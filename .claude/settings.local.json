@@ -2,7 +2,11 @@
   "permissions": {
     "allow": [
       "Bash(.venv\\\\Scripts\\\\python.exe -c \"import marker; print\\(marker.__version__\\)\")",
-      "Bash(uv run *)"
+      "Bash(uv run *)",
+      "WebSearch",
+      "WebFetch(domain:docs.thevirtualbrain.org)",
+      "WebFetch(domain:neurolib-dev.github.io)",
+      "WebFetch(domain:link.springer.com)"
     ]
   }
 }
