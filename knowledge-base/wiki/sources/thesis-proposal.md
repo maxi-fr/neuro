@@ -13,9 +13,11 @@ updated: 2026-05-18
 **Ingested:** 2026-05-18
 
 ## Summary
+
 This document outlines a Master's thesis project focused on using Model Predictive Control (MPC) to steer neural populations from pathological to physiological states. The framework incorporates neural dynamics models, state and parameter estimation, and the integration of Large Language Models (LLMs) for automated design and real-time adaptation. The proposal highlights the need for patient-specific models and multi-scale adaptation (milliseconds to days) to address research gaps in neurostimulation.
 
 ## Key Takeaways
+
 - **MPC Framework:** Uses a prediction model and cost function to achieve desired behaviors while respecting safety constraints to avoid tissue damage [[raw/Thesis.md#Model Predictive Control for Neurostimulation | Thesis]].
 - **Hierarchical Control:** Suggests a hierarchical structure where a faster low-level controller tracks MPC-generated references to achieve millisecond sampling times [[raw/Thesis.md#Master's project | Thesis]].
 - **LLM Integration:** Proposes using LLMs to design treatment protocols, integrate multimodal feedback (EEG, patient/physician assessments), and propose stimulation parameters [[raw/Thesis.md#Master's project | Thesis]].
@@ -23,6 +25,7 @@ This document outlines a Master's thesis project focused on using Model Predicti
 - **Adaptive Control:** Emphasizes the need for parameter estimation and model adaptation to account for long-term effects like plasticity and disease progression [[raw/Thesis.md#Prediction model | Thesis]].
 
 ## Related Concepts
+
 - [[concepts/model-predictive-control.md|Model Predictive Control]] — Core control methodology for neurostimulation.
 - [[concepts/neural-mass-model.md|Neural Mass Model]] — Used for reduced-order population modeling.
 - [[concepts/parkinsons-disease.md|Parkinson's Disease]] — One of the target pathologies (desynchronization objective).
@@ -33,6 +36,7 @@ This document outlines a Master's thesis project focused on using Model Predicti
 - [[concepts/state-estimation.md|State Estimation]] — Required for feedback control using unmeasurable states.
 
 ## Raw Notes
+
 - Objectives: Synchronization (epilepsy), Desynchronization (Parkinson's), Amplitude reduction (depression).
 - Sampling time challenge: Pure MPC may struggle with ms requirements.
 - Constraints: Must be robustly satisfied to avoid overstimulation.

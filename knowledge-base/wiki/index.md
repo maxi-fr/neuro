@@ -1,6 +1,7 @@
 # LLM Wiki Index
 
 ## Sources
+
 - [[sources/chang-et-al-2020.md|Model Predictive Control for Seizure Suppression Based on Nonlinear Auto-Regressive Moving-Average Volterra Model]] — Closed-loop brain stimulation using MPC and Volterra models.
 - [[sources/chouzouris-et-al-2021.md|Applications of optimal nonlinear control to a whole-brain network of FitzHugh-Nagumo oscillators]] — Optimal nonlinear control for state-switching and synchronization in whole-brain networks.
 - [[sources/froehlich-jezernik-2005.md|Feedback control of Hodgkin–Huxley nerve cell dynamics]] — Cascaded feedback control for direct state variable tracking in Hodgkin-Huxley neurons.
@@ -9,6 +10,7 @@
 - [[sources/thesis-proposal.md|Master's Thesis Proposal: MPC for Neurostimulation]] — Master's thesis proposal on MPC, state estimation, and LLM integration.
 
 ## Concepts
+
 - [[concepts/beta-band-oscillations.md|Beta-band Oscillations]] — Neural rhythms (13-30 Hz) used as a primary biomarker for Parkinson's Disease.
 - [[concepts/closed-loop-brain-stimulation.md|Closed-loop Brain Stimulation]] — Automated adjustment of stimulation parameters based on real-time feedback.
 - [[concepts/difference-of-convex-functions.md|Difference of Convex Functions and ICNN]] — DC functions and ICNN architecture for structured nonlinear modeling and efficient MPC optimization.
@@ -26,6 +28,7 @@
 - [[concepts/volterra-model.md|Volterra Model]] — Functional series representation for nonlinear dynamic system identification.
 
 ## Synthesis
+
 - [[synthesis/neurostimulation-approaches.md|Neurostimulation Approaches Synthesis]] — Standardized comparison of the five primary neurostimulation approaches across control objectives, controllers, and models.
 - [[synthesis/control-strategy-landscape.md|Control Strategy Landscape]] — Compares the four control paradigms across all sources: feedback linearization, optimal nonlinear control, Volterra MPC, and DCNN Tube MPC.
 - [[synthesis/brain-model-taxonomy.md|Brain Model Taxonomy]] — Compares the four brain model types (HH, FHN, NMM, data-driven) by scale, fidelity, and control tractability.

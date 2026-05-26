@@ -36,9 +36,11 @@ Otherwise:
    - `docs/` (recursively)
    - `notes/` (recursively)
 3. For each file found, compute its MD5 hash:
+
    ```powershell
    (Get-FileHash <file> -Algorithm MD5).Hash
    ```
+
 4. Compare against the manifest:
    - **New:** file path not in manifest → queue for ingest
    - **Modified:** file path in manifest but MD5 differs → queue for re-ingest (update existing wiki pages)
@@ -52,6 +54,7 @@ Present the list of files to ingest, grouped by status (new/modified/deleted), a
 ### Re-ingesting modified files
 
 When a previously ingested file has changed:
+
 - Read the `wiki_pages` list from the manifest to find all wiki pages that were created/updated from this source
 - Re-read the source and update those wiki pages with the new content
 - Preserve information from OTHER sources on those pages — only update the parts that came from the modified source
@@ -69,6 +72,7 @@ Before processing sources:
 For each new source file, in order:
 
 ### 3a. Read and Analyze
+
 - For markdown or text files, read the full source file.
 - For PDF files (`.pdf`):
   1. Execute `uv run skills/ingest/process_pdf.py "<path_to_pdf>" -o raw/<pdf_name>/`. This will create a markdown file and an `attachments` directory in a new folder alongside the PDF.
@@ -81,6 +85,7 @@ For each new source file, in order:
 - **Identify and extract mathematical descriptions and formulas** if they are necessary for a complete understanding of the concepts or claims. Use standard LaTeX syntax (`$$...$$` for blocks, `$ ... $` for inline).
 
 ### 3b. Create Source Summary
+
 Write a summary page in `wiki/sources/`:
 
 ```markdown
@@ -112,12 +117,14 @@ Any additional details, quotes, or data worth preserving.
 ```
 
 ### 3c. Create or Update Concept Pages
+
 For each significant concept mentioned in the source:
 
 - If `wiki/concepts/<concept>.md` exists: **update it** — add new information from this source, update the `sources` list in frontmatter, add `updated` date, ensure cross-references are correct. Always cite the specific source and location for new claims.
 - If it doesn't exist: **create it** with information from this source. Add wikilinks to related concepts.
 
 Concept page template:
+
 ```markdown
 ---
 title: Concept Name
@@ -143,7 +150,9 @@ Information aggregated from all sources. **Every distinct claim must include a c
 ```
 
 ### 3d. Update Cross-References
+
 After creating/updating pages for a source:
+
 - Check all pages that were created or updated
 - Ensure bidirectional wikilinks exist and use full relative paths with aliases (e.g., `[[concepts/concept-name.md|Concept Name]]`)
 - Add links to the source summary from all concept pages it touches
@@ -151,6 +160,7 @@ After creating/updating pages for a source:
 ## Step 4: Update Index
 
 Rebuild `wiki/index.md`:
+
 - Read all `.md` files in `wiki/` subdirectories
 - Group by type (concept, source, comparison, synthesis)
 - For each page, list: `- [[Page Title]] — one-line description` (read from frontmatter or first paragraph)
@@ -166,6 +176,7 @@ After processing each source file, update `wiki/.manifest.json`:
 ```
 
 Update the manifest entry:
+
 ```json
 {
   "relative/path/to/file.md": {
@@ -183,7 +194,8 @@ Read the existing manifest, merge in the new/updated entries, and write it back.
 ## Step 6: Update Log
 
 Append to `wiki/log.md`:
-```
+
+```markdown
 ## [YYYY-MM-DD] ingest | filename.md
 - Source: relative/path/to/file.md
 - Status: new | modified (previous hash: abc123)
@@ -195,6 +207,7 @@ Append to `wiki/log.md`:
 ## Step 7: Reindex qmd
 
 If qmd is available:
+
 ```bash
 qmd update
 ```
@@ -202,6 +215,7 @@ qmd update
 ## Step 8: Report
 
 Print a summary for the user:
+
 - Files ingested
 - Pages created (with links)
 - Pages updated (with what changed)

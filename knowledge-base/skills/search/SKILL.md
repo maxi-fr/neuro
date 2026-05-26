@@ -19,6 +19,7 @@ The user's argument is the search query. If no argument is provided, ask the use
 Use a multi-pronged search approach:
 
 ### 2a. qmd Search (Primary)
+
 Use the qmd MCP tools to search the `wiki` collection:
 
 ```json
@@ -37,9 +38,11 @@ Use the qmd MCP tools to search the `wiki` collection:
 For complex queries, add a `hyde` sub-query with a hypothetical answer (50-100 words).
 
 ### 2b. Index Scan (Fallback/Supplement)
+
 Read `wiki/index.md` and scan for relevant page titles and descriptions. This catches pages that qmd might miss due to indexing lag.
 
 ### 2c. Grep (Precision)
+
 If the query contains specific terms, names, or identifiers, use Grep to find exact matches across wiki pages.
 
 ## Step 3: Read Relevant Pages
@@ -47,6 +50,7 @@ If the query contains specific terms, names, or identifiers, use Grep to find ex
 From the search results, identify the most relevant pages (typically 3-10). Read them in full using the Read tool or `qmd get`.
 
 For each page, note:
+
 - How it relates to the query
 - Key facts or claims
 - Which sources it draws from
@@ -75,7 +79,8 @@ If the answer is substantial and adds value beyond what's already in the wiki, o
 If the user agrees, write the page following standard wiki conventions (frontmatter, wikilinks, proper filename) and update the index.
 
 Append to `wiki/log.md`:
-```
+
+```markdown
 ## [YYYY-MM-DD] query | <short query description>
 - Query: <full query>
 - Pages consulted: [[Page1]], [[Page2]], ...

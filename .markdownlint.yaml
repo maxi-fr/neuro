@@ -1,0 +1,8 @@
+MD013: false
+MD060: false
+MD033:
+  allowed_elements: [details, summary, skill-name]
+MD024:
+  siblings_only: true
+MD025:
+  front_matter_title: ""

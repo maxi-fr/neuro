@@ -43,13 +43,14 @@ This wiki setup is optimized for **Gemini CLI**.
 
 Source directories (never modified by the LLM):
 
-```
+```text
 raw/                  # Primary source documents
 ├── attachments/      # Images and binary assets
 ```
 
 Wiki output (owned by the LLM):
-```
+
+```text
 wiki/
 ├── index.md          # Master index of all pages (updated on every ingest)
 ├── log.md            # Chronological log of all operations
@@ -64,7 +65,6 @@ skills/               # Skills for the LLM to use
 ...
 └── <skill-name>/
     └── SKILL.md
-
 
 ## Page Conventions
 
@@ -112,6 +112,7 @@ The root `GEMINI.md` file contains the base instructions for the agent.
 To use these skills, simply ask the agent to perform the task (e.g., "Ingest the new sources" or "Search the wiki for X").
 
 ### Workflow
+
 1. Drop source files into `raw/` (use Obsidian Web Clipper for articles).
 2. Ask the agent to **ingest** the new sources.
 3. Ask the agent to **search** the wiki when you have questions.
@@ -119,6 +120,7 @@ To use these skills, simply ask the agent to perform the task (e.g., "Ingest the
 5. Periodically ask to **optimize** the wiki as it grows.
 
 ### Search (qmd)
+
 The wiki is indexed by qmd (local markdown search engine) with collection name `wiki`.
 Skills use qmd MCP tools automatically. To reindex manually: `qmd update`.
 To build embeddings: `qmd embed`.

@@ -12,6 +12,7 @@ updated: 2026-05-14
 The Hodgkin-Huxley (HH) model is a phenomenological model of action potential generation in nerve cells. It describes the temporal evolution of the membrane voltage and the dynamics of voltage-gated ion channels.
 
 ## Key Points
+
 - **Mathematical Structure:** The model consists of four coupled, nonlinear differential equations. The membrane voltage $V$ evolves according to:
   $$ C_{m} \dot{V} = G_{K} n^{4} (E_{K} - V) + G_{Na} m^{3} h (E_{Na} - V) + G_{L} (V_{L} - V) + I_{inj} $$
   The gating variables $y \in \{m, h, n\}$ follow first-order kinetics:
@@ -22,9 +23,11 @@ The Hodgkin-Huxley (HH) model is a phenomenological model of action potential ge
 - **Spatial Propagation:** The model can be extended to multicompartment versions to simulate the propagation of action potentials along axons (e.g., node-to-node conduction in myelinated axons) [[raw/Froehlich_Jezernik_2005/Froehlich_Jezernik_2005.md#2.2. Multicompartment model | Fröhlich & Jezernik 2005]].
 
 ## Related Concepts
+
 - [[concepts/closed-loop-brain-stimulation.md|Closed-loop Brain Stimulation]] — HH models are often used as the "plant" in closed-loop control simulations.
 - [[concepts/feedback-linearization.md|Feedback Linearization]] — A technique used to control the nonlinear HH dynamics.
 - [[concepts/model-predictive-control.md|Model Predictive Control]] — Used as the outer control layer for optimal ion channel tracking.
 
 ## Sources
+
 - [[sources/froehlich-jezernik-2005.md|Feedback control of Hodgkin–Huxley nerve cell dynamics]] — Uses the HH model to develop cascaded feedback control schemes for AP generation and annihilation.

@@ -14,6 +14,7 @@ Across the five sources in this wiki, four distinct control paradigms appear for
 ## The Four Paradigms
 
 ### 1. Cascaded Feedback Linearization + MPC
+
 **Source:** [[sources/froehlich-jezernik-2005.md|Fröhlich & Jezernik 2005]]
 **Model:** [[concepts/hodgkin-huxley-model.md|Hodgkin-Huxley]] (mechanistic, single-neuron)
 **Target:** Direct biophysical state control — ion channel activation ($m$) and inactivation ($h$)
@@ -22,6 +23,7 @@ Across the five sources in this wiki, four distinct control paradigms appear for
 **Limitation:** Requires exact model parameters; valid only within the operating range of the linearization.
 
 ### 2. Optimal Nonlinear Control on Whole-Brain Networks
+
 **Source:** [[sources/chouzouris-et-al-2021.md|Chouzouris et al. 2021]]
 **Model:** Whole-brain [[concepts/fitzhugh-nagumo-model.md|FHN]] network with DTI-derived [[concepts/human-connectome.md|connectome]] (mechanistic, large-scale)
 **Target:** Attractor switching between multistable network states; network synchronization
@@ -30,6 +32,7 @@ Across the five sources in this wiki, four distinct control paradigms appear for
 **Limitation:** Offline computation limits real-time applicability; requires full network state knowledge.
 
 ### 3. Optimal Nonlinear Control on Neural Mass Models
+
 **Source:** [[sources/salfenmose-obermayer-2022.md|Salfenmose & Obermayer 2022]]
 **Model:** EI EIF [[concepts/neural-mass-model.md|neural mass model]] (biophysically grounded, population-level)
 **Target:** Bistable state switching (down→up, up→down)
@@ -38,6 +41,7 @@ Across the five sources in this wiki, four distinct control paradigms appear for
 **Limitation:** Gradient-based offline optimization; not directly adaptive to real-time state changes.
 
 ### 4. MPC with Black-box Volterra Model
+
 **Source:** [[sources/chang-et-al-2020.md|Chang et al. 2020]]
 **Model:** NARMA [[concepts/volterra-model.md|Volterra model]] (data-driven, black-box)
 **Target:** Suppression of epileptiform EEG discharges ([[concepts/seizure-suppression.md|seizure suppression]])
@@ -46,6 +50,7 @@ Across the five sources in this wiki, four distinct control paradigms appear for
 **Limitation:** Volterra series can have high parameter counts; may not generalize across patients without re-identification.
 
 ### 5. DCNN Tube MPC
+
 **Source:** [[sources/steffen-cannon-2025.md|Steffen & Cannon 2025]]
 **Model:** [[concepts/difference-of-convex-functions.md|Difference of Convex Neural Networks]] (data-driven, structured nonlinear)
 **Target:** [[concepts/beta-band-oscillations.md|Beta-band]] suppression in [[concepts/parkinsons-disease.md|Parkinson's Disease]] via closed-loop DBS
@@ -67,12 +72,14 @@ Across the five sources in this wiki, four distinct control paradigms appear for
 ## Emerging Thesis
 
 The field is evolving along two axes simultaneously:
+
 1. **Scale**: single-neuron (HH) → population (NMM/FHN) → whole-brain networks
 2. **Model knowledge**: mechanistic first-principles → data-driven black-box
 
 The most recent work (Steffen & Cannon 2025) sits at the frontier: data-driven, population-scale, real-time, and patient-generalizable. The central open question is whether the generalization advantage holds in prospective clinical settings with hardware-in-the-loop constraints.
 
 ## Related Concepts
+
 - [[concepts/closed-loop-brain-stimulation.md|Closed-loop Brain Stimulation]] — Overarching framework for all strategies.
 - [[concepts/model-predictive-control.md|Model Predictive Control]] — Shared algorithmic framework for strategies 1, 4, and 5.
 - [[concepts/optimal-nonlinear-control.md|Optimal Nonlinear Control]] — Core framework for strategies 2 and 3.

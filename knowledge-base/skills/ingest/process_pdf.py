@@ -7,9 +7,9 @@ import subprocess
 import sys
 from pathlib import Path
 
-from marker.converters.pdf import PdfConverter  # type: ignore[import-untyped]
-from marker.models import create_model_dict  # type: ignore[import-untyped]
-from marker.output import text_from_rendered  # type: ignore[import-untyped]
+from marker.converters.pdf import PdfConverter  # type: ignore[import-not-found]
+from marker.models import create_model_dict  # type: ignore[import-not-found]
+from marker.output import text_from_rendered  # type: ignore[import-not-found]
 
 _PDF_SUFFIX = ".pdf"
 

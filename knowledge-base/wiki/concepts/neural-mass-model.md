@@ -12,6 +12,7 @@ updated: 2026-05-18
 A Neural Mass Model (NMM) is a macroscopic neurophysiological model that simulates the collective activity of large populations of neurons. It is widely used to analyze the mechanisms of brain disorders like epilepsy and to simulate EEG signals.
 
 ## Key Points
+
 - **Macroscopic Scale:** Instead of modeling individual neurons, NMMs represent the average behavior of neuronal populations (e.g., pyramidal cells, excitatory interneurons, inhibitory interneurons).
 - **Reduced Complexity:** NMMs (and the closely related **Wilson-Cowan model**) provide a computationally tractable alternative to complex population models built from diffusively coupled single-cell models. This makes them suitable for real-time applications like [[concepts/model-predictive-control.md|Model Predictive Control]] [[raw/Thesis.md#Prediction model | Thesis]].
 - **EEG Simulation:** NMMs can produce normal EEG waves or epileptiform discharges by adjusting parameters governing excitatory and inhibitory interactions.
@@ -21,11 +22,13 @@ A Neural Mass Model (NMM) is a macroscopic neurophysiological model that simulat
 - **Dynamics:** These models can exhibit complex behaviors including bistability (coexistence of "up" and "down" states), oscillations, and limit cycles. Specific models are tailored to describe different pathological behaviors such as Parkinson's disease or epilepsy [[raw/Thesis.md#Prediction model | Thesis]].
 
 ## Related Concepts
+
 - [[concepts/seizure-suppression.md|Seizure Suppression]] — NMMs are often used as "virtual brains" to test suppression strategies.
 - [[concepts/model-predictive-control.md|Model Predictive Control]] — NMMs serve as the prediction models for real-time control.
 - [[concepts/optimal-nonlinear-control.md|Optimal Nonlinear Control]] — Used to find efficient ways to steer NMMs between different activity states.
 
 ## Sources
+
 - [[sources/chang-et-al-2020.md|Model Predictive Control for Seizure Suppression Based on Nonlinear Auto-Regressive Moving-Average Volterra Model]] — Uses an NMM as a black-box model.
 - [[sources/salfenmose-obermayer-2022.md|Nonlinear optimal control of a mean-field model of neural population dynamics]] — Applies optimal control to a biophysically grounded EI EIF neural mass model.
 - [[sources/thesis-proposal.md|Master's Thesis Proposal: MPC for Neurostimulation]] — Discusses NMMs and Wilson-Cowan models as tractable prediction models for MPC.
