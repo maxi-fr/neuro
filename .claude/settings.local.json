@@ -6,7 +6,11 @@
       "WebSearch",
       "WebFetch(domain:docs.thevirtualbrain.org)",
       "WebFetch(domain:neurolib-dev.github.io)",
-      "WebFetch(domain:link.springer.com)"
+      "WebFetch(domain:link.springer.com)",
+      "Bash(uv pip *)",
+      "Bash(uv sync *)",
+      "Bash(uv add *)",
+      "Bash(uv run scripts/*)"
     ]
   }
 }

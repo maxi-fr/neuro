@@ -9,6 +9,7 @@ readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
     "neurolib>=0.6.2",
+    "matplotlib>=3.8",
 ]
 
 [dependency-groups]
@@ -56,6 +57,10 @@ convention = "numpy"
 [tool.ruff.lint.per-file-ignores]
 "knowledge-base/**" = [
     "INP001", # Not a package — standalone scripts
+]
+"scripts/**" = [
+    "INP001", # Not a package — standalone runnable demos
+    "T201",   # print() is fine in CLI scripts
 ]
 "tests/*" = [
     "S101",    # assert
