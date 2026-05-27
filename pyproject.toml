@@ -18,7 +18,7 @@ dev = [
     "pytest-cov>=4.1.0", # Added for coverage reporting
     "ruff>=0.3.0",
     "pre-commit>=3.0.0",
-    "mypy>=1.0.0",
+    "ty",
     "validate-pyproject>=0.23",
     "ipykernel>=7.2.0",
 ]
@@ -42,7 +42,7 @@ ignore = [
     "TD",     # for structure of TODO comments
     "D100",   # Missing docstring in public module
     "D104",   # Missing docstring in public package
-    "ANN101", # Missing type annotation for self (deprecated in modern Ruff)
+    "PGH003", # Use specific rule codes when ignoring type issues (simplified for ty)
     "COM812", # Trailing comma missing (conflicts with formatter)
     "ISC001", # Single line implicit string concatenation (conflicts with formatter)
 ]
@@ -85,44 +85,27 @@ minversion = "6.0"
 addopts = "-ra -q -v --cov=closed-loop-neurostimulation"
 testpaths = ["tests"]
 
-[tool.mypy]
-python_version = "3.13"
-files = "src"
-# --- The Meta Flag (for any new added flags which fall under strict) ---
-strict = true
+[tool.ty]
 
-# --- 1. Disallow Dynamic Typing ---
-disallow_any_generics = false      # e.g., List instead of List[int]
-disallow_subclassing_any = true   # Prevents inheriting from a class typed as 'Any'
+[tool.ty.rules]
+# In ty, you control strictness by setting individual rules to "error", "warn", or "ignore".
 
-# --- 2. Untyped Definitions & Calls ---
-disallow_untyped_calls = true     # Prevents calling a function without type hints
-disallow_untyped_defs = true      # Forces function signatures to have hints (Args + Return)
-disallow_incomplete_defs = true   # Prevents partial hints (e.g., hinting args but not return)
-check_untyped_defs = true         # Look inside functions even if they don't have hints
-disallow_untyped_decorators = true # Ensures decorators are typed
+# 1. Base Core Type Safety
+invalid-assignment = "error"         # Assigning a value to a variable of an incompatible type
+invalid-argument-type = "error"      # Passing an argument of an incompatible type to a function
+invalid-return-type = "error"        # Returning a value that doesn't match the function's return annotation
+unresolved-import = "error"          # Importing a module that cannot be found in the environment
+unresolved-attribute = "error"       # Accessing an attribute that doesn't exist on that object type
+unresolved-reference = "error"       # Using a variable or name that hasn't been defined
 
-# --- 3. None and Optional Handling ---
-no_implicit_optional = true       # Prevents 'x: str = None' (must be 'Optional[str]')
+# 2. Quality of Life & Configuration Checks
+possibly-missing-import = "error"    # Strict import resolution (analogous to mypy's missing import checks)
+unused-ignore-comment = "warn"       # Flagging a '# ty: ignore' comment that is no longer needed
+unused-type-ignore-comment = "warn"  # Flagging a standard '# type: ignore' that is no longer needed
+ignore-comment-unknown-rule = "warn" # Flagging if you write an ignore for a rule that doesn't exist
 
-# --- 4. Configuring Warnings ---
-warn_redundant_casts = true       # Warns if you cast something to its own type
-warn_unused_ignores = true        # Warns if a '# type: ignore' isn't needed anymore
-warn_return_any = true            # Warns if a function returns 'Any' when hinted otherwise
-warn_unreachable = true           # Warns about code that can never run
-
-# --- 5. Miscellaneous Strictness ---
-no_implicit_reexport = true       # Prevents access to 'from x import y' unless 'y' is in x's __all__
-strict_equality = true            # Prevents 'x == y' if types are fundamentally incompatible
-strict_optional = true            # (On by default anyway) Handle 'None' strictly
-
-# Not part of strict = true
-# --- 6. Quality of Life / Reporting ---
-show_error_codes = true           # Shows [error-code] for easy ignoring
-pretty = true                     # Colorized output and context markers
-show_column_numbers = true        # Better precision in error reports
-warn_unused_configs = true        # Alerts you if a config line isn't doing anything
-
-# --- 7. Handling Dependencies ---
-ignore_missing_imports = false     # Don't error on libs without stubs (e.g. pandas)
-follow_imports = "normal"         # How to follow imports ("silent", "normal", "error")
+# 3. Collection & Logic Boundaries
+index-out-of-bounds = "error"        # Static bounds checking on indexable collections (e.g., tuples)
+division-by-zero = "error"           # Catching literal division by zero statically
+not-iterable = "error"               # Trying to use a non-iterable object in a 'for' loop or comprehension
+not-subscriptable = "error"          # Trying to index an object that doesn't support it (like an integer)

@@ -17,6 +17,7 @@ Scripts to run simulations.
 ## Project specific instructions
 
 * uv is used for dependency management
+* use the ty LSP
 * Make sure no formatting, linting, type or test errors are present. Sometimes it might be allowed to selectively ingore rules if it makes the code cleaner
 * You are working on a windows machine use only PowerShell commands.
 
@@ -26,11 +27,11 @@ uv sync                                   # install deps
 uv run pytest                             # tests (config in pyproject.toml: -v, --cov)
 uv run ruff check . --fix --unsafe-fixes  # lint (rule set is "ALL" with curated ignores)
 uv run ruff format .
-uv run mypy
+uv run ty check                           # type checking with ty
 uv run pre-commit run --all-files
 ```
 
-Pre-commit hooks run ruff (with `--fix --unsafe-fixes`), ruff-format, mypy, pytest, `uv-lock`, and markdownlint on every commit — expect commits to mutate `requirements.txt` and reformat files.
+Pre-commit hooks run ruff (with `--fix --unsafe-fixes`), ruff-format, ty, pytest, `uv-lock`, and markdownlint on every commit — expect commits to mutate `requirements.txt` and reformat files.
 
 ## General instructions
 

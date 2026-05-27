@@ -10,7 +10,11 @@
       "Bash(uv pip *)",
       "Bash(uv sync *)",
       "Bash(uv add *)",
-      "Bash(uv run scripts/*)"
+      "Bash(Get-ChildItem -Path \"c:\\\\Users\\\\frank\\\\closed-loop-neurostimulation\" -Recurse -Force)",
+      "Bash(Select-Object FullName, PSIsContainer)",
+      "Bash(Sort-Object FullName)",
+      "Bash(Format-Table -AutoSize)",
+      "Bash(Get-ChildItem -Path \"c:\\\\Users\\\\frank\\\\closed-loop-neurostimulation\\\\.venv\\\\Lib\\\\site-packages\\\\neurolib\\\\models\\\\fhn\" -File)"
     ]
   }
 }
