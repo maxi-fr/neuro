@@ -10,6 +10,8 @@ requires-python = ">=3.13"
 dependencies = [
     "neurolib>=0.6.2",
     "matplotlib>=3.8",
+    "tvb-library>=2.10.0",
+    "tvb-data>=3.0.0",
 ]
 
 [dependency-groups]
@@ -90,22 +92,19 @@ testpaths = ["tests"]
 [tool.ty.rules]
 # In ty, you control strictness by setting individual rules to "error", "warn", or "ignore".
 
-# 1. Base Core Type Safety
-invalid-assignment = "error"         # Assigning a value to a variable of an incompatible type
-invalid-argument-type = "error"      # Passing an argument of an incompatible type to a function
+invalid-assignment = "error"         # Assigning an incompatible type to a variable
+invalid-argument-type = "error"      # Passing the wrong type to a function
 invalid-return-type = "error"        # Returning a value that doesn't match the function's return annotation
-unresolved-import = "error"          # Importing a module that cannot be found in the environment
+unresolved-import = "error"          # Importing a module that cannot be found
 unresolved-attribute = "error"       # Accessing an attribute that doesn't exist on that object type
-unresolved-reference = "error"       # Using a variable or name that hasn't been defined
+unresolved-reference = "error"       # Using an undefined variable or name
 
-# 2. Quality of Life & Configuration Checks
-possibly-missing-import = "error"    # Strict import resolution (analogous to mypy's missing import checks)
-unused-ignore-comment = "warn"       # Flagging a '# ty: ignore' comment that is no longer needed
-unused-type-ignore-comment = "warn"  # Flagging a standard '# type: ignore' that is no longer needed
-ignore-comment-unknown-rule = "warn" # Flagging if you write an ignore for a rule that doesn't exist
+possibly-missing-import = "error"    # Strict import resolution
+unused-ignore-comment = "warn"       # Flagging a '# ty: ignore' comment that isn't doing anything
+unused-type-ignore-comment = "warn"  # Flagging a standard '# type: ignore' that isn't doing anything
+ignore-comment-unknown-rule = "warn" # Warns you if you try to ignore a rule that doesn't exist
 
-# 3. Collection & Logic Boundaries
-index-out-of-bounds = "error"        # Static bounds checking on indexable collections (e.g., tuples)
+index-out-of-bounds = "error"        # Static bounds checking on indexable collections (like tuples)
 division-by-zero = "error"           # Catching literal division by zero statically
-not-iterable = "error"               # Trying to use a non-iterable object in a 'for' loop or comprehension
-not-subscriptable = "error"          # Trying to index an object that doesn't support it (like an integer)
+not-iterable = "error"               # Trying to use a non-iterable object in a loop
+not-subscriptable = "error"          # Trying to index an object that doesn't support it

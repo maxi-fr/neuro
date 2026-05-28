@@ -19,23 +19,73 @@
 * For parkinsons: desynchronization [[knowledge-base/raw/control-objectives#1. Parkinson’s Disease (PD)|]]
 * For epilepsy: state transition [[knowledge-base/raw/control-objectives#2. Epilepsy|]]
 
+Task is twofold: reference trajectory/cost function for MPC and brain model parameter set
+
+* Need to find
+* Make the different plants show the pathological states. As in create plots in which they are visible
+
+</details>
+
+<details>
+<summary>Add marimo notebooks</summary>
+
+* for state exploration
+* simulation plots and so on
+
+</details>
+
+<details>
+<summary>Add plotting utils</summary>
+
+* for plotting eeg signals
+* graphs
+* bifurcation diagramms
+* ...
+
+</details>
+
+<details>
+<summary>Saving plots and data </summary>
+
+* plots should be saved as images
+* their data
+* what function was used to generate them + parameters
+
+</details>
+
+<details>
+<summary>What is AAL2 atlas</summary>
+
+* what is HCP-80
+
 </details>
 
 ## For first meeting (26.05)
 
-Research:
+So that we have a first direction for the project.
 
-* possible MPC formulations for impulsive systems
-    1) Formulation as a continuous optimal control problem where pulse times and amplitudes are free and optimized over along the horizon.
+<details>
+<summary>Research possible MPC formulations for impulsive systems</summary>
 
-    2) Continuous relaxations where sparsity/pulsing is achieved via regularization terms in the cost function (similar to what some of the attached papers do), or other relaxation strategies.
+* Formulation as a continuous optimal control problem where pulse times and amplitudes are free and optimized over along the horizon.
 
-    3) Formulation as a mixed-integer problem with a fixed timing, where at each time point a discrete variable (0 - no pulse, 1 - pulse) and the continuous amplitude are optimized.
-* modeling for brain dynamics
-  * neural-mass models: Cowan-Wilson, Jansen-Rit
-* implementation frameworks for brain dynamics
-  * which python simulators for brain dynamics, neurostimulation, and EEG signals?
-    * library by TU Berlin people - neurolib
-    *
+* Continuous relaxations where sparsity/pulsing is achieved via regularization terms in the cost function (similar to what some of the attached papers do), or other relaxation strategies.
 
-so that we have a first direction for the project.
+* Formulation as a mixed-integer problem with a fixed timing, where at each time point a discrete variable (0 - no pulse, 1 - pulse) and the continuous amplitude are optimized.
+
+</details>
+
+<details>
+<summary>Research modeling for brain dynamics</summary>
+
+* neural-mass models: Cowan-Wilson, Jansen-Rit
+
+</details>
+
+<details>
+<summary>Research implementation frameworks for brain dynamics</summary>
+
+* which python simulators for brain dynamics, neurostimulation, and EEG signals?
+  * library by TU Berlin people - neurolib
+
+</details>

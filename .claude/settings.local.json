@@ -14,7 +14,25 @@
       "Bash(Select-Object FullName, PSIsContainer)",
       "Bash(Sort-Object FullName)",
       "Bash(Format-Table -AutoSize)",
-      "Bash(Get-ChildItem -Path \"c:\\\\Users\\\\frank\\\\closed-loop-neurostimulation\\\\.venv\\\\Lib\\\\site-packages\\\\neurolib\\\\models\\\\fhn\" -File)"
+      "Bash(Get-ChildItem -Path \"c:\\\\Users\\\\frank\\\\closed-loop-neurostimulation\\\\.venv\\\\Lib\\\\site-packages\\\\neurolib\\\\models\\\\fhn\" -File)",
+      "Bash(Get-ChildItem -Path \"c:\\\\Users\\\\frank\\\\closed-loop-neurostimulation\" -Recurse -Directory)",
+      "Bash(Select-Object -ExpandProperty FullName)",
+      "Bash(Sort-Object)",
+      "Bash(Get-ChildItem -Path \"c:\\\\Users\\\\frank\\\\closed-loop-neurostimulation\" -Force)",
+      "Bash(Select-Object Name, PSIsContainer)",
+      "WebFetch(domain:pypi.org)",
+      "WebFetch(domain:tvb-library.readthedocs.io)",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:notebook.community)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "Bash(cd /tmp)",
+      "Bash(gh repo *)",
+      "PowerShell(uv run ruff check . --fix --unsafe-fixes 2>&1)",
+      "PowerShell(uv run ruff format . 2>&1)",
+      "PowerShell(uv run ty check 2>&1)",
+      "PowerShell(uv run pytest tests/test_plant.py -v 2>&1)",
+      "Bash(python -c \"import tvb_data; print\\(tvb_data.__file__\\)\")",
+      "Bash(python)"
     ]
   }
 }
