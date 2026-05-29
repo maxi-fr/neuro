@@ -13,12 +13,12 @@ The Volterra model is a functional series representation used to describe the in
 
 ## Key Points
 
-- **Structure:** Generally less time-consuming and more compact than neural networks for certain implementations. [[raw/Chang_et_al_2020/Chang_et_al_2020.md#I. Introduction | Chang et al. 2020]]
+- **Structure:** Generally less time-consuming and more compact than neural networks for certain implementations. [[Literature/Chang_et_al_2020.pdf | Chang et al. 2020 (I. Introduction)]]
 - **NARMA Volterra:** Nonlinear Auto-Regressive Moving-Average Volterra models incorporate past inputs and outputs to predict future states. A second-order discrete-time Volterra series mapping stimulation $u(n)$ to EEG output $y(n)$ can be expressed as:
     $$ y(n) = h_0 + \sum_{i=0}^M h_1(i) u(n-i) + \sum_{i=0}^M \sum_{j=0}^M h_2(i, j) u(n-i) u(n-j) + \dots $$
-    where $h_k$ are the Volterra kernels of order $k$. [[raw/Chang_et_al_2020/Chang_et_al_2020.md#I. Introduction | Chang et al. 2020]]
-- **System Identification:** Used to learn the dynamics of a system from experimental data without needing to know its internal physical structure (black-box modeling). [[raw/Chang_et_al_2020/Chang_et_al_2020.md#I. Introduction | Chang et al. 2020]]
-- **Application in MPC:** Often serves as the predictive model in [[concepts/model-predictive-control.md|Model Predictive Control]] schemes. [[raw/Chang_et_al_2020/Chang_et_al_2020.md#I. Introduction | Chang et al. 2020]]
+    where $h_k$ are the Volterra kernels of order $k$. [[Literature/Chang_et_al_2020.pdf | Chang et al. 2020 (I. Introduction)]]
+- **System Identification:** Used to learn the dynamics of a system from experimental data without needing to know its internal physical structure (black-box modeling). [[Literature/Chang_et_al_2020.pdf | Chang et al. 2020 (I. Introduction)]]
+- **Application in MPC:** Often serves as the predictive model in [[concepts/model-predictive-control.md|Model Predictive Control]] schemes. [[Literature/Chang_et_al_2020.pdf | Chang et al. 2020 (I. Introduction)]]
 
 ## Related Concepts
 
@@ -29,4 +29,4 @@ The Volterra model is a functional series representation used to describe the in
 
 ## Sources
 
-- [[sources/chang-et-al-2020.md|Model Predictive Control for Seizure Suppression Based on Nonlinear Auto-Regressive Moving-Average Volterra Model]] — Utilizes a NARMA Volterra model as the predictive component of an MPC controller. [[raw/Chang_et_al_2020/Chang_et_al_2020.md#I. Introduction | Chang et al. 2020]]
+- [[sources/chang-et-al-2020.md|Model Predictive Control for Seizure Suppression Based on Nonlinear Auto-Regressive Moving-Average Volterra Model]] — Utilizes a NARMA Volterra model as the predictive component of an MPC controller. [[Literature/Chang_et_al_2020.pdf | Chang et al. 2020 (I. Introduction)]]

@@ -86,7 +86,8 @@ Read `wiki/.manifest.json` and verify source integrity:
 2. Compare against the stored hash. Report:
    - **Modified sources:** MD5 differs — the source has changed since last ingest. Wiki pages may be stale. Suggest running the **ingest** skill to re-process.
    - **Deleted sources:** File no longer exists on disk. Wiki pages referencing it may be orphaned.
-   - **Untracked sources:** Files in `raw/`, `docs/`, `notes/` that aren't in the manifest at all — never ingested.
+   - **Untracked sources:** Files in `Literature/` and `Notes/` that aren't in the manifest at all — never ingested.
+
 3. Summarize: N modified, N deleted, N untracked out of N total tracked sources.
 
 ## Step 5: Index & Log Checks

@@ -2,7 +2,7 @@
 
 ## [2026-05-14] ingest | Chang_et_al_2020.md
 
-- Source: raw/Chang_et_al_2020/Chang_et_al_2020.md
+- Source: Literature/Chang_et_al_2020.pdf
 - Status: new
 - Pages created:
   - [[Model Predictive Control for Seizure Suppression Based on Nonlinear Auto-Regressive Moving-Average Volterra Model]]
@@ -16,7 +16,7 @@
 
 ## [2026-05-14] ingest | Chouzouris_et_al_2021.md
 
-- Source: raw/Chouzouris_et_al_2021/Chouzouris_et_al_2021.md
+- Source: Literature/Chouzouris_et_al_2021.pdf
 - Status: new
 - Pages created:
   - [[sources/chouzouris-et-al-2021.md|Applications of optimal nonlinear control to a whole-brain network of FitzHugh-Nagumo oscillators]]
@@ -29,7 +29,7 @@
 
 ## [2026-05-14] ingest | Froehlich_Jezernik_2005.md
 
-- Source: raw/Froehlich_Jezernik_2005/Froehlich_Jezernik_2005.md
+- Source: Literature/Froehlich_Jezernik_2005.pdf
 - Status: new
 - Pages created:
   - [[sources/froehlich-jezernik-2005.md|Feedback control of Hodgkin–Huxley nerve cell dynamics]]
@@ -42,7 +42,7 @@
 
 ## [2026-05-14] ingest | Salfenmose_Obermayer_2022.pdf
 
-- Source: raw/Salfenmose_Obermayer_2022/Salfenmose_Obermayer_2022.pdf
+- Source: Literature/Salfenmose_Obermayer_2022.pdf
 - Status: new
 - Pages created:
   - [[sources/salfenmose-obermayer-2022.md|Nonlinear optimal control of a mean-field model of neural population dynamics]]
@@ -76,7 +76,7 @@
 
 ## [2026-05-14] ingest | Steffen_Cannon_2025.md
 
-- Source: raw/Steffen_Cannon_2025/Steffen_Cannon_2025.md
+- Source: Literature/Steffen_Cannon_2025.pdf
 - Status: new
 - Pages created: sources/steffen-cannon-2025.md, concepts/parkinsons-disease.md, concepts/beta-band-oscillations.md, concepts/input-convex-neural-network.md, concepts/difference-of-convex-functions.md
 - Pages updated: concepts/closed-loop-brain-stimulation.md, concepts/model-predictive-control.md
@@ -92,7 +92,7 @@
 
 ## [2026-05-18] ingest | Thesis.md
 
-- Source: raw/Thesis.md
+- Source: Notes/Thesis.md
 - Status: new
 - Pages created: sources/thesis-proposal.md, concepts/llms-in-neurostimulation.md, concepts/state-estimation.md
 - Pages updated: concepts/model-predictive-control.md, concepts/neural-mass-model.md, concepts/parkinsons-disease.md, concepts/seizure-suppression.md, wiki/index.md

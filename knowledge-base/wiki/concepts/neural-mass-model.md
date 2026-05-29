@@ -14,12 +14,12 @@ A Neural Mass Model (NMM) is a macroscopic neurophysiological model that simulat
 ## Key Points
 
 - **Macroscopic Scale:** Instead of modeling individual neurons, NMMs represent the average behavior of neuronal populations (e.g., pyramidal cells, excitatory interneurons, inhibitory interneurons).
-- **Reduced Complexity:** NMMs (and the closely related **Wilson-Cowan model**) provide a computationally tractable alternative to complex population models built from diffusively coupled single-cell models. This makes them suitable for real-time applications like [[concepts/model-predictive-control.md|Model Predictive Control]] [[raw/Thesis.md#Prediction model | Thesis]].
+- **Reduced Complexity:** NMMs (and the closely related **Wilson-Cowan model**) provide a computationally tractable alternative to complex population models built from diffusively coupled single-cell models. This makes them suitable for real-time applications like [[concepts/model-predictive-control.md|Model Predictive Control]] [[Notes/Thesis.md#Prediction model | Thesis]].
 - **EEG Simulation:** NMMs can produce normal EEG waves or epileptiform discharges by adjusting parameters governing excitatory and inhibitory interactions.
 - **Biophysically Realistic Variants:** Newer models, such as the **EI EIF model**, are derived from mean-field approximations of exponential integrate-and-fire (EIF) neurons, ensuring all parameters and variables are biophysically grounded. These models are often described by sets of first-order ordinary differential equations (ODEs) for each population $i$:
     $$ \tau_i \dot{r}_i = -r_i + \Phi_i(I_{ext,i} + \sum_j W_{ij} r_j) $$
-    where $r_i$ is the population firing rate, $\tau_i$ is the time constant, and $\Phi_i$ is the nonlinear transfer function [[raw/Salfenmose_Obermayer_2022/Salfenmose_Obermayer_2022.md#2.1. | Salfenmose & Obermayer 2022]].
-- **Dynamics:** These models can exhibit complex behaviors including bistability (coexistence of "up" and "down" states), oscillations, and limit cycles. Specific models are tailored to describe different pathological behaviors such as Parkinson's disease or epilepsy [[raw/Thesis.md#Prediction model | Thesis]].
+    where $r_i$ is the population firing rate, $\tau_i$ is the time constant, and $\Phi_i$ is the nonlinear transfer function [[Literature/Salfenmose_Obermayer_2022.pdf | Salfenmose & Obermayer 2022 (2.1.)]].
+- **Dynamics:** These models can exhibit complex behaviors including bistability (coexistence of "up" and "down" states), oscillations, and limit cycles. Specific models are tailored to describe different pathological behaviors such as Parkinson's disease or epilepsy [[Notes/Thesis.md#Prediction model | Thesis]].
 
 ## Related Concepts
 

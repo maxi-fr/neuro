@@ -19,7 +19,7 @@ Based on [Andrej Karpathy's LLM Wiki idea](https://gist.github.com/karpathy/442a
 
 **How it works:**
 
-1. You drop source files (articles, papers, notes) into `raw/`.
+1. You drop source files (articles, papers, notes) into `Literature/` or `Notes/`.
 2. Ask the agent to **ingest** the wiki -- the LLM reads each source, creates summary pages, concept pages, and maintains cross-references using `[[wikilinks]]`.
 3. Query the wiki by asking the agent to **search** -- get synthesized answers with citations.
 4. The wiki keeps getting richer with every source you add and every question you ask.
@@ -44,8 +44,8 @@ This wiki setup is optimized for **Gemini CLI**.
 Source directories (never modified by the LLM):
 
 ```text
-raw/                  # Primary source documents
-├── attachments/      # Images and binary assets
+Literature/           # Primary source documents (papers, PDFs)
+Notes/                # Research notes, clippings, and synthesis
 ```
 
 Wiki output (owned by the LLM):
@@ -104,7 +104,7 @@ The root `GEMINI.md` file contains the base instructions for the agent.
 
 | Skill | Purpose | When to Use |
 |-------|---------|-------------|
-| `ingest` | Process new/modified sources, create/update wiki pages | After adding new files to `raw/` |
+| `ingest` | Process new/modified sources, create/update wiki pages | After adding new files to `Literature/` or `Notes/` |
 | `search` | Search wiki via qmd and synthesize answers with citations | When asking questions against the knowledge base |
 | `optimize` | Compact, merge, reorganize, strengthen cross-references | Periodically as wiki grows (every ~10-20 ingests) |
 | `health` | Audit for broken links, orphans, contradictions, stale content | Periodically to maintain wiki quality |
@@ -113,7 +113,7 @@ To use these skills, simply ask the agent to perform the task (e.g., "Ingest the
 
 ### Workflow
 
-1. Drop source files into `raw/` (use Obsidian Web Clipper for articles).
+1. Drop source files into `Literature/` or `Notes/` (use Obsidian Web Clipper for articles).
 2. Ask the agent to **ingest** the new sources.
 3. Ask the agent to **search** the wiki when you have questions.
 4. Periodically ask for a **health check** to maintain quality.
@@ -127,8 +127,8 @@ To build embeddings: `qmd embed`.
 
 ### Tips
 
-- **[Obsidian Web Clipper](https://obsidian.md/clipper)** is a browser extension that converts web articles to markdown. Very useful for quickly getting sources into `raw/`.
-- **Download images locally.** In Obsidian, set attachment folder path to `raw/attachments/` and bind a hotkey to download attachments. This lets the LLM view images directly.
+- **[Obsidian Web Clipper](https://obsidian.md/clipper)** is a browser extension that converts web articles to markdown. Very useful for quickly getting sources into `Literature/` or `Notes/`.
+- **Download images locally.** In Obsidian, set attachment folder path to `Notes/attachments/` and bind a hotkey to download attachments. This lets the LLM view images directly.
 - **Obsidian's graph view** is the best way to see the shape of your wiki -- what's connected, which pages are hubs, which are orphans.
 - **Good answers can be filed back.** When a search produces a valuable analysis, the agent may offer to save it as a wiki page so your explorations compound too.
 - **The wiki is just markdown files.** It's a git repo, version-controlled, portable, and works with any tool that reads markdown.

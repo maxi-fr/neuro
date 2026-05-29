@@ -13,9 +13,9 @@ Beta-band oscillations are neural rhythms in the frequency range of approximatel
 
 ## Key Points
 
-- **Parkinson's Disease Biomarker:** In Parkinson's Disease (PD), the envelope of beta-band oscillations in the subthalamic nucleus (STN) is a key biomarker of the disease state. Pathological motor symptoms are associated with prolonged bursts of high-amplitude beta activity [[raw/Steffen_Cannon_2025/Steffen_Cannon_2025.md#I. INTRODUCTION | Steffen & Cannon 2025]].
-- **Feedback Signal:** In [[concepts/closed-loop-brain-stimulation.md|Closed-loop Brain Stimulation]], the beta-band envelope is used as a feedback signal. The controller modulates stimulation to suppress these oscillations when they exceed a certain threshold $\beta_0$ [[raw/Steffen_Cannon_2025/Steffen_Cannon_2025.md#II. PROBLEM FORMULATION | Steffen & Cannon 2025]].
-- **Nonlinear Dynamics:** The response of beta-band oscillations to stimulation is inherently nonlinear and time-varying, necessitating advanced control strategies like [[concepts/model-predictive-control.md|Model Predictive Control]] [[raw/Steffen_Cannon_2025/Steffen_Cannon_2025.md#I. INTRODUCTION | Steffen & Cannon 2025]].
+- **Parkinson's Disease Biomarker:** In Parkinson's Disease (PD), the envelope of beta-band oscillations in the subthalamic nucleus (STN) is a key biomarker of the disease state. Pathological motor symptoms are associated with prolonged bursts of high-amplitude beta activity [[Literature/Steffen_Cannon_2025.pdf | Steffen & Cannon 2025 (I. INTRODUCTION)]].
+- **Feedback Signal:** In [[concepts/closed-loop-brain-stimulation.md|Closed-loop Brain Stimulation]], the beta-band envelope is used as a feedback signal. The controller modulates stimulation to suppress these oscillations when they exceed a certain threshold $\beta_0$ [[Literature/Steffen_Cannon_2025.pdf | Steffen & Cannon 2025 (II. PROBLEM FORMULATION)]].
+- **Nonlinear Dynamics:** The response of beta-band oscillations to stimulation is inherently nonlinear and time-varying, necessitating advanced control strategies like [[concepts/model-predictive-control.md|Model Predictive Control]] [[Literature/Steffen_Cannon_2025.pdf | Steffen & Cannon 2025 (I. INTRODUCTION)]].
 
 ## Related Concepts
 

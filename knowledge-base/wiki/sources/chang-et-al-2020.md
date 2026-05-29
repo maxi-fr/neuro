@@ -2,14 +2,14 @@
 title: "Model Predictive Control for Seizure Suppression Based on Nonlinear Auto-Regressive Moving-Average Volterra Model"
 type: source
 tags: [mpc, seizure-suppression, nmm, volterra, closed-loop]
-sources: [raw/Chang_et_al_2020/Chang_et_al_2020.md]
+sources: [Literature/Chang_et_al_2020.pdf]
 created: 2026-05-14
 updated: 2026-05-14
 ---
 
 # Model Predictive Control for Seizure Suppression Based on Nonlinear Auto-Regressive Moving-Average Volterra Model
 
-**Source:** `raw/Chang_et_al_2020/Chang_et_al_2020.md`
+**Source:** `Literature/Chang_et_al_2020.pdf`
 **Ingested:** 2026-05-14
 
 ## Summary
@@ -20,10 +20,10 @@ to characterize the relationship between stimulation input $u$ and neuronal resp
 
 ## Key Takeaways
 
-- **Black-box Approach:** The control strategy does not require detailed prior knowledge of the brain's physiological parameters, treating it as a black box for system identification. [[raw/Chang_et_al_2020/Chang_et_al_2020.md#II. METHODS | Chang et al. 2020]]
-- **NARMA Volterra Model:** This model is used for its ability to capture complex nonlinear dynamics with a more compact structure than neural networks. [[raw/Chang_et_al_2020/Chang_et_al_2020.md#I. Introduction | Chang et al. 2020]]
-- **Robustness:** The proposed MPC strategy shows robustness to system disturbances, making it suitable for clinical applications where modeling uncertainty is high. [[raw/Chang_et_al_2020/Chang_et_al_2020.md#I. Introduction | Chang et al. 2020]]
-- **Optimal Stimulation:** Unlike traditional open-loop stimulation, this closed-loop approach automatically adjusts waveforms in real-time based on state feedback, potentially reducing energy consumption and side effects. [[raw/Chang_et_al_2020/Chang_et_al_2020.md#I. Introduction | Chang et al. 2020]]
+- **Black-box Approach:** The control strategy does not require detailed prior knowledge of the brain's physiological parameters, treating it as a black box for system identification. [[Literature/Chang_et_al_2020.pdf | Chang et al. 2020 (II. METHODS)]]
+- **NARMA Volterra Model:** This model is used for its ability to capture complex nonlinear dynamics with a more compact structure than neural networks. [[Literature/Chang_et_al_2020.pdf | Chang et al. 2020 (I. Introduction)]]
+- **Robustness:** The proposed MPC strategy shows robustness to system disturbances, making it suitable for clinical applications where modeling uncertainty is high. [[Literature/Chang_et_al_2020.pdf | Chang et al. 2020 (I. Introduction)]]
+- **Optimal Stimulation:** Unlike traditional open-loop stimulation, this closed-loop approach automatically adjusts waveforms in real-time based on state feedback, potentially reducing energy consumption and side effects. [[Literature/Chang_et_al_2020.pdf | Chang et al. 2020 (I. Introduction)]]
 
 ## Related Concepts
 

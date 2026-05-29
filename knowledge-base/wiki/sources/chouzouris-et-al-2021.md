@@ -2,14 +2,14 @@
 title: "Applications of optimal nonlinear control to a whole-brain network of FitzHugh-Nagumo oscillators"
 type: source
 tags: [optimal-control, nonlinear-dynamics, fitzhugh-nagumo, whole-brain-network, connectome]
-sources: [raw/Chouzouris_et_al_2021/Chouzouris_et_al_2021.md]
+sources: [Literature/Chouzouris_et_al_2021.pdf]
 created: 2026-05-14
 updated: 2026-05-14
 ---
 
 # Applications of optimal nonlinear control to a whole-brain network of FitzHugh-Nagumo oscillators
 
-**Source:** `raw/Chouzouris_et_al_2021/Chouzouris_et_al_2021.md`
+**Source:** `Literature/Chouzouris_et_al_2021.pdf`
 **Ingested:** 2026-05-14
 
 ## Summary
@@ -22,11 +22,11 @@ The authors find that optimal control strategies for nonlinear brain networks ar
 
 ## Key Takeaways
 
-- **Optimal Nonlinear Control vs. Linear Theory:** Intuitions from linear control theory about node roles (based solely on connectome features) do not generally apply to nonlinear systems. [[raw/Chouzouris_et_al_2021/Chouzouris_et_al_2021.md#Abstract | Chouzouris et al. 2021]]
-- **Task-Dependent Node Roles:** The importance of a node for controlling the network depends critically on the specific task (e.g., state-switching vs. synchronization) and the state-space location. [[raw/Chouzouris_et_al_2021/Chouzouris_et_al_2021.md#Abstract | Chouzouris et al. 2021]]
-- **FitzHugh-Nagumo Model:** Used to represent average neural activity in each brain region, capturing transitions between bifurcations which linear models cannot. [[raw/Chouzouris_et_al_2021/Chouzouris_et_al_2021.md#I. Introduction | Chouzouris et al. 2021]]
-- **Whole-Brain Connectivity:** internode coupling is based on an atlas-based segmentation and DTI-derived connectome of the human brain. [[raw/Chouzouris_et_al_2021/Chouzouris_et_al_2021.md#Abstract | Chouzouris et al. 2021]]
-- **Sparse Control:** The framework allows for finding optimal control signals that affect only a small number of control sites. [[raw/Chouzouris_et_al_2021/Chouzouris_et_al_2021.md#I. Introduction | Chouzouris et al. 2021]]
+- **Optimal Nonlinear Control vs. Linear Theory:** Intuitions from linear control theory about node roles (based solely on connectome features) do not generally apply to nonlinear systems. [[Literature/Chouzouris_et_al_2021.pdf | Chouzouris et al. 2021 (Abstract)]]
+- **Task-Dependent Node Roles:** The importance of a node for controlling the network depends critically on the specific task (e.g., state-switching vs. synchronization) and the state-space location. [[Literature/Chouzouris_et_al_2021.pdf | Chouzouris et al. 2021 (Abstract)]]
+- **FitzHugh-Nagumo Model:** Used to represent average neural activity in each brain region, capturing transitions between bifurcations which linear models cannot. [[Literature/Chouzouris_et_al_2021.pdf | Chouzouris et al. 2021 (I. Introduction)]]
+- **Whole-Brain Connectivity:** internode coupling is based on an atlas-based segmentation and DTI-derived connectome of the human brain. [[Literature/Chouzouris_et_al_2021.pdf | Chouzouris et al. 2021 (Abstract)]]
+- **Sparse Control:** The framework allows for finding optimal control signals that affect only a small number of control sites. [[Literature/Chouzouris_et_al_2021.pdf | Chouzouris et al. 2021 (I. Introduction)]]
 
 ## Related Concepts
 

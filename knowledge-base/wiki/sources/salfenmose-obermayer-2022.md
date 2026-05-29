@@ -2,14 +2,14 @@
 title: "Nonlinear optimal control of a mean-field model of neural population dynamics"
 type: source
 tags: [nonlinear-optimal-control, neural-mass-model, bistability, mean-field]
-sources: [raw/Salfenmose_Obermayer_2022/Salfenmose_Obermayer_2022.pdf]
+sources: [Literature/Salfenmose_Obermayer_2022.pdf]
 created: 2026-05-14
 updated: 2026-05-14
 ---
 
 # Nonlinear optimal control of a mean-field model of neural population dynamics
 
-**Source:** `raw/Salfenmose_Obermayer_2022/Salfenmose_Obermayer_2022.pdf`
+**Source:** `Literature/Salfenmose_Obermayer_2022.pdf`
 **Ingested:** 2026-05-14
 
 ## Summary
@@ -20,12 +20,12 @@ where $k=1$ for sparsity and $k=2$ for energy. The population dynamics follow me
 
 ## Key Takeaways
 
-- **Minimal Intervention Strategy:** In the noiseless case, optimal control strategies for state switching consist of a finite pulse that steers the system only minimally across the boundary of the target state's basin of attraction. Once the boundary is passed, the system naturally relaxes to the target state without further input [[raw/Salfenmose_Obermayer_2022/Salfenmose_Obermayer_2022.md#3.2. | Salfenmose & Obermayer 2022]].
+- **Minimal Intervention Strategy:** In the noiseless case, optimal control strategies for state switching consist of a finite pulse that steers the system only minimally across the boundary of the target state's basin of attraction. Once the boundary is passed, the system naturally relaxes to the target state without further input [[Literature/Salfenmose_Obermayer_2022.pdf | Salfenmose & Obermayer 2022 (3.2.)]].
 - **Cost Function Effects:**
   - **L1-norm (Sparsity):** Penalizing the 1-norm leads to "one-dimensional" control solutions, targeting only one of the populations (excitatory or inhibitory).
-  - **L2-norm (Energy):** Penalizing the 2-norm leads to "two-dimensional" solutions, where both populations may receive input to keep absolute values low [[raw/Salfenmose_Obermayer_2022/Salfenmose_Obermayer_2022.md#3.3. | Salfenmose & Obermayer 2022]].
-- **Target Population Efficiency:** For the down-to-up transition, the choice of target population (E or I) depends on the system's location in state space relative to bifurcation lines. For the up-to-down transition, stimulating the excitatory population is consistently more efficient due to the geometry of the regime boundary [[raw/Salfenmose_Obermayer_2022/Salfenmose_Obermayer_2022.md#3.3. | Salfenmose & Obermayer 2022]].
-- **Linear Scaling:** Despite the model's nonlinearity, the required control amplitude scales linearly with the distance to the target regime boundary in the dominating input channel [[raw/Salfenmose_Obermayer_2022/Salfenmose_Obermayer_2022.md#3.3. | Salfenmose & Obermayer 2022]].
+  - **L2-norm (Energy):** Penalizing the 2-norm leads to "two-dimensional" solutions, where both populations may receive input to keep absolute values low [[Literature/Salfenmose_Obermayer_2022.pdf | Salfenmose & Obermayer 2022 (3.3.)]].
+- **Target Population Efficiency:** For the down-to-up transition, the choice of target population (E or I) depends on the system's location in state space relative to bifurcation lines. For the up-to-down transition, stimulating the excitatory population is consistently more efficient due to the geometry of the regime boundary [[Literature/Salfenmose_Obermayer_2022.pdf | Salfenmose & Obermayer 2022 (3.3.)]].
+- **Linear Scaling:** Despite the model's nonlinearity, the required control amplitude scales linearly with the distance to the target regime boundary in the dominating input channel [[Literature/Salfenmose_Obermayer_2022.pdf | Salfenmose & Obermayer 2022 (3.3.)]].
 
 ## Related Concepts
 

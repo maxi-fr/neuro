@@ -14,9 +14,9 @@ Parkinson's Disease (PD) is a progressive neurological disorder that primarily a
 ## Key Points
 
 - **Biomarkers:** PD is associated with pathological bursts in the amplitude of **beta-band oscillations (13-30 Hz)** in population-level neural activity.
-- **Control Objective:** In an MPC framework, the goal for PD is typically **desynchronization** of the pathological neural population [[raw/Thesis.md#Cost function | Thesis]].
+- **Control Objective:** In an MPC framework, the goal for PD is typically **desynchronization** of the pathological neural population [[Notes/Thesis.md#Cost function | Thesis]].
 - **Treatment via DBS:** Deep Brain Stimulation (DBS) is a standard surgical treatment involving electrodes that deliver electrical pulses to disrupt pathological activity.
-- **Closed-loop DBS (CLDBS):** Adaptive or closed-loop DBS modulates stimulation amplitude in real-time based on disease biomarkers (like beta oscillations) to improve outcomes and reduce side effects [[raw/Steffen_Cannon_2025/Steffen_Cannon_2025.md#I. INTRODUCTION | Steffen & Cannon 2025]].
+- **Closed-loop DBS (CLDBS):** Adaptive or closed-loop DBS modulates stimulation amplitude in real-time based on disease biomarkers (like beta oscillations) to improve outcomes and reduce side effects [[Literature/Steffen_Cannon_2025.pdf | Steffen & Cannon 2025 (I. INTRODUCTION)]].
 
 ## Related Concepts
 

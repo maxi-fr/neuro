@@ -2,14 +2,14 @@
 title: "Deep Learning Model Predictive Control for Deep Brain Stimulation in Parkinson's Disease"
 type: source
 tags: [model-predictive-control, deep-brain-stimulation, parkinsons-disease, neural-networks, convex-optimization]
-sources: [raw/Steffen_Cannon_2025/Steffen_Cannon_2025.md]
+sources: [Literature/Steffen_Cannon_2025.pdf]
 created: 2026-05-14
 updated: 2026-05-14
 ---
 
 # Deep Learning Model Predictive Control for Deep Brain Stimulation in Parkinson's Disease
 
-**Source:** `raw/Steffen_Cannon_2025/Steffen_Cannon_2025.md`
+**Source:** `Literature/Steffen_Cannon_2025.pdf`
 **Ingested:** 2026-05-14
 
 ## Summary
@@ -18,10 +18,10 @@ This paper presents a nonlinear data-driven Model Predictive Control (MPC) algor
 
 ## Key Takeaways
 
-- **Nonlinear Multi-step Predictor:** The model uses a separate neural network for each step of the prediction horizon, represented as a difference of two ICNNs. This simplifies robust tube construction by avoiding recursive error propagation [[raw/Steffen_Cannon_2025/Steffen_Cannon_2025.md#III. CONTROL LAW | Steffen & Cannon 2025]].
-- **Superior Performance:** In simulations using patient LFP data, the DCNN TMPC achieved >20% reduction in tracking error and control activity compared to linear MPC, PI, and on-off controllers [[raw/Steffen_Cannon_2025/Steffen_Cannon_2025.md#IV. NUMERICAL SIMULATIONS | Steffen & Cannon 2025]].
-- **Generalizability:** The pre-trained model (trained on other patients) outperformed linear MPC even when the latter was tuned to the specific test patient, demonstrating significant robustness and generalization capability [[raw/Steffen_Cannon_2025/Steffen_Cannon_2025.md#IV-C. Comparison with Alternative Control Strategies | Steffen & Cannon 2025]].
-- **Mathematical Formulation:** The system is modeled as $\dot{y}(t) = f(y(t), u(t), t)$ where $y(t)$ is the beta-band envelope. The cost function minimizes pathological activity $[y(t) - y_0]_{\geq 0}$ and stimulation energy $Ru(t)^2$ [[raw/Steffen_Cannon_2025/Steffen_Cannon_2025.md#II. PROBLEM FORMULATION | Steffen & Cannon 2025]].
+- **Nonlinear Multi-step Predictor:** The model uses a separate neural network for each step of the prediction horizon, represented as a difference of two ICNNs. This simplifies robust tube construction by avoiding recursive error propagation [[Literature/Steffen_Cannon_2025.pdf | Steffen & Cannon 2025 (III. CONTROL LAW)]].
+- **Superior Performance:** In simulations using patient LFP data, the DCNN TMPC achieved >20% reduction in tracking error and control activity compared to linear MPC, PI, and on-off controllers [[Literature/Steffen_Cannon_2025.pdf | Steffen & Cannon 2025 (IV. NUMERICAL SIMULATIONS)]].
+- **Generalizability:** The pre-trained model (trained on other patients) outperformed linear MPC even when the latter was tuned to the specific test patient, demonstrating significant robustness and generalization capability [[Literature/Steffen_Cannon_2025.pdf | Steffen & Cannon 2025 (IV-C. Comparison with Alternative Control Strategies)]].
+- **Mathematical Formulation:** The system is modeled as $\dot{y}(t) = f(y(t), u(t), t)$ where $y(t)$ is the beta-band envelope. The cost function minimizes pathological activity $[y(t) - y_0]_{\geq 0}$ and stimulation energy $Ru(t)^2$ [[Literature/Steffen_Cannon_2025.pdf | Steffen & Cannon 2025 (II. PROBLEM FORMULATION)]].
 
 ## Related Concepts
 

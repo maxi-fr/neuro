@@ -13,16 +13,16 @@ A Difference of Convex (DC) function is a function that can be expressed as the 
 
 ## DC Functions
 
-- **Universal Approximation:** Any continuous twice-differentiable function can be represented with arbitrary accuracy as a DC function [[raw/Steffen_Cannon_2025/Steffen_Cannon_2025.md#II. PROBLEM FORMULATION | Steffen & Cannon 2025]].
-- **Sequential Convex Programming:** Optimization proceeds by linearizing the concave part ($-h(x)$), reducing the problem to a sequence of convex subproblems [[raw/Steffen_Cannon_2025/Steffen_Cannon_2025.md#I. INTRODUCTION | Steffen & Cannon 2025]].
-- **Tight Linearization Bounds:** The DC structure provides tight error bounds on linearization, critical for robust strategies like Tube MPC [[raw/Steffen_Cannon_2025/Steffen_Cannon_2025.md#I. INTRODUCTION | Steffen & Cannon 2025]].
+- **Universal Approximation:** Any continuous twice-differentiable function can be represented with arbitrary accuracy as a DC function [[Literature/Steffen_Cannon_2025.pdf | Steffen & Cannon 2025 (II. PROBLEM FORMULATION)]].
+- **Sequential Convex Programming:** Optimization proceeds by linearizing the concave part ($-h(x)$), reducing the problem to a sequence of convex subproblems [[Literature/Steffen_Cannon_2025.pdf | Steffen & Cannon 2025 (I. INTRODUCTION)]].
+- **Tight Linearization Bounds:** The DC structure provides tight error bounds on linearization, critical for robust strategies like Tube MPC [[Literature/Steffen_Cannon_2025.pdf | Steffen & Cannon 2025 (I. INTRODUCTION)]].
 
 ## ICNN Architecture
 
 Input-Convex Neural Networks (ICNN) are the building block for each convex component $g$ or $h$:
 
-- **Structural Constraints:** Convexity is enforced by non-negative inter-hidden-layer weights and convex, non-decreasing activations (e.g., ReLU), plus skip connections from the input to preserve expressiveness [[raw/Steffen_Cannon_2025/Steffen_Cannon_2025.md#III-A. Difference of Convex Functions Neural Network Model | Steffen & Cannon 2025]].
-- **DCNN:** Two ICNNs combined as $f(x) = f_1(x) - f_2(x)$ can represent complex nonlinearities while keeping inference tractable via convex programming [[raw/Steffen_Cannon_2025/Steffen_Cannon_2025.md#III-A. Difference of Convex Functions Neural Network Model | Steffen & Cannon 2025]].
+- **Structural Constraints:** Convexity is enforced by non-negative inter-hidden-layer weights and convex, non-decreasing activations (e.g., ReLU), plus skip connections from the input to preserve expressiveness [[Literature/Steffen_Cannon_2025.pdf | Steffen & Cannon 2025 (III-A. Difference of Convex Functions Neural Network Model)]].
+- **DCNN:** Two ICNNs combined as $f(x) = f_1(x) - f_2(x)$ can represent complex nonlinearities while keeping inference tractable via convex programming [[Literature/Steffen_Cannon_2025.pdf | Steffen & Cannon 2025 (III-A. Difference of Convex Functions Neural Network Model)]].
 
 ## Related Concepts
 

@@ -17,10 +17,10 @@ The Hodgkin-Huxley (HH) model is a phenomenological model of action potential ge
   $$ C_{m} \dot{V} = G_{K} n^{4} (E_{K} - V) + G_{Na} m^{3} h (E_{Na} - V) + G_{L} (V_{L} - V) + I_{inj} $$
   The gating variables $y \in \{m, h, n\}$ follow first-order kinetics:
   $$ \dot{y} = \alpha_y(V)(1-y) - \beta_y(V)y = \frac{y_\infty(V) - y}{\tau_y(V)} $$
-  where $m$ and $h$ describe sodium activation/inactivation, and $n$ describes potassium activation [[raw/Froehlich_Jezernik_2005/Froehlich_Jezernik_2005.md#2.1. Single compartment HH model | Fröhlich & Jezernik 2005]].
-- **Ionic Currents:** It models ionic flow through sodium, potassium, and leakage channels. Each current depends on the membrane voltage and the specific state of the channel gates [[raw/Froehlich_Jezernik_2005/Froehlich_Jezernik_2005.md#2.1. Single compartment HH model | Fröhlich & Jezernik 2005]].
-- **Action Potential Generation:** If a certain voltage threshold is exceeded, a positive feedback loop of sodium influx triggers an action potential, which is subsequently repolarized by sodium inactivation and delayed potassium outflux [[raw/Froehlich_Jezernik_2005/Froehlich_Jezernik_2005.md#2.1. Single compartment HH model | Fröhlich & Jezernik 2005]].
-- **Spatial Propagation:** The model can be extended to multicompartment versions to simulate the propagation of action potentials along axons (e.g., node-to-node conduction in myelinated axons) [[raw/Froehlich_Jezernik_2005/Froehlich_Jezernik_2005.md#2.2. Multicompartment model | Fröhlich & Jezernik 2005]].
+  where $m$ and $h$ describe sodium activation/inactivation, and $n$ describes potassium activation [[Literature/Froehlich_Jezernik_2005.pdf | Fröhlich & Jezernik 2005 (2.1. Single compartment HH model)]].
+- **Ionic Currents:** It models ionic flow through sodium, potassium, and leakage channels. Each current depends on the membrane voltage and the specific state of the channel gates [[Literature/Froehlich_Jezernik_2005.pdf | Fröhlich & Jezernik 2005 (2.1. Single compartment HH model)]].
+- **Action Potential Generation:** If a certain voltage threshold is exceeded, a positive feedback loop of sodium influx triggers an action potential, which is subsequently repolarized by sodium inactivation and delayed potassium outflux [[Literature/Froehlich_Jezernik_2005.pdf | Fröhlich & Jezernik 2005 (2.1. Single compartment HH model)]].
+- **Spatial Propagation:** The model can be extended to multicompartment versions to simulate the propagation of action potentials along axons (e.g., node-to-node conduction in myelinated axons) [[Literature/Froehlich_Jezernik_2005.pdf | Fröhlich & Jezernik 2005 (2.2. Multicompartment model)]].
 
 ## Related Concepts
 

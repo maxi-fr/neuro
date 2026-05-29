@@ -13,8 +13,8 @@ Feedback linearization is a common method for controlling nonlinear systems by t
 
 ## Key Points
 
-- **Application to Neural Dynamics:** In the context of [[concepts/hodgkin-huxley-model.md|Hodgkin-Huxley]] dynamics, feedback linearization can be used to cancel out the nonlinear ionic current terms, allowing the design of a linear state feedback controller for the membrane voltage [[raw/Froehlich_Jezernik_2005/Froehlich_Jezernik_2005.md#2.3. State feedback controller for control of membrane voltage | Fröhlich & Jezernik 2005]].
-- **Controller Design:** By applying this method, the tracking error dynamics can be reduced to a simple linear form (e.g., $\dot{e} + Ke = 0$, where $e = V_{ref} - V$), where the performance is determined by a feedback gain $K$. This allows the use of linear control tools to achieve desired convergence rates. [[raw/Froehlich_Jezernik_2005/Froehlich_Jezernik_2005.md#2.3. State feedback controller for control of membrane voltage | Fröhlich & Jezernik 2005]]
+- **Application to Neural Dynamics:** In the context of [[concepts/hodgkin-huxley-model.md|Hodgkin-Huxley]] dynamics, feedback linearization can be used to cancel out the nonlinear ionic current terms, allowing the design of a linear state feedback controller for the membrane voltage [[Literature/Froehlich_Jezernik_2005.pdf | Fröhlich & Jezernik 2005 (2.3. State feedback controller for control of membrane voltage)]].
+- **Controller Design:** By applying this method, the tracking error dynamics can be reduced to a simple linear form (e.g., $\dot{e} + Ke = 0$, where $e = V_{ref} - V$), where the performance is determined by a feedback gain $K$. This allows the use of linear control tools to achieve desired convergence rates. [[Literature/Froehlich_Jezernik_2005.pdf | Fröhlich & Jezernik 2005 (2.3. State feedback controller for control of membrane voltage)]]
 
 ## Related Concepts
 

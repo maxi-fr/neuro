@@ -1,6 +1,6 @@
 {
-  "raw/Chang_et_al_2020/Chang_et_al_2020.md": {
-    "md5": "82C41E450D5B8AD54300C32E7775210A",
+  "Literature/Chang_et_al_2020.pdf": {
+    "md5": "F5D8C0D556D19B11F6D1089073F65BCB",
     "ingested": "2026-05-14",
     "wiki_pages": [
       "sources/chang-et-al-2020.md",
@@ -11,8 +11,8 @@
       "concepts/closed-loop-brain-stimulation.md"
     ]
   },
-  "raw/Chouzouris_et_al_2021/Chouzouris_et_al_2021.md": {
-    "md5": "BC22C721FF9D3055F4D9F54F764AFBC1",
+  "Literature/Chouzouris_et_al_2021.pdf": {
+    "md5": "ED0671BD39EEBF8DC96158396A9D1754",
     "ingested": "2026-05-14",
     "wiki_pages": [
       "sources/chouzouris-et-al-2021.md",
@@ -22,8 +22,8 @@
       "concepts/closed-loop-brain-stimulation.md"
     ]
   },
-  "raw/Froehlich_Jezernik_2005/Froehlich_Jezernik_2005.md": {
-    "md5": "F4D2EB577EE66816F8781C8955102445",
+  "Literature/Froehlich_Jezernik_2005.pdf": {
+    "md5": "61196DE6063C2632F79B5696BA725140",
     "ingested": "2026-05-14",
     "wiki_pages": [
       "sources/froehlich-jezernik-2005.md",
@@ -33,7 +33,7 @@
       "concepts/closed-loop-brain-stimulation.md"
     ]
   },
-  "raw/Salfenmose_Obermayer_2022/Salfenmose_Obermayer_2022.pdf": {
+  "Literature/Salfenmose_Obermayer_2022.pdf": {
     "md5": "D0E32600E17B7CA35EED146AB79B10F9",
     "ingested": "2026-05-14",
     "wiki_pages": [
@@ -43,8 +43,8 @@
       "concepts/closed-loop-brain-stimulation.md"
     ]
   },
-  "raw/Steffen_Cannon_2025/Steffen_Cannon_2025.md": {
-    "md5": "27A5190658A2880F29AEF4FEBCAFDDFB",
+  "Literature/Steffen_Cannon_2025.pdf": {
+    "md5": "9691FD38D1841DE25AE0F49F1AE2D7F8",
     "ingested": "2026-05-14",
     "wiki_pages": [
       "sources/steffen-cannon-2025.md",
@@ -55,8 +55,8 @@
       "concepts/difference-of-convex-functions.md"
     ]
   },
-  "raw/Thesis.md": {
-    "md5": "c63bf1b5c37b747ae8090156a5a913ca",
+  "Notes/Thesis.md": {
+    "md5": "96061FD815EDF77A4C9D4AD7FF327E51",
     "ingested": "2026-05-18",
     "wiki_pages": [
       "sources/thesis-proposal.md",

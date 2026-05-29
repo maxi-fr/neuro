@@ -2,14 +2,14 @@
 title: "Master's Thesis Proposal: MPC for Neurostimulation"
 type: source
 tags: [model-predictive-control, neurostimulation, state-estimation, large-language-models, neural-dynamics]
-sources: [raw/Thesis.md]
+sources: [Notes/Thesis.md]
 created: 2026-05-18
 updated: 2026-05-18
 ---
 
 # Master's Thesis Proposal: MPC for Neurostimulation
 
-**Source:** `raw/Thesis.md`
+**Source:** `Notes/Thesis.md`
 **Ingested:** 2026-05-18
 
 ## Summary
@@ -18,11 +18,11 @@ This document outlines a Master's thesis project focused on using Model Predicti
 
 ## Key Takeaways
 
-- **MPC Framework:** Uses a prediction model and cost function to achieve desired behaviors while respecting safety constraints to avoid tissue damage [[raw/Thesis.md#Model Predictive Control for Neurostimulation | Thesis]].
-- **Hierarchical Control:** Suggests a hierarchical structure where a faster low-level controller tracks MPC-generated references to achieve millisecond sampling times [[raw/Thesis.md#Master's project | Thesis]].
-- **LLM Integration:** Proposes using LLMs to design treatment protocols, integrate multimodal feedback (EEG, patient/physician assessments), and propose stimulation parameters [[raw/Thesis.md#Master's project | Thesis]].
-- **Modeling Hierarchy:** Distinguishes between complex population models (diffusively coupled single-cells) for simulation and simpler models (Wilson-Cowan, Neural Mass Models) for real-time MPC [[raw/Thesis.md#Prediction model | Thesis]].
-- **Adaptive Control:** Emphasizes the need for parameter estimation and model adaptation to account for long-term effects like plasticity and disease progression [[raw/Thesis.md#Prediction model | Thesis]].
+- **MPC Framework:** Uses a prediction model and cost function to achieve desired behaviors while respecting safety constraints to avoid tissue damage [[Notes/Thesis.md#Model Predictive Control for Neurostimulation | Thesis]].
+- **Hierarchical Control:** Suggests a hierarchical structure where a faster low-level controller tracks MPC-generated references to achieve millisecond sampling times [[Notes/Thesis.md#Master's project | Thesis]].
+- **LLM Integration:** Proposes using LLMs to design treatment protocols, integrate multimodal feedback (EEG, patient/physician assessments), and propose stimulation parameters [[Notes/Thesis.md#Master's project | Thesis]].
+- **Modeling Hierarchy:** Distinguishes between complex population models (diffusively coupled single-cells) for simulation and simpler models (Wilson-Cowan, Neural Mass Models) for real-time MPC [[Notes/Thesis.md#Prediction model | Thesis]].
+- **Adaptive Control:** Emphasizes the need for parameter estimation and model adaptation to account for long-term effects like plasticity and disease progression [[Notes/Thesis.md#Prediction model | Thesis]].
 
 ## Related Concepts
 

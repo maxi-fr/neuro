@@ -13,10 +13,10 @@ State estimation is the process of inferring the internal states of a dynamical 
 
 ## Key Points
 
-- **Necessity for Feedback:** Since the states of neural dynamics models (like [[concepts/hodgkin-huxley-model.md|Hodgkin-Huxley]] or [[concepts/neural-mass-model.md|Neural Mass Models]]) are typically not directly measurable, a state observer is required for feedback control [[raw/Thesis.md#Challenges | Thesis]].
-- **Moving Horizon Estimation (MHE):** A common approach mentioned for the MPC framework, which solves an optimization problem over a sliding window of past measurements to estimate current states [[raw/Thesis.md#Prediction model | Thesis]].
-- **Parameter Estimation:** Beyond states, estimating time-varying parameters (e.g., synaptic weights, disease progression coefficients) is necessary for long-term adaptation and plasticity-aware control [[raw/Thesis.md#Prediction model | Thesis]].
-- **Observability:** A key challenge in designing observers for large-scale neural population models, where it may be unclear if the measured signals provide enough information to reconstruct the full state [[raw/Thesis.md#Prediction model | Thesis]].
+- **Necessity for Feedback:** Since the states of neural dynamics models (like [[concepts/hodgkin-huxley-model.md|Hodgkin-Huxley]] or [[concepts/neural-mass-model.md|Neural Mass Models]]) are typically not directly measurable, a state observer is required for feedback control [[Notes/Thesis.md#Challenges | Thesis]].
+- **Moving Horizon Estimation (MHE):** A common approach mentioned for the MPC framework, which solves an optimization problem over a sliding window of past measurements to estimate current states [[Notes/Thesis.md#Prediction model | Thesis]].
+- **Parameter Estimation:** Beyond states, estimating time-varying parameters (e.g., synaptic weights, disease progression coefficients) is necessary for long-term adaptation and plasticity-aware control [[Notes/Thesis.md#Prediction model | Thesis]].
+- **Observability:** A key challenge in designing observers for large-scale neural population models, where it may be unclear if the measured signals provide enough information to reconstruct the full state [[Notes/Thesis.md#Prediction model | Thesis]].
 
 ## Related Concepts
 

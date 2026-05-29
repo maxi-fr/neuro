@@ -16,8 +16,8 @@
 <details>
 <summary>Defining control objectives</summary>
 
-* For parkinsons: desynchronization [[knowledge-base/raw/control-objectives#1. Parkinson’s Disease (PD)|]]
-* For epilepsy: state transition [[knowledge-base/raw/control-objectives#2. Epilepsy|]]
+* For parkinsons: desynchronization [[knowledge-base/Notes/control-objectives#1. Parkinson’s Disease (PD)|]]
+* For epilepsy: state transition [[knowledge-base/Notes/control-objectives#2. Epilepsy|]]
 
 Task is twofold: reference trajectory/cost function for MPC and brain model parameter set
 

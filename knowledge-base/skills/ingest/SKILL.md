@@ -1,6 +1,6 @@
 ---
 name: ingest
-description: Ingest new sources into the LLM Wiki. Reads unprocessed files from raw/, docs/, and notes/, creates source summaries, updates concept pages, maintains cross-references, and updates the index and log. Use when new files have been added.
+description: Ingest new sources into the LLM Wiki. Reads unprocessed files from Literature/ and Notes/, creates source summaries, updates concept pages, maintains cross-references, and updates the index and log. Use when new files have been added.
 argument-hint: "[optional: specific file or folder path to ingest]"
 user-invokable: true
 allowed-tools: read_file, write_file, replace, run_shell_command, grep_search, glob, list_directory, update_topic, invoke_agent, mcp__plugin_qmd_qmd__query, mcp__plugin_qmd_qmd__status, mcp__plugin_qmd_qmd__get, mcp__plugin_qmd_qmd__multi_get
@@ -32,9 +32,8 @@ Otherwise:
 
 1. Read `wiki/.manifest.json` (create empty `{}` if it doesn't exist).
 2. Scan these directories for markdown, PDF, and other readable files:
-   - `raw/` (recursively, skip `raw/attachments/`)
-   - `docs/` (recursively)
-   - `notes/` (recursively)
+   - `Literature/` (recursively)
+   - `Notes/` (recursively)
 3. For each file found, compute its MD5 hash:
 
    ```powershell
@@ -75,12 +74,12 @@ For each new source file, in order:
 
 - For markdown or text files, read the full source file.
 - For PDF files (`.pdf`):
-  1. Execute `uv run skills/ingest/process_pdf.py "<path_to_pdf>" -o raw/<pdf_name>/`. This will create a markdown file and an `attachments` directory in a new folder alongside the PDF.
+  1. Execute `uv run skills/ingest/process_pdf.py "<path_to_pdf>" -o Literature/<pdf_name>/`. This will create a markdown file and an `attachments` directory in a new folder alongside the PDF.
   2. Read the generated markdown file.
   3. **Invoke a subagent** to clean up the generated markdown. Automated PDF-to-Markdown conversion can introduce formatting issues or OCR artifacts. Ask the subagent to fix broken formatting, correct typos, ensure headings/lists/tables are well-formed, and improve overall readability.
   4. Write the cleaned markdown back to the generated file.
   5. Use the cleaned markdown content for the remainder of the analysis.
-- If the file references images in `raw/attachments/`, read key images for additional context
+- If the file references images in `Notes/attachments/`, read key images for additional context
 - Identify: core concepts, claims/data points, relationships. **Crucially, track the specific locations (e.g., section headings, line numbers) where each claim is made.**
 - **Identify and extract mathematical descriptions and formulas** if they are necessary for a complete understanding of the concepts or claims. Use standard LaTeX syntax (`$$...$$` for blocks, `$ ... $` for inline).
 
@@ -223,7 +222,7 @@ Print a summary for the user:
 
 ## Important Notes
 
-- **Never modify source files** in `raw/`, `docs/`, or `notes/`. They are immutable.
+- **Never modify source files** in `Literature/` or `Notes/`. They are immutable.
 - **Flag contradictions.** If new source data conflicts with existing wiki claims, note the contradiction on both pages and mention it in the report.
 - **Be thorough but concise.** Source summaries should capture all key information but not be longer than necessary.
 - **Use parallel subagents** when ingesting multiple files to speed up processing.

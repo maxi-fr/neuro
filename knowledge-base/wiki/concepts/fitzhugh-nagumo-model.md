@@ -13,12 +13,12 @@ The FitzHugh-Nagumo (FHN) model is a simplified version of the Hodgkin-Huxley mo
 
 ## Key Points
 
-- **Dynamics:** The model captures key features of neural activity, including excitability, fixed points (low and high activity), and limit cycles (oscillations). [[raw/Chouzouris_et_al_2021/Chouzouris_et_al_2021.md#Abstract | Chouzouris et al. 2021]]
-- **Bifurcations:** FHN oscillators can reproduce the transitions from one dynamical regime to another, which is essential for describing brain state transitions. [[raw/Chouzouris_et_al_2021/Chouzouris_et_al_2021.md#I. Introduction | Chouzouris et al. 2021]]
-- **Large-Scale Networks:** When coupled in a network (e.g., using a human connectome), FHN oscillators can simulate whole-brain dynamics and synchronization phenomena. [[raw/Chouzouris_et_al_2021/Chouzouris_et_al_2021.md#I. Introduction | Chouzouris et al. 2021]]
+- **Dynamics:** The model captures key features of neural activity, including excitability, fixed points (low and high activity), and limit cycles (oscillations). [[Literature/Chouzouris_et_al_2021.pdf | Chouzouris et al. 2021 (Abstract)]]
+- **Bifurcations:** FHN oscillators can reproduce the transitions from one dynamical regime to another, which is essential for describing brain state transitions. [[Literature/Chouzouris_et_al_2021.pdf | Chouzouris et al. 2021 (I. Introduction)]]
+- **Large-Scale Networks:** When coupled in a network (e.g., using a human connectome), FHN oscillators can simulate whole-brain dynamics and synchronization phenomena. [[Literature/Chouzouris_et_al_2021.pdf | Chouzouris et al. 2021 (I. Introduction)]]
 - **Mathematical Form:** The model consists of two coupled ordinary differential equations:
   $$ \begin{aligned} \dot{x}_1 &= R(x_1) - x_2 + \mu \\ \dot{x}_2 &= \frac{1}{\tau} (x_1 - \delta x_2) \end{aligned} $$
-  where $x_1$ is the activity variable (fast), $x_2$ is the recovery variable (slow), $\mu$ is the background input, and $R(x) = -\alpha x^3 + \beta x^2 - \gamma x$ defines the nonlinear excitability. [[raw/Chouzouris_et_al_2021/Chouzouris_et_al_2021.md#III. RESULTS | Chouzouris et al. 2021]]
+  where $x_1$ is the activity variable (fast), $x_2$ is the recovery variable (slow), $\mu$ is the background input, and $R(x) = -\alpha x^3 + \beta x^2 - \gamma x$ defines the nonlinear excitability. [[Literature/Chouzouris_et_al_2021.pdf | Chouzouris et al. 2021 (III. RESULTS)]]
 
 ## Related Concepts
 

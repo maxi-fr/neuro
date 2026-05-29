@@ -8,7 +8,8 @@ and directs analysis.
 
 ### Source Directories (Immutable — never modify)
 
-- **`raw/`** — Primary source documents (articles, papers, clippings, notes) and their extracted .md versions
+- **`Literature/`** — Primary source documents (articles, papers, books)
+- **`Notes/`** — Research notes, clippings, and personal synthesis
 
 ### Wiki Output (`wiki/`)
 
@@ -30,7 +31,7 @@ You have access to the following specialized skills. Activate them when the user
 
 | Skill | Purpose | When to Activate |
 |-------|---------|------------------|
-| **ingest** | Process new/modified sources, create/update wiki pages | When the user asks you to ingest new sources, process new files, or mentions adding new files to `raw/`. |
+| **ingest** | Process new/modified sources, create/update wiki pages | When the user asks you to ingest new sources, process new files, or mentions adding new files to `Literature/` or `Notes/`. |
 | **search** | Search wiki via qmd and synthesize answers with citations | When the user asks a knowledge question that requires searching the wiki. |
 | **optimize** | Compact, merge, reorganize, strengthen cross-references | When the user asks you to optimize, clean up, or garden the wiki. |
 | **health** | Audit for broken links, orphans, contradictions, stale content | When the user asks for a health check, audit, or review of wiki quality. |
