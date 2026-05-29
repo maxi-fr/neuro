@@ -1,5 +1,5 @@
 [project]
-name = "closed-loop-neurostimulation"
+name = "neuro"
 version = "0.1.0"
 description = "Model Predictive Control for Neurostimulation"
 authors = [
@@ -51,7 +51,7 @@ ignore = [
 
 [tool.ruff.lint.isort]
 # Ensures imports are grouped logically
-known-first-party = ["closed-loop-neurostimulation"]
+known-first-party = ["neuro"]
 
 [tool.ruff.lint.pydocstyle]
 convention = "numpy"
@@ -84,7 +84,7 @@ line-ending = "auto"
 [tool.pytest.ini_options]
 minversion = "6.0"
 # Added -v for more detail and --cov to integrate coverage
-addopts = "-ra -q -v --cov=closed-loop-neurostimulation"
+addopts = "-ra -q -v --cov=neuro"
 testpaths = ["tests"]
 
 [tool.ty]

@@ -595,7 +595,7 @@ matplotlib==3.10.9 \
     --hash=sha256:f4399f64b3e94cd500195490972ae1ee81170df1636fa15364d157d5bdd7b921 \
     --hash=sha256:fd66508e8c6877d98e586654b608a0456db8d7e8a546eb1e2600efd957302358
     # via
-    #   closed-loop-neurostimulation
+    #   neuro
     #   tvb-library
 matplotlib-inline==0.2.2 \
     --hash=sha256:3c821cf1c209f59fb2d2d64abbf5b23b67bcb2210d663f9918dd851c6da1fcf6 \
@@ -693,7 +693,7 @@ networkx==3.6.1 \
 neurolib==0.6.2 \
     --hash=sha256:0e2528dbb08e8ebac66e633660f6a8e5cd51b7b7de0ab76b4f1a397496ca8896 \
     --hash=sha256:d2eb02e1096928896e3735577cb170df94c8059b549ef022e924f3b8fa50c691
-    # via closed-loop-neurostimulation
+    # via neuro
 nodeenv==1.10.0 \
     --hash=sha256:5bb13e3eed2923615535339b3c620e76779af4cb4c6a90deccc9e36b274d3827 \
     --hash=sha256:996c191ad80897d076bdfba80a41994c2b47c68e224c542b48feba42ba00f8bb
@@ -1306,11 +1306,11 @@ traitlets==5.15.0 \
 tvb-data==3.0.0 \
     --hash=sha256:681e9fb1fd807b57f9b55c7fd147ac7563ded90c978d42eeae1bb150adab0b12 \
     --hash=sha256:6cadd8b0c7757bd367d1eb8b7c107c6d933d7528b0917440d4e57e646e82a3d1
-    # via closed-loop-neurostimulation
+    # via neuro
 tvb-library==2.10.0 \
     --hash=sha256:8b7d4e64f56d02eba3b19490201fb9de59d6160d821eea24e4022da5914f2037 \
     --hash=sha256:cd4ad32dcf4c58a8b926bd30baed269272d217d92605e308d7d3f22d900b8641
-    # via closed-loop-neurostimulation
+    # via neuro
 ty==0.0.39 \
     --hash=sha256:1c62a3a87ce26b50819f0dbf03bd95f23f19eeb87bbc7aa732ec64277c77f1aa \
     --hash=sha256:3435b64c1e59c14c9aa39c20cc018823937cd38d55db853e74d95b8f420569b0 \

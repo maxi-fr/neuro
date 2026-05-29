@@ -26,7 +26,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import numpy.typing as npt
 
-from closed_loop_neurostimulation.plant import FHNPlant
+from neuro.plant import FHNPlant
 
 FloatArray = npt.NDArray[np.float64]
 

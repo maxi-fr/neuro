@@ -25,7 +25,7 @@ integrators, and coupling functions all differ.  Tests here cover:
 import numpy as np
 import pytest
 
-from closed_loop_neurostimulation.plant import FHNPlant, NativeFHNPlant, TVBFHNPlant
+from neuro.plant import FHNPlant, NativeFHNPlant, TVBFHNPlant
 
 _SEED = 42
 _DT = 0.1

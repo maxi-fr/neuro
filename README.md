@@ -1,4 +1,4 @@
-# closed-loop-neurostimulation
+# neuro
 
 Model Predictive Control for Neurostimulation
 

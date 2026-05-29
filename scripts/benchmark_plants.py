@@ -25,7 +25,7 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
-from closed_loop_neurostimulation.plant import FHNPlant, NativeFHNPlant, TVBFHNPlant
+from neuro.plant import FHNPlant, NativeFHNPlant, TVBFHNPlant
 
 if TYPE_CHECKING:
     from collections.abc import Callable
