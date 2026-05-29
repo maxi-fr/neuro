@@ -1,10 +1,19 @@
 # TODO
 
+## General
+
 ## Knowledge Base
 
 * Rename sources folder to summaries
 
 ## Implementations
+
+<details>
+<summary>upgrade neurolib</summary>
+
+* get neurolib from github instead of pypy, because new version has leadfield matrix (eeg stuff)
+
+</details>
 
 <details>
 <summary>Setup brain model</summary>
