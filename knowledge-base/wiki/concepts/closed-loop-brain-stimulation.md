@@ -31,10 +31,10 @@ Closed-loop brain stimulation (CLBS) is an approach to neuromodulation where sti
 - [[concepts/volterra-model.md|Volterra Model]] — Black-box predictor used in data-driven MPC for closed-loop stimulation.
 - [[concepts/difference-of-convex-functions.md|Difference of Convex Functions]] — DCNN architecture for nonlinear modeling in data-driven closed-loop DBS.
 
-## Sources
+## Summaries
 
-- [[sources/chang-et-al-2020.md|Model Predictive Control for Seizure Suppression Based on Nonlinear Auto-Regressive Moving-Average Volterra Model]] — Framework for real-time control of epileptic seizures using MPC and Volterra models.
-- [[sources/chouzouris-et-al-2021.md|Applications of optimal nonlinear control to a whole-brain network of FitzHugh-Nagumo oscillators]] — Framework for state-switching and synchronization in large-scale brain networks.
-- [[sources/froehlich-jezernik-2005.md|Feedback control of Hodgkin–Huxley nerve cell dynamics]] — Demonstrates closed-loop control of ion channel states for AP generation and suppression.
-- [[sources/salfenmose-obermayer-2022.md|Nonlinear optimal control of a mean-field model of neural population dynamics]] — Analyzes efficient switching strategies in biophysically grounded models.
-- [[sources/steffen-cannon-2025.md|Deep Learning Model Predictive Control for Deep Brain Stimulation in Parkinson's Disease]] — Nonlinear data-driven MPC for beta-band suppression in PD.
+- [[summaries/chang-et-al-2020.md|Model Predictive Control for Seizure Suppression Based on Nonlinear Auto-Regressive Moving-Average Volterra Model]] — Framework for real-time control of epileptic seizures using MPC and Volterra models.
+- [[summaries/chouzouris-et-al-2021.md|Applications of optimal nonlinear control to a whole-brain network of FitzHugh-Nagumo oscillators]] — Framework for state-switching and synchronization in large-scale brain networks.
+- [[summaries/froehlich-jezernik-2005.md|Feedback control of Hodgkin–Huxley nerve cell dynamics]] — Demonstrates closed-loop control of ion channel states for AP generation and suppression.
+- [[summaries/salfenmose-obermayer-2022.md|Nonlinear optimal control of a mean-field model of neural population dynamics]] — Analyzes efficient switching strategies in biophysically grounded models.
+- [[summaries/steffen-cannon-2025.md|Deep Learning Model Predictive Control for Deep Brain Stimulation in Parkinson's Disease]] — Nonlinear data-driven MPC for beta-band suppression in PD.

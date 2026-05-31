@@ -1,7 +1,7 @@
 MD013: false
 MD060: false
 MD033:
-  allowed_elements: [details, summary, skill-name]
+  allowed_elements: [details, summary, skill-name, strike, s]
 MD024:
   siblings_only: true
 MD025:

@@ -27,8 +27,8 @@ A Neural Mass Model (NMM) is a macroscopic neurophysiological model that simulat
 - [[concepts/model-predictive-control.md|Model Predictive Control]] — NMMs serve as the prediction models for real-time control.
 - [[concepts/optimal-nonlinear-control.md|Optimal Nonlinear Control]] — Used to find efficient ways to steer NMMs between different activity states.
 
-## Sources
+## Summaries
 
-- [[sources/chang-et-al-2020.md|Model Predictive Control for Seizure Suppression Based on Nonlinear Auto-Regressive Moving-Average Volterra Model]] — Uses an NMM as a black-box model.
-- [[sources/salfenmose-obermayer-2022.md|Nonlinear optimal control of a mean-field model of neural population dynamics]] — Applies optimal control to a biophysically grounded EI EIF neural mass model.
-- [[sources/thesis-proposal.md|Master's Thesis Proposal: MPC for Neurostimulation]] — Discusses NMMs and Wilson-Cowan models as tractable prediction models for MPC.
+- [[summaries/chang-et-al-2020.md|Model Predictive Control for Seizure Suppression Based on Nonlinear Auto-Regressive Moving-Average Volterra Model]] — Uses an NMM as a black-box model.
+- [[summaries/salfenmose-obermayer-2022.md|Nonlinear optimal control of a mean-field model of neural population dynamics]] — Applies optimal control to a biophysically grounded EI EIF neural mass model.
+- [[summaries/thesis-proposal.md|Master's Thesis Proposal: MPC for Neurostimulation]] — Discusses NMMs and Wilson-Cowan models as tractable prediction models for MPC.

@@ -29,6 +29,6 @@ Input-Convex Neural Networks (ICNN) are the building block for each convex compo
 - [[concepts/model-predictive-control.md|Model Predictive Control]] — Optimization framework using DCNN models via sequential convex programming.
 - [[concepts/closed-loop-brain-stimulation.md|Closed-loop Brain Stimulation]] — Application domain where DCNN models the nonlinear beta-band response to DBS.
 
-## Sources
+## Summaries
 
-- [[sources/steffen-cannon-2025.md|Deep Learning Model Predictive Control for Deep Brain Stimulation in Parkinson's Disease]] — Employs DCNN for nonlinear Tube MPC in closed-loop DBS.
+- [[summaries/steffen-cannon-2025.md|Deep Learning Model Predictive Control for Deep Brain Stimulation in Parkinson's Disease]] — Employs DCNN for nonlinear Tube MPC in closed-loop DBS.

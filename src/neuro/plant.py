@@ -22,11 +22,15 @@ lead-field projection.
 from __future__ import annotations
 
 import warnings
+from typing import TYPE_CHECKING
 
 import numpy as np
 import numpy.typing as npt
 from neurolib.models.fhn import FHNModel
 from neurolib.utils.loadData import Dataset
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 with warnings.catch_warnings():
     warnings.simplefilter("ignore", UserWarning)
@@ -59,6 +63,43 @@ def _make_leadfield(n_sensors: int, n_nodes: int, seed: int) -> FloatArray:
     matrix = rng.standard_normal((n_sensors, n_nodes))
     matrix /= np.linalg.norm(matrix, axis=1, keepdims=True)
     return matrix.astype(np.float64)
+
+
+def _load_leadfield(path: str | Path, n_nodes: int) -> FloatArray:
+    """Load a precomputed lead-field matrix and validate its shape.
+
+    Parameters
+    ----------
+    path
+        Path to a NumPy ``.npy`` file holding a 2-D ``(n_sensors, n_nodes)``
+        lead-field matrix, e.g. one produced by
+        ``scripts/generate_leadfield.py``.
+    n_nodes
+        Number of network nodes the plant simulates.  The loaded matrix must
+        have exactly this many columns so ``leadfield @ activity`` is defined.
+
+    Returns
+    -------
+    matrix
+        The loaded lead-field, shape ``(n_sensors, n_nodes)``.
+
+    Raises
+    ------
+    ValueError
+        If the loaded array is not 2-D or its column count differs from
+        ``n_nodes``.  The neurolib HCP connectome and the AAL2-cortical
+        lead-field from ``scripts/generate_leadfield.py`` share the same
+        80-region parcellation and node ordering, so an aligned lead-field
+        loads directly onto the default ``connectome="hcp"`` plant.
+    """
+    matrix: FloatArray = np.load(path).astype(np.float64)
+    if matrix.ndim != 2 or matrix.shape[1] != n_nodes:  # noqa: PLR2004
+        msg = (
+            f"Lead-field at {path!r} has shape {matrix.shape}; expected a 2-D "
+            f"matrix with {n_nodes} columns (one per network node)."
+        )
+        raise ValueError(msg)
+    return matrix
 
 
 def _tvb_eeg_leadfield(
@@ -127,7 +168,13 @@ class FHNPlant:
     n_sensors
         Number of synthetic EEG channels produced by the lead-field projection.
     leadfield_seed
-        Seed for the deterministic random lead-field matrix.
+        Seed for the deterministic random lead-field matrix.  Ignored when
+        ``leadfield_path`` is given.
+    leadfield_path
+        Optional path to a precomputed ``.npy`` lead-field (e.g. from
+        ``scripts/generate_leadfield.py``).  When set it replaces the random
+        matrix and ``n_sensors`` / ``leadfield_seed`` are ignored; the file's
+        column count must equal the number of connectome nodes.
     connectome
         Name of the built-in neurolib dataset providing ``Cmat`` (structural
         connectivity) and ``Dmat`` (fiber lengths). ``"hcp"`` gives 80 nodes.
@@ -152,6 +199,7 @@ class FHNPlant:
         sigma_ou: float = 0.05,
         n_sensors: int = 64,
         leadfield_seed: int = 0,
+        leadfield_path: str | Path | None = None,
         connectome: str = "hcp",
         seed: int | None = None,
     ) -> None:
@@ -163,7 +211,11 @@ class FHNPlant:
         self._dt: float = dt
         self._sigma_ou: float = sigma_ou
         self._n_nodes: int = int(dataset.Cmat.shape[0])
-        self._leadfield: FloatArray = _make_leadfield(n_sensors, self._n_nodes, leadfield_seed)
+        self._leadfield: FloatArray = (
+            _load_leadfield(leadfield_path, self._n_nodes)
+            if leadfield_path is not None
+            else _make_leadfield(n_sensors, self._n_nodes, leadfield_seed)
+        )
         self._initialized: bool = False
 
     @property
@@ -183,11 +235,13 @@ class FHNPlant:
 
     @property
     def leadfield(self) -> FloatArray:
-        """Synthetic EEG lead-field matrix, shape ``(n_sensors, n_nodes)``.
+        """EEG lead-field matrix, shape ``(n_sensors, n_nodes)``.
 
-        Random row-normalised matrix.  Neurolib v0.6.2 ships no built-in EEG
-        projection for its HCP 80-node parcellation; replace this matrix
-        manually if anatomical EEG is required.
+        A random row-normalised matrix by default.  Pass ``leadfield_path`` at
+        construction to load a real anatomical lead-field instead (see
+        ``scripts/generate_leadfield.py``, whose AAL2-cortical output is aligned
+        to the same 80-region HCP parcellation); its column count must match the
+        connectome node count.
         """
         return self._leadfield
 
@@ -252,7 +306,7 @@ class NativeFHNPlant:
 
     Parameters
     ----------
-    dt, sigma_ou, n_sensors, leadfield_seed, connectome
+    dt, sigma_ou, n_sensors, leadfield_seed, leadfield_path, connectome
         Same meaning as in :class:`FHNPlant`.
     seed
         Seed for the legacy ``np.random`` global RNG.  Replicates neurolib's
@@ -282,6 +336,7 @@ class NativeFHNPlant:
         sigma_ou: float = 0.05,
         n_sensors: int = 64,
         leadfield_seed: int = 0,
+        leadfield_path: str | Path | None = None,
         connectome: str = "hcp",
         seed: int | None = None,
     ) -> None:
@@ -310,7 +365,11 @@ class NativeFHNPlant:
         # Source-node index vector for advanced indexing in the coupling step
         self._src: npt.NDArray[np.int_] = np.arange(n_nodes)
 
-        self._leadfield: FloatArray = _make_leadfield(n_sensors, n_nodes, leadfield_seed)
+        self._leadfield: FloatArray = (
+            _load_leadfield(leadfield_path, n_nodes)
+            if leadfield_path is not None
+            else _make_leadfield(n_sensors, n_nodes, leadfield_seed)
+        )
 
         # Mutable simulation state -- None until the first step()
         self._initialized: bool = False
@@ -336,11 +395,13 @@ class NativeFHNPlant:
 
     @property
     def leadfield(self) -> FloatArray:
-        """Lead-field matrix, shape ``(n_sensors, n_nodes)``.
+        """EEG lead-field matrix, shape ``(n_sensors, n_nodes)``.
 
-        Random row-normalised matrix.  Neurolib v0.6.2 ships no built-in EEG
-        projection for its HCP 80-node parcellation; replace this matrix
-        manually if anatomical EEG is required.
+        A random row-normalised matrix by default.  Pass ``leadfield_path`` at
+        construction to load a real anatomical lead-field instead (see
+        ``scripts/generate_leadfield.py``, whose AAL2-cortical output is aligned
+        to the same 80-region HCP parcellation); its column count must match the
+        connectome node count.
         """
         return self._leadfield
 

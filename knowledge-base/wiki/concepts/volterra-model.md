@@ -27,6 +27,6 @@ The Volterra model is a functional series representation used to describe the in
 - [[concepts/seizure-suppression.md|Seizure Suppression]] — Primary application domain for Volterra-based MPC.
 - [[concepts/closed-loop-brain-stimulation.md|Closed-loop Brain Stimulation]] — Volterra models enable data-driven closed-loop control of neural dynamics.
 
-## Sources
+## Summaries
 
-- [[sources/chang-et-al-2020.md|Model Predictive Control for Seizure Suppression Based on Nonlinear Auto-Regressive Moving-Average Volterra Model]] — Utilizes a NARMA Volterra model as the predictive component of an MPC controller. [[Literature/Chang_et_al_2020.pdf | Chang et al. 2020 (I. Introduction)]]
+- [[summaries/chang-et-al-2020.md|Model Predictive Control for Seizure Suppression Based on Nonlinear Auto-Regressive Moving-Average Volterra Model]] — Utilizes a NARMA Volterra model as the predictive component of an MPC controller. [[Literature/Chang_et_al_2020.pdf | Chang et al. 2020 (I. Introduction)]]

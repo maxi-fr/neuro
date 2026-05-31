@@ -15,7 +15,7 @@ Across the five sources in this wiki, four distinct control paradigms appear for
 
 ### 1. Cascaded Feedback Linearization + MPC
 
-**Source:** [[sources/froehlich-jezernik-2005.md|Fröhlich & Jezernik 2005]]
+**Source:** [[summaries/froehlich-jezernik-2005.md|Fröhlich & Jezernik 2005]]
 **Model:** [[concepts/hodgkin-huxley-model.md|Hodgkin-Huxley]] (mechanistic, single-neuron)
 **Target:** Direct biophysical state control — ion channel activation ($m$) and inactivation ($h$)
 **Approach:** Inner loop cancels HH nonlinearities via [[concepts/feedback-linearization.md|feedback linearization]] (reducing error dynamics to $\dot{e} + Ke = 0$); outer [[concepts/model-predictive-control.md|MPC]] layer optimally tracks ion channel references with hard constraints.
@@ -24,7 +24,7 @@ Across the five sources in this wiki, four distinct control paradigms appear for
 
 ### 2. Optimal Nonlinear Control on Whole-Brain Networks
 
-**Source:** [[sources/chouzouris-et-al-2021.md|Chouzouris et al. 2021]]
+**Source:** [[summaries/chouzouris-et-al-2021.md|Chouzouris et al. 2021]]
 **Model:** Whole-brain [[concepts/fitzhugh-nagumo-model.md|FHN]] network with DTI-derived [[concepts/human-connectome.md|connectome]] (mechanistic, large-scale)
 **Target:** Attractor switching between multistable network states; network synchronization
 **Approach:** Minimize a cost functional over a full control trajectory using gradient-based optimization. Offline, open-loop computation.
@@ -33,7 +33,7 @@ Across the five sources in this wiki, four distinct control paradigms appear for
 
 ### 3. Optimal Nonlinear Control on Neural Mass Models
 
-**Source:** [[sources/salfenmose-obermayer-2022.md|Salfenmose & Obermayer 2022]]
+**Source:** [[summaries/salfenmose-obermayer-2022.md|Salfenmose & Obermayer 2022]]
 **Model:** EI EIF [[concepts/neural-mass-model.md|neural mass model]] (biophysically grounded, population-level)
 **Target:** Bistable state switching (down→up, up→down)
 **Approach:** Gradient descent via adjoint method; L1 vs L2 regularization of control signal.
@@ -42,7 +42,7 @@ Across the five sources in this wiki, four distinct control paradigms appear for
 
 ### 4. MPC with Black-box Volterra Model
 
-**Source:** [[sources/chang-et-al-2020.md|Chang et al. 2020]]
+**Source:** [[summaries/chang-et-al-2020.md|Chang et al. 2020]]
 **Model:** NARMA [[concepts/volterra-model.md|Volterra model]] (data-driven, black-box)
 **Target:** Suppression of epileptiform EEG discharges ([[concepts/seizure-suppression.md|seizure suppression]])
 **Approach:** System identification from experimental data; receding-horizon [[concepts/model-predictive-control.md|MPC]] optimizes stimulation in real-time.
@@ -51,7 +51,7 @@ Across the five sources in this wiki, four distinct control paradigms appear for
 
 ### 5. DCNN Tube MPC
 
-**Source:** [[sources/steffen-cannon-2025.md|Steffen & Cannon 2025]]
+**Source:** [[summaries/steffen-cannon-2025.md|Steffen & Cannon 2025]]
 **Model:** [[concepts/difference-of-convex-functions.md|Difference of Convex Neural Networks]] (data-driven, structured nonlinear)
 **Target:** [[concepts/beta-band-oscillations.md|Beta-band]] suppression in [[concepts/parkinsons-disease.md|Parkinson's Disease]] via closed-loop DBS
 **Approach:** Multi-step DCNN predictor trained on patient LFP data; sequential convex programming for online optimization; robust Tube MPC handles linearization errors.

@@ -22,6 +22,8 @@ integrators, and coupling functions all differ.  Tests here cover:
 * Structural: same 80-node HCP connectome as the neurolib plants
 """
 
+from pathlib import Path
+
 import numpy as np
 import pytest
 
@@ -99,6 +101,35 @@ def test_reset_reproduces_first_step(sigma_ou: float) -> None:
     native.reset()
     act_second, _ = native.step(100.0)
     np.testing.assert_array_equal(act_first, act_second)
+
+
+# ---------------------------------------------------------------------------
+# Lead-field loading (leadfield_path)
+# ---------------------------------------------------------------------------
+
+
+def test_leadfield_path_loads_matrix(tmp_path: Path) -> None:
+    """A precomputed (n_sensors, n_nodes) .npy is loaded and used by both plants."""
+    rng = np.random.default_rng(0)
+    matrix = rng.standard_normal((_N_SENSORS, _N_NODES))
+    path = tmp_path / "leadfield.npy"
+    np.save(path, matrix)
+
+    for plant in (
+        FHNPlant(leadfield_path=path, seed=_SEED),
+        NativeFHNPlant(leadfield_path=path, seed=_SEED),
+    ):
+        np.testing.assert_array_equal(plant.leadfield, matrix)
+        _, eeg = plant.step(100.0)
+        assert eeg.shape == (_N_SENSORS, round(100.0 / _DT))
+
+
+def test_leadfield_path_shape_mismatch_raises(tmp_path: Path) -> None:
+    """A lead-field whose column count != n_nodes is rejected at construction."""
+    path = tmp_path / "bad_leadfield.npy"
+    np.save(path, np.zeros((_N_SENSORS, _N_NODES - 1)))
+    with pytest.raises(ValueError, match="columns"):
+        FHNPlant(leadfield_path=path)
 
 
 # ---------------------------------------------------------------------------

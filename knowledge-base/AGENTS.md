@@ -21,7 +21,7 @@ All wiki pages live here. The LLM owns this directory entirely. Key files:
 ### Wiki Page Conventions
 
 - **Frontmatter:** Every page has YAML frontmatter with `title`, `type`
-  (concept/source/comparison/synthesis), `tags`, `sources`, `created`, `updated`.
+  (concept/summary/comparison/synthesis), `tags`, `sources`, `created`, `updated`.
 - **Wikilinks:** Use `[[Page Title]]` for cross-references (Obsidian-compatible). Always bidirectional.
 - **Filenames:** Lowercase kebab-case, `.md` extension. No spaces or special characters.
 

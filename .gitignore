@@ -21,3 +21,5 @@ knowledge-base/Presentations
 knowledge-base/.obsidian/
 random_stuff.*
 CLAUDE.md
+# Lead-field generation artifacts (AAL2 atlas + cached .npy outputs)
+data/

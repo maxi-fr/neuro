@@ -23,6 +23,6 @@ State estimation is the process of inferring the internal states of a dynamical 
 - [[concepts/model-predictive-control.md|Model Predictive Control]] — Relies on estimated states for its prediction horizon.
 - [[concepts/neural-mass-model.md|Neural Mass Model]] — One of the models requiring state estimation for real-time control.
 
-## Sources
+## Summaries
 
-- [[sources/thesis-proposal.md|Master's Thesis Proposal: MPC for Neurostimulation]] — Highlights state and parameter estimation as critical components of the neurostimulation framework.
+- [[summaries/thesis-proposal.md|Master's Thesis Proposal: MPC for Neurostimulation]] — Highlights state and parameter estimation as critical components of the neurostimulation framework.

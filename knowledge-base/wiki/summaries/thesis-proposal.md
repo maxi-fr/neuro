@@ -1,6 +1,6 @@
 ---
 title: "Master's Thesis Proposal: MPC for Neurostimulation"
-type: source
+type: summary
 tags: [model-predictive-control, neurostimulation, state-estimation, large-language-models, neural-dynamics]
 sources: [Notes/Thesis.md]
 created: 2026-05-18

@@ -27,6 +27,6 @@ The integration of Large Language Models (LLMs) into neurostimulation frameworks
 - [[concepts/model-predictive-control.md|Model Predictive Control]] — The control framework that LLMs help design and adapt.
 - [[concepts/closed-loop-brain-stimulation.md|Closed-loop Brain Stimulation]] — The clinical application for LLM-integrated control.
 
-## Sources
+## Summaries
 
-- [[sources/thesis-proposal.md|Master's Thesis Proposal: MPC for Neurostimulation]] — Proposes the integration of LLMs for treatment protocol design and multimodal feedback.
+- [[summaries/thesis-proposal.md|Master's Thesis Proposal: MPC for Neurostimulation]] — Proposes the integration of LLMs for treatment protocol design and multimodal feedback.

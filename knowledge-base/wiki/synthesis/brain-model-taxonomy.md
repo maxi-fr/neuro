@@ -15,7 +15,7 @@ Each source in this wiki uses a different mathematical representation of neural 
 
 ### 1. Hodgkin-Huxley Model (Single Neuron, Mechanistic)
 
-**Used in:** [[sources/froehlich-jezernik-2005.md|Fröhlich & Jezernik 2005]]
+**Used in:** [[summaries/froehlich-jezernik-2005.md|Fröhlich & Jezernik 2005]]
 **Scale:** Single neuron or axon segment
 **Fidelity:** High — models individual ion channels (Na⁺, K⁺, leakage), gating dynamics, and action potential generation
 **State variables:** Membrane voltage $V$, sodium activation $m$, inactivation $h$, potassium activation $n$
@@ -24,7 +24,7 @@ Each source in this wiki uses a different mathematical representation of neural 
 
 ### 2. FitzHugh-Nagumo Oscillator (Simplified Excitable System)
 
-**Used in:** [[sources/chouzouris-et-al-2021.md|Chouzouris et al. 2021]]
+**Used in:** [[summaries/chouzouris-et-al-2021.md|Chouzouris et al. 2021]]
 **Scale:** Individual brain region (mesoscale), coupled into large networks via [[concepts/human-connectome.md|connectome]] weights
 **Fidelity:** Medium — captures excitability, fixed points, and limit cycles without ion-channel specifics
 **State variables:** Fast activity variable $x_1$, slow recovery variable $x_2$
@@ -33,7 +33,7 @@ Each source in this wiki uses a different mathematical representation of neural 
 
 ### 3. Neural Mass Model (Population-Level, Biophysical)
 
-**Used in:** [[sources/chang-et-al-2020.md|Chang et al. 2020]], [[sources/salfenmose-obermayer-2022.md|Salfenmose & Obermayer 2022]]
+**Used in:** [[summaries/chang-et-al-2020.md|Chang et al. 2020]], [[summaries/salfenmose-obermayer-2022.md|Salfenmose & Obermayer 2022]]
 **Scale:** Neural population (thousands of neurons)
 **Fidelity:** Medium-high — derived from mean-field approximations; captures excitatory/inhibitory interactions, bistability, and EEG-like dynamics
 **State variables:** Population firing rates $r_E$, $r_I$; governed by $\tau \dot{r} = -r + \Phi(I)$
@@ -42,7 +42,7 @@ Each source in this wiki uses a different mathematical representation of neural 
 
 ### 4. Data-Driven Models (Black-box, System Identification)
 
-**Used in:** [[sources/chang-et-al-2020.md|Chang et al. 2020]] ([[concepts/volterra-model.md|Volterra series]]), [[sources/steffen-cannon-2025.md|Steffen & Cannon 2025]] ([[concepts/difference-of-convex-functions.md|DCNN]])
+**Used in:** [[summaries/chang-et-al-2020.md|Chang et al. 2020]] ([[concepts/volterra-model.md|Volterra series]]), [[summaries/steffen-cannon-2025.md|Steffen & Cannon 2025]] ([[concepts/difference-of-convex-functions.md|DCNN]])
 **Scale:** Population/whole brain (input-output relationship only)
 **Fidelity:** Low mechanistic, high empirical — captures actual patient dynamics from recorded data
 **State variables:** None explicit; mapping from stimulation $u$ to biomarker $y$

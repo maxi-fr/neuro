@@ -31,7 +31,7 @@ Optimal nonlinear control is an optimization-based framework for deriving contro
 - [[concepts/fitzhugh-nagumo-model.md|FitzHugh-Nagumo Model]] — Node dynamics model in whole-brain networks steered via optimal nonlinear control.
 - [[concepts/human-connectome.md|Human Connectome]] — Structural backbone of the network; topology influences optimal control strategies.
 
-## Sources
+## Summaries
 
-- [[sources/chouzouris-et-al-2021.md|Applications of optimal nonlinear control to a whole-brain network of FitzHugh-Nagumo oscillators]] — Application of the framework to state-switching and synchronization in a whole-brain connectome model.
-- [[sources/salfenmose-obermayer-2022.md|Nonlinear optimal control of a mean-field model of neural population dynamics]] — Detailed analysis of optimal control in a two-population neural mass model.
+- [[summaries/chouzouris-et-al-2021.md|Applications of optimal nonlinear control to a whole-brain network of FitzHugh-Nagumo oscillators]] — Application of the framework to state-switching and synchronization in a whole-brain connectome model.
+- [[summaries/salfenmose-obermayer-2022.md|Nonlinear optimal control of a mean-field model of neural population dynamics]] — Detailed analysis of optimal control in a two-population neural mass model.

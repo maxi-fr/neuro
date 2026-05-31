@@ -23,7 +23,7 @@ Seizure suppression refers to the methods and strategies used to eliminate or re
 - [[concepts/neural-mass-model.md|Neural Mass Model]] — Used to simulate epileptiform EEG signals for research.
 - [[concepts/model-predictive-control.md|Model Predictive Control]] — Applied to generate optimal stimulation waveforms for seizure suppression.
 
-## Sources
+## Summaries
 
-- [[sources/chang-et-al-2020.md|Model Predictive Control for Seizure Suppression Based on Nonlinear Auto-Regressive Moving-Average Volterra Model]] — Investigates using MPC for seizure suppression.
-- [[sources/thesis-proposal.md|Master's Thesis Proposal: MPC for Neurostimulation]] — Identifies synchronization/desynchronization as control objectives for epilepsy.
+- [[summaries/chang-et-al-2020.md|Model Predictive Control for Seizure Suppression Based on Nonlinear Auto-Regressive Moving-Average Volterra Model]] — Investigates using MPC for seizure suppression.
+- [[summaries/thesis-proposal.md|Master's Thesis Proposal: MPC for Neurostimulation]] — Identifies synchronization/desynchronization as control objectives for epilepsy.

@@ -22,6 +22,6 @@ Beta-band oscillations are neural rhythms in the frequency range of approximatel
 - [[concepts/parkinsons-disease.md|Parkinson's Disease]] — Clinical context for beta-band pathology.
 - [[concepts/closed-loop-brain-stimulation.md|Closed-loop Brain Stimulation]] — Control framework using beta-band feedback.
 
-## Sources
+## Summaries
 
-- [[sources/steffen-cannon-2025.md|Deep Learning Model Predictive Control for Deep Brain Stimulation in Parkinson's Disease]] — Focuses on suppressing beta-band activity using nonlinear MPC.
+- [[summaries/steffen-cannon-2025.md|Deep Learning Model Predictive Control for Deep Brain Stimulation in Parkinson's Disease]] — Focuses on suppressing beta-band activity using nonlinear MPC.

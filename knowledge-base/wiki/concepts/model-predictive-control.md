@@ -30,9 +30,9 @@ Model Predictive Control (MPC) is an advanced method of process control that ite
 - [[concepts/llms-in-neurostimulation.md|LLMs in Neurostimulation]] — Integration of LLMs for protocol design and feedback.
 - [[concepts/closed-loop-brain-stimulation.md|Closed-loop Brain Stimulation]] — The application domain for these control strategies.
 
-## Sources
+## Summaries
 
-- [[sources/chang-et-al-2020.md|Model Predictive Control for Seizure Suppression Based on Nonlinear Auto-Regressive Moving-Average Volterra Model]] — Describes the use of MPC for seizure suppression.
-- [[sources/froehlich-jezernik-2005.md|Feedback control of Hodgkin–Huxley nerve cell dynamics]] — Uses MPC to track ion channel states.
-- [[sources/steffen-cannon-2025.md|Deep Learning Model Predictive Control for Deep Brain Stimulation in Parkinson's Disease]] — Introduces DCNN-based Tube MPC.
-- [[sources/thesis-proposal.md|Master's Thesis Proposal: MPC for Neurostimulation]] — Outlines the use of MPC with state estimation, hierarchical control, and LLM integration.
+- [[summaries/chang-et-al-2020.md|Model Predictive Control for Seizure Suppression Based on Nonlinear Auto-Regressive Moving-Average Volterra Model]] — Describes the use of MPC for seizure suppression.
+- [[summaries/froehlich-jezernik-2005.md|Feedback control of Hodgkin–Huxley nerve cell dynamics]] — Uses MPC to track ion channel states.
+- [[summaries/steffen-cannon-2025.md|Deep Learning Model Predictive Control for Deep Brain Stimulation in Parkinson's Disease]] — Introduces DCNN-based Tube MPC.
+- [[summaries/thesis-proposal.md|Master's Thesis Proposal: MPC for Neurostimulation]] — Outlines the use of MPC with state estimation, hierarchical control, and LLM integration.

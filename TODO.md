@@ -9,7 +9,7 @@
 ## Implementations
 
 <details>
-<summary>upgrade neurolib</summary>
+<summary><s>upgrade neurolib</s></summary>
 
 * get neurolib from github instead of pypy, because new version has leadfield matrix (eeg stuff)
 

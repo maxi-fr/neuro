@@ -23,7 +23,7 @@ Parkinson's Disease (PD) is a progressive neurological disorder that primarily a
 - [[concepts/beta-band-oscillations.md|Beta-band Oscillations]] — The primary feedback signal for PD CLDBS.
 - [[concepts/model-predictive-control.md|Model Predictive Control]] — Used in advanced CLDBS to suppress pathological activity.
 
-## Sources
+## Summaries
 
-- [[sources/steffen-cannon-2025.md|Deep Learning Model Predictive Control for Deep Brain Stimulation in Parkinson's Disease]] — Discusses nonlinear control strategies for PD treatment.
-- [[sources/thesis-proposal.md|Master's Thesis Proposal: MPC for Neurostimulation]] — Identifies desynchronization as a key control objective for PD.
+- [[summaries/steffen-cannon-2025.md|Deep Learning Model Predictive Control for Deep Brain Stimulation in Parkinson's Disease]] — Discusses nonlinear control strategies for PD treatment.
+- [[summaries/thesis-proposal.md|Master's Thesis Proposal: MPC for Neurostimulation]] — Identifies desynchronization as a key control objective for PD.

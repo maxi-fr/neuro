@@ -1,6 +1,6 @@
 ---
 title: "Feedback control of Hodgkin–Huxley nerve cell dynamics"
-type: source
+type: summary
 tags: [hodgkin-huxley, model-predictive-control, nonlinear-control, neural-dynamics, closed-loop]
 sources: [Literature/Froehlich_Jezernik_2005.pdf]
 created: 2026-05-14

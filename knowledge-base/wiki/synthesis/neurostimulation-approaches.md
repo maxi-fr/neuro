@@ -13,7 +13,7 @@ This page synthesizes the five primary neurostimulation approaches documented in
 
 ## Approach 1: Cascaded Feedback Linearization + MPC
 
-**Source:** [[sources/froehlich-jezernik-2005.md|Fröhlich & Jezernik 2005]]
+**Source:** [[summaries/froehlich-jezernik-2005.md|Fröhlich & Jezernik 2005]]
 
 ### Control objective
 
@@ -43,7 +43,7 @@ This page synthesizes the five primary neurostimulation approaches documented in
 
 ## Approach 2: Optimal Nonlinear Control on Whole-Brain Networks
 
-**Source:** [[sources/chouzouris-et-al-2021.md|Chouzouris et al. 2021]]
+**Source:** [[summaries/chouzouris-et-al-2021.md|Chouzouris et al. 2021]]
 
 ### Control objective
 
@@ -73,7 +73,7 @@ This page synthesizes the five primary neurostimulation approaches documented in
 
 ## Approach 3: Optimal Nonlinear Control on Neural Mass Models
 
-**Source:** [[sources/salfenmose-obermayer-2022.md|Salfenmose & Obermayer 2022]]
+**Source:** [[summaries/salfenmose-obermayer-2022.md|Salfenmose & Obermayer 2022]]
 
 ### Control objective
 
@@ -103,7 +103,7 @@ This page synthesizes the five primary neurostimulation approaches documented in
 
 ## Approach 4: MPC with Black-box Volterra Model
 
-**Source:** [[sources/chang-et-al-2020.md|Chang et al. 2020]]
+**Source:** [[summaries/chang-et-al-2020.md|Chang et al. 2020]]
 
 ### Control objective
 
@@ -133,7 +133,7 @@ This page synthesizes the five primary neurostimulation approaches documented in
 
 ## Approach 5: DCNN Tube MPC
 
-**Source:** [[sources/steffen-cannon-2025.md|Steffen & Cannon 2025]]
+**Source:** [[summaries/steffen-cannon-2025.md|Steffen & Cannon 2025]]
 
 ### Control objective
 

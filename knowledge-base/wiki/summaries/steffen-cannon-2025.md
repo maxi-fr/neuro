@@ -1,6 +1,6 @@
 ---
 title: "Deep Learning Model Predictive Control for Deep Brain Stimulation in Parkinson's Disease"
-type: source
+type: summary
 tags: [model-predictive-control, deep-brain-stimulation, parkinsons-disease, neural-networks, convex-optimization]
 sources: [Literature/Steffen_Cannon_2025.pdf]
 created: 2026-05-14

@@ -1,6 +1,6 @@
 ---
 title: "Model Predictive Control for Seizure Suppression Based on Nonlinear Auto-Regressive Moving-Average Volterra Model"
-type: source
+type: summary
 tags: [mpc, seizure-suppression, nmm, volterra, closed-loop]
 sources: [Literature/Chang_et_al_2020.pdf]
 created: 2026-05-14

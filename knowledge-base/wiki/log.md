@@ -19,7 +19,7 @@
 - Source: Literature/Chouzouris_et_al_2021.pdf
 - Status: new
 - Pages created:
-  - [[sources/chouzouris-et-al-2021.md|Applications of optimal nonlinear control to a whole-brain network of FitzHugh-Nagumo oscillators]]
+  - [[summaries/chouzouris-et-al-2021.md|Applications of optimal nonlinear control to a whole-brain network of FitzHugh-Nagumo oscillators]]
   - [[concepts/optimal-nonlinear-control.md|Optimal Nonlinear Control]]
   - [[concepts/fitzhugh-nagumo-model.md|FitzHugh-Nagumo Model]]
   - [[concepts/human-connectome.md|Human Connectome]]
@@ -32,7 +32,7 @@
 - Source: Literature/Froehlich_Jezernik_2005.pdf
 - Status: new
 - Pages created:
-  - [[sources/froehlich-jezernik-2005.md|Feedback control of Hodgkin–Huxley nerve cell dynamics]]
+  - [[summaries/froehlich-jezernik-2005.md|Feedback control of Hodgkin–Huxley nerve cell dynamics]]
   - [[concepts/hodgkin-huxley-model.md|Hodgkin-Huxley Model]]
   - [[concepts/feedback-linearization.md|Feedback Linearization]]
 - Pages updated:
@@ -45,7 +45,7 @@
 - Source: Literature/Salfenmose_Obermayer_2022.pdf
 - Status: new
 - Pages created:
-  - [[sources/salfenmose-obermayer-2022.md|Nonlinear optimal control of a mean-field model of neural population dynamics]]
+  - [[summaries/salfenmose-obermayer-2022.md|Nonlinear optimal control of a mean-field model of neural population dynamics]]
 - Pages updated:
   - [[concepts/optimal-nonlinear-control.md|Optimal Nonlinear Control]]
   - [[concepts/neural-mass-model.md|Neural Mass Model]]
@@ -68,17 +68,17 @@
   - [[concepts/feedback-linearization.md]]
   - [[concepts/closed-loop-brain-stimulation.md]]
   - [[concepts/seizure-suppression.md]]
-  - [[sources/salfenmose-obermayer-2022.md]]
-  - [[sources/froehlich-jezernik-2005.md]]
-  - [[sources/chouzouris-et-al-2021.md]]
-  - [[sources/chang-et-al-2020.md]]
+  - [[summaries/salfenmose-obermayer-2022.md]]
+  - [[summaries/froehlich-jezernik-2005.md]]
+  - [[summaries/chouzouris-et-al-2021.md]]
+  - [[summaries/chang-et-al-2020.md]]
 - Details: Integrated LaTeX-formatted ODEs, cost functionals, network dynamics, and system identification models where necessary for formal understanding.
 
 ## [2026-05-14] ingest | Steffen_Cannon_2025.md
 
 - Source: Literature/Steffen_Cannon_2025.pdf
 - Status: new
-- Pages created: sources/steffen-cannon-2025.md, concepts/parkinsons-disease.md, concepts/beta-band-oscillations.md, concepts/input-convex-neural-network.md, concepts/difference-of-convex-functions.md
+- Pages created: summaries/steffen-cannon-2025.md, concepts/parkinsons-disease.md, concepts/beta-band-oscillations.md, concepts/input-convex-neural-network.md, concepts/difference-of-convex-functions.md
 - Pages updated: concepts/closed-loop-brain-stimulation.md, concepts/model-predictive-control.md
 - New concepts: 4
 
@@ -94,7 +94,7 @@
 
 - Source: Notes/Thesis.md
 - Status: new
-- Pages created: sources/thesis-proposal.md, concepts/llms-in-neurostimulation.md, concepts/state-estimation.md
+- Pages created: summaries/thesis-proposal.md, concepts/llms-in-neurostimulation.md, concepts/state-estimation.md
 - Pages updated: concepts/model-predictive-control.md, concepts/neural-mass-model.md, concepts/parkinsons-disease.md, concepts/seizure-suppression.md, wiki/index.md
 - New concepts: 2
 

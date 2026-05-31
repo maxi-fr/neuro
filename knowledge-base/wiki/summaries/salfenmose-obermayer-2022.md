@@ -1,6 +1,6 @@
 ---
 title: "Nonlinear optimal control of a mean-field model of neural population dynamics"
-type: source
+type: summary
 tags: [nonlinear-optimal-control, neural-mass-model, bistability, mean-field]
 sources: [Literature/Salfenmose_Obermayer_2022.pdf]
 created: 2026-05-14

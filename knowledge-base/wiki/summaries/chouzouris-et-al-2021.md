@@ -1,6 +1,6 @@
 ---
 title: "Applications of optimal nonlinear control to a whole-brain network of FitzHugh-Nagumo oscillators"
-type: source
+type: summary
 tags: [optimal-control, nonlinear-dynamics, fitzhugh-nagumo, whole-brain-network, connectome]
 sources: [Literature/Chouzouris_et_al_2021.pdf]
 created: 2026-05-14

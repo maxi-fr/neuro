@@ -21,6 +21,6 @@ Feedback linearization is a common method for controlling nonlinear systems by t
 - [[concepts/hodgkin-huxley-model.md|Hodgkin-Huxley Model]] — A primary target for feedback linearization in neurostimulation.
 - [[concepts/model-predictive-control.md|Model Predictive Control]] — Often used in cascade with a linearization layer.
 
-## Sources
+## Summaries
 
-- [[sources/froehlich-jezernik-2005.md|Feedback control of Hodgkin–Huxley nerve cell dynamics]] — Employs feedback linearization as the inner loop of a cascaded controller.
+- [[summaries/froehlich-jezernik-2005.md|Feedback control of Hodgkin–Huxley nerve cell dynamics]] — Employs feedback linearization as the inner loop of a cascaded controller.

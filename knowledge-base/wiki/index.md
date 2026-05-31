@@ -1,13 +1,13 @@
 # LLM Wiki Index
 
-## Sources
+## Summaries
 
-- [[sources/chang-et-al-2020.md|Model Predictive Control for Seizure Suppression Based on Nonlinear Auto-Regressive Moving-Average Volterra Model]] — Closed-loop brain stimulation using MPC and Volterra models.
-- [[sources/chouzouris-et-al-2021.md|Applications of optimal nonlinear control to a whole-brain network of FitzHugh-Nagumo oscillators]] — Optimal nonlinear control for state-switching and synchronization in whole-brain networks.
-- [[sources/froehlich-jezernik-2005.md|Feedback control of Hodgkin–Huxley nerve cell dynamics]] — Cascaded feedback control for direct state variable tracking in Hodgkin-Huxley neurons.
-- [[sources/salfenmose-obermayer-2022.md|Nonlinear optimal control of a mean-field model of neural population dynamics]] — Analyzes efficient switching strategies in biophysically grounded models.
-- [[sources/steffen-cannon-2025.md|Deep Learning Model Predictive Control for Deep Brain Stimulation in Parkinson's Disease]] — Nonlinear data-driven MPC for beta-band suppression in PD.
-- [[sources/thesis-proposal.md|Master's Thesis Proposal: MPC for Neurostimulation]] — Master's thesis proposal on MPC, state estimation, and LLM integration.
+- [[summaries/chang-et-al-2020.md|Model Predictive Control for Seizure Suppression Based on Nonlinear Auto-Regressive Moving-Average Volterra Model]] — Closed-loop brain stimulation using MPC and Volterra models.
+- [[summaries/chouzouris-et-al-2021.md|Applications of optimal nonlinear control to a whole-brain network of FitzHugh-Nagumo oscillators]] — Optimal nonlinear control for state-switching and synchronization in whole-brain networks.
+- [[summaries/froehlich-jezernik-2005.md|Feedback control of Hodgkin–Huxley nerve cell dynamics]] — Cascaded feedback control for direct state variable tracking in Hodgkin-Huxley neurons.
+- [[summaries/salfenmose-obermayer-2022.md|Nonlinear optimal control of a mean-field model of neural population dynamics]] — Analyzes efficient switching strategies in biophysically grounded models.
+- [[summaries/steffen-cannon-2025.md|Deep Learning Model Predictive Control for Deep Brain Stimulation in Parkinson's Disease]] — Nonlinear data-driven MPC for beta-band suppression in PD.
+- [[summaries/thesis-proposal.md|Master's Thesis Proposal: MPC for Neurostimulation]] — Master's thesis proposal on MPC, state estimation, and LLM integration.
 
 ## Concepts
 
