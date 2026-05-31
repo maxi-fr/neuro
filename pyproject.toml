@@ -31,6 +31,7 @@ dev = [
     "ty",
     "validate-pyproject>=0.23",
     "ipykernel>=7.2.0",
+    "marimo>=0.23.8",
 ]
 
 [build-system]
@@ -74,6 +75,19 @@ convention = "numpy"
 "scripts/**" = [
     "INP001", # Not a package — standalone runnable demos
     "T201",   # print() is fine in CLI scripts
+]
+"notebooks/**" = [
+    "INP001",  # Not a package
+    "B018",    # Useless expression (Marimo displays last expression)
+    "ANN",     # Missing type annotations in notebook cell signatures
+    "PLR0913", # Too many arguments in cell definitions
+    "N803",    # Argument name check (since we inject FHNPlant class as cell argument)
+    "D",       # Ignore docstrings in notebooks
+    "T201",    # print() is fine in notebooks
+    "N807",    # Function name starting and ending with __ (standard in Marimo)
+    "PLC0415", # Imports inside functions (standard in Marimo cells)
+    "RET501",  # Redundant return statements (Marimo requires them, Ruff tries to remove them)
+    "PLR1711", # Useless return statement at end of function (Marimo requires them, Ruff tries to remove them)
 ]
 "tests/*" = [
     "S101",    # assert

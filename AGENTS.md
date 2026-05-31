@@ -29,6 +29,7 @@ uv run ruff check . --fix --unsafe-fixes  # lint (rule set is "ALL" with curated
 uv run ruff format .
 uv run ty check                           # type checking with ty
 uv run pre-commit run --all-files
+uv run marimo check --fix --unsafe-fixes <notebook-name> # Run marimo specific lint issues
 ```
 
 Pre-commit hooks run ruff (with `--fix --unsafe-fixes`), ruff-format, ty, pytest, `uv-lock`, and markdownlint on every commit — expect commits to mutate `requirements.txt` and reformat files.

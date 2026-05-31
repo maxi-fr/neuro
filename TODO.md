@@ -49,7 +49,7 @@ Task is twofold: reference trajectory/cost function for MPC and brain model para
 * for plotting eeg signals
 * graphs
 * bifurcation diagramms
-* ...
+* plots should save plotting data
 
 </details>
 

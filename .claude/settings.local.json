@@ -32,7 +32,8 @@
       "PowerShell(uv run ty check 2>&1)",
       "PowerShell(uv run pytest tests/test_plant.py -v 2>&1)",
       "Bash(python -c \"import tvb_data; print\\(tvb_data.__file__\\)\")",
-      "Bash(python)"
+      "Bash(python)",
+      "Bash(python -c ' *)"
     ]
   }
 }
