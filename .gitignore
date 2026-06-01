@@ -24,3 +24,4 @@ CLAUDE.md
 # Lead-field generation artifacts (AAL2 atlas + cached .npy outputs)
 data/
 __marimo__/
+artifacts/

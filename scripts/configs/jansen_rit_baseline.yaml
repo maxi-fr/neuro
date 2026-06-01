@@ -1,0 +1,86 @@
+# Open-loop baseline of the whole-brain Jansen-Rit plant, run through the
+# `simulate` orchestrator (simulate.simulation.Simulation.from_yaml).
+#
+# "Open loop" = no control: the ZeroController always emits u = 0, so the plant
+# evolves freely and the logger records its EEG output.
+#
+# Units: every `dt` is in MILLISECONDS and must be an integer multiple of the
+# dynamics `dt` (the orchestrator enforces this). `t_end` is also in ms.
+#
+# Every component lists its REQUIRED keys uncommented and its OPTIONAL keys
+# commented with their default value, so the full set of knobs is visible here.
+#
+# Dimensional notes (why the components below and not the stock PID/Gaussian set):
+# The orchestrator seeds its loop with a scalar y_k = 0.0, so at step 0 the
+# sensor/estimator see a scalar while every later step sees the 65-channel EEG
+# vector. Two consequences:
+#   * neuro.sensing.DirectSensor pins the measurement to `n_sensors` channels
+#     (broadcasting the scalar seed) so the logged y_mea / x_hat stay a
+#     homogeneous array the logger can stack into the .npz.
+#   * neuro.control.ZeroController emits a fixed (n_u, 1) zero vector. A zero-gain
+#     PIDController cannot run here: no single gain shape fits both the scalar
+#     seed step and the later 65-vector steps.
+# IdentityEstimator passes the (now fixed-dimension) measurement through as the
+# "state estimate", and control `u` enters the model via `b` (n_nodes x n_u).
+
+t_end: 500.0  # total simulated time [ms]
+
+dynamics:
+  class_path: neuro.jansen_rit_plant.TVBJansenRitDynamics
+  dt: 0.1   # integration step [ms]
+  nsig: 0.0 # additive noise amplitude (HeunStochastic); 0.0 -> deterministic
+  seed: 0   # RNG seed for the noise stream (optional; default: null)
+  # connectome: connectivity_76.zip   # TVB connectivity .zip (default: connectivity_76.zip)
+  # b: [[1.0]]                         # input-gain matrix (n_nodes x n_u): maps control u onto
+  #                                    # model.mu. Default: ones((n_nodes, 1)). NOTE: distinct from
+  #                                    # the model_params `b` below (an intrinsic JR time constant).
+  #
+  # model_params: TVB JansenRit parameters. Each value becomes a numpy array, so
+  # wrap scalars in a list. Values shown are the TVB defaults; uncomment to override.
+  model_params:
+    A: [3.25]        # max amplitude of EPSP / excitatory synaptic gain [mV]
+    B: [22.0]        # max amplitude of IPSP / inhibitory synaptic gain [mV]
+    a: [0.1]         # reciprocal of the excitatory membrane/delay time constant [ms^-1]
+    b: [0.05]        # reciprocal of the inhibitory membrane/delay time constant [ms^-1]
+    v0: [5.52]       # PSP firing threshold for a 50% firing rate [mV]
+    nu_max: [0.0025] # maximum firing rate of the neural population [ms^-1]
+    r: [0.56]        # steepness of the sigmoidal firing-rate transform [mV^-1]
+    J: [135.0]       # average number of synapses between populations
+    a_1: [1.0]       # synaptic-contact probability, fast excitatory feedback loop
+    a_2: [0.8]       # synaptic-contact probability, slow excitatory feedback loop
+    a_3: [0.25]      # synaptic-contact probability, fast inhibitory feedback loop
+    a_4: [0.25]      # synaptic-contact probability, slow inhibitory feedback loop
+    p_min: [0.12]    # minimum input firing rate
+    p_max: [0.32]    # maximum input firing rate
+    mu: [0.22]       # mean input firing rate (the control set-point u is added to this)
+
+output:
+  class_path: neuro.jansen_rit_plant.TVBJansenRitOutput
+  dt: 0.1
+  n_nodes: 76  # number of connectome regions (must match the dynamics connectome)
+  # projection: projection_eeg_65_surface_16k.npy   # TVB EEG surface projection (default shown)
+  # region_mapping: regionMapping_16k_76.txt        # TVB region mapping (default shown)
+
+reference:
+  class_path: simulate.reference.StepReference
+  dt: 0.1
+  step_value: 0.0    # reference set-point (0.0 -> open-loop baseline; default: 1.0)
+  # start_time: 0.0  # time at which the step turns on [ms] (default: 0.0)
+  # horizon: 1       # number of future samples returned per call (MPC horizon; default: 1)
+
+sensor:
+  class_path: neuro.sensing.DirectSensor
+  dt: 0.1
+  n_sensors: 65      # EEG channel count (TVB BEM surface projection = 65); required
+  std_dev: 0.0       # Gaussian measurement-noise std-dev (default: 0.0)
+  # seed: 42         # RNG seed for the measurement noise (default: 42)
+
+estimator:
+  class_path: simulate.estimator.IdentityEstimator
+  dt: 0.1
+  # No optional parameters: returns the measurement as the state estimate.
+
+controller:
+  class_path: neuro.control.ZeroController
+  dt: 0.1
+  # n_u: 1           # control-vector dimension; must match the dynamics `b` columns (default: 1)

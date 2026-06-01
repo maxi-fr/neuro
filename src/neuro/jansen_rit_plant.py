@@ -14,7 +14,7 @@ from pydantic import BaseModel, ConfigDict
 from simulate.dynamics import Dynamics
 from simulate.output import Output
 
-from neuro.plant import FloatArray, _tvb_eeg_leadfield, _TVBSnapshot
+from neuro.plant import FloatArray, _as_tvb_params, _tvb_eeg_leadfield, _TVBSnapshot
 
 if TYPE_CHECKING:
     from numpy.typing import ArrayLike
@@ -37,14 +37,12 @@ class TVBJansenRitDynamicsLog(BaseModel):
     """Pydantic model for internal TVB Jansen-Rit dynamics logging."""
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
-    x: FloatArray
 
 
 class TVBJansenRitOutputLog(BaseModel):
     """Pydantic model for TVB Jansen-Rit EEG output logging."""
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
-    y: FloatArray
 
 
 # --- Output Class -----------------------------------------------------------
@@ -93,7 +91,7 @@ class TVBJansenRitOutput(Output[TVBJansenRitOutputLog]):
         x_grid = x_vec.reshape((6, n_nodes))
         activity = x_grid[1, :] - x_grid[2, :]  # y1 - y2 pyramidal potential
         y_vec = self._leadfield @ activity.reshape((-1, 1))
-        return cast("FloatArray", self.from_col_vec(y_vec)), TVBJansenRitOutputLog(y=y_vec.copy())
+        return cast("FloatArray", self.from_col_vec(y_vec)), TVBJansenRitOutputLog()
 
 
 # --- Dynamics Class ---------------------------------------------------------
@@ -106,20 +104,21 @@ class TVBJansenRitDynamics(Dynamics[TVBJansenRitDynamicsLog]):
     :meth:`dynamics` advances the TVB simulator by one ``dt``.
     """
 
-    def __init__(
+    def __init__(  # noqa: PLR0913
         self,
         dt: float = 0.1,
         nsig: float = 0.0,
         connectome: str = "connectivity_76.zip",
         seed: int | None = None,
         b: ArrayLike | None = None,
+        model_params: dict[str, Any] | None = None,
     ) -> None:
         super().__init__(dt, integrator=None)
         conn = _Connectivity.from_file(connectome)
         conn.configure()
         self._n_nodes = int(conn.number_of_regions)
 
-        model = _JansenRit()
+        model = _JansenRit(**_as_tvb_params(model_params))
         model.variables_of_interest = ("y1", "y2")
 
         noise = _tvb_noise.Additive(nsig=np.array([nsig]))
@@ -161,6 +160,7 @@ class TVBJansenRitDynamics(Dynamics[TVBJansenRitDynamicsLog]):
             connectome=config.get("connectome", "connectivity_76.zip"),
             seed=config.get("seed"),
             b=config.get("b"),
+            model_params=config.get("model_params"),
         )
 
     def _snapshot(self) -> _TVBSnapshot:
@@ -196,7 +196,7 @@ class TVBJansenRitDynamics(Dynamics[TVBJansenRitDynamicsLog]):
         return state_new.reshape((-1, 1))
 
     def _make_log(self) -> TVBJansenRitDynamicsLog:
-        return TVBJansenRitDynamicsLog(x=self.x.copy())
+        return TVBJansenRitDynamicsLog()
 
     def reset(self) -> None:
         """Reset the TVB simulator state and the injected mean input."""

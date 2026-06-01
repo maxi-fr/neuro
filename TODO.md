@@ -9,13 +9,6 @@
 ## Implementations
 
 <details>
-<summary><s>upgrade neurolib</s></summary>
-
-* get neurolib from github instead of pypy, because new version has leadfield matrix (eeg stuff)
-
-</details>
-
-<details>
 <summary>Setup brain model</summary>
 
 * Finding good parameters

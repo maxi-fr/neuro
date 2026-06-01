@@ -23,7 +23,9 @@ import pytest
 
 from neuro.jansen_rit_plant import TVBJansenRitDynamics, TVBJansenRitOutput
 from neuro.plant import (
+    FHNDynamicsLog,
     FHNOutput,
+    FHNOutputLog,
     NativeFHNDynamics,
     TVBFHNDynamics,
     TVBFHNOutput,
@@ -129,12 +131,46 @@ def test_native_control_changes_trajectory() -> None:
     assert not np.allclose(s_zero, s_ctrl)
 
 
+def test_native_dynamics_logs_internal_noise() -> None:
+    """NativeFHNDynamics logs its internal OU noise variables."""
+    dynamics = NativeFHNDynamics(dt=_DT, sigma_ou=0.05, seed=0)
+    _, log = dynamics.evaluate(0.0, np.zeros((1, 1)))
+    assert isinstance(log, FHNDynamicsLog)
+    assert log.v_ou is not None
+    assert log.w_ou is not None
+    assert log.v_ou.shape == (dynamics.n_nodes,)
+    assert log.w_ou.shape == (dynamics.n_nodes,)
+    np.testing.assert_array_equal(log.v_ou, dynamics._v_ou)  # noqa: SLF001
+    np.testing.assert_array_equal(log.w_ou, dynamics._w_ou)  # noqa: SLF001
+
+
 def test_native_from_config_roundtrip() -> None:
     """from_config reproduces a directly-constructed instance's trajectory."""
     direct, output = _make_native(sigma_ou=0.05, seed=3)
     cfg = NativeFHNDynamics.from_config({"dt": _DT, "sigma_ou": 0.05, "seed": 3})
     s_direct, _ = _run(direct, output, 100.0)
     cfg_out = FHNOutput(dt=_DT, n_sensors=_N_SENSORS, leadfield_seed=0, n_nodes=cfg.n_nodes)
+    s_cfg, _ = _run(cfg, cfg_out, 100.0)
+    np.testing.assert_array_equal(s_direct, s_cfg)
+
+
+def test_native_model_param_changes_trajectory() -> None:
+    """Overriding a model constant (alpha) changes the noiseless trajectory."""
+    d_default, o_default = _make_native(sigma_ou=0.0)
+    d_alt = NativeFHNDynamics(dt=_DT, sigma_ou=0.0, seed=_SEED, alpha=2.0)
+    o_alt = FHNOutput(dt=_DT, n_sensors=_N_SENSORS, leadfield_seed=0, n_nodes=d_alt.n_nodes)
+    s_default, _ = _run(d_default, o_default, 50.0)
+    s_alt, _ = _run(d_alt, o_alt, 50.0)
+    assert not np.allclose(s_default, s_alt)
+
+
+def test_native_from_config_model_param_roundtrip() -> None:
+    """from_config threads model-constant overrides through to the trajectory."""
+    direct = NativeFHNDynamics(dt=_DT, seed=3, alpha=2.0, k_gl=0.4)
+    output = FHNOutput(dt=_DT, n_sensors=_N_SENSORS, leadfield_seed=0, n_nodes=direct.n_nodes)
+    cfg = NativeFHNDynamics.from_config({"dt": _DT, "seed": 3, "alpha": 2.0, "k_gl": 0.4})
+    cfg_out = FHNOutput(dt=_DT, n_sensors=_N_SENSORS, leadfield_seed=0, n_nodes=cfg.n_nodes)
+    s_direct, _ = _run(direct, output, 100.0)
     s_cfg, _ = _run(cfg, cfg_out, 100.0)
     np.testing.assert_array_equal(s_direct, s_cfg)
 
@@ -160,7 +196,7 @@ def test_fhn_output_update_projects_v() -> None:
     y, log = output.update(0.0, x, 0.0)
     expected = output.leadfield @ v
     np.testing.assert_allclose(cast("FloatArray", y), expected.flatten())
-    np.testing.assert_allclose(log.y, expected)
+    assert isinstance(log, FHNOutputLog)
 
 
 def test_fhn_output_leadfield_path_loads(tmp_path: Path) -> None:
@@ -367,6 +403,28 @@ def test_jr_from_config_roundtrip() -> None:
     """from_config reproduces a directly-constructed JR trajectory."""
     direct, output = _make_jr(nsig=0.0, seed=5)
     cfg = TVBJansenRitDynamics.from_config({"dt": _DT, "nsig": 0.0, "seed": 5})
+    cfg_out = TVBJansenRitOutput(dt=_DT, n_nodes=cfg.n_nodes)
+    s_direct, _ = _run(direct, output, 100.0)
+    s_cfg, _ = _run(cfg, cfg_out, 100.0)
+    np.testing.assert_array_equal(s_direct, s_cfg)
+
+
+def test_jr_model_params_changes_trajectory() -> None:
+    """Overriding a TVB JansenRit parameter (A) changes the trajectory."""
+    d_default, o_default = _make_jr(nsig=0.0, seed=0)
+    d_alt = TVBJansenRitDynamics(dt=_DT, nsig=0.0, seed=0, model_params={"A": [4.0]})
+    o_alt = TVBJansenRitOutput(dt=_DT, n_nodes=d_alt.n_nodes)
+    s_default, _ = _run(d_default, o_default, 50.0)
+    s_alt, _ = _run(d_alt, o_alt, 50.0)
+    assert np.isfinite(s_alt).all()
+    assert not np.allclose(s_default, s_alt)
+
+
+def test_jr_from_config_model_params_roundtrip() -> None:
+    """from_config threads model_params through to the JR trajectory."""
+    direct = TVBJansenRitDynamics(dt=_DT, seed=5, model_params={"A": [4.0]})
+    output = TVBJansenRitOutput(dt=_DT, n_nodes=direct.n_nodes)
+    cfg = TVBJansenRitDynamics.from_config({"dt": _DT, "seed": 5, "model_params": {"A": [4.0]}})
     cfg_out = TVBJansenRitOutput(dt=_DT, n_nodes=cfg.n_nodes)
     s_direct, _ = _run(direct, output, 100.0)
     s_cfg, _ = _run(cfg, cfg_out, 100.0)

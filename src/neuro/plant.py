@@ -42,6 +42,17 @@ _TVBSnapshot = tuple[
 ]
 
 
+def _as_tvb_params(model_params: dict[str, Any] | None) -> dict[str, FloatArray]:
+    """Coerce a config-supplied parameter mapping into TVB-ready numpy arrays.
+
+    TVB model attributes are ``NArray`` traits, so each override must be a numpy
+    array (a scalar or list from YAML/JSON is wrapped accordingly).
+    """
+    if not model_params:
+        return {}
+    return {key: np.array(value, dtype=np.float64) for key, value in model_params.items()}
+
+
 def _make_leadfield(n_sensors: int, n_nodes: int, seed: int) -> FloatArray:
     """Create a row-normalised random lead-field matrix."""
     rng = np.random.default_rng(seed)
@@ -89,14 +100,14 @@ class FHNDynamicsLog(BaseModel):
     """Pydantic model for internal FHN dynamics state logging."""
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
-    x: FloatArray
+    v_ou: FloatArray | None = None
+    w_ou: FloatArray | None = None
 
 
 class FHNOutputLog(BaseModel):
     """Pydantic model for FHN EEG output logging."""
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
-    y: FloatArray
 
 
 # --- Output Classes ---------------------------------------------------------
@@ -150,7 +161,7 @@ class FHNOutput(Output[FHNOutputLog]):
         n_nodes = x_vec.shape[0] // 2
         activity = x_vec[:n_nodes]
         y_vec = self._leadfield @ activity
-        return cast("FloatArray", self.from_col_vec(y_vec)), FHNOutputLog(y=y_vec.copy())
+        return cast("FloatArray", self.from_col_vec(y_vec)), FHNOutputLog()
 
 
 class TVBFHNOutput(Output[FHNOutputLog]):
@@ -194,7 +205,7 @@ class TVBFHNOutput(Output[FHNOutputLog]):
         n_nodes = x_vec.shape[0] // 2
         activity = x_vec[:n_nodes]
         y_vec = self._leadfield @ activity
-        return cast("FloatArray", self.from_col_vec(y_vec)), FHNOutputLog(y=y_vec.copy())
+        return cast("FloatArray", self.from_col_vec(y_vec)), FHNOutputLog()
 
 
 # --- Dynamics Classes -------------------------------------------------------
@@ -222,13 +233,26 @@ class NativeFHNDynamics(Dynamics[FHNDynamicsLog]):
     _X_EXT: float = 1.0
     _Y_EXT: float = 0.0
 
-    def __init__(
+    def __init__(  # noqa: PLR0913
         self,
         dt: float = 0.1,
         sigma_ou: float = 0.05,
         connectome: str = "hcp",
         seed: int | None = None,
         b: ArrayLike | None = None,
+        alpha: float = _ALPHA,
+        beta: float = _BETA,
+        gamma: float = _GAMMA,
+        delta: float = _DELTA,
+        epsilon: float = _EPSILON,
+        tau: float = _TAU,
+        k_gl: float = _K_GL,
+        tau_ou: float = _TAU_OU,
+        signal_v: float = _SIGNAL_V,
+        x_ou_mean: float = _X_OU_MEAN,
+        y_ou_mean: float = _Y_OU_MEAN,
+        x_ext: float = _X_EXT,
+        y_ext: float = _Y_EXT,
     ) -> None:
         super().__init__(dt, integrator=None)
         dataset = Dataset(connectome)
@@ -237,11 +261,26 @@ class NativeFHNDynamics(Dynamics[FHNDynamicsLog]):
         self._seed = seed
         self._n_nodes = int(dataset.Cmat.shape[0])
 
+        # Model parameters (overridable; class constants are the defaults).
+        self._alpha = alpha
+        self._beta = beta
+        self._gamma = gamma
+        self._delta = delta
+        self._epsilon = epsilon
+        self._tau = tau
+        self._k_gl = k_gl
+        self._tau_ou = tau_ou
+        self._signal_v = signal_v
+        self._x_ou_mean = x_ou_mean
+        self._y_ou_mean = y_ou_mean
+        self._x_ext = x_ext
+        self._y_ext = y_ext
+
         cmat = dataset.Cmat.copy().astype(np.float64)
         np.fill_diagonal(cmat, 0.0)
         self._cmat = cmat
 
-        dmat_ms = (dataset.Dmat / self._SIGNAL_V).astype(np.float64)
+        dmat_ms = (dataset.Dmat / self._signal_v).astype(np.float64)
         dmat_ndt = np.around(dmat_ms / dt).astype(int)
         np.fill_diagonal(dmat_ndt, 0)
         self._dmat_ndt = dmat_ndt
@@ -273,6 +312,19 @@ class NativeFHNDynamics(Dynamics[FHNDynamicsLog]):
             connectome=config.get("connectome", "hcp"),
             seed=config.get("seed"),
             b=config.get("b"),
+            alpha=config.get("alpha", cls._ALPHA),
+            beta=config.get("beta", cls._BETA),
+            gamma=config.get("gamma", cls._GAMMA),
+            delta=config.get("delta", cls._DELTA),
+            epsilon=config.get("epsilon", cls._EPSILON),
+            tau=config.get("tau", cls._TAU),
+            k_gl=config.get("k_gl", cls._K_GL),
+            tau_ou=config.get("tau_ou", cls._TAU_OU),
+            signal_v=config.get("signal_v", cls._SIGNAL_V),
+            x_ou_mean=config.get("x_ou_mean", cls._X_OU_MEAN),
+            y_ou_mean=config.get("y_ou_mean", cls._Y_OU_MEAN),
+            x_ext=config.get("x_ext", cls._X_EXT),
+            y_ext=config.get("y_ext", cls._Y_EXT),
         )
 
     def dynamics(self, t: float, x: np.ndarray, u: np.ndarray) -> np.ndarray:  # noqa: ARG002
@@ -287,7 +339,7 @@ class NativeFHNDynamics(Dynamics[FHNDynamicsLog]):
         # Vectorised diffusive coupling
         delayed_indices = self._startind - self._dmat_ndt - 1
         delayed_v = self._history_v[self._src[np.newaxis, :], delayed_indices]
-        vs_input = self._K_GL * (self._cmat * (delayed_v - v_prev)).sum(axis=1)
+        vs_input = self._k_gl * (self._cmat * (delayed_v - v_prev)).sum(axis=1)
 
         # Control input B @ u
         u_vec = self.to_col_vec(u)
@@ -297,17 +349,17 @@ class NativeFHNDynamics(Dynamics[FHNDynamicsLog]):
         noise_w_val = self._rng.standard_normal(self._n_nodes)
 
         v_rhs = (
-            -self._ALPHA * v_prev.flatten() ** 3
-            + self._BETA * v_prev.flatten() ** 2
-            + self._GAMMA * v_prev.flatten()
+            -self._alpha * v_prev.flatten() ** 3
+            + self._beta * v_prev.flatten() ** 2
+            + self._gamma * v_prev.flatten()
             - w_prev.flatten()
             + vs_input
             + self._v_ou
-            + self._X_EXT
+            + self._x_ext
             + vs_input_ext
         )
         w_rhs = (
-            (v_prev.flatten() - self._DELTA - self._EPSILON * w_prev.flatten()) / self._TAU + self._w_ou + self._Y_EXT
+            (v_prev.flatten() - self._delta - self._epsilon * w_prev.flatten()) / self._tau + self._w_ou + self._y_ext
         )
 
         v_next = v_prev.flatten() + self._dt * v_rhs
@@ -315,12 +367,12 @@ class NativeFHNDynamics(Dynamics[FHNDynamicsLog]):
 
         self._v_ou = (
             self._v_ou
-            + (self._X_OU_MEAN - self._v_ou) * self._dt / self._TAU_OU
+            + (self._x_ou_mean - self._v_ou) * self._dt / self._tau_ou
             + self._sigma_ou * np.sqrt(self._dt) * noise_v_val
         )
         self._w_ou = (
             self._w_ou
-            + (self._Y_OU_MEAN - self._w_ou) * self._dt / self._TAU_OU
+            + (self._y_ou_mean - self._w_ou) * self._dt / self._tau_ou
             + self._sigma_ou * np.sqrt(self._dt) * noise_w_val
         )
 
@@ -330,7 +382,7 @@ class NativeFHNDynamics(Dynamics[FHNDynamicsLog]):
         return np.vstack([v_next.reshape(-1, 1), w_next.reshape(-1, 1)])
 
     def _make_log(self) -> FHNDynamicsLog:
-        return FHNDynamicsLog(x=self.x.copy())
+        return FHNDynamicsLog(v_ou=self._v_ou.copy(), w_ou=self._w_ou.copy())
 
     def reset(self) -> None:
         """Reset the dynamics simulator to its seeded initial state."""
@@ -356,27 +408,29 @@ class TVBFHNDynamics(Dynamics[FHNDynamicsLog]):
     :meth:`dynamics` advances the TVB simulator by one ``dt``.
     """
 
-    def __init__(
+    def __init__(  # noqa: PLR0913
         self,
         dt: float = 0.1,
         nsig: float = 0.0,
         connectome: str = "connectivity_76.zip",
         seed: int | None = None,
         b: ArrayLike | None = None,
+        model_params: dict[str, Any] | None = None,
+        coupling: str = "Linear",
     ) -> None:
         super().__init__(dt, integrator=None)
         conn = _Connectivity.from_file(connectome)
         conn.configure()
         self._n_nodes = int(conn.number_of_regions)
 
-        model = _Generic2dOscillator()
+        model = _Generic2dOscillator(**_as_tvb_params(model_params))
         noise = _tvb_noise.Additive(nsig=np.array([nsig]))
         integrator = _tvb_integrators.HeunStochastic(dt=dt, noise=noise)
 
         self._sim = _tvb_simulator.Simulator(
             connectivity=conn,
             model=model,
-            coupling=_tvb_coupling.Linear(),
+            coupling=getattr(_tvb_coupling, coupling)(),
             integrator=integrator,
             monitors=(_tvb_monitors.Raw(),),
         )
@@ -408,6 +462,8 @@ class TVBFHNDynamics(Dynamics[FHNDynamicsLog]):
             connectome=config.get("connectome", "connectivity_76.zip"),
             seed=config.get("seed"),
             b=config.get("b"),
+            model_params=config.get("model_params"),
+            coupling=config.get("coupling", "Linear"),
         )
 
     def _snapshot(self) -> _TVBSnapshot:
@@ -444,7 +500,7 @@ class TVBFHNDynamics(Dynamics[FHNDynamicsLog]):
         return np.vstack([v_new, w_new])
 
     def _make_log(self) -> FHNDynamicsLog:
-        return FHNDynamicsLog(x=self.x.copy())
+        return FHNDynamicsLog()
 
     def reset(self) -> None:
         """Reset the TVB simulator state and the injected external current."""
