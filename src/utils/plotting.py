@@ -8,7 +8,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import numpy.typing as npt
 
-from neuro.processing import compute_fft, compute_psd
+from .processing import compute_fft, compute_psd
 
 if TYPE_CHECKING:
     from matplotlib.axes import Axes

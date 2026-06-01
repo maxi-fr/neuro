@@ -90,6 +90,7 @@ convention = "numpy"
     "PLC0415", # Imports inside functions (standard in Marimo cells)
     "RET501",  # Redundant return statements (Marimo requires them, Ruff tries to remove them)
     "PLR1711", # Useless return statement at end of function (Marimo requires them, Ruff tries to remove them)
+    "F821",    # Undefined name (Marimo cells use reactive arguments)
 ]
 "tests/*" = [
     "S101",    # assert
@@ -135,3 +136,7 @@ index-out-of-bounds = "error"        # Static bounds checking on indexable colle
 division-by-zero = "error"           # Catching literal division by zero statically
 not-iterable = "error"               # Trying to use a non-iterable object in a loop
 not-subscriptable = "error"          # Trying to index an object that doesn't support it
+
+[[tool.ty.overrides]]
+include = ["notebooks/**"]
+rules = { unresolved-reference = "ignore" }

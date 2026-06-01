@@ -14,9 +14,8 @@ def _():
         NativeFHNDynamics,
         TVBFHNDynamics,
         TVBFHNOutput,
-        plot_fourier,
-        plot_signals,
     )
+    from utils.plotting import plot_fourier, plot_signals
 
     return (
         FHNOutput,

@@ -32,7 +32,7 @@ import numpy.typing as npt
 from simulate.config import load_config
 from simulate.simulation import Simulation
 
-from neuro.plotting import plot_fourier, plot_signals
+from utils.plotting import plot_fourier, plot_signals
 
 FloatArray = npt.NDArray[np.float64]
 
