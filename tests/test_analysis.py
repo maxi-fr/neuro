@@ -7,8 +7,8 @@ import pytest
 from matplotlib.axes import Axes
 from matplotlib.figure import Figure
 
-from neuro.plotting import plot_dashboard, plot_fourier, plot_signals
-from neuro.processing import compute_fft, compute_psd
+from utils.plotting import plot_dashboard, plot_fourier, plot_signals
+from utils.processing import compute_fft, compute_psd
 
 
 def test_compute_fft_sine() -> None:
