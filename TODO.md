@@ -21,6 +21,9 @@
 * Finding good parameters
 * Running uncontrolled simulations
 
+* maybe refactor tvb leadfield. Doesnst have to be this complicated surface projection stuff
+* Figure out how inputs are modeled
+
 </details>
 <details>
 <summary>Defining control objectives</summary>

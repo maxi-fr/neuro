@@ -1293,6 +1293,7 @@ source = { editable = "." }
 dependencies = [
     { name = "matplotlib" },
     { name = "neurolib" },
+    { name = "simulate" },
     { name = "tvb-data" },
     { name = "tvb-library" },
 ]
@@ -1321,6 +1322,7 @@ requires-dist = [
     { name = "mne", marker = "extra == 'leadfield'", specifier = ">=1.6" },
     { name = "neurolib", git = "https://github.com/neurolib-dev/neurolib.git?rev=v0.7.0" },
     { name = "nibabel", marker = "extra == 'leadfield'", specifier = ">=5.0" },
+    { name = "simulate", git = "https://github.com/maxi-fr/simulate.git" },
     { name = "tvb-data", specifier = ">=3.0.0" },
     { name = "tvb-library", specifier = ">=2.10.0" },
 ]
@@ -1549,6 +1551,18 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/31/89/8fc1c268969fac43688d65fd92e67df24bd128d53cb4d2eee534cd307399/pandas-3.0.3-cp314-cp314t-musllinux_1_2_x86_64.whl", hash = "sha256:9c39be2d709d01fa972a0cabc522389fceca4f3969332ba25a7d6c5802cf976a", size = 11828897, upload-time = "2026-05-11T18:54:17.146Z" },
     { url = "https://files.pythonhosted.org/packages/56/3b/e7d20dea247a3e6dc0bd8a6953854afbedc03951def4e7371e05e7263e25/pandas-3.0.3-cp314-cp314t-win_amd64.whl", hash = "sha256:4db8c527972a821cf5286b40ccc57642a39bc62e62022b42f99f8a67fca8c3a1", size = 10900855, upload-time = "2026-05-11T18:54:19.72Z" },
     { url = "https://files.pythonhosted.org/packages/0f/54/68a0978d1ef8502b8492099beaa6e7a0c1b32e3b5d4f677f5810cb08711c/pandas-3.0.3-cp314-cp314t-win_arm64.whl", hash = "sha256:b2c95f8bfc1ee412bf482605d7bfd30c12d1d26bd59fdd91efeef1d4718decb1", size = 9466464, upload-time = "2026-05-11T18:54:22.754Z" },
+]
+
+[[package]]
+name = "pandas-stubs"
+version = "3.0.3.260530"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "numpy" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/3d/aa/c41a8a0ff86fd85dbb3ec0c1f3fa488ca64a8b5f82654ae1b07d84acefe5/pandas_stubs-3.0.3.260530.tar.gz", hash = "sha256:d1efe47b2e5a312c047d7feabec5cb7a55365747983420077e9fcbe9ab74f714", size = 113183, upload-time = "2026-05-30T17:47:40.34Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/0b/e0/99ec5b02203c4e9ce878bc63d8caa06ac1f891e4d63bded9a5ced70fcb4f/pandas_stubs-3.0.3.260530-py3-none-any.whl", hash = "sha256:a6277eb1c8cebf48d9b2413fcd2e9a6b4ff479c934a223c29eacbc3058c4cb55", size = 173780, upload-time = "2026-05-30T17:47:39.13Z" },
 ]
 
 [[package]]
@@ -2124,6 +2138,21 @@ wheels = [
 ]
 
 [[package]]
+name = "simulate"
+version = "0.1.0"
+source = { git = "https://github.com/maxi-fr/simulate.git#7214866ca776d8859421084056b54d07b015714e" }
+dependencies = [
+    { name = "ipython" },
+    { name = "matplotlib" },
+    { name = "numpy" },
+    { name = "pandas" },
+    { name = "pandas-stubs" },
+    { name = "pydantic" },
+    { name = "pyyaml" },
+    { name = "types-pyyaml" },
+]
+
+[[package]]
 name = "six"
 version = "1.17.0"
 source = { registry = "https://pypi.org/simple" }
@@ -2337,6 +2366,15 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/1a/e8/02f4dd4a12bcdbda0006f9c7ff3b99a4be06bd0d257d3bd4a5b66de074e6/ty-0.0.39-py3-none-win32.whl", hash = "sha256:891c3262314dbc80bf3e872634d23dd216306945daa9a9fcc206ce5ed21ac4c9", size = 10615377, upload-time = "2026-05-22T21:09:43.167Z" },
     { url = "https://files.pythonhosted.org/packages/b5/5a/aaeb22faa8d4dae90a287d4c3636c671edcff3b99be5f4fc8b79ad71eef6/ty-0.0.39-py3-none-win_amd64.whl", hash = "sha256:ba7f2d54452535419e90f6f03ff39282999e87b43c21c00559f6d7ad711a36d5", size = 11710711, upload-time = "2026-05-22T21:09:53.179Z" },
     { url = "https://files.pythonhosted.org/packages/a3/17/ae7339651bfcaa5f54698c8c70eaf5031baa400ecb67baec31d03a56cbd4/ty-0.0.39-py3-none-win_arm64.whl", hash = "sha256:eb4cf0fefbbfedf9a352597bb2431ebdcb7eb3a595c0f825f228e897a0ec285d", size = 11081409, upload-time = "2026-05-22T21:09:03.741Z" },
+]
+
+[[package]]
+name = "types-pyyaml"
+version = "6.0.12.20260518"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/b8/83/4a1afc3fbfcf5b8d46fc390cd95ed6b0dc9010a265f4e9f46314efffa37a/types_pyyaml-6.0.12.20260518.tar.gz", hash = "sha256:d917f83fb38462550338c1297faedd860b3ec83912b96b1e3d73255f7473e466", size = 17850, upload-time = "2026-05-18T06:01:58.675Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/06/a2/c01db32be2ae7d6a1689972f3c492b149ee4e164b12fdfd9f64b50888215/types_pyyaml-6.0.12.20260518-py3-none-any.whl", hash = "sha256:d2150f75a231c9fe9c7463bd29487d93e60bac90400287351384bc2284eba7cd", size = 20312, upload-time = "2026-05-18T06:01:57.368Z" },
 ]
 
 [[package]]

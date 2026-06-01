@@ -10,7 +10,7 @@ so it is run once here and the result is saved as ``.npy`` for the plants to
 The neurolib HCP datasets are parcellated into exactly these **80 cortical AAL2
 regions** (LRLR ordering), so the lead-field shares the connectome's
 parcellation and the saved matrix is directly usable as
-``FHNPlant(leadfield_path=...)``.
+``FHNOutput(leadfield_path=...)``.
 
 ``compute_downsampled_leadfield`` returns columns ordered by ascending raw AAL2
 code and only for regions that received >=1 dipole, which is not guaranteed to

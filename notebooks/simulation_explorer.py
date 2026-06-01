@@ -7,20 +7,24 @@ app = marimo.App(width="medium", app_title="Whole-Brain Simulation Explorer")
 @app.cell
 def _():
     import marimo as mo
+    import numpy as np
 
     from neuro import (
-        FHNPlant,
-        NativeFHNPlant,
-        TVBFHNPlant,
+        FHNOutput,
+        NativeFHNDynamics,
+        TVBFHNDynamics,
+        TVBFHNOutput,
         plot_fourier,
         plot_signals,
     )
 
     return (
-        FHNPlant,
-        NativeFHNPlant,
-        TVBFHNPlant,
+        FHNOutput,
+        NativeFHNDynamics,
+        TVBFHNDynamics,
+        TVBFHNOutput,
         mo,
+        np,
         plot_fourier,
         plot_signals,
     )
@@ -42,8 +46,8 @@ def _(mo):
 def _(mo):
     # 1. Choose the plant model
     plant_select = mo.ui.dropdown(
-        options=["NativeFHNPlant", "FHNPlant", "TVBFHNPlant"],
-        value="NativeFHNPlant",
+        options=["NativeFHNDynamics", "TVBFHNDynamics"],
+        value="NativeFHNDynamics",
         label="Plant Model",
     )
 
@@ -154,11 +158,13 @@ def _(mo):
 
 @app.cell
 def _(
-    FHNPlant,
-    NativeFHNPlant,
-    TVBFHNPlant,
+    FHNOutput,
+    NativeFHNDynamics,
+    TVBFHNDynamics,
+    TVBFHNOutput,
     duration_slider,
     mo,
+    np,
     nsig_slider,
     plant_select,
     seed_input,
@@ -168,20 +174,35 @@ def _(
     seed = int(seed_input.value)
     duration = float(duration_slider.value)
 
-    # Each plant takes its own noise parameter (see controls cell).
-    if plant_name == "FHNPlant":
+    # Each plant takes its own noise parameter (see controls cell), and is paired
+    # with the matching EEG Output component.
+    if plant_name == "NativeFHNDynamics":
         noise_param = f"sigma_ou = {sigma_ou_slider.value}"
-        plant = FHNPlant(sigma_ou=float(sigma_ou_slider.value), seed=seed)
-    elif plant_name == "NativeFHNPlant":
-        noise_param = f"sigma_ou = {sigma_ou_slider.value}"
-        plant = NativeFHNPlant(sigma_ou=float(sigma_ou_slider.value), seed=seed)
+        dynamics = NativeFHNDynamics(sigma_ou=float(sigma_ou_slider.value), seed=seed)
+        output = FHNOutput(dt=dynamics.dt, n_nodes=dynamics.n_nodes)
     else:
         noise_param = f"nsig = {nsig_slider.value}"
-        plant = TVBFHNPlant(nsig=float(nsig_slider.value), seed=seed)
+        dynamics = TVBFHNDynamics(nsig=float(nsig_slider.value), seed=seed)
+        output = TVBFHNOutput(dt=dynamics.dt, n_nodes=dynamics.n_nodes)
 
-    # Execute simulation step
-    activity, eeg = plant.step(duration)
-    dt_ms = plant.dt
+    # Advance the dynamics one dt at a time, projecting each state to EEG.
+    dt_ms = dynamics.dt
+    n_steps = round(duration / dt_ms)
+    n_nodes = dynamics.n_nodes
+    u = np.zeros((dynamics.b.shape[1], 1))
+
+    activity_cols = []
+    eeg_cols = []
+    t = 0.0
+    for _ in range(n_steps):
+        x_raw, _ = dynamics.evaluate(t, u)
+        y_raw, _ = output.evaluate(t, x_raw, u)
+        activity_cols.append(np.atleast_1d(x_raw)[:n_nodes].reshape(-1, 1))
+        eeg_cols.append(np.atleast_1d(y_raw).reshape(-1, 1))
+        t += dt_ms
+
+    activity = np.hstack(activity_cols)
+    eeg = np.hstack(eeg_cols)
 
     status_message = mo.md(
         f"""

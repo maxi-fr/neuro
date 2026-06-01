@@ -1,9 +1,9 @@
-"""Benchmark the three FHN plant models: FHNPlant, NativeFHNPlant, TVBFHNPlant.
+"""Benchmark the FHN plant dynamics: NativeFHNDynamics, TVBFHNDynamics.
 
 Measures construction time, per-step wall-clock time, simulation throughput
 (simulated ms / real ms), and peak Python-heap allocation for each plant.
 
-Note that TVBFHNPlant uses different equations, a different integrator
+Note that TVBFHNDynamics uses different equations, a different integrator
 (HeunStochastic vs Euler), and a different connectome (76-node AAL vs 80-node
 HCP), so its results are not numerically comparable — only the performance
 profile is meaningful to compare directly.
@@ -25,12 +25,12 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
-from neuro.plant import FHNPlant, NativeFHNPlant, TVBFHNPlant
+from neuro.plant import NativeFHNDynamics, TVBFHNDynamics
 
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-_AnyPlant = FHNPlant | NativeFHNPlant | TVBFHNPlant
+_AnyPlant = NativeFHNDynamics | TVBFHNDynamics
 
 
 @dataclass
@@ -50,11 +50,19 @@ def _benchmark(name: str, factory: Callable[[], _AnyPlant], n_steps: int, step_m
     construct_s = time.perf_counter() - t0
     n_nodes: int = plant.n_nodes
 
+    # Each outer step advances the dynamics by ``step_ms`` worth of dt-sized
+    # evaluate() calls, so "simulated ms" stays step_ms * n_steps.
+    inner = max(1, round(step_ms / plant.dt))
+    u = np.zeros((plant.b.shape[1], 1))
+
     step_times = np.empty(n_steps, dtype=np.float64)
     tracemalloc.start()
+    t = 0.0
     for i in range(n_steps):
         t1 = time.perf_counter()
-        plant.step(step_ms)
+        for _ in range(inner):
+            plant.evaluate(t, u)
+            t += plant.dt
         step_times[i] = (time.perf_counter() - t1) * 1e3  # convert to ms
 
     _, peak = tracemalloc.get_traced_memory()
@@ -106,7 +114,7 @@ def parse_args() -> argparse.Namespace:
         "--step-ms",
         type=float,
         default=10.0,
-        help="Simulation chunk per step() call in milliseconds (default: 10).",
+        help="Simulated milliseconds per benchmarked step (default: 10).",
     )
     parser.add_argument(
         "--seed",
@@ -125,9 +133,8 @@ def main() -> None:
     seed: int = args.seed
 
     plants: list[tuple[str, Callable[[], _AnyPlant]]] = [
-        ("FHNPlant", lambda: FHNPlant(seed=seed)),
-        ("NativeFHNPlant", lambda: NativeFHNPlant(seed=seed)),
-        ("TVBFHNPlant", lambda: TVBFHNPlant(seed=seed)),
+        ("NativeFHNDynamics", lambda: NativeFHNDynamics(seed=seed)),
+        ("TVBFHNDynamics", lambda: TVBFHNDynamics(seed=seed)),
     ]
 
     results: list[_Result] = []

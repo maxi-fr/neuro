@@ -1,7 +1,8 @@
 """Run an uncontrolled baseline simulation of the FHN whole-brain plant.
 
-Instantiates :class:`FHNPlant`, advances it step-by-step for ~1 s of simulated
-time using the closed-loop-style API, and reports summary statistics on the
+Instantiates :class:`NativeFHNDynamics` + :class:`FHNOutput`, advances them
+step-by-step for ~1 s of simulated time using the ``evaluate`` API, and reports
+summary statistics on the
 node activity and EEG projection. Also renders diagnostic EEG plots so the
 simulation can be inspected visually. Useful as a smoke test for the plant and
 as a worked example of the step-by-step loop.
@@ -17,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
+from typing import cast
 
 import matplotlib as mpl
 
@@ -26,7 +28,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import numpy.typing as npt
 
-from neuro.plant import FHNPlant
+from neuro.plant import FHNOutput, NativeFHNDynamics
 
 FloatArray = npt.NDArray[np.float64]
 
@@ -46,8 +48,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--step-ms",
         type=float,
-        default=10.0,
-        help="Simulation chunk per step() call in milliseconds (default: 10).",
+        default=0.1,
+        help="Integration step (dt) in milliseconds (default: 0.1).",
     )
     parser.add_argument(
         "--sigma-ou",
@@ -146,22 +148,34 @@ def main() -> None:
     args = parse_args()
     n_steps = round(args.duration_ms / args.step_ms)
 
-    plant = FHNPlant(sigma_ou=args.sigma_ou)
+    dynamics = NativeFHNDynamics(dt=args.step_ms, sigma_ou=args.sigma_ou)
+    output = FHNOutput(dt=args.step_ms, n_nodes=dynamics.n_nodes)
     print(
-        f"FHNPlant: n_nodes={plant.n_nodes}  dt={plant.dt} ms  "
-        f"sigma_ou={plant.sigma_ou}  leadfield={plant.leadfield.shape}",
+        f"NativeFHNDynamics: n_nodes={dynamics.n_nodes}  dt={dynamics.dt} ms  "
+        f"sigma_ou={dynamics.sigma_ou}  leadfield={output.leadfield.shape}",
     )
     print(f"Running {n_steps} steps of {args.step_ms} ms ({args.duration_ms} ms total)...")
 
-    activity_chunks: list[FloatArray] = []
-    eeg_chunks: list[FloatArray] = []
+    activity_history: list[FloatArray] = []
+    eeg_history: list[FloatArray] = []
+    t = 0.0
+    u = np.zeros((1, 1))
     for _ in range(n_steps):
-        activity, eeg = plant.step(args.step_ms)
-        activity_chunks.append(activity)
-        eeg_chunks.append(eeg)
+        x_raw, _ = dynamics.evaluate(t, u)
+        eeg_raw, _ = output.evaluate(t, x_raw, u)
 
-    activity_full: FloatArray = np.concatenate(activity_chunks, axis=1)
-    eeg_full: FloatArray = np.concatenate(eeg_chunks, axis=1)
+        x = cast("FloatArray", x_raw)
+        eeg = cast("FloatArray", eeg_raw)
+
+        n_nodes = dynamics.n_nodes
+        activity = x[:n_nodes]
+
+        activity_history.append(activity)
+        eeg_history.append(eeg)
+        t += args.step_ms
+
+    activity_full: FloatArray = np.column_stack(activity_history)
+    eeg_full: FloatArray = np.column_stack(eeg_history)
 
     print("Aggregated outputs:")
     summarise("activity", activity_full)
@@ -169,11 +183,11 @@ def main() -> None:
 
     if args.save is not None:
         args.save.parent.mkdir(parents=True, exist_ok=True)
-        np.savez(args.save, activity=activity_full, eeg=eeg_full, leadfield=plant.leadfield)
+        np.savez(args.save, activity=activity_full, eeg=eeg_full, leadfield=output.leadfield)
         print(f"Saved outputs to {args.save}")
 
     if not args.no_plot:
-        plot_eeg(eeg_full, plant.dt, args.plot_path)
+        plot_eeg(eeg_full, dynamics.dt, args.plot_path)
         print(f"Saved EEG plot to {args.plot_path}")
 
 

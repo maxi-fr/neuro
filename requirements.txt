@@ -415,6 +415,7 @@ ipython==9.13.0 \
     # via
     #   ipykernel
     #   ipywidgets
+    #   simulate
 ipython-pygments-lexers==1.1.1 \
     --hash=sha256:09c0138009e56b6854f9535736f4171d855c8c08a563a0dcd8022f78355c7e81 \
     --hash=sha256:a9462224a505ade19a605f71f8fa63c2048833ce50abc86768a0d81d876dc81c
@@ -677,6 +678,7 @@ matplotlib==3.10.9 \
     --hash=sha256:fd66508e8c6877d98e586654b608a0456db8d7e8a546eb1e2600efd957302358
     # via
     #   neuro
+    #   simulate
     #   tvb-library
 matplotlib-inline==0.2.2 \
     --hash=sha256:3c821cf1c209f59fb2d2d64abbf5b23b67bcb2210d663f9918dd851c6da1fcf6 \
@@ -921,8 +923,10 @@ numpy==2.4.6 \
     #   numba
     #   numexpr
     #   pandas
+    #   pandas-stubs
     #   pypet
     #   scipy
+    #   simulate
     #   tables
     #   tvb-library
     #   xarray
@@ -972,7 +976,12 @@ pandas==3.0.3 \
     # via
     #   neurolib
     #   pypet
+    #   simulate
     #   xarray
+pandas-stubs==3.0.3.260530 \
+    --hash=sha256:a6277eb1c8cebf48d9b2413fcd2e9a6b4ff479c934a223c29eacbc3058c4cb55 \
+    --hash=sha256:d1efe47b2e5a312c047d7feabec5cb7a55365747983420077e9fcbe9ab74f714
+    # via simulate
 parso==0.8.7 \
     --hash=sha256:a8926eb2a1b915486941fdbd31e86a4baf88fe8c210f25f2f35ecec5b574ca1c \
     --hash=sha256:eaaac4c9fdd5e9e8852dc778d2d7405897ec510f2a298071453e5e3a07914bb1
@@ -1105,7 +1114,9 @@ pycparser==3.0 ; implementation_name != 'PyPy' \
 pydantic==2.13.4 \
     --hash=sha256:45a282cde31d808236fd7ea9d919b128653c8b38b393d1c4ab335c62924d9aba \
     --hash=sha256:c40756b57adaa8b1efeeced5c196f3f3b7c435f90e84ea7f443901bec8099ef6
-    # via blosc2
+    # via
+    #   blosc2
+    #   simulate
 pydantic-core==2.46.4 \
     --hash=sha256:0186750b482eefa11d7f435892b09c5c606193ef3375bcf94aa00ae6bfb66262 \
     --hash=sha256:0cbe8b01f948de4286c74cdd6c667aceb38f5c1e26f0693b3983d9d74887c65e \
@@ -1230,6 +1241,7 @@ pyyaml==6.0.3 \
     #   marimo
     #   pre-commit
     #   pymdown-extensions
+    #   simulate
 pyzmq==27.1.0 \
     --hash=sha256:01c0e07d558b06a60773744ea6251f769cd79a41a97d11b8bf4ab8f034b0424d \
     --hash=sha256:08363b2011dec81c354d694bdecaef4770e0ae96b9afea70b3f47b973655cc05 \
@@ -1341,6 +1353,8 @@ setuptools==82.0.1 \
     --hash=sha256:7d872682c5d01cfde07da7bccc7b65469d3dca203318515ada1de5eda35efbf9 \
     --hash=sha256:a59e362652f08dcd477c78bb6e7bd9d80a7995bc73ce773050228a348ce2e5bb
     # via jitcxde-common
+simulate @ git+https://github.com/maxi-fr/simulate.git@7214866ca776d8859421084056b54d07b015714e
+    # via neuro
 six==1.17.0 \
     --hash=sha256:4721f391ed90541fddacab5acf947aa0d3dc7d27b2e1e8eda2be8970586c3274 \
     --hash=sha256:ff70335d468e7eb6ec65b95b99d3a2836546063f63acc5171de367e834932a81
@@ -1463,6 +1477,10 @@ ty==0.0.39 \
     --hash=sha256:eceb6c91dcd05a231119f82abdd9aa337513de23ca6ac990bc44f88791dc1799 \
     --hash=sha256:f750277e76a01ecd86185960eca73823c26a53c51103568d56d4d904575159fd \
     --hash=sha256:f8c34bc81a9c3516e49904e9d8330aac385377cca98390193ea02b903a40fcf0
+types-pyyaml==6.0.12.20260518 \
+    --hash=sha256:d2150f75a231c9fe9c7463bd29487d93e60bac90400287351384bc2284eba7cd \
+    --hash=sha256:d917f83fb38462550338c1297faedd860b3ec83912b96b1e3d73255f7473e466
+    # via simulate
 typing-extensions==4.15.0 \
     --hash=sha256:0cea48d173cc12fa28ecabc3b837ea3cf6f38c6d1136f85cbaaf598984861466 \
     --hash=sha256:f0fa19c6845758ab08074a0cfa8b7aecb71c999ca73d62883bc25cc018c4e548

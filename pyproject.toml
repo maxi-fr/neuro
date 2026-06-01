@@ -12,6 +12,7 @@ dependencies = [
     "matplotlib>=3.8",
     "tvb-library>=2.10.0",
     "tvb-data>=3.0.0",
+    "simulate",
 ]
 
 [project.optional-dependencies]
@@ -43,6 +44,7 @@ default-groups = ["dev"]
 
 [tool.uv.sources]
 neurolib = { git = "https://github.com/neurolib-dev/neurolib.git", rev = "v0.7.0" }
+simulate = { git = "https://github.com/maxi-fr/simulate.git" }
 
 [tool.ruff]
 line-length = 120
@@ -81,7 +83,7 @@ convention = "numpy"
     "B018",    # Useless expression (Marimo displays last expression)
     "ANN",     # Missing type annotations in notebook cell signatures
     "PLR0913", # Too many arguments in cell definitions
-    "N803",    # Argument name check (since we inject FHNPlant class as cell argument)
+    "N803",    # Argument name check (since we inject Dynamics/Output classes as cell arguments)
     "D",       # Ignore docstrings in notebooks
     "T201",    # print() is fine in notebooks
     "N807",    # Function name starting and ending with __ (standard in Marimo)
