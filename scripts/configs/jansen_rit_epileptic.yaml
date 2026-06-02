@@ -1,0 +1,63 @@
+# Epileptiform regime of the whole-brain Jansen-Rit plant.
+#
+# Hyperexcitability via an elevated excitatory synaptic gain A (higher A/B ratio):
+# raising A drives each column to a much larger-amplitude discharge (single-node
+# peak-to-peak grows ~10 mV -> ~22 mV from A=3.25 to A=5.0), and the moderate
+# long-range coupling lets these high-amplitude discharges spread across the
+# connectome -- a seizure-like regime, clearly distinct from the low-amplitude
+# healthy rhythm.
+#
+# NOTE (see plan Step 6): with TVB's default Jansen-Rit parameters, raising A
+# produces large-amplitude *rhythmic* discharges rather than textbook 3 Hz
+# spike-wave complexes (the waveform stays roughly sinusoidal, kurtosis < 0).
+# Classic spike-wave morphology needs a Wendling-style multi-interneuron
+# extension, which is out of scope here. Values tuned against the single-node A
+# bifurcation diagram (scripts/run_bifurcation.py).
+#   achieved (single node, A=5.0): peak-to-peak ~22 mV, dominant ~7 Hz
+
+t_end: 4000.0
+
+dynamics:
+  class_path: neuro.jansen_rit_plant.TVBJansenRitDynamics
+  dt: 0.1
+  nsig: 0.02
+  seed: 0
+  coupling_strength: 1.0   # moderate coupling -> discharges spread across regions
+  model_params:
+    A: [5.0]               # elevated excitatory gain -> hyperexcitable discharge
+    B: [22.0]
+    a: [0.1]
+    b: [0.05]
+    v0: [5.52]
+    nu_max: [0.0025]
+    r: [0.56]
+    J: [135.0]
+    a_1: [1.0]
+    a_2: [0.8]
+    a_3: [0.25]
+    a_4: [0.25]
+    mu: [0.22]
+
+output:
+  class_path: neuro.jansen_rit_plant.TVBJansenRitOutput
+  dt: 0.1
+  n_nodes: 76
+
+reference:
+  class_path: simulate.reference.StepReference
+  dt: 0.1
+  step_value: 0.0
+
+sensor:
+  class_path: neuro.sensing.DirectSensor
+  dt: 0.1
+  n_sensors: 65
+  std_dev: 0.0
+
+estimator:
+  class_path: simulate.estimator.IdentityEstimator
+  dt: 0.1
+
+controller:
+  class_path: neuro.control.ZeroController
+  dt: 0.1

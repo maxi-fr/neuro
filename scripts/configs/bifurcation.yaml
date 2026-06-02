@@ -1,0 +1,19 @@
+# Parameter ranges for the single-node Jansen-Rit bifurcation sweeps
+# (scripts/run_bifurcation.py). The network is decoupled (coupling_strength = 0)
+# and run deterministically so each diagram is the isolated-column bifurcation.
+
+dt: 0.1
+duration_ms: 2000.0    # per-value run length
+transient_ms: 800.0    # leading transient discarded before measuring min/max/freq
+
+# Sweep of the background input mu (the classic Grimbert-Faugeras parameter).
+mu:
+  start: 0.0
+  stop: 0.4
+  num: 41
+
+# Sweep of the excitatory synaptic gain A (excitability knob).
+A:
+  start: 2.5
+  stop: 7.0
+  num: 37

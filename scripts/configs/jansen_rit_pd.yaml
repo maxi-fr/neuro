@@ -1,0 +1,72 @@
+# Parkinsonian regime of the whole-brain Jansen-Rit plant (BEST EFFORT).
+#
+# Target: network-wide HYPERSYNCHRONIZATION in the BETA band (13-30 Hz). The SAME
+# Jansen-Rit model is used (no basal-ganglia / DBS-specific model); only
+# parameters change.
+#
+# FINDING (see plan Step 6 / scripts/run_state_map.py): genuine beta-band
+# hypersynchronization is NOT reachable with this plant by parameter changes
+# alone, for two structural reasons:
+#   1. TVB's SigmoidalJansenRit coupling SATURATES — raising coupling_strength
+#      drives the whole network into a quiescent high-activity fixed point
+#      (oscillation amplitude -> 0 above coupling ~3) instead of a synchronized
+#      limit cycle, so the cross-correlation R stays <= ~0.1 while oscillating.
+#      (Contrast Chouzouris et al., whose FHN network uses *linear additive*
+#      coupling that can drive a synchronized high-amplitude limit cycle.)
+#   2. Pushing the synaptic kinetics (a, b) up toward beta frequencies abolishes
+#      the limit cycle (the node settles to a fixed point).
+# A faithful PD model would therefore need linear/homogeneous coupling or an
+# explicit basal-ganglia beta loop — both out of scope here.
+#
+# CLOSEST ACHIEVABLE (this config): moderate coupling lifts the network rhythm
+# to the upper-alpha band (~10-11 Hz) with a modestly elevated synchronization
+# relative to the healthy baseline (R ~ 0.1 vs ~0). It is "faster + more
+# synchronized than healthy", directionally PD-like, but not true beta hypersync.
+#   achieved (deterministic): dominant_freq ~ 10.7 Hz, R ~ 0.10
+
+t_end: 4000.0
+
+dynamics:
+  class_path: neuro.jansen_rit_plant.TVBJansenRitDynamics
+  dt: 0.1
+  nsig: 0.02
+  seed: 0
+  coupling_strength: 2.0    # near the largest coupling that still oscillates
+  model_params:
+    A: [3.25]
+    B: [22.0]
+    a: [0.1]
+    b: [0.05]
+    v0: [5.52]
+    nu_max: [0.0025]
+    r: [0.56]
+    J: [135.0]
+    a_1: [1.0]
+    a_2: [0.8]
+    a_3: [0.25]
+    a_4: [0.25]
+    mu: [0.22]
+
+output:
+  class_path: neuro.jansen_rit_plant.TVBJansenRitOutput
+  dt: 0.1
+  n_nodes: 76
+
+reference:
+  class_path: simulate.reference.StepReference
+  dt: 0.1
+  step_value: 0.0
+
+sensor:
+  class_path: neuro.sensing.DirectSensor
+  dt: 0.1
+  n_sensors: 65
+  std_dev: 0.0
+
+estimator:
+  class_path: simulate.estimator.IdentityEstimator
+  dt: 0.1
+
+controller:
+  class_path: neuro.control.ZeroController
+  dt: 0.1

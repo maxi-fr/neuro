@@ -148,6 +148,7 @@ def plot_fourier(  # noqa: C901, PLR0913, PLR0912
     plot_mean: bool = False,
     max_freq: float | None = None,
     normalize: bool = False,
+    nperseg: int | None = None,
     ax: Axes | None = None,
 ) -> tuple[Figure, Axes]:
     """Plot the Fourier decomposition / spectrum of multi-channel signals.
@@ -174,6 +175,10 @@ def plot_fourier(  # noqa: C901, PLR0913, PLR0912
         compare spectral *shape* rather than absolute magnitude. Useful when
         signals differ in overall amplitude (e.g. different plants, noise levels,
         or lead-field scales).
+    nperseg
+        Welch segment length (``mode="power"`` only). Larger values give finer
+        frequency resolution; needed at small ``dt`` to resolve EEG bands.
+        Ignored for ``mode="amplitude"``.
     ax
         Optional matplotlib Axes to plot into. If None, a new figure is created.
 
@@ -194,7 +199,7 @@ def plot_fourier(  # noqa: C901, PLR0913, PLR0912
         ylabel = "Amplitude"
         title = "FFT Amplitude Spectrum"
     elif mode == "power":
-        freqs, vals = compute_psd(signals, dt_ms)
+        freqs, vals = compute_psd(signals, dt_ms, nperseg=nperseg)
         ylabel = "Power (V²/Hz)"
         title = "Power Spectral Density (Welch)"
     else:
@@ -267,6 +272,7 @@ def plot_dashboard(  # noqa: PLR0913
     nodes_to_plot: list[int] | None = None,
     sensors_to_plot: list[int] | None = None,
     max_freq: float = 50.0,
+    nperseg: int | None = None,
     title: str = "Whole-Brain Simulation Dashboard",
 ) -> Figure:
     """Create a unified dashboard showing activity and EEG signals in time & frequency domains.
@@ -285,6 +291,9 @@ def plot_dashboard(  # noqa: PLR0913
         Optional list of EEG sensor indices to plot. Defaults to first 5 sensors.
     max_freq
         Maximum frequency (Hz) to plot in the spectrum panel.
+    nperseg
+        Welch segment length for the power-spectrum panels. Larger values give
+        finer frequency resolution (needed at small ``dt``).
     title
         Overall title of the dashboard.
 
@@ -341,6 +350,7 @@ def plot_dashboard(  # noqa: PLR0913
         channel_names=[f"Node {i}" for i in range(activity.shape[0])],
         plot_mean=False,
         max_freq=max_freq,
+        nperseg=nperseg,
         ax=ax_act_freq,
     )
     ax_act_freq.set_title("Brain Activity Power Spectrum (Welch)")
@@ -354,9 +364,129 @@ def plot_dashboard(  # noqa: PLR0913
         channel_names=[f"EEG {i}" for i in range(eeg.shape[0])],
         plot_mean=False,
         max_freq=max_freq,
+        nperseg=nperseg,
         ax=ax_eeg_freq,
     )
     ax_eeg_freq.set_title("EEG Power Spectrum (Welch)")
 
     fig.suptitle(title, fontsize=16, fontweight="bold", y=0.98)
     return fig
+
+
+def plot_bifurcation_1d(  # noqa: PLR0913
+    values: FloatArray,
+    min_vals: FloatArray,
+    max_vals: FloatArray,
+    freqs: FloatArray,
+    *,
+    param_label: str = "Parameter",
+    title: str = "Bifurcation diagram",
+    ax: Axes | None = None,
+) -> tuple[Figure, Axes]:
+    """Plot a single-node bifurcation diagram (activity envelope + frequency).
+
+    Mirrors Fig. 1 of Chouzouris et al. / Grimbert-Faugeras: the shaded band is
+    the min-max range of the steady-state activity as the swept parameter varies
+    (a single line where the node is at a fixed point, a widening band once it
+    oscillates), and the right axis shows the dominant oscillation frequency.
+
+    Parameters
+    ----------
+    values
+        Swept parameter values, shape (n_points,).
+    min_vals, max_vals
+        Minimum and maximum steady-state activity at each value, shape (n_points,).
+    freqs
+        Dominant frequency (Hz) at each value, shape (n_points,). NaNs (no
+        oscillation) are simply not drawn.
+    param_label
+        Axis label for the swept parameter.
+    title
+        Plot title.
+    ax
+        Optional matplotlib Axes for the activity (left) axis. If None, a new
+        figure is created.
+
+    Returns
+    -------
+    fig
+        The matplotlib Figure object.
+    ax
+        The activity (left) Axes object.
+    """
+    if ax is None:
+        fig, ax = plt.subplots(figsize=(9, 5), layout="constrained")
+    else:
+        fig = cast("Figure", ax.figure)
+
+    ax.fill_between(values, min_vals, max_vals, color="#1f77b4", alpha=0.25, label="activity range")
+    ax.plot(values, max_vals, color="#1f77b4", linewidth=1.4)
+    ax.plot(values, min_vals, color="#1f77b4", linewidth=1.4)
+    ax.set_xlabel(param_label, fontsize=11, fontweight="bold")
+    ax.set_ylabel("Activity $y_1 - y_2$ (mV)", color="#1f77b4", fontsize=11, fontweight="bold")
+    ax.tick_params(axis="y", labelcolor="#1f77b4")
+    ax.set_title(title, fontsize=13, fontweight="bold", pad=12)
+    ax.spines["top"].set_visible(False)
+    ax.grid(visible=True, linestyle="--", alpha=0.3)
+
+    ax_freq = ax.twinx()
+    ax_freq.plot(values, freqs, color="#d62728", linewidth=1.6, marker=".", label="dominant freq")
+    ax_freq.set_ylabel("Dominant frequency (Hz)", color="#d62728", fontsize=11, fontweight="bold")
+    ax_freq.tick_params(axis="y", labelcolor="#d62728")
+    ax_freq.spines["top"].set_visible(False)
+
+    return fig, ax
+
+
+def plot_state_map(  # noqa: PLR0913
+    mu_values: FloatArray,
+    sigma_values: FloatArray,
+    metric_grid: FloatArray,
+    *,
+    metric_label: str = "Synchronization R",
+    title: str = "Network state-space map",
+    cmap: str = "viridis",
+    ax: Axes | None = None,
+) -> tuple[Figure, Axes]:
+    """Plot a 2-D network state-space map over background input and coupling.
+
+    Mirrors Fig. 3(a) of Chouzouris et al.: each pixel summarises the network's
+    behaviour (e.g. synchronization or dominant frequency) at one operating point
+    in the (background input mu, coupling strength sigma) plane.
+
+    Parameters
+    ----------
+    mu_values
+        Background-input values along the x-axis, shape (n_mu,).
+    sigma_values
+        Coupling-strength values along the y-axis, shape (n_sigma,).
+    metric_grid
+        Metric to colour by, shape (n_sigma, n_mu) (rows indexed by sigma).
+    metric_label
+        Colourbar label.
+    title
+        Plot title.
+    cmap
+        Matplotlib colormap name.
+    ax
+        Optional matplotlib Axes. If None, a new figure is created.
+
+    Returns
+    -------
+    fig
+        The matplotlib Figure object.
+    ax
+        The matplotlib Axes object.
+    """
+    if ax is None:
+        fig, ax = plt.subplots(figsize=(7.5, 6), layout="constrained")
+    else:
+        fig = cast("Figure", ax.figure)
+
+    mesh = ax.pcolormesh(mu_values, sigma_values, metric_grid, cmap=cmap, shading="auto")
+    fig.colorbar(mesh, ax=ax, label=metric_label)
+    ax.set_xlabel(r"Background input $\mu$", fontsize=11, fontweight="bold")
+    ax.set_ylabel(r"Coupling strength $\sigma$", fontsize=11, fontweight="bold")
+    ax.set_title(title, fontsize=13, fontweight="bold", pad=12)
+
+    return fig, ax

@@ -112,6 +112,7 @@ class TVBJansenRitDynamics(Dynamics[TVBJansenRitDynamicsLog]):
         seed: int | None = None,
         b: ArrayLike | None = None,
         model_params: dict[str, Any] | None = None,
+        coupling_strength: float = 1.0,
     ) -> None:
         super().__init__(dt, integrator=None)
         conn = _Connectivity.from_file(connectome)
@@ -121,13 +122,21 @@ class TVBJansenRitDynamics(Dynamics[TVBJansenRitDynamicsLog]):
         model = _JansenRit(**_as_tvb_params(model_params))
         model.variables_of_interest = ("y1", "y2")
 
-        noise = _tvb_noise.Additive(nsig=np.array([nsig]))
+        # Inject additive noise only into the excitatory input pathway (state
+        # variable y4, which carries the mean input mu) -- i.e. a "noisy input".
+        # Noising all six state variables instead makes the slow potentials
+        # (y0, y1, y2) random-walk, swamping the rhythm with low-frequency drift.
+        nsig_vec = np.zeros(int(model.nvar), dtype=np.float64)
+        nsig_vec[4] = nsig
+        noise = _tvb_noise.Additive(nsig=nsig_vec)
         integrator = _tvb_integrators.HeunStochastic(dt=dt, noise=noise)
 
+        # `a` is the global coupling gain: SigmoidalJansenRit.post(gx) = a * gx.
+        # Setting it to 0 decouples the nodes (used for single-node bifurcation sweeps).
         self._sim = _tvb_simulator.Simulator(
             connectivity=conn,
             model=model,
-            coupling=_tvb_coupling.SigmoidalJansenRit(),
+            coupling=_tvb_coupling.SigmoidalJansenRit(a=np.array([coupling_strength])),
             integrator=integrator,
             monitors=(_tvb_monitors.Raw(),),
         )
@@ -161,6 +170,7 @@ class TVBJansenRitDynamics(Dynamics[TVBJansenRitDynamicsLog]):
             seed=config.get("seed"),
             b=config.get("b"),
             model_params=config.get("model_params"),
+            coupling_strength=config.get("coupling_strength", 1.0),
         )
 
     def _snapshot(self) -> _TVBSnapshot:
