@@ -29,8 +29,9 @@ import matplotlib.pyplot as plt
 from simulate.config import load_config
 
 from neuro.sweep import run_open_loop
-from utils.plotting import plot_dashboard, plot_signals
+from utils.plotting import plot_fourier, plot_signals
 from utils.processing import dominant_frequency, steady_window, synchronization
+from utils.save_plots import ThesisPlotSaver
 
 DEFAULT_CONFIG = Path("scripts/configs/jansen_rit_healthy.yaml")
 DEFAULT_PLOT_PATH = Path("artifacts/jansen_rit_healthy.png")
@@ -92,20 +93,16 @@ def main() -> None:
     if args.no_plot:
         return
 
-    nperseg = min(PSD_NPERSEG, eeg.shape[1])
-    fig = plot_dashboard(
-        activity,
-        eeg,
-        dt_ms=dt_ms,
-        nperseg=nperseg,
-        title=f"{args.config.stem}  (R={r_sync:.2f}, f_dom={f_dom:.1f} Hz)",
-    )
-    args.plot_path.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(args.plot_path, dpi=150)
-    plt.close(fig)
+    saver = ThesisPlotSaver(base_dir=str(args.plot_path.parent))
+    metadata = {
+        "config_file": str(args.config),
+        "transient_ms": args.transient_ms,
+        "synchronization_R": float(r_sync),
+        "dominant_frequency_Hz": float(f_dom),
+    }
 
-    eeg_path = args.plot_path.with_name(f"{args.plot_path.stem}_eeg{args.plot_path.suffix}")
-    fig_eeg, _ = plot_signals(
+    # 1. Plot signals (traces)
+    fig_signals, _ = plot_signals(
         eeg,
         dt_ms=dt_ms,
         channels_to_plot=list(range(min(N_EEG_TRACES, eeg.shape[0]))),
@@ -113,9 +110,28 @@ def main() -> None:
         title=f"EEG output — {args.config.stem}",
         color="#ff7f0e",
     )
-    fig_eeg.savefig(eeg_path, dpi=150)
-    plt.close(fig_eeg)
-    print(f"Saved {args.plot_path} and {eeg_path}")
+    saver.save(fig_signals, name=args.plot_path.stem, metadata=metadata, overwrite=True)
+    plt.close(fig_signals)
+
+    # 2. Plot Fourier power spectrum
+    nperseg = min(PSD_NPERSEG, eeg.shape[1])
+    fig_freq, _ = plot_fourier(
+        eeg,
+        dt_ms=dt_ms,
+        mode="power",
+        channels_to_plot=list(range(min(N_EEG_TRACES, eeg.shape[0]))),
+        channel_names=[f"EEG {i}" for i in range(eeg.shape[0])],
+        max_freq=50.0,
+        nperseg=nperseg,
+    )
+    if fig_freq.axes:
+        fig_freq.axes[0].set_title(f"EEG Power Spectrum — {args.config.stem}")
+    saver.save(fig_freq, name=f"{args.plot_path.stem}_spectrum", metadata=metadata, overwrite=True)
+    plt.close(fig_freq)
+
+    print(
+        f"Saved regime plot folders to {args.plot_path.parent / args.plot_path.stem} and {args.plot_path.parent / (args.plot_path.stem + '_spectrum')}"
+    )
 
 
 if __name__ == "__main__":

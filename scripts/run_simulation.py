@@ -33,6 +33,7 @@ from simulate.config import load_config
 from simulate.simulation import Simulation
 
 from utils.plotting import plot_fourier, plot_signals
+from utils.save_plots import ThesisPlotSaver
 
 FloatArray = npt.NDArray[np.float64]
 
@@ -84,36 +85,6 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def plot_eeg(eeg: FloatArray, dt_ms: float, path: Path) -> None:
-    """Render EEG channel traces and a power spectrum from the logged output."""
-    n_shown = min(N_CHANNELS_TO_PLOT, eeg.shape[0])
-    channels = list(range(n_shown))
-
-    fig, (ax_trace, ax_freq) = plt.subplots(2, 1, figsize=(10, 8), layout="constrained")
-    plot_signals(
-        eeg,
-        dt_ms=dt_ms,
-        channels_to_plot=channels,
-        channel_names=[f"EEG {i}" for i in range(eeg.shape[0])],
-        title=f"EEG output (first {n_shown} of {eeg.shape[0]} channels)",
-        color="#ff7f0e",
-        ax=ax_trace,
-    )
-    plot_fourier(
-        eeg,
-        dt_ms=dt_ms,
-        mode="power",
-        channels_to_plot=channels,
-        channel_names=[f"EEG {i}" for i in range(eeg.shape[0])],
-        max_freq=50.0,
-        ax=ax_freq,
-    )
-
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(path, dpi=150)
-    plt.close(fig)
-
-
 def main() -> None:
     """Load the config, run the orchestrated simulation, and report results."""
     args = parse_args()
@@ -144,8 +115,43 @@ def main() -> None:
     print(f"  control |u| max={np.abs(u).max():.3e} (open loop -> expected 0)")
 
     if not args.no_plot:
-        plot_eeg(eeg, dt_ms, args.plot_path)
-        print(f"Saved EEG plot to {args.plot_path}")
+        metadata = {
+            "config": str(args.config),
+            "output_dir": str(args.output_dir),
+            "prefix": args.prefix,
+        }
+        saver = ThesisPlotSaver(base_dir=str(args.plot_path.parent))
+        n_sensors = eeg.shape[0]
+        n_shown = min(N_CHANNELS_TO_PLOT, n_sensors)
+        channels = list(range(n_shown))
+
+        # 1. Plot signals (traces)
+        fig_signals, _ = plot_signals(
+            eeg,
+            dt_ms=dt_ms,
+            channels_to_plot=channels,
+            channel_names=[f"EEG {i}" for i in range(n_sensors)],
+            title=f"EEG output (first {n_shown} of {n_sensors} channels)",
+            color="#ff7f0e",
+        )
+        saver.save(fig_signals, name=args.plot_path.stem, metadata=metadata, overwrite=True)
+        plt.close(fig_signals)
+
+        # 2. Plot Fourier power spectrum
+        fig_freq, _ = plot_fourier(
+            eeg,
+            dt_ms=dt_ms,
+            mode="power",
+            channels_to_plot=channels,
+            channel_names=[f"EEG {i}" for i in range(n_sensors)],
+            max_freq=50.0,
+        )
+        saver.save(fig_freq, name=f"{args.plot_path.stem}_spectrum", metadata=metadata, overwrite=True)
+        plt.close(fig_freq)
+
+        print(
+            f"Saved EEG plot folders to {args.plot_path.parent / args.plot_path.stem} and {args.plot_path.parent / (args.plot_path.stem + '_spectrum')}"
+        )
 
 
 if __name__ == "__main__":

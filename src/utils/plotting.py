@@ -264,115 +264,6 @@ def plot_fourier(  # noqa: C901, PLR0913, PLR0912
     return fig, ax
 
 
-def plot_dashboard(  # noqa: PLR0913
-    activity: FloatArray,
-    eeg: FloatArray,
-    dt_ms: float,
-    *,
-    nodes_to_plot: list[int] | None = None,
-    sensors_to_plot: list[int] | None = None,
-    max_freq: float = 50.0,
-    nperseg: int | None = None,
-    title: str = "Whole-Brain Simulation Dashboard",
-) -> Figure:
-    """Create a unified dashboard showing activity and EEG signals in time & frequency domains.
-
-    Parameters
-    ----------
-    activity
-        Brain region activity, shape (n_nodes, n_samples).
-    eeg
-        EEG sensor projection, shape (n_sensors, n_samples).
-    dt_ms
-        Integration step (sampling interval) in milliseconds.
-    nodes_to_plot
-        Optional list of node indices to plot in time domain. Defaults to first 5 nodes.
-    sensors_to_plot
-        Optional list of EEG sensor indices to plot. Defaults to first 5 sensors.
-    max_freq
-        Maximum frequency (Hz) to plot in the spectrum panel.
-    nperseg
-        Welch segment length for the power-spectrum panels. Larger values give
-        finer frequency resolution (needed at small ``dt``).
-    title
-        Overall title of the dashboard.
-
-    Returns
-    -------
-    fig
-        The generated matplotlib Figure.
-    """
-    if nodes_to_plot is None:
-        nodes_to_plot = list(range(min(5, activity.shape[0])))
-
-    if sensors_to_plot is None:
-        sensors_to_plot = list(range(min(5, eeg.shape[0])))
-
-    # Create figure with 2x2 layout
-    fig = plt.figure(figsize=(14, 9), layout="constrained")
-    gs = fig.add_gridspec(2, 2)
-
-    ax_act_time = fig.add_subplot(gs[0, 0])
-    ax_eeg_time = fig.add_subplot(gs[0, 1])
-    ax_act_freq = fig.add_subplot(gs[1, 0])
-    ax_eeg_freq = fig.add_subplot(gs[1, 1])
-
-    # Plot Time-Domain Activity
-    plot_signals(
-        activity,
-        dt_ms=dt_ms,
-        channels_to_plot=nodes_to_plot,
-        channel_names=[f"Node {i}" for i in range(activity.shape[0])],
-        stacked=True,
-        title="Brain Region Activity (V)",
-        color="#1f77b4",
-        ax=ax_act_time,
-    )
-
-    # Plot Time-Domain EEG
-    plot_signals(
-        eeg,
-        dt_ms=dt_ms,
-        channels_to_plot=sensors_to_plot,
-        channel_names=[f"EEG {i}" for i in range(eeg.shape[0])],
-        stacked=True,
-        title="EEG Projection (Leadfield @ V)",
-        color="#ff7f0e",
-        ax=ax_eeg_time,
-    )
-
-    # Plot Frequency-Domain Activity (Power Spectral Density)
-    plot_fourier(
-        activity,
-        dt_ms=dt_ms,
-        mode="power",
-        channels_to_plot=nodes_to_plot,
-        channel_names=[f"Node {i}" for i in range(activity.shape[0])],
-        plot_mean=False,
-        max_freq=max_freq,
-        nperseg=nperseg,
-        ax=ax_act_freq,
-    )
-    ax_act_freq.set_title("Brain Activity Power Spectrum (Welch)")
-
-    # Plot Frequency-Domain EEG (Power Spectral Density)
-    plot_fourier(
-        eeg,
-        dt_ms=dt_ms,
-        mode="power",
-        channels_to_plot=sensors_to_plot,
-        channel_names=[f"EEG {i}" for i in range(eeg.shape[0])],
-        plot_mean=False,
-        max_freq=max_freq,
-        nperseg=nperseg,
-        ax=ax_eeg_freq,
-    )
-    ax_eeg_freq.set_title("EEG Power Spectrum (Welch)")
-
-    fig.suptitle(title, fontsize=16, fontweight="bold", y=0.98)
-    return fig
-
-
 def plot_bifurcation_1d(  # noqa: PLR0913
     values: FloatArray,
     min_vals: FloatArray,
@@ -488,5 +379,67 @@ def plot_state_map(  # noqa: PLR0913
     ax.set_xlabel(r"Background input $\mu$", fontsize=11, fontweight="bold")
     ax.set_ylabel(r"Coupling strength $\sigma$", fontsize=11, fontweight="bold")
     ax.set_title(title, fontsize=13, fontweight="bold", pad=12)
+
+    return fig, ax
+
+
+def plot_heatmap(
+    signals: FloatArray,
+    dt_ms: float,
+    *,
+    title: str = "Signals Heatmap",
+    cmap: str = "RdBu_r",
+    ax: Axes | None = None,
+) -> tuple[Figure, Axes]:
+    """Plot multi-channel signals as a heatmap over time.
+
+    Parameters
+    ----------
+    signals
+        Input signals, shape (n_channels, n_samples).
+    dt_ms
+        Sampling interval (integration step) in milliseconds.
+    title
+        Title of the plot.
+    cmap
+        Colormap name.
+    ax
+        Optional matplotlib Axes to plot into. If None, a new figure is created.
+
+    Returns
+    -------
+    fig
+        The matplotlib Figure object.
+    ax
+        The matplotlib Axes object.
+    """
+    if signals.ndim != 2:  # noqa: PLR2004
+        msg = f"Expected 2-D array of shape (n_channels, n_samples), got shape {signals.shape}"
+        raise ValueError(msg)
+
+    n_channels, n_samples = signals.shape
+    time_sec = np.arange(n_samples) * dt_ms / 1000.0
+
+    if ax is None:
+        fig, ax = plt.subplots(figsize=(10, 4.5), layout="constrained")
+    else:
+        fig = cast("Figure", ax.figure)
+
+    vlim = float(np.max(np.abs(signals)))
+    if vlim == 0:
+        vlim = 1.0
+    image = ax.imshow(
+        signals,
+        aspect="auto",
+        origin="lower",
+        extent=(float(time_sec[0]), float(time_sec[-1]), 0.0, float(n_channels)),
+        cmap=cmap,
+        vmin=-vlim,
+        vmax=vlim,
+    )
+    ax.set_title(title, fontsize=13, fontweight="bold", pad=12)
+    ax.set_xlabel("Time (s)", fontsize=11, fontweight="bold")
+    ax.set_ylabel("Channel", fontsize=11, fontweight="bold")
+    fig.colorbar(image, ax=ax, label="Amplitude")
 
     return fig, ax

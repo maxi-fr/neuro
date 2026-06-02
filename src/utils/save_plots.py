@@ -2,7 +2,9 @@ import datetime
 import json
 import math
 import pickle
+import shutil
 import subprocess
+import warnings
 from pathlib import Path
 from typing import Any
 
@@ -29,23 +31,37 @@ class ThesisPlotSaver:
 
     def _configure_matplotlib(self) -> None:
         """Set up the global matplotlib rcParams for crisp, native LaTeX output."""
-        mpl.rcParams.update(
-            {
-                "backend": "pgf",
-                "pgf.texsystem": "pdflatex",
-                "text.usetex": True,
-                "font.family": "serif",
-                "font.serif": [],
-                "font.sans-serif": [],
-                "font.monospace": [],
-                "font.size": 11,
-                "axes.labelsize": 11,
-                "legend.fontsize": 9,
-                "xtick.labelsize": 9,
-                "ytick.labelsize": 9,
-                "pgf.preamble": f"{r'\usepackage{amsmath}'}\n{r'\usepackage{amssymb}'}",
-            }
-        )
+        has_latex = shutil.which("pdflatex") is not None
+
+        rc_params: dict[str, Any] = {
+            "font.family": "serif",
+            "font.size": 11,
+            "axes.labelsize": 11,
+            "legend.fontsize": 9,
+            "xtick.labelsize": 9,
+            "ytick.labelsize": 9,
+        }
+
+        if has_latex:
+            rc_params.update(
+                {
+                    "backend": "pgf",
+                    "pgf.texsystem": "pdflatex",
+                    "text.usetex": True,
+                    "font.serif": [],
+                    "font.sans-serif": [],
+                    "font.monospace": [],
+                    "pgf.preamble": f"{r'\usepackage{amsmath}'}\n{r'\usepackage{amssymb}'}",
+                }
+            )
+        else:
+            warnings.warn(
+                "pdflatex not found on system path. Disabling LaTeX rendering and PGF backend fallback.",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+
+        mpl.rcParams.update(rc_params)
 
     def _get_git_commit(self) -> str:
         """Query the local git repository for the current commit hash identifier."""
@@ -74,16 +90,24 @@ class ThesisPlotSaver:
         fig_height_in: float = fig_width_in * golden_ratio * (subplots[0] / subplots[1])
         return (fig_width_in, fig_height_in)
 
-    def save(self, fig: plt.Figure, name: str, metadata: dict[str, Any] | None = None) -> None:
+    def save(
+        self,
+        fig: plt.Figure,
+        name: str,
+        metadata: dict[str, Any] | None = None,
+        *,
+        overwrite: bool = False,
+    ) -> None:
         """
         Save the figure object, PGF graphic, and JSON metadata into a target folder.
 
         If the directory 'plots/<name>' already exists, it auto-increments: 'plots/<name>_01'.
+        Unless overwrite is set to True.
         """
         target_dir: Path = self.base_dir / name
         final_name: str = name
 
-        if target_dir.exists():
+        if not overwrite and target_dir.exists():
             counter: int = 1
             while True:
                 final_name = f"{name}_{counter:02d}"
@@ -111,7 +135,14 @@ class ThesisPlotSaver:
             pickle.dump(fig, f)
 
         pgf_path: Path = base_filepath.with_suffix(".pgf")
-        fig.savefig(pgf_path, bbox_inches="tight")
+        try:
+            fig.savefig(pgf_path, bbox_inches="tight")
+        except Exception as e:  # noqa: BLE001
+            warnings.warn(
+                f"Could not save PGF graphic: {e}. Skipping PGF export.",
+                RuntimeWarning,
+                stacklevel=2,
+            )
 
         png_path: Path = base_filepath.with_suffix(".png")
         fig.savefig(png_path, dpi=200, bbox_inches="tight")

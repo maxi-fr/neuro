@@ -47,6 +47,8 @@ Task is twofold: reference trajectory/cost function for MPC and brain model para
 * bifurcation diagramms
 * plots should save plotting data
 
+* thesis plot saver can take in a list of figures
+
 </details>
 
 <details>
@@ -55,6 +57,13 @@ Task is twofold: reference trajectory/cost function for MPC and brain model para
 * plots should be saved as images
 * their data
 * what function was used to generate them + parameters
+
+</details>
+
+<details>
+<summary>bugs in run simulation</summary>
+
+* the generated plots look weird
 
 </details>
 

@@ -29,6 +29,7 @@ from simulate.config import load_config
 
 from neuro.sweep import network_state_map
 from utils.plotting import plot_state_map
+from utils.save_plots import ThesisPlotSaver
 
 DEFAULT_CONFIG = Path("scripts/configs/state_map.yaml")
 DEFAULT_OUTPUT_DIR = Path("artifacts")
@@ -88,6 +89,8 @@ def main() -> None:
         ("freq", "Dominant frequency (Hz)", "magma"),
         ("amplitude", "Median amplitude (mV)", "cividis"),
     ]
+    saver = ThesisPlotSaver(base_dir=str(args.output_dir))
+
     for key, label, cmap in panels:
         fig, _ = plot_state_map(
             result["mu"],
@@ -97,10 +100,15 @@ def main() -> None:
             title=f"Network state map — {label}",
             cmap=cmap,
         )
-        path = args.output_dir / f"state_map_{key}.png"
-        fig.savefig(path, dpi=150)
+        metadata = {
+            "metric": key,
+            "metric_label": label,
+            "config_file": str(args.config),
+        }
+        plot_name = f"state_map_{key}"
+        saver.save(fig, name=plot_name, metadata=metadata, overwrite=True)
         plt.close(fig)
-        print(f"  saved {path}")
+        print(f"  saved state map plot folder to {args.output_dir / plot_name}")
 
 
 if __name__ == "__main__":

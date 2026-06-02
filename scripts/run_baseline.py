@@ -29,6 +29,8 @@ import numpy as np
 import numpy.typing as npt
 
 from neuro.plant import FHNOutput, NativeFHNDynamics
+from utils.plotting import plot_heatmap, plot_signals
+from utils.save_plots import ThesisPlotSaver
 
 FloatArray = npt.NDArray[np.float64]
 
@@ -87,62 +89,6 @@ def summarise(name: str, array: FloatArray) -> None:
     )
 
 
-def plot_eeg(eeg: FloatArray, dt_ms: float, path: Path) -> None:
-    """Render diagnostic EEG plots: stacked channel traces and a heatmap.
-
-    Parameters
-    ----------
-    eeg
-        EEG array of shape ``(n_sensors, n_samples)``.
-    dt_ms
-        Sampling period in milliseconds, used to build the time axis.
-    path
-        Destination PNG path. Parent directories are created as needed.
-    """
-    n_sensors, n_samples = eeg.shape
-    t_s = np.arange(n_samples) * dt_ms / 1000.0  # seconds
-
-    fig, (ax_trace, ax_heat) = plt.subplots(
-        2,
-        1,
-        figsize=(10, 7),
-        gridspec_kw={"height_ratios": [2, 1]},
-    )
-
-    # Stacked traces: first N_CHANNELS_TO_TRACE channels, vertically offset.
-    n_shown = min(N_CHANNELS_TO_TRACE, n_sensors)
-    offset = 4.0 * float(eeg.std())
-    for i in range(n_shown):
-        ax_trace.plot(t_s, eeg[i] + i * offset, linewidth=0.7)
-    ax_trace.set_title(f"EEG channel traces (first {n_shown} of {n_sensors})")
-    ax_trace.set_xlabel("time (s)")
-    ax_trace.set_ylabel("channel (offset)")
-    ax_trace.set_yticks([i * offset for i in range(n_shown)])
-    ax_trace.set_yticklabels([f"ch{i}" for i in range(n_shown)])
-    ax_trace.set_xlim(t_s[0], t_s[-1])
-
-    # Heatmap of all sensors over time.
-    vlim = float(np.max(np.abs(eeg)))
-    image = ax_heat.imshow(
-        eeg,
-        aspect="auto",
-        origin="lower",
-        extent=(float(t_s[0]), float(t_s[-1]), 0.0, float(n_sensors)),
-        cmap="RdBu_r",
-        vmin=-vlim,
-        vmax=vlim,
-    )
-    ax_heat.set_title(f"EEG heatmap (all {n_sensors} channels)")
-    ax_heat.set_xlabel("time (s)")
-    ax_heat.set_ylabel("channel")
-    fig.colorbar(image, ax=ax_heat, label="amplitude")
-
-    fig.tight_layout()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(path, dpi=150)
-    plt.close(fig)
-
-
 def main() -> None:
     """Run the baseline simulation and report aggregated statistics."""
     args = parse_args()
@@ -187,8 +133,38 @@ def main() -> None:
         print(f"Saved outputs to {args.save}")
 
     if not args.no_plot:
-        plot_eeg(eeg_full, dynamics.dt, args.plot_path)
-        print(f"Saved EEG plot to {args.plot_path}")
+        metadata = {
+            "duration_ms": args.duration_ms,
+            "step_ms": args.step_ms,
+            "sigma_ou": args.sigma_ou,
+        }
+        saver = ThesisPlotSaver(base_dir=str(args.plot_path.parent))
+
+        # 1. Plot signals (traces)
+        n_sensors = eeg_full.shape[0]
+        n_shown = min(N_CHANNELS_TO_TRACE, n_sensors)
+        fig_signals, _ = plot_signals(
+            eeg_full,
+            dt_ms=dynamics.dt,
+            channels_to_plot=list(range(n_shown)),
+            channel_names=[f"ch{i}" for i in range(n_sensors)],
+            title=f"EEG channel traces (first {n_shown} of {n_sensors})",
+        )
+        saver.save(fig_signals, name=args.plot_path.stem, metadata=metadata, overwrite=True)
+        plt.close(fig_signals)
+
+        # 2. Plot heatmap
+        fig_heat, _ = plot_heatmap(
+            eeg_full,
+            dt_ms=dynamics.dt,
+            title=f"EEG heatmap (all {n_sensors} channels)",
+        )
+        saver.save(fig_heat, name=f"{args.plot_path.stem}_heatmap", metadata=metadata, overwrite=True)
+        plt.close(fig_heat)
+
+        print(
+            f"Saved EEG plot folders to {args.plot_path.parent / args.plot_path.stem} and {args.plot_path.parent / (args.plot_path.stem + '_heatmap')}"
+        )
 
 
 if __name__ == "__main__":

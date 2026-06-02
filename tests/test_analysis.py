@@ -7,7 +7,7 @@ import pytest
 from matplotlib.axes import Axes
 from matplotlib.figure import Figure
 
-from utils.plotting import plot_dashboard, plot_fourier, plot_signals
+from utils.plotting import plot_fourier, plot_heatmap, plot_signals
 from utils.processing import compute_fft, compute_psd
 
 
@@ -99,10 +99,10 @@ def test_plotting_fourier() -> None:
         plot_fourier(signals, dt_ms=1.0, mode="invalid")
 
 
-def test_plot_dashboard() -> None:
+def test_plot_heatmap() -> None:
     rng = np.random.default_rng(0)
-    activity = rng.standard_normal((5, 100))
-    eeg = rng.standard_normal((8, 100))
-    fig = plot_dashboard(activity, eeg, dt_ms=1.0)
+    signals = rng.standard_normal((8, 100))
+    fig, ax = plot_heatmap(signals, dt_ms=1.0)
     assert isinstance(fig, Figure)
+    assert isinstance(ax, Axes)
     plt.close(fig)

@@ -86,7 +86,17 @@ def _(
     fig.set_size_inches(new_size[0], new_size[1])
 
     # Overwrite the targeted vector layouts cleanly
-    fig.savefig(base_file.with_suffix(".pgf"), bbox_inches="tight")
+    import shutil
+    import warnings
+
+    if shutil.which("pdflatex") is not None:
+        try:
+            fig.savefig(base_file.with_suffix(".pgf"), bbox_inches="tight")
+        except Exception as e:  # noqa: BLE001
+            warnings.warn(f"Could not save PGF graphic: {e}", RuntimeWarning, stacklevel=2)
+    else:
+        warnings.warn("pdflatex not found. Skipping PGF export.", RuntimeWarning, stacklevel=2)
+
     fig.savefig(base_file.with_suffix(".png"), dpi=200, bbox_inches="tight")
     return
 

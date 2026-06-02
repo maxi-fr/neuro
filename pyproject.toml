@@ -117,6 +117,9 @@ testpaths = ["tests"]
 
 [tool.ty]
 
+[tool.ty.src]
+exclude = ["notebooks/"]
+
 [tool.ty.rules]
 # In ty, you control strictness by setting individual rules to "error", "warn", or "ignore".
 

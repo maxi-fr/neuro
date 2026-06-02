@@ -26,6 +26,7 @@ from simulate.config import load_config
 
 from neuro.sweep import sweep_1d
 from utils.plotting import plot_bifurcation_1d
+from utils.save_plots import ThesisPlotSaver
 
 DEFAULT_CONFIG = Path("scripts/configs/bifurcation.yaml")
 DEFAULT_OUTPUT_DIR = Path("artifacts")
@@ -78,10 +79,21 @@ def _run_one(param: str, label: str, values: np.ndarray, cfg: dict, output_dir: 
         param_label=label,
         title=f"Single-node Jansen-Rit bifurcation vs {label}",
     )
-    path = output_dir / f"bifurcation_{param}.png"
-    fig.savefig(path, dpi=150)
+    saver = ThesisPlotSaver(base_dir=str(output_dir))
+    metadata = {
+        "param": param,
+        "label": label,
+        "values_start": float(values[0]),
+        "values_stop": float(values[-1]),
+        "values_num": len(values),
+        "duration_ms": float(cfg["duration_ms"]),
+        "transient_ms": float(cfg["transient_ms"]),
+        "dt": float(cfg["dt"]),
+    }
+    plot_name = f"bifurcation_{param}"
+    saver.save(fig, name=plot_name, metadata=metadata, overwrite=True)
     plt.close(fig)
-    print(f"  saved {path}")
+    print(f"  saved bifurcation plot folder to {output_dir / plot_name}")
 
 
 def main() -> None:
