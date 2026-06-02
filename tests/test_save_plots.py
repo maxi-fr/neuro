@@ -4,6 +4,7 @@ import shutil
 from pathlib import Path
 
 import matplotlib.pyplot as plt
+import numpy as np
 import pytest
 
 from utils.save_plots import ThesisPlotSaver
@@ -86,3 +87,61 @@ def test_thesis_plot_saver_increment_vs_overwrite(tmp_path: Path) -> None:
     # 'my_plot_02' should NOT exist
     dir3 = tmp_path / "my_plot_02"
     assert not dir3.exists()
+
+
+def test_thesis_plot_saver_save_with_data(tmp_path: Path) -> None:
+    """Test saving dictionaries of numpy arrays."""
+    saver = ThesisPlotSaver(base_dir=str(tmp_path))
+    fig, ax = plt.subplots()
+    ax.plot([0, 1], [0, 1])
+
+    dict_data = {"eeg": np.array([1, 2]), "activity": np.array([3, 4])}
+    saver.save(fig, "plot_dict", data=dict_data, overwrite=True)
+    npz_path = tmp_path / "plot_dict" / "plot_dict.npz"
+    assert npz_path.exists()
+    loaded_npz = np.load(npz_path)
+    np.testing.assert_array_equal(loaded_npz["eeg"], dict_data["eeg"])
+    np.testing.assert_array_equal(loaded_npz["activity"], dict_data["activity"])
+
+    plt.close(fig)
+
+
+def test_thesis_plot_saver_save_dict_figs(tmp_path: Path) -> None:
+    """Test saving multiple figures as a dictionary."""
+    saver = ThesisPlotSaver(base_dir=str(tmp_path))
+
+    fig1, ax1 = plt.subplots()
+    ax1.plot([0, 1], [0, 1])
+    fig2, ax2 = plt.subplots()
+    ax2.plot([0, 1], [0, 2])
+
+    saver.save({"traces": fig1, "heatmap": fig2}, "dict_plots", overwrite=True)
+    assert (tmp_path / "dict_plots" / "dict_plots_traces.png").exists()
+    assert (tmp_path / "dict_plots" / "dict_plots_heatmap.png").exists()
+
+    plt.close(fig1)
+    plt.close(fig2)
+
+
+def test_thesis_plot_saver_metadata(tmp_path: Path) -> None:
+    """Test metadata saving directly in the metadata dictionary."""
+    saver = ThesisPlotSaver(base_dir=str(tmp_path))
+    fig, ax = plt.subplots()
+    ax.plot([0, 1], [0, 1])
+
+    metadata = {
+        "generator": "test_generator_func",
+        "step_size": 0.05,
+        "n_sims": 10,
+    }
+    saver.save(fig, "gen_plot", metadata=metadata, overwrite=True)
+    plt.close(fig)
+
+    json_path = tmp_path / "gen_plot" / "gen_plot.json"
+    assert json_path.exists()
+    with json_path.open("r", encoding="utf-8") as f:
+        meta = json.load(f)
+
+    assert meta["generator"] == "test_generator_func"
+    assert meta["step_size"] == 0.05
+    assert meta["n_sims"] == 10

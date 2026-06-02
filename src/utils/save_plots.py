@@ -10,6 +10,7 @@ from typing import Any
 
 import matplotlib as mpl
 import matplotlib.pyplot as plt
+import numpy as np
 
 
 class ThesisPlotSaver:
@@ -90,20 +91,27 @@ class ThesisPlotSaver:
         fig_height_in: float = fig_width_in * golden_ratio * (subplots[0] / subplots[1])
         return (fig_width_in, fig_height_in)
 
-    def save(
-        self,
-        fig: plt.Figure,
-        name: str,
-        metadata: dict[str, Any] | None = None,
-        *,
-        overwrite: bool = False,
-    ) -> None:
-        """
-        Save the figure object, PGF graphic, and JSON metadata into a target folder.
+    def _save_single_fig(self, fig: plt.Figure, filepath: Path) -> None:
+        """Save a single figure's pickle, pgf, and png formats."""
+        pkl_path: Path = filepath.with_suffix(".pkl")
+        with pkl_path.open("wb") as f:
+            pickle.dump(fig, f)
 
-        If the directory 'plots/<name>' already exists, it auto-increments: 'plots/<name>_01'.
-        Unless overwrite is set to True.
-        """
+        pgf_path: Path = filepath.with_suffix(".pgf")
+        try:
+            fig.savefig(pgf_path, bbox_inches="tight")
+        except Exception as e:  # noqa: BLE001
+            warnings.warn(
+                f"Could not save PGF graphic: {e}. Skipping PGF export.",
+                RuntimeWarning,
+                stacklevel=3,
+            )
+
+        png_path: Path = filepath.with_suffix(".png")
+        fig.savefig(png_path, dpi=200, bbox_inches="tight")
+
+    def _resolve_target_dir(self, name: str, *, overwrite: bool) -> tuple[Path, str]:
+        """Resolve the target directory path and the final folder name."""
         target_dir: Path = self.base_dir / name
         final_name: str = name
 
@@ -115,7 +123,19 @@ class ThesisPlotSaver:
                 if not target_dir.exists():
                     break
                 counter += 1
+        return target_dir, final_name
 
+    def save(
+        self,
+        fig: plt.Figure | dict[str, plt.Figure],
+        name: str,
+        metadata: dict[str, Any] | None = None,
+        *,
+        data: dict[str, np.ndarray] | None = None,
+        overwrite: bool = False,
+    ) -> None:
+        """Save the figure(s), PGF graphic(s), and JSON metadata into a target folder."""
+        target_dir, final_name = self._resolve_target_dir(name, overwrite=overwrite)
         target_dir.mkdir(parents=True, exist_ok=True)
         base_filepath: Path = target_dir / final_name
 
@@ -126,23 +146,17 @@ class ThesisPlotSaver:
         metadata["generated_at"] = datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%d %H:%M:%S")
 
         json_path: Path = base_filepath.with_suffix(".json")
-
         with json_path.open("w", encoding="utf-8") as f:
             json.dump(metadata, f, indent=4, ensure_ascii=False)
 
-        pkl_path: Path = base_filepath.with_suffix(".pkl")
-        with pkl_path.open("wb") as f:
-            pickle.dump(fig, f)
+        # Save data if provided
+        if data is not None:
+            np.savez_compressed(base_filepath.with_suffix(".npz"), **data)  # ty: ignore[invalid-argument-type]
 
-        pgf_path: Path = base_filepath.with_suffix(".pgf")
-        try:
-            fig.savefig(pgf_path, bbox_inches="tight")
-        except Exception as e:  # noqa: BLE001
-            warnings.warn(
-                f"Could not save PGF graphic: {e}. Skipping PGF export.",
-                RuntimeWarning,
-                stacklevel=2,
-            )
-
-        png_path: Path = base_filepath.with_suffix(".png")
-        fig.savefig(png_path, dpi=200, bbox_inches="tight")
+        # Save figures
+        if isinstance(fig, dict):
+            for key, f in fig.items():
+                if isinstance(f, plt.Figure):
+                    self._save_single_fig(f, target_dir / f"{final_name}_{key}")
+        else:
+            self._save_single_fig(fig, base_filepath)

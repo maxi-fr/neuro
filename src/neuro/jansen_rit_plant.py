@@ -120,7 +120,6 @@ class TVBJansenRitDynamics(Dynamics[TVBJansenRitDynamicsLog]):
         self._n_nodes = int(conn.number_of_regions)
 
         model = _JansenRit(**_as_tvb_params(model_params))
-        model.variables_of_interest = ("y1", "y2")
 
         # Inject additive noise only into the excitatory input pathway (state
         # variable y4, which carries the mean input mu) -- i.e. a "noisy input".
