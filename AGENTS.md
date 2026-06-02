@@ -32,7 +32,7 @@ uv run pre-commit run --all-files
 uv run marimo check --fix --unsafe-fixes <notebook-name> # Run marimo specific lint issues
 ```
 
-Pre-commit hooks run ruff (with `--fix --unsafe-fixes`), ruff-format, ty, pytest, `uv-lock`, and markdownlint on every commit — expect commits to mutate `requirements.txt` and reformat files.
+Pre-commit hooks run ruff (with `--fix --unsafe-fixes`), ruff-format, ty, pytest, `uv-lock`, and markdownlint on every commit — expect commits to mutate `requirements.txt` and reformat files. Note: since the pre-commit hooks runs all the checks and tests there is no point in running them manually as well.
 
 ## General instructions
 

@@ -1,11 +1,11 @@
-"""Run an open-loop Jansen-Rit regime and save EEG / activity / spectrum plots.
+"""Run an open-loop Jansen-Rit regime and save EEG and spectrum plots.
 
 Reads a regime config (the ``dynamics`` block of an orchestrator-style YAML such
 as ``scripts/configs/jansen_rit_healthy.yaml``), drives the plant with no control
 via :func:`neuro.sweep.run_open_loop`, and renders:
 
-* a 2x2 dashboard (node activity + EEG, each with its Welch power spectrum), and
-* a stacked EEG-trace figure.
+* a stacked EEG-trace figure, and
+* a Welch power spectrum of the EEG.
 
 It also reports the network synchronization and dominant EEG frequency so the
 regime (healthy alpha / epileptiform / parkinsonian beta) is quantified.
@@ -55,7 +55,7 @@ def parse_args() -> argparse.Namespace:
         "--plot-path",
         type=Path,
         default=DEFAULT_PLOT_PATH,
-        help="PNG path for the dashboard; the EEG-trace figure is saved alongside as *_eeg.png.",
+        help="Path prefix (stem) for the saved plots and data folder.",
     )
     parser.add_argument("--no-plot", action="store_true", help="Skip plotting (just print metrics).")
     return parser.parse_args()
@@ -110,8 +110,6 @@ def main() -> None:
         title=f"EEG output — {args.config.stem}",
         color="#ff7f0e",
     )
-    saver.save(fig_signals, name=args.plot_path.stem, metadata=metadata, overwrite=True)
-    plt.close(fig_signals)
 
     # 2. Plot Fourier power spectrum
     nperseg = min(PSD_NPERSEG, eeg.shape[1])
@@ -126,12 +124,19 @@ def main() -> None:
     )
     if fig_freq.axes:
         fig_freq.axes[0].set_title(f"EEG Power Spectrum — {args.config.stem}")
-    saver.save(fig_freq, name=f"{args.plot_path.stem}_spectrum", metadata=metadata, overwrite=True)
+
+    # Save both figures and time-series data in a single subdirectory
+    saver.save(
+        {"signals": fig_signals, "spectrum": fig_freq},
+        name=args.plot_path.stem,
+        metadata=metadata,
+        data={"eeg": eeg},
+        overwrite=True,
+    )
+    plt.close(fig_signals)
     plt.close(fig_freq)
 
-    print(
-        f"Saved regime plot folders to {args.plot_path.parent / args.plot_path.stem} and {args.plot_path.parent / (args.plot_path.stem + '_spectrum')}"
-    )
+    print(f"Saved regime plots and data folder to {args.plot_path.parent / args.plot_path.stem}")
 
 
 if __name__ == "__main__":

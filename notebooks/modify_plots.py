@@ -56,7 +56,13 @@ def _(Any, Path, json, mo, plot_selector: "mo.ui.dropdown"):
     with json_path.open(encoding="utf-8") as f_json:
         meta_data = json.load(f_json)
 
-    preview_img: mo.image = mo.image(src=str(base_file.with_suffix(".png")), width=450)
+    # Find all PNG files in the folder for preview
+    png_files = sorted(selected_folder.glob("*.png"))
+    if png_files:
+        previews = [mo.image(src=str(p), width=450) for p in png_files]
+        preview_img = mo.hstack(previews) if len(previews) > 1 else previews[0]
+    else:
+        preview_img = mo.md("⚠️ *No PNG preview found.*")
 
     meta_view: mo.vstack = mo.vstack([mo.md("### ⚙️ Experiment Configuration"), mo.dict_view(meta_data)])
 
@@ -66,7 +72,6 @@ def _(Any, Path, json, mo, plot_selector: "mo.ui.dropdown"):
 
 @app.cell
 def _(
-    Path,
     base_file: "Path",
     mo,
     pickle,
@@ -76,28 +81,29 @@ def _(
 ):
     mo.stop(not rebuild_btn.value)
 
-    # Unpickle using structural path typing
-    pkl_path: Path = base_file.with_suffix(".pkl")
-    with pkl_path.open("rb") as f:
-        fig = pickle.load(f)
-
-    # Recalculate dimensions dynamically
-    new_size = saver.calculate_dimensions(fraction=width_slider.value)
-    fig.set_size_inches(new_size[0], new_size[1])
-
-    # Overwrite the targeted vector layouts cleanly
+    # Unpickle using structural path typing for all pickle files in the folder
     import shutil
     import warnings
 
-    if shutil.which("pdflatex") is not None:
-        try:
-            fig.savefig(base_file.with_suffix(".pgf"), bbox_inches="tight")
-        except Exception as e:  # noqa: BLE001
-            warnings.warn(f"Could not save PGF graphic: {e}", RuntimeWarning, stacklevel=2)
-    else:
-        warnings.warn("pdflatex not found. Skipping PGF export.", RuntimeWarning, stacklevel=2)
+    pkl_files = sorted(base_file.parent.glob("*.pkl"))
+    for p_path in pkl_files:
+        with p_path.open("rb") as f:
+            fig = pickle.load(f)
 
-    fig.savefig(base_file.with_suffix(".png"), dpi=200, bbox_inches="tight")
+        # Recalculate dimensions dynamically
+        new_size = saver.calculate_dimensions(fraction=width_slider.value)
+        fig.set_size_inches(new_size[0], new_size[1])
+
+        # Overwrite the targeted vector layouts cleanly
+        if shutil.which("pdflatex") is not None:
+            try:
+                fig.savefig(p_path.with_suffix(".pgf"), bbox_inches="tight")
+            except Exception as e:  # noqa: BLE001
+                warnings.warn(f"Could not save PGF graphic: {e}", RuntimeWarning, stacklevel=2)
+        else:
+            warnings.warn("pdflatex not found. Skipping PGF export.", RuntimeWarning, stacklevel=2)
+
+        fig.savefig(p_path.with_suffix(".png"), dpi=200, bbox_inches="tight")
     return
 
 

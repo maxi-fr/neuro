@@ -91,6 +91,7 @@ def main() -> None:
     ]
     saver = ThesisPlotSaver(base_dir=str(args.output_dir))
 
+    fig_dict = {}
     for key, label, cmap in panels:
         fig, _ = plot_state_map(
             result["mu"],
@@ -100,15 +101,23 @@ def main() -> None:
             title=f"Network state map — {label}",
             cmap=cmap,
         )
-        metadata = {
-            "metric": key,
-            "metric_label": label,
-            "config_file": str(args.config),
-        }
-        plot_name = f"state_map_{key}"
-        saver.save(fig, name=plot_name, metadata=metadata, overwrite=True)
+        fig_dict[key] = fig
+
+    metadata = {
+        "config_file": str(args.config),
+    }
+    data = {
+        "mu": np.asarray(result["mu"]),
+        "sigma": np.asarray(result["sigma"]),
+        "sync": np.asarray(result["sync"]),
+        "freq": np.asarray(result["freq"]),
+        "amplitude": np.asarray(result["amplitude"]),
+    }
+    plot_name = "state_map"
+    saver.save(fig_dict, name=plot_name, metadata=metadata, data=data, overwrite=True)
+    for fig in fig_dict.values():
         plt.close(fig)
-        print(f"  saved state map plot folder to {args.output_dir / plot_name}")
+    print(f"  saved network state maps and data to {args.output_dir / plot_name}")
 
 
 if __name__ == "__main__":

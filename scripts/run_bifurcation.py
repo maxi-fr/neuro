@@ -90,10 +90,16 @@ def _run_one(param: str, label: str, values: np.ndarray, cfg: dict, output_dir: 
         "transient_ms": float(cfg["transient_ms"]),
         "dt": float(cfg["dt"]),
     }
+    data = {
+        "values": np.asarray(result["values"]),
+        "min": np.asarray(result["min"]),
+        "max": np.asarray(result["max"]),
+        "freq": np.asarray(result["freq"]),
+    }
     plot_name = f"bifurcation_{param}"
-    saver.save(fig, name=plot_name, metadata=metadata, overwrite=True)
+    saver.save(fig, name=plot_name, metadata=metadata, data=data, overwrite=True)
     plt.close(fig)
-    print(f"  saved bifurcation plot folder to {output_dir / plot_name}")
+    print(f"  saved bifurcation plot and data folder to {output_dir / plot_name}")
 
 
 def main() -> None:

@@ -2,8 +2,7 @@
 
 Instantiates :class:`NativeFHNDynamics` + :class:`FHNOutput`, advances them
 step-by-step for ~1 s of simulated time using the ``evaluate`` API, and reports
-summary statistics on the
-node activity and EEG projection. Also renders diagnostic EEG plots so the
+summary statistics on the EEG projection. Also renders diagnostic EEG plots so the
 simulation can be inspected visually. Useful as a smoke test for the plant and
 as a worked example of the step-by-step loop.
 
@@ -102,7 +101,6 @@ def main() -> None:
     )
     print(f"Running {n_steps} steps of {args.step_ms} ms ({args.duration_ms} ms total)...")
 
-    activity_history: list[FloatArray] = []
     eeg_history: list[FloatArray] = []
     t = 0.0
     u = np.zeros((1, 1))
@@ -110,26 +108,19 @@ def main() -> None:
         x_raw, _ = dynamics.evaluate(t, u)
         eeg_raw, _ = output.evaluate(t, x_raw, u)
 
-        x = cast("FloatArray", x_raw)
         eeg = cast("FloatArray", eeg_raw)
 
-        n_nodes = dynamics.n_nodes
-        activity = x[:n_nodes]
-
-        activity_history.append(activity)
         eeg_history.append(eeg)
         t += args.step_ms
 
-    activity_full: FloatArray = np.column_stack(activity_history)
     eeg_full: FloatArray = np.column_stack(eeg_history)
 
     print("Aggregated outputs:")
-    summarise("activity", activity_full)
     summarise("eeg", eeg_full)
 
     if args.save is not None:
         args.save.parent.mkdir(parents=True, exist_ok=True)
-        np.savez(args.save, activity=activity_full, eeg=eeg_full, leadfield=output.leadfield)
+        np.savez(args.save, eeg=eeg_full, leadfield=output.leadfield)
         print(f"Saved outputs to {args.save}")
 
     if not args.no_plot:
@@ -150,8 +141,6 @@ def main() -> None:
             channel_names=[f"ch{i}" for i in range(n_sensors)],
             title=f"EEG channel traces (first {n_shown} of {n_sensors})",
         )
-        saver.save(fig_signals, name=args.plot_path.stem, metadata=metadata, overwrite=True)
-        plt.close(fig_signals)
 
         # 2. Plot heatmap
         fig_heat, _ = plot_heatmap(
@@ -159,12 +148,19 @@ def main() -> None:
             dt_ms=dynamics.dt,
             title=f"EEG heatmap (all {n_sensors} channels)",
         )
-        saver.save(fig_heat, name=f"{args.plot_path.stem}_heatmap", metadata=metadata, overwrite=True)
+
+        # Save both figures and time-series data in a single subdirectory
+        saver.save(
+            {"signals": fig_signals, "heatmap": fig_heat},
+            name=args.plot_path.stem,
+            metadata=metadata,
+            data={"eeg": eeg_full},
+            overwrite=True,
+        )
+        plt.close(fig_signals)
         plt.close(fig_heat)
 
-        print(
-            f"Saved EEG plot folders to {args.plot_path.parent / args.plot_path.stem} and {args.plot_path.parent / (args.plot_path.stem + '_heatmap')}"
-        )
+        print(f"Saved EEG plots and data folder to {args.plot_path.parent / args.plot_path.stem}")
 
 
 if __name__ == "__main__":

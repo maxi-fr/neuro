@@ -134,8 +134,6 @@ def main() -> None:
             title=f"EEG output (first {n_shown} of {n_sensors} channels)",
             color="#ff7f0e",
         )
-        saver.save(fig_signals, name=args.plot_path.stem, metadata=metadata, overwrite=True)
-        plt.close(fig_signals)
 
         # 2. Plot Fourier power spectrum
         fig_freq, _ = plot_fourier(
@@ -146,12 +144,19 @@ def main() -> None:
             channel_names=[f"EEG {i}" for i in range(n_sensors)],
             max_freq=50.0,
         )
-        saver.save(fig_freq, name=f"{args.plot_path.stem}_spectrum", metadata=metadata, overwrite=True)
+
+        # Save both figures and time-series data in a single subdirectory
+        saver.save(
+            {"signals": fig_signals, "spectrum": fig_freq},
+            name=args.plot_path.stem,
+            metadata=metadata,
+            data={"eeg": eeg, "u": u},
+            overwrite=True,
+        )
+        plt.close(fig_signals)
         plt.close(fig_freq)
 
-        print(
-            f"Saved EEG plot folders to {args.plot_path.parent / args.plot_path.stem} and {args.plot_path.parent / (args.plot_path.stem + '_spectrum')}"
-        )
+        print(f"Saved EEG plots and data folder to {args.plot_path.parent / args.plot_path.stem}")
 
 
 if __name__ == "__main__":
