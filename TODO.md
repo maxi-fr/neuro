@@ -4,7 +4,7 @@
 
 ## Knowledge Base
 
-* Rename sources folder to summaries
+* Delete knowledge-base thing
 
 ## Implementations
 

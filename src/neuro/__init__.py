@@ -11,7 +11,6 @@ from .plant import (
     TVBFHNOutput,
 )
 from .sensing import DirectSensor
-from .sweep import network_state_map, run_activity, run_open_loop, sweep_1d
 
 __all__ = [
     "DirectSensor",
@@ -22,8 +21,4 @@ __all__ = [
     "TVBJansenRitDynamics",
     "TVBJansenRitOutput",
     "ZeroController",
-    "network_state_map",
-    "run_activity",
-    "run_open_loop",
-    "sweep_1d",
 ]

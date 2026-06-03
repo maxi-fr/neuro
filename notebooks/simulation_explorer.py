@@ -15,7 +15,7 @@ def _():
         TVBFHNDynamics,
         TVBFHNOutput,
     )
-    from utils.plotting import plot_fourier, plot_signals
+    from utils.plotting import plot_psd, plot_signals
 
     return (
         FHNOutput,
@@ -24,7 +24,7 @@ def _():
         TVBFHNOutput,
         mo,
         np,
-        plot_fourier,
+        plot_psd,
         plot_signals,
     )
 
@@ -113,13 +113,6 @@ def _(mo):
         label="Waterfall/Stacked Stacked Channels",
     )
 
-    # 8. Spectral mode selector
-    mode_select = mo.ui.dropdown(
-        options=["amplitude", "power"],
-        value="power",
-        label="Fourier Spectrum Mode",
-    )
-
     # 9. Normalize spectra (compare shape, not absolute magnitude)
     normalize_select = mo.ui.checkbox(
         value=True,
@@ -133,7 +126,7 @@ def _(mo):
                 mo.hstack(
                     [
                         mo.vstack([plant_select, seed_input, duration_slider, sigma_ou_slider, nsig_slider]),
-                        mo.vstack([channels_slider, max_freq_slider, stacked_select, mode_select, normalize_select]),
+                        mo.vstack([channels_slider, max_freq_slider, stacked_select, normalize_select]),
                     ],
                     justify='start',
                     gap=4,
@@ -145,7 +138,6 @@ def _(mo):
         channels_slider,
         duration_slider,
         max_freq_slider,
-        mode_select,
         normalize_select,
         nsig_slider,
         plant_select,
@@ -236,16 +228,14 @@ def _(
     eeg,
     max_freq_slider,
     mo,
-    mode_select,
     normalize_select,
-    plot_fourier,
+    plot_psd,
     plot_signals,
     stacked_select,
 ):
     _n_ch = int(channels_slider.value)
     _max_f = float(max_freq_slider.value)
     is_stacked = bool(stacked_select.value)
-    spec_mode = mode_select.value
     normalize_spec = bool(normalize_select.value)
 
     # Interactive tabs to view Activity or EEG separately
@@ -260,10 +250,9 @@ def _(
                 title="Brain Region Oscillations over Time",
                 color="#1f77b4",
             )[0],
-            plot_fourier(
+            plot_psd(
                 activity,
                 dt_ms=dt_ms,
-                mode=spec_mode,
                 channels_to_plot=list(range(min(_n_ch, activity.shape[0]))),
                 plot_mean=False,
                 max_freq=_max_f,
@@ -283,10 +272,9 @@ def _(
                 title="EEG Scalp Projection over Time",
                 color="#ff7f0e",
             )[0],
-            plot_fourier(
+            plot_psd(
                 eeg,
                 dt_ms=dt_ms,
-                mode=spec_mode,
                 channels_to_plot=list(range(min(_n_ch, eeg.shape[0]))),
                 plot_mean=False,
                 max_freq=_max_f,
