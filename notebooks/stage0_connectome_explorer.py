@@ -10,7 +10,7 @@ def _():
     import numpy as np
     from matplotlib import pyplot as plt
 
-    from neuro import load_connectome
+    from neuro.connectome import load_connectome
 
     return load_connectome, mo, np, plt
 

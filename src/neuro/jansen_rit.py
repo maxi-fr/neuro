@@ -26,10 +26,14 @@ The right-hand side is written element-wise, so the same code runs a single node
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from typing import TYPE_CHECKING
 
 import numpy as np
 import numpy.typing as npt
+
+if TYPE_CHECKING:
+    from neuro.connectome import Connectome
 
 FloatArray = npt.NDArray[np.float64]
 
@@ -45,7 +49,7 @@ class JansenRitParams:
     ----------
     A
         Excitatory synaptic gain in mV -- the bifurcation knob (3.25 = background,
-        3.6 = limit cycle).
+        3.6 = limit cycle). Can be a scalar or a vector of shape (N,) for network nodes.
     B
         Inhibitory synaptic gain in mV.
     a
@@ -74,7 +78,7 @@ class JansenRitParams:
         threshold of 5 used in later stages).
     """
 
-    A: float = 3.25
+    A: float | FloatArray = 3.25
     B: float = 22.0
     a: float = 100.0
     b: float = 50.0
@@ -94,8 +98,8 @@ def sigmoid(v: FloatArray | float, params: JansenRitParams) -> FloatArray:
     return 2.0 * params.e0 / (1.0 + np.exp(params.r * (params.v0 - v)))
 
 
-def jr_rhs(x: FloatArray, params: JansenRitParams) -> FloatArray:
-    """Right-hand side of the single-node Jansen-Rit ODEs (no noise, no tES).
+def jr_rhs(x: FloatArray, params: JansenRitParams, coupling: FloatArray | float = 0.0) -> FloatArray:
+    """Right-hand side of the single-node or network Jansen-Rit ODEs.
 
     Parameters
     ----------
@@ -104,6 +108,8 @@ def jr_rhs(x: FloatArray, params: JansenRitParams) -> FloatArray:
         ``[x1, x2, x3, x4, x5, x6]``.
     params
         Model parameters.
+    coupling
+        Network coupling term, shape ``(N,)`` or scalar; enters the ``x5'`` equation.
 
     Returns
     -------
@@ -120,24 +126,30 @@ def jr_rhs(x: FloatArray, params: JansenRitParams) -> FloatArray:
     dx1 = x4
     dx4 = params.A * a * out - 2.0 * a * x4 - a * a * x1
     dx2 = x5
-    # Stage 2 adds + A a K sum_j w_ij S(x2-x3); zeta is injected in heun_step.
-    dx5 = params.A * a * (params.mean_input + params.C2 * exc) - 2.0 * a * x5 - a * a * x2
+    # Stage 2 adds + A a K sum_j w_ij S(y_j) - step-wise constant coupling; zeta is injected in heun_step.
+    dx5 = params.A * a * (params.mean_input + params.C2 * exc + coupling) - 2.0 * a * x5 - a * a * x2
     dx3 = x6
     dx6 = params.B * b * params.C4 * inh - 2.0 * b * x6 - b * b * x3
 
     return np.array([dx1, dx2, dx3, dx4, dx5, dx6])
 
 
-def rk4_step(x: FloatArray, params: JansenRitParams, dt: float) -> FloatArray:
+def rk4_step(x: FloatArray, params: JansenRitParams, dt: float, coupling: FloatArray | float = 0.0) -> FloatArray:
     """Advance one deterministic RK4 step (noise off)."""
-    k1 = jr_rhs(x, params)
-    k2 = jr_rhs(x + 0.5 * dt * k1, params)
-    k3 = jr_rhs(x + 0.5 * dt * k2, params)
-    k4 = jr_rhs(x + dt * k3, params)
+    k1 = jr_rhs(x, params, coupling)
+    k2 = jr_rhs(x + 0.5 * dt * k1, params, coupling)
+    k3 = jr_rhs(x + 0.5 * dt * k2, params, coupling)
+    k4 = jr_rhs(x + dt * k3, params, coupling)
     return x + (dt / 6.0) * (k1 + 2.0 * k2 + 2.0 * k3 + k4)
 
 
-def stochastic_rk4_step(x: FloatArray, params: JansenRitParams, dt: float, xi: FloatArray | float) -> FloatArray:
+def stochastic_rk4_step(
+    x: FloatArray,
+    params: JansenRitParams,
+    dt: float,
+    xi: FloatArray | float,
+    coupling: FloatArray | float = 0.0,
+) -> FloatArray:
     """Advance one stochastic Runge-Kutta 4th-order step with additive noise.
 
     Parameters
@@ -151,6 +163,8 @@ def stochastic_rk4_step(x: FloatArray, params: JansenRitParams, dt: float, xi: F
     xi
         Standard-normal draw(s) for this step: a scalar for one node, shape
         ``(N,)`` for ``N`` nodes.
+    coupling
+        Network coupling term, shape ``(N,)`` or scalar.
 
     Returns
     -------
@@ -160,15 +174,21 @@ def stochastic_rk4_step(x: FloatArray, params: JansenRitParams, dt: float, xi: F
     dw = np.zeros_like(x, dtype=np.float64)
     dw[4] = params.sigma * np.sqrt(dt) * xi  # additive noise enters x5 only
 
-    k1 = jr_rhs(x, params) * dt + dw
-    k2 = jr_rhs(x + 0.5 * k1, params) * dt + dw
-    k3 = jr_rhs(x + 0.5 * k2, params) * dt + dw
-    k4 = jr_rhs(x + k3, params) * dt + dw
+    k1 = jr_rhs(x, params, coupling) * dt + dw
+    k2 = jr_rhs(x + 0.5 * k1, params, coupling) * dt + dw
+    k3 = jr_rhs(x + 0.5 * k2, params, coupling) * dt + dw
+    k4 = jr_rhs(x + k3, params, coupling) * dt + dw
 
     return x + (k1 + 2.0 * k2 + 2.0 * k3 + k4) / 6.0
 
 
-def heun_step(x: FloatArray, params: JansenRitParams, dt: float, xi: FloatArray | float) -> FloatArray:
+def heun_step(
+    x: FloatArray,
+    params: JansenRitParams,
+    dt: float,
+    xi: FloatArray | float,
+    coupling: FloatArray | float = 0.0,
+) -> FloatArray:
     """Advance one stochastic-Heun step with additive noise on the ``x5'`` equation.
 
     Parameters
@@ -182,6 +202,8 @@ def heun_step(x: FloatArray, params: JansenRitParams, dt: float, xi: FloatArray 
     xi
         Standard-normal draw(s) for this step: a scalar for one node, shape
         ``(N,)`` for ``N`` nodes.
+    coupling
+        Network coupling term, shape ``(N,)`` or scalar.
 
     Returns
     -------
@@ -191,9 +213,9 @@ def heun_step(x: FloatArray, params: JansenRitParams, dt: float, xi: FloatArray 
     dw = np.zeros_like(x, dtype=np.float64)
     dw[4] = params.sigma * np.sqrt(dt) * xi  # additive noise enters x5 only
 
-    f0 = jr_rhs(x, params)
+    f0 = jr_rhs(x, params, coupling)
     x_pred = x + dt * f0 + dw
-    f1 = jr_rhs(x_pred, params)
+    f1 = jr_rhs(x_pred, params, coupling)
     return x + 0.5 * dt * (f0 + f1) + dw
 
 
@@ -245,6 +267,119 @@ def simulate_node(  # noqa: PLR0913
         else:
             x = heun_step(x, params, dt, rng.standard_normal())
         x_traj[:, k + 1] = x
+
+    t = np.arange(n_steps + 1, dtype=np.float64) * dt
+    return t, x_traj
+
+
+def simulate_network(  # noqa: PLR0913
+    *,
+    params: JansenRitParams,
+    connectome: Connectome,
+    K: float,  # noqa: N803
+    duration: float,
+    dt: float = DT_DEFAULT,
+    seed: int | None = None,
+    deterministic: bool = False,
+    use_stochastic_rk4: bool = False,
+    use_delays: bool = True,
+    initial_state: FloatArray | None = None,
+) -> tuple[FloatArray, FloatArray]:
+    """Integrate a coupled network of nodes and return the full trajectory.
+
+    Parameters
+    ----------
+    params
+        Model parameters. If ``params.A`` is an array, it specifies regional gains.
+    connectome
+        The structural connectome containing weights and conduction delays.
+    K
+        Global coupling scaling factor.
+    duration
+        Simulated time in seconds.
+    dt
+        Integration step in seconds; defaults to ``DT_DEFAULT``.
+    seed
+        Seed for the noise stream (ignored when ``deterministic``).
+    deterministic
+        If ``True``, integrate with RK4 and no noise; otherwise use stochastic Heun
+        (or stochastic RK4 if ``use_stochastic_rk4`` is ``True``).
+    use_stochastic_rk4
+        If ``True`` and ``deterministic`` is ``False``, integrate with stochastic RK4;
+        otherwise use stochastic Heun.
+    use_delays
+        If ``True``, use delayed coupling from tract lengths. If ``False``, use
+        instantaneous coupling.
+    initial_state
+        Initial state array of shape ``(6, N)``. If ``None``, defaults to zeros.
+
+    Returns
+    -------
+    t
+        Time vector in seconds, shape ``(n_samples,)``.
+    x_traj
+        State trajectory, shape ``(6, N, n_samples)``.
+    """
+    n_steps = round(duration / dt)
+    n_nodes = connectome.weights.shape[0]
+
+    a_vec = params.A
+    if np.isscalar(a_vec):
+        a_vec = np.full(n_nodes, a_vec, dtype=np.float64)
+    net_params = replace(params, A=a_vec)
+
+    if initial_state is not None:
+        if initial_state.shape != (6, n_nodes):
+            msg = f"initial_state must have shape (6, {n_nodes}), got {initial_state.shape}"
+            raise ValueError(msg)
+        x = initial_state.copy()
+    else:
+        x = np.zeros((6, n_nodes), dtype=np.float64)
+
+    x_traj = np.zeros((6, n_nodes, n_steps + 1), dtype=np.float64)
+    x_traj[:, :, 0] = x
+
+    if use_delays:
+        # Delays in connectome are in ms. Convert to steps: round(delays / (dt * 1000.0))
+        delay_steps = np.round(connectome.delays / (dt * 1000.0)).astype(np.int64)
+    else:
+        delay_steps = np.zeros((n_nodes, n_nodes), dtype=np.int64)
+
+    max_delay_steps = int(np.max(delay_steps))
+    max_history_len = max_delay_steps + 1
+
+    # History buffer of S(y) of shape (max_history_len, N)
+    history = np.zeros((max_history_len, n_nodes), dtype=np.float64)
+    # Initialize history by repeating the initial state's S(y)
+    s_y_init = sigmoid(x[1] - x[2], net_params)
+    history[:, :] = s_y_init
+
+    rng = np.random.default_rng(seed)
+    w_weights = connectome.weights
+
+    col_indices = np.arange(n_nodes)[np.newaxis, :]
+
+    for k in range(n_steps):
+        # 1. Update history with the current state's S(y)
+        s_y = sigmoid(x[1] - x[2], net_params)
+        history[k % max_history_len, :] = s_y
+
+        # 2. Compute coupling
+        row_indices = (k - delay_steps) % max_history_len
+        s_y_delayed = history[row_indices, col_indices]
+        coupling = K * np.sum(w_weights * s_y_delayed, axis=1)
+
+        # 3. Integrate
+        if deterministic:
+            x = rk4_step(x, net_params, dt, coupling=coupling)
+        else:
+            xi = rng.standard_normal(n_nodes)
+            if use_stochastic_rk4:
+                x = stochastic_rk4_step(x, net_params, dt, xi, coupling=coupling)
+            else:
+                x = heun_step(x, net_params, dt, xi, coupling=coupling)
+
+        x_traj[:, :, k + 1] = x
 
     t = np.arange(n_steps + 1, dtype=np.float64) * dt
     return t, x_traj
