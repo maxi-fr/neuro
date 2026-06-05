@@ -25,3 +25,4 @@ data/ # Lead-field generation artifacts (AAL2 atlas + cached .npy outputs)
 __marimo__/
 artifacts/
 simulations/
+data/

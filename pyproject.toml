@@ -8,7 +8,6 @@ authors = [
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
-    "neurolib",
     "matplotlib>=3.8",
     "tvb-library>=2.10.0",
     "tvb-data>=3.0.0",
@@ -43,7 +42,6 @@ build-backend = "uv_build"
 default-groups = ["dev"]
 
 [tool.uv.sources]
-neurolib = { git = "https://github.com/neurolib-dev/neurolib.git", rev = "v0.7.0" }
 simulate = { git = "https://github.com/maxi-fr/simulate.git" }
 
 [tool.ruff]

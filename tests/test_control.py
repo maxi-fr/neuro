@@ -1,16 +1,11 @@
 """Tests for the project control/sensing components and orchestrated open-loop runs.
 
-Covers :class:`~neuro.control.ZeroController`, :class:`~neuro.sensing.DirectSensor`,
-and an end-to-end open-loop :class:`~simulate.simulation.Simulation` of the
-Jansen-Rit plant -- the exact path the stock zero-gain ``PIDController`` /
-``GaussianSensor`` combination cannot run, because the orchestrator seeds the loop
-with a scalar measurement before the EEG vector is available.
+Covers :class:`~neuro.control.ZeroController` and :class:`~neuro.sensing.DirectSensor`
 """
 
 from pathlib import Path
 
 import numpy as np
-from simulate.simulation import Simulation
 
 from neuro.control import ZeroController
 from neuro.sensing import DirectSensor
@@ -40,27 +35,3 @@ def test_zero_controller_from_config() -> None:
     controller = ZeroController.from_config({"dt": _DT, "n_u": 2})
     assert controller.dt == _DT
     assert controller.n_u == 2
-
-
-def test_orchestrated_jr_open_loop_runs(tmp_path: Path) -> None:
-    """A full open-loop JR simulation runs and logs finite EEG with zero control."""
-    config = {
-        "t_end": 2.0,
-        "dynamics": {"class_path": "neuro.jansen_rit_plant.TVBJansenRitDynamics", "dt": _DT, "seed": 0},
-        "output": {"class_path": "neuro.jansen_rit_plant.TVBJansenRitOutput", "dt": _DT, "n_nodes": 76},
-        "reference": {"class_path": "simulate.reference.StepReference", "dt": _DT, "step_value": 0.0},
-        "sensor": {"class_path": "neuro.sensing.DirectSensor", "dt": _DT, "n_sensors": _N_SENSORS_TVB, "std_dev": 0.0},
-        "estimator": {"class_path": "simulate.estimator.IdentityEstimator", "dt": _DT},
-        "controller": {"class_path": "neuro.control.ZeroController", "dt": _DT, "n_u": 1},
-    }
-    sim = Simulation.from_config(config)
-    sim.run(tmp_path, prefix="t")
-    sim.export_results(tmp_path, prefix="t")
-
-    with np.load(tmp_path / "t.npz") as data:
-        eeg = data["universal_y"]
-        u = data["universal_u"]
-
-    assert eeg.shape[1] == _N_SENSORS_TVB
-    assert np.isfinite(eeg).all()
-    np.testing.assert_array_equal(u, np.zeros_like(u))

@@ -6,13 +6,10 @@ to a fixed channel count (with optional Gaussian noise).
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Self, cast
+from typing import Any, Self, cast
 
 import numpy as np
 from simulate.sensor import GaussianSensorLog, Sensor
-
-if TYPE_CHECKING:
-    from neuro.plant import FloatArray
 
 
 class DirectSensor(Sensor[GaussianSensorLog]):
@@ -54,4 +51,4 @@ class DirectSensor(Sensor[GaussianSensorLog]):
         if y_vec.shape[0] != self.n_sensors:
             y_vec = np.broadcast_to(y_vec, (self.n_sensors, 1))
         noise = self.rng.normal(0, self.std_dev, size=y_vec.shape)
-        return cast("FloatArray", self.from_col_vec(y_vec + noise)), GaussianSensorLog(noise=noise)
+        return cast("np.ndarray", self.from_col_vec(y_vec + noise)), GaussianSensorLog(noise=noise)

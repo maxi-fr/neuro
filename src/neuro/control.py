@@ -14,8 +14,6 @@ import numpy as np
 from pydantic import BaseModel, ConfigDict
 from simulate.controller import Controller
 
-from neuro.plant import FloatArray  # noqa: TC001  (runtime import: pydantic resolves the log field)
-
 
 class ZeroControllerLog(BaseModel):
     """Pydantic model for ZeroController logging."""
@@ -51,4 +49,4 @@ class ZeroController(Controller[ZeroControllerLog]):
     ) -> tuple[float | np.ndarray, ZeroControllerLog]:
         """Return a zero control vector regardless of reference or state."""
         u_vec = np.zeros((self.n_u, 1), dtype=np.float64)
-        return cast("FloatArray", self.from_col_vec(u_vec)), ZeroControllerLog()
+        return cast("np.ndarray", self.from_col_vec(u_vec)), ZeroControllerLog()
