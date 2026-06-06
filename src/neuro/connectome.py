@@ -92,16 +92,55 @@ class Connectome:
     gamma: FloatArray | None = None
 
 
+def _mirror_partner_permutation(locations: FloatArray) -> npt.NDArray[np.int64]:
+    """Map each sensor to the sensor at its sagittal-mirror position.
+
+    TVB's ``eeg_unitvector_62`` sensor file and ``projection_eeg_62_surface_16k``
+    lead field are in mirror-image left-right conventions: projection row ``i``
+    carries the lead field of the electrode *contralateral* to ``labels[i]``, so a
+    naive ``row i -> labels[i]`` pairing flips every channel to the wrong
+    hemisphere. Reflecting each sensor across the montage's sagittal plane and
+    matching to the nearest sensor recovers the correct row<->label pairing
+    (midline sensors map to themselves).
+    """
+
+    # The left-right axis is the one whose reflection best maps the symmetric
+    # montage onto itself (smallest total nearest-neighbour distance).
+    def _reflect(axis: int) -> FloatArray:
+        reflected = locations.copy()
+        reflected[:, axis] *= -1.0
+        return reflected
+
+    def _match_cost(reflected: FloatArray) -> tuple[npt.NDArray[np.int64], float]:
+        dist = np.linalg.norm(locations[:, None, :] - reflected[None, :, :], axis=2)
+        partner = dist.argmin(axis=1).astype(np.int64)
+        return partner, float(dist[np.arange(len(partner)), partner].sum())
+
+    best_partner, best_cost = np.arange(len(locations), dtype=np.int64), np.inf
+    for axis in range(locations.shape[1]):
+        partner, cost = _match_cost(_reflect(axis))
+        if cost < best_cost:
+            best_partner, best_cost = partner, cost
+    return best_partner
+
+
 def _build_eeg_gain() -> tuple[FloatArray, StrArray]:
     """Build the region-level EEG gain ``L`` and its channel labels.
 
     Collapses TVB's ``(62, 16384)`` surface projection to ``(62, 76)`` by summing
-    the projection columns of the vertices mapped to each region.
+    the projection columns of the vertices mapped to each region. The projection
+    rows are first reordered through :func:`_mirror_partner_permutation` so each
+    channel label carries its own-hemisphere lead field (TVB's sensor and
+    projection files disagree on left-right convention).
     """
     sensors = SensorsEEG.from_file(_SENSORS_FILE)
     channel_labels = np.asarray(sensors.labels, dtype=np.str_)
+    locations = np.asarray(sensors.locations, dtype=np.float64)
+    partner = _mirror_partner_permutation(locations)
+
     proj = ProjectionSurfaceEEG.from_file(_PROJECTION_FILE, matlab_data_name="ProjectionMatrix")
-    surface_gain = np.asarray(proj.projection_data, dtype=np.float64)
+    # Row k now carries labels[k]'s own-side lead field, not its contralateral one.
+    surface_gain = np.asarray(proj.projection_data, dtype=np.float64)[partner]
     rmap = np.asarray(RegionMapping.from_file(_REGION_MAPPING_FILE).array_data, dtype=np.int64)
 
     n_sensors = surface_gain.shape[0]

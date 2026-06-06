@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import numpy as np
 import numpy.typing as npt
-from scipy.signal import welch
+from scipy.signal import detrend, welch
 
 FloatArray = npt.NDArray[np.float64]
 
@@ -51,6 +51,64 @@ def compute_psd(
 
     freqs, pxx = welch(signals, fs=fs, nperseg=nperseg, axis=1)
     return freqs.astype(np.float64), pxx.astype(np.float64)
+
+
+def band_energy(
+    signals: FloatArray,
+    dt_ms: float,
+    *,
+    band: tuple[float, float] = (0.0, 50.0),
+    nperseg: int | None = None,
+    normalize: bool = True,
+) -> FloatArray:
+    """Per-channel spectral energy integrated over a frequency band.
+
+    Detrends each channel (removing the DC/linear baseline of ``y = x2 - x3``),
+    computes the Welch PSD via :func:`compute_psd`, integrates it over ``band``
+    (Hz, inclusive) with the trapezoid rule, and optionally normalizes so the
+    strongest channel is ``1.0`` (the paper's convention).
+
+    Parameters
+    ----------
+    signals
+        Input signals, shape (n_channels, n_samples).
+    dt_ms
+        Sampling interval (integration step) in milliseconds.
+    band
+        Inclusive frequency band ``(low, high)`` in Hz to integrate over.
+    nperseg
+        Welch segment length; passed through to :func:`compute_psd`.
+    normalize
+        If True, divide by the maximum so the strongest channel is 1.0.
+
+    Returns
+    -------
+    FloatArray
+        Per-channel energy, shape (n_channels,).
+
+    Raises
+    ------
+    ValueError
+        If signals is not a 2-D array.
+    """
+    if signals.ndim != 2:  # noqa: PLR2004
+        msg = f"Expected 2-D array of shape (n_channels, n_samples), got shape {signals.shape}"
+        raise ValueError(msg)
+
+    n_channels = signals.shape[0]
+    if signals.shape[1] == 0:
+        return np.zeros(n_channels, dtype=np.float64)
+
+    detrended = detrend(signals, axis=1)
+    freqs, psd = compute_psd(detrended, dt_ms, nperseg=nperseg)
+
+    low, high = band
+    mask = (freqs >= low) & (freqs <= high)
+    energy = np.trapezoid(psd[:, mask], freqs[mask], axis=1)
+
+    if normalize and energy.max() > 0:
+        energy = energy / energy.max()
+    return energy.astype(np.float64)
 
 
 def steady_window(signals: FloatArray, dt_ms: float, transient_ms: float) -> FloatArray:

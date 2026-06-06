@@ -5,6 +5,8 @@ shapes, the EEG gain ``L``, delay sanity, and the presence of the paper's EZ/PZ
 regions and named EEG channels.
 """
 
+import re
+
 import numpy as np
 import pytest
 
@@ -49,6 +51,26 @@ def test_required_regions_and_channels_present(connectome: Connectome) -> None:
     """All paper EZ/PZ regions and named EEG channels are loaded."""
     assert all(region in connectome.region_index for region in _EZ_PZ_REGIONS)
     assert all(channel in connectome.channel_index for channel in _NAMED_CHANNELS)
+
+
+def _channel_side(label: str) -> str:
+    """Hemisphere of a 10-20 channel from its number (odd=left, even=right)."""
+    match = re.search(r"(\d+)", label)
+    if match is None:
+        return "z"
+    return "L" if int(match.group(1)) % 2 == 1 else "R"
+
+
+def test_eeg_gain_is_ipsilateral(connectome: Connectome) -> None:
+    """Lateral cortical regions project most strongly to same-side EEG channels.
+
+    Guards against the left-right mirror between TVB's sensor and projection
+    files (see :func:`neuro.connectome._mirror_partner_permutation`).
+    """
+    for region, side in (("lTCV", "L"), ("rTCV", "R"), ("lTCI", "L"), ("rTCI", "R")):
+        column = np.abs(connectome.gain[:, connectome.region_index[region]])
+        top_channel = str(connectome.channel_labels[int(np.argmax(column))])
+        assert _channel_side(top_channel) == side, f"{region} -> {top_channel}"
 
 
 def test_delays_in_millisecond_range(connectome: Connectome) -> None:
