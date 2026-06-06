@@ -17,7 +17,7 @@ from neuro.jansen_rit import (
     heun_step,
     output,
     rk4_step,
-    sigmoid,
+    sigmoid_jit,
     simulate_node,
     stochastic_rk4_step,
 )
@@ -42,9 +42,9 @@ def _post_transient_output(a_gain: float, *, deterministic: bool) -> np.ndarray:
 def test_sigmoid_shape_and_bounds() -> None:
     """S(v0) = e0, S is monotonic increasing, and bounded in [0, 2 e0]."""
     params = JansenRitParams()
-    assert sigmoid(params.v0, params) == params.e0
+    assert np.asarray(sigmoid_jit(params.v0, params.e0, params.v0, params.r), dtype=np.float64) == params.e0
     v = np.linspace(-20.0, 30.0, 200)
-    s = sigmoid(v, params)
+    s = np.asarray(sigmoid_jit(v, params.e0, params.v0, params.r), dtype=np.float64)
     assert np.all(np.diff(s) > 0)
     assert s.min() >= 0.0
     assert s.max() <= 2.0 * params.e0

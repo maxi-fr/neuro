@@ -29,6 +29,7 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any, Self
 
+import numba
 import numpy as np
 import numpy.typing as npt
 from pydantic import BaseModel, ConfigDict
@@ -94,10 +95,89 @@ class JansenRitParams:
     mean_input: float = 90.0
     sigma: float = 550.0
 
+    def to_numba_tuple(self, n_nodes: int) -> tuple[Any, ...]:
+        """Convert params to a JIT-friendly tuple, broadcasting regional parameters."""
+        a_gains = self.A
+        if n_nodes == 1:
+            a_gains_val = float(a_gains.item()) if isinstance(a_gains, np.ndarray) else float(a_gains)
+        else:
+            a_gains_val = (
+                np.asarray(a_gains, dtype=np.float64)
+                if isinstance(a_gains, np.ndarray)
+                else np.full(n_nodes, a_gains, dtype=np.float64)
+            )
 
-def sigmoid(v: FloatArray | float, params: JansenRitParams) -> FloatArray:
+        return (
+            a_gains_val,
+            self.B,
+            self.a,
+            self.b,
+            self.C1,
+            self.C2,
+            self.C3,
+            self.C4,
+            self.e0,
+            self.v0,
+            self.r,
+            self.mean_input,
+            self.sigma,
+        )
+
+
+def _to_scalar(val: FloatArray | float) -> float:
+    if isinstance(val, np.ndarray):
+        return float(val.item())
+    return float(val)
+
+
+def _to_array(val: FloatArray | float, n_nodes: int) -> FloatArray:
+    if isinstance(val, np.ndarray):
+        return np.asarray(val, dtype=np.float64)
+    return np.full(n_nodes, val, dtype=np.float64)
+
+
+@numba.njit(fastmath=True, cache=True)
+def sigmoid_jit(v: FloatArray | float, e0: float, v0: float, r: float) -> FloatArray | float:
     """Evaluate the firing-rate sigmoid ``S(v) = 2 e0 / (1 + exp(r (v0 - v)))``."""
-    return 2.0 * params.e0 / (1.0 + np.exp(params.r * (params.v0 - v)))
+    return 2.0 * e0 / (1.0 + np.exp(r * (v0 - v)))
+
+
+@numba.njit(fastmath=True, cache=True)
+def _jr_rhs_jit(
+    x: FloatArray, params_tuple: tuple[Any, ...], coupling: FloatArray | float, u_tes: FloatArray | float
+) -> FloatArray:
+    A, B, a, b, C1, C2, C3, C4, e0, v0, r, mean_input, _ = params_tuple  # noqa: N806
+
+    x1, x2, x3, x4, x5, x6 = x
+
+    out = sigmoid_jit(x2 - x3 + u_tes, e0, v0, r)
+    exc = sigmoid_jit(C1 * x1, e0, v0, r)
+    inh = sigmoid_jit(C3 * x1, e0, v0, r)
+
+    dx1 = x4
+    dx4 = A * a * out - 2.0 * a * x4 - a * a * x1
+    dx2 = x5
+    dx5 = A * a * (mean_input + C2 * exc + coupling) - 2.0 * a * x5 - a * a * x2
+    dx3 = x6
+    dx6 = B * b * C4 * inh - 2.0 * b * x6 - b * b * x3
+
+    if x.ndim == 1:
+        res = np.empty(6, dtype=np.float64)
+        res[0] = dx1
+        res[1] = dx2
+        res[2] = dx3
+        res[3] = dx4
+        res[4] = dx5
+        res[5] = dx6
+        return res
+    res = np.empty((6, x.shape[1]), dtype=np.float64)
+    res[0, :] = dx1
+    res[1, :] = dx2
+    res[2, :] = dx3
+    res[3, :] = dx4
+    res[4, :] = dx5
+    res[5, :] = dx6
+    return res
 
 
 def jr_rhs(
@@ -125,22 +205,23 @@ def jr_rhs(
     FloatArray
         Time derivative ``x'`` with the same shape as ``x``.
     """
-    x1, x2, x3, x4, x5, x6 = x
-    a, b = params.a, params.b
+    n_nodes = 1 if x.ndim == 1 else x.shape[1]
+    params_tuple = params.to_numba_tuple(n_nodes)
 
-    out = sigmoid(x2 - x3 + u_tes, params)  # pyramidal output rate; + U_tES slot (Stage 3)
-    exc = sigmoid(params.C1 * x1, params)  # drive to excitatory interneurons
-    inh = sigmoid(params.C3 * x1, params)  # drive to inhibitory interneurons
+    if n_nodes == 1:
+        return _jr_rhs_jit(x, params_tuple, _to_scalar(coupling), _to_scalar(u_tes))
+    return _jr_rhs_jit(x, params_tuple, _to_array(coupling, n_nodes), _to_array(u_tes, n_nodes))
 
-    dx1 = x4
-    dx4 = params.A * a * out - 2.0 * a * x4 - a * a * x1
-    dx2 = x5
-    # Stage 2 adds + A a K sum_j w_ij S(y_j) - step-wise constant coupling; zeta is injected in heun_step.
-    dx5 = params.A * a * (params.mean_input + params.C2 * exc + coupling) - 2.0 * a * x5 - a * a * x2
-    dx3 = x6
-    dx6 = params.B * b * params.C4 * inh - 2.0 * b * x6 - b * b * x3
 
-    return np.array([dx1, dx2, dx3, dx4, dx5, dx6])
+@numba.njit(fastmath=True, cache=True)
+def _rk4_step_jit(
+    x: FloatArray, params_tuple: tuple[Any, ...], dt: float, coupling: FloatArray | float, u_tes: FloatArray | float
+) -> FloatArray:
+    k1 = _jr_rhs_jit(x, params_tuple, coupling, u_tes)
+    k2 = _jr_rhs_jit(x + 0.5 * dt * k1, params_tuple, coupling, u_tes)
+    k3 = _jr_rhs_jit(x + 0.5 * dt * k2, params_tuple, coupling, u_tes)
+    k4 = _jr_rhs_jit(x + dt * k3, params_tuple, coupling, u_tes)
+    return x + (dt / 6.0) * (k1 + 2.0 * k2 + 2.0 * k3 + k4)
 
 
 def rk4_step(
@@ -151,11 +232,34 @@ def rk4_step(
     u_tes: FloatArray | float = 0.0,
 ) -> FloatArray:
     """Advance one deterministic RK4 step (noise off)."""
-    k1 = jr_rhs(x, params, coupling, u_tes)
-    k2 = jr_rhs(x + 0.5 * dt * k1, params, coupling, u_tes)
-    k3 = jr_rhs(x + 0.5 * dt * k2, params, coupling, u_tes)
-    k4 = jr_rhs(x + dt * k3, params, coupling, u_tes)
-    return x + (dt / 6.0) * (k1 + 2.0 * k2 + 2.0 * k3 + k4)
+    n_nodes = 1 if x.ndim == 1 else x.shape[1]
+    params_tuple = params.to_numba_tuple(n_nodes)
+
+    if n_nodes == 1:
+        return _rk4_step_jit(x, params_tuple, dt, _to_scalar(coupling), _to_scalar(u_tes))
+    return _rk4_step_jit(x, params_tuple, dt, _to_array(coupling, n_nodes), _to_array(u_tes, n_nodes))
+
+
+@numba.njit(fastmath=True, cache=True)
+def _stochastic_rk4_step_jit(  # noqa: PLR0913
+    x: FloatArray,
+    params_tuple: tuple[Any, ...],
+    dt: float,
+    xi: FloatArray | float,
+    coupling: FloatArray | float,
+    u_tes: FloatArray | float,
+) -> FloatArray:
+    sigma = params_tuple[12]
+
+    dw = np.zeros(x.shape, dtype=np.float64)
+    dw[4] = sigma * np.sqrt(dt) * xi  # additive noise enters x5 only
+
+    k1 = _jr_rhs_jit(x, params_tuple, coupling, u_tes) * dt + dw
+    k2 = _jr_rhs_jit(x + 0.5 * k1, params_tuple, coupling, u_tes) * dt + dw
+    k3 = _jr_rhs_jit(x + 0.5 * k2, params_tuple, coupling, u_tes) * dt + dw
+    k4 = _jr_rhs_jit(x + k3, params_tuple, coupling, u_tes) * dt + dw
+
+    return x + (k1 + 2.0 * k2 + 2.0 * k3 + k4) / 6.0
 
 
 def stochastic_rk4_step(  # noqa: PLR0913
@@ -189,15 +293,34 @@ def stochastic_rk4_step(  # noqa: PLR0913
     FloatArray
         Next state, same shape as ``x``.
     """
-    dw = np.zeros_like(x, dtype=np.float64)
-    dw[4] = params.sigma * np.sqrt(dt) * xi  # additive noise enters x5 only
+    n_nodes = 1 if x.ndim == 1 else x.shape[1]
+    params_tuple = params.to_numba_tuple(n_nodes)
 
-    k1 = jr_rhs(x, params, coupling, u_tes) * dt + dw
-    k2 = jr_rhs(x + 0.5 * k1, params, coupling, u_tes) * dt + dw
-    k3 = jr_rhs(x + 0.5 * k2, params, coupling, u_tes) * dt + dw
-    k4 = jr_rhs(x + k3, params, coupling, u_tes) * dt + dw
+    if n_nodes == 1:
+        return _stochastic_rk4_step_jit(x, params_tuple, dt, _to_scalar(xi), _to_scalar(coupling), _to_scalar(u_tes))
+    return _stochastic_rk4_step_jit(
+        x, params_tuple, dt, _to_array(xi, n_nodes), _to_array(coupling, n_nodes), _to_array(u_tes, n_nodes)
+    )
 
-    return x + (k1 + 2.0 * k2 + 2.0 * k3 + k4) / 6.0
+
+@numba.njit(fastmath=True, cache=True)
+def _heun_step_jit(  # noqa: PLR0913
+    x: FloatArray,
+    params_tuple: tuple[Any, ...],
+    dt: float,
+    xi: FloatArray | float,
+    coupling: FloatArray | float,
+    u_tes: FloatArray | float,
+) -> FloatArray:
+    sigma = params_tuple[12]
+
+    dw = np.zeros(x.shape, dtype=np.float64)
+    dw[4] = sigma * np.sqrt(dt) * xi  # additive noise enters x5 only
+
+    f0 = _jr_rhs_jit(x, params_tuple, coupling, u_tes)
+    x_pred = x + dt * f0 + dw
+    f1 = _jr_rhs_jit(x_pred, params_tuple, coupling, u_tes)
+    return x + 0.5 * dt * (f0 + f1) + dw
 
 
 def heun_step(  # noqa: PLR0913
@@ -231,13 +354,40 @@ def heun_step(  # noqa: PLR0913
     FloatArray
         Next state, same shape as ``x``.
     """
-    dw = np.zeros_like(x, dtype=np.float64)
-    dw[4] = params.sigma * np.sqrt(dt) * xi  # additive noise enters x5 only
+    n_nodes = 1 if x.ndim == 1 else x.shape[1]
+    params_tuple = params.to_numba_tuple(n_nodes)
 
-    f0 = jr_rhs(x, params, coupling, u_tes)
-    x_pred = x + dt * f0 + dw
-    f1 = jr_rhs(x_pred, params, coupling, u_tes)
-    return x + 0.5 * dt * (f0 + f1) + dw
+    if n_nodes == 1:
+        return _heun_step_jit(x, params_tuple, dt, _to_scalar(xi), _to_scalar(coupling), _to_scalar(u_tes))
+    return _heun_step_jit(
+        x, params_tuple, dt, _to_array(xi, n_nodes), _to_array(coupling, n_nodes), _to_array(u_tes, n_nodes)
+    )
+
+
+@numba.njit(fastmath=True, cache=True)
+def _dynamics_history_coupling_jit(  # noqa: PLR0913
+    history: FloatArray,
+    k: int,
+    max_history_len: int,
+    delay_steps: npt.NDArray[np.int64],
+    w_weights: FloatArray,
+    coupling_k: float,
+    s_y: FloatArray,
+) -> FloatArray:
+    # 1. Update circular history buffer
+    history[k % max_history_len, :] = s_y
+
+    # 2. Compute delayed coupling (O(N^2) loop with zero allocations)
+    n_nodes = w_weights.shape[0]
+    coupling = np.zeros(n_nodes, dtype=np.float64)
+    for i in range(n_nodes):
+        c_i = 0.0
+        for j in range(n_nodes):
+            delay = delay_steps[i, j]
+            row = (k - delay) % max_history_len
+            c_i += w_weights[i, j] * history[row, j]
+        coupling[i] = coupling_k * c_i
+    return coupling
 
 
 def simulate_node(  # noqa: PLR0913
@@ -480,6 +630,7 @@ class JansenRitDynamics(Dynamics[JansenRitDynamicsLog]):
         if np.isscalar(a_vec):
             a_vec = np.full(n_nodes, a_vec, dtype=np.float64)
         self.net_params = replace(params, A=a_vec)
+        self.params_tuple = self.net_params.to_numba_tuple(n_nodes)
 
         # tES steering matrix gamma_2d of shape (n_elec, n_nodes); single electrode is n_elec=1.
         self.gamma_2d = None if gamma is None else np.atleast_2d(gamma)
@@ -503,7 +654,7 @@ class JansenRitDynamics(Dynamics[JansenRitDynamicsLog]):
 
         # Circular history buffer of S(y), seeded from the initial state.
         self.history = np.zeros((self.max_history_len, n_nodes), dtype=np.float64)
-        self.history[:, :] = sigmoid(self.x[1] - self.x[2], self.net_params)
+        self.history[:, :] = sigmoid_jit(self.x[1] - self.x[2], params.e0, params.v0, params.r)
         self.col_indices = np.arange(n_nodes)[np.newaxis, :]
         self.w_weights = weights
 
@@ -558,27 +709,61 @@ class JansenRitDynamics(Dynamics[JansenRitDynamicsLog]):
 
     def dynamics(self, t: float, x: np.ndarray, u: np.ndarray) -> np.ndarray:  # noqa: ARG002
         """Advance the network one step, mirroring the :func:`simulate_network` loop body."""
-        # 1. Update history with the current state's S(y).
-        s_y = sigmoid(x[1] - x[2], self.net_params)
-        self.history[self._k % self.max_history_len, :] = s_y
+        n_nodes = x.shape[1]
+        params_tuple = self.params_tuple
 
-        # 2. Compute delayed coupling.
-        row_indices = (self._k - self.delay_steps) % self.max_history_len
-        s_y_delayed = self.history[row_indices, self.col_indices]
-        coupling = self.K * np.sum(self.w_weights * s_y_delayed, axis=1)
+        # 1. Update history and compute delayed coupling.
+        s_y = sigmoid_jit(x[1] - x[2], self.net_params.e0, self.net_params.v0, self.net_params.r)
+        coupling = _dynamics_history_coupling_jit(
+            self.history,
+            self._k,
+            self.max_history_len,
+            self.delay_steps,
+            self.w_weights,
+            self.K,
+            s_y,
+        )
 
-        # 3. Project the tES control onto nodes.
+        # 2. Project the tES control onto nodes.
         u_node = self._project_control(u)
 
-        # 4. Integrate one step.
+        # 3. Integrate one step.
         if self.deterministic:
-            x_next = rk4_step(x, self.net_params, self.dt, coupling=coupling, u_tes=u_node)
-        else:
-            xi = self.rng.standard_normal(x.shape[1])
-            if self.use_stochastic_rk4:
-                x_next = stochastic_rk4_step(x, self.net_params, self.dt, xi, coupling=coupling, u_tes=u_node)
+            if n_nodes == 1:
+                x_next = _rk4_step_jit(x, params_tuple, self.dt, _to_scalar(coupling), _to_scalar(u_node))
             else:
-                x_next = heun_step(x, self.net_params, self.dt, xi, coupling=coupling, u_tes=u_node)
+                x_next = _rk4_step_jit(
+                    x, params_tuple, self.dt, _to_array(coupling, n_nodes), _to_array(u_node, n_nodes)
+                )
+        else:
+            xi = self.rng.standard_normal(n_nodes)
+            if self.use_stochastic_rk4:
+                if n_nodes == 1:
+                    x_next = _stochastic_rk4_step_jit(
+                        x, params_tuple, self.dt, _to_scalar(xi), _to_scalar(coupling), _to_scalar(u_node)
+                    )
+                else:
+                    x_next = _stochastic_rk4_step_jit(
+                        x,
+                        params_tuple,
+                        self.dt,
+                        _to_array(xi, n_nodes),
+                        _to_array(coupling, n_nodes),
+                        _to_array(u_node, n_nodes),
+                    )
+            elif n_nodes == 1:
+                x_next = _heun_step_jit(
+                    x, params_tuple, self.dt, _to_scalar(xi), _to_scalar(coupling), _to_scalar(u_node)
+                )
+            else:
+                x_next = _heun_step_jit(
+                    x,
+                    params_tuple,
+                    self.dt,
+                    _to_array(xi, n_nodes),
+                    _to_array(coupling, n_nodes),
+                    _to_array(u_node, n_nodes),
+                )
 
         self._k += 1
         return x_next
