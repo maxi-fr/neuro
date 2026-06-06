@@ -54,6 +54,7 @@ def _(mo):
             "Stage 2: EZ/PZ Seizure Recruitment": "stage2_recruitment",
             "Stage 2: Coupling Correctness (Node Disconnect)": "stage2_isolation",
             "Stage 2: Delays vs. Instantaneous Propagation": "stage2_delays",
+            "Stage 3: Immediate tES Suppression & Re-expansion": "stage3_stimulation",
         },
         value="stage1",
         label="Select Validation Case",
@@ -65,6 +66,7 @@ def _(mo):
 @app.cell
 def _(case, connectome, mo):
     region_options = ["None", *list(connectome.region_labels)]
+    channel_options = sorted(connectome.channel_labels)
 
     # 1. Single Node params
     a_slider = mo.ui.slider(3.0, 4.0, 0.05, value=3.6, label="A (Synaptic Gain)")
@@ -80,6 +82,13 @@ def _(case, connectome, mo):
 
     # Isolate dropdown
     isolate_dropdown = mo.ui.dropdown(options=region_options, value="lTCI", label="Isolate Region")
+
+    # 3. Stimulation params
+    electrode_dropdown = mo.ui.dropdown(options=channel_options, value="CP5", label="Target Electrode (Cathode)")
+    sigma_stim_slider = mo.ui.slider(5.0, 100.0, 5.0, value=20.0, label="tES Spread σ_stim (mm)")
+    u_intensity_slider = mo.ui.slider(-3.0, 3.0, 0.25, value=1.5, label="tES Intensity u_hat_tES")
+    onset_slider = mo.ui.slider(0.0, 10.0, 0.5, value=0.0, label="tES Onset (s)")
+    offset_slider = mo.ui.slider(0.0, 10.0, 0.5, value=2.5, label="tES Offset (s)")
 
     # Render panels
     controls = None
@@ -121,17 +130,41 @@ def _(case, connectome, mo):
                 seed_slider,
             ]
         )
+    elif case == "stage3_stimulation":
+        controls = mo.vstack(
+            [
+                mo.md("#### 🎛️ Stimulation Settings"),
+                electrode_dropdown,
+                sigma_stim_slider,
+                u_intensity_slider,
+                onset_slider,
+                offset_slider,
+                mo.md("---"),
+                mo.md("#### 🎛️ Network Settings"),
+                k_slider,
+                divisor_slider,
+                speed_slider,
+                duration_slider,
+                deterministic_toggle,
+                seed_slider,
+            ]
+        )
     return (
         a_slider,
         controls,
         deterministic_toggle,
         divisor_slider,
         duration_slider,
+        electrode_dropdown,
         isolate_dropdown,
         k_slider,
+        offset_slider,
+        onset_slider,
         seed_slider,
         sigma_slider,
+        sigma_stim_slider,
         speed_slider,
+        u_intensity_slider,
     )
 
 
@@ -191,6 +224,15 @@ def _(mo, test_case_selector):
           1. Both delayed and instantaneous coupling result in successful recruitment.
           2. Conduction delays strictly increase the onset time of recruitment for downstream regions compared to instantaneous coupling.
         """
+    elif case == "stage3_stimulation":
+        desc = """
+        ### Stage 3: Immediate tES Suppression & Re-expansion
+        **Goal:** Verify cathodic tES suppresses seizure propagation immediately, with quick re-expansion after offset.
+        - **Success Criteria:**
+          1. **Immediate Suppression:** With cathodic tES active (intensity $\\hat{u}_{\\text{tES}} = 1.5$, target CP5), the number of recruited healthy regions during stimulation is $0$ (PTP of healthy nodes $< 5.0$).
+          2. **Re-expansion:** After stimulation stops, the seizure propagation re-expands and recruits healthy regions (PTP of healthy nodes $> 5.0$ in the post-stimulation window).
+          3. **Polarity Sanity:** Anodic stimulation (flipping tES sign to negative intensity, e.g. $\\hat{u}_{\\text{tES}} = -1.5$) fails to suppress recruitment.
+        """
     mo.md(desc)
     return (case,)
 
@@ -210,16 +252,21 @@ def _(
     deterministic_toggle,
     divisor_slider,
     duration_slider,
+    electrode_dropdown,
     isolate_dropdown,
     k_slider,
     np,
+    offset_slider,
+    onset_slider,
     output,
     replace,
     seed_slider,
     sigma_slider,
+    sigma_stim_slider,
     simulate_network,
     simulate_node,
     speed_slider,
+    u_intensity_slider,
 ):
     # Reactive simulation execution based on parameters
     sim_data = {}
@@ -365,6 +412,57 @@ def _(
             "y_inst": _y_inst,
             "ez_idxs": _ez_idxs,
             "pz_idxs": _pz_idxs,
+        }
+    elif case == "stage3_stimulation":
+        # Stage 3 tES
+        conn_scaled = replace(
+            connectome, speed=speed_slider.value, delays=connectome.tract_lengths / speed_slider.value
+        )
+        conn_scaled = replace(conn_scaled, weights=conn_scaled.weights / divisor_slider.value)
+
+        # Compute gamma
+        from neuro.connectome import compute_gamma
+
+        gamma = compute_gamma(
+            connectome.centres,
+            target_electrode=electrode_dropdown.value,
+            sigma=sigma_stim_slider.value,
+        )
+        conn_scaled = replace(conn_scaled, gamma=gamma)
+
+        n_nodes = len(connectome.region_labels)
+        ez_names = ("lHC", "lPHC", "lAMYG")
+        pz_names = ("lTCI", "lTCV")
+        _ez_idxs = [connectome.region_index[name] for name in ez_names]
+        _pz_idxs = [connectome.region_index[name] for name in pz_names]
+        _healthy_idxs = [i for i in range(n_nodes) if i not in _ez_idxs and i not in _pz_idxs]
+
+        a_gains = np.full(n_nodes, 3.25)
+        a_gains[_ez_idxs] = 3.6
+        a_gains[_pz_idxs] = 3.4
+        params = JansenRitParams(A=a_gains)
+
+        stim_window = (float(onset_slider.value), float(offset_slider.value))
+
+        _t, _x = simulate_network(
+            params=params,
+            connectome=conn_scaled,
+            K=k_slider.value,
+            duration=float(duration_slider.value),
+            seed=int(seed_slider.value),
+            deterministic=deterministic_toggle.value,
+            u_hat_tES=float(u_intensity_slider.value),
+            stim_window=stim_window,
+        )
+        _y = output(_x)
+        sim_data = {
+            "t": _t,
+            "x": _x,
+            "y": _y,
+            "ez_idxs": _ez_idxs,
+            "pz_idxs": _pz_idxs,
+            "healthy_idxs": _healthy_idxs,
+            "stim_window": stim_window,
         }
     return (sim_data,)
 
@@ -574,6 +672,53 @@ def _(case, compute_psd, connectome, mo, np, sim_data):
             )
         )
         passed_all = ez_ok_del and ez_ok_inst and slower_ok
+    elif case == "stage3_stimulation":
+        _t = sim_data["t"]
+        _y = sim_data["y"]
+        _ez_idxs = sim_data["ez_idxs"]
+        _pz_idxs = sim_data["pz_idxs"]
+        _healthy_idxs = sim_data["healthy_idxs"]
+        _onset, _offset = sim_data["stim_window"]
+
+        # Calculate PTP in and out of stim window (allowing some transient delay)
+        supp_ok = False
+        reexp_ok = False
+
+        if _offset - _onset > 0.6:
+            idx_during = np.where((_t >= _onset + 0.5) & (_t < _offset - 0.1))[0]
+            if len(idx_during) > 0:
+                ptps_during = np.ptp(_y[_healthy_idxs, :][:, idx_during], axis=1)
+                n_during = np.sum(ptps_during > 5.0)
+                supp_ok = n_during == 0
+                results.append(
+                    _badge(
+                        supp_ok,
+                        f"Immediate Suppression: {n_during} healthy regions recruited during stimulation (Expected: 0)",
+                    )
+                )
+            else:
+                results.append(_badge(ok=False, label="No time indices found during stimulation window"))
+        else:
+            results.append(_badge(ok=False, label="Stimulation window too short to evaluate suppression"))
+
+        if _t[-1] - _offset >= 1.0:
+            idx_after = np.where(_t >= _offset + 0.8)[0]
+            if len(idx_after) > 0:
+                ptps_after = np.ptp(_y[_healthy_idxs, :][:, idx_after], axis=1)
+                n_after = np.sum(ptps_after > 5.0)
+                reexp_ok = n_after > 0
+                results.append(
+                    _badge(
+                        reexp_ok,
+                        f"Seizure Re-expansion: {n_after} healthy regions recruited after stimulation stops (Expected: > 0)",
+                    )
+                )
+            else:
+                results.append(_badge(ok=False, label="No time indices found after stimulation window"))
+        else:
+            results.append(_badge(ok=False, label="Post-stimulation duration too short to evaluate re-expansion"))
+
+        passed_all = supp_ok and reexp_ok
 
     # Layout result banner
     banner_color = "#d4edda" if passed_all else "#f8d7da"
@@ -596,7 +741,18 @@ def _(case, compute_psd, connectome, mo, np, sim_data):
 
 
 @app.cell
-def _(case, compute_psd, connectome, np, plt, sim_data):
+def _(
+    case,
+    compute_psd,
+    connectome,
+    controls,
+    mo,
+    np,
+    plt,
+    sim_data,
+    test_case_selector,
+    validation_panel,
+):
     fig = None
 
     if case == "stage0":
@@ -726,12 +882,55 @@ def _(case, compute_psd, connectome, np, plt, sim_data):
         axes[1].spines[["top", "right"]].set_visible(False)
         axes[1].grid(visible=True, linestyle="--", alpha=0.3)
 
+    elif case == "stage3_stimulation":
+        _t = sim_data["t"]
+        _y = sim_data["y"]
+        _onset, _offset = sim_data["stim_window"]
+
+        fig = plt.figure(figsize=(11, 7), layout="constrained")
+        gs = fig.add_gridspec(2, 2, width_ratios=[1.8, 1])
+
+        # 1. Spatiotemporal raster
+        ax_raster = fig.add_subplot(gs[:, 0])
+        im = ax_raster.imshow(
+            _y,
+            cmap="RdBu_r",
+            aspect="auto",
+            extent=[_t[0], _t[-1], 0, len(connectome.region_labels)],
+            vmin=-10,
+            vmax=10,
+        )
+        ax_raster.set_title("Whole-Brain Membrane Potentials (y) with tES")
+        ax_raster.set_xlabel("Time (s)")
+        ax_raster.set_ylabel("Brain Region Index")
+        ax_raster.axvspan(_onset, _offset, color="magenta", alpha=0.1, label="tES Active")
+        ax_raster.legend(loc="upper right")
+        fig.colorbar(im, ax=ax_raster, label="y = x2 - x3 (mV)")
+
+        # 2. Representative traces
+        ax_trace_ez = fig.add_subplot(gs[0, 1])
+        _lhc_idx = connectome.region_index["lHC"]
+        ax_trace_ez.plot(_t, _y[_lhc_idx], color="#d62728", label="lHC (EZ)", linewidth=0.8)
+        ax_trace_ez.axvspan(_onset, _offset, color="magenta", alpha=0.08)
+        ax_trace_ez.set_title("Representative Traces")
+        ax_trace_ez.set_ylabel("y (mV)")
+        ax_trace_ez.legend(loc="upper right")
+        ax_trace_ez.spines[["top", "right"]].set_visible(False)
+        ax_trace_ez.grid(visible=True, linestyle="--", alpha=0.3)
+
+        ax_trace_pz = fig.add_subplot(gs[1, 1])
+        _ltci_idx = connectome.region_index["lTCI"]
+        _rhc_idx = connectome.region_index["rHC"]
+        ax_trace_pz.plot(_t, _y[_ltci_idx], color="#ff7f0e", label="lTCI (PZ)", linewidth=0.8)
+        ax_trace_pz.plot(_t, _y[_rhc_idx], color="#1f77b4", label="rHC (Healthy)", linewidth=0.8)
+        ax_trace_pz.axvspan(_onset, _offset, color="magenta", alpha=0.08)
+        ax_trace_pz.set_xlabel("Time (s)")
+        ax_trace_pz.set_ylabel("y (mV)")
+        ax_trace_pz.legend(loc="upper right")
+        ax_trace_pz.spines[["top", "right"]].set_visible(False)
+        ax_trace_pz.grid(visible=True, linestyle="--", alpha=0.3)
+
     plt.close(fig)
-    return (fig,)
-
-
-@app.cell
-def _(controls, fig, mo, test_case_selector, validation_panel):
     dashboard = mo.hstack(
         [
             mo.vstack([mo.md("### ⚙️ Selection"), test_case_selector, mo.md("---"), controls], width=3),

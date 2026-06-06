@@ -82,6 +82,7 @@ class Connectome:
     channel_labels: StrArray
     region_index: dict[str, int]
     channel_index: dict[str, int]
+    gamma: FloatArray | None = None
 
 
 def _build_eeg_gain() -> tuple[FloatArray, StrArray]:
@@ -101,6 +102,7 @@ def _build_eeg_gain() -> tuple[FloatArray, StrArray]:
     gain = np.zeros((n_sensors, n_regions), dtype=np.float64)
     for r in range(n_regions):
         gain[:, r] = surface_gain[:, rmap == r].sum(axis=1)
+
     return gain, channel_labels
 
 
@@ -147,3 +149,47 @@ def load_connectome(speed: float = 50.0) -> Connectome:
         region_index=region_index,
         channel_index=channel_index,
     )
+
+
+def compute_gamma(
+    centres: FloatArray,
+    target_electrode: str = "CP5",
+    sigma: float = 20.0,
+    sensors_file: str = _SENSORS_FILE,
+) -> FloatArray:
+    """Compute the normalized spatial projection vector gamma for tES stimulation.
+
+    Parameters
+    ----------
+    centres
+        Region centroids coordinates in mm, shape (N_regions, 3).
+    target_electrode
+        Label of the stimulating electrode (e.g. 'CP5').
+    sigma
+        Spatial standard deviation (spread) in mm.
+    sensors_file
+        Filename of the EEG sensors dataset.
+
+    Returns
+    -------
+    FloatArray
+        Normalized spatial projection vector of shape (N_regions,); negative for
+        cathodic stimulation (peak magnitude of 1.0 at closest region centroid).
+    """
+    sensors = SensorsEEG.from_file(sensors_file)
+    labels = [label.upper() for label in sensors.labels]
+    target = target_electrode.upper()
+    if target not in labels:
+        msg = f"Electrode {target_electrode} not found in sensors."
+        raise ValueError(msg)
+    idx = labels.index(target)
+    electrode_loc = np.asarray(sensors.locations[idx], dtype=np.float64)
+
+    # Euclidean distance from electrode to all region centroids
+    dists = np.linalg.norm(centres - electrode_loc, axis=1)
+
+    # Gaussian falloff (negative for cathodic stimulation)
+    gamma = -np.exp(-(dists**2) / (2.0 * sigma**2))
+
+    # Normalize so that the maximum absolute value is exactly 1.0
+    return gamma / np.abs(gamma).max()

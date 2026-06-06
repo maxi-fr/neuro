@@ -98,7 +98,12 @@ def sigmoid(v: FloatArray | float, params: JansenRitParams) -> FloatArray:
     return 2.0 * params.e0 / (1.0 + np.exp(params.r * (params.v0 - v)))
 
 
-def jr_rhs(x: FloatArray, params: JansenRitParams, coupling: FloatArray | float = 0.0) -> FloatArray:
+def jr_rhs(
+    x: FloatArray,
+    params: JansenRitParams,
+    coupling: FloatArray | float = 0.0,
+    u_tes: FloatArray | float = 0.0,
+) -> FloatArray:
     """Right-hand side of the single-node or network Jansen-Rit ODEs.
 
     Parameters
@@ -110,6 +115,8 @@ def jr_rhs(x: FloatArray, params: JansenRitParams, coupling: FloatArray | float 
         Model parameters.
     coupling
         Network coupling term, shape ``(N,)`` or scalar; enters the ``x5'`` equation.
+    u_tes
+        tES stimulation vector/scalar entering the pyramidal sigmoid in the ``x4'`` equation.
 
     Returns
     -------
@@ -119,7 +126,7 @@ def jr_rhs(x: FloatArray, params: JansenRitParams, coupling: FloatArray | float 
     x1, x2, x3, x4, x5, x6 = x
     a, b = params.a, params.b
 
-    out = sigmoid(x2 - x3, params)  # pyramidal output rate; + U_tES slot (Stage 3)
+    out = sigmoid(x2 - x3 + u_tes, params)  # pyramidal output rate; + U_tES slot (Stage 3)
     exc = sigmoid(params.C1 * x1, params)  # drive to excitatory interneurons
     inh = sigmoid(params.C3 * x1, params)  # drive to inhibitory interneurons
 
@@ -134,21 +141,28 @@ def jr_rhs(x: FloatArray, params: JansenRitParams, coupling: FloatArray | float 
     return np.array([dx1, dx2, dx3, dx4, dx5, dx6])
 
 
-def rk4_step(x: FloatArray, params: JansenRitParams, dt: float, coupling: FloatArray | float = 0.0) -> FloatArray:
+def rk4_step(
+    x: FloatArray,
+    params: JansenRitParams,
+    dt: float,
+    coupling: FloatArray | float = 0.0,
+    u_tes: FloatArray | float = 0.0,
+) -> FloatArray:
     """Advance one deterministic RK4 step (noise off)."""
-    k1 = jr_rhs(x, params, coupling)
-    k2 = jr_rhs(x + 0.5 * dt * k1, params, coupling)
-    k3 = jr_rhs(x + 0.5 * dt * k2, params, coupling)
-    k4 = jr_rhs(x + dt * k3, params, coupling)
+    k1 = jr_rhs(x, params, coupling, u_tes)
+    k2 = jr_rhs(x + 0.5 * dt * k1, params, coupling, u_tes)
+    k3 = jr_rhs(x + 0.5 * dt * k2, params, coupling, u_tes)
+    k4 = jr_rhs(x + dt * k3, params, coupling, u_tes)
     return x + (dt / 6.0) * (k1 + 2.0 * k2 + 2.0 * k3 + k4)
 
 
-def stochastic_rk4_step(
+def stochastic_rk4_step(  # noqa: PLR0913
     x: FloatArray,
     params: JansenRitParams,
     dt: float,
     xi: FloatArray | float,
     coupling: FloatArray | float = 0.0,
+    u_tes: FloatArray | float = 0.0,
 ) -> FloatArray:
     """Advance one stochastic Runge-Kutta 4th-order step with additive noise.
 
@@ -165,6 +179,8 @@ def stochastic_rk4_step(
         ``(N,)`` for ``N`` nodes.
     coupling
         Network coupling term, shape ``(N,)`` or scalar.
+    u_tes
+        tES stimulation vector/scalar entering the pyramidal sigmoid.
 
     Returns
     -------
@@ -174,20 +190,21 @@ def stochastic_rk4_step(
     dw = np.zeros_like(x, dtype=np.float64)
     dw[4] = params.sigma * np.sqrt(dt) * xi  # additive noise enters x5 only
 
-    k1 = jr_rhs(x, params, coupling) * dt + dw
-    k2 = jr_rhs(x + 0.5 * k1, params, coupling) * dt + dw
-    k3 = jr_rhs(x + 0.5 * k2, params, coupling) * dt + dw
-    k4 = jr_rhs(x + k3, params, coupling) * dt + dw
+    k1 = jr_rhs(x, params, coupling, u_tes) * dt + dw
+    k2 = jr_rhs(x + 0.5 * k1, params, coupling, u_tes) * dt + dw
+    k3 = jr_rhs(x + 0.5 * k2, params, coupling, u_tes) * dt + dw
+    k4 = jr_rhs(x + k3, params, coupling, u_tes) * dt + dw
 
     return x + (k1 + 2.0 * k2 + 2.0 * k3 + k4) / 6.0
 
 
-def heun_step(
+def heun_step(  # noqa: PLR0913
     x: FloatArray,
     params: JansenRitParams,
     dt: float,
     xi: FloatArray | float,
     coupling: FloatArray | float = 0.0,
+    u_tes: FloatArray | float = 0.0,
 ) -> FloatArray:
     """Advance one stochastic-Heun step with additive noise on the ``x5'`` equation.
 
@@ -204,6 +221,8 @@ def heun_step(
         ``(N,)`` for ``N`` nodes.
     coupling
         Network coupling term, shape ``(N,)`` or scalar.
+    u_tes
+        tES stimulation vector/scalar entering the pyramidal sigmoid.
 
     Returns
     -------
@@ -213,9 +232,9 @@ def heun_step(
     dw = np.zeros_like(x, dtype=np.float64)
     dw[4] = params.sigma * np.sqrt(dt) * xi  # additive noise enters x5 only
 
-    f0 = jr_rhs(x, params, coupling)
+    f0 = jr_rhs(x, params, coupling, u_tes)
     x_pred = x + dt * f0 + dw
-    f1 = jr_rhs(x_pred, params, coupling)
+    f1 = jr_rhs(x_pred, params, coupling, u_tes)
     return x + 0.5 * dt * (f0 + f1) + dw
 
 
@@ -272,7 +291,7 @@ def simulate_node(  # noqa: PLR0913
     return t, x_traj
 
 
-def simulate_network(  # noqa: PLR0913
+def simulate_network(  # noqa: PLR0913, C901, PLR0912, PLR0915
     *,
     params: JansenRitParams,
     connectome: Connectome,
@@ -284,6 +303,9 @@ def simulate_network(  # noqa: PLR0913
     use_stochastic_rk4: bool = False,
     use_delays: bool = True,
     initial_state: FloatArray | None = None,
+    u_hat_tES: float = 0.0,  # noqa: N803
+    stim_window: tuple[float, float] | None = None,
+    u_tES: FloatArray | None = None,  # noqa: N803
 ) -> tuple[FloatArray, FloatArray]:
     """Integrate a coupled network of nodes and return the full trajectory.
 
@@ -312,6 +334,13 @@ def simulate_network(  # noqa: PLR0913
         instantaneous coupling.
     initial_state
         Initial state array of shape ``(6, N)``. If ``None``, defaults to zeros.
+    u_hat_tES
+        Constant tES stimulation intensity scaling factor (amplitude).
+    stim_window
+        Time window (start_s, end_s) during which tES stimulation is active.
+    u_tES
+        Pre-computed time-varying tES intensity array of shape ``(n_steps + 1,)``.
+        If provided, overrides ``u_hat_tES`` and ``stim_window``.
 
     Returns
     -------
@@ -322,6 +351,10 @@ def simulate_network(  # noqa: PLR0913
     """
     n_steps = round(duration / dt)
     n_nodes = connectome.weights.shape[0]
+
+    if u_tES is not None and u_tES.shape[0] < n_steps:
+        msg = f"u_tES array length must be at least {n_steps}, got {u_tES.shape[0]}"
+        raise ValueError(msg)
 
     a_vec = params.A
     if np.isscalar(a_vec):
@@ -369,15 +402,32 @@ def simulate_network(  # noqa: PLR0913
         s_y_delayed = history[row_indices, col_indices]
         coupling = K * np.sum(w_weights * s_y_delayed, axis=1)
 
-        # 3. Integrate
+        # 3. Compute tES stimulation
+        if u_tES is not None:
+            u_t = u_tES[k]
+        elif stim_window is not None:
+            t_curr = k * dt
+            u_t = u_hat_tES if stim_window[0] <= t_curr < stim_window[1] else 0.0
+        else:
+            u_t = 0.0
+
+        if u_t != 0.0:
+            if connectome.gamma is None:
+                msg = "tES stimulation is active but connectome.gamma is not configured."
+                raise ValueError(msg)
+            u_node = u_t * connectome.gamma
+        else:
+            u_node = 0.0
+
+        # 4. Integrate
         if deterministic:
-            x = rk4_step(x, net_params, dt, coupling=coupling)
+            x = rk4_step(x, net_params, dt, coupling=coupling, u_tes=u_node)
         else:
             xi = rng.standard_normal(n_nodes)
             if use_stochastic_rk4:
-                x = stochastic_rk4_step(x, net_params, dt, xi, coupling=coupling)
+                x = stochastic_rk4_step(x, net_params, dt, xi, coupling=coupling, u_tes=u_node)
             else:
-                x = heun_step(x, net_params, dt, xi, coupling=coupling)
+                x = heun_step(x, net_params, dt, xi, coupling=coupling, u_tes=u_node)
 
         x_traj[:, :, k + 1] = x
 
