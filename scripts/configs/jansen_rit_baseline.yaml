@@ -1,0 +1,39 @@
+# Open-loop whole-brain Jansen-Rit baseline run through the simulate orchestrator.
+# All times are in SI seconds: dt = 1 ms, t_end = 5 s. The ZeroController injects no
+# control, so the network evolves freely (no tES).
+t_end: 5.0
+
+dynamics:
+  class_path: neuro.jansen_rit.JansenRitDynamics
+  dt: 0.001
+  K: 0.75
+  A: 3.25
+  seed: 42
+  speed: 50.0
+  use_delays: true
+  deterministic: false
+
+output:
+  class_path: neuro.output.EEGOutput
+  dt: 0.001
+  speed: 50.0
+
+reference:
+  class_path: simulate.reference.StepReference
+  dt: 0.001
+  step_value: 0.0
+
+sensor:
+  class_path: neuro.sensing.DirectSensor
+  dt: 0.001
+  n_sensors: 62
+  std_dev: 0.0
+
+estimator:
+  class_path: simulate.estimator.IdentityEstimator
+  dt: 0.001
+
+controller:
+  class_path: neuro.control.ZeroController
+  dt: 0.001
+  n_u: 1
