@@ -6,15 +6,15 @@ app = marimo.App(width="medium", app_title="Stage 1 Single-node Jansen-Rit")
 
 @app.cell
 def _():
-    from dataclasses import replace
 
     import marimo as mo
     import numpy as np
     from matplotlib import pyplot as plt
 
-    from neuro.jansen_rit import DT_DEFAULT, JansenRitParams, output, simulate_node
+    from neuro.jansen_rit import JansenRitParams, output, simulate_network
     from utils.plotting import plot_psd
 
+    DT_DEFAULT = 1e-3  # noqa: N806
     return (
         DT_DEFAULT,
         JansenRitParams,
@@ -23,8 +23,7 @@ def _():
         output,
         plot_psd,
         plt,
-        replace,
-        simulate_node,
+        simulate_network,
     )
 
 
@@ -52,12 +51,14 @@ def _(mo):
 
 
 @app.cell
-def _(JansenRitParams, output, replace, simulate_node):
+def _(DT_DEFAULT, JansenRitParams, output, simulate_network):
     def run(a_gain, *, sigma=None, duration=20.0, seed=7, deterministic=False):
         """Simulate one node and return ``(t, y, x)`` for gain ``a_gain``."""
         base = JansenRitParams()
-        params = replace(base, A=a_gain, sigma=base.sigma if sigma is None else sigma)
-        t, x = simulate_node(params=params, duration=duration, seed=seed, deterministic=deterministic)
+        noise = 0.0 if deterministic else (base.sigma if sigma is None else sigma)
+        params = JansenRitParams(A=a_gain, sigma=noise)
+        t, x_traj = simulate_network(params=params, connectome=None, duration=duration, dt=DT_DEFAULT, seed=seed)
+        x = x_traj[:, 0, :]  # drop the singleton node dim -> (6, n_samples)
         return t, output(x), x
 
     return (run,)

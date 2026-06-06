@@ -5,6 +5,9 @@ fixed point at the healthy/PZ gains, a sustained spike-wave limit cycle at the E
 gain, a noise-driven background near amplitude 2, and numerical stability. Values
 follow Yu et al. 2024, Table 1 (``I = 90``); the seizure is a ~3 Hz spike-wave,
 which is this epilepsy model's actual rhythm (not 8-12 Hz alpha).
+
+A "deterministic" run is just ``sigma = 0`` (the integrator is always stochastic
+Heun); the single node is the degenerate ``connectome=None`` network.
 """
 
 from dataclasses import replace
@@ -12,14 +15,11 @@ from dataclasses import replace
 import numpy as np
 
 from neuro.jansen_rit import (
-    DT_DEFAULT,
     JansenRitParams,
     heun_step,
     output,
-    rk4_step,
     sigmoid_jit,
-    simulate_node,
-    stochastic_rk4_step,
+    simulate_network,
 )
 from utils.processing import compute_psd, steady_window
 
@@ -29,14 +29,16 @@ _A_EZ = 3.6
 _DURATION = 20.0
 _TRANSIENT_MS = 6000.0
 _SEED = 7
+_DT = 1e-3
 
 
 def _post_transient_output(a_gain: float, *, deterministic: bool) -> np.ndarray:
     """Run one node at gain ``a_gain`` and return its steady-state output ``y``."""
-    params = replace(JansenRitParams(), A=a_gain)
-    _, x = simulate_node(params=params, duration=_DURATION, seed=_SEED, deterministic=deterministic)
-    y = output(x)[np.newaxis, :]
-    return steady_window(y, DT_DEFAULT * 1000.0, _TRANSIENT_MS)[0]
+    sigma = 0.0 if deterministic else JansenRitParams().sigma
+    params = JansenRitParams(A=a_gain, sigma=sigma)
+    _, x = simulate_network(params=params, connectome=None, duration=_DURATION, dt=_DT, seed=_SEED)
+    y = output(x)  # shape (1, n_samples) for the single node
+    return steady_window(y, _DT * 1000.0, _TRANSIENT_MS)[0]
 
 
 def test_sigmoid_shape_and_bounds() -> None:
@@ -80,11 +82,11 @@ def test_ez_phase_plane_is_an_orbit() -> None:
     The phase plane is the output ``y = x2 - x3`` against its derivative
     ``x5 - x6``; a fixed point would collapse to a point in both.
     """
-    params = replace(JansenRitParams(), A=_A_EZ)
-    _, x = simulate_node(params=params, duration=_DURATION, seed=_SEED, deterministic=True)
-    n_drop = round(_TRANSIENT_MS / (DT_DEFAULT * 1000.0))
-    y = (x[1] - x[2])[n_drop:]
-    dy = (x[4] - x[5])[n_drop:]
+    params = replace(JansenRitParams(), A=_A_EZ, sigma=0.0)
+    _, x = simulate_network(params=params, connectome=None, duration=_DURATION, dt=_DT, seed=_SEED)
+    n_drop = round(_TRANSIENT_MS / (_DT * 1000.0))
+    y = (x[1, 0] - x[2, 0])[n_drop:]
+    dy = (x[4, 0] - x[5, 0])[n_drop:]
     assert np.ptp(y) > 5.0
     assert np.ptp(dy) > 5.0
 
@@ -92,7 +94,7 @@ def test_ez_phase_plane_is_an_orbit() -> None:
 def test_ez_seizure_frequency_band() -> None:
     """The EZ limit cycle is a slow spike-wave rhythm (~3 Hz)."""
     y = _post_transient_output(_A_EZ, deterministic=True)
-    freqs, pxx = compute_psd(y[np.newaxis, :], DT_DEFAULT * 1000.0, nperseg=8192)
+    freqs, pxx = compute_psd(y[np.newaxis, :], _DT * 1000.0, nperseg=8192)
     f_peak = freqs[np.argmax(pxx[0])]
     assert 1.0 < f_peak < 6.0
 
@@ -115,56 +117,27 @@ def test_all_runs_stay_finite() -> None:
     """No NaN/inf across the healthy, PZ, and EZ regimes, noisy and deterministic."""
     for a_gain in (_A_HEALTHY, _A_PZ, _A_EZ):
         for deterministic in (True, False):
-            params = replace(JansenRitParams(), A=a_gain)
-            _, x = simulate_node(params=params, duration=_DURATION, seed=_SEED, deterministic=deterministic)
+            sigma = 0.0 if deterministic else JansenRitParams().sigma
+            params = JansenRitParams(A=a_gain, sigma=sigma)
+            _, x = simulate_network(params=params, connectome=None, duration=_DURATION, dt=_DT, seed=_SEED)
             assert np.isfinite(x).all()
 
 
 def test_heun_reduces_to_deterministic_when_noiseless() -> None:
     """heun_step with sigma = 0 stays finite and still produces the EZ limit cycle.
 
-    Confirms the stochastic and deterministic integrators agree in the noiseless
-    limit (RK4 <-> Heun consistency).
+    Confirms the noiseless integrator is well-behaved (the deterministic limit of
+    the stochastic Heun scheme).
     """
-    params = replace(JansenRitParams(), A=_A_EZ, sigma=0.0)
-    dt = DT_DEFAULT
+    params = JansenRitParams(A=_A_EZ, sigma=0.0)
+    dt = _DT
     n_steps = round(_DURATION / dt)
     x = np.zeros(6, dtype=np.float64)
     traj = np.empty((6, n_steps + 1), dtype=np.float64)
     traj[:, 0] = x
     for k in range(n_steps):
-        x = heun_step(x, params, dt, 0.0)
+        x = heun_step(x, 0.0, params, dt, 0.0)
         traj[:, k + 1] = x
     assert np.isfinite(traj).all()
     y = steady_window((traj[1] - traj[2])[np.newaxis, :], dt * 1000.0, _TRANSIENT_MS)[0]
     assert np.ptp(y) > 5.0
-
-
-def test_stochastic_rk4_reduces_to_deterministic_when_noiseless() -> None:
-    """stochastic_rk4_step with zero noise is identical to deterministic rk4_step."""
-    params = replace(JansenRitParams(), A=_A_EZ)
-    dt = DT_DEFAULT
-    x1 = np.arange(6, dtype=np.float64)  # non-trivial initial state to test values
-    x2 = x1.copy()
-
-    # One step check
-    y1 = rk4_step(x1, params, dt)
-    y2 = stochastic_rk4_step(x2, params, dt, 0.0)
-    assert np.allclose(y1, y2)
-
-    # Multi-step simulation check with sigma = 0.0
-    params_noiseless = replace(params, sigma=0.0)
-    _, traj_rk4 = simulate_node(params=params_noiseless, duration=1.0, deterministic=True)
-    _, traj_srk4 = simulate_node(params=params_noiseless, duration=1.0, deterministic=False, use_stochastic_rk4=True)
-    assert np.allclose(traj_rk4, traj_srk4)
-
-
-def test_stochastic_rk4_runs_with_noise() -> None:
-    """Stochastic RK4 runs with noise and stays finite."""
-    params = replace(JansenRitParams(), A=_A_HEALTHY)
-    t, x = simulate_node(params=params, duration=2.0, seed=_SEED, use_stochastic_rk4=True)
-    assert len(t) > 0
-    assert np.isfinite(x).all()
-    # Check that it actually has noise (i.e. is not identical to deterministic rk4)
-    _, x_det = simulate_node(params=params, duration=2.0, deterministic=True)
-    assert not np.allclose(x, x_det)

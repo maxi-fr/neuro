@@ -1,6 +1,6 @@
 import marimo
 
-__generated_with = "0.23.6"
+__generated_with = "0.23.8"
 app = marimo.App(
     width="medium",
     app_title="Stage 3 Stimulation: Immediate tES",
@@ -175,7 +175,8 @@ def _(
     a_gains = np.full(n_nodes, 3.25)
     a_gains[ez_idxs] = 3.6
     a_gains[pz_idxs] = 3.4
-    params = JansenRitParams(A=a_gains)
+    noise_sigma = 0.0 if deterministic_toggle.value else JansenRitParams().sigma
+    params = JansenRitParams(A=a_gains, sigma=noise_sigma)
 
     # 3. Stimulation window
     stim_window = (float(onset_slider.value), float(offset_slider.value))
@@ -188,7 +189,6 @@ def _(
         duration=float(duration_slider.value),
         dt=1e-3,
         seed=int(seed_slider.value),
-        deterministic=deterministic_toggle.value,
         u_hat_tES=u_amp,
         stim_window=stim_window,
     )

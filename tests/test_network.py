@@ -13,7 +13,9 @@ import numpy as np
 import pytest
 
 from neuro.connectome import Connectome, load_connectome
-from neuro.jansen_rit import JansenRitParams, output, simulate_network
+from neuro.jansen_rit import JansenRitDynamics, JansenRitParams, output, simulate_network
+
+_DT = 1e-3
 
 
 @pytest.fixture(scope="module")
@@ -48,13 +50,13 @@ def _get_onset_time(y: np.ndarray, t: np.ndarray, threshold: float = 5.0) -> flo
 
 def test_network_all_healthy_control(connectome: Connectome) -> None:
     """If all nodes are healthy (A = 3.25) and K = 0.75, the network stays quiescent."""
-    # Deterministic control stays flat
+    # Deterministic (sigma = 0) control stays flat
     _, x_traj = simulate_network(
-        params=JansenRitParams(A=3.25),
+        params=JansenRitParams(A=3.25, sigma=0.0),
         connectome=connectome,
         K=0.75,
         duration=2.0,
-        deterministic=True,
+        dt=_DT,
     )
     y = output(x_traj)
     # Steady window after transient
@@ -68,7 +70,7 @@ def test_network_all_healthy_control(connectome: Connectome) -> None:
         connectome=connectome,
         K=0.75,
         duration=2.0,
-        deterministic=False,
+        dt=_DT,
         seed=42,
     )
     y_noise = output(x_traj_noise)
@@ -93,8 +95,7 @@ def test_network_recruitment(connectome: Connectome, ez_pz_indices: tuple[list[i
         connectome=connectome,
         K=0.75,
         duration=4.0,
-        deterministic=False,
-        use_delays=True,
+        dt=_DT,
         seed=42,
     )
     y = output(x_traj)
@@ -147,7 +148,7 @@ def test_network_coupling_correctness(connectome: Connectome, ez_pz_indices: tup
         connectome=custom_connectome,
         K=0.75,
         duration=4.0,
-        deterministic=False,
+        dt=_DT,
         seed=42,
     )
     y = output(x_traj)
@@ -165,6 +166,76 @@ def test_network_coupling_correctness(connectome: Connectome, ez_pz_indices: tup
     assert ptps[ltcv_idx] > 5.0
 
 
+def _two_node_delayed_connectome() -> Connectome:
+    """Minimal 2-node connectome: one-way 0 -> 1 coupling with a 5-step conduction delay."""
+    weights = np.zeros((2, 2))
+    weights[1, 0] = 0.6  # node 1 receives from node 0 only
+    delays = np.zeros((2, 2))
+    delays[1, 0] = 5.0  # ms -> round(5 / (dt * 1000)) = 5 steps at dt = 1e-3
+    return Connectome(
+        weights=weights,
+        tract_lengths=np.zeros((2, 2)),
+        centres=np.zeros((2, 3)),
+        region_labels=np.array(["n0", "n1"]),
+        hemispheres=np.array([False, False]),
+        speed=1.0,
+        delays=delays,
+        gain=np.zeros((1, 2)),
+        channel_labels=np.array(["c0"]),
+        region_index={"n0": 0, "n1": 1},
+        channel_index={"c0": 0},
+    )
+
+
+def test_step_index_recovered_from_accumulated_time() -> None:
+    """``round(t / dt)`` recovers the step index under the orchestrator's ``t += dt`` drift.
+
+    ``JansenRitDynamics.dynamics`` derives its circular-history index from ``t`` instead of
+    a stored counter. ``Simulation.run`` advances time by accumulation (``t += dt``), so the
+    ``t`` handed to the plant drifts from the ideal ``k * dt``; this guards that the drift
+    never flips the recovered index over a long horizon.
+    """
+    t = 0.0
+    for k in range(100_000):
+        assert round(t / _DT) == k
+        t += _DT
+
+
+def test_history_coupling_index_robust_to_accumulated_time() -> None:
+    """Driving the plant with accumulated ``t`` (as ``Simulation.run`` does) matches exact ``k * dt``.
+
+    The delayed coupling indexes a circular buffer by ``k = round(t / dt)``; if accumulated
+    floating-point time shifted that index (e.g. ``int()`` truncation or drift), the downstream
+    node would read the wrong delay slot and the two trajectories would diverge.
+    """
+    connectome = _two_node_delayed_connectome()
+    params = JansenRitParams(A=np.array([3.6, 3.25]), sigma=0.0)
+    initial_state = np.zeros((6, 2))
+    initial_state[0, 0] = 1.0  # kick node 0 off the (unstable) equilibrium so it limit-cycles
+    n_steps = 3000
+
+    def run(*, accumulate: bool) -> np.ndarray:
+        dyn = JansenRitDynamics(
+            dt=_DT, params=params, connectome=connectome, K=0.75, seed=0, initial_state=initial_state
+        )
+        xs = np.zeros((6, 2, n_steps + 1))
+        xs[:, :, 0] = dyn.x
+        t = 0.0
+        for k in range(n_steps):
+            dyn.evaluate(t if accumulate else k * _DT, 0.0)
+            xs[:, :, k + 1] = dyn.x
+            t += _DT
+        return xs
+
+    x_exact = run(accumulate=False)
+    x_accum = run(accumulate=True)
+
+    # Coupling must actually have driven the downstream node, so the comparison is non-vacuous.
+    assert np.ptp(output(x_exact)[1]) > 1.0
+    # Exact index recovery -> bit-identical trajectories regardless of how t is produced.
+    assert np.array_equal(x_exact, x_accum)
+
+
 def test_network_delays_vs_instantaneous(connectome: Connectome, ez_pz_indices: tuple[list[int], list[int]]) -> None:
     """Delays change recruitment propagation timing but not the ability to seize."""
     ez_idxs, pz_idxs = ez_pz_indices
@@ -180,19 +251,19 @@ def test_network_delays_vs_instantaneous(connectome: Connectome, ez_pz_indices: 
         connectome=connectome,
         K=0.75,
         duration=4.0,
-        deterministic=False,
-        use_delays=True,
+        dt=_DT,
         seed=42,
     )
     y_delayed = output(x_traj_delayed)
 
-    t, x_traj_instant = simulate_network(
+    # Instantaneous coupling = a connectome whose conduction delays are all zero.
+    conn_instant = replace(connectome, delays=np.zeros_like(connectome.delays))
+    _, x_traj_instant = simulate_network(
         params=params,
-        connectome=connectome,
+        connectome=conn_instant,
         K=0.75,
         duration=4.0,
-        deterministic=False,
-        use_delays=False,
+        dt=_DT,
         seed=42,
     )
     y_instant = output(x_traj_instant)

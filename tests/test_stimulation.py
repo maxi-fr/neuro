@@ -15,6 +15,8 @@ import pytest
 from neuro.connectome import Connectome, compute_gamma, load_connectome
 from neuro.jansen_rit import JansenRitParams, output, simulate_network
 
+_DT = 1e-3
+
 
 @pytest.fixture(scope="module")
 def connectome() -> Connectome:
@@ -76,7 +78,7 @@ def test_tes_immediate_suppression_and_reexpansion(
         connectome=conn_stim,
         K=0.75,
         duration=4.0,
-        deterministic=False,
+        dt=_DT,
         seed=42,
     )
     y_baseline = output(x_traj_baseline)
@@ -91,7 +93,7 @@ def test_tes_immediate_suppression_and_reexpansion(
         connectome=conn_stim,
         K=0.75,
         duration=4.0,
-        deterministic=False,
+        dt=_DT,
         seed=42,
         u_hat_tES=1.0,
         stim_window=(0.0, 4.0),
@@ -114,7 +116,7 @@ def test_tes_immediate_suppression_and_reexpansion(
         connectome=conn_stim,
         K=0.75,
         duration=12.0,
-        deterministic=False,
+        dt=_DT,
         seed=42,
         u_hat_tES=1.0,
         stim_window=(0.0, 2.0),
@@ -157,7 +159,7 @@ def test_tes_polarity_sanity(
         connectome=conn_stim,
         K=0.75,
         duration=4.0,
-        deterministic=False,
+        dt=_DT,
         seed=42,
         u_hat_tES=-1.0,
         stim_window=(0.0, 4.0),
@@ -192,7 +194,7 @@ def test_gamma_multi_invariants(connectome: Connectome) -> None:
 
 def test_single_electrode_2d_path_matches_scalar(connectome: Connectome) -> None:
     """A (1, 76) gamma reproduces the (76,) scalar path byte-for-byte (back-compat)."""
-    params = JansenRitParams()
+    params = JansenRitParams(sigma=0.0)
     gamma = compute_gamma(connectome.centres, "CP5", sigma=25.0)
     conn_1d = replace(connectome, gamma=gamma)  # shape (76,)
     conn_2d = replace(connectome, gamma=np.atleast_2d(gamma))  # shape (1, 76)
@@ -202,7 +204,7 @@ def test_single_electrode_2d_path_matches_scalar(connectome: Connectome) -> None
         connectome=conn_1d,
         K=0.75,
         duration=0.5,
-        deterministic=True,
+        dt=_DT,
         u_hat_tES=1.0,
         stim_window=(0.0, 0.5),
     )
@@ -211,7 +213,7 @@ def test_single_electrode_2d_path_matches_scalar(connectome: Connectome) -> None
         connectome=conn_2d,
         K=0.75,
         duration=0.5,
-        deterministic=True,
+        dt=_DT,
         u_hat_tES=1.0,
         stim_window=(0.0, 0.5),
     )
@@ -224,7 +226,7 @@ def test_dual_cathode_superposition(connectome: Connectome) -> None:
     Drives gamma = [g_CP5, g_CP6] with u = [0.5, 0.5] (the Patient-6 1 mA -> 0.5+0.5
     split) and asserts the trajectory matches a single combined 0.5*g_CP5 + 0.5*g_CP6.
     """
-    params = JansenRitParams()
+    params = JansenRitParams(sigma=0.0)
     g5 = compute_gamma(connectome.centres, "CP5", sigma=25.0)
     g6 = compute_gamma(connectome.centres, "CP6", sigma=25.0)
     montage = compute_gamma(connectome.centres, ["CP5", "CP6"], sigma=25.0)
@@ -238,7 +240,7 @@ def test_dual_cathode_superposition(connectome: Connectome) -> None:
         connectome=conn_montage,
         K=0.75,
         duration=0.5,
-        deterministic=True,
+        dt=_DT,
         u_hat_tES=np.array([0.5, 0.5]),
         stim_window=(0.0, 0.5),
     )
@@ -247,7 +249,7 @@ def test_dual_cathode_superposition(connectome: Connectome) -> None:
         connectome=conn_combined,
         K=0.75,
         duration=0.5,
-        deterministic=True,
+        dt=_DT,
         u_hat_tES=1.0,
         stim_window=(0.0, 0.5),
     )

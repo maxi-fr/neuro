@@ -4,14 +4,14 @@
 t_end: 5.0
 
 dynamics:
+  # Run/scenario knobs only; model physics constants default to JansenRitParams values.
   class_path: neuro.jansen_rit.JansenRitDynamics
   dt: 0.001
   K: 0.75
-  A: 3.25
   seed: 42
   speed: 50.0
-  use_delays: true
-  deterministic: false
+  params:
+    A: 3.25
 
 output:
   class_path: neuro.output.EEGOutput

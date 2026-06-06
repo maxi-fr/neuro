@@ -9,6 +9,8 @@ the real TVB connectome.
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 import numpy as np
 
 from neuro.connectome import Connectome
@@ -56,11 +58,10 @@ def test_dynamics_matches_simulate_network() -> None:
         duration=0.01,
         dt=_DT,
         seed=7,
-        use_delays=True,
     )
     n_steps = x_ref.shape[2] - 1
 
-    dyn = JansenRitDynamics(dt=_DT, connectome=conn, K=0.5, params=params, seed=7, use_delays=True)
+    dyn = JansenRitDynamics(dt=_DT, connectome=conn, K=0.5, params=params, seed=7)
     for k in range(n_steps):
         out, _ = dyn.evaluate(k * _DT, 0.0)
         np.testing.assert_allclose(np.asarray(out).reshape(6, 3), x_ref[:, :, k + 1], atol=1e-12)
@@ -68,14 +69,13 @@ def test_dynamics_matches_simulate_network() -> None:
 
 def test_dynamics_from_config_builds_network() -> None:
     """from_config loads the TVB connectome and one step yields a finite flat state."""
-    dyn = JansenRitDynamics.from_config({"dt": _DT, "K": 0.75, "A": 3.25, "seed": 42, "speed": 50.0})
+    dyn = JansenRitDynamics.from_config({"dt": _DT, "K": 0.75, "params": {"A": 3.25}, "seed": 42, "speed": 50.0})
     assert dyn.x.shape == (_STATE_DIM, _N_REGIONS_TVB)
 
     out, _ = dyn.evaluate(0.0, 0.0)
     out = np.asarray(out)
     assert out.shape == (_STATE_DIM * _N_REGIONS_TVB,)
     assert np.isfinite(out).all()
-    assert dyn._k == 1  # noqa: SLF001
 
 
 def test_eeg_output_applies_gain() -> None:

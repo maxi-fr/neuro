@@ -1,6 +1,6 @@
 import marimo
 
-__generated_with = "0.23.6"
+__generated_with = "0.23.8"
 app = marimo.App(
     width="medium",
     app_title="Stage 5: EEG Projection & Spectral Energy",
@@ -129,15 +129,14 @@ def _(
     a_gains[ez_idxs] = 3.6
     a_gains[pz_idxs] = 3.4
 
+    noise_sigma = 0.0 if deterministic_toggle.value else JansenRitParams().sigma
     t, x_traj = simulate_network(
-        params=JansenRitParams(A=a_gains),
+        params=JansenRitParams(A=a_gains, sigma=noise_sigma),
         connectome=conn,
         K=k_slider.value,
         duration=float(duration_slider.value),
         dt=1e-3,
         seed=int(seed_slider.value),
-        deterministic=deterministic_toggle.value,
-        use_delays=True,
     )
     y = output(x_traj)
 
