@@ -167,3 +167,88 @@ def test_tes_polarity_sanity(
     recruited_healthy_anodic = [idx for idx in healthy_idxs if ptps_anodic[idx] > 5.0]
     # Anodic stimulation should NOT suppress recruitment (healthy nodes still seize)
     assert len(recruited_healthy_anodic) > 0
+
+
+def test_gamma_multi_invariants(connectome: Connectome) -> None:
+    """A multi-electrode montage stacks independently-normalized per-electrode rows."""
+    g5 = compute_gamma(connectome.centres, "CP5", sigma=20.0)
+    g6 = compute_gamma(connectome.centres, "CP6", sigma=20.0)
+    montage = compute_gamma(connectome.centres, ["CP5", "CP6"], sigma=20.0)
+
+    assert montage.shape == (2, 76)
+    assert np.all(montage <= 0.0)
+    assert np.max(np.abs(montage[0])) == pytest.approx(1.0)
+    assert np.max(np.abs(montage[1])) == pytest.approx(1.0)
+
+    # Each row matches the corresponding single-electrode call (stacking identity).
+    np.testing.assert_allclose(montage[0], g5)
+    np.testing.assert_allclose(montage[1], g6)
+
+    # Per-electrode sigma is honoured.
+    per_sigma = compute_gamma(connectome.centres, ["CP5", "CP6"], sigma=[10.0, 30.0])
+    np.testing.assert_allclose(per_sigma[0], compute_gamma(connectome.centres, "CP5", sigma=10.0))
+    np.testing.assert_allclose(per_sigma[1], compute_gamma(connectome.centres, "CP6", sigma=30.0))
+
+
+def test_single_electrode_2d_path_matches_scalar(connectome: Connectome) -> None:
+    """A (1, 76) gamma reproduces the (76,) scalar path byte-for-byte (back-compat)."""
+    params = JansenRitParams()
+    gamma = compute_gamma(connectome.centres, "CP5", sigma=25.0)
+    conn_1d = replace(connectome, gamma=gamma)  # shape (76,)
+    conn_2d = replace(connectome, gamma=np.atleast_2d(gamma))  # shape (1, 76)
+
+    _, x_1d = simulate_network(
+        params=params,
+        connectome=conn_1d,
+        K=0.75,
+        duration=0.5,
+        deterministic=True,
+        u_hat_tES=1.0,
+        stim_window=(0.0, 0.5),
+    )
+    _, x_2d = simulate_network(
+        params=params,
+        connectome=conn_2d,
+        K=0.75,
+        duration=0.5,
+        deterministic=True,
+        u_hat_tES=1.0,
+        stim_window=(0.0, 0.5),
+    )
+    np.testing.assert_allclose(x_1d, x_2d)
+
+
+def test_dual_cathode_superposition(connectome: Connectome) -> None:
+    """A dual-cathode montage at split current equals injecting the summed field.
+
+    Drives gamma = [g_CP5, g_CP6] with u = [0.5, 0.5] (the Patient-6 1 mA -> 0.5+0.5
+    split) and asserts the trajectory matches a single combined 0.5*g_CP5 + 0.5*g_CP6.
+    """
+    params = JansenRitParams()
+    g5 = compute_gamma(connectome.centres, "CP5", sigma=25.0)
+    g6 = compute_gamma(connectome.centres, "CP6", sigma=25.0)
+    montage = compute_gamma(connectome.centres, ["CP5", "CP6"], sigma=25.0)
+    combined = 0.5 * g5 + 0.5 * g6
+
+    conn_montage = replace(connectome, gamma=montage)
+    conn_combined = replace(connectome, gamma=combined)
+
+    _, x_montage = simulate_network(
+        params=params,
+        connectome=conn_montage,
+        K=0.75,
+        duration=0.5,
+        deterministic=True,
+        u_hat_tES=np.array([0.5, 0.5]),
+        stim_window=(0.0, 0.5),
+    )
+    _, x_combined = simulate_network(
+        params=params,
+        connectome=conn_combined,
+        K=0.75,
+        duration=0.5,
+        deterministic=True,
+        u_hat_tES=1.0,
+        stim_window=(0.0, 0.5),
+    )
+    np.testing.assert_allclose(x_montage, x_combined)

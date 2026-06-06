@@ -20,9 +20,13 @@ from __future__ import annotations
 
 import warnings
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 import numpy as np
 import numpy.typing as npt
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
 
 with warnings.catch_warnings():
     warnings.simplefilter("ignore", UserWarning)
@@ -69,6 +73,9 @@ class Connectome:
         Map from region label to its row/column index.
     channel_index
         Map from channel label to its row index in ``gain``.
+    gamma
+        tES spatial projection, ``None`` until configured. Shape ``(76,)`` for a
+        single electrode or ``(n_electrodes, 76)`` for a multi-electrode montage.
     """
 
     weights: FloatArray
@@ -153,43 +160,58 @@ def load_connectome(speed: float = 50.0) -> Connectome:
 
 def compute_gamma(
     centres: FloatArray,
-    target_electrode: str = "CP5",
-    sigma: float = 20.0,
+    target_electrode: str | Sequence[str] = "CP5",
+    sigma: float | Sequence[float] = 20.0,
     sensors_file: str = _SENSORS_FILE,
 ) -> FloatArray:
-    """Compute the normalized spatial projection vector gamma for tES stimulation.
+    """Compute the normalized spatial projection gamma for tES stimulation.
 
     Parameters
     ----------
     centres
         Region centroids coordinates in mm, shape (N_regions, 3).
     target_electrode
-        Label of the stimulating electrode (e.g. 'CP5').
+        Label of the stimulating electrode (e.g. 'CP5'), or a sequence of labels
+        for a multi-electrode montage (e.g. ('CP5', 'CP6')).
     sigma
-        Spatial standard deviation (spread) in mm.
+        Spatial standard deviation (spread) in mm; a scalar shared across
+        electrodes, or one value per electrode.
     sensors_file
         Filename of the EEG sensors dataset.
 
     Returns
     -------
     FloatArray
-        Normalized spatial projection vector of shape (N_regions,); negative for
-        cathodic stimulation (peak magnitude of 1.0 at closest region centroid).
+        Normalized spatial projection; negative for cathodic stimulation (peak
+        magnitude of 1.0 at the closest region centroid). Shape ``(N_regions,)``
+        for a single electrode, or ``(n_electrodes, N_regions)`` for a montage,
+        with each row independently normalized.
     """
     sensors = SensorsEEG.from_file(sensors_file)
     labels = [label.upper() for label in sensors.labels]
-    target = target_electrode.upper()
-    if target not in labels:
-        msg = f"Electrode {target_electrode} not found in sensors."
+
+    def _gamma_one(electrode: str, spread: float) -> FloatArray:
+        target = electrode.upper()
+        if target not in labels:
+            msg = f"Electrode {electrode} not found in sensors."
+            raise ValueError(msg)
+        electrode_loc = np.asarray(sensors.locations[labels.index(target)], dtype=np.float64)
+        # Euclidean distance from electrode to all region centroids
+        dists = np.linalg.norm(centres - electrode_loc, axis=1)
+        # Gaussian falloff (negative for cathodic stimulation)
+        gamma = -np.exp(-(dists**2) / (2.0 * spread**2))
+        # Normalize so that the maximum absolute value is exactly 1.0
+        return gamma / np.abs(gamma).max()
+
+    if isinstance(target_electrode, str):
+        if not isinstance(sigma, (int, float)):
+            msg = "sigma must be a scalar when target_electrode is a single label."
+            raise TypeError(msg)
+        return _gamma_one(target_electrode, sigma)
+
+    electrodes = list(target_electrode)
+    sigmas = [sigma] * len(electrodes) if isinstance(sigma, (int, float)) else list(sigma)
+    if len(sigmas) != len(electrodes):
+        msg = f"sigma sequence length {len(sigmas)} must match {len(electrodes)} electrodes."
         raise ValueError(msg)
-    idx = labels.index(target)
-    electrode_loc = np.asarray(sensors.locations[idx], dtype=np.float64)
-
-    # Euclidean distance from electrode to all region centroids
-    dists = np.linalg.norm(centres - electrode_loc, axis=1)
-
-    # Gaussian falloff (negative for cathodic stimulation)
-    gamma = -np.exp(-(dists**2) / (2.0 * sigma**2))
-
-    # Normalize so that the maximum absolute value is exactly 1.0
-    return gamma / np.abs(gamma).max()
+    return np.stack([_gamma_one(e, s) for e, s in zip(electrodes, sigmas, strict=True)])

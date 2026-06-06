@@ -66,9 +66,11 @@ def _(load_connectome):
 @app.cell
 def _(electrode_options, mo):
     # Interactive UI controls
-    electrode_dropdown = mo.ui.dropdown(options=electrode_options, value="CP5", label="Target Electrode (Cathode)")
+    electrode_multiselect = mo.ui.multiselect(
+        options=electrode_options, value=["CP5"], label="Cathode montage (select ≥1)"
+    )
     sigma_slider = mo.ui.slider(5.0, 100.0, 5.0, value=20.0, label="Spatial Spread σ_stim (mm)")
-    u_intensity_slider = mo.ui.slider(-3.0, 3.0, 0.25, value=1.5, label="tES Intensity u_hat_tES")
+    u_intensity_slider = mo.ui.slider(-3.0, 3.0, 0.25, value=1.5, label="Total tES Intensity u_hat_tES")
 
     onset_slider = mo.ui.slider(0.0, 10.0, 0.5, value=0.0, label="Stimulation Onset (s)")
     offset_slider = mo.ui.slider(0.0, 10.0, 0.5, value=2.5, label="Stimulation Offset (s)")
@@ -85,7 +87,10 @@ def _(electrode_options, mo):
             mo.vstack(
                 [
                     mo.md("#### 🎛️ Stimulation Settings"),
-                    electrode_dropdown,
+                    mo.md(
+                        "_Selecting e.g. CP5+CP6 reproduces the Patient-6 dual-cathode montage; the total current is split equally across electrodes._"
+                    ),
+                    electrode_multiselect,
                     sigma_slider,
                     u_intensity_slider,
                     onset_slider,
@@ -111,7 +116,7 @@ def _(electrode_options, mo):
         deterministic_toggle,
         divisor_slider,
         duration_slider,
-        electrode_dropdown,
+        electrode_multiselect,
         k_slider,
         offset_slider,
         onset_slider,
@@ -130,7 +135,7 @@ def _(
     deterministic_toggle,
     divisor_slider,
     duration_slider,
-    electrode_dropdown,
+    electrode_multiselect,
     k_slider,
     np,
     offset_slider,
@@ -143,16 +148,22 @@ def _(
     speed_slider,
     u_intensity_slider,
 ):
-    # 1. Update connectome and compute gamma spatial projection
+    # 1. Update connectome and compute gamma steering matrix (n_elec, 76)
     conn_scaled = replace(connectome, speed=speed_slider.value, delays=connectome.tract_lengths / speed_slider.value)
     conn_scaled = replace(conn_scaled, weights=conn_scaled.weights / divisor_slider.value)
 
+    selected_electrodes = list(electrode_multiselect.value) or ["CP5"]
+    n_elec = len(selected_electrodes)
     gamma = compute_gamma(
         connectome.centres,
-        target_electrode=electrode_dropdown.value,
+        target_electrode=selected_electrodes,
         sigma=sigma_slider.value,
     )
     conn_scaled = replace(conn_scaled, gamma=gamma)
+
+    # Total current split equally across the montage (e.g. CP5+CP6: 1.0 -> 0.5+0.5).
+    u_amp = np.full(n_elec, float(u_intensity_slider.value) / n_elec)
+    gamma_field = u_amp @ gamma  # combined per-node U_tES field for visualization
 
     # 2. Configure EZ and PZ gains
     n_nodes = len(connectome.region_labels)
@@ -178,27 +189,27 @@ def _(
         dt=1e-3,
         seed=int(seed_slider.value),
         deterministic=deterministic_toggle.value,
-        u_hat_tES=float(u_intensity_slider.value),
+        u_hat_tES=u_amp,
         stim_window=stim_window,
     )
     y = output(x_traj)
-    return conn_scaled, ez_idxs, gamma, pz_idxs, stim_window, t, y
+    return conn_scaled, ez_idxs, gamma_field, pz_idxs, stim_window, t, y
 
 
 @app.cell
-def _(conn_scaled, gamma, np, plt):
-    # Visualizing the top 15 regions closest to the electrode
-    sorted_idxs = np.argsort(np.abs(gamma))[::-1]
+def _(conn_scaled, gamma_field, np, plt):
+    # Visualizing the top 15 regions by combined montage field |U_tES|
+    sorted_idxs = np.argsort(np.abs(gamma_field))[::-1]
     top_idxs = sorted_idxs[:15]
     top_labels = conn_scaled.region_labels[top_idxs]
-    top_gammas = gamma[top_idxs]
+    top_gammas = gamma_field[top_idxs]
 
     fig_gamma, ax_g = plt.subplots(figsize=(6, 3.5), layout="constrained")
     colors = ["#f50057" if g < 0 else "#2979ff" for g in top_gammas]
     bars = ax_g.barh(top_labels[::-1], top_gammas[::-1], color=colors[::-1], height=0.6, alpha=0.85)
     ax_g.axvline(0.0, color="gray", linestyle="-", linewidth=0.8)
-    ax_g.set_title("Spatial Stimulation Weight γ (Top 15 regions)", fontsize=11, fontweight="bold")
-    ax_g.set_xlabel("γ projection factor")
+    ax_g.set_title("Combined Montage Field U_tES (Top 15 regions)", fontsize=11, fontweight="bold")
+    ax_g.set_xlabel("U_tES = u·γ (combined)")
     ax_g.spines[["top", "right"]].set_visible(False)
     ax_g.grid(visible=True, axis="x", linestyle="--", alpha=0.3)
 

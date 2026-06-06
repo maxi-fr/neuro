@@ -303,7 +303,7 @@ def simulate_network(  # noqa: PLR0913, C901, PLR0912, PLR0915
     use_stochastic_rk4: bool = False,
     use_delays: bool = True,
     initial_state: FloatArray | None = None,
-    u_hat_tES: float = 0.0,  # noqa: N803
+    u_hat_tES: float | FloatArray = 0.0,  # noqa: N803
     stim_window: tuple[float, float] | None = None,
     u_tES: FloatArray | None = None,  # noqa: N803
 ) -> tuple[FloatArray, FloatArray]:
@@ -335,12 +335,15 @@ def simulate_network(  # noqa: PLR0913, C901, PLR0912, PLR0915
     initial_state
         Initial state array of shape ``(6, N)``. If ``None``, defaults to zeros.
     u_hat_tES
-        Constant tES stimulation intensity scaling factor (amplitude).
+        Constant tES current applied during ``stim_window``. A scalar (shared by
+        every electrode) or shape ``(n_electrodes,)`` for per-electrode currents.
     stim_window
         Time window (start_s, end_s) during which tES stimulation is active.
     u_tES
-        Pre-computed time-varying tES intensity array of shape ``(n_steps + 1,)``.
-        If provided, overrides ``u_hat_tES`` and ``stim_window``.
+        Pre-computed time-varying tES current. Shape ``(n_steps + 1,)`` for a
+        single shared envelope, or ``(n_steps + 1, n_electrodes)`` per electrode.
+        If provided, overrides ``u_hat_tES`` and ``stim_window``. The per-node
+        stimulus is ``u_vec @ gamma`` with ``gamma`` of shape ``(n_electrodes, 76)``.
 
     Returns
     -------
@@ -354,6 +357,19 @@ def simulate_network(  # noqa: PLR0913, C901, PLR0912, PLR0915
 
     if u_tES is not None and u_tES.shape[0] < n_steps:
         msg = f"u_tES array length must be at least {n_steps}, got {u_tES.shape[0]}"
+        raise ValueError(msg)
+
+    # tES steering matrix gamma_2d of shape (n_elec, n_nodes); single electrode is n_elec=1.
+    gamma_2d = None if connectome.gamma is None else np.atleast_2d(connectome.gamma)
+    n_elec = 1 if gamma_2d is None else gamma_2d.shape[0]
+    u_amp = np.atleast_1d(np.asarray(u_hat_tES, dtype=np.float64))
+    if u_amp.shape[0] == 1:
+        u_amp = np.broadcast_to(u_amp, (n_elec,))
+    elif u_amp.shape[0] != n_elec:
+        msg = f"u_hat_tES has {u_amp.shape[0]} electrodes but gamma has {n_elec}"
+        raise ValueError(msg)
+    if u_tES is not None and u_tES.ndim > 1 and u_tES.shape[1] != n_elec:
+        msg = f"u_tES has {u_tES.shape[1]} electrodes but gamma has {n_elec}"
         raise ValueError(msg)
 
     a_vec = params.A
@@ -402,20 +418,20 @@ def simulate_network(  # noqa: PLR0913, C901, PLR0912, PLR0915
         s_y_delayed = history[row_indices, col_indices]
         coupling = K * np.sum(w_weights * s_y_delayed, axis=1)
 
-        # 3. Compute tES stimulation
+        # 3. Compute tES stimulation: per-electrode current u_vec, superposed via u_vec @ gamma.
         if u_tES is not None:
-            u_t = u_tES[k]
-        elif stim_window is not None:
-            t_curr = k * dt
-            u_t = u_hat_tES if stim_window[0] <= t_curr < stim_window[1] else 0.0
+            u_step = u_tES[k]
+            u_vec = np.full(n_elec, u_step) if np.ndim(u_step) == 0 else u_step
+        elif stim_window is not None and stim_window[0] <= k * dt < stim_window[1]:
+            u_vec = u_amp
         else:
-            u_t = 0.0
+            u_vec = None
 
-        if u_t != 0.0:
-            if connectome.gamma is None:
+        if u_vec is not None and np.any(u_vec != 0.0):
+            if gamma_2d is None:
                 msg = "tES stimulation is active but connectome.gamma is not configured."
                 raise ValueError(msg)
-            u_node = u_t * connectome.gamma
+            u_node = u_vec @ gamma_2d
         else:
             u_node = 0.0
 
