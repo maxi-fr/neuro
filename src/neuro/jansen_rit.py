@@ -22,7 +22,8 @@ background sits near peak-to-peak amplitude 2.
 Integration is stochastic Heun with additive noise on the ``x5'`` equation; a
 noiseless run is just ``sigma = 0``. The right-hand side is written element-wise, so
 the same code runs a single node (state shape ``(6,)``) or ``N`` nodes (``(6, N)``).
-Everything is in SI seconds: ``a = 100``, ``b = 50`` per second, ``dt = 1e-3`` s.
+Everything is in SI seconds: ``a = 100``, ``b = 50`` per second, ``dt = 1e-4`` s
+(0.1 ms, matching the Stage 7 TVB reference step).
 """
 
 from __future__ import annotations
@@ -33,7 +34,6 @@ from typing import TYPE_CHECKING, Any, Self
 import numba
 import numpy as np
 import numpy.typing as npt
-from pydantic import BaseModel, ConfigDict
 from simulate.dynamics import Dynamics
 
 if TYPE_CHECKING:
@@ -86,7 +86,7 @@ class JansenRitParams:
     v0: float = 6.0
     r: float = 0.56
     mean_input: float = 90.0
-    sigma: float = 550.0
+    sigma: float = 500.0
 
     def to_numba_tuple(self, n_nodes: int) -> tuple[Any, ...]:
         """Convert params to a JIT-friendly tuple, broadcasting regional parameters."""
@@ -364,10 +364,9 @@ def output(x_traj: FloatArray) -> FloatArray:
     return x_traj[1] - x_traj[2]
 
 
-class JansenRitDynamicsLog(BaseModel):
-    """Pydantic log snapshot of the Jansen-Rit network state."""
-
-    model_config = ConfigDict(arbitrary_types_allowed=True)
+@dataclass(frozen=True)
+class JansenRitDynamicsLog:
+    """Dataclass log snapshot of the Jansen-Rit network state."""
 
     x: np.ndarray
 

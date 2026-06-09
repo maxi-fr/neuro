@@ -23,7 +23,8 @@ def compute_psd(
     dt_ms
         Sampling interval (integration step) in milliseconds.
     nperseg
-        Length of each segment for Welch's method. If None, defaults to min(n_samples, 256).
+        Length of each segment for Welch's method. If None, sized for ~1 Hz
+        frequency resolution, ``min(n_samples, round(fs))``.
 
     Returns
     -------
@@ -47,7 +48,12 @@ def compute_psd(
 
     fs = 1000.0 / dt_ms
     if nperseg is None:
-        nperseg = min(n_samples, 256)
+        # Size the default segment by a target frequency resolution (1 Hz) rather than a
+        # fixed sample count: at the sim's high fs (dt=0.1 ms -> fs=10 kHz) a fixed small
+        # nperseg makes the bin width fs/nperseg wider than the EEG rhythm, collapsing it
+        # into the DC bin (the psd-nperseg-resolution-gotcha note).
+        freq_res_hz = 1.0
+        nperseg = min(n_samples, round(fs / freq_res_hz))
 
     freqs, pxx = welch(signals, fs=fs, nperseg=nperseg, axis=1)
     return freqs.astype(np.float64), pxx.astype(np.float64)

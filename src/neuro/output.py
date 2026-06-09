@@ -6,11 +6,11 @@ scalp EEG through the connectome's forward operator.
 
 from __future__ import annotations
 
+import dataclasses
 from typing import Any, Self
 
 import numpy as np
 import numpy.typing as npt
-from pydantic import BaseModel, ConfigDict
 from simulate.output import Output
 
 from neuro.jansen_rit import output as regional_output
@@ -18,12 +18,9 @@ from neuro.jansen_rit import output as regional_output
 FloatArray = npt.NDArray[np.float64]
 
 
-class EEGOutputLog(BaseModel):
-    """Pydantic log snapshot of the EEG measurement."""
-
-    model_config = ConfigDict(arbitrary_types_allowed=True)
-
-    y: np.ndarray
+@dataclasses.dataclass(frozen=True)
+class EEGOutputLog:
+    """Dataclass log snapshot of the EEG measurement."""
 
 
 class EEGOutput(Output[EEGOutputLog]):
@@ -59,4 +56,4 @@ class EEGOutput(Output[EEGOutputLog]):
         x_grid = np.asarray(x, dtype=np.float64).reshape(6, self.n_nodes)
         y_region = regional_output(x_grid)
         eeg = self.gain @ y_region
-        return eeg, EEGOutputLog(y=eeg.copy())
+        return eeg, EEGOutputLog()

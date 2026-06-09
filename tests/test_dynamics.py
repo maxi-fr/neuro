@@ -17,7 +17,7 @@ from neuro.connectome import Connectome
 from neuro.jansen_rit import JansenRitDynamics, JansenRitParams, simulate_network
 from neuro.output import EEGOutput
 
-_DT = 1e-3
+_DT = 1e-4
 _N_REGIONS_TVB = 76
 _N_CHANNELS_TVB = 62
 _STATE_DIM = 6

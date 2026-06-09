@@ -27,7 +27,7 @@ from neuro.jansen_rit import JansenRitParams, output, simulate_network
 from utils.processing import band_energy, steady_window
 
 _FIG3C_TRIO = (("CP5", "CP6"), ("P3", "P4"), ("F3", "F4"))  # (left, right homolog)
-_DT = 1e-3
+_DT = 1e-4
 
 
 def _channel_side(label: str) -> str:

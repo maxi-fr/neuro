@@ -26,10 +26,10 @@ from utils.processing import compute_psd, steady_window
 _A_HEALTHY = 3.25
 _A_PZ = 3.4
 _A_EZ = 3.6
-_DURATION = 20.0
-_TRANSIENT_MS = 6000.0
+_DURATION = 8.0
+_TRANSIENT_MS = 3000.0
 _SEED = 7
-_DT = 1e-3
+_DT = 1e-4
 
 
 def _post_transient_output(a_gain: float, *, deterministic: bool) -> np.ndarray:

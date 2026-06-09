@@ -1,0 +1,46 @@
+# Whole-brain Jansen-Rit run with an open-loop tES window via the simulate orchestrator.
+# All times are in SI seconds: dt = 0.1 ms, t_end = 50 s. The StimWindowController holds a
+# constant cathodic tES current over [onset, offset); the plant projects it to nodes through
+# the gamma steering vector of the CP5 electrode (configured below via target_electrode).
+t_end: 50.0
+
+dynamics:
+  # Run/scenario knobs only; model physics constants default to JansenRitParams values.
+  class_path: neuro.jansen_rit.JansenRitDynamics
+  dt: 0.0001
+  K: 0.75
+  seed: 42
+  speed: 50.0
+  # tES electrode + spatial spread; required so connectome.gamma is set and stimulation projects.
+  target_electrode: CP5
+  gamma_sigma: 20.0
+  params:
+    A: 3.25
+
+output:
+  class_path: neuro.output.EEGOutput
+  dt: 0.0001
+  speed: 50.0
+
+reference:
+  class_path: simulate.reference.StepReference
+  dt: 0.0001
+  step_value: 0.0
+
+sensor:
+  class_path: neuro.sensing.DirectSensor
+  dt: 0.0001
+  n_sensors: 62
+  std_dev: 0.0
+
+estimator:
+  class_path: simulate.estimator.IdentityEstimator
+  dt: 0.0001
+
+controller:
+  class_path: neuro.control.StimWindowController
+  dt: 0.0001
+  onset: 10.0      # stimulation starts at 10 s
+  offset: 30.0     # stimulation ends at 30 s
+  amplitude: 1.5   # constant tES current during the window (cathodic via negative gamma)
+  n_u: 1           # single electrode (CP5)

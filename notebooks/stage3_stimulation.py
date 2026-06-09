@@ -1,6 +1,6 @@
 import marimo
 
-__generated_with = "0.23.8"
+__generated_with = "0.23.6"
 app = marimo.App(
     width="medium",
     app_title="Stage 3 Stimulation: Immediate tES",
@@ -187,7 +187,7 @@ def _(
         connectome=conn_scaled,
         K=k_slider.value,
         duration=float(duration_slider.value),
-        dt=1e-3,
+        dt=1e-4,
         seed=int(seed_slider.value),
         u_hat_tES=u_amp,
         stim_window=stim_window,

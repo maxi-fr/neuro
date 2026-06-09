@@ -1,6 +1,6 @@
 import marimo
 
-__generated_with = "0.23.8"
+__generated_with = "0.23.6"
 app = marimo.App(width="medium", app_title="Stage 0 Connectome Explorer")
 
 
@@ -81,7 +81,7 @@ def _(connectome, mo, np):
 @app.cell
 def _(connectome, plt):
     _fig, _ax = plt.subplots(figsize=(6, 5))
-    _im = _ax.imshow(connectome.weights, cmap="magma", aspect="auto")
+    _im = _ax.imshow(connectome.weights, cmap="viridis", aspect="auto")
     _ax.set_title("Connection weights (hemispheric blocks)")
     _ax.set_xlabel("source region")
     _ax.set_ylabel("target region")
@@ -109,7 +109,7 @@ def _(connectome, np, plt):
     _fig, _ax = plt.subplots(figsize=(9, 4))
     _vmax = float(np.abs(connectome.gain).max())
     _im = _ax.imshow(connectome.gain, cmap="RdBu_r", aspect="auto", vmin=-_vmax, vmax=_vmax)
-    _ax.set_title("EEG forward operator L (62 channels x 76 regions)")
+    _ax.set_title("EEG leadfield matrix L (62 channels x 76 regions)")
     _ax.set_xlabel("region")
     _ax.set_ylabel("channel")
     _fig.colorbar(_im, ax=_ax)

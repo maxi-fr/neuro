@@ -15,7 +15,7 @@ import pytest
 from neuro.connectome import Connectome, load_connectome
 from neuro.jansen_rit import JansenRitDynamics, JansenRitParams, output, simulate_network
 
-_DT = 1e-3
+_DT = 1e-4
 
 
 @pytest.fixture(scope="module")
@@ -60,7 +60,7 @@ def test_network_all_healthy_control(connectome: Connectome) -> None:
     )
     y = output(x_traj)
     # Steady window after transient
-    y_steady = y[:, 1000:]
+    y_steady = y[:, round(1.0 / _DT) :]
     ptps = np.ptp(y_steady, axis=1)
     assert np.all(ptps < 0.05)
 
@@ -74,7 +74,7 @@ def test_network_all_healthy_control(connectome: Connectome) -> None:
         seed=42,
     )
     y_noise = output(x_traj_noise)
-    y_noise_steady = y_noise[:, 1000:]
+    y_noise_steady = y_noise[:, round(1.0 / _DT) :]
     ptps_noise = np.ptp(y_noise_steady, axis=1)
     assert np.all(ptps_noise < 5.0)
     assert np.all(ptps_noise > 0.5)
@@ -101,7 +101,7 @@ def test_network_recruitment(connectome: Connectome, ez_pz_indices: tuple[list[i
     y = output(x_traj)
 
     # EZ nodes should oscillate immediately
-    y_steady = y[:, 1000:]
+    y_steady = y[:, round(1.0 / _DT) :]
     ptps = np.ptp(y_steady, axis=1)
     assert np.all(ptps[ez_idxs] > 5.0)
 
@@ -152,7 +152,7 @@ def test_network_coupling_correctness(connectome: Connectome, ez_pz_indices: tup
         seed=42,
     )
     y = output(x_traj)
-    y_steady = y[:, 1000:]
+    y_steady = y[:, round(1.0 / _DT) :]
     ptps = np.ptp(y_steady, axis=1)
 
     # Isolated PZ node (lTCI) must stop seizing (stays in background range < 5.0)
@@ -171,7 +171,7 @@ def _two_node_delayed_connectome() -> Connectome:
     weights = np.zeros((2, 2))
     weights[1, 0] = 0.6  # node 1 receives from node 0 only
     delays = np.zeros((2, 2))
-    delays[1, 0] = 5.0  # ms -> round(5 / (dt * 1000)) = 5 steps at dt = 1e-3
+    delays[1, 0] = 5.0  # ms -> round(5 / (dt * 1000)) = 50 steps at dt = 1e-4
     return Connectome(
         weights=weights,
         tract_lengths=np.zeros((2, 2)),
@@ -212,7 +212,7 @@ def test_history_coupling_index_robust_to_accumulated_time() -> None:
     params = JansenRitParams(A=np.array([3.6, 3.25]), sigma=0.0)
     initial_state = np.zeros((6, 2))
     initial_state[0, 0] = 1.0  # kick node 0 off the (unstable) equilibrium so it limit-cycles
-    n_steps = 3000
+    n_steps = 30000  # 3 s at dt = 1e-4, enough for the downstream node to be driven
 
     def run(*, accumulate: bool) -> np.ndarray:
         dyn = JansenRitDynamics(
@@ -269,8 +269,8 @@ def test_network_delays_vs_instantaneous(connectome: Connectome, ez_pz_indices: 
     y_instant = output(x_traj_instant)
 
     # Both networks should successfully seize/recruit
-    ptps_delayed = np.ptp(y_delayed[:, 1000:], axis=1)
-    ptps_instant = np.ptp(y_instant[:, 1000:], axis=1)
+    ptps_delayed = np.ptp(y_delayed[:, round(1.0 / _DT) :], axis=1)
+    ptps_instant = np.ptp(y_instant[:, round(1.0 / _DT) :], axis=1)
     assert np.all(ptps_delayed[ez_idxs] > 5.0)
     assert np.all(ptps_instant[ez_idxs] > 5.0)
 

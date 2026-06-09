@@ -14,7 +14,7 @@ def _():
     from neuro.jansen_rit import JansenRitParams, output, simulate_network
     from utils.plotting import plot_psd
 
-    DT_DEFAULT = 1e-3  # noqa: N806
+    DT_DEFAULT = 1e-4  # noqa: N806
     return (
         DT_DEFAULT,
         JansenRitParams,
@@ -45,7 +45,7 @@ def _(mo):
     Parameters follow Table 1 (`I = 90`, `a = 100`, `b = 50`, `v0 = 6`, …); the
     only free knob is the white-noise std `sigma`, tuned so the background sits near
     amplitude 2 (calibrating the closed-loop threshold of 5). Everything is in SI
-    seconds with `dt = 1e-3 s`.
+    seconds with `dt = 1e-4 s` (0.1 ms, matching the Stage 7 TVB reference).
     """)
     return
 
@@ -137,7 +137,7 @@ def _(mo):
 @app.cell
 def _(mo):
     a_slider = mo.ui.slider(3.0, 4.0, 0.01, value=3.6, label="A (excitatory gain)")
-    sigma_slider = mo.ui.slider(0.0, 1000.0, 50.0, value=550.0, label="noise sigma")
+    sigma_slider = mo.ui.slider(0.0, 1000.0, 50.0, value=500.0, label="noise sigma")
     duration_slider = mo.ui.slider(5, 60, 5, value=20, label="duration (s)")
     seed_slider = mo.ui.slider(0, 50, 1, value=7, label="seed")
     deterministic_switch = mo.ui.checkbox(value=False, label="deterministic (RK4, no noise)")
