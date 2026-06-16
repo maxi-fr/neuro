@@ -241,6 +241,9 @@ filelock==3.29.0 \
     # via
     #   python-discovery
     #   virtualenv
+filterpy==1.4.5 \
+    --hash=sha256:4f2a4d39e4ea601b9ab42b2db08b5918a9538c168cff1c6895ae26646f3d73b1
+    # via neuro
 fonttools==4.63.0 \
     --hash=sha256:0eac00b9118c3c2f87d272e45341871c5b3066baa3c86897fa634a7c3fb59096 \
     --hash=sha256:1e874792a8212b44583ea02189d9e693906b2f78b261f372f95d6c563210ac1d \
@@ -542,6 +545,7 @@ matplotlib==3.10.9 \
     --hash=sha256:f4399f64b3e94cd500195490972ae1ee81170df1636fa15364d157d5bdd7b921 \
     --hash=sha256:fd66508e8c6877d98e586654b608a0456db8d7e8a546eb1e2600efd957302358
     # via
+    #   filterpy
     #   neuro
     #   simulate
     #   tvb-library
@@ -690,6 +694,7 @@ numpy==2.4.6 \
     --hash=sha256:f74a575920ab21fe304421a3fc28793d82e299cae9eccb37084e9fc7f3617c20
     # via
     #   contourpy
+    #   filterpy
     #   matplotlib
     #   numba
     #   numexpr
@@ -1091,7 +1096,9 @@ scipy==1.17.1 \
     --hash=sha256:eb092099205ef62cd1782b006658db09e2fed75bffcae7cc0d44052d8aa0f484 \
     --hash=sha256:eee2cfda04c00a857206a4330f0c5e3e56535494e30ca445eb19ec624ae75118 \
     --hash=sha256:f8885db0bc2bffa59d5c1b72fad7a6a92d3e80e7257f967dd81abb553a90d293
-    # via tvb-library
+    # via
+    #   filterpy
+    #   tvb-library
 simulate @ git+https://github.com/maxi-fr/simulate.git@f071b215b50b6695fdd341d78c6817273f17423f
     # via neuro
 six==1.17.0 \

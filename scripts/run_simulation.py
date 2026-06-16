@@ -20,6 +20,8 @@ Usage
 from __future__ import annotations
 
 import argparse
+import subprocess
+import sys
 from pathlib import Path
 
 import yaml
@@ -86,6 +88,13 @@ def main() -> None:
     npz_path = run_dir / "logs.npz"
     print(f"Wrote {npz_path}")
     print(f"Saved configuration to {config_path}")
+    sys.stdout.flush()
+
+    # Plot the simulation results
+    subprocess.run(  # noqa: S603
+        [sys.executable, "scripts/plot_simulation.py", "--dir", str(run_dir)],
+        check=True,
+    )
 
 
 if __name__ == "__main__":

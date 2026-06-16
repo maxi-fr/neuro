@@ -44,7 +44,11 @@ class EEGOutput(Output[EEGOutputLog]):
         from neuro.connectome import load_connectome  # noqa: PLC0415
 
         connectome = load_connectome(speed=float(config.get("speed", 50.0)))
-        return cls(dt=float(config["dt"]), gain=connectome.gain)
+        gain = connectome.gain
+        n_nodes_val = config.get("n_nodes")
+        if n_nodes_val is not None:
+            gain = gain[:, : int(n_nodes_val)]
+        return cls(dt=float(config["dt"]), gain=gain)
 
     def update(
         self,

@@ -24,6 +24,7 @@ import numpy as np
 import numpy.typing as npt
 from simulate.config import load_config
 
+from neuro.connectome import load_connectome
 from utils.plotting import plot_psd, plot_signals
 from utils.processing import steady_window, synchronization
 from utils.save_plots import ThesisPlotSaver
@@ -52,7 +53,7 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def main() -> None:  # noqa: PLR0915
+def main() -> None:  # noqa: C901, PLR0912, PLR0915
     """Load simulation outputs, compute metrics, and save figures."""
     args = parse_args()
     dir_path: Path = args.dir
@@ -71,6 +72,7 @@ def main() -> None:  # noqa: PLR0915
     dt_s = float(config["dynamics"]["dt"])
     dt_ms = dt_s * 1000.0  # plotting/PSD utilities expect milliseconds
 
+    activity = None
     with np.load(npz_path) as data:
         eeg: FloatArray = data["universal_y"].T  # (n_sensors, n_samples)
         u: FloatArray = data["universal_u"]
@@ -88,10 +90,11 @@ def main() -> None:  # noqa: PLR0915
                 activity = (x_grid[:, 1, :] - x_grid[:, 2, :]).T  # (n_nodes, n_samples)
 
                 # Discard transient for synchronization metric if requested
+                activity_steady = activity
                 if args.transient_ms > 0.0:
-                    activity = steady_window(activity, dt_ms, args.transient_ms)
+                    activity_steady = steady_window(activity, dt_ms, args.transient_ms)
 
-                r_sync = synchronization(activity)
+                r_sync = synchronization(activity_steady)
             except Exception as e:  # noqa: BLE001
                 print(f"Could not calculate network synchronization: {e}")
 
@@ -101,6 +104,8 @@ def main() -> None:  # noqa: PLR0915
         eeg = steady_window(eeg, dt_ms, args.transient_ms)
         n_drop = round(args.transient_ms / dt_ms)
         u = u[n_drop:]
+        if activity is not None:
+            activity = steady_window(activity, dt_ms, args.transient_ms)
 
     print(f"Loaded simulation logs from {npz_path}")
     print(
@@ -145,9 +150,44 @@ def main() -> None:  # noqa: PLR0915
         nperseg=nperseg,
     )
 
+    # 3. Plot select nodes (one EZ, one PZ, and one healthy) if regional activity is available
+    fig_nodes = None
+    if activity is not None:
+        try:
+            connectome = load_connectome()
+            ez_node = "lHC"
+            pz_node = "lTCI"
+            healthy_node = "rHC"
+            ez_idx = connectome.region_index[ez_node]
+            pz_idx = connectome.region_index[pz_node]
+            healthy_idx = connectome.region_index[healthy_node]
+
+            node_signals = activity[[ez_idx, pz_idx, healthy_idx], :]
+            node_names = [f"{ez_node} (EZ)", f"{pz_node} (PZ)", f"{healthy_node} (Healthy)"]
+            node_colors = ["#d62728", "#ff7f0e", "#1f77b4"]
+
+            fig_nodes, _ = plot_signals(
+                node_signals,
+                dt_ms=dt_ms,
+                channel_names=node_names,
+                channels_to_plot=[0, 1, 2],
+                stacked=True,
+                title="Representative Node Outputs",
+                color=node_colors,
+            )
+        except Exception as e:  # noqa: BLE001
+            print(f"Could not plot select nodes: {e}")
+
     # Save both figures and time-series data in a single subdirectory
+    figs = {
+        "signals": fig_signals,
+        "spectrum": fig_freq,
+    }
+    if fig_nodes is not None:
+        figs["nodes"] = fig_nodes
+
     saver.save(
-        {"signals": fig_signals, "spectrum": fig_freq},
+        figs,
         name=dir_path.name,
         metadata=metadata,
         data={"eeg": eeg, "u": u},
@@ -155,6 +195,8 @@ def main() -> None:  # noqa: PLR0915
     )
     plt.close(fig_signals)
     plt.close(fig_freq)
+    if fig_nodes is not None:
+        plt.close(fig_nodes)
 
     print(f"Saved EEG plots and data folder to {dir_path}")
 

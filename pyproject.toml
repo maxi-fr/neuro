@@ -12,6 +12,7 @@ dependencies = [
     "tvb-library>=2.10.0",
     "tvb-data>=3.0.0",
     "simulate",
+    "filterpy>=1.4.5",
 ]
 
 [project.optional-dependencies]

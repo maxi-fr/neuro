@@ -7,11 +7,16 @@
 ## Implementations
 
 <details>
-<summary>Setup brain model</summary>
+<summary>UKF research + implementation</summary>
 
-* Rename gain to leadfield
-* Implement config loading
-* Implement good simulation loop/ simulate integration
+* Use library or implement myself?
+
+</details>
+
+<details>
+<summary>EEG channel selection</summary>
+
+*
 
 </details>
 

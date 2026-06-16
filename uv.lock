@@ -437,6 +437,17 @@ wheels = [
 ]
 
 [[package]]
+name = "filterpy"
+version = "1.4.5"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "matplotlib" },
+    { name = "numpy" },
+    { name = "scipy" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/f6/1d/ac8914360460fafa1990890259b7fa5ef7ba4cd59014e782e4ab3ab144d8/filterpy-1.4.5.zip", hash = "sha256:4f2a4d39e4ea601b9ab42b2db08b5918a9538c168cff1c6895ae26646f3d73b1", size = 177985, upload-time = "2018-10-10T22:38:24.63Z" }
+
+[[package]]
 name = "fonttools"
 version = "4.63.0"
 source = { registry = "https://pypi.org/simple" }
@@ -1047,6 +1058,7 @@ name = "neuro"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
+    { name = "filterpy" },
     { name = "matplotlib" },
     { name = "simulate" },
     { name = "tvb-data" },
@@ -1073,6 +1085,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "filterpy", specifier = ">=1.4.5" },
     { name = "matplotlib", specifier = ">=3.8" },
     { name = "mne", marker = "extra == 'leadfield'", specifier = ">=1.6" },
     { name = "nibabel", marker = "extra == 'leadfield'", specifier = ">=5.0" },

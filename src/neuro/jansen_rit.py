@@ -457,6 +457,21 @@ class JansenRitDynamics(Dynamics[JansenRitDynamicsLog]):
 
         connectome = load_connectome(speed=float(config["speed"]))
 
+        n_nodes_val = config.get("n_nodes")
+        if n_nodes_val is not None:
+            n_nodes = int(n_nodes_val)
+            connectome = replace(
+                connectome,
+                weights=connectome.weights[:n_nodes, :n_nodes],
+                tract_lengths=connectome.tract_lengths[:n_nodes, :n_nodes],
+                centres=connectome.centres[:n_nodes],
+                region_labels=connectome.region_labels[:n_nodes],
+                hemispheres=connectome.hemispheres[:n_nodes],
+                delays=connectome.delays[:n_nodes, :n_nodes],
+                gain=connectome.gain[:, :n_nodes],
+                region_index={label: idx for idx, label in enumerate(connectome.region_labels[:n_nodes])},
+            )
+
         target_electrode = config.get("target_electrode")
         if target_electrode is not None:
             gamma = compute_gamma(
