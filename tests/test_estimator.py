@@ -1,8 +1,11 @@
 from __future__ import annotations
 
-import numpy as np
+import dataclasses
 
-from neuro.connectome import Connectome
+import numpy as np
+import pytest
+
+from neuro.connectome import Connectome, load_connectome
 from neuro.estimator import UKFEstimator
 from neuro.jansen_rit import JansenRitDynamics, JansenRitParams
 
@@ -186,3 +189,137 @@ def test_estimator_from_config() -> None:
     assert est.n_nodes == 76  # standard TVB connectome has 76 regions
     assert est.dim_z == 2  # selected_channels length
     assert est.ukf.x[6 * 76] == 0.5  # initial K value
+
+
+def test_estimator_with_extensions() -> None:
+    """Verify state dimensions, clipping, transition and measurement functions with extensions enabled."""
+    conn = _toy_connectome(2)
+
+    # Initial state dimension: 6*N (12) + 1 (K) + N^2 (4) = 17
+    # + 2 EEG gains (n_nodes = 2) = 19
+    est = UKFEstimator(
+        dt=1e-4,
+        n_nodes=2,
+        gain=conn.gain,
+        delays=conn.delays,
+        estimate_eeg_gains=True,
+    )
+
+    assert est.dim_x == 19
+    assert est.ukf.x.shape == (19,)
+    assert est.ukf.P.shape == (19, 19)
+    assert est.ukf.Q.shape == (19, 19)
+
+    # Verify initial value of gains are 1.0 by default
+    assert np.all(est.ukf.x[17:19] == 1.0)  # EEG gains
+
+    # Manually set negative parameters to test clipping
+    x_test = est.ukf.x.copy()
+    x_test[12] = 0.5  # K
+    x_test[17] = -0.1  # gain 0
+    x_test[18] = 1.5  # gain 1
+    est.ukf.x = x_test
+
+    # Dummy update should clip negative values
+    y_mea = np.zeros(2)
+    u = 0.0
+    _x_hat, log = est.update(0.0, y_mea, u)
+
+    assert est.ukf.x[17] == 0.0  # gain 0 clipped
+    assert est.ukf.x[18] >= 0.0
+    assert log.g_est is not None
+
+    # Test hx with estimated gains: y_eeg_i = g_i * y_node_i
+    x_hx = np.zeros(19)
+    x_hx[2] = 2.0  # node 0, x2
+    x_hx[4] = 0.5  # node 0, x3 => LFP_0 = 1.5
+    x_hx[3] = 3.0  # node 1, x2
+    x_hx[5] = 1.0  # node 1, x3 => LFP_1 = 2.0
+    x_hx[17] = 2.0  # gain 0
+    x_hx[18] = 0.5  # gain 1
+
+    # expected LFP: [1.5 * 2.0, 2.0 * 0.5] = [3.0, 1.0]
+    expected_eeg = np.array([3.0, 1.0])
+    y_est = est.ukf.hx(x_hx)
+    np.testing.assert_allclose(y_est, expected_eeg, atol=1e-12)
+
+
+def test_estimator_gamma_from_target_electrode() -> None:
+    """Verify that steering matrix gamma is correctly constructed from target electrodes by name or index."""
+    # Test case 1: Target electrodes picked by name
+    config_names = {
+        "dt": 1e-4,
+        "speed": 50.0,
+        "target_electrode": ["F3", "P3"],
+    }
+    est_names = UKFEstimator.from_config(config_names)
+    assert est_names.n_elec == 2
+    assert est_names.gamma_2d is not None
+    assert est_names.gamma_2d.shape == (2, est_names.n_nodes)
+
+    # Test case 2: Target electrodes picked by index
+    config_indices = {
+        "dt": 1e-4,
+        "speed": 50.0,
+        "target_electrode": [2, 5],
+    }
+    est_indices = UKFEstimator.from_config(config_indices)
+    assert est_indices.n_elec == 2
+    assert est_indices.gamma_2d is not None
+    assert est_indices.gamma_2d.shape == (2, est_indices.n_nodes)
+
+    # Verify that the calculated gammas are identical (electrode index matches label)
+    conn = load_connectome()
+    labels = [conn.channel_labels[2], conn.channel_labels[5]]
+
+    config_matched_names = {
+        "dt": 1e-4,
+        "speed": 50.0,
+        "target_electrode": labels,
+    }
+    est_matched_names = UKFEstimator.from_config(config_matched_names)
+    assert est_indices.gamma_2d is not None
+    assert est_matched_names.gamma_2d is not None
+    np.testing.assert_allclose(est_indices.gamma_2d, est_matched_names.gamma_2d)
+
+    # Test case 3: Same logic applies to JansenRitDynamics.from_config
+    config_dynamics = {
+        "dt": 1e-4,
+        "speed": 50.0,
+        "K": 0.5,
+        "target_electrode": ["F3", "P3"],
+    }
+    dyn = JansenRitDynamics.from_config(config_dynamics)
+    assert dyn.n_elec == 2
+    assert dyn.gamma_2d is not None
+    assert dyn.gamma_2d.shape == (2, dyn.x.shape[1])
+
+
+def test_estimator_update_accepts_pre_subsetted_and_full() -> None:
+    """Verify that update accepts both full-channel arrays and pre-subsetted EEG arrays."""
+    conn = _toy_connectome(2)
+    # Selected channels is index 0 only
+    est = UKFEstimator(
+        dt=1e-4,
+        n_nodes=2,
+        gain=conn.gain,
+        selected_channels=[0],
+    )
+    # Full channel vector of shape (2,)
+    y_full = np.array([1.2, 3.4])
+    # Pre-subsetted vector of shape (1,)
+    y_sub = np.array([1.2])
+
+    # Try update with full channel vector
+    x_hat_full, _ = est.update(0.0, y_full, 0.0)
+    # Try update with pre-subsetted vector
+    x_hat_sub, _ = est.update(0.0, y_sub, 0.0)
+
+    assert isinstance(x_hat_full, np.ndarray)
+    assert x_hat_full.shape == (17,)
+    assert isinstance(x_hat_sub, np.ndarray)
+    assert x_hat_sub.shape == (17,)
+
+    # Test error raising for invalid shape
+    with pytest.raises(ValueError, match="matches neither dim_z"):
+        est.update(0.0, np.array([1.2, 3.4, 5.6]), 0.0)

@@ -97,3 +97,37 @@ def test_eeg_output_from_config_channel_count() -> None:
     """from_config wires the (62, 76) TVB forward operator."""
     out_comp = EEGOutput.from_config({"dt": _DT, "speed": 50.0})
     assert out_comp.gain.shape == (_N_CHANNELS_TVB, _N_REGIONS_TVB)
+
+
+def test_eeg_output_selected_channels() -> None:
+    """EEGOutput maps to a subset of channels if selected_channels is provided."""
+    n_nodes = 3
+    gain = np.arange(12, dtype=np.float64).reshape(4, n_nodes)
+    out_comp = EEGOutput(dt=_DT, gain=gain, selected_channels=[1, 3])
+
+    x_flat = np.arange(6 * n_nodes, dtype=np.float64)
+    x_grid = x_flat.reshape(6, n_nodes)
+    expected = (gain @ (x_grid[1] - x_grid[2]))[[1, 3]]
+
+    y, _ = out_comp.update(0.0, x_flat, 0.0)
+    np.testing.assert_allclose(np.asarray(y), expected)
+    assert np.asarray(y).shape == (2,)
+
+
+def test_eeg_output_from_config_selected_channels() -> None:
+    """from_config wires selected channels correctly."""
+    out_comp = EEGOutput.from_config(
+        {
+            "dt": _DT,
+            "speed": 50.0,
+            "selected_channels": ["F3", "P3"],
+        }
+    )
+    assert out_comp.selected_channels is not None
+    assert len(out_comp.selected_channels) == 2
+    # Verify that "F3" and "P3" correspond to the correct resolved channel indices
+    from neuro.connectome import load_connectome  # noqa: PLC0415
+
+    conn = load_connectome(speed=50.0)
+    assert out_comp.selected_channels[0] == conn.channel_index["F3"]
+    assert out_comp.selected_channels[1] == conn.channel_index["P3"]

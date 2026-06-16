@@ -33,9 +33,7 @@ def _fx_step_jit(  # noqa: PLR0913
     Parameters
     ----------
     x_aug : np.ndarray
-        The augmented state vector of shape (6*M + 1 + M^2,), where the first 6*M
-        elements are the hidden dynamic states, index 6*M is the global coupling scale K,
-        and the remaining M^2 elements are the connection weights w_ij (row-major).
+        The augmented state vector.
     dt : float
         Integration step size in seconds.
     u_node : np.ndarray
@@ -54,7 +52,7 @@ def _fx_step_jit(  # noqa: PLR0913
     Returns
     -------
     np.ndarray
-        The predicted next augmented state vector of shape (6*M + 1 + M^2,).
+        The predicted next augmented state vector.
     """
     n_nodes = delay_steps.shape[0]
 
@@ -97,6 +95,7 @@ def _hx_step_jit(
     gain: np.ndarray,
     selected_channels: np.ndarray,
     n_nodes: int,
+    estimate_eeg_gains: bool,  # noqa: FBT001
 ) -> np.ndarray:
     """Evaluate the measurement function for a single sigma point.
 
@@ -107,13 +106,15 @@ def _hx_step_jit(
     Parameters
     ----------
     x_aug : np.ndarray
-        The augmented state vector of shape (6*M + 1 + M^2,).
+        The augmented state vector.
     gain : np.ndarray
         The EEG forward operator matrix of shape (n_channels, M).
     selected_channels : np.ndarray
         Indices of active EEG channels to select, of shape (n_selected_channels,).
     n_nodes : int
         The number of nodes M in the Jansen-Rit network.
+    estimate_eeg_gains : bool
+        If True, projects outputs via estimated diagonal gains.
 
     Returns
     -------
@@ -122,7 +123,14 @@ def _hx_step_jit(
     """
     x_dyn = np.reshape(x_aug[: 6 * n_nodes], (6, n_nodes))
     y_node = x_dyn[1] - x_dyn[2]
-    y_eeg = gain @ y_node
+
+    if estimate_eeg_gains:
+        g_start = 6 * n_nodes + 1 + n_nodes**2
+        gains = x_aug[g_start : g_start + n_nodes]
+        y_eeg = gains * y_node
+    else:
+        y_eeg = gain @ y_node
+
     return y_eeg[selected_channels]
 
 
@@ -133,12 +141,13 @@ class UKFEstimatorLog:
     p_diag: np.ndarray
     K_est: float
     w_est: np.ndarray
+    g_est: np.ndarray | None = None
 
 
 class UKFEstimator(Estimator[UKFEstimatorLog]):
     """Unscented Kalman Filter (UKF) estimator for Jansen-Rit model state and parameters."""
 
-    def __init__(  # noqa: PLR0913, PLR0915, C901
+    def __init__(  # noqa: PLR0913, PLR0915, C901, PLR0912
         self,
         dt: float,
         n_nodes: int,
@@ -159,6 +168,10 @@ class UKFEstimator(Estimator[UKFEstimatorLog]):
         beta: float = 2.0,
         kappa: float = 0.0,
         params: JansenRitParams | None = None,
+        estimate_eeg_gains: bool = False,  # noqa: FBT001, FBT002
+        q_g: float = 1e-5,
+        p_g: float = 1e-2,
+        initial_g: np.ndarray | None = None,
     ) -> None:
         """Initialize the UKF Estimator.
 
@@ -207,10 +220,18 @@ class UKFEstimator(Estimator[UKFEstimatorLog]):
             UKF scaling parameter kappa.
         params : JansenRitParams or None, optional
             Jansen-Rit model parameters.
+        estimate_eeg_gains : bool, default False
+            If True, assume diagonal leadfield projection and estimate channel gains online.
+        q_g : float, default 1e-5
+            Process noise variance for estimated EEG gains.
+        p_g : float, default 1e-2
+            Initial covariance variance for EEG gains.
+        initial_g : np.ndarray or None, optional
+            Initial EEG channel gains (defaults to ones).
         """
         super().__init__(dt)
         self.n_nodes = n_nodes
-        self.dim_x = 6 * n_nodes + 1 + n_nodes**2
+        self.estimate_eeg_gains = estimate_eeg_gains
 
         self.gain = np.asarray(gain, dtype=np.float64)
         if selected_channels is None:
@@ -221,6 +242,10 @@ class UKFEstimator(Estimator[UKFEstimatorLog]):
 
         self.gamma_2d = None if gamma is None else np.atleast_2d(gamma)
         self.n_elec = 1 if self.gamma_2d is None else self.gamma_2d.shape[0]
+
+        self.dim_x = 6 * n_nodes + 1 + n_nodes**2
+        if estimate_eeg_gains:
+            self.dim_x += n_nodes
 
         if delays is None:
             delays = np.zeros((n_nodes, n_nodes), dtype=np.float64)
@@ -248,12 +273,26 @@ class UKFEstimator(Estimator[UKFEstimatorLog]):
                     u_node_arr = np.asarray(u_node, dtype=np.float64)
             else:
                 u_node_arr = np.full(self.n_nodes, float(u_node), dtype=np.float64)
+
             return _fx_step_jit(
-                x_aug, dt_step, u_node_arr, k, self.max_history_len, self.delay_steps, self.history, self.params_tuple
+                x_aug,
+                dt_step,
+                u_node_arr,
+                k,
+                self.max_history_len,
+                self.delay_steps,
+                self.history,
+                self.params_tuple,
             )
 
         def hx(x_aug: np.ndarray) -> np.ndarray:
-            return _hx_step_jit(x_aug, self.gain, self.selected_channels, self.n_nodes)
+            return _hx_step_jit(
+                x_aug,
+                self.gain,
+                self.selected_channels,
+                self.n_nodes,
+                self.estimate_eeg_gains,
+            )
 
         self.ukf = UnscentedKalmanFilter(
             dim_x=self.dim_x,
@@ -268,7 +307,15 @@ class UKFEstimator(Estimator[UKFEstimatorLog]):
         x0_aug = np.zeros(self.dim_x, dtype=np.float64)
         x0_aug[6 * n_nodes] = initial_k
         if initial_w is not None:
-            x0_aug[6 * n_nodes + 1 :] = initial_w.flatten()
+            x0_aug[6 * n_nodes + 1 : 6 * n_nodes + 1 + n_nodes**2] = initial_w.flatten()
+
+        current_idx = 6 * n_nodes + 1 + n_nodes**2
+        if estimate_eeg_gains:
+            if initial_g is not None:
+                x0_aug[current_idx : current_idx + n_nodes] = initial_g
+            else:
+                x0_aug[current_idx : current_idx + n_nodes] = 1.0
+
         self.ukf.x = x0_aug
 
         # Seed history
@@ -280,7 +327,14 @@ class UKFEstimator(Estimator[UKFEstimatorLog]):
         P0 = np.zeros((self.dim_x, self.dim_x), dtype=np.float64)
         P0[: 6 * n_nodes, : 6 * n_nodes] = p_state * np.eye(6 * n_nodes)
         P0[6 * n_nodes, 6 * n_nodes] = p_k
-        P0[6 * n_nodes + 1 :, 6 * n_nodes + 1 :] = p_w * np.eye(n_nodes**2)
+        P0[6 * n_nodes + 1 : 6 * n_nodes + 1 + n_nodes**2, 6 * n_nodes + 1 : 6 * n_nodes + 1 + n_nodes**2] = (
+            p_w * np.eye(n_nodes**2)
+        )
+
+        current_idx = 6 * n_nodes + 1 + n_nodes**2
+        if estimate_eeg_gains:
+            P0[current_idx : current_idx + n_nodes, current_idx : current_idx + n_nodes] = p_g * np.eye(n_nodes)
+
         self.ukf.P = P0
 
         # process noise Q
@@ -288,14 +342,21 @@ class UKFEstimator(Estimator[UKFEstimatorLog]):
         for i in range(n_nodes):
             Q[6 * i + 4, 6 * i + 4] = q_x5
         Q[6 * n_nodes, 6 * n_nodes] = q_k
-        Q[6 * n_nodes + 1 :, 6 * n_nodes + 1 :] = q_w * np.eye(n_nodes**2)
+        Q[6 * n_nodes + 1 : 6 * n_nodes + 1 + n_nodes**2, 6 * n_nodes + 1 : 6 * n_nodes + 1 + n_nodes**2] = (
+            q_w * np.eye(n_nodes**2)
+        )
+
+        current_idx = 6 * n_nodes + 1 + n_nodes**2
+        if estimate_eeg_gains:
+            Q[current_idx : current_idx + n_nodes, current_idx : current_idx + n_nodes] = q_g * np.eye(n_nodes)
+
         self.ukf.Q = Q
 
         # measurement noise R
         self.ukf.R = r_channel * np.eye(self.dim_z)
 
     @classmethod
-    def from_config(cls, config: dict[str, Any]) -> Self:
+    def from_config(cls, config: dict[str, Any]) -> Self:  # noqa: PLR0915
         """Instantiate the UKFEstimator from a raw configuration dictionary.
 
         Loads structural connectome connectivity using `speed`, optionally subsets the
@@ -338,7 +399,6 @@ class UKFEstimator(Estimator[UKFEstimatorLog]):
 
         n_nodes = connectome.weights.shape[0]
         gain = connectome.gain
-        gamma = connectome.gamma
         delays = connectome.delays
 
         selected_channels_cfg = config.get("selected_channels")
@@ -351,6 +411,31 @@ class UKFEstimator(Estimator[UKFEstimatorLog]):
                 else:
                     selected_channels.append(int(ch))
             selected_channels = np.array(selected_channels, dtype=np.int64)
+
+        target_electrode = config.get("target_electrode")
+        gamma = connectome.gamma
+        if target_electrode is not None:
+            if isinstance(target_electrode, (str, int, np.integer)):
+                electrodes_list = [target_electrode]
+            else:
+                electrodes_list = list(target_electrode)
+
+            resolved_electrodes = []
+            for el in electrodes_list:
+                if isinstance(el, (int, np.integer)):
+                    resolved_electrodes.append(str(connectome.channel_labels[int(el)]))
+                else:
+                    resolved_electrodes.append(str(el))
+
+            from neuro.connectome import compute_gamma  # noqa: PLC0415
+
+            gamma = compute_gamma(
+                connectome.centres,
+                target_electrode=resolved_electrodes
+                if not isinstance(target_electrode, (str, int, np.integer))
+                else resolved_electrodes[0],
+                sigma=config.get("gamma_sigma", 20.0),
+            )
 
         params_config = config.get("params", {})
         params = JansenRitParams.from_config(params_config)
@@ -373,6 +458,15 @@ class UKFEstimator(Estimator[UKFEstimatorLog]):
         beta = float(config.get("beta", 2.0))
         kappa = float(config.get("kappa", 0.0))
 
+        estimate_eeg_gains = bool(config.get("estimate_eeg_gains", False))
+
+        q_g = float(config.get("q_g", 1e-5))
+        p_g = float(config.get("p_g", 1e-2))
+
+        initial_g = config.get("initial_g")
+        if initial_g is not None:
+            initial_g = np.asarray(initial_g, dtype=np.float64)
+
         return cls(
             dt=dt,
             n_nodes=n_nodes,
@@ -393,6 +487,10 @@ class UKFEstimator(Estimator[UKFEstimatorLog]):
             beta=beta,
             kappa=kappa,
             params=params,
+            estimate_eeg_gains=estimate_eeg_gains,
+            q_g=q_g,
+            p_g=p_g,
+            initial_g=initial_g,
         )
 
     def _project_control(self, u: float | np.ndarray) -> np.ndarray | float:
@@ -435,11 +533,9 @@ class UKFEstimator(Estimator[UKFEstimatorLog]):
         Returns
         -------
         x_hat : np.ndarray
-            The full estimated augmented state vector of shape (6*M + 1 + M^2,), containing
-            reconstructed dynamic states and parameter estimates (K and w_ij).
+            The full estimated augmented state vector.
         log : UKFEstimatorLog
-            A log containing estimates of covariance diagonal, global coupling scale K,
-            and the estimated connection weights matrix.
+            A log containing estimates.
         """
         u_node = self._project_control(u)
         k = round(t / self.dt)
@@ -447,16 +543,31 @@ class UKFEstimator(Estimator[UKFEstimatorLog]):
         self.ukf.predict(u_node=u_node, k=k)
 
         y_mea_vec = np.atleast_1d(y_mea)
-        y_mea_sub = y_mea_vec[self.selected_channels]
+        if y_mea_vec.shape[0] == self.dim_z:
+            y_mea_sub = y_mea_vec
+        elif y_mea_vec.shape[0] == self.gain.shape[0]:
+            y_mea_sub = y_mea_vec[self.selected_channels]
+        else:
+            msg = f"y_mea shape {y_mea_vec.shape} matches neither dim_z {self.dim_z} nor full channels {self.gain.shape[0]}"
+            raise ValueError(msg)
         self.ukf.update(y_mea_sub)
 
+        # Enforce bounds
         self.ukf.x[6 * self.n_nodes] = max(0.0, float(self.ukf.x[6 * self.n_nodes]))
 
-        W_slice = self.ukf.x[6 * self.n_nodes + 1 :]
+        W_slice = self.ukf.x[6 * self.n_nodes + 1 : 6 * self.n_nodes + 1 + self.n_nodes**2]
         W = W_slice.reshape(self.n_nodes, self.n_nodes)
         np.clip(W, 0.0, None, out=W)
         np.fill_diagonal(W, 0.0)
-        self.ukf.x[6 * self.n_nodes + 1 :] = W.flatten()
+        self.ukf.x[6 * self.n_nodes + 1 : 6 * self.n_nodes + 1 + self.n_nodes**2] = W.flatten()
+
+        current_idx = 6 * self.n_nodes + 1 + self.n_nodes**2
+        g_est = None
+        if self.estimate_eeg_gains:
+            g = self.ukf.x[current_idx : current_idx + self.n_nodes]
+            np.clip(g, 0.0, None, out=g)
+            self.ukf.x[current_idx : current_idx + self.n_nodes] = g
+            g_est = g.copy()
 
         x_dyn = self.ukf.x[: 6 * self.n_nodes].reshape(6, self.n_nodes)
         s_y = sigmoid_jit(x_dyn[1] - x_dyn[2], self.net_params.e0, self.net_params.v0, self.net_params.r)
@@ -466,6 +577,7 @@ class UKFEstimator(Estimator[UKFEstimatorLog]):
             p_diag=np.diag(self.ukf.P).copy(),
             K_est=float(self.ukf.x[6 * self.n_nodes]),
             w_est=W.copy(),
+            g_est=g_est,
         )
 
         return self.ukf.x.copy(), log

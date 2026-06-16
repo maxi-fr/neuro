@@ -474,9 +474,23 @@ class JansenRitDynamics(Dynamics[JansenRitDynamicsLog]):
 
         target_electrode = config.get("target_electrode")
         if target_electrode is not None:
+            if isinstance(target_electrode, (str, int, np.integer)):
+                electrodes_list = [target_electrode]
+            else:
+                electrodes_list = list(target_electrode)
+
+            resolved_electrodes = []
+            for el in electrodes_list:
+                if isinstance(el, (int, np.integer)):
+                    resolved_electrodes.append(str(connectome.channel_labels[int(el)]))
+                else:
+                    resolved_electrodes.append(str(el))
+
             gamma = compute_gamma(
                 connectome.centres,
-                target_electrode=target_electrode,
+                target_electrode=resolved_electrodes
+                if not isinstance(target_electrode, (str, int, np.integer))
+                else resolved_electrodes[0],
                 sigma=config.get("gamma_sigma", 20.0),
             )
             connectome = replace(connectome, gamma=gamma)
