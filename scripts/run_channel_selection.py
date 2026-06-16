@@ -26,10 +26,18 @@ import argparse
 from pathlib import Path
 
 import numpy as np
+import numpy.typing as npt
 
 from neuro.connectome import load_connectome
 from neuro.jansen_rit import JansenRitParams, output, simulate_network
-from utils.channel_selection import compute_channel_gramians, pca_loading_scores, select_channels
+from utils.channel_selection import (
+    compute_channel_gramians,
+    leadfield_focus_scores,
+    pca_loading_scores,
+    qr_pivot_selection,
+    reconstruction_error,
+    select_channels,
+)
 from utils.processing import steady_window
 
 _DT = 1e-4
@@ -40,8 +48,44 @@ _PZ_REGIONS = ("lTCI", "lTCV")
 _A_HEALTHY = 3.25
 _A_EZ = 3.6
 _A_PZ = 3.4
+_TRAIN_FRACTION = 0.7
 
 OUTPUT_DIR = Path("simulations/channel_selection")
+
+
+def _compare_subsets(
+    subsets: dict[str, list[int]],
+    eeg_steady: npt.NDArray[np.float64],
+    focus_scores: npt.NDArray[np.float64],
+    n_select: int,
+    labels: npt.NDArray[np.str_],
+) -> dict[str, dict[str, float]]:
+    """Score each candidate subset by held-out EEG reconstruction error and focus coverage.
+
+    ``recon_error`` is the relative error of reconstructing all 62 standardized channels
+    from the subset on a held-out time window (lower is better). ``focus_coverage`` is the
+    subset's summed leadfield-to-focus score divided by the best achievable for ``n_select``
+    channels (1.0 = the most focus-proximal channels possible).
+    """
+    n_train = int(_TRAIN_FRACTION * eeg_steady.shape[1])
+    train, test = eeg_steady[:, :n_train], eeg_steady[:, n_train:]
+    focus_best = float(np.sort(focus_scores)[::-1][:n_select].sum())
+
+    metrics = {
+        name: {
+            "recon_error": reconstruction_error(train, test, sel),
+            "focus_coverage": float(focus_scores[sel].sum()) / focus_best,
+        }
+        for name, sel in subsets.items()
+    }
+
+    name_width = max(len(name) for name in subsets)
+    print(f"\n{'criterion':<{name_width}}  recon_err  focus_cov  channels")
+    for name, sel in subsets.items():
+        m = metrics[name]
+        chans = ", ".join(labels[i] for i in sel)
+        print(f"{name:<{name_width}}  {m['recon_error']:>9.4f}  {m['focus_coverage']:>9.3f}  {chans}")
+    return metrics
 
 
 def parse_args() -> argparse.Namespace:
@@ -131,13 +175,42 @@ def main(  # noqa: PLR0913
     print(f"\nTop {n_select} channels by Gramian minimum-eigenvalue criterion (selection order):")
     print("  " + ", ".join(connectome.channel_labels[idx] for idx in min_eig_selection))
 
-    pca_top = set(pca_ranking[:n_select].tolist())
-    det_top = set(det_selection)
-    min_eig_top = set(min_eig_selection)
-    print("\nOverlap between rankings (channel count):")
-    print(f"  PCA & Gramian(det):     {len(pca_top & det_top)} / {n_select}")
-    print(f"  PCA & Gramian(min_eig): {len(pca_top & min_eig_top)} / {n_select}")
-    print(f"  Gramian(det) & Gramian(min_eig): {len(det_top & min_eig_top)} / {n_select}")
+    # 3. Focus-restricted Gramian: observe only the EZ/PZ hidden states (objective-aware,
+    #    and small enough that the subset Gramian is full rank so min_eig is meaningful).
+    focus_nodes = [connectome.region_index[name] for name in (*_EZ_REGIONS, *_PZ_REGIONS)]
+    print(f"\nComputing focus-restricted Gramians ({6 * len(focus_nodes) + 1} simulations of {gramian_duration} s)...")
+    gramians_focus = compute_channel_gramians(
+        x0,
+        JansenRitParams(A=a_gains),
+        connectome,
+        K=_K,
+        dt=_DT,
+        duration=gramian_duration,
+        epsilon=epsilon,
+        node_subset=focus_nodes,
+    )
+    det_focus = select_channels(gramians_focus, n_select, criterion="det")
+    min_eig_focus = select_channels(gramians_focus, n_select, criterion="min_eig")
+
+    # 4. Redundancy-aware (QR / Q-DEIM) and structural focus selectors.
+    qr_selection = qr_pivot_selection(eeg_steady, n_select, variance_threshold=0.95)
+    focus_scores = leadfield_focus_scores(connectome.gain, focus_nodes)
+    focus_selection = np.argsort(focus_scores)[::-1][:n_select].tolist()
+    rng_baseline = np.random.default_rng(_SEED)
+    random_selection = rng_baseline.choice(eeg_steady.shape[0], n_select, replace=False).tolist()
+
+    # 5. Head-to-head comparison by held-out reconstruction error and focus coverage.
+    subsets = {
+        "PCA loading": pca_ranking[:n_select].tolist(),
+        "QR / Q-DEIM": qr_selection,
+        "Leadfield-focus": focus_selection,
+        "Gramian det (full)": det_selection,
+        "Gramian min_eig (full)": min_eig_selection,
+        "Gramian det (focus)": det_focus,
+        "Gramian min_eig (focus)": min_eig_focus,
+        "Random baseline": random_selection,
+    }
+    metrics = _compare_subsets(subsets, eeg_steady, focus_scores, n_select, connectome.channel_labels)
 
     results_path = output_dir / "channel_ranking.npz"
     np.savez(
@@ -147,6 +220,14 @@ def main(  # noqa: PLR0913
         pca_explained_variance_ratio=pca_explained_variance_ratio,
         det_selection=np.array(det_selection),
         min_eig_selection=np.array(min_eig_selection),
+        det_focus=np.array(det_focus),
+        min_eig_focus=np.array(min_eig_focus),
+        qr_selection=np.array(qr_selection),
+        focus_selection=np.array(focus_selection),
+        focus_scores=focus_scores,
+        recon_errors=np.array([metrics[name]["recon_error"] for name in subsets]),
+        focus_coverage=np.array([metrics[name]["focus_coverage"] for name in subsets]),
+        subset_names=np.array(list(subsets)),
         channel_labels=connectome.channel_labels,
     )
     print(f"\nWrote {results_path}")

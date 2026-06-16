@@ -16,10 +16,13 @@ from typing import TYPE_CHECKING, Literal
 
 import numpy as np
 import numpy.typing as npt
+from scipy.linalg import qr
 
 from neuro.jansen_rit import output, simulate_network
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     from neuro.connectome import Connectome
     from neuro.jansen_rit import JansenRitParams
 
@@ -70,6 +73,74 @@ def pca_loading_scores(signals: FloatArray, variance_threshold: float = 0.95) ->
     return weighted.sum(axis=0).astype(np.float64), explained_variance_ratio
 
 
+def qr_pivot_selection(signals: FloatArray, n_select: int, variance_threshold: float = 0.95) -> list[int]:
+    """Select non-redundant channels by pivoted QR (Q-DEIM) on the dominant POD modes.
+
+    The SVD of the centered data gives spatial modes over channels (the rows of
+    ``Vt``). A column-pivoted QR of the energy-weighted top-``K`` modes greedily
+    picks the channels that span the dominant subspace with the least redundancy:
+    the first pivot is the highest-variance channel (matching the top of
+    :func:`pca_loading_scores`), and each subsequent pivot is the channel most
+    orthogonal to those already chosen. This avoids the near-duplicate neighbours a
+    pure loading-score ranking selects.
+
+    Parameters
+    ----------
+    signals
+        Input signals, shape (n_channels, n_samples).
+    n_select
+        Number of channels to select.
+    variance_threshold
+        Cumulative variance the retained principal components must explain; sets the
+        number of modes ``K`` that QR pivots over.
+
+    Returns
+    -------
+    list[int]
+        Selected channel indices, in pivot (selection) order.
+
+    Raises
+    ------
+    ValueError
+        If signals is not a 2-D array.
+    """
+    if signals.ndim != 2:  # noqa: PLR2004
+        msg = f"Expected 2-D array of shape (n_channels, n_samples), got shape {signals.shape}"
+        raise ValueError(msg)
+
+    centered = signals - signals.mean(axis=1, keepdims=True)
+    _, singular_values, vt = np.linalg.svd(centered.T, full_matrices=False)
+    cumulative = np.cumsum(singular_values**2 / (singular_values**2).sum())
+    n_components = min(int(np.searchsorted(cumulative, variance_threshold)) + 1, singular_values.size)
+
+    weighted_modes = singular_values[:n_components, None] * vt[:n_components, :]
+    _, _, pivots = qr(weighted_modes, pivoting=True)
+    return pivots[:n_select].tolist()
+
+
+def leadfield_focus_scores(gain: FloatArray, focus_regions: Sequence[int]) -> FloatArray:
+    """Per-channel absolute leadfield sensitivity onto a set of focus regions.
+
+    Sums ``|L[:, r]|`` over the focus regions ``r``; channels that physically pick up
+    the seizure focus score highest. Ranking by this score is purely structural (no
+    simulation), so it makes the channel selection aware of the known epileptogenic
+    zone instead of of overall signal amplitude.
+
+    Parameters
+    ----------
+    gain
+        EEG forward operator ``L``, shape (n_channels, n_regions).
+    focus_regions
+        Indices of the regions of interest (e.g. the EZ/PZ nodes).
+
+    Returns
+    -------
+    FloatArray
+        Per-channel focus score, shape (n_channels,).
+    """
+    return np.abs(gain[:, list(focus_regions)]).sum(axis=1).astype(np.float64)
+
+
 def compute_channel_gramians(  # noqa: PLR0913
     x0: FloatArray,
     params: JansenRitParams,
@@ -79,15 +150,23 @@ def compute_channel_gramians(  # noqa: PLR0913
     duration: float,
     epsilon: float = 1e-6,
     decimate: int = 50,
+    node_subset: Sequence[int] | None = None,
 ) -> FloatArray:
     """Per-channel empirical observability Gramian around the linearization point ``x0``.
 
-    For each of the ``6 * N`` flattened state dimensions, perturbs ``x0`` by
-    ``epsilon`` and re-simulates (noiseless, ``sigma = 0``) to build the EEG
-    sensitivity ``Psi[j, i, t] = (eeg_pert[i, t] - eeg_base[i, t]) / epsilon``. Because
+    For each perturbed state dimension, perturbs ``x0`` by ``epsilon`` and re-simulates
+    (noiseless, ``sigma = 0``) to build the EEG sensitivity
+    ``Psi[j, i, t] = (eeg_pert[i, t] - eeg_base[i, t]) / epsilon``. Because
     ``Wo(S) = sum_t Psi_S(t)^T Psi_S(t) dt`` decomposes additively over the channels in
-    ``S``, this returns one ``(6N, 6N)`` Gramian per channel; the Gramian of any
-    channel subset is the sum of its channels' matrices (see :func:`select_channels`).
+    ``S``, this returns one ``(D, D)`` Gramian per channel; the Gramian of any channel
+    subset is the sum of its channels' matrices (see :func:`select_channels`).
+
+    By default all ``6 * N`` state dimensions are perturbed (``D = 6N``). Passing
+    ``node_subset`` restricts the perturbations to the ``6 * len(node_subset)`` states of
+    those nodes, so the Gramian measures observability of only those nodes' hidden states
+    (``D = 6 * len(node_subset)``). For a focal seizure this both targets the criterion at
+    the epileptogenic zone and keeps ``D`` small enough for the subset Gramian to be full
+    rank from only a few channels, which is what makes the ``min_eig`` criterion meaningful.
 
     Parameters
     ----------
@@ -109,14 +188,19 @@ def compute_channel_gramians(  # noqa: PLR0913
     decimate
         Keep every ``decimate``-th sample of the EEG sensitivity before integrating,
         to bound memory use.
+    node_subset
+        Indices of the nodes whose states are perturbed. ``None`` perturbs every node.
 
     Returns
     -------
     FloatArray
-        Per-channel observability Gramians, shape (n_channels, 6N, 6N).
+        Per-channel observability Gramians, shape (n_channels, D, D), with
+        ``D = 6 * len(node_subset)`` (or ``6N`` when ``node_subset`` is ``None``).
     """
     n_state, n_nodes = x0.shape
-    n_dim = n_state * n_nodes
+    nodes = list(range(n_nodes)) if node_subset is None else list(node_subset)
+    perturbed = [(state_idx, node_idx) for state_idx in range(n_state) for node_idx in nodes]
+    n_dim = len(perturbed)
     det_params = replace(params, sigma=0.0)
 
     def _run_eeg(x_init: FloatArray) -> FloatArray:
@@ -136,8 +220,7 @@ def compute_channel_gramians(  # noqa: PLR0913
     n_channels, n_samples = eeg_base.shape
 
     psi = np.empty((n_dim, n_channels, n_samples), dtype=np.float64)
-    for j in range(n_dim):
-        state_idx, node_idx = divmod(j, n_nodes)
+    for j, (state_idx, node_idx) in enumerate(perturbed):
         x_pert = x0.copy()
         x_pert[state_idx, node_idx] += epsilon
         psi[j] = (_run_eeg(x_pert) - eeg_base) / epsilon
@@ -206,3 +289,43 @@ def select_channels(
         accumulated = accumulated + channel_gramians[best_idx]
         remaining.remove(best_idx)
     return selected
+
+
+def reconstruction_error(
+    train: FloatArray,
+    test: FloatArray,
+    selected: Sequence[int],
+    targets: Sequence[int] | None = None,
+) -> float:
+    """Held-out relative error of linearly reconstructing channels from a subset.
+
+    Standardizes every channel by its training mean and standard deviation (so the
+    score is not dominated by high-amplitude channels), fits a least-squares map from
+    the ``selected`` channels to the ``targets`` on ``train``, and reports the relative
+    Frobenius error on ``test``. ``targets`` defaults to all channels. Lower is better;
+    this is the objective check that lets the selection criteria be compared head-to-head.
+
+    Parameters
+    ----------
+    train, test
+        Disjoint time windows of the same channels, each shape (n_channels, n_samples).
+    selected
+        Indices of the channels used as the reconstruction inputs.
+    targets
+        Indices of the channels to reconstruct; defaults to all channels.
+
+    Returns
+    -------
+    float
+        Relative L2 reconstruction error on ``test``.
+    """
+    mean = train.mean(axis=1, keepdims=True)
+    std = train.std(axis=1, keepdims=True)
+    std[std == 0.0] = 1.0
+    train_z = (train - mean) / std
+    test_z = (test - mean) / std
+
+    target_idx = list(range(train.shape[0])) if targets is None else list(targets)
+    coeffs, *_ = np.linalg.lstsq(train_z[list(selected)].T, train_z[target_idx].T, rcond=None)
+    predicted = (test_z[list(selected)].T @ coeffs).T
+    return float(np.linalg.norm(predicted - test_z[target_idx]) / np.linalg.norm(test_z[target_idx]))
