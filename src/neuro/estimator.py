@@ -22,13 +22,18 @@ def _fx_step_jit(  # noqa: PLR0913
     delay_steps: np.ndarray,
     history: np.ndarray,
     params_tuple: tuple[Any, ...],
+    a_start: int,
+    input_start: int,
 ) -> np.ndarray:
     """Evaluate the state transition function for a single sigma point.
 
     This advances the dynamic states of a single augmented state vector by one
     deterministic Heun step, while keeping the parameters (global coupling K and
     connection weights W) constant. It supports connection delays through a circular
-    history buffer of regional outputs.
+    history buffer of regional outputs. When ``a_start >= 0`` the per-node excitatory
+    gain ``A`` is read from the augmented state (positions ``a_start : a_start + M``)
+    instead of ``params_tuple``, so that ``A`` is treated as an estimated parameter;
+    likewise ``input_start >= 0`` reads the per-node mean input ``I`` from the state.
 
     Parameters
     ----------
@@ -48,6 +53,10 @@ def _fx_step_jit(  # noqa: PLR0913
         Circular buffer containing historical regional outputs, of shape (max_history_len, M).
     params_tuple : tuple of Any
         A tuple of physics parameters for the Jansen-Rit model, formatted by JansenRitParams.to_numba_tuple.
+    a_start : int
+        Index of the estimated per-node ``A`` block in ``x_aug``, or ``-1`` if ``A`` is fixed.
+    input_start : int
+        Index of the estimated per-node mean-input block in ``x_aug``, or ``-1`` if it is fixed.
 
     Returns
     -------
@@ -77,11 +86,55 @@ def _fx_step_jit(  # noqa: PLR0913
                 c_i += w_matrix[i, j] * history[row, j]
         coupling[i] = k_coupling * c_i
 
-    if n_nodes == 1:
+    # Override the (otherwise constant) excitatory gain A (index 0) and/or mean input (index 11)
+    # with this sigma point's estimates by rebuilding the parameter tuple.
+    if input_start >= 0:
+        input_vec = x_aug[input_start : input_start + n_nodes]
+        a_elem = x_aug[a_start : a_start + n_nodes] if a_start >= 0 else params_tuple[0]
+        p_in = (
+            a_elem,
+            params_tuple[1],
+            params_tuple[2],
+            params_tuple[3],
+            params_tuple[4],
+            params_tuple[5],
+            params_tuple[6],
+            params_tuple[7],
+            params_tuple[8],
+            params_tuple[9],
+            params_tuple[10],
+            input_vec,
+            params_tuple[12],
+        )
+        if n_nodes == 1:
+            x_next = _heun_step_jit(x_dyn, u_node[0], p_in, dt, 0.0, coupling[0])
+        else:
+            x_next = _heun_step_jit(x_dyn, u_node, p_in, dt, np.zeros(n_nodes, dtype=np.float64), coupling)
+    elif a_start >= 0:
+        a_vec = x_aug[a_start : a_start + n_nodes]
+        p_a = (
+            a_vec,
+            params_tuple[1],
+            params_tuple[2],
+            params_tuple[3],
+            params_tuple[4],
+            params_tuple[5],
+            params_tuple[6],
+            params_tuple[7],
+            params_tuple[8],
+            params_tuple[9],
+            params_tuple[10],
+            params_tuple[11],
+            params_tuple[12],
+        )
+        if n_nodes == 1:
+            x_next = _heun_step_jit(x_dyn, u_node[0], p_a, dt, 0.0, coupling[0])
+        else:
+            x_next = _heun_step_jit(x_dyn, u_node, p_a, dt, np.zeros(n_nodes, dtype=np.float64), coupling)
+    elif n_nodes == 1:
         x_next = _heun_step_jit(x_dyn, u_node[0], params_tuple, dt, 0.0, coupling[0])
     else:
-        xi_arr = np.zeros(n_nodes, dtype=np.float64)
-        x_next = _heun_step_jit(x_dyn, u_node, params_tuple, dt, xi_arr, coupling)
+        x_next = _heun_step_jit(x_dyn, u_node, params_tuple, dt, np.zeros(n_nodes, dtype=np.float64), coupling)
 
     x_aug_next = np.empty_like(x_aug)
     x_aug_next[: 6 * n_nodes] = x_next.flatten()
@@ -142,6 +195,8 @@ class UKFEstimatorLog:
     K_est: float
     w_est: np.ndarray
     g_est: np.ndarray | None = None
+    a_est: np.ndarray | None = None
+    input_est: np.ndarray | None = None
 
 
 class UKFEstimator(Estimator[UKFEstimatorLog]):
@@ -172,6 +227,14 @@ class UKFEstimator(Estimator[UKFEstimatorLog]):
         q_g: float = 1e-5,
         p_g: float = 1e-2,
         initial_g: np.ndarray | None = None,
+        estimate_a: bool = False,  # noqa: FBT001, FBT002
+        q_a: float = 1e-5,
+        p_a: float = 1e-2,
+        initial_a: np.ndarray | None = None,
+        estimate_input: bool = False,  # noqa: FBT001, FBT002
+        q_input: float = 1e-3,
+        p_input: float = 1e-2,
+        initial_input: np.ndarray | None = None,
     ) -> None:
         """Initialize the UKF Estimator.
 
@@ -228,10 +291,33 @@ class UKFEstimator(Estimator[UKFEstimatorLog]):
             Initial covariance variance for EEG gains.
         initial_g : np.ndarray or None, optional
             Initial EEG channel gains (defaults to ones).
+        estimate_a : bool, default False
+            If True, augment the state with the per-node excitatory gain ``A`` (the
+            Jansen-Rit bifurcation knob) and estimate it online. Needed for seizure
+            tracking, where ``A`` moves between the healthy fixed point (~3.25) and the
+            limit-cycle regime (~3.6).
+        q_a : float, default 1e-5
+            Process noise variance for the estimated per-node gain ``A``.
+        p_a : float, default 1e-2
+            Initial state variance for the estimated per-node gain ``A``.
+        initial_a : np.ndarray or None, optional
+            Initial per-node ``A`` estimate of shape (n_nodes,); defaults to ``params.A``.
+        estimate_input : bool, default False
+            If True, augment the state with the per-node mean input ``I`` and estimate it online.
+            This gives a reduced (open) sub-network a place to absorb the drive from regions left
+            out of the reduction, so ``A`` and ``K`` need not distort to compensate.
+        q_input : float, default 1e-3
+            Process noise variance for the estimated per-node mean input ``I``.
+        p_input : float, default 1e-2
+            Initial state variance for the estimated per-node mean input ``I``.
+        initial_input : np.ndarray or None, optional
+            Initial per-node ``I`` estimate of shape (n_nodes,); defaults to ``params.mean_input``.
         """
         super().__init__(dt)
         self.n_nodes = n_nodes
         self.estimate_eeg_gains = estimate_eeg_gains
+        self.estimate_a = estimate_a
+        self.estimate_input = estimate_input
 
         self.gain = np.asarray(gain, dtype=np.float64)
         if selected_channels is None:
@@ -245,6 +331,13 @@ class UKFEstimator(Estimator[UKFEstimatorLog]):
 
         self.dim_x = 6 * n_nodes + 1 + n_nodes**2
         if estimate_eeg_gains:
+            self.dim_x += n_nodes
+        # Estimated parameter blocks are appended last, A then mean input; -1 means fixed.
+        self.a_start = self.dim_x if estimate_a else -1
+        if estimate_a:
+            self.dim_x += n_nodes
+        self.input_start = self.dim_x if estimate_input else -1
+        if estimate_input:
             self.dim_x += n_nodes
 
         if delays is None:
@@ -283,6 +376,8 @@ class UKFEstimator(Estimator[UKFEstimatorLog]):
                 self.delay_steps,
                 self.history,
                 self.params_tuple,
+                self.a_start,
+                self.input_start,
             )
 
         def hx(x_aug: np.ndarray) -> np.ndarray:
@@ -316,6 +411,16 @@ class UKFEstimator(Estimator[UKFEstimatorLog]):
             else:
                 x0_aug[current_idx : current_idx + n_nodes] = 1.0
 
+        if estimate_a:
+            a_init = self.net_params.A if initial_a is None else np.asarray(initial_a, dtype=np.float64)
+            x0_aug[self.a_start : self.a_start + n_nodes] = a_init
+
+        if estimate_input:
+            input_init = (
+                self.net_params.mean_input if initial_input is None else np.asarray(initial_input, dtype=np.float64)
+            )
+            x0_aug[self.input_start : self.input_start + n_nodes] = input_init
+
         self.ukf.x = x0_aug
 
         # Seed history
@@ -335,6 +440,13 @@ class UKFEstimator(Estimator[UKFEstimatorLog]):
         if estimate_eeg_gains:
             P0[current_idx : current_idx + n_nodes, current_idx : current_idx + n_nodes] = p_g * np.eye(n_nodes)
 
+        if estimate_a:
+            P0[self.a_start : self.a_start + n_nodes, self.a_start : self.a_start + n_nodes] = p_a * np.eye(n_nodes)
+
+        if estimate_input:
+            sl = slice(self.input_start, self.input_start + n_nodes)
+            P0[sl, sl] = p_input * np.eye(n_nodes)
+
         self.ukf.P = P0
 
         # process noise Q
@@ -350,13 +462,20 @@ class UKFEstimator(Estimator[UKFEstimatorLog]):
         if estimate_eeg_gains:
             Q[current_idx : current_idx + n_nodes, current_idx : current_idx + n_nodes] = q_g * np.eye(n_nodes)
 
+        if estimate_a:
+            Q[self.a_start : self.a_start + n_nodes, self.a_start : self.a_start + n_nodes] = q_a * np.eye(n_nodes)
+
+        if estimate_input:
+            sl = slice(self.input_start, self.input_start + n_nodes)
+            Q[sl, sl] = q_input * np.eye(n_nodes)
+
         self.ukf.Q = Q
 
         # measurement noise R
         self.ukf.R = r_channel * np.eye(self.dim_z)
 
     @classmethod
-    def from_config(cls, config: dict[str, Any]) -> Self:  # noqa: PLR0915
+    def from_config(cls, config: dict[str, Any]) -> Self:  # noqa: C901, PLR0912, PLR0915
         """Instantiate the UKFEstimator from a raw configuration dictionary.
 
         Loads structural connectome connectivity using `speed`, optionally subsets the
@@ -467,6 +586,22 @@ class UKFEstimator(Estimator[UKFEstimatorLog]):
         if initial_g is not None:
             initial_g = np.asarray(initial_g, dtype=np.float64)
 
+        estimate_a = bool(config.get("estimate_a", False))
+        q_a = float(config.get("q_a", 1e-5))
+        p_a = float(config.get("p_a", 1e-2))
+
+        initial_a = config.get("initial_a")
+        if initial_a is not None:
+            initial_a = np.asarray(initial_a, dtype=np.float64)
+
+        estimate_input = bool(config.get("estimate_input", False))
+        q_input = float(config.get("q_input", 1e-3))
+        p_input = float(config.get("p_input", 1e-2))
+
+        initial_input = config.get("initial_input")
+        if initial_input is not None:
+            initial_input = np.asarray(initial_input, dtype=np.float64)
+
         return cls(
             dt=dt,
             n_nodes=n_nodes,
@@ -491,6 +626,14 @@ class UKFEstimator(Estimator[UKFEstimatorLog]):
             q_g=q_g,
             p_g=p_g,
             initial_g=initial_g,
+            estimate_a=estimate_a,
+            q_a=q_a,
+            p_a=p_a,
+            initial_a=initial_a,
+            estimate_input=estimate_input,
+            q_input=q_input,
+            p_input=p_input,
+            initial_input=initial_input,
         )
 
     def _project_control(self, u: float | np.ndarray) -> np.ndarray | float:
@@ -569,6 +712,22 @@ class UKFEstimator(Estimator[UKFEstimatorLog]):
             self.ukf.x[current_idx : current_idx + self.n_nodes] = g
             g_est = g.copy()
 
+        a_est = None
+        if self.estimate_a:
+            # Keep A in a physical, numerically stable range around the bifurcation (~3.25-3.6).
+            a = self.ukf.x[self.a_start : self.a_start + self.n_nodes]
+            np.clip(a, 0.0, 10.0, out=a)
+            self.ukf.x[self.a_start : self.a_start + self.n_nodes] = a
+            a_est = a.copy()
+
+        input_est = None
+        if self.estimate_input:
+            # Keep the mean input non-negative (it is a firing-rate drive).
+            inp = self.ukf.x[self.input_start : self.input_start + self.n_nodes]
+            np.clip(inp, 0.0, None, out=inp)
+            self.ukf.x[self.input_start : self.input_start + self.n_nodes] = inp
+            input_est = inp.copy()
+
         x_dyn = self.ukf.x[: 6 * self.n_nodes].reshape(6, self.n_nodes)
         s_y = sigmoid_jit(x_dyn[1] - x_dyn[2], self.net_params.e0, self.net_params.v0, self.net_params.r)
         self.history[k % self.max_history_len, :] = s_y
@@ -578,6 +737,8 @@ class UKFEstimator(Estimator[UKFEstimatorLog]):
             K_est=float(self.ukf.x[6 * self.n_nodes]),
             w_est=W.copy(),
             g_est=g_est,
+            a_est=a_est,
+            input_est=input_est,
         )
 
         return self.ukf.x.copy(), log

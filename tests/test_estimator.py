@@ -244,6 +244,164 @@ def test_estimator_with_extensions() -> None:
     np.testing.assert_allclose(y_est, expected_eeg, atol=1e-12)
 
 
+def test_estimator_estimate_a_dimensions() -> None:
+    """With A estimation on, the augmented state gains an N-vector A block initialized to params.A."""
+    conn = _toy_connectome(2)
+    est = UKFEstimator(dt=1e-4, n_nodes=2, gain=conn.gain, delays=conn.delays, estimate_a=True)
+
+    # 6*2 dynamic + 1 (K) + 4 (W) + 2 (A) = 19, with A appended last.
+    assert est.dim_x == 19
+    assert est.a_start == 17
+    assert np.allclose(est.ukf.x[17:19], 3.25)  # default params.A
+    assert np.allclose(np.diag(est.ukf.Q)[17:19], 1e-5)
+    assert np.allclose(np.diag(est.ukf.P)[17:19], 1e-2)
+
+
+def test_estimator_estimate_a_and_gains_layout() -> None:
+    """A is appended after the EEG-gain block, leaving the gain indices unchanged."""
+    conn = _toy_connectome(2)
+    est = UKFEstimator(dt=1e-4, n_nodes=2, gain=conn.gain, delays=conn.delays, estimate_eeg_gains=True, estimate_a=True)
+    # 17 + 2 (gains) + 2 (A) = 21; gains at 17:19, A at 19:21.
+    assert est.dim_x == 21
+    assert est.a_start == 19
+    assert np.allclose(est.ukf.x[17:19], 1.0)  # EEG gains
+    assert np.allclose(est.ukf.x[19:21], 3.25)  # A
+
+
+def test_estimator_estimate_a_fx_uses_estimated_a() -> None:
+    """The transition reads A from the augmented state, not from the fixed params."""
+    conn = _toy_connectome(2)
+    params = JansenRitParams(A=3.25, sigma=0.0)
+    dt = 1e-4
+    a_custom = np.array([3.6, 3.4])
+
+    # Reference: true dynamics stepped with the custom per-node A.
+    dyn = JansenRitDynamics(dt=dt, connectome=conn, K=0.5, params=dataclasses.replace(params, A=a_custom), seed=0)
+    rng = np.random.default_rng(7)
+    x_dyn = rng.normal(size=(6, 2))
+    dyn.x = x_dyn.copy()
+    out_dyn, _ = dyn.evaluate(0.0, 0.0)
+
+    # Estimator built with params.A = 3.25, but the augmented A block holds a_custom.
+    est = UKFEstimator(
+        dt=dt,
+        n_nodes=2,
+        gain=conn.gain,
+        delays=conn.delays,
+        initial_k=0.5,
+        initial_w=conn.weights,
+        params=params,
+        estimate_a=True,
+    )
+    x_aug = np.zeros(19)
+    x_aug[:12] = x_dyn.flatten()
+    x_aug[12] = 0.5
+    x_aug[13:17] = conn.weights.flatten()
+    x_aug[17:19] = a_custom
+
+    x_next = est.ukf.fx(x_aug, dt, 0.0, 0)
+    np.testing.assert_allclose(x_next[:12], out_dyn, atol=1e-12)
+    np.testing.assert_allclose(x_next[17:19], a_custom, atol=1e-12)  # A held constant in prediction
+
+
+def test_estimator_estimate_a_clipping() -> None:
+    """A is clipped into [0, 10] after the update step."""
+    conn = _toy_connectome(2)
+    est = UKFEstimator(dt=1e-4, n_nodes=2, gain=conn.gain, delays=conn.delays, estimate_a=True)
+
+    x_test = est.ukf.x.copy()
+    x_test[17] = -1.0
+    x_test[18] = 50.0
+    est.ukf.x = x_test
+
+    _x_hat, log = est.update(0.0, np.zeros(2), 0.0)
+    assert est.ukf.x[17] >= 0.0
+    assert est.ukf.x[18] <= 10.0
+    assert log.a_est is not None
+
+
+def test_estimator_estimate_input_dimensions() -> None:
+    """With input estimation on, the state gains an N-vector mean-input block at params default."""
+    conn = _toy_connectome(2)
+    est = UKFEstimator(dt=1e-4, n_nodes=2, gain=conn.gain, delays=conn.delays, estimate_input=True)
+
+    # 6*2 dynamic + 1 (K) + 4 (W) + 2 (input) = 19.
+    assert est.dim_x == 19
+    assert est.input_start == 17
+    assert np.allclose(est.ukf.x[17:19], 90.0)  # default params.mean_input
+    assert np.allclose(np.diag(est.ukf.Q)[17:19], 1e-3)
+    assert np.allclose(np.diag(est.ukf.P)[17:19], 1e-2)
+
+
+def test_estimator_estimate_a_and_input_layout() -> None:
+    """A is appended before the mean-input block; both default to their plant values."""
+    conn = _toy_connectome(2)
+    est = UKFEstimator(dt=1e-4, n_nodes=2, gain=conn.gain, delays=conn.delays, estimate_a=True, estimate_input=True)
+    # 17 + 2 (A) + 2 (input) = 21; A at 17:19, input at 19:21.
+    assert est.dim_x == 21
+    assert est.a_start == 17
+    assert est.input_start == 19
+    assert np.allclose(est.ukf.x[17:19], 3.25)
+    assert np.allclose(est.ukf.x[19:21], 90.0)
+
+
+def test_estimator_estimate_input_fx_uses_estimated_input() -> None:
+    """The transition reads the per-node mean input from the state; the default matches a fixed run."""
+    conn = _toy_connectome(2)
+    params = JansenRitParams(A=3.25, sigma=0.0, mean_input=90.0)
+    dt = 1e-4
+    rng = np.random.default_rng(11)
+    x_dyn = rng.normal(size=(6, 2))
+
+    est_fixed = UKFEstimator(
+        dt=dt, n_nodes=2, gain=conn.gain, delays=conn.delays, initial_k=0.5, initial_w=conn.weights, params=params
+    )
+    x_fixed = np.zeros(17)
+    x_fixed[:12] = x_dyn.flatten()
+    x_fixed[12] = 0.5
+    x_fixed[13:] = conn.weights.flatten()
+    out_fixed = est_fixed.ukf.fx(x_fixed, dt, 0.0, 0)
+
+    est_inp = UKFEstimator(
+        dt=dt,
+        n_nodes=2,
+        gain=conn.gain,
+        delays=conn.delays,
+        initial_k=0.5,
+        initial_w=conn.weights,
+        params=params,
+        estimate_input=True,
+    )
+    x_inp = np.zeros(19)
+    x_inp[:12] = x_dyn.flatten()
+    x_inp[12] = 0.5
+    x_inp[13:17] = conn.weights.flatten()
+    x_inp[17:19] = 90.0  # equals the fixed mean_input
+    out_inp = est_inp.ukf.fx(x_inp, dt, 0.0, 0)
+    np.testing.assert_allclose(out_inp[:12], out_fixed[:12], atol=1e-12)
+
+    # A different per-node input changes the dynamics; the parameter itself is held in prediction.
+    x_inp2 = x_inp.copy()
+    x_inp2[17:19] = np.array([40.0, 160.0])
+    out_inp2 = est_inp.ukf.fx(x_inp2, dt, 0.0, 0)
+    assert not np.allclose(out_inp2[:12], out_inp[:12])
+    np.testing.assert_allclose(out_inp2[17:19], [40.0, 160.0], atol=1e-12)
+
+
+def test_estimator_estimate_input_clipping() -> None:
+    """The mean input is clipped non-negative after the update step."""
+    conn = _toy_connectome(2)
+    est = UKFEstimator(dt=1e-4, n_nodes=2, gain=conn.gain, delays=conn.delays, estimate_input=True)
+
+    x_test = est.ukf.x.copy()
+    x_test[17] = -5.0
+    est.ukf.x = x_test
+
+    _x_hat, log = est.update(0.0, np.zeros(2), 0.0)
+    assert est.ukf.x[17] >= 0.0
+    assert log.input_est is not None
+
+
 def test_estimator_gamma_from_target_electrode() -> None:
     """Verify that steering matrix gamma is correctly constructed from target electrodes by name or index."""
     # Test case 1: Target electrodes picked by name
