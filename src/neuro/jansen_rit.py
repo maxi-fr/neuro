@@ -364,6 +364,39 @@ def output(x_traj: FloatArray) -> FloatArray:
     return x_traj[1] - x_traj[2]
 
 
+def project_control(u: float | np.ndarray, gamma_2d: FloatArray | None, n_elec: int) -> FloatArray | float:
+    """Project per-electrode tES current ``u`` onto nodes via ``gamma``.
+
+    Parameters
+    ----------
+    u:
+        Per-electrode control input, shape ``(n_elec,)`` or broadcastable scalar.
+    gamma_2d:
+        Steering matrix of shape ``(n_elec, n_nodes)``, or ``None`` if no stimulation
+        is configured.
+    n_elec:
+        Number of electrodes (must match ``gamma_2d.shape[0]``).
+
+    Returns
+    -------
+    FloatArray | float
+        Node-level stimulation ``u @ gamma_2d`` of shape ``(n_nodes,)``, or ``0.0``
+        when ``u`` is all-zero.
+    """
+    u_vec = np.asarray(u, dtype=np.float64).reshape(-1)
+    if not np.any(u_vec):
+        return 0.0
+    if gamma_2d is None:
+        msg = "tES stimulation is active but connectome.gamma is not configured."
+        raise ValueError(msg)
+    if u_vec.size == 1:
+        u_vec = np.broadcast_to(u_vec, (n_elec,))
+    elif u_vec.size != n_elec:
+        msg = f"control has {u_vec.size} electrodes but gamma has {n_elec}"
+        raise ValueError(msg)
+    return u_vec @ gamma_2d
+
+
 @dataclass(frozen=True)
 class JansenRitDynamicsLog:
     """Dataclass log snapshot of the Jansen-Rit network state."""
@@ -506,21 +539,6 @@ class JansenRitDynamics(Dynamics[JansenRitDynamicsLog]):
             seed=config.get("seed"),
         )
 
-    def _project_control(self, u: np.ndarray) -> FloatArray | float:
-        """Project per-electrode tES current ``u`` onto nodes via ``gamma``."""
-        u_vec = np.asarray(u, dtype=np.float64).reshape(-1)
-        if not np.any(u_vec):
-            return 0.0
-        if self.gamma_2d is None:
-            msg = "tES stimulation is active but connectome.gamma is not configured."
-            raise ValueError(msg)
-        if u_vec.size == 1:
-            u_vec = np.broadcast_to(u_vec, (self.n_elec,))
-        elif u_vec.size != self.n_elec:
-            msg = f"control has {u_vec.size} electrodes but gamma has {self.n_elec}"
-            raise ValueError(msg)
-        return u_vec @ self.gamma_2d
-
     def dynamics(self, t: float, x: np.ndarray, u: np.ndarray) -> np.ndarray:
         """Advance the network one stochastic-Heun step (``sigma = 0`` is noiseless).
 
@@ -543,7 +561,7 @@ class JansenRitDynamics(Dynamics[JansenRitDynamicsLog]):
             s_y,
         )
 
-        u_node = self._project_control(u)
+        u_node = project_control(u, self.gamma_2d, self.n_elec)
         xi = self.rng.standard_normal(n_nodes)
         return _heun_step_jit(x, _to_array(u_node, n_nodes), self.params_tuple, self.dt, xi, coupling)
 

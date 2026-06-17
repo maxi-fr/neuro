@@ -9,7 +9,7 @@ import numpy as np
 from filterpy.kalman import MerweScaledSigmaPoints, UnscentedKalmanFilter
 from simulate.estimator import Estimator
 
-from neuro.jansen_rit import JansenRitParams, _heun_step_jit, sigmoid_jit
+from neuro.jansen_rit import JansenRitParams, _heun_step_jit, project_control, sigmoid_jit
 
 
 @numba.njit(fastmath=True, cache=True)
@@ -636,21 +636,6 @@ class UKFEstimator(Estimator[UKFEstimatorLog]):
             initial_input=initial_input,
         )
 
-    def _project_control(self, u: float | np.ndarray) -> np.ndarray | float:
-        """Project per-electrode tES current ``u`` onto nodes via ``gamma``."""
-        u_vec = np.asarray(u, dtype=np.float64).reshape(-1)
-        if not np.any(u_vec):
-            return 0.0
-        if self.gamma_2d is None:
-            msg = "tES stimulation is active but connectome.gamma is not configured."
-            raise ValueError(msg)
-        if u_vec.size == 1:
-            u_vec = np.broadcast_to(u_vec, (self.n_elec,))
-        elif u_vec.size != self.n_elec:
-            msg = f"control has {u_vec.size} electrodes but gamma has {self.n_elec}"
-            raise ValueError(msg)
-        return u_vec @ self.gamma_2d
-
     def update(
         self,
         t: float,
@@ -680,7 +665,7 @@ class UKFEstimator(Estimator[UKFEstimatorLog]):
         log : UKFEstimatorLog
             A log containing estimates.
         """
-        u_node = self._project_control(u)
+        u_node = project_control(u, self.gamma_2d, self.n_elec)
         k = round(t / self.dt)
 
         self.ukf.predict(u_node=u_node, k=k)

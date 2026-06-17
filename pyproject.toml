@@ -13,6 +13,7 @@ dependencies = [
     "tvb-data>=3.0.0",
     "simulate",
     "filterpy>=1.4.5",
+    "casadi>=3.7.2",
 ]
 
 [project.optional-dependencies]
