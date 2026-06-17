@@ -246,10 +246,12 @@ def test_estimator_with_extensions() -> None:
 
 def test_estimator_gamma_from_target_electrode() -> None:
     """Verify that steering matrix gamma is correctly constructed from target electrodes by name or index."""
+    # Use n_nodes=4 to keep allocations small; the electrode-resolution logic is independent of network size.
     # Test case 1: Target electrodes picked by name
     config_names = {
         "dt": 1e-4,
         "speed": 50.0,
+        "n_nodes": 4,
         "target_electrode": ["F3", "P3"],
     }
     est_names = UKFEstimator.from_config(config_names)
@@ -261,6 +263,7 @@ def test_estimator_gamma_from_target_electrode() -> None:
     config_indices = {
         "dt": 1e-4,
         "speed": 50.0,
+        "n_nodes": 4,
         "target_electrode": [2, 5],
     }
     est_indices = UKFEstimator.from_config(config_indices)
@@ -275,6 +278,7 @@ def test_estimator_gamma_from_target_electrode() -> None:
     config_matched_names = {
         "dt": 1e-4,
         "speed": 50.0,
+        "n_nodes": 4,
         "target_electrode": labels,
     }
     est_matched_names = UKFEstimator.from_config(config_matched_names)
@@ -287,6 +291,7 @@ def test_estimator_gamma_from_target_electrode() -> None:
         "dt": 1e-4,
         "speed": 50.0,
         "K": 0.5,
+        "n_nodes": 4,
         "target_electrode": ["F3", "P3"],
     }
     dyn = JansenRitDynamics.from_config(config_dynamics)
