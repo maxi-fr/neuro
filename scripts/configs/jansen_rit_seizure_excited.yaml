@@ -1,10 +1,18 @@
-t_end: 10.0
+# Whole-brain Jansen-Rit seizure plant driven by a persistently-exciting tES waveform, for
+# input->output (plant) identification. The WaveformController plays back a precomputed
+# per-electrode current (ras/prbs/multisine). Expand this base into a multi-trial ensemble
+# with scripts/generate_experiment.py (varies dynamics.seed and controller.input_seed), then
+# run the generated `experiments:` file through scripts/run_simulation.py.
+t_end: 5.0
+
 dynamics:
   class_path: neuro.jansen_rit.JansenRitDynamics
   dt: 0.0001
   K: 0.75
   seed: 42
   speed: 50.0
+  target_electrode: [CP5, T7]
+  gamma_sigma: 20.0
   params:
     A: [3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25,
       3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25,
@@ -12,11 +20,24 @@ dynamics:
       3.25, 3.6, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.6, 3.25, 3.25, 3.25, 3.25,
       3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.6, 3.25, 3.25,
       3.25, 3.25, 3.25, 3.25, 3.4, 3.25, 3.25, 3.4, 3.25, 3.25, 3.25]
+
 reference: {class_path: simulate.reference.StepReference, dt: 0.0001, step_value: 0.0}
+
 sensors:
   class_path: simulate.sensor.GaussianSensor
   dt: 0.0001
   std_dev: 0.0
   measurement: {class_path: neuro.measurement.EEGMeasurement, speed: 50.0}
+
 estimator: {class_path: simulate.estimator.IdentityEstimator, dt: 0.0001}
-controller: {class_path: neuro.control.ZeroController, dt: 0.0001, n_u: 1}
+
+controller:
+  class_path: neuro.control.WaveformController
+  dt: 0.0001
+  n_u: 2              # one entry per target_electrode (CP5, T7)
+  input_type: prbs   # ras | prbs | multisine
+  amp: 50.0
+  hold_ms: 50.0
+  transient_ms: 1000.0  # zero stimulation during the leading transient
+  duration: 5.0         # schedule length in seconds; keep equal to t_end
+  input_seed: 100042

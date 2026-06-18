@@ -838,6 +838,21 @@ pluggy==1.6.0 \
     # via
     #   pytest
     #   pytest-cov
+polars==1.41.2 \
+    --hash=sha256:23ce9a2910b6e3e8d4258770bf44aa17170958df7af6e85feedf4458a04d8d29 \
+    --hash=sha256:256d6731162371b77f3f29a55eacb8c0fc740ddb1a293a01d2ef5b5393c5c708
+    # via simulate
+polars-runtime-32==1.41.2 \
+    --hash=sha256:18eea22c5cc34e27f8a60950458ad81e6a9ea75e89363ca1367e14e7e7f781fc \
+    --hash=sha256:1e5e5377c315e0dcafdfb2a31adc546abbaeb3f9cb1864e6536523d2af473265 \
+    --hash=sha256:20e969e08f9b137e233c04cc04de73d9795f89eb77d34854e40a025965a43763 \
+    --hash=sha256:2630540dfdfb0f36f9b04a07c7c2e3f50bf2ad384113263c1c812007ee9141e0 \
+    --hash=sha256:7af09ec1ab053da2c9669e8d15f809a4083a29be05db57111688b8051062af56 \
+    --hash=sha256:843d96f69d18eca53429c1198e58891db7f18111f83b9c419bb45ad9d73eaed5 \
+    --hash=sha256:95a08346dac337357cdb825c8076df7d36da54c4caa59a5cb41d0a30691c5edd \
+    --hash=sha256:dedfaeec2c7f995298da7319dd9431d662e5dd1d0ec51b1459df4a0234ceff52 \
+    --hash=sha256:e7016a3deb641b64a31447abbbee0f34bd020a6a9ae34ee6b743837def15e2a4
+    # via polars
 pre-commit==4.6.0 \
     --hash=sha256:718d2208cef53fdc38206e40524a6d4d9576d103eb16f0fec11c875e7716e9d9 \
     --hash=sha256:e2cf246f7299edcabcf15f9b0571fdce06058527f0a06535068a86d38089f29b
@@ -1114,7 +1129,7 @@ scipy==1.17.1 \
     # via
     #   filterpy
     #   tvb-library
-simulate @ git+https://github.com/maxi-fr/simulate.git@f071b215b50b6695fdd341d78c6817273f17423f
+simulate @ git+https://github.com/maxi-fr/simulate.git@2363bd30c7833fed73de8f8416217b2faac18ece
     # via neuro
 six==1.17.0 \
     --hash=sha256:4721f391ed90541fddacab5acf947aa0d3dc7d27b2e1e8eda2be8970586c3274 \

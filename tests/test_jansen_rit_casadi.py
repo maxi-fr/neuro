@@ -141,7 +141,7 @@ def test_heun_step_matches_estimator_fx() -> None:
     delay_steps = np.zeros((n_nodes, n_nodes), dtype=np.int64)
     history = np.zeros((1, n_nodes), dtype=np.float64)  # max_history_len=1
 
-    x_aug_next = _fx_step_jit(x_aug, _DT, u_node, 0, 1, delay_steps, history, params_tuple)
+    x_aug_next = _fx_step_jit(x_aug, _DT, u_node, 0, 1, delay_steps, history, params_tuple, -1, -1)
     x_dyn_next_estimator = x_aug_next[: 6 * n_nodes]
 
     # Manually compute coupling as _fx_step_jit does with delay=0

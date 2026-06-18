@@ -458,6 +458,8 @@ class JansenRitDynamics(Dynamics[JansenRitDynamicsLog]):
         # tES steering matrix gamma_2d of shape (n_elec, n_nodes); single electrode is n_elec=1.
         self.gamma_2d = None if gamma is None else np.atleast_2d(gamma)
         self.n_elec = 1 if self.gamma_2d is None else self.gamma_2d.shape[0]
+        # The control input is the per-electrode tES current; the orchestrator seeds u with this width.
+        self.n_inputs = self.n_elec
 
         if initial_state is not None:
             if initial_state.shape != (6, n_nodes):

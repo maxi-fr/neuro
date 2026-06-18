@@ -74,7 +74,7 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
 
     activity = None
     with np.load(npz_path) as data:
-        eeg: FloatArray = data["universal_y"].T  # (n_sensors, n_samples)
+        eeg: FloatArray = data["universal_y_mea"].T  # (n_sensors, n_samples)
         u: FloatArray = data["universal_u"]
 
         # Calculate network synchronization from logs if Jansen-Rit dynamics are used

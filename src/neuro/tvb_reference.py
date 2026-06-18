@@ -258,7 +258,7 @@ def run_reference(sim: simulator.Simulator, duration_s: float) -> ReferenceResul
     eeg = None
     if _eeg_monitor(sim) is not None:
         # Mirror-correct the monitor's gain to own-hemisphere channels (same fix as
-        # the hand-rolled L), then project: EEG = L @ Y, comparable to EEGOutput.
+        # the hand-rolled L), then project: EEG = L @ Y, comparable to EEGMeasurement.
         raw_gain = reference_eeg_gain(sim)
         sensors = SensorsEEG.from_file(_SENSORS_FILE)
         partner = _mirror_partner_permutation(np.asarray(sensors.locations, dtype=np.float64))

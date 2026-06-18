@@ -12,7 +12,7 @@ otherwise, the orchestrated counterpart to the ``stim_window`` argument of
 from __future__ import annotations
 
 import dataclasses
-from typing import TYPE_CHECKING, Any, Self, cast
+from typing import TYPE_CHECKING, Any, Self
 
 import numpy as np
 from simulate.controller import Controller
@@ -27,13 +27,11 @@ class ZeroControllerLog:
 
 
 class ZeroController(Controller[ZeroControllerLog]):
-    """Controller that ignores its inputs and always outputs a zero vector.
+    """Controller that ignores its inputs and always outputs a zero ``(n_u,)`` vector.
 
-    Emitting a fixed ``(n_u, 1)`` control sidesteps the dimensional mismatch the
-    stock :class:`~simulate.controller.PIDController` hits on a vector-output
-    plant: the orchestrator seeds the loop with a scalar ``y_k = 0.0``, so the
-    first estimated state is a scalar while every later one is the full EEG
-    measurement vector -- no single PID gain shape fits both steps.
+    This is the controller for *open-loop* runs through the
+    :class:`~simulate.simulation.Simulation` orchestrator, which always requires a
+    controller; with all-zero control the plant's ``project_control`` is a no-op.
     """
 
     def __init__(self, dt: float, n_u: int = 1) -> None:
@@ -53,8 +51,7 @@ class ZeroController(Controller[ZeroControllerLog]):
         x_hat: float | np.ndarray,  # noqa: ARG002
     ) -> tuple[float | np.ndarray, ZeroControllerLog]:
         """Return a zero control vector regardless of reference or state."""
-        u_vec = np.zeros((self.n_u, 1), dtype=np.float64)
-        return cast("np.ndarray", self.from_col_vec(u_vec)), ZeroControllerLog()
+        return np.zeros(self.n_u, dtype=np.float64), ZeroControllerLog()
 
 
 @dataclasses.dataclass(frozen=True)
@@ -132,5 +129,110 @@ class StimWindowController(Controller[StimWindowControllerLog]):
     ) -> tuple[float | np.ndarray, StimWindowControllerLog]:
         """Emit the stimulation amplitude inside the window, zero outside it."""
         active = self.onset <= t < self.offset
-        u_vec = self.amplitude if active else np.zeros((self.n_u, 1), dtype=np.float64)
-        return cast("np.ndarray", self.from_col_vec(u_vec)), StimWindowControllerLog(active=active)
+        u = self.amplitude.reshape(-1) if active else np.zeros(self.n_u, dtype=np.float64)
+        return u, StimWindowControllerLog(active=active)
+
+
+_MULTISINE_F_MIN_HZ = 1
+_MULTISINE_F_MAX_HZ = 15
+_EPS = 1e-12
+
+
+def _multisine(n_samples: int, n_elec: int, amp: float, dt: float, rng: np.random.Generator) -> np.ndarray:
+    """Build a random-phase multisine of peak amplitude ``amp``, one column per electrode."""
+    t = np.arange(n_samples) * dt
+    freqs = np.arange(_MULTISINE_F_MIN_HZ, _MULTISINE_F_MAX_HZ + 1)
+    out = np.zeros((n_samples, n_elec))
+    for elec in range(n_elec):
+        phases = rng.uniform(0.0, 2.0 * np.pi, size=freqs.size)
+        sig = np.sin(2.0 * np.pi * freqs[:, None] * t[None, :] + phases[:, None]).sum(axis=0)
+        out[:, elec] = amp * sig / max(np.abs(sig).max(), _EPS)
+    return out
+
+
+def build_input_schedule(  # noqa: PLR0913
+    *,
+    input_type: str,
+    n_steps: int,
+    transient_steps: int,
+    n_elec: int,
+    amp: float,
+    hold_ms: float,
+    dt: float,
+    rng: np.random.Generator,
+) -> np.ndarray:
+    """Build the per-step tES schedule ``(n_steps, n_elec)``; zero during the leading transient.
+
+    ``ras`` holds a random uniform amplitude per block, ``prbs`` a random binary +/-amp, and
+    ``multisine`` a random-phase sum of sinusoids; ``hold_ms`` sets the block length for the
+    first two.
+    """
+    u = np.zeros((n_steps, n_elec))
+    active = n_steps - transient_steps
+    if active <= 0:
+        return u
+
+    if input_type in ("ras", "prbs"):
+        hold = max(1, round(hold_ms / (dt * 1000.0)))
+        n_blocks = (active + hold - 1) // hold
+        if input_type == "ras":
+            block_vals = rng.uniform(-amp, amp, size=(n_blocks, n_elec))
+        else:
+            block_vals = rng.choice(np.array([-amp, amp]), size=(n_blocks, n_elec))
+        seq = np.repeat(block_vals, hold, axis=0)[:active]
+    elif input_type == "multisine":
+        seq = _multisine(active, n_elec, amp, dt, rng)
+    else:
+        msg = f"unknown input_type {input_type!r}"
+        raise ValueError(msg)
+
+    u[transient_steps:] = seq
+    return u
+
+
+@dataclasses.dataclass(frozen=True)
+class WaveformControllerLog:
+    """Dataclass for WaveformController logging (the emitted control is logged universally)."""
+
+
+class WaveformController(Controller[WaveformControllerLog]):
+    """Open-loop controller that plays back a precomputed per-electrode tES waveform.
+
+    Ignores the reference and estimated state; at time ``t`` it emits the schedule sample for
+    step ``k = round(t / dt)`` (clamped to the last sample). Used to inject persistently-exciting
+    tES inputs (random-amplitude steps ``ras``, a random binary signal ``prbs``, or a
+    ``multisine``) for plant identification -- configured by
+    ``scripts/configs/jansen_rit_seizure_excited.yaml``.
+    """
+
+    def __init__(self, dt: float, schedule: ArrayLike) -> None:
+        """Initialize from a precomputed ``(n_steps, n_u)`` per-electrode schedule."""
+        super().__init__(dt)
+        self.schedule = np.atleast_2d(np.asarray(schedule, dtype=np.float64))
+        self.n_u = self.schedule.shape[1]
+
+    @classmethod
+    def from_config(cls, config: dict[str, Any]) -> Self:
+        """Build the schedule from the excitation parameters in the config dict."""
+        dt = float(config["dt"])
+        schedule = build_input_schedule(
+            input_type=str(config["input_type"]),
+            n_steps=round(float(config["duration"]) / dt),
+            transient_steps=round(float(config.get("transient_ms", 0.0)) / (dt * 1000.0)),
+            n_elec=int(config["n_u"]),
+            amp=float(config["amp"]),
+            hold_ms=float(config.get("hold_ms", 50.0)),
+            dt=dt,
+            rng=np.random.default_rng(int(config["input_seed"])),
+        )
+        return cls(dt=dt, schedule=schedule)
+
+    def update(
+        self,
+        t: float,
+        ref: float | np.ndarray,  # noqa: ARG002
+        x_hat: float | np.ndarray,  # noqa: ARG002
+    ) -> tuple[float | np.ndarray, WaveformControllerLog]:
+        """Emit the scheduled per-electrode current for the current step."""
+        k = min(round(t / self.dt), self.schedule.shape[0] - 1)
+        return self.schedule[k], WaveformControllerLog()

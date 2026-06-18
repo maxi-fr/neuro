@@ -1,28 +1,15 @@
-"""Tests for the project control/sensing components and orchestrated open-loop runs.
+"""Tests for the project control components.
 
-Covers :class:`~neuro.control.ZeroController`, :class:`~neuro.control.StimWindowController`
-and :class:`~neuro.sensing.DirectSensor`.
+Covers :class:`~neuro.control.ZeroController` and
+:class:`~neuro.control.StimWindowController`.
 """
-
-from pathlib import Path
 
 import numpy as np
 import pytest
 
 from neuro.control import StimWindowController, ZeroController
-from neuro.sensing import DirectSensor
 
 _DT = 0.1
-_N_SENSORS_TVB = 65
-
-
-def test_direct_sensor_broadcasts_scalar_seed() -> None:
-    """A scalar seed becomes an n_sensors vector; a vector passes through."""
-    sensor = DirectSensor(dt=_DT, n_sensors=4, std_dev=0.0)
-    seed_mea, _ = sensor.update(0.0, 0.0)
-    np.testing.assert_array_equal(np.atleast_1d(seed_mea), np.zeros(4))
-    vec_mea, _ = sensor.update(_DT, np.arange(4, dtype=np.float64))
-    np.testing.assert_array_equal(np.atleast_1d(vec_mea), np.arange(4))
 
 
 def test_zero_controller_outputs_zero_vector() -> None:

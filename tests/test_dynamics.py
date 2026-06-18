@@ -1,10 +1,11 @@
-"""Tests for the simulate-framework Jansen-Rit plant and EEG output components.
+"""Tests for the simulate-framework Jansen-Rit plant and EEG measurement model.
 
 Covers :class:`~neuro.jansen_rit.JansenRitDynamics` and
-:class:`~neuro.output.EEGOutput`. The equivalence test pins the stepped component
-to the standalone :func:`~neuro.jansen_rit.simulate_network` loop on a small
-synthetic connectome (no TVB load); one smoke test exercises ``from_config`` against
-the real TVB connectome.
+:class:`~neuro.measurement.EEGMeasurement`. The equivalence tests pin the stepped
+component, and a full orchestrated :class:`~simulate.simulation.Simulation` run, to
+the standalone :func:`~neuro.jansen_rit.simulate_network` loop on a small synthetic
+connectome (no TVB load); other tests exercise ``from_config`` and the EEG
+measurement against the real TVB connectome.
 """
 
 from __future__ import annotations
@@ -12,10 +13,15 @@ from __future__ import annotations
 from dataclasses import replace
 
 import numpy as np
+from simulate.estimator import IdentityEstimator
+from simulate.reference import StepReference
+from simulate.sensor import GaussianSensor, full_state_measurement
+from simulate.simulation import Simulation
 
-from neuro.connectome import Connectome
+from neuro.connectome import Connectome, load_connectome
+from neuro.control import ZeroController
 from neuro.jansen_rit import JansenRitDynamics, JansenRitParams, simulate_network
-from neuro.output import EEGOutput
+from neuro.measurement import EEGMeasurement
 
 _DT = 1e-4
 _N_REGIONS_TVB = 76
@@ -67,67 +73,91 @@ def test_dynamics_matches_simulate_network() -> None:
         np.testing.assert_allclose(np.asarray(out).reshape(6, 3), x_ref[:, :, k + 1], atol=1e-12)
 
 
+def test_simulation_matches_simulate_network() -> None:
+    """A full orchestrated open-loop Simulation reproduces simulate_network's state trajectory.
+
+    Same plant seed/params/coupling, a zero controller and a noise-free sensor, all at a single
+    rate, so the logged ``universal_x`` must equal ``simulate_network``'s ``x_traj`` bit-for-bit.
+    """
+    conn = _toy_connectome(3)
+    params = JansenRitParams(A=3.4)
+    duration = 0.01
+    _t, x_ref = simulate_network(params=params, connectome=conn, K=0.5, duration=duration, dt=_DT, seed=7)
+
+    sim = Simulation(
+        t_end=duration,
+        dynamics=JansenRitDynamics(dt=_DT, connectome=conn, K=0.5, params=params, seed=7),
+        reference=StepReference(dt=_DT, step_value=0.0),
+        sensors=GaussianSensor(dt=_DT, measurement=full_state_measurement, std_dev=0.0),
+        estimator=IdentityEstimator(dt=_DT),
+        controller=ZeroController(dt=_DT, n_u=1),
+    )
+    sim.run()
+
+    logs = sim.logger.universal_logs
+    orch_x = np.stack([np.asarray(entry["x"], dtype=np.float64) for entry in logs], axis=-1)
+    n = x_ref.shape[2]
+    assert orch_x.shape[2] >= n
+    np.testing.assert_allclose(orch_x[:, :, :n], x_ref, atol=1e-12)
+
+
 def test_dynamics_from_config_builds_network() -> None:
-    """from_config loads the TVB connectome and one step yields a finite flat state."""
+    """from_config loads the TVB connectome and one step yields a finite (6, N) state."""
     dyn = JansenRitDynamics.from_config({"dt": _DT, "K": 0.75, "params": {"A": 3.25}, "seed": 42, "speed": 50.0})
     assert dyn.x.shape == (_STATE_DIM, _N_REGIONS_TVB)
 
     out, _ = dyn.evaluate(0.0, 0.0)
     out = np.asarray(out)
-    assert out.shape == (_STATE_DIM * _N_REGIONS_TVB,)
+    assert out.shape == (_STATE_DIM, _N_REGIONS_TVB)
     assert np.isfinite(out).all()
 
 
-def test_eeg_output_applies_gain() -> None:
-    """EEGOutput maps the flat state to eeg = gain @ (x2 - x3)."""
-    n_nodes = 3
-    gain = np.arange(12, dtype=np.float64).reshape(4, n_nodes)
-    out_comp = EEGOutput(dt=_DT, gain=gain)
+def test_eeg_measurement_applies_gain() -> None:
+    """EEGMeasurement maps the network state to eeg = gain @ (x2 - x3)."""
+    m = EEGMeasurement(speed=50.0)
+    x_flat = np.arange(6 * m.n_nodes, dtype=np.float64)
+    x_grid = x_flat.reshape(6, m.n_nodes)
+    expected = m.gain @ (x_grid[1] - x_grid[2])
 
-    x_flat = np.arange(6 * n_nodes, dtype=np.float64)
-    x_grid = x_flat.reshape(6, n_nodes)
-    expected = gain @ (x_grid[1] - x_grid[2])
-
-    y, _ = out_comp.update(0.0, x_flat, 0.0)
-    np.testing.assert_allclose(np.asarray(y), expected)
-    assert np.asarray(y).shape == (4,)
+    eeg = m(0.0, x_flat, 0.0)
+    np.testing.assert_allclose(eeg, expected)
+    assert eeg.shape == (_N_CHANNELS_TVB,)
 
 
-def test_eeg_output_from_config_channel_count() -> None:
-    """from_config wires the (62, 76) TVB forward operator."""
-    out_comp = EEGOutput.from_config({"dt": _DT, "speed": 50.0})
-    assert out_comp.gain.shape == (_N_CHANNELS_TVB, _N_REGIONS_TVB)
+def test_eeg_measurement_full_forward_operator() -> None:
+    """The forward operator is the (62, 76) TVB lead field."""
+    m = EEGMeasurement(speed=50.0)
+    assert m.gain.shape == (_N_CHANNELS_TVB, _N_REGIONS_TVB)
 
 
-def test_eeg_output_selected_channels() -> None:
-    """EEGOutput maps to a subset of channels if selected_channels is provided."""
-    n_nodes = 3
-    gain = np.arange(12, dtype=np.float64).reshape(4, n_nodes)
-    out_comp = EEGOutput(dt=_DT, gain=gain, selected_channels=[1, 3])
+def test_eeg_measurement_n_nodes_slices_gain() -> None:
+    """n_nodes restricts the operator to the leading regions but keeps all 62 channels."""
+    m = EEGMeasurement(speed=50.0, n_nodes=2)
+    assert m.gain.shape == (_N_CHANNELS_TVB, 2)
 
-    x_flat = np.arange(6 * n_nodes, dtype=np.float64)
-    x_grid = x_flat.reshape(6, n_nodes)
-    expected = (gain @ (x_grid[1] - x_grid[2]))[[1, 3]]
-
-    y, _ = out_comp.update(0.0, x_flat, 0.0)
-    np.testing.assert_allclose(np.asarray(y), expected)
-    assert np.asarray(y).shape == (2,)
+    x_flat = np.arange(6 * 2, dtype=np.float64)
+    eeg = m(0.0, x_flat, 0.0)
+    assert eeg.shape == (_N_CHANNELS_TVB,)
 
 
-def test_eeg_output_from_config_selected_channels() -> None:
-    """from_config wires selected channels correctly."""
-    out_comp = EEGOutput.from_config(
-        {
-            "dt": _DT,
-            "speed": 50.0,
-            "selected_channels": ["F3", "P3"],
-        }
-    )
-    assert out_comp.selected_channels is not None
-    assert len(out_comp.selected_channels) == 2
-    # Verify that "F3" and "P3" correspond to the correct resolved channel indices
-    from neuro.connectome import load_connectome  # noqa: PLC0415
+def test_eeg_measurement_selected_channels() -> None:
+    """selected_channels restricts the measurement to a channel subset."""
+    m = EEGMeasurement(speed=50.0, selected_channels=[1, 3])
+    x_flat = np.arange(6 * m.n_nodes, dtype=np.float64)
+    x_grid = x_flat.reshape(6, m.n_nodes)
+    expected = (m.gain @ (x_grid[1] - x_grid[2]))[[1, 3]]
 
+    eeg = m(0.0, x_flat, 0.0)
+    np.testing.assert_allclose(eeg, expected)
+    assert eeg.shape == (2,)
+
+
+def test_eeg_measurement_selected_channels_by_name() -> None:
+    """Channel names resolve to the connectome's channel indices."""
+    m = EEGMeasurement(speed=50.0, selected_channels=["F3", "P3"])
     conn = load_connectome(speed=50.0)
-    assert out_comp.selected_channels[0] == conn.channel_index["F3"]
-    assert out_comp.selected_channels[1] == conn.channel_index["P3"]
+    assert m.selected_channels is not None
+    np.testing.assert_array_equal(
+        m.selected_channels,
+        [conn.channel_index["F3"], conn.channel_index["P3"]],
+    )

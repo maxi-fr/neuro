@@ -12,22 +12,19 @@ dynamics:
   params:
     A: 3.25
 
-output:
-  class_path: neuro.output.EEGOutput
-  dt: 0.0001
-  speed: 50.0
-  n_nodes: 2
-
 reference:
   class_path: simulate.reference.StepReference
   dt: 0.0001
   step_value: 0.0
 
-sensor:
-  class_path: neuro.sensing.DirectSensor
+sensors:
+  class_path: simulate.sensor.GaussianSensor
   dt: 0.0001
-  n_sensors: 62
   std_dev: 0.0
+  measurement:
+    class_path: neuro.measurement.EEGMeasurement
+    speed: 50.0
+    n_nodes: 2
 
 estimator:
   class_path: neuro.estimator.UKFEstimator

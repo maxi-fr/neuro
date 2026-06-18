@@ -140,7 +140,7 @@ def test_state_transition_matches_dynamics() -> None:
     x_next_est = est.ukf.fx(x_aug, dt, 0.0, 0)
 
     # Check matching dynamic states
-    np.testing.assert_allclose(x_next_est[:12], out_dyn, atol=1e-12)
+    np.testing.assert_allclose(x_next_est[:12], np.asarray(out_dyn).flatten(), atol=1e-12)
     # Check parameters remain constant in prediction
     np.testing.assert_allclose(x_next_est[12:], x_aug[12:], atol=1e-12)
 
@@ -300,7 +300,7 @@ def test_estimator_estimate_a_fx_uses_estimated_a() -> None:
     x_aug[17:19] = a_custom
 
     x_next = est.ukf.fx(x_aug, dt, 0.0, 0)
-    np.testing.assert_allclose(x_next[:12], out_dyn, atol=1e-12)
+    np.testing.assert_allclose(x_next[:12], np.asarray(out_dyn).flatten(), atol=1e-12)
     np.testing.assert_allclose(x_next[17:19], a_custom, atol=1e-12)  # A held constant in prediction
 
 

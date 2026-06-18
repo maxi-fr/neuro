@@ -1,6 +1,6 @@
 import marimo
 
-__generated_with = "0.23.8"
+__generated_with = "0.23.9"
 app = marimo.App(width="medium", app_title="EEG Channel Selection")
 
 
@@ -60,9 +60,9 @@ def _(mo):
     mo.md(r"""
     # 🧠 EEG Channel Selection
 
-    Builds on `scripts/run_channel_selection.py`: runs an EZ/PZ seizure simulation,
-    then ranks the 62 EEG channels by **PCA loading scores** and by the **empirical
-    observability Gramian** (see `knowledge-base/Notes/model_reduction.md`).
+    Runs an EZ/PZ seizure simulation, then ranks the 62 EEG channels by **PCA loading
+    scores** and by the **empirical observability Gramian** (see
+    `knowledge-base/Notes/model_reduction.md`).
     """)
     return
 

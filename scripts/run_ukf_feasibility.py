@@ -1,7 +1,9 @@
 """Feasibility test of tracking a whole-brain seizure with a reduced region-space UKF.
 
-Loads the 62-channel seizure EEG produced by ``scripts/run_channel_selection.py`` and drives a
-*reduced* ``M``-region Jansen-Rit UKF. Unlike a channel-space surrogate, the reduced nodes are
+Loads the 62-channel seizure EEG from a capture run -- simulate a seizure plant through the
+orchestrator (``scripts/configs/jansen_rit_seizure.yaml`` via ``scripts/run_simulation.py``) and
+point ``--data`` at the resulting ``log.npz`` -- and drives a *reduced* ``M``-region Jansen-Rit
+UKF. Unlike a channel-space surrogate, the reduced nodes are
 actual brain regions -- the EZ/PZ plus their strongest structural neighbours -- so a node sits on
 the seizure source. The measurement model is the real ``M``-column leadfield restricted to the
 ``M`` EEG channels that best see those regions (``estimate_eeg_gains=False``), and the per-node
@@ -33,24 +35,19 @@ import numpy as np
 from neuro.connectome import Connectome, load_connectome
 from neuro.estimator import UKFEstimator
 from neuro.jansen_rit import JansenRitParams
+from neuro.seizure import A_EZ, A_HEALTHY, A_PZ, DT, EZ_REGIONS, PZ_REGIONS, K, focus_indices
 from utils.channel_selection import leadfield_focus_scores
 
-_DT = 1e-4
-# Plant configuration mirrored from scripts/run_channel_selection.py, used for smart init.
-_K_PLANT = 0.75
-_EZ_REGIONS = ("lHC", "lPHC", "lAMYG")
-_PZ_REGIONS = ("lTCI", "lTCV")
-_A_HEALTHY = 3.25
-_A_EZ = 3.6
-_A_PZ = 3.4
-DATA_PATH = Path("simulations/channel_selection/seizure_data.npz")
+DATA_PATH = Path("results/seizure_capture/log.npz")
 OUTPUT_DIR = Path("simulations/ukf_feasibility")
 
 
 def parse_args() -> argparse.Namespace:
     """Parse command-line arguments for the UKF feasibility runner."""
     parser = argparse.ArgumentParser(description="Reduced region-space UKF feasibility test on seizure EEG.")
-    parser.add_argument("--data", type=Path, default=DATA_PATH, help="Seizure EEG npz from run_channel_selection.")
+    parser.add_argument(
+        "--data", type=Path, default=DATA_PATH, help="Capture log.npz from a seizure run_simulation run."
+    )
     parser.add_argument("--n-select", type=int, default=10, help="Number of reduced regions and EEG channels.")
     parser.add_argument("--steps", type=int, default=10000, help="Number of dt steps to filter (1e-4 s each).")
     parser.add_argument("--q-x5", type=float, default=1e-3, help="Process-noise variance on x5.")
@@ -72,7 +69,7 @@ def select_regions_and_channels(connectome: Connectome, n_select: int) -> tuple[
     Regions are the EZ/PZ nodes plus the top structural neighbours by bidirectional weight to the
     focus; channels are the ``n_select`` EEG sensors with the largest leadfield onto those regions.
     """
-    focus = [connectome.region_index[r] for r in (*_EZ_REGIONS, *_PZ_REGIONS)]
+    focus = focus_indices(connectome)
     weights = connectome.weights
     coupling_to_focus = weights[:, focus].sum(axis=1) + weights[focus, :].sum(axis=0)
     coupling_to_focus[focus] = -np.inf  # do not re-pick the focus regions
@@ -102,15 +99,18 @@ def main(  # noqa: PLR0913, PLR0915
     """Build the reduced region-space model, run the UKF, and report prediction quality."""
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    blob = np.load(data, allow_pickle=True)
-    eeg = blob["eeg"]  # (62, T)
-    labels = blob["channel_labels"]
-
     connectome = load_connectome(speed=50.0)
+
+    # Seizure EEG comes from a capture run: simulate a seizure plant through the orchestrator
+    # (scripts/configs/jansen_rit_seizure.yaml -> scripts/run_simulation.py) and point --data at
+    # the resulting log.npz; the 62-channel EEG is the universally-logged measurement.
+    blob = np.load(data, allow_pickle=True)
+    eeg = np.asarray(blob["universal_y_mea"], dtype=np.float64).T  # (62, T)
+    labels = connectome.channel_labels
     regions, channels = select_regions_and_channels(connectome, n_select)
     region_labels = [str(connectome.region_labels[r]) for r in regions]
     a0 = np.array(
-        [_A_EZ if rl in _EZ_REGIONS else _A_PZ if rl in _PZ_REGIONS else _A_HEALTHY for rl in region_labels],
+        [A_EZ if rl in EZ_REGIONS else A_PZ if rl in PZ_REGIONS else A_HEALTHY for rl in region_labels],
         dtype=np.float64,
     )
     w0 = connectome.weights[np.ix_(regions, regions)].copy()
@@ -129,10 +129,10 @@ def main(  # noqa: PLR0913, PLR0915
     gain_scaled = connectome.gain[:, regions] / chan_std[:, None]
     y_meas = (eeg - chan_mean[:, None]) / chan_std[:, None]  # (62, T), train-window stats
 
-    print(f"Filtering {steps} steps ({steps * _DT:.2f} s) of a {len(regions)}-region reduced model...")
+    print(f"Filtering {steps} steps ({steps * DT:.2f} s) of a {len(regions)}-region reduced model...")
 
     est = UKFEstimator(
-        dt=_DT,
+        dt=DT,
         n_nodes=len(regions),
         gain=gain_scaled,  # real M-column leadfield, per-channel scaled
         delays=None,  # instantaneous coupling so the free-run stays history-free
@@ -147,7 +147,7 @@ def main(  # noqa: PLR0913, PLR0915
         q_input=q_input,
         p_input=p_input,
         r_channel=r_channel,
-        initial_k=_K_PLANT,
+        initial_k=K,
         initial_w=w0,
         initial_a=a0,
         # Fix K at the plant value: zero process noise and a negligible prior variance so the
@@ -165,7 +165,7 @@ def main(  # noqa: PLR0913, PLR0915
     t_start = time.perf_counter()
     for step in range(steps):
         z = y_meas[channels, step]
-        _x_hat, log = est.update(step * _DT, z, 0.0)
+        _x_hat, log = est.update(step * DT, z, 0.0)
         innovations[step] = est.ukf.y
         a_hist[step] = log.a_est
         input_hist[step] = log.input_est
@@ -176,7 +176,7 @@ def main(  # noqa: PLR0913, PLR0915
     elapsed = time.perf_counter() - t_start
 
     if diverged_at >= 0:
-        print(f"\n*** Filter DIVERGED at step {diverged_at} ({diverged_at * _DT:.3f} s) -- non-finite state. ***")
+        print(f"\n*** Filter DIVERGED at step {diverged_at} ({diverged_at * DT:.3f} s) -- non-finite state. ***")
         return
 
     print(f"Done in {elapsed:.1f} s ({1e3 * elapsed / steps:.2f} ms/step).")
@@ -217,7 +217,7 @@ def main(  # noqa: PLR0913, PLR0915
         x_free = est.ukf.x.copy()
         preds = np.empty((h_max, n_select), dtype=np.float64)
         for h in range(h_max):
-            x_free = est.ukf.fx(x_free, _DT, 0.0, steps + h)
+            x_free = est.ukf.fx(x_free, DT, 0.0, steps + h)
             preds[h] = est.ukf.hx(x_free)
         future = y_meas[channels, steps : steps + h_max].T
         hold = y_meas[channels, steps - 1]
@@ -230,7 +230,7 @@ def main(  # noqa: PLR0913, PLR0915
             model_h = float(np.linalg.norm(preds[:h] - fut_h) / np.linalg.norm(fut_h))
             persist_h = float(np.linalg.norm(fut_h - hold) / np.linalg.norm(fut_h))
             verdict = "model wins" if model_h < persist_h else "persistence wins"
-            print(f"  {h * _DT * 1e3:5.0f} ms : model {model_h:.4f} / persistence {persist_h:.4f}  ({verdict})")
+            print(f"  {h * DT * 1e3:5.0f} ms : model {model_h:.4f} / persistence {persist_h:.4f}  ({verdict})")
         free_rel = float(np.linalg.norm(preds - future) / np.linalg.norm(future))
         persist_free = float(np.linalg.norm(future - hold) / np.linalg.norm(future))
 
@@ -254,7 +254,7 @@ def main(  # noqa: PLR0913, PLR0915
         meas_filt=z_win.T,
         meas_future=future,
         free_preds=preds,
-        dt=_DT,
+        dt=DT,
     )
     print(f"\nWrote {out_path}")
 

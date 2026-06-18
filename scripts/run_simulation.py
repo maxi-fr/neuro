@@ -1,100 +1,72 @@
-"""Run a whole-brain simulation through the ``simulate`` orchestrator.
-
-Loads a YAML config describing all six components (dynamics, output, reference,
-sensor, estimator, controller), runs :class:`~simulate.simulation.Simulation` to
-``t_end``, and lets the framework's :class:`~simulate.logger.Logger` write every
-signal to ``{output_dir}/{name}/logs.npz``. Finally renders the logged EEG output.
-
-The shipped default config (``scripts/configs/jansen_rit_baseline.yaml``) is an
-open-loop Jansen-Rit baseline -- the ``ZeroController`` injects no control, so the
-plant evolves freely. This is the orchestrated counterpart to the manual loop in
-``run_baseline.py``.
-
-Usage
------
-    uv run python scripts/run_simulation.py
-    uv run python scripts/run_simulation.py --duration-ms 2000
-    uv run python scripts/run_simulation.py --config scripts/configs/my_run.yaml
-"""
-
-from __future__ import annotations
-
 import argparse
-import subprocess
 import sys
+from datetime import UTC, datetime
 from pathlib import Path
 
-import yaml
-from simulate.config import load_config
+from simulate.config import deep_merge, load_config
+from simulate.experiment import ExperimentManager
 from simulate.simulation import Simulation
-
-DEFAULT_CONFIG = Path("scripts/configs/jansen_rit_baseline.yaml")
-OUTPUT_DIR = Path("simulations/")
-
-
-def parse_args() -> argparse.Namespace:
-    """Parse command-line arguments for the orchestrated runner."""
-    parser = argparse.ArgumentParser(description="Run a simulation via the simulate orchestrator.")
-    parser.add_argument(
-        "--config",
-        type=Path,
-        default=DEFAULT_CONFIG,
-        help="YAML config for the Simulation.",
-    )
-    parser.add_argument(
-        "--duration-ms",
-        type=float,
-        default=None,
-        help="Override the config's t_end (milliseconds).",
-    )
-    parser.add_argument(
-        "--name",
-        type=str,
-        help="Filename prefix for the merged .npz.",
-    )
-    return parser.parse_args()
 
 
 def main() -> None:
-    """Load the config, run the orchestrated simulation, and export results."""
-    args = parse_args()
-
-    config = load_config(args.config)
-    if args.duration_ms is not None:
-        config["t_end"] = args.duration_ms / 1000.0  # CLI is ms; config t_end is in seconds
-    dt_s = float(config["dynamics"]["dt"])
-    dt_ms = dt_s * 1000.0
-
-    sim = Simulation.from_config(config)
-
-    t_end_s = float(config["t_end"])
-    print(
-        f"Running {config['dynamics']['class_path']} for {t_end_s} s "
-        f"at dt={dt_ms} ms -> {round(t_end_s / dt_s) + 1} steps...",
+    """Execute the main entry point for the simulation CLI."""
+    parser = argparse.ArgumentParser(description="Modular Python Framework for Control System Simulation")
+    parser.add_argument(
+        "config_file",
+        type=str,
+        help="Path to the YAML configuration file.",
+    )
+    parser.add_argument(
+        "--chunk-size",
+        type=int,
+        default=10_000,
+        help="Steps per output chunk file (default: 10000). Use 0 to disable chunking.",
+    )
+    parser.add_argument(
+        "--output-dir",
+        type=str,
+        default=None,
+        help="Directory to save simulation results (default: simulation_<current_datetime>).",
+    )
+    parser.add_argument(
+        "--compress",
+        action="store_true",
+        help="Enable zlib compression for output files (default: False/uncompressed).",
     )
 
-    name = args.name or args.config.stem
-    run_dir = OUTPUT_DIR / name
+    args = parser.parse_args()
 
-    sim.run(run_dir, prefix="logs")
-    sim.export_results(run_dir, prefix="logs")
+    config_path = Path(args.config_file)
+    if not config_path.exists():
+        sys.exit(1)
 
-    # Save the config dictionary as YAML in the simulation directory
-    run_dir.mkdir(parents=True, exist_ok=True)
-    config_path = run_dir / "config.yaml"
-    with config_path.open("w", encoding="utf-8") as f:
-        yaml.safe_dump(config, f, default_flow_style=False)
+    config = load_config(config_path)
 
-    npz_path = run_dir / "logs.npz"
-    print(f"Wrote {npz_path}")
-    print(f"Saved configuration to {config_path}")
-    sys.stdout.flush()
+    chunk_size = args.chunk_size if args.chunk_size > 0 else None
 
-    # Plot the simulation results
-    subprocess.run(  # noqa: S603
-        [sys.executable, "scripts/plot_simulation.py", "--dir", str(run_dir)],
-        check=True,
-    )
+    if args.output_dir is None:
+        local_now = datetime.now(UTC).astimezone()
+        output_dir_str = f"results/simulation_{local_now.strftime('%Y-%m-%d_%H-%M-%S')}"
+    else:
+        output_dir_str = args.output_dir
+
+    if "experiments" in config:
+        manager = ExperimentManager(output_dir=output_dir_str)
+
+        raw_configs = config["experiments"]
+        if not raw_configs:
+            sys.exit(0)
+
+        configs = [raw_configs[0]]
+        for override in raw_configs[1:]:
+            configs.append(deep_merge(configs[-1], override))
+
+        manager.run_batch(configs, chunk_size=chunk_size, compress=args.compress)
+    else:
+        output_dir = Path(output_dir_str)
+        sim = Simulation.from_config(config)
+        sim.run(output_dir=output_dir, prefix="log", chunk_size=chunk_size, compress=args.compress)
+        sim.export_results(output_dir, prefix="log", compress=args.compress)
 
 
 if __name__ == "__main__":
