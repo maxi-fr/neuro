@@ -1,6 +1,6 @@
 import marimo
 
-__generated_with = "0.23.6"
+__generated_with = "0.23.8"
 app = marimo.App(width="medium", app_title="Stage 7: TVB Reference Validation")
 
 
@@ -13,7 +13,7 @@ def _():
     from matplotlib import pyplot as plt
 
     from neuro.connectome import load_connectome
-    from neuro.jansen_rit import JansenRitParams, output, simulate_network
+    from neuro.jansen_rit import JansenRitParams, lfp, simulate_network
     from neuro.tvb_reference import build_reference_simulator, reference_eeg_gain, run_reference
     from utils.processing import band_energy, compute_psd, steady_window
 
@@ -22,10 +22,10 @@ def _():
         band_energy,
         build_reference_simulator,
         compute_psd,
+        lfp,
         load_connectome,
         mo,
         np,
-        output,
         plt,
         reference_eeg_gain,
         replace,
@@ -123,8 +123,8 @@ def _(
     deterministic_toggle,
     duration_slider,
     k_slider,
+    lfp,
     nsig_slider,
-    output,
     run_reference,
     seed_slider,
     sigma_slider,
@@ -147,7 +147,7 @@ def _(
         dt=1e-4,
         seed=int(seed_slider.value),
     )
-    hr_y = output(_x)
+    hr_y = lfp(_x)
     hr_eeg = conn.gain @ hr_y
     return hr_eeg, hr_t, hr_y, tvb
 

@@ -1,6 +1,6 @@
 import marimo
 
-__generated_with = "0.23.6"
+__generated_with = "0.23.8"
 app = marimo.App(
     width="medium",
     app_title="Stage 3 Stimulation: Immediate tES",
@@ -16,15 +16,15 @@ def _():
     from matplotlib import pyplot as plt
 
     from neuro.connectome import compute_gamma, load_connectome
-    from neuro.jansen_rit import JansenRitParams, output, simulate_network
+    from neuro.jansen_rit import JansenRitParams, lfp, simulate_network
 
     return (
         JansenRitParams,
         compute_gamma,
+        lfp,
         load_connectome,
         mo,
         np,
-        output,
         plt,
         replace,
         simulate_network,
@@ -137,10 +137,10 @@ def _(
     duration_slider,
     electrode_multiselect,
     k_slider,
+    lfp,
     np,
     offset_slider,
     onset_slider,
-    output,
     replace,
     seed_slider,
     sigma_slider,
@@ -192,7 +192,7 @@ def _(
         u_hat_tES=u_amp,
         stim_window=stim_window,
     )
-    y = output(x_traj)
+    y = lfp(x_traj)
     return conn_scaled, ez_idxs, gamma_field, pz_idxs, stim_window, t, y
 
 

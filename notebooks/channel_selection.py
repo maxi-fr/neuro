@@ -11,7 +11,7 @@ def _():
     from matplotlib import pyplot as plt
 
     from neuro.connectome import load_connectome
-    from neuro.jansen_rit import JansenRitParams, output, simulate_network
+    from neuro.jansen_rit import JansenRitParams, lfp, simulate_network
     from utils.channel_selection import compute_channel_gramians, pca_loading_scores, select_channels
     from utils.plotting import plot_psd, plot_signals
     from utils.processing import steady_window
@@ -19,10 +19,10 @@ def _():
     return (
         JansenRitParams,
         compute_channel_gramians,
+        lfp,
         load_connectome,
         mo,
         np,
-        output,
         pca_loading_scores,
         plot_psd,
         plot_signals,
@@ -91,7 +91,7 @@ def _(
     a_gains,
     connectome,
     duration_slider,
-    output,
+    lfp,
     sim_dt,
     sim_k,
     sim_seed,
@@ -105,7 +105,7 @@ def _(
         dt=sim_dt,
         seed=sim_seed,
     )
-    eeg = connectome.gain @ output(x_traj)
+    eeg = connectome.gain @ lfp(x_traj)
     x0 = x_traj[:, :, -1]
     return eeg, x0
 

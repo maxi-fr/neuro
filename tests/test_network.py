@@ -13,7 +13,7 @@ import numpy as np
 import pytest
 
 from neuro.connectome import Connectome, load_connectome
-from neuro.jansen_rit import JansenRitDynamics, JansenRitParams, output, simulate_network
+from neuro.jansen_rit import JansenRitDynamics, JansenRitParams, lfp, simulate_network
 
 _DT = 1e-4
 
@@ -58,7 +58,7 @@ def test_network_all_healthy_control(connectome: Connectome) -> None:
         duration=2.0,
         dt=_DT,
     )
-    y = output(x_traj)
+    y = lfp(x_traj)
     # Steady window after transient
     y_steady = y[:, round(1.0 / _DT) :]
     ptps = np.ptp(y_steady, axis=1)
@@ -73,7 +73,7 @@ def test_network_all_healthy_control(connectome: Connectome) -> None:
         dt=_DT,
         seed=42,
     )
-    y_noise = output(x_traj_noise)
+    y_noise = lfp(x_traj_noise)
     y_noise_steady = y_noise[:, round(1.0 / _DT) :]
     ptps_noise = np.ptp(y_noise_steady, axis=1)
     assert np.all(ptps_noise < 5.0)
@@ -98,7 +98,7 @@ def test_network_recruitment(connectome: Connectome, ez_pz_indices: tuple[list[i
         dt=_DT,
         seed=42,
     )
-    y = output(x_traj)
+    y = lfp(x_traj)
 
     # EZ nodes should oscillate immediately
     y_steady = y[:, round(1.0 / _DT) :]
@@ -151,7 +151,7 @@ def test_network_coupling_correctness(connectome: Connectome, ez_pz_indices: tup
         dt=_DT,
         seed=42,
     )
-    y = output(x_traj)
+    y = lfp(x_traj)
     y_steady = y[:, round(1.0 / _DT) :]
     ptps = np.ptp(y_steady, axis=1)
 
@@ -231,7 +231,7 @@ def test_history_coupling_index_robust_to_accumulated_time() -> None:
     x_accum = run(accumulate=True)
 
     # Coupling must actually have driven the downstream node, so the comparison is non-vacuous.
-    assert np.ptp(output(x_exact)[1]) > 1.0
+    assert np.ptp(lfp(x_exact)[1]) > 1.0
     # Exact index recovery -> bit-identical trajectories regardless of how t is produced.
     assert np.array_equal(x_exact, x_accum)
 
@@ -254,7 +254,7 @@ def test_network_delays_vs_instantaneous(connectome: Connectome, ez_pz_indices: 
         dt=_DT,
         seed=42,
     )
-    y_delayed = output(x_traj_delayed)
+    y_delayed = lfp(x_traj_delayed)
 
     # Instantaneous coupling = a connectome whose conduction delays are all zero.
     conn_instant = replace(connectome, delays=np.zeros_like(connectome.delays))
@@ -266,7 +266,7 @@ def test_network_delays_vs_instantaneous(connectome: Connectome, ez_pz_indices: 
         dt=_DT,
         seed=42,
     )
-    y_instant = output(x_traj_instant)
+    y_instant = lfp(x_traj_instant)
 
     # Both networks should successfully seize/recruit
     ptps_delayed = np.ptp(y_delayed[:, round(1.0 / _DT) :], axis=1)

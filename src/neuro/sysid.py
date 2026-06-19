@@ -12,8 +12,8 @@ import numpy as np
 from neuro.jansen_rit import JansenRitParams
 from neuro.jansen_rit_casadi import (
     JRSymbolicParams,
+    eeg,
     heun_step,
-    measure,
     project_control,
 )
 
@@ -25,7 +25,7 @@ class SysIDResult:
     params: JansenRitParams
     eeg_gain: np.ndarray | None
     cost: float
-    trajectory: np.ndarray  # Predicted output
+    trajectory: np.ndarray  # Predicted lfp
 
 
 class SysIDSolver:
@@ -123,9 +123,7 @@ class SysIDSolver:
         self.y_std_p = self.opti.parameter(self.n_channels, 1)
 
         # Initial history parameter
-        self.x0_history_p = [
-            self.opti.parameter(6, self.n_nodes) for _ in range(self.max_delay + 1)
-        ]
+        self.x0_history_p = [self.opti.parameter(6, self.n_nodes) for _ in range(self.max_delay + 1)]
 
         # Build decision variables
         self._var_map = {}
@@ -202,7 +200,7 @@ class SysIDSolver:
             history.insert(0, X_vars[k])
             history.pop()
 
-            y_k = measure(X_vars[k], self.sym_params.eeg_gain)
+            y_k = eeg(X_vars[k], self.sym_params.eeg_gain)
             err = (y_k - self.y_data_p[:, k]) / self.y_std_p
             cost += ca.sumsqr(err)
             Y_pred.append(y_k)
@@ -226,7 +224,7 @@ class SysIDSolver:
         u_data : np.ndarray
             Control input array of shape (n_steps, n_elec).
         y_data : np.ndarray
-            Measured EEG output data of shape (n_steps, n_channels).
+            Measured EEG data of shape (n_steps, n_channels).
         x0_history : list[np.ndarray]
             List of initial state matrices representing the history before step 0.
 

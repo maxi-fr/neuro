@@ -18,7 +18,7 @@ import numpy as np
 import numpy.typing as npt
 from scipy.linalg import qr
 
-from neuro.jansen_rit import output, simulate_network
+from neuro.jansen_rit import lfp, simulate_network
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -213,7 +213,7 @@ def compute_channel_gramians(  # noqa: PLR0913
             initial_state=x_init,
             seed=0,
         )
-        eeg = connectome.gain @ output(x_traj)
+        eeg = connectome.gain @ lfp(x_traj)
         return eeg[:, ::decimate]
 
     eeg_base = _run_eeg(x0)

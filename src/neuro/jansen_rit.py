@@ -359,7 +359,7 @@ def simulate_network(  # noqa: PLR0913
     return t, x_traj
 
 
-def output(x_traj: FloatArray) -> FloatArray:
+def lfp(x_traj: FloatArray) -> FloatArray:
     """Observed output ``y = x2 - x3`` from a state trajectory or state."""
     return x_traj[1] - x_traj[2]
 

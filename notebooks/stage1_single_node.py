@@ -11,16 +11,16 @@ def _():
     import numpy as np
     from matplotlib import pyplot as plt
 
-    from neuro.jansen_rit import JansenRitParams, output, simulate_network
+    from neuro.jansen_rit import JansenRitParams, lfp, simulate_network
     from utils.plotting import plot_psd
 
     DT_DEFAULT = 1e-4  # noqa: N806
     return (
         DT_DEFAULT,
         JansenRitParams,
+        lfp,
         mo,
         np,
-        output,
         plot_psd,
         plt,
         simulate_network,
@@ -51,7 +51,7 @@ def _(mo):
 
 
 @app.cell
-def _(DT_DEFAULT, JansenRitParams, output, simulate_network):
+def _(DT_DEFAULT, JansenRitParams, lfp, simulate_network):
     def run(a_gain, *, sigma=None, duration=20.0, seed=7, deterministic=False):
         """Simulate one node and return ``(t, y, x)`` for gain ``a_gain``."""
         base = JansenRitParams()
@@ -59,7 +59,7 @@ def _(DT_DEFAULT, JansenRitParams, output, simulate_network):
         params = JansenRitParams(A=a_gain, sigma=noise)
         t, x_traj = simulate_network(params=params, connectome=None, duration=duration, dt=DT_DEFAULT, seed=seed)
         x = x_traj[:, 0, :]  # drop the singleton node dim -> (6, n_samples)
-        return t, output(x), x
+        return t, lfp(x), x
 
     return (run,)
 
@@ -85,7 +85,7 @@ def _(DT_DEFAULT, np, plt, run):
 
 @app.cell
 def _(DT_DEFAULT, plt, run):
-    # Phase plane: output y = x2 - x3 against its derivative x5 - x6.
+    # Phase plane: lfp y = x2 - x3 against its derivative x5 - x6.
     _fig, _axes = plt.subplots(1, 2, figsize=(10, 4.5), layout="constrained")
     _n_drop = int(8.0 / DT_DEFAULT)
     for _ax, _a, _color, _kind in (

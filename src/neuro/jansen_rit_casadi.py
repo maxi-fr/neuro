@@ -68,7 +68,9 @@ def sigmoid(v: ca.SX | float, params: JRSymbolicParams) -> ca.SX:
     return 2 * params.e0 / (1.0 + ca.exp(params.r * (params.v0 - v)))
 
 
-def f_rhs(X: ca.SX | ca.MX, coupling: ca.SX | ca.MX, u: ca.SX | ca.MX | float, params: JRSymbolicParams) -> ca.SX | ca.MX:
+def f_rhs(
+    X: ca.SX | ca.MX, coupling: ca.SX | ca.MX, u: ca.SX | ca.MX | float, params: JRSymbolicParams
+) -> ca.SX | ca.MX:
     """Compute the continuous-time right-hand side (RHS) derivatives for the network nodes.
 
     Parameters
@@ -175,7 +177,7 @@ def heun_step(
     return X_curr + 0.5 * dt * (k1 + k2)
 
 
-def output(X: ca.SX | ca.MX) -> ca.SX | ca.MX:
+def lfp(X: ca.SX | ca.MX) -> ca.SX | ca.MX:
     """Observed output ``y = x2 - x3`` from a state trajectory or state.
 
     Parameters
@@ -191,8 +193,10 @@ def output(X: ca.SX | ca.MX) -> ca.SX | ca.MX:
     return X[1, :] - X[2, :]
 
 
-def measure(X: ca.SX | ca.MX, gain: ca.SX | ca.MX | np.ndarray, selected_channels: np.ndarray | list[int] | None = None) -> ca.SX | ca.MX:
-    """Measure the EEG/LFP output.
+def eeg(
+    X: ca.SX | ca.MX, gain: ca.SX | ca.MX | np.ndarray, selected_channels: np.ndarray | list[int] | None = None
+) -> ca.SX | ca.MX:
+    """Measure the EEG output.
 
     Parameters
     ----------
@@ -208,7 +212,7 @@ def measure(X: ca.SX | ca.MX, gain: ca.SX | ca.MX | np.ndarray, selected_channel
     ca.SX | ca.MX
         The measured output vector.
     """
-    node_lfp = output(X)  # shape 1 x N
+    node_lfp = lfp(X)  # shape 1 x N
     y = ca.mtimes(gain, node_lfp.T)
 
     if selected_channels is not None:
@@ -279,7 +283,7 @@ def rollout(
     for u in controls:
         x_next = heun_step(current_history, u, params, dt)
         X_seq.append(x_next)
-        Y_seq.append(output(x_next))
+        Y_seq.append(lfp(x_next))
 
         current_history.insert(0, x_next)
         current_history.pop()

@@ -1,6 +1,6 @@
 import marimo
 
-__generated_with = "0.23.9"
+__generated_with = "0.23.8"
 app = marimo.App(
     width="medium",
     app_title="Interactive Simulation & EEG Plotter",
@@ -16,14 +16,14 @@ def _():
     from matplotlib import pyplot as plt
 
     from neuro.connectome import load_connectome
-    from neuro.jansen_rit import JansenRitParams, output, simulate_network
+    from neuro.jansen_rit import JansenRitParams, lfp, simulate_network
 
     return (
         JansenRitParams,
+        lfp,
         load_connectome,
         mo,
         np,
-        output,
         plt,
         replace,
         simulate_network,
@@ -114,8 +114,8 @@ def _(
     duration_slider,
     ez_names,
     k_slider,
+    lfp,
     np,
-    output,
     pz_names,
     replace,
     seed_slider,
@@ -145,7 +145,7 @@ def _(
         dt=1e-4,
         seed=int(seed_slider.value),
     )
-    y = output(_x_traj)
+    y = lfp(_x_traj)
     # Project node activity to EEG
     eeg = _conn.gain @ y
     return eeg, t, y

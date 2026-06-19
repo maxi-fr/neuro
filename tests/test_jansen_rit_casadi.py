@@ -20,9 +20,9 @@ from neuro.jansen_rit import (
 )
 from neuro.jansen_rit_casadi import (
     JRSymbolicParams,
+    eeg,
     f_rhs,
     get_network_coupling,
-    measure,
     project_control,
     rollout,
     sigmoid,
@@ -182,7 +182,7 @@ def test_measure_matches_hx_step() -> None:
 
     X = ca.SX.sym("X", 6, n_nodes)
     gain_sym = ca.SX.sym("gain", n_channels, n_nodes)
-    fn = ca.Function("meas", [X, gain_sym], [measure(X, gain_sym)])
+    fn = ca.Function("meas", [X, gain_sym], [eeg(X, gain_sym)])
 
     gain_val = rng.uniform(-1, 1, (n_channels, n_nodes))
     y_casadi = _np2(fn(x, gain_val)).flatten()

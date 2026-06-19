@@ -23,7 +23,7 @@ import numpy as np
 import pytest
 
 from neuro.connectome import Connectome, load_connectome
-from neuro.jansen_rit import JansenRitParams, output, simulate_network
+from neuro.jansen_rit import JansenRitParams, lfp, simulate_network
 from utils.processing import band_energy, steady_window
 
 _FIG3C_TRIO = (("CP5", "CP6"), ("P3", "P4"), ("F3", "F4"))  # (left, right homolog)
@@ -64,7 +64,7 @@ def eeg_energy(connectome: Connectome) -> np.ndarray:
         dt=_DT,
         seed=42,
     )
-    y = output(x_traj)
+    y = lfp(x_traj)
     dt_ms = _DT * 1000.0
     y_steady = steady_window(y, dt_ms, transient_ms=2000.0)
 

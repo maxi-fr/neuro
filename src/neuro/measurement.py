@@ -11,7 +11,7 @@ from __future__ import annotations
 import numpy as np
 import numpy.typing as npt
 
-from neuro.jansen_rit import output as regional_output
+from neuro.jansen_rit import lfp as regional_lfp
 
 FloatArray = npt.NDArray[np.float64]
 
@@ -60,7 +60,7 @@ class EEGMeasurement:
     ) -> FloatArray:
         """Collapse the network state ``x`` to an EEG channel vector."""
         x_grid = np.asarray(x, dtype=np.float64).reshape(6, self.n_nodes)
-        eeg = self.gain @ regional_output(x_grid)
+        eeg = self.gain @ regional_lfp(x_grid)
         if self.selected_channels is not None:
             eeg = eeg[self.selected_channels]
         return eeg

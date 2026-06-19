@@ -17,7 +17,7 @@ import numpy as np
 from neuro.jansen_rit import (
     JansenRitParams,
     heun_step,
-    output,
+    lfp,
     sigmoid_jit,
     simulate_network,
 )
@@ -33,11 +33,11 @@ _DT = 1e-4
 
 
 def _post_transient_output(a_gain: float, *, deterministic: bool) -> np.ndarray:
-    """Run one node at gain ``a_gain`` and return its steady-state output ``y``."""
+    """Run one node at gain ``a_gain`` and return its steady-state lfp ``y``."""
     sigma = 0.0 if deterministic else JansenRitParams().sigma
     params = JansenRitParams(A=a_gain, sigma=sigma)
     _, x = simulate_network(params=params, connectome=None, duration=_DURATION, dt=_DT, seed=_SEED)
-    y = output(x)  # shape (1, n_samples) for the single node
+    y = lfp(x)  # shape (1, n_samples) for the single node
     return steady_window(y, _DT * 1000.0, _TRANSIENT_MS)[0]
 
 
@@ -79,7 +79,7 @@ def test_ez_node_is_limit_cycle() -> None:
 def test_ez_phase_plane_is_an_orbit() -> None:
     """The EZ trajectory spans a real range in both phase-plane axes (closed orbit).
 
-    The phase plane is the output ``y = x2 - x3`` against its derivative
+    The phase plane is the lfp ``y = x2 - x3`` against its derivative
     ``x5 - x6``; a fixed point would collapse to a point in both.
     """
     params = replace(JansenRitParams(), A=_A_EZ, sigma=0.0)

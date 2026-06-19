@@ -1,6 +1,6 @@
 import marimo
 
-__generated_with = "0.23.6"
+__generated_with = "0.23.8"
 app = marimo.App(
     width="medium",
     app_title="Stage 5: EEG Projection & Spectral Energy",
@@ -16,16 +16,16 @@ def _():
     from matplotlib import pyplot as plt
 
     from neuro.connectome import load_connectome
-    from neuro.jansen_rit import JansenRitParams, output, simulate_network
+    from neuro.jansen_rit import JansenRitParams, lfp, simulate_network
     from utils.processing import band_energy, steady_window
 
     return (
         JansenRitParams,
         band_energy,
+        lfp,
         load_connectome,
         mo,
         np,
-        output,
         plt,
         replace,
         simulate_network,
@@ -46,7 +46,7 @@ def _(mo):
     * $L$ (``connectome.gain``, shape $62\times76$) collapses TVB's surface lead field to regions. Its
       projection rows are re-paired to channel labels by sagittal-mirror matching, since TVB's sensor and
       projection files use opposite left–right conventions (Stage 0 fix).
-    * $Y = x_2 - x_3$ is each region's pyramidal output; the PSD is Welch (substitute for the paper's Chronux).
+    * $Y = x_2 - x_3$ is each region's pyramidal lfp; the PSD is Welch (substitute for the paper's Chronux).
 
     **Expected (Fig 3c / Fig 5a):** for the canonical EZ $=\{$lHC, lPHC, lAMYG$\}$, the high-energy channels are
     **left-hemisphere temporo-parietal (F3 / P3 / CP5)** — ipsilateral to the EZ. EEG units are arbitrary, so
@@ -108,8 +108,8 @@ def _(
     divisor_slider,
     duration_slider,
     k_slider,
+    lfp,
     np,
-    output,
     replace,
     seed_slider,
     simulate_network,
@@ -138,7 +138,7 @@ def _(
         dt=1e-4,
         seed=int(seed_slider.value),
     )
-    y = output(x_traj)
+    y = lfp(x_traj)
 
     dt_ms = (t[1] - t[0]) * 1000.0
     y_steady = steady_window(y, dt_ms, transient_ms=float(transient_slider.value) * 1000.0)

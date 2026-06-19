@@ -1,7 +1,7 @@
 """Model Predictive Control (MPC) for the Jansen-Rit network.
 
 This controller optimizes a multi-step sequence of control inputs to minimize
-the error between the predicted EEG output and a reference signal, subject to
+the error between the predicted EEG lfp and a reference signal, subject to
 control bounds and optionally smoothness penalties.
 """
 # ruff: noqa: N806
@@ -19,8 +19,8 @@ from neuro.connectome import compute_gamma, load_connectome
 from neuro.jansen_rit import JansenRitParams
 from neuro.jansen_rit_casadi import (
     JRSymbolicParams,
+    eeg,
     heun_step,
-    measure,
     project_control,
 )
 
@@ -102,7 +102,7 @@ class MPCController(Controller[MPCLog]):
             history.insert(0, X_vars[k])
             history.pop()
 
-            y_k = measure(X_vars[k], gain)
+            y_k = eeg(X_vars[k], gain)
             err = y_k - self.y_ref_p[:, k]
             cost += ca.sumsqr(err)
 
