@@ -10,6 +10,7 @@ A "deterministic" run is just ``sigma = 0`` (the integrator is always stochastic
 Heun); the single node is the degenerate ``connectome=None`` network.
 """
 
+import dataclasses
 from dataclasses import replace
 
 import numpy as np
@@ -21,6 +22,7 @@ from neuro.jansen_rit import (
     sigmoid_jit,
     simulate_network,
 )
+from neuro.jansen_rit_casadi import JRSymbolicParams
 from utils.processing import compute_psd, steady_window
 
 _A_HEALTHY = 3.25
@@ -36,7 +38,7 @@ def _post_transient_output(a_gain: float, *, deterministic: bool) -> np.ndarray:
     """Run one node at gain ``a_gain`` and return its steady-state lfp ``y``."""
     sigma = 0.0 if deterministic else JansenRitParams().sigma
     params = JansenRitParams(A=a_gain, sigma=sigma)
-    _, x = simulate_network(params=params, connectome=None, duration=_DURATION, dt=_DT, seed=_SEED)
+    _, x = simulate_network(params=params, duration=_DURATION, dt=_DT, seed=_SEED)
     y = lfp(x)  # shape (1, n_samples) for the single node
     return steady_window(y, _DT * 1000.0, _TRANSIENT_MS)[0]
 
@@ -83,7 +85,7 @@ def test_ez_phase_plane_is_an_orbit() -> None:
     ``x5 - x6``; a fixed point would collapse to a point in both.
     """
     params = replace(JansenRitParams(), A=_A_EZ, sigma=0.0)
-    _, x = simulate_network(params=params, connectome=None, duration=_DURATION, dt=_DT, seed=_SEED)
+    _, x = simulate_network(params=params, duration=_DURATION, dt=_DT, seed=_SEED)
     n_drop = round(_TRANSIENT_MS / (_DT * 1000.0))
     y = (x[1, 0] - x[2, 0])[n_drop:]
     dy = (x[4, 0] - x[5, 0])[n_drop:]
@@ -119,7 +121,7 @@ def test_all_runs_stay_finite() -> None:
         for deterministic in (True, False):
             sigma = 0.0 if deterministic else JansenRitParams().sigma
             params = JansenRitParams(A=a_gain, sigma=sigma)
-            _, x = simulate_network(params=params, connectome=None, duration=_DURATION, dt=_DT, seed=_SEED)
+            _, x = simulate_network(params=params, duration=_DURATION, dt=_DT, seed=_SEED)
             assert np.isfinite(x).all()
 
 

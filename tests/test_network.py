@@ -52,9 +52,9 @@ def test_network_all_healthy_control(connectome: Connectome) -> None:
     """If all nodes are healthy (A = 3.25) and K = 0.75, the network stays quiescent."""
     # Deterministic (sigma = 0) control stays flat
     _, x_traj = simulate_network(
-        params=JansenRitParams(A=3.25, sigma=0.0),
-        connectome=connectome,
-        K=0.75,
+        params=JansenRitParams.from_config(
+            {"connectome": connectome, "dt": _DT, "params": {"K": 0.75, "A": 3.25, "sigma": 0.0}}
+        ),
         duration=2.0,
         dt=_DT,
     )
@@ -66,9 +66,7 @@ def test_network_all_healthy_control(connectome: Connectome) -> None:
 
     # Stochastic control stays in background range (< 5.0)
     _t, x_traj_noise = simulate_network(
-        params=JansenRitParams(A=3.25),
-        connectome=connectome,
-        K=0.75,
+        params=JansenRitParams.from_config({"connectome": connectome, "dt": _DT, "params": {"K": 0.75, "A": 3.25}}),
         duration=2.0,
         dt=_DT,
         seed=42,
@@ -88,12 +86,9 @@ def test_network_recruitment(connectome: Connectome, ez_pz_indices: tuple[list[i
     a_gains = np.full(n_nodes, 3.25)
     a_gains[ez_idxs] = 3.6
     a_gains[pz_idxs] = 3.4
-    params = JansenRitParams(A=a_gains)
 
     t, x_traj = simulate_network(
-        params=params,
-        connectome=connectome,
-        K=0.75,
+        params=JansenRitParams.from_config({"connectome": connectome, "dt": _DT, "params": {"K": 0.75, "A": a_gains}}),
         duration=4.0,
         dt=_DT,
         seed=42,
@@ -130,7 +125,6 @@ def test_network_coupling_correctness(connectome: Connectome, ez_pz_indices: tup
     a_gains = np.full(n_nodes, 3.25)
     a_gains[ez_idxs] = 3.6
     a_gains[pz_idxs] = 3.4
-    params = JansenRitParams(A=a_gains)
 
     # Create a connectome copy with modified weights
     custom_connectome = replace(connectome, weights=connectome.weights.copy())
@@ -144,9 +138,9 @@ def test_network_coupling_correctness(connectome: Connectome, ez_pz_indices: tup
     custom_connectome.weights[lhc_idx, :] = 0.0
 
     _t, x_traj = simulate_network(
-        params=params,
-        connectome=custom_connectome,
-        K=0.75,
+        params=JansenRitParams.from_config(
+            {"connectome": custom_connectome, "dt": _DT, "params": {"K": 0.75, "A": a_gains}}
+        ),
         duration=4.0,
         dt=_DT,
         seed=42,
@@ -184,6 +178,7 @@ def _two_node_delayed_connectome() -> Connectome:
         channel_labels=np.array(["c0"]),
         region_index={"n0": 0, "n1": 1},
         channel_index={"c0": 0},
+        gamma=np.zeros((1, 2)),
     )
 
 
@@ -209,15 +204,15 @@ def test_history_coupling_index_robust_to_accumulated_time() -> None:
     node would read the wrong delay slot and the two trajectories would diverge.
     """
     connectome = _two_node_delayed_connectome()
-    params = JansenRitParams(A=np.array([3.6, 3.25]), sigma=0.0)
+    params = JansenRitParams.from_config(
+        {"connectome": connectome, "dt": _DT, "params": {"K": 0.75, "A": np.array([3.6, 3.25]), "sigma": 0.0}}
+    )
     initial_state = np.zeros((6, 2))
     initial_state[0, 0] = 1.0  # kick node 0 off the (unstable) equilibrium so it limit-cycles
     n_steps = 30000  # 3 s at dt = 1e-4, enough for the downstream node to be driven
 
     def run(*, accumulate: bool) -> np.ndarray:
-        dyn = JansenRitDynamics(
-            dt=_DT, params=params, connectome=connectome, K=0.75, seed=0, initial_state=initial_state
-        )
+        dyn = JansenRitDynamics(dt=_DT, params=params, seed=0, initial_state=initial_state)
         xs = np.zeros((6, 2, n_steps + 1))
         xs[:, :, 0] = dyn.x
         t = 0.0
@@ -244,12 +239,9 @@ def test_network_delays_vs_instantaneous(connectome: Connectome, ez_pz_indices: 
     a_gains = np.full(n_nodes, 3.25)
     a_gains[ez_idxs] = 3.6
     a_gains[pz_idxs] = 3.4
-    params = JansenRitParams(A=a_gains)
 
     t, x_traj_delayed = simulate_network(
-        params=params,
-        connectome=connectome,
-        K=0.75,
+        params=JansenRitParams.from_config({"connectome": connectome, "dt": _DT, "params": {"K": 0.75, "A": a_gains}}),
         duration=4.0,
         dt=_DT,
         seed=42,
@@ -259,9 +251,9 @@ def test_network_delays_vs_instantaneous(connectome: Connectome, ez_pz_indices: 
     # Instantaneous coupling = a connectome whose conduction delays are all zero.
     conn_instant = replace(connectome, delays=np.zeros_like(connectome.delays))
     _, x_traj_instant = simulate_network(
-        params=params,
-        connectome=conn_instant,
-        K=0.75,
+        params=JansenRitParams.from_config(
+            {"connectome": conn_instant, "dt": _DT, "params": {"K": 0.75, "A": a_gains}}
+        ),
         duration=4.0,
         dt=_DT,
         seed=42,

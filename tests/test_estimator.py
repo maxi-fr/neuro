@@ -31,6 +31,7 @@ def _toy_connectome(n_nodes: int = 2) -> Connectome:
         channel_labels=channels,
         region_index={label: idx for idx, label in enumerate(labels)},
         channel_index={label: idx for idx, label in enumerate(channels)},
+        gamma=np.zeros((1, n_nodes)),
     )
 
 
@@ -113,7 +114,13 @@ def test_state_transition_matches_dynamics() -> None:
     dt = 1e-4
 
     # Run true dynamics step
-    dyn = JansenRitDynamics(dt=dt, connectome=conn, K=0.5, params=params, seed=42)
+    dyn = JansenRitDynamics(
+        dt=dt,
+        params=JansenRitParams.from_config(
+            {"connectome": conn, "dt": dt, "params": {"K": 0.5, "A": 3.25, "sigma": 0.0}}
+        ),
+        seed=42,
+    )
     rng = np.random.default_rng(123)
     x_dyn = rng.normal(size=(6, 2))
     dyn.x = x_dyn.copy()
@@ -176,6 +183,7 @@ def test_estimator_from_config() -> None:
         "dt": 1e-4,
         "speed": 50.0,
         "selected_channels": ["F3", "P3"],
+        "params": {},
         "q_x5": 1e-4,
         "q_K": 1e-6,
         "q_w": 1e-6,
@@ -276,7 +284,13 @@ def test_estimator_estimate_a_fx_uses_estimated_a() -> None:
     a_custom = np.array([3.6, 3.4])
 
     # Reference: true dynamics stepped with the custom per-node A.
-    dyn = JansenRitDynamics(dt=dt, connectome=conn, K=0.5, params=dataclasses.replace(params, A=a_custom), seed=0)
+    dyn = JansenRitDynamics(
+        dt=dt,
+        params=JansenRitParams.from_config(
+            {"connectome": conn, "dt": dt, "params": {"K": 0.5, "A": a_custom, "sigma": 0.0}}
+        ),
+        seed=0,
+    )
     rng = np.random.default_rng(7)
     x_dyn = rng.normal(size=(6, 2))
     dyn.x = x_dyn.copy()
@@ -411,6 +425,7 @@ def test_estimator_gamma_from_target_electrode() -> None:
         "speed": 50.0,
         "n_nodes": 4,
         "target_electrode": ["F3", "P3"],
+        "params": {},
     }
     est_names = UKFEstimator.from_config(config_names)
     assert est_names.n_elec == 2
@@ -423,6 +438,7 @@ def test_estimator_gamma_from_target_electrode() -> None:
         "speed": 50.0,
         "n_nodes": 4,
         "target_electrode": [2, 5],
+        "params": {},
     }
     est_indices = UKFEstimator.from_config(config_indices)
     assert est_indices.n_elec == 2
@@ -438,6 +454,7 @@ def test_estimator_gamma_from_target_electrode() -> None:
         "speed": 50.0,
         "n_nodes": 4,
         "target_electrode": labels,
+        "params": {},
     }
     est_matched_names = UKFEstimator.from_config(config_matched_names)
     assert est_indices.gamma_2d is not None

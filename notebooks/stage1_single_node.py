@@ -57,7 +57,7 @@ def _(DT_DEFAULT, JansenRitParams, lfp, simulate_network):
         base = JansenRitParams()
         noise = 0.0 if deterministic else (base.sigma if sigma is None else sigma)
         params = JansenRitParams(A=a_gain, sigma=noise)
-        t, x_traj = simulate_network(params=params, connectome=None, duration=duration, dt=DT_DEFAULT, seed=seed)
+        t, x_traj = simulate_network(params=params, duration=duration, dt=DT_DEFAULT, seed=seed)
         x = x_traj[:, 0, :]  # drop the singleton node dim -> (6, n_samples)
         return t, lfp(x), x
 

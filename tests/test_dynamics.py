@@ -50,24 +50,23 @@ def _toy_connectome(n_nodes: int = 3) -> Connectome:
         channel_labels=channels,
         region_index={label: idx for idx, label in enumerate(labels)},
         channel_index={label: idx for idx, label in enumerate(channels)},
+        gamma=np.zeros((1, n_nodes)),
     )
 
 
 def test_dynamics_matches_simulate_network() -> None:
     """Stepping the component reproduces simulate_network exactly (same seed/params)."""
     conn = _toy_connectome(3)
-    params = JansenRitParams(A=3.4)
+    params = JansenRitParams.from_config({"connectome": conn, "dt": _DT, "params": {"K": 0.5, "A": 3.6, "sigma": 0.0}})
     _t, x_ref = simulate_network(
         params=params,
-        connectome=conn,
-        K=0.5,
         duration=0.01,
         dt=_DT,
         seed=7,
     )
     n_steps = x_ref.shape[2] - 1
 
-    dyn = JansenRitDynamics(dt=_DT, connectome=conn, K=0.5, params=params, seed=7)
+    dyn = JansenRitDynamics(dt=_DT, params=params, seed=7)
     for k in range(n_steps):
         out, _ = dyn.evaluate(k * _DT, 0.0)
         np.testing.assert_allclose(np.asarray(out).reshape(6, 3), x_ref[:, :, k + 1], atol=1e-12)
@@ -80,13 +79,13 @@ def test_simulation_matches_simulate_network() -> None:
     rate, so the logged ``universal_x`` must equal ``simulate_network``'s ``x_traj`` bit-for-bit.
     """
     conn = _toy_connectome(3)
-    params = JansenRitParams(A=3.4)
+    params = JansenRitParams.from_config({"connectome": conn, "dt": _DT, "params": {"K": 0.5, "A": 3.6, "sigma": 0.0}})
     duration = 0.01
-    _t, x_ref = simulate_network(params=params, connectome=conn, K=0.5, duration=duration, dt=_DT, seed=7)
+    _t, x_ref = simulate_network(params=params, duration=duration, dt=_DT, seed=7)
 
     sim = Simulation(
         t_end=duration,
-        dynamics=JansenRitDynamics(dt=_DT, connectome=conn, K=0.5, params=params, seed=7),
+        dynamics=JansenRitDynamics(dt=_DT, params=params, seed=7),
         reference=StepReference(dt=_DT, step_value=0.0),
         sensors=GaussianSensor(dt=_DT, measurement=full_state_measurement, std_dev=0.0),
         estimator=IdentityEstimator(dt=_DT),

@@ -10,7 +10,7 @@ differentiable shooting formulation.
 from __future__ import annotations
 
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 import casadi as ca
@@ -47,7 +47,8 @@ class JRSymbolicParams:
     K: ca.SX | float
 
     # Pure structural
-    delay_steps: np.ndarray
+    delay_steps: ca.SX | np.ndarray
+    gamma: ca.SX | np.ndarray = field(default_factory=lambda: np.zeros((1, 1), dtype=np.float64))
 
 
 def sigmoid(v: ca.SX | float, params: JRSymbolicParams) -> ca.SX:
@@ -221,14 +222,14 @@ def eeg(
     return y
 
 
-def project_control(u_elec: ca.SX | ca.MX | float | np.ndarray, gamma_2d: np.ndarray | None) -> ca.SX | ca.MX:
+def project_control(u_elec: ca.SX | ca.MX | float | np.ndarray, gamma_2d: np.ndarray) -> ca.SX | ca.MX:
     """Project per-electrode tES current ``u`` onto nodes via ``gamma``.
 
     Parameters
     ----------
     u_elec : ca.SX | ca.MX | float | np.ndarray
         Control input applied to the electrodes.
-    gamma_2d : np.ndarray | None
+    gamma_2d : np.ndarray
         Spatial projection matrix from electrodes to brain nodes.
 
     Returns
@@ -236,9 +237,6 @@ def project_control(u_elec: ca.SX | ca.MX | float | np.ndarray, gamma_2d: np.nda
     ca.SX | ca.MX
         The projected input to each node, of shape (1, N).
     """
-    if gamma_2d is None:
-        return ca.SX(0.0)
-
     u_elec_t = u_elec
     if isinstance(u_elec, (ca.SX, ca.MX)):
         if u_elec.shape[0] != 1 and u_elec.shape[1] == 1:

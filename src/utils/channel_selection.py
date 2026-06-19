@@ -18,13 +18,12 @@ import numpy as np
 import numpy.typing as npt
 from scipy.linalg import qr
 
-from neuro.jansen_rit import lfp, simulate_network
+from neuro.jansen_rit import JansenRitParams, lfp, simulate_network
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
     from neuro.connectome import Connectome
-    from neuro.jansen_rit import JansenRitParams
 
 FloatArray = npt.NDArray[np.float64]
 
@@ -201,15 +200,24 @@ def compute_channel_gramians(  # noqa: PLR0913
     nodes = list(range(n_nodes)) if node_subset is None else list(node_subset)
     perturbed = [(state_idx, node_idx) for state_idx in range(n_state) for node_idx in nodes]
     n_dim = len(perturbed)
-    det_params = replace(params, sigma=0.0)
+    # Overlay the connectome's network structure onto the local (noiseless) params once;
+    # only the initial state varies between runs.
+    network = JansenRitParams.from_config({"connectome": connectome, "dt": dt, "params": {"K": K}})
+    sim_params = replace(
+        params,
+        sigma=0.0,
+        eeg_gain=network.eeg_gain,
+        w_weights=network.w_weights,
+        delay_steps=network.delay_steps,
+        gamma=network.gamma,
+        K=network.K,
+    )
 
     def _run_eeg(x_init: FloatArray) -> FloatArray:
         _, x_traj = simulate_network(
-            params=det_params,
+            params=sim_params,
             duration=duration,
             dt=dt,
-            connectome=connectome,
-            K=K,
             initial_state=x_init,
             seed=0,
         )

@@ -9,13 +9,12 @@ control bounds and optionally smoothness penalties.
 from __future__ import annotations
 
 import dataclasses
-from typing import Any, Self
+from typing import Any, Self, cast
 
 import casadi as ca
 import numpy as np
 from simulate.controller import Controller
 
-from neuro.connectome import compute_gamma, load_connectome
 from neuro.jansen_rit import JansenRitParams
 from neuro.jansen_rit_casadi import (
     JRSymbolicParams,
@@ -37,8 +36,6 @@ class MPCController(Controller[MPCLog]):
         self,
         dt: float,
         params: JRSymbolicParams,
-        gamma: np.ndarray,
-        gain: np.ndarray,
         horizon_steps: int,
         R: float,  # noqa: N803
         R_du: float,  # noqa: N803
@@ -55,10 +52,6 @@ class MPCController(Controller[MPCLog]):
             Simulation time step.
         params : JRSymbolicParams
             Symbolic parameters for the Jansen-Rit network.
-        gamma : np.ndarray
-            Spatial profile mapping electrode stimulation to brain regions.
-        gain : np.ndarray
-            Leadfield matrix for observing the brain regions.
         horizon_steps : int
             Number of steps to look ahead in the predictive horizon.
         R : float
@@ -71,6 +64,8 @@ class MPCController(Controller[MPCLog]):
         super().__init__(dt)
         self.opti = ca.Opti()
 
+        # gamma is structural here (always numeric, never symbolic) for the MPC plant.
+        gamma = cast("np.ndarray", params.gamma)
         if gamma.ndim == 1:
             gamma = gamma.reshape(1, -1)
         self.n_elec = gamma.shape[0]
@@ -83,7 +78,7 @@ class MPCController(Controller[MPCLog]):
         self.x0_history_p = [self.opti.parameter(6, self.n_nodes) for _ in range(self.max_delay_steps + 1)]
         self.u_prev_p = self.opti.parameter(self.n_elec, 1)
 
-        n_channels = gain.shape[0]
+        n_channels = params.eeg_gain.shape[0]
         self.y_ref_p = self.opti.parameter(n_channels, horizon_steps)
 
         # Decision variables
@@ -102,7 +97,7 @@ class MPCController(Controller[MPCLog]):
             history.insert(0, X_vars[k])
             history.pop()
 
-            y_k = eeg(X_vars[k], gain)
+            y_k = eeg(X_vars[k], params.eeg_gain)
             err = y_k - self.y_ref_p[:, k]
             cost += ca.sumsqr(err)
 
@@ -140,42 +135,16 @@ class MPCController(Controller[MPCLog]):
             An instantiated MPCController object.
         """
         dt = float(config["dt"])
-        horizon_steps = int(config["horizon_steps"])
-        R = float(config.get("R", 0.0))
+        horizon_steps = int(config["horizon"] / dt)
+        R = float(config.get("R", 1.0))
         R_du = float(config.get("R_du", 0.0))
-        bounds = tuple(config.get("bounds", (-1.0, 1.0)))
+        bounds = (float(config.get("u_min", -1.0)), float(config.get("u_max", 1.0)))
 
-        # Load connectome
-        speed = float(config.get("speed", 50.0))
-        conn = load_connectome(speed=speed)
+        if "target_electrode" not in config:
+            config["target_electrode"] = "CP5"
 
-        W = conn.weights
-        D = np.round(conn.delays / dt).astype(np.int64)
-        gain = conn.gain
-        centres = conn.centres
-
-        selected_regions = config.get("selected_regions")
-        if selected_regions is not None:
-            region_idx = np.array(selected_regions)
-            W = W[np.ix_(region_idx, region_idx)]
-            D = D[np.ix_(region_idx, region_idx)]
-            gain = gain[:, region_idx]
-            centres = centres[region_idx]
-
-        selected_channels = config.get("selected_channels")
-        if selected_channels is not None:
-            channel_idx = np.array(selected_channels)
-            gain = gain[channel_idx, :]
-
-        n_nodes = W.shape[0]
-
-        target_electrode = config.get("target_electrode", "CP5")
-        sigma = float(config.get("sigma", 20.0))
-        gamma = compute_gamma(centres, target_electrode, sigma)
-
-        base_params = config.get("params", {})
-        base = JansenRitParams(**base_params)
-        K_val = float(config.get("K", 1.0))
+        base = JansenRitParams.from_config(config)
+        n_nodes = base.w_weights.shape[0]
 
         params = JRSymbolicParams(
             A=np.broadcast_to(np.asarray(base.A), (1, n_nodes)),
@@ -191,17 +160,16 @@ class MPCController(Controller[MPCLog]):
             r=base.r,
             mean_input=np.broadcast_to(np.asarray(base.mean_input), (1, n_nodes)),
             sigma=base.sigma,
-            eeg_gain=np.ones((1, n_nodes)),
-            K=K_val,
-            w_weights=W,
-            delay_steps=D,
+            eeg_gain=base.eeg_gain,
+            gamma=base.gamma,
+            K=base.K,
+            w_weights=base.w_weights,
+            delay_steps=base.delay_steps,
         )
 
         return cls(
             dt=dt,
             params=params,
-            gamma=gamma,
-            gain=gain,
             horizon_steps=horizon_steps,
             R=R,
             R_du=R_du,

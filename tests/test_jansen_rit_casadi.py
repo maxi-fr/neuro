@@ -260,7 +260,7 @@ def test_rollout_matches_simulate_network() -> None:
     fn = ca.Function("roll", [], [ca.horzcat(*X_seq)])
     got_traj = _np2(fn()["o0"])
 
-    _, x_ref = simulate_network(params=base, connectome=None, duration=n_steps * _DT, dt=_DT, seed=_SEED)
+    _, x_ref = simulate_network(params=base, duration=n_steps * _DT, dt=_DT, seed=_SEED)
 
     want_traj = x_ref[:, 0, 1:]
 

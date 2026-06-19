@@ -57,9 +57,7 @@ def eeg_energy(connectome: Connectome) -> np.ndarray:
     a_gains[pz_idxs] = 3.4
 
     _, x_traj = simulate_network(
-        params=JansenRitParams(A=a_gains),
-        connectome=connectome,
-        K=0.75,
+        params=JansenRitParams.from_config({"connectome": connectome, "dt": _DT, "params": {"K": 0.75, "A": a_gains}}),
         duration=15.0,
         dt=_DT,
         seed=42,

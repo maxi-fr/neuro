@@ -31,6 +31,7 @@ def _two_node_connectome() -> Connectome:
         channel_labels=np.array(["c0", "c1"]),
         region_index={"n0": 0, "n1": 1},
         channel_index={"c0": 0, "c1": 1},
+        gamma=np.zeros((1, 2)),
     )
 
 

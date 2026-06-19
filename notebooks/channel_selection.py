@@ -98,9 +98,9 @@ def _(
     simulate_network,
 ):
     _, x_traj = simulate_network(
-        params=JansenRitParams(A=a_gains),
-        connectome=connectome,
-        K=sim_k,
+        params=JansenRitParams.from_config(
+            {"connectome": connectome, "dt": sim_dt, "params": {"A": a_gains, "K": sim_k}}
+        ),
         duration=float(duration_slider.value),
         dt=sim_dt,
         seed=sim_seed,

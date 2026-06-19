@@ -18,9 +18,10 @@ Two conventions are fixed here and relied on by later stages:
 
 from __future__ import annotations
 
+import dataclasses
 import warnings
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import numpy.typing as npt
@@ -89,7 +90,82 @@ class Connectome:
     channel_labels: StrArray
     region_index: dict[str, int]
     channel_index: dict[str, int]
-    gamma: FloatArray | None = None
+    gamma: FloatArray
+
+    @classmethod
+    def from_config(cls, config: dict[str, Any]) -> Connectome:  # noqa: C901, PLR0912
+        """Instantiate the connectome from a configuration dictionary.
+
+        Loads the base TVB connectome, applies any node/region/channel subsetting,
+        and computes the tES spatial projection `gamma` if configured.
+        """
+        speed = float(config.get("speed", 50.0))
+        conn = load_connectome(speed=speed)
+
+        n_nodes_val = config.get("n_nodes")
+        selected_regions = config.get("selected_regions")
+
+        region_idx = None
+        if selected_regions is not None:
+            region_idx = np.array(selected_regions, dtype=np.int64)
+        elif n_nodes_val is not None:
+            region_idx = np.arange(int(n_nodes_val), dtype=np.int64)
+
+        if region_idx is not None:
+            conn = dataclasses.replace(
+                conn,
+                weights=conn.weights[np.ix_(region_idx, region_idx)],
+                tract_lengths=conn.tract_lengths[np.ix_(region_idx, region_idx)],
+                centres=conn.centres[region_idx],
+                region_labels=conn.region_labels[region_idx],
+                hemispheres=conn.hemispheres[region_idx],
+                delays=conn.delays[np.ix_(region_idx, region_idx)],
+                gain=conn.gain[:, region_idx],
+                region_index={str(conn.region_labels[i]): idx for idx, i in enumerate(region_idx)},
+            )
+
+        selected_channels_cfg = config.get("selected_channels")
+        if selected_channels_cfg is not None:
+            channel_idx = []
+            for ch in selected_channels_cfg:
+                if isinstance(ch, str):
+                    channel_idx.append(conn.channel_index[ch])
+                else:
+                    channel_idx.append(int(ch))
+            channel_idx = np.array(channel_idx, dtype=np.int64)
+            from dataclasses import replace  # noqa: PLC0415
+
+            conn = replace(
+                conn,
+                gain=conn.gain[channel_idx, :],
+                channel_labels=conn.channel_labels[channel_idx],
+                channel_index={str(conn.channel_labels[i]): idx for idx, i in enumerate(channel_idx)},
+            )
+
+        target_electrode = config.get("target_electrode")
+        if target_electrode is not None:
+            if isinstance(target_electrode, (str, int, np.integer)):
+                electrodes_list = [target_electrode]
+            else:
+                electrodes_list = list(target_electrode)
+
+            resolved_electrodes = []
+            for el in electrodes_list:
+                if isinstance(el, (int, np.integer)):
+                    resolved_electrodes.append(str(conn.channel_labels[int(el)]))
+                else:
+                    resolved_electrodes.append(str(el))
+
+            gamma = compute_gamma(
+                conn.centres,
+                target_electrode=resolved_electrodes if len(resolved_electrodes) > 1 else resolved_electrodes[0],
+                sigma=float(config.get("sigma", 20.0)),
+            )
+            from dataclasses import replace  # noqa: PLC0415
+
+            conn = replace(conn, gamma=gamma)
+
+        return conn
 
 
 def _mirror_partner_permutation(locations: FloatArray) -> npt.NDArray[np.int64]:
@@ -194,6 +270,7 @@ def load_connectome(speed: float = 50.0) -> Connectome:
         channel_labels=channel_labels,
         region_index=region_index,
         channel_index=channel_index,
+        gamma=np.zeros(len(region_labels)),
     )
 
 

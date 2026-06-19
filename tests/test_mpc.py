@@ -23,7 +23,6 @@ def test_mpc_smoke_limit_cycle() -> None:
 
     base = JansenRitParams(A=3.6, sigma=0.0)  # A=3.6 is limit cycle regime
     gamma = np.array([[1.0]])
-    gain = np.array([[1.0]])
 
     params = JRSymbolicParams(
         A=np.array([[base.A]]),
@@ -40,6 +39,7 @@ def test_mpc_smoke_limit_cycle() -> None:
         mean_input=np.array([[base.mean_input]]),
         sigma=base.sigma,
         eeg_gain=np.ones((1, n_nodes)),
+        gamma=gamma,
         K=1.0,
         w_weights=np.zeros((1, 1)),
         delay_steps=np.zeros((1, 1), dtype=np.int64),
@@ -48,8 +48,6 @@ def test_mpc_smoke_limit_cycle() -> None:
     mpc = MPCController(
         dt=dt,
         params=params,
-        gamma=gamma,
-        gain=gain,
         horizon_steps=horizon_steps,
         R=0.01,
         R_du=0.0,
@@ -58,7 +56,7 @@ def test_mpc_smoke_limit_cycle() -> None:
 
     # Run a short open loop to get into the limit cycle
     # simulate_network takes duration in seconds
-    _, x_open = simulate_network(params=base, connectome=None, duration=1.0, dt=dt, seed=42)
+    _, x_open = simulate_network(params=base, duration=1.0, dt=dt, seed=42)
 
     # Start MPC at the end of open loop
     x_hat = x_open[:, :, -1]

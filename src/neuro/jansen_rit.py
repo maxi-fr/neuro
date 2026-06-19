@@ -28,18 +28,20 @@ Everything is in SI seconds: ``a = 100``, ``b = 50`` per second, ``dt = 1e-4`` s
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
-from typing import TYPE_CHECKING, Any, Self
+from dataclasses import dataclass, field, replace
+from typing import Any, Self
 
 import numba
 import numpy as np
 import numpy.typing as npt
 from simulate.dynamics import Dynamics
 
-if TYPE_CHECKING:
-    from neuro.connectome import Connectome
-
 FloatArray = npt.NDArray[np.float64]
+
+
+def delays_to_steps(delays_ms: FloatArray, dt: float) -> npt.NDArray[np.int64]:
+    """Convert conduction delays (ms) to integer step lags for integration step ``dt`` (s)."""
+    return np.round(delays_ms / (dt * 1000.0)).astype(np.int64)
 
 
 @dataclass(frozen=True)
@@ -72,6 +74,16 @@ class JansenRitParams:
     sigma
         Standard deviation of the additive Gaussian white noise ``zeta`` on the
         ``x5'`` equation; ``sigma = 0`` gives a noiseless (deterministic) run.
+    eeg_gain
+        Leadfield matrix for observing the brain regions, mapping source to sensors.
+    w_weights
+        Network connectivity weight matrix.
+    delay_steps
+        Network delay matrix in integer steps.
+    K
+        Global coupling scaling factor.
+    gamma
+        Spatial profile mapping electrode stimulation to brain regions.
     """
 
     A: float | FloatArray = 3.25
@@ -85,8 +97,15 @@ class JansenRitParams:
     e0: float = 2.5
     v0: float = 6.0
     r: float = 0.56
-    mean_input: float = 90.0
+    mean_input: float | FloatArray = 90.0
     sigma: float = 500.0
+
+    # Network parameters (mirrors JRSymbolicParams)
+    eeg_gain: FloatArray = field(default_factory=lambda: np.ones((1, 1), dtype=np.float64))
+    w_weights: FloatArray = field(default_factory=lambda: np.zeros((1, 1), dtype=np.float64))
+    delay_steps: npt.NDArray[np.int64] = field(default_factory=lambda: np.zeros((1, 1), dtype=np.int64))
+    K: float = 1.0
+    gamma: FloatArray = field(default_factory=lambda: np.zeros((1, 1), dtype=np.float64))
 
     def to_numba_tuple(self, n_nodes: int) -> tuple[Any, ...]:
         """Convert params to a JIT-friendly tuple, broadcasting regional parameters."""
@@ -118,17 +137,49 @@ class JansenRitParams:
 
     @classmethod
     def from_config(cls, config: dict[str, Any]) -> JansenRitParams:
-        """Build :class:`JansenRitParams` from a config dict merged with the defaults."""
-        if config.get("A") is None:
-            return JansenRitParams(**config)
+        """Build :class:`JansenRitParams` from a global config dict.
 
-        a_config = config.pop("A")
-        a_val = (
-            np.asarray(a_config, dtype=np.float64)
-            if isinstance(a_config, (list, tuple, np.ndarray))
-            else float(a_config)
-        )
-        return JansenRitParams(A=a_val, **config)
+        Extracts the network topology via ``Connectome.from_config`` (or uses a provided
+        `connectome` key) and the scalar parameters strictly from the nested `"params"` key.
+        """
+        # Load the connectome
+        conn = config.get("connectome")
+        if conn is None:
+            from neuro.connectome import Connectome  # noqa: PLC0415
+
+            conn = Connectome.from_config(config)
+
+        dt = float(config.get("dt", 0.001))
+
+        if "params" not in config:
+            msg = "JansenRitParams.from_config requires a nested 'params' dictionary in the config."
+            raise ValueError(msg)
+
+        params_cfg = dict(config["params"])
+
+        network_kwargs = {
+            "eeg_gain": conn.gain,
+            "w_weights": conn.weights,
+            "delay_steps": delays_to_steps(conn.delays, dt),
+            "gamma": conn.gamma,
+        }
+
+        conflicts = network_kwargs.keys() & params_cfg.keys()
+        if conflicts:
+            msg = (
+                f"Network parameters {sorted(conflicts)} come from the connectome and cannot be overridden in 'params'"
+            )
+            raise ValueError(msg)
+
+        if params_cfg.get("A") is not None:
+            a_config = params_cfg.pop("A")
+            params_cfg["A"] = (
+                np.asarray(a_config, dtype=np.float64)
+                if isinstance(a_config, (list, tuple, np.ndarray))
+                else float(a_config)
+            )
+
+        return cls(**network_kwargs, **params_cfg)  # type: ignore
 
 
 def _to_scalar(val: FloatArray | float) -> float:
@@ -279,8 +330,6 @@ def simulate_network(  # noqa: PLR0913
     params: JansenRitParams,
     duration: float,
     dt: float,
-    connectome: Connectome | None = None,
-    K: float = 0.0,  # noqa: N803
     seed: int | None = None,
     initial_state: FloatArray | None = None,
     u_hat_tES: float | FloatArray = 0.0,  # noqa: N803
@@ -300,11 +349,6 @@ def simulate_network(  # noqa: PLR0913
         Simulated time in seconds.
     dt
         Integration step in seconds.
-    connectome
-        Structural connectome (weights + conduction delays), or ``None`` for one node.
-        A connectome with zero delays gives instantaneous coupling.
-    K
-        Global coupling scaling factor.
     seed
         Seed for the noise stream.
     initial_state
@@ -326,8 +370,6 @@ def simulate_network(  # noqa: PLR0913
 
     dyn = JansenRitDynamics(
         dt=dt,
-        connectome=connectome,
-        K=K,
         params=params,
         seed=seed,
         initial_state=initial_state,
@@ -364,7 +406,7 @@ def lfp(x_traj: FloatArray) -> FloatArray:
     return x_traj[1] - x_traj[2]
 
 
-def project_control(u: float | np.ndarray, gamma_2d: FloatArray | None, n_elec: int) -> FloatArray | float:
+def project_control(u: float | np.ndarray, gamma_2d: FloatArray, n_elec: int) -> FloatArray | float:
     """Project per-electrode tES current ``u`` onto nodes via ``gamma``.
 
     Parameters
@@ -372,8 +414,7 @@ def project_control(u: float | np.ndarray, gamma_2d: FloatArray | None, n_elec: 
     u:
         Per-electrode control input, shape ``(n_elec,)`` or broadcastable scalar.
     gamma_2d:
-        Steering matrix of shape ``(n_elec, n_nodes)``, or ``None`` if no stimulation
-        is configured.
+        Steering matrix of shape ``(n_elec, n_nodes)``.
     n_elec:
         Number of electrodes (must match ``gamma_2d.shape[0]``).
 
@@ -386,9 +427,7 @@ def project_control(u: float | np.ndarray, gamma_2d: FloatArray | None, n_elec: 
     u_vec = np.asarray(u, dtype=np.float64).reshape(-1)
     if not np.any(u_vec):
         return 0.0
-    if gamma_2d is None:
-        msg = "tES stimulation is active but connectome.gamma is not configured."
-        raise ValueError(msg)
+    u_vec = np.atleast_1d(u)
     if u_vec.size == 1:
         u_vec = np.broadcast_to(u_vec, (n_elec,))
     elif u_vec.size != n_elec:
@@ -424,30 +463,22 @@ class JansenRitDynamics(Dynamics[JansenRitDynamicsLog]):
     ``connectome.delays`` (ms) convert to steps via ``round(delays / (dt * 1000))``.
     """
 
-    def __init__(  # noqa: PLR0913
+    def __init__(
         self,
         *,
         dt: float,
         params: JansenRitParams,
-        connectome: Connectome | None = None,
-        K: float = 0.0,  # noqa: N803
         seed: int | None = None,
         initial_state: FloatArray | None = None,
     ) -> None:
-        """Initialize the network plant from a connectome and coupling ``K``."""
+        """Initialize the network plant from params."""
         super().__init__(dt, integrator=None)
-        self.K = K
+        self.K = params.K
 
-        if connectome is None:
-            n_nodes = 1
-            weights = np.zeros((1, 1), dtype=np.float64)
-            delays = np.zeros((1, 1), dtype=np.float64)
-            gamma = None
-        else:
-            n_nodes = connectome.weights.shape[0]
-            weights = connectome.weights
-            delays = connectome.delays
-            gamma = connectome.gamma
+        n_nodes = params.w_weights.shape[0]
+        weights = params.w_weights
+        delays = params.delay_steps
+        gamma = params.gamma
 
         a_vec = params.A
         if np.isscalar(a_vec):
@@ -456,8 +487,8 @@ class JansenRitDynamics(Dynamics[JansenRitDynamicsLog]):
         self.params_tuple = self.net_params.to_numba_tuple(n_nodes)
 
         # tES steering matrix gamma_2d of shape (n_elec, n_nodes); single electrode is n_elec=1.
-        self.gamma_2d = None if gamma is None else np.atleast_2d(gamma)
-        self.n_elec = 1 if self.gamma_2d is None else self.gamma_2d.shape[0]
+        self.gamma_2d = np.atleast_2d(gamma)
+        self.n_elec = self.gamma_2d.shape[0]
         # The control input is the per-electrode tES current; the orchestrator seeds u with this width.
         self.n_inputs = self.n_elec
 
@@ -470,7 +501,7 @@ class JansenRitDynamics(Dynamics[JansenRitDynamicsLog]):
             self.x = np.zeros((6, n_nodes), dtype=np.float64)
 
         # Delays (ms) -> integer step lag; a connectome with zero delays is instantaneous.
-        self.delay_steps = np.round(delays / (dt * 1000.0)).astype(np.int64)
+        self.delay_steps = delays
         self.max_history_len = int(np.max(self.delay_steps)) + 1
 
         # Circular history buffer of S(y), seeded from the initial state.
@@ -482,61 +513,25 @@ class JansenRitDynamics(Dynamics[JansenRitDynamicsLog]):
 
     @classmethod
     def from_config(cls, config: dict[str, Any]) -> Self:
-        """Instantiate from a raw config dict, loading the TVB connectome by ``speed``.
+        """Instantiate from a raw config dict.
 
         Config keys for the dynamics component are flat. Parameters for the physical
         model should be nested under the ``params`` key. ``speed``, ``K`` and ``dt``
         are required.
         """
-        from neuro.connectome import compute_gamma, load_connectome  # noqa: PLC0415
+        # Ensure we use "sigma" consistently instead of "gamma_sigma"
+        if "gamma_sigma" in config and "sigma" not in config:
+            config["sigma"] = config["gamma_sigma"]
 
-        connectome = load_connectome(speed=float(config["speed"]))
+        # Ensure K is passed properly if it's top-level
+        if "params" not in config:
+            config["params"] = {}
+        if "K" in config and "K" not in config["params"]:
+            config["params"]["K"] = float(config["K"])
 
-        n_nodes_val = config.get("n_nodes")
-        if n_nodes_val is not None:
-            n_nodes = int(n_nodes_val)
-            connectome = replace(
-                connectome,
-                weights=connectome.weights[:n_nodes, :n_nodes],
-                tract_lengths=connectome.tract_lengths[:n_nodes, :n_nodes],
-                centres=connectome.centres[:n_nodes],
-                region_labels=connectome.region_labels[:n_nodes],
-                hemispheres=connectome.hemispheres[:n_nodes],
-                delays=connectome.delays[:n_nodes, :n_nodes],
-                gain=connectome.gain[:, :n_nodes],
-                region_index={label: idx for idx, label in enumerate(connectome.region_labels[:n_nodes])},
-            )
-
-        target_electrode = config.get("target_electrode")
-        if target_electrode is not None:
-            if isinstance(target_electrode, (str, int, np.integer)):
-                electrodes_list = [target_electrode]
-            else:
-                electrodes_list = list(target_electrode)
-
-            resolved_electrodes = []
-            for el in electrodes_list:
-                if isinstance(el, (int, np.integer)):
-                    resolved_electrodes.append(str(connectome.channel_labels[int(el)]))
-                else:
-                    resolved_electrodes.append(str(el))
-
-            gamma = compute_gamma(
-                connectome.centres,
-                target_electrode=resolved_electrodes
-                if not isinstance(target_electrode, (str, int, np.integer))
-                else resolved_electrodes[0],
-                sigma=config.get("gamma_sigma", 20.0),
-            )
-            connectome = replace(connectome, gamma=gamma)
-
-        params_config = config.get("params", {})
-        params = JansenRitParams.from_config(params_config)
-
+        params = JansenRitParams.from_config(config)
         return cls(
             dt=float(config["dt"]),
-            connectome=connectome,
-            K=float(config["K"]),
             params=params,
             seed=config.get("seed"),
         )

@@ -29,9 +29,42 @@ class SysIDResult:
 
 
 class SysIDSolver:
-    """System identification solver for the Jansen-Rit network."""
+    """System identification solver for the Jansen-Rit network.
 
-    # Rough nominal bounds for scaling and constraints
+    This solver uses the Partially Constrained Multiple Shooting (PCMS) formulation
+    to identify network parameters from EEG data.
+
+    Optimization Problem Size & Conditioning
+    ----------------------------------------
+    The size and conditioning of the Nonlinear Programming (NLP) problem depend
+    heavily on the trajectory length (`n_steps`) and the subrecord length (`D`):
+
+    - **Decision Variables:**
+      The number of state decision variables scales as `O((n_steps / D) * n_nodes * 6)`.
+      Multiple Shooting (D=1) creates new state variables at every step, leading
+      to a massive NLP that consumes a lot of memory but has a smoother objective
+      landscape. Single Shooting (D >= n_steps) creates no intermediate state
+      variables, keeping the NLP small but creating a deeply nested simulation graph.
+
+    - **Conditioning and Stability:**
+      If the system exhibits chaotic or unstable dynamics for certain parameter
+      combinations, Single Shooting (large D) can become non-contractive, leading
+      to gradient explosion and causing the IPOPT solver to fail or get stuck in
+      local minima. Smaller D breaks the simulation into smaller, stable subrecords,
+      making it significantly more robust against poor initial parameter guesses.
+
+    - **Trade-offs:**
+      - **D = 1 (Multiple Shooting):** Most robust, but memory intensive. If `n_steps`
+        is very large (e.g., > 10,000), Ipopt may run out of memory or take too
+        long per iteration due to the massive Jacobian/Hessian size.
+      - **D >= n_steps (Single Shooting):** Least memory usage, fastest per-iteration
+        computation, but highly susceptible to getting stuck in local minima or
+        crashing if the initial guess falls in an unstable parameter regime.
+      - **1 < D < n_steps (PCMS):** The sweet spot. Tuning D (e.g., D=10 to D=100)
+        reduces the number of decision variables compared to Multiple Shooting
+        while still preventing the gradients from exploding over long horizons.
+    """
+
     NOMINALS: ClassVar[dict[str, float]] = {
         "A": 3.25,
         "B": 22.0,
@@ -68,17 +101,38 @@ class SysIDSolver:
         "eeg_gain": (0.0, 10.0),
     }
 
-    def __init__(  # noqa: C901, PLR0913, PLR0915
+    @classmethod
+    def from_config(cls, config: dict[str, Any]) -> SysIDSolver:
+        """Create a SysIDSolver from a configuration dictionary.
+
+        Parameters
+        ----------
+        config : dict[str, Any]
+            Dictionary containing the solver configuration.
+
+        Returns
+        -------
+        SysIDSolver
+            A configured SysIDSolver instance.
+        """
+        base_params = JansenRitParams.from_config(config)
+        return cls(
+            dt=config["dt"],
+            base_params=base_params,
+            free_params=config["free_params"],
+            n_steps=config["n_steps"],
+            lambda_reg=config.get("lambda_reg", 0.01),
+            D=config.get("D", 1),
+        )
+
+    def __init__(  # noqa: C901, PLR0912, PLR0913, PLR0915
         self,
         dt: float,
         base_params: JansenRitParams,
         free_params: list[str],
-        gamma: np.ndarray,
-        gain: np.ndarray,
-        w_weights: np.ndarray,
-        delay_steps: np.ndarray,
         n_steps: int,
         lambda_reg: float = 0.01,
+        D: int = 1,  # noqa: N803
     ) -> None:
         """Initialize the SysID NLP.
 
@@ -90,31 +144,32 @@ class SysIDSolver:
             Base parameters for the network. Unfree parameters will remain at these values.
         free_params : list[str]
             List of parameter names to estimate (e.g. ["A", "mean_input", "eeg_gain"]).
-        gamma : np.ndarray
-            Spatial profile mapping electrode stimulation to brain regions.
-        gain : np.ndarray
-            Leadfield matrix for observing the brain regions.
-        w_weights : np.ndarray
-            Network connectivity weight matrix.
-        delay_steps : np.ndarray
-            Network delay matrix in integer steps.
         n_steps : int
             Number of steps to fit the data over.
         lambda_reg : float
             Regularization penalty for keeping free parameters close to nominal values.
+        D : int
+            Subrecord length for Partially Constrained Multiple Shooting (PCMS).
+            D=1 corresponds to Multiple Shooting. D>=n_steps corresponds to Single Shooting.
         """
         self.opti = ca.Opti()
         self.dt = dt
         self.base = base_params
         self.free_params = free_params
 
-        self.n_nodes = w_weights.shape[0]
-        self.n_elec = gamma.shape[0] if gamma.ndim == 2 else 1
-        if gamma.ndim == 1:
+        self.n_nodes = base_params.w_weights.shape[0]
+        gamma = base_params.gamma
+        if gamma is None:
+            self.n_elec = 1
+            gamma = np.zeros((1, self.n_nodes))
+        elif gamma.ndim == 1:
             gamma = gamma.reshape(1, -1)
-        self.n_channels = gain.shape[0]
+            self.n_elec = 1
+        else:
+            self.n_elec = gamma.shape[0]
+        self.n_channels = base_params.eeg_gain.shape[0]
 
-        self.max_delay = int(np.max(delay_steps))
+        self.max_delay = int(np.max(base_params.delay_steps))
         self.n_steps = n_steps
 
         # Data parameters
@@ -130,8 +185,8 @@ class SysIDSolver:
         self._actual_map = {}
 
         sym_kwargs: dict[str, Any] = {
-            "w_weights": w_weights,
-            "delay_steps": delay_steps,
+            "w_weights": base_params.w_weights,
+            "delay_steps": base_params.delay_steps,
         }
 
         # Initialize sym_kwargs with base values broadcasted if needed
@@ -140,8 +195,9 @@ class SysIDSolver:
             if field.name in ["A", "mean_input"]:
                 val = np.broadcast_to(np.asarray(val), (1, self.n_nodes))
             sym_kwargs[field.name] = val
-        sym_kwargs["K"] = 1.0
-        sym_kwargs["eeg_gain"] = gain
+        sym_kwargs["K"] = base_params.K
+        sym_kwargs["eeg_gain"] = base_params.eeg_gain
+        sym_kwargs["gamma"] = gamma
 
         # For each free parameter, create an Opti variable
         for p in self.free_params:
@@ -153,7 +209,7 @@ class SysIDSolver:
             if p in ["A", "mean_input"]:
                 shape = (1, self.n_nodes)
             elif p == "eeg_gain":
-                shape = gain.shape
+                shape = base_params.eeg_gain.shape
             else:
                 shape = (1, 1)
 
@@ -164,7 +220,7 @@ class SysIDSolver:
             # Nominal scaling
             nominal = self.NOMINALS[p]
             if p == "eeg_gain":
-                nominal = np.abs(gain).mean() or 1.0
+                nominal = np.abs(base_params.eeg_gain).mean() or 1.0
             actual = v_scaled * nominal
             self._actual_map[p] = actual
             sym_kwargs[p] = actual
@@ -189,18 +245,21 @@ class SysIDSolver:
         # We need a way to track the predicted Y to output it later
         Y_pred = []
 
-        # Multiple shooting: explicit state variables per step
-        X_vars = [self.opti.variable(6, self.n_nodes) for _ in range(n_steps)]
         history = list(self.x0_history_p)
 
         for k in range(n_steps):
             x_next = heun_step(history, U_proj[k], self.sym_params, dt)
-            self.opti.subject_to(X_vars[k] == x_next)
 
-            history.insert(0, X_vars[k])
+            if (k + 1) % D == 0 and (k + 1) < n_steps:
+                current_x = self.opti.variable(6, self.n_nodes)
+                self.opti.subject_to(current_x == x_next)
+            else:
+                current_x = x_next
+
+            history.insert(0, current_x)
             history.pop()
 
-            y_k = eeg(X_vars[k], self.sym_params.eeg_gain)
+            y_k = eeg(current_x, self.sym_params.eeg_gain)
             err = (y_k - self.y_data_p[:, k]) / self.y_std_p
             cost += ca.sumsqr(err)
             Y_pred.append(y_k)

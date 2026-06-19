@@ -251,7 +251,7 @@ class UKFEstimator(Estimator[UKFEstimatorLog]):
         gain : np.ndarray
             The scalp EEG forward operator gain matrix of shape (n_channels, n_nodes).
         gamma : np.ndarray or None, optional
-            The spatial projection matrix for tES current, of shape (n_electrodes, n_nodes).
+            Spatial projection matrix for the tES stimulus (shape: n_electrodes x n_nodes). Defaults to zeros.
         delays : np.ndarray or None, optional
             Conduction delays matrix between regions in milliseconds, of shape (n_nodes, n_nodes).
         selected_channels : list of int or np.ndarray or None, optional
@@ -326,8 +326,8 @@ class UKFEstimator(Estimator[UKFEstimatorLog]):
             self.selected_channels = np.asarray(selected_channels, dtype=np.int64)
         self.dim_z = len(self.selected_channels)
 
-        self.gamma_2d = None if gamma is None else np.atleast_2d(gamma)
-        self.n_elec = 1 if self.gamma_2d is None else self.gamma_2d.shape[0]
+        self.gamma_2d = np.atleast_2d(gamma if gamma is not None else np.zeros((1, n_nodes)))
+        self.n_elec = self.gamma_2d.shape[0]
 
         self.dim_x = 6 * n_nodes + 1 + n_nodes**2
         if estimate_eeg_gains:
@@ -475,7 +475,7 @@ class UKFEstimator(Estimator[UKFEstimatorLog]):
         self.ukf.R = r_channel * np.eye(self.dim_z)
 
     @classmethod
-    def from_config(cls, config: dict[str, Any]) -> Self:  # noqa: C901, PLR0912, PLR0915
+    def from_config(cls, config: dict[str, Any]) -> Self:
         """Instantiate the UKFEstimator from a raw configuration dictionary.
 
         Loads structural connectome connectivity using `speed`, optionally subsets the
@@ -492,72 +492,21 @@ class UKFEstimator(Estimator[UKFEstimatorLog]):
         UKFEstimator
             The instantiated UKFEstimator object.
         """
-        from neuro.connectome import load_connectome  # noqa: PLC0415
+        # Ensure we use "sigma" consistently instead of "gamma_sigma"
+        if "gamma_sigma" in config and "sigma" not in config:
+            config["sigma"] = config["gamma_sigma"]
 
+        params = JansenRitParams.from_config(config)
         dt = float(config["dt"])
-        speed = float(config.get("speed", 50.0))
-        connectome = load_connectome(speed=speed)
 
-        n_nodes_val = config.get("n_nodes")
-        if n_nodes_val is not None:
-            n_nodes = int(n_nodes_val)
-            from dataclasses import replace  # noqa: PLC0415
+        n_nodes = params.w_weights.shape[0]
+        gain = params.eeg_gain
+        delays = params.delay_steps.astype(np.float64) * dt * 1000.0
 
-            # TODO: smarter reduction of connectome
-            connectome = replace(
-                connectome,
-                weights=connectome.weights[:n_nodes, :n_nodes],
-                tract_lengths=connectome.tract_lengths[:n_nodes, :n_nodes],
-                centres=connectome.centres[:n_nodes],
-                region_labels=connectome.region_labels[:n_nodes],
-                hemispheres=connectome.hemispheres[:n_nodes],
-                delays=connectome.delays[:n_nodes, :n_nodes],
-                gain=connectome.gain[:, :n_nodes],
-                region_index={label: idx for idx, label in enumerate(connectome.region_labels[:n_nodes])},
-            )
-
-        n_nodes = connectome.weights.shape[0]
-        gain = connectome.gain
-        delays = connectome.delays
-
-        selected_channels_cfg = config.get("selected_channels")
+        # Gain matrix is already subset by Connectome.from_config if needed.
         selected_channels = None
-        if selected_channels_cfg is not None:
-            selected_channels = []
-            for ch in selected_channels_cfg:
-                if isinstance(ch, str):
-                    selected_channels.append(connectome.channel_index[ch])
-                else:
-                    selected_channels.append(int(ch))
-            selected_channels = np.array(selected_channels, dtype=np.int64)
 
-        target_electrode = config.get("target_electrode")
-        gamma = connectome.gamma
-        if target_electrode is not None:
-            if isinstance(target_electrode, (str, int, np.integer)):
-                electrodes_list = [target_electrode]
-            else:
-                electrodes_list = list(target_electrode)
-
-            resolved_electrodes = []
-            for el in electrodes_list:
-                if isinstance(el, (int, np.integer)):
-                    resolved_electrodes.append(str(connectome.channel_labels[int(el)]))
-                else:
-                    resolved_electrodes.append(str(el))
-
-            from neuro.connectome import compute_gamma  # noqa: PLC0415
-
-            gamma = compute_gamma(
-                connectome.centres,
-                target_electrode=resolved_electrodes
-                if not isinstance(target_electrode, (str, int, np.integer))
-                else resolved_electrodes[0],
-                sigma=config.get("gamma_sigma", 20.0),
-            )
-
-        params_config = config.get("params", {})
-        params = JansenRitParams.from_config(params_config)
+        gamma = params.gamma
 
         q_x5 = float(config.get("q_x5", 1e-3))
         q_K = float(config.get("q_K", 1e-5))
@@ -571,7 +520,7 @@ class UKFEstimator(Estimator[UKFEstimatorLog]):
         initial_K = float(config.get("initial_K", config.get("K", 0.0)))
 
         initial_w = config.get("initial_w")
-        initial_w = np.asarray(initial_w, dtype=np.float64) if initial_w is not None else connectome.weights.copy()
+        initial_w = np.asarray(initial_w, dtype=np.float64) if initial_w is not None else params.w_weights.copy()
 
         alpha = float(config.get("alpha", 1e-3))
         beta = float(config.get("beta", 2.0))
