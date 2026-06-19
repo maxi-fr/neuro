@@ -1,30 +1,27 @@
-# ruff: noqa: N806
+# ruff: noqa: N806, N803
 """CasADi symbolic implementation of the Jansen-Rit neural mass model.
 
-Provides differentiable RHS and Heun-step CasADi Functions suitable for
-embedding in optimization problems (MPC, NLP). Noise is not modelled -- the
+Provides differentiable RHS and Heun-step symbolic ``ca.SX`` expressions suitable
+for embedding in optimization problems (MPC, NLP). Noise is not modelled -- the
 stochastic ``sigma`` term lives in ``jansen_rit.py`` and has no place in a
 differentiable shooting formulation.
 
 State layout
 ------------
-``x`` is a flat vector of length ``6 * n_nodes`` following the same C-order
-convention as the estimator's augmented-state encoding::
+The symbolic state ``X`` is a ``6 x N`` matrix: row ``k`` holds state variable
+``x_{k+1}`` across all ``N`` nodes (pyramidal ``x1``, excitatory ``x2``,
+inhibitory ``x3`` and their derivatives ``x4, x5, x6``)::
 
-    x[k * n_nodes : (k+1) * n_nodes]  =  state variable x_{k+1} for all nodes
+    X[0, :]  =  x1  (pyramidal)
+    X[1, :]  =  x2  (excitatory)
+    X[2, :]  =  x3  (inhibitory)
+    X[3, :]  =  x4
+    X[4, :]  =  x5
+    X[5, :]  =  x6
 
-For a single node (``n_nodes = 1``) this reduces to ``[x1, x2, x3, x4, x5, x6]``,
-identical to the single-node output of ``_jr_rhs_jit``.  For ``n_nodes = N``:
-
-    x[0*N : 1*N]  =  x1  (pyramidal)
-    x[1*N : 2*N]  =  x2  (excitatory)
-    x[2*N : 3*N]  =  x3  (inhibitory)
-    x[3*N : 4*N]  =  x4
-    x[4*N : 5*N]  =  x5
-    x[5*N : 6*N]  =  x6
-
-This matches ``np.reshape(x_aug[:6*N], (6, N)).flatten()`` (C order) from the
-estimator, so CasADi outputs can be compared directly against ``_fx_step_jit``.
+This is exactly ``np.reshape(x_aug[:6*N], (6, N))`` (C order) from the estimator,
+so flattening a CasADi output in C order reproduces the estimator's dynamic-state
+slice and can be compared directly against ``_fx_step_jit`` / ``_jr_rhs_jit``.
 """
 
 from __future__ import annotations
@@ -32,118 +29,165 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 import casadi as ca
-import numpy as np
 
 if TYPE_CHECKING:
+    import numpy as np
+
     from neuro.jansen_rit import JansenRitParams
 
 
-def build_jr_rhs(params: JansenRitParams, n_nodes: int = 1) -> ca.Function:
-    """Build a CasADi symbolic right-hand side for the Jansen-Rit ODE.
+def sigmoid(v: ca.SX | float, params: JansenRitParams) -> ca.SX:
+    """Compute the sigmoidal transformation mapping average membrane potential to firing rate.
 
     Parameters
     ----------
-    params:
-        Jansen-Rit parameters.  ``params.A`` may be a scalar or a 1-D array of
-        length ``n_nodes``; all other parameters must be scalars.
-    n_nodes:
-        Number of network nodes.
+    v
+        Average membrane potential, as a scalar or CasADi symbolic expression.
+    params
+        Configuration dataclass holding the sigmoid constants ``e0``, ``v0``, ``r``.
 
     Returns
     -------
-    ca.Function
-        ``jr_rhs(x, coupling, u_tes) -> dx``
-        where every argument/result is a vector of the sizes shown below:
-
-        * ``x``        - ``(6 * n_nodes,)`` current state
-        * ``coupling`` - ``(n_nodes,)``      network coupling term
-        * ``u_tes``    - ``(n_nodes,)``      tES input on pyramidal population
-        * ``dx``       - ``(6 * n_nodes,)``  time derivative
+    ca.SX
+        Symbolic firing rate ``2 e0 / (1 + exp(r (v0 - v)))``.
     """
-    x = ca.SX.sym("x", 6 * n_nodes)
-    coupling = ca.SX.sym("coupling", n_nodes)
-    u_tes = ca.SX.sym("u_tes", n_nodes)
+    return 2 * params.e0 / (1.0 + ca.exp(params.r * (params.v0 - v)))
 
-    A_arr = (
-        np.full(n_nodes, np.asarray(params.A, dtype=np.float64).item())
-        if np.isscalar(params.A)
-        else np.asarray(params.A, dtype=np.float64)
-    )
 
+def f_rhs(X: ca.SX, coupling: ca.SX, u: ca.SX | float, A: ca.SX, params: JansenRitParams) -> ca.SX:
+    """Compute the continuous-time right-hand side (RHS) derivatives for the network nodes.
+
+    Parameters
+    ----------
+    X
+        Current node states as a ``6 x N`` symbolic matrix.
+    coupling
+        Structural coupling row vector of shape ``1 x N``. Already includes the
+        firing-rate sigmoid and global gain ``K`` (see :func:`get_network_coupling`).
+    u
+        External tES input on the pyramidal population, scalar or shape ``1 x N``.
+    A
+        Excitatory synaptic gain, scalar or shape ``1 x N`` (broadcast over the rows).
+    params
+        Configuration dataclass holding the biological and structural constants.
+
+    Returns
+    -------
+    ca.SX
+        A ``6 x N`` symbolic matrix of the state derivatives ``dX/dt``.
+    """
     B, a, b = params.B, params.a, params.b
     C1, C2, C3, C4 = params.C1, params.C2, params.C3, params.C4
-    e0, v0, r, mean_input = params.e0, params.v0, params.r, params.mean_input
+    mean_input = params.mean_input
 
-    dx_parts: list[ca.SX] = []
-    for i in range(n_nodes):
-        x1_i = x[0 * n_nodes + i]
-        x2_i = x[1 * n_nodes + i]
-        x3_i = x[2 * n_nodes + i]
-        x4_i = x[3 * n_nodes + i]
-        x5_i = x[4 * n_nodes + i]
-        x6_i = x[5 * n_nodes + i]
-        A_i = float(A_arr[i])
+    x1, x2, x3, x4, x5, x6 = X[0, :], X[1, :], X[2, :], X[3, :], X[4, :], X[5, :]
+    N: int = X.shape[1]
 
-        sig_out = 2.0 * e0 / (1.0 + ca.exp(r * (v0 - (x2_i - x3_i + u_tes[i]))))
-        sig_exc = 2.0 * e0 / (1.0 + ca.exp(r * (v0 - C1 * x1_i)))
-        sig_inh = 2.0 * e0 / (1.0 + ca.exp(r * (v0 - C3 * x1_i)))
+    rhs = ca.SX(6, N)
+    rhs[0, :] = x4
+    rhs[1, :] = x5
+    rhs[2, :] = x6
+    rhs[3, :] = A * a * sigmoid(x2 - x3 + u, params) - 2 * a * x4 - a**2 * x1
+    rhs[4, :] = A * a * (mean_input + C2 * sigmoid(C1 * x1, params) + coupling) - 2 * a * x5 - a**2 * x2
+    rhs[5, :] = B * b * (C4 * sigmoid(C3 * x1, params)) - 2 * b * x6 - b**2 * x3
 
-        dx_parts.append(x4_i)  # dx1
-        dx_parts.append(x5_i)  # dx2
-        dx_parts.append(x6_i)  # dx3
-        dx_parts.append(A_i * a * sig_out - 2.0 * a * x4_i - a**2 * x1_i)  # dx4
-        dx_parts.append(A_i * a * (mean_input + C2 * sig_exc + coupling[i]) - 2.0 * a * x5_i - a**2 * x2_i)  # dx5
-        dx_parts.append(B * b * C4 * sig_inh - 2.0 * b * x6_i - b**2 * x3_i)  # dx6
-
-    # Reassemble in variable-first order: [dx1_0,..,dx1_{N-1}, dx2_0,.., dx6_{N-1}]
-    dx = ca.vertcat(*[dx_parts[6 * i + k] for k in range(6) for i in range(n_nodes)])
-
-    return ca.Function(
-        "jr_rhs",
-        [x, coupling, u_tes],
-        [dx],
-        ["x", "coupling", "u_tes"],
-        ["dx"],
-    )
+    return rhs
 
 
-def build_heun_step(params: JansenRitParams, dt: float, n_nodes: int = 1) -> ca.Function:
-    """Build a CasADi deterministic fixed-step Heun integrator.
+def get_network_coupling(
+    X_history_list: list[ca.SX], K: ca.SX, W: ca.SX, D: np.ndarray, params: JansenRitParams
+) -> ca.SX:
+    """Calculate the structural delayed-coupling inputs acting on all nodes in the network.
 
-    Implements ``x_next = x + 0.5 * dt * (f(x) + f(x + dt * f(x)))``, the
-    deterministic (noise-free) Heun scheme -- identical to :func:`heun_step`
-    from ``jansen_rit.py`` when called with ``sigma = 0``.
+    Implements ``c_i = K * sum_j W[i, j] * S(x2_j - x3_j)`` evaluated at the delayed
+    time ``t - D[i, j]``, matching the paper's ``K sum_j w_ij S(x2 - x3)`` term and the
+    numba reference (``_dynamics_history_coupling_jit`` / ``_fx_step_jit``).
 
     Parameters
     ----------
-    params:
-        Jansen-Rit parameters.
-    dt:
-        Integration step in seconds.
-    n_nodes:
-        Number of network nodes.
+    X_history_list
+        Chronologically ordered list of ``6 x N`` state matrices, where index 0 is
+        time ``t``, index 1 is ``t - 1``, etc. Must hold at least ``int(D.max()) + 1``
+        entries.
+    K
+        Global coupling scaling factor symbol.
+    W
+        ``N x N`` structural connectivity weight matrix symbol.
+    D
+        ``N x N`` static numpy matrix of exact integer integration-step delays.
+    params
+        Configuration dataclass holding the sigmoid constants ``e0``, ``v0``, ``r``.
 
     Returns
     -------
-    ca.Function
-        ``heun_step(x, coupling, u_tes) -> x_next``
-        with the same argument sizes as :func:`build_jr_rhs`.
+    ca.SX
+        A ``1 x N`` symbolic row vector of total structural coupling incoming to each node.
     """
-    rhs = build_jr_rhs(params, n_nodes)
+    N: int = W.shape[0]
+    coupling_vector = ca.SX(1, N)
 
-    x = ca.SX.sym("x", 6 * n_nodes)
-    coupling = ca.SX.sym("coupling", n_nodes)
-    u_tes = ca.SX.sym("u_tes", n_nodes)
+    for i in range(N):
+        c_i: ca.SX | float = 0
+        for j in range(N):
+            delay_steps: int = int(D[i, j])
+            X_past: ca.SX = X_history_list[delay_steps]
 
-    f0 = rhs(x, coupling, u_tes)
-    x_pred = x + dt * f0
-    f1 = rhs(x_pred, coupling, u_tes)
-    x_next = x + 0.5 * dt * (f0 + f1)
+            c_i += K * W[i, j] * sigmoid(X_past[1, j] - X_past[2, j], params)
 
-    return ca.Function(
-        "heun_step",
-        [x, coupling, u_tes],
-        [x_next],
-        ["x", "coupling", "u_tes"],
-        ["x_next"],
-    )
+        coupling_vector[i] = c_i
+
+    return coupling_vector
+
+
+def heun_step(  # noqa: PLR0913
+    X_history_list: list[ca.SX],
+    u: ca.SX | float,
+    K: ca.SX,
+    W: ca.SX,
+    D: np.ndarray,
+    A: ca.SX,
+    params: JansenRitParams,
+    dt: float,
+) -> ca.SX:
+    """Advance the delayed Jansen-Rit network states by one discrete step using Heun's method.
+
+    Parameters
+    ----------
+    X_history_list
+        Chronologically ordered list of ``6 x N`` state matrices, where index 0 is the
+        current state snapshot ``X_t``.
+    u
+        External tES input vector or constant applied to the node populations.
+    K
+        Global coupling scaling factor symbol.
+    W
+        ``N x N`` structural connectivity weight matrix symbol.
+    D
+        ``N x N`` static numpy matrix of exact integer integration-step delays.
+    A
+        Excitatory synaptic gain, scalar or shape ``1 x N``.
+    params
+        Configuration dataclass holding the biological and structural constants.
+    dt
+        Step size for numerical integration in seconds.
+
+    Returns
+    -------
+    ca.SX
+        A ``6 x N`` symbolic matrix of the integrated next-step states ``X_{t+1}``.
+    """
+    X_curr: ca.SX = X_history_list[0]
+
+    coupling: ca.SX = get_network_coupling(X_history_list, K, W, D, params)
+    k1: ca.SX = f_rhs(X_curr, coupling, u, A, params)
+
+    X_pred: ca.SX = X_curr + dt * k1
+
+    # Note: If true predictor-corrector delay updates are needed here later,
+    # you would append X_pred to a copied state list before querying coup_pred.
+    # X_history_pred = [X_pred] + X_history_list[:-1]  # noqa: ERA001
+    # coupling = get_network_coupling(X_history_pred, K, W, D, params)  # noqa: ERA001
+
+    k2: ca.SX = f_rhs(X_pred, coupling, u, A, params)
+
+    return X_curr + 0.5 * dt * (k1 + k2)

@@ -20,6 +20,13 @@
 
 </details>
 
+<details>
+<summary>Coupling should be calculated every time rhs is evaluated</summary>
+
+*
+
+</details>
+
 ## For first meeting (26.05)
 
 So that we have a first direction for the project.
