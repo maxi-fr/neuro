@@ -51,12 +51,42 @@ class JRSymbolicParams:
 
 
 def sigmoid(v: ca.SX | float, params: JRSymbolicParams) -> ca.SX:
-    """Compute the sigmoidal transformation mapping average membrane potential to firing rate."""
+    """Compute the sigmoidal transformation mapping average membrane potential to firing rate.
+
+    Parameters
+    ----------
+    v : ca.SX | float
+        Average membrane potential.
+    params : JRSymbolicParams
+        Symbolic parameters for the network.
+
+    Returns
+    -------
+    ca.SX
+        Average firing rate.
+    """
     return 2 * params.e0 / (1.0 + ca.exp(params.r * (params.v0 - v)))
 
 
-def f_rhs(X: ca.SX, coupling: ca.SX, u: ca.SX | float, params: JRSymbolicParams) -> ca.SX:
-    """Compute the continuous-time right-hand side (RHS) derivatives for the network nodes."""
+def f_rhs(X: ca.SX | ca.MX, coupling: ca.SX | ca.MX, u: ca.SX | ca.MX | float, params: JRSymbolicParams) -> ca.SX | ca.MX:
+    """Compute the continuous-time right-hand side (RHS) derivatives for the network nodes.
+
+    Parameters
+    ----------
+    X : ca.SX | ca.MX
+        Current state matrix of shape (6, N).
+    coupling : ca.SX | ca.MX
+        Network coupling input vector of shape (1, N).
+    u : ca.SX | ca.MX | float
+        External control input projected to the nodes, of shape (1, N) or scalar.
+    params : JRSymbolicParams
+        Symbolic parameters for the network.
+
+    Returns
+    -------
+    ca.SX | ca.MX
+        The RHS state derivatives, of the same shape and type as X.
+    """
     B, a, b = params.B, params.a, params.b
     C1, C2, C3, C4 = params.C1, params.C2, params.C3, params.C4
     mean_input = params.mean_input
@@ -65,7 +95,7 @@ def f_rhs(X: ca.SX, coupling: ca.SX, u: ca.SX | float, params: JRSymbolicParams)
     x1, x2, x3, x4, x5, x6 = X[0, :], X[1, :], X[2, :], X[3, :], X[4, :], X[5, :]
     N: int = X.shape[1]
 
-    rhs = ca.SX(6, N)
+    rhs = type(X)(6, N)
     rhs[0, :] = x4
     rhs[1, :] = x5
     rhs[2, :] = x6
@@ -76,20 +106,33 @@ def f_rhs(X: ca.SX, coupling: ca.SX, u: ca.SX | float, params: JRSymbolicParams)
     return rhs
 
 
-def get_network_coupling(X_history_list: list[ca.SX], params: JRSymbolicParams) -> ca.SX:
-    """Calculate the structural delayed-coupling inputs acting on all nodes in the network."""
+def get_network_coupling(X_history_list: Sequence[ca.SX | ca.MX], params: JRSymbolicParams) -> ca.SX | ca.MX:
+    """Calculate the structural delayed-coupling inputs acting on all nodes in the network.
+
+    Parameters
+    ----------
+    X_history_list : Sequence[ca.SX | ca.MX]
+        List of past state matrices, ordered from newest (index 0) to oldest.
+    params : JRSymbolicParams
+        Symbolic parameters containing connectivity weights and delay steps.
+
+    Returns
+    -------
+    ca.SX | ca.MX
+        The delayed coupling input vector of shape (1, N).
+    """
     K = params.K
     W = params.w_weights
     D = params.delay_steps
 
     N: int = X_history_list[0].shape[1]
-    coupling_vector = ca.SX(1, N)
+    coupling_vector = type(X_history_list[0])(1, N)
 
     for i in range(N):
         c_i: ca.SX | float = 0
         for j in range(N):
             delay_steps: int = int(D[i, j])
-            X_past: ca.SX = X_history_list[delay_steps]
+            X_past = X_history_list[delay_steps]
             c_i += K * W[i, j] * sigmoid(X_past[1, j] - X_past[2, j], params)
 
         coupling_vector[i] = c_i
@@ -98,46 +141,102 @@ def get_network_coupling(X_history_list: list[ca.SX], params: JRSymbolicParams) 
 
 
 def heun_step(
-    X_history_list: list[ca.SX],
-    u: ca.SX | float,
+    X_history_list: Sequence[ca.SX | ca.MX],
+    u: ca.SX | ca.MX | float,
     params: JRSymbolicParams,
     dt: float,
-) -> ca.SX:
-    """Advance the delayed Jansen-Rit network states by one discrete step using Heun's method."""
-    X_curr: ca.SX = X_history_list[0]
+) -> ca.SX | ca.MX:
+    """Advance the delayed Jansen-Rit network states by one discrete step using Heun's method.
 
-    coupling: ca.SX = get_network_coupling(X_history_list, params)
-    k1: ca.SX = f_rhs(X_curr, coupling, u, params)
+    Parameters
+    ----------
+    X_history_list : Sequence[ca.SX | ca.MX]
+        List of past state matrices, ordered from newest (index 0) to oldest.
+    u : ca.SX | ca.MX | float
+        External control input projected to the nodes.
+    params : JRSymbolicParams
+        Symbolic parameters for the network.
+    dt : float
+        Integration time step.
 
-    X_pred: ca.SX = X_curr + dt * k1
-    k2: ca.SX = f_rhs(X_pred, coupling, u, params)
+    Returns
+    -------
+    ca.SX | ca.MX
+        The next state matrix of shape (6, N).
+    """
+    X_curr = X_history_list[0]
+
+    coupling = get_network_coupling(X_history_list, params)
+    k1 = f_rhs(X_curr, coupling, u, params)
+
+    X_pred = X_curr + dt * k1
+    k2 = f_rhs(X_pred, coupling, u, params)
 
     return X_curr + 0.5 * dt * (k1 + k2)
 
 
-def output(X: ca.SX) -> ca.SX:
-    """Observed output ``y = x2 - x3`` from a state trajectory or state."""
+def output(X: ca.SX | ca.MX) -> ca.SX | ca.MX:
+    """Observed output ``y = x2 - x3`` from a state trajectory or state.
+
+    Parameters
+    ----------
+    X : ca.SX | ca.MX
+        Current state matrix of shape (6, N).
+
+    Returns
+    -------
+    ca.SX | ca.MX
+        The scalar LFP output per node, of shape (1, N).
+    """
     return X[1, :] - X[2, :]
 
 
-def measure(X: ca.SX, gain: ca.SX | np.ndarray, selected_channels: np.ndarray | list[int] | None = None) -> ca.SX:
-    """Measure the EEG/LFP output."""
+def measure(X: ca.SX | ca.MX, gain: ca.SX | ca.MX | np.ndarray, selected_channels: np.ndarray | list[int] | None = None) -> ca.SX | ca.MX:
+    """Measure the EEG/LFP output.
+
+    Parameters
+    ----------
+    X : ca.SX | ca.MX
+        Current state matrix of shape (6, N).
+    gain : ca.SX | ca.MX | np.ndarray
+        Leadfield measurement matrix.
+    selected_channels : np.ndarray | list[int] | None
+        Optional subset of channels to output.
+
+    Returns
+    -------
+    ca.SX | ca.MX
+        The measured output vector.
+    """
     node_lfp = output(X)  # shape 1 x N
     y = ca.mtimes(gain, node_lfp.T)
 
     if selected_channels is not None:
         y = y[selected_channels, :]
 
-    return ca.SX(y)
+    return y
 
 
-def project_control(u_elec: ca.SX | float | np.ndarray, gamma_2d: np.ndarray | None) -> ca.SX:
-    """Project per-electrode tES current ``u`` onto nodes via ``gamma``."""
+def project_control(u_elec: ca.SX | ca.MX | float | np.ndarray, gamma_2d: np.ndarray | None) -> ca.SX | ca.MX:
+    """Project per-electrode tES current ``u`` onto nodes via ``gamma``.
+
+    Parameters
+    ----------
+    u_elec : ca.SX | ca.MX | float | np.ndarray
+        Control input applied to the electrodes.
+    gamma_2d : np.ndarray | None
+        Spatial projection matrix from electrodes to brain nodes.
+
+    Returns
+    -------
+    ca.SX | ca.MX
+        The projected input to each node, of shape (1, N).
+    """
     if gamma_2d is None:
         return ca.SX(0.0)
 
     u_elec_t = u_elec
-    if isinstance(u_elec, ca.SX):
+    if isinstance(u_elec, (ca.SX, ca.MX)):
         if u_elec.shape[0] != 1 and u_elec.shape[1] == 1:
             u_elec_t = u_elec.T
         return ca.mtimes(u_elec_t, gamma_2d)
@@ -149,12 +248,29 @@ def project_control(u_elec: ca.SX | float | np.ndarray, gamma_2d: np.ndarray | N
 
 
 def rollout(
-    x0_history: list[ca.SX],
-    controls: Sequence[ca.SX | float],
+    x0_history: Sequence[ca.SX | ca.MX],
+    controls: Sequence[ca.SX | ca.MX | float],
     params: JRSymbolicParams,
     dt: float,
-) -> tuple[list[ca.SX], list[ca.SX]]:
-    """Roll out the dynamics over a horizon."""
+) -> tuple[list[ca.SX | ca.MX], list[ca.SX | ca.MX]]:
+    """Roll out the dynamics over a horizon.
+
+    Parameters
+    ----------
+    x0_history : Sequence[ca.SX | ca.MX]
+        Initial state history list.
+    controls : Sequence[ca.SX | ca.MX | float]
+        Sequence of control inputs over the horizon.
+    params : JRSymbolicParams
+        Symbolic parameters for the network.
+    dt : float
+        Integration time step.
+
+    Returns
+    -------
+    tuple[list[ca.SX | ca.MX], list[ca.SX | ca.MX]]
+        A tuple containing the sequence of states and the sequence of LFP outputs.
+    """
     X_seq = []
     Y_seq = []
 
