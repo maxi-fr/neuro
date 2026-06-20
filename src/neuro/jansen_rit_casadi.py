@@ -138,7 +138,7 @@ def get_network_coupling(X_history_list: Sequence[ca.SX | ca.MX], params: JRSymb
             X_past = X_history_list[delay_steps]
             c_i += K * W[i, j] * sigmoid(X_past[1, j] - X_past[2, j], params)
 
-        coupling_vector[i] = c_i
+        coupling_vector[0, i] = c_i
 
     return coupling_vector
 

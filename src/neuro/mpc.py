@@ -9,19 +9,13 @@ control bounds and optionally smoothness penalties.
 from __future__ import annotations
 
 import dataclasses
-from typing import Any, Self, cast
+from typing import Any, Self
 
 import casadi as ca
 import numpy as np
 from simulate.controller import Controller
 
-from neuro.jansen_rit import JansenRitParams
-from neuro.jansen_rit_casadi import (
-    JRSymbolicParams,
-    eeg,
-    heun_step,
-    project_control,
-)
+from neuro.symbolic_model import JRSymbolicModel, SymbolicModel
 
 
 @dataclasses.dataclass(frozen=True)
@@ -35,7 +29,7 @@ class MPCController(Controller[MPCLog]):
     def __init__(  # noqa: PLR0913
         self,
         dt: float,
-        params: JRSymbolicParams,
+        model: SymbolicModel,
         horizon_steps: int,
         R: float,  # noqa: N803
         R_du: float,  # noqa: N803
@@ -50,8 +44,8 @@ class MPCController(Controller[MPCLog]):
         ----------
         dt : float
             Simulation time step.
-        params : JRSymbolicParams
-            Symbolic parameters for the Jansen-Rit network.
+        model : SymbolicModel
+            Discrete-time model providing ``step`` (dynamics) and ``output``.
         horizon_steps : int
             Number of steps to look ahead in the predictive horizon.
         R : float
@@ -64,40 +58,36 @@ class MPCController(Controller[MPCLog]):
         super().__init__(dt)
         self.opti = ca.Opti()
 
-        # gamma is structural here (always numeric, never symbolic) for the MPC plant.
-        gamma = cast("np.ndarray", params.gamma)
-        if gamma.ndim == 1:
-            gamma = gamma.reshape(1, -1)
-        self.n_elec = gamma.shape[0]
-        self.n_nodes = gamma.shape[1]
+        self.model = model
+        self.n_elec = model.n_elec
+        self.n_nodes = model.state_shape[1]
         self.horizon_steps = horizon_steps
 
-        self.max_delay_steps = int(np.max(params.delay_steps))
+        self.max_delay_steps = model.history_depth
 
         # Parameters (fixed for the optimization but updated each step)
         self.x0_history_p = [self.opti.parameter(6, self.n_nodes) for _ in range(self.max_delay_steps + 1)]
         self.u_prev_p = self.opti.parameter(self.n_elec, 1)
 
-        n_channels = params.eeg_gain.shape[0]
+        n_channels = model.n_channels
         self.y_ref_p = self.opti.parameter(n_channels, horizon_steps)
 
         # Decision variables
         self.U = self.opti.variable(self.n_elec, horizon_steps)
-        U_proj = [project_control(self.U[:, k], gamma) for k in range(horizon_steps)]
 
         cost = 0
 
         # Multiple shooting: explicit state variables per step
-        X_vars = [self.opti.variable(6, self.n_nodes) for _ in range(horizon_steps)]
+        X_vars = [self.opti.variable(*model.state_shape) for _ in range(horizon_steps)]
         history = list(self.x0_history_p)
         for k in range(horizon_steps):
-            x_next = heun_step(history, U_proj[k], params, dt)
+            x_next = model.step(history, self.U[:, k])
             self.opti.subject_to(X_vars[k] == x_next)
 
             history.insert(0, X_vars[k])
             history.pop()
 
-            y_k = eeg(X_vars[k], params.eeg_gain)
+            y_k = model.output(X_vars[k])
             err = y_k - self.y_ref_p[:, k]
             cost += ca.sumsqr(err)
 
@@ -140,36 +130,11 @@ class MPCController(Controller[MPCLog]):
         R_du = float(config.get("R_du", 0.0))
         bounds = (float(config.get("u_min", -1.0)), float(config.get("u_max", 1.0)))
 
-        if "target_electrode" not in config:
-            config["target_electrode"] = "CP5"
-
-        base = JansenRitParams.from_config(config)
-        n_nodes = base.w_weights.shape[0]
-
-        params = JRSymbolicParams(
-            A=np.broadcast_to(np.asarray(base.A), (1, n_nodes)),
-            B=base.B,
-            a=base.a,
-            b=base.b,
-            C1=base.C1,
-            C2=base.C2,
-            C3=base.C3,
-            C4=base.C4,
-            e0=base.e0,
-            v0=base.v0,
-            r=base.r,
-            mean_input=np.broadcast_to(np.asarray(base.mean_input), (1, n_nodes)),
-            sigma=base.sigma,
-            eeg_gain=base.eeg_gain,
-            gamma=base.gamma,
-            K=base.K,
-            w_weights=base.w_weights,
-            delay_steps=base.delay_steps,
-        )
+        model = JRSymbolicModel.from_config(config)
 
         return cls(
             dt=dt,
-            params=params,
+            model=model,
             horizon_steps=horizon_steps,
             R=R,
             R_du=R_du,

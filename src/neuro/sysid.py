@@ -10,12 +10,8 @@ import casadi as ca
 import numpy as np
 
 from neuro.jansen_rit import JansenRitParams
-from neuro.jansen_rit_casadi import (
-    JRSymbolicParams,
-    eeg,
-    heun_step,
-    project_control,
-)
+from neuro.jansen_rit_casadi import JRSymbolicParams
+from neuro.symbolic_model import JRSymbolicModel
 
 
 @dataclasses.dataclass
@@ -101,6 +97,11 @@ class SysIDSolver:
         "eeg_gain": (0.0, 10.0),
     }
 
+    # ``w_weights`` is identified as a symmetric, zero-diagonal matrix: its strict
+    # upper triangle is optimised (nonnegative, scaled by the base matrix magnitude)
+    # and mirrored. This caps each scaled edge weight.
+    _W_SCALED_UB: ClassVar[float] = 10.0
+
     @classmethod
     def from_config(cls, config: dict[str, Any]) -> SysIDSolver:
         """Create a SysIDSolver from a configuration dictionary.
@@ -115,7 +116,7 @@ class SysIDSolver:
         SysIDSolver
             A configured SysIDSolver instance.
         """
-        base_params = JansenRitParams.from_config(config)
+        base_params = JansenRitParams.from_config(config["params"])
         return cls(
             dt=config["dt"],
             base_params=base_params,
@@ -169,7 +170,6 @@ class SysIDSolver:
             self.n_elec = gamma.shape[0]
         self.n_channels = base_params.eeg_gain.shape[0]
 
-        self.max_delay = int(np.max(base_params.delay_steps))
         self.n_steps = n_steps
 
         # Data parameters
@@ -177,10 +177,7 @@ class SysIDSolver:
         self.y_data_p = self.opti.parameter(self.n_channels, n_steps)
         self.y_std_p = self.opti.parameter(self.n_channels, 1)
 
-        # Initial history parameter
-        self.x0_history_p = [self.opti.parameter(6, self.n_nodes) for _ in range(self.max_delay + 1)]
-
-        # Build decision variables
+        # Build decision variables for the free parameters and assemble the model.
         self._var_map = {}
         self._actual_map = {}
 
@@ -201,6 +198,31 @@ class SysIDSolver:
 
         # For each free parameter, create an Opti variable
         for p in self.free_params:
+            if p == "w_weights":
+                # Identify a symmetric, zero-diagonal connectivity matrix: optimise the
+                # strict upper triangle and mirror it, so symmetry holds by construction.
+                iu = np.triu_indices(self.n_nodes, k=1)
+                base_tri = np.asarray(base_params.w_weights, dtype=np.float64)[iu]
+                scale = float(np.abs(base_params.w_weights).max()) or 1.0
+
+                w_scaled = self.opti.variable(1, base_tri.size)
+                self._var_map[p] = w_scaled
+                self.opti.subject_to(self.opti.bounded(0.0, w_scaled, self._W_SCALED_UB))
+
+                edges = {}
+                for idx, (i, j) in enumerate(zip(*iu, strict=True)):
+                    edges[int(i), int(j)] = edges[int(j), int(i)] = w_scaled[0, idx] * scale
+                w_sym = ca.vertcat(
+                    *[
+                        ca.horzcat(*[edges.get((i, j), ca.MX(0.0)) for j in range(self.n_nodes)])
+                        for i in range(self.n_nodes)
+                    ]
+                )
+                self._actual_map[p] = w_sym
+                sym_kwargs[p] = w_sym
+                self._w_tri_target = (base_tri / scale).reshape(1, -1)
+                continue
+
             if p not in self.NOMINALS:
                 msg = f"Unknown parameter {p}"
                 raise ValueError(msg)
@@ -230,36 +252,59 @@ class SysIDSolver:
             self.opti.subject_to(self.opti.bounded(lb / nominal, v_scaled, ub / nominal))
 
         self.sym_params = JRSymbolicParams(**sym_kwargs)
+        self.model = JRSymbolicModel(self.sym_params, dt)
+        self.max_delay = self.model.history_depth
+
+        # State stays unbounded: the parameter bounds keep the dynamics in a stable
+        # regime and the data-fitting cost + dynamics defect constraints pin the states.
+
+        # Initial state variable (at step 0)
+        self.x0_var = self.opti.variable(*self.model.state_shape)
+
+        # Intermediate state variables for steps 1 to max_delay
+        self.x_vars = [self.opti.variable(*self.model.state_shape) for _ in range(self.max_delay)]
 
         # Build the dynamic graph
         cost = 0
         reg_cost = 0
 
-        # Regularization: pull scaled parameters to 1.0 (their nominal base values)
+        # Regularization: pull scaled parameters to 1.0 (their nominal base values);
+        # the weight triangle is pulled to its base structural values instead.
         for p in self.free_params:
-            reg_cost += lambda_reg * ca.sumsqr(self._var_map[p] - 1.0)
-
-        # Unroll the graph
-        U_proj = [project_control(self.u_data_p[:, k], gamma) for k in range(n_steps)]
+            target = self._w_tri_target if p == "w_weights" else 1.0
+            reg_cost += lambda_reg * ca.sumsqr(self._var_map[p] - target)
 
         # We need a way to track the predicted Y to output it later
         Y_pred = []
 
-        history = list(self.x0_history_p)
+        # For the first max_delay steps, the states are already decision variables.
+        # We compute the cost and predictions directly from them.
+        for k in range(self.max_delay):
+            current_x = self.x_vars[k]
+            y_k = self.model.output(current_x)
+            err = (y_k - self.y_data_p[:, k]) / self.y_std_p
+            cost += ca.sumsqr(err)
+            Y_pred.append(y_k)
 
-        for k in range(n_steps):
-            x_next = heun_step(history, U_proj[k], self.sym_params, dt)
+        # Initial history for starting the loop after max_delay steps
+        history = [self.x_vars[i] for i in range(self.max_delay - 1, -1, -1)] + [self.x0_var]
+
+        self.ms_vars = []
+
+        for k in range(self.max_delay, n_steps):
+            x_next = self.model.step(history, self.u_data_p[:, k])
 
             if (k + 1) % D == 0 and (k + 1) < n_steps:
-                current_x = self.opti.variable(6, self.n_nodes)
+                current_x = self.opti.variable(*self.model.state_shape)
                 self.opti.subject_to(current_x == x_next)
+                self.ms_vars.append((current_x, k + 1))
             else:
                 current_x = x_next
 
             history.insert(0, current_x)
             history.pop()
 
-            y_k = eeg(current_x, self.sym_params.eeg_gain)
+            y_k = self.model.output(current_x)
             err = (y_k - self.y_data_p[:, k]) / self.y_std_p
             cost += ca.sumsqr(err)
             Y_pred.append(y_k)
@@ -270,11 +315,11 @@ class SysIDSolver:
         opts = {"ipopt.print_level": 5, "print_time": 1, "ipopt.sb": "yes"}
         self.opti.solver("ipopt", opts)
 
-    def solve(
+    def solve(  # noqa: C901, PLR0912
         self,
         u_data: np.ndarray,
         y_data: np.ndarray,
-        x0_history: list[np.ndarray],
+        x0_guess: np.ndarray | None = None,
     ) -> SysIDResult:
         """Run the SysID optimization on the provided dataset.
 
@@ -284,8 +329,8 @@ class SysIDSolver:
             Control input array of shape (n_steps, n_elec).
         y_data : np.ndarray
             Measured EEG data of shape (n_steps, n_channels).
-        x0_history : list[np.ndarray]
-            List of initial state matrices representing the history before step 0.
+        x0_guess : np.ndarray | None
+            Optional initial guess for the state matrix at step 0, of shape (6, n_nodes).
 
         Returns
         -------
@@ -309,13 +354,36 @@ class SysIDSolver:
         y_std[y_std < 1e-6] = 1.0  # avoid division by zero
         self.opti.set_value(self.y_std_p, y_std)
 
-        # Initial history
-        for k in range(self.max_delay + 1):
-            self.opti.set_value(self.x0_history_p[k], x0_history[k])
+        # Initial guess for state at step 0
+        if x0_guess is None:
+            x0_guess = np.zeros((6, self.n_nodes))
 
-        # Initial guesses: start at 1.0 (nominal)
-        for v in self._var_map.values():
-            self.opti.set_initial(v, 1.0)
+        # Warm-start state variables using a forward simulation rollout
+        from neuro.jansen_rit import JansenRitDynamics  # noqa: PLC0415
+
+        dyn = JansenRitDynamics(
+            dt=self.dt,
+            params=self.base,
+            initial_state=x0_guess,
+        )
+        x_guess = [x0_guess]
+        for k in range(self.n_steps - 1):
+            dyn.evaluate(k * self.dt, u_data[k])
+            x_guess.append(dyn.x.copy())
+
+        # Set initial guesses for state variables
+        self.opti.set_initial(self.x0_var, x_guess[0])
+
+        for i, x_var in enumerate(self.x_vars):
+            self.opti.set_initial(x_var, x_guess[i + 1])
+
+        for x_var, step_idx in self.ms_vars:
+            self.opti.set_initial(x_var, x_guess[step_idx])
+
+        # Initial guesses: scaled params start at 1.0 (nominal); the weight triangle
+        # starts at its base structural values.
+        for p, v in self._var_map.items():
+            self.opti.set_initial(v, self._w_tri_target if p == "w_weights" else 1.0)
 
         # Try solving
         try:
@@ -336,6 +404,8 @@ class SysIDSolver:
                 eeg_gain = val
             elif p in ["A", "mean_input"]:
                 kwargs[p] = np.asarray(val).flatten()
+            elif p == "w_weights":
+                kwargs[p] = np.asarray(val, dtype=np.float64)
             else:
                 kwargs[p] = float(val)
 

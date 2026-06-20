@@ -8,6 +8,7 @@ import pytest
 from neuro.jansen_rit import JansenRitParams, heun_step, simulate_network
 from neuro.jansen_rit_casadi import JRSymbolicParams
 from neuro.mpc import MPCController
+from neuro.symbolic_model import JRSymbolicModel
 
 
 def test_mpc_smoke_limit_cycle() -> None:
@@ -47,7 +48,7 @@ def test_mpc_smoke_limit_cycle() -> None:
 
     mpc = MPCController(
         dt=dt,
-        params=params,
+        model=JRSymbolicModel(params, dt),
         horizon_steps=horizon_steps,
         R=0.01,
         R_du=0.0,
