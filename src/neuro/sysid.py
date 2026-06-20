@@ -1,5 +1,5 @@
 """System Identification for the Jansen-Rit network using CasADi."""
-# ruff: noqa: N806, PLR2004
+# ruff: noqa: N806
 
 from __future__ import annotations
 
@@ -18,8 +18,7 @@ from neuro.symbolic_model import JRSymbolicModel
 class SysIDResult:
     """Result of a system identification run."""
 
-    params: JansenRitParams
-    eeg_gain: np.ndarray | None
+    free_params: dict[str, Any]
     cost: float
     trajectory: np.ndarray  # Predicted lfp
 
@@ -61,78 +60,17 @@ class SysIDSolver:
         while still preventing the gradients from exploding over long horizons.
     """
 
-    NOMINALS: ClassVar[dict[str, float]] = {
-        "A": 3.25,
-        "B": 22.0,
-        "a": 100.0,
-        "b": 50.0,
-        "C1": 135.0,
-        "C2": 108.0,
-        "C3": 33.75,
-        "C4": 33.75,
-        "e0": 2.5,
-        "v0": 6.0,
-        "r": 0.56,
-        "mean_input": 90.0,
-        "sigma": 0.0,
-        "K": 1.0,
-        "eeg_gain": 1.0,
-    }
-
-    BOUNDS: ClassVar[dict[str, tuple[float, float]]] = {
-        "A": (0.0, 10.0),
-        "B": (0.0, 100.0),
-        "a": (10.0, 500.0),
-        "b": (1.0, 200.0),
-        "C1": (10.0, 500.0),
-        "C2": (10.0, 500.0),
-        "C3": (1.0, 200.0),
-        "C4": (1.0, 200.0),
-        "e0": (0.1, 10.0),
-        "v0": (0.1, 20.0),
-        "r": (0.1, 2.0),
-        "mean_input": (0.0, 500.0),
-        "sigma": (0.0, 0.0),
-        "K": (0.0, 10.0),
-        "eeg_gain": (0.0, 10.0),
-    }
-
     # ``w_weights`` is identified as a symmetric, zero-diagonal matrix: its strict
-    # upper triangle is optimised (nonnegative, scaled by the base matrix magnitude)
-    # and mirrored. This caps each scaled edge weight.
-    _W_SCALED_UB: ClassVar[float] = 10.0
+    # upper triangle is optimised (nonnegative) and mirrored. Each edge is capped at
+    # this multiple of the largest base weight.
+    _W_UB_FACTOR: ClassVar[float] = 10.0
 
-    @classmethod
-    def from_config(cls, config: dict[str, Any]) -> SysIDSolver:
-        """Create a SysIDSolver from a configuration dictionary.
-
-        Parameters
-        ----------
-        config : dict[str, Any]
-            Dictionary containing the solver configuration.
-
-        Returns
-        -------
-        SysIDSolver
-            A configured SysIDSolver instance.
-        """
-        base_params = JansenRitParams.from_config(config["params"])
-        return cls(
-            dt=config["dt"],
-            base_params=base_params,
-            free_params=config["free_params"],
-            n_steps=config["n_steps"],
-            lambda_reg=config.get("lambda_reg", 0.01),
-            D=config.get("D", 1),
-        )
-
-    def __init__(  # noqa: C901, PLR0912, PLR0913, PLR0915
+    def __init__(  # noqa: C901, PLR0912, PLR0915
         self,
         dt: float,
         base_params: JansenRitParams,
         free_params: list[str],
         n_steps: int,
-        lambda_reg: float = 0.01,
         D: int = 1,  # noqa: N803
     ) -> None:
         """Initialize the SysID NLP.
@@ -147,23 +85,19 @@ class SysIDSolver:
             List of parameter names to estimate (e.g. ["A", "mean_input", "eeg_gain"]).
         n_steps : int
             Number of steps to fit the data over.
-        lambda_reg : float
-            Regularization penalty for keeping free parameters close to nominal values.
+
         D : int
             Subrecord length for Partially Constrained Multiple Shooting (PCMS).
             D=1 corresponds to Multiple Shooting. D>=n_steps corresponds to Single Shooting.
         """
         self.opti = ca.Opti()
         self.dt = dt
-        self.base = base_params
         self.free_params = free_params
 
         self.n_nodes = base_params.w_weights.shape[0]
         gamma = base_params.gamma
-        if gamma is None:
-            self.n_elec = 1
-            gamma = np.zeros((1, self.n_nodes))
-        elif gamma.ndim == 1:
+
+        if gamma.ndim == 1:
             gamma = gamma.reshape(1, -1)
             self.n_elec = 1
         else:
@@ -175,11 +109,6 @@ class SysIDSolver:
         # Data parameters
         self.u_data_p = self.opti.parameter(self.n_elec, n_steps)
         self.y_data_p = self.opti.parameter(self.n_channels, n_steps)
-        self.y_std_p = self.opti.parameter(self.n_channels, 1)
-
-        # Build decision variables for the free parameters and assemble the model.
-        self._var_map = {}
-        self._actual_map = {}
 
         sym_kwargs: dict[str, Any] = {
             "w_weights": base_params.w_weights,
@@ -188,7 +117,7 @@ class SysIDSolver:
 
         # Initialize sym_kwargs with base values broadcasted if needed
         for field in dataclasses.fields(JansenRitParams):
-            val = getattr(self.base, field.name)
+            val = getattr(base_params, field.name)
             if field.name in ["A", "mean_input"]:
                 val = np.broadcast_to(np.asarray(val), (1, self.n_nodes))
             sym_kwargs[field.name] = val
@@ -199,31 +128,28 @@ class SysIDSolver:
         # For each free parameter, create an Opti variable
         for p in self.free_params:
             if p == "w_weights":
-                # Identify a symmetric, zero-diagonal connectivity matrix: optimise the
-                # strict upper triangle and mirror it, so symmetry holds by construction.
                 iu = np.triu_indices(self.n_nodes, k=1)
                 base_tri = np.asarray(base_params.w_weights, dtype=np.float64)[iu]
-                scale = float(np.abs(base_params.w_weights).max()) or 1.0
+                w_ub = self._W_UB_FACTOR * (float(np.abs(base_params.w_weights).max()) or 1.0)
 
-                w_scaled = self.opti.variable(1, base_tri.size)
-                self._var_map[p] = w_scaled
-                self.opti.subject_to(self.opti.bounded(0.0, w_scaled, self._W_SCALED_UB))
+                w_var = self.opti.variable(1, base_tri.size)
+                prior = base_tri.reshape(1, -1)
+                self.opti.set_initial(w_var, prior)
+                self.opti.subject_to(self.opti.bounded(0.0, w_var, w_ub))
 
                 edges = {}
                 for idx, (i, j) in enumerate(zip(*iu, strict=True)):
-                    edges[int(i), int(j)] = edges[int(j), int(i)] = w_scaled[0, idx] * scale
+                    edges[int(i), int(j)] = edges[int(j), int(i)] = w_var[0, idx]
                 w_sym = ca.vertcat(
                     *[
                         ca.horzcat(*[edges.get((i, j), ca.MX(0.0)) for j in range(self.n_nodes)])
                         for i in range(self.n_nodes)
                     ]
                 )
-                self._actual_map[p] = w_sym
                 sym_kwargs[p] = w_sym
-                self._w_tri_target = (base_tri / scale).reshape(1, -1)
                 continue
 
-            if p not in self.NOMINALS:
+            if not hasattr(base_params, p):
                 msg = f"Unknown parameter {p}"
                 raise ValueError(msg)
 
@@ -235,28 +161,26 @@ class SysIDSolver:
             else:
                 shape = (1, 1)
 
-            # Scaled variable near 1.0
-            v_scaled = self.opti.variable(*shape)
-            self._var_map[p] = v_scaled
+            v = self.opti.variable(*shape)
+            sym_kwargs[p] = v
 
-            # Nominal scaling
-            nominal = self.NOMINALS[p]
+            prior = getattr(base_params, p)
             if p == "eeg_gain":
-                nominal = np.abs(base_params.eeg_gain).mean() or 1.0
-            actual = v_scaled * nominal
-            self._actual_map[p] = actual
-            sym_kwargs[p] = actual
+                prior = np.abs(base_params.eeg_gain).mean() or 1.0
+            self.opti.set_initial(v, prior)
 
             # Bounds
-            lb, ub = self.BOUNDS[p]
-            self.opti.subject_to(self.opti.bounded(lb / nominal, v_scaled, ub / nominal))
+            lb = -np.inf
+            ub = np.inf
+            for f in dataclasses.fields(base_params):
+                if f.name == p:
+                    lb, ub = f.metadata.get("bounds", (-np.inf, np.inf))
+                    break
+            self.opti.subject_to(self.opti.bounded(lb, v, ub))
 
         self.sym_params = JRSymbolicParams(**sym_kwargs)
         self.model = JRSymbolicModel(self.sym_params, dt)
         self.max_delay = self.model.history_depth
-
-        # State stays unbounded: the parameter bounds keep the dynamics in a stable
-        # regime and the data-fitting cost + dynamics defect constraints pin the states.
 
         # Initial state variable (at step 0)
         self.x0_var = self.opti.variable(*self.model.state_shape)
@@ -264,17 +188,8 @@ class SysIDSolver:
         # Intermediate state variables for steps 1 to max_delay
         self.x_vars = [self.opti.variable(*self.model.state_shape) for _ in range(self.max_delay)]
 
-        # Build the dynamic graph
         cost = 0
-        reg_cost = 0
 
-        # Regularization: pull scaled parameters to 1.0 (their nominal base values);
-        # the weight triangle is pulled to its base structural values instead.
-        for p in self.free_params:
-            target = self._w_tri_target if p == "w_weights" else 1.0
-            reg_cost += lambda_reg * ca.sumsqr(self._var_map[p] - target)
-
-        # We need a way to track the predicted Y to output it later
         Y_pred = []
 
         # For the first max_delay steps, the states are already decision variables.
@@ -282,8 +197,7 @@ class SysIDSolver:
         for k in range(self.max_delay):
             current_x = self.x_vars[k]
             y_k = self.model.output(current_x)
-            err = (y_k - self.y_data_p[:, k]) / self.y_std_p
-            cost += ca.sumsqr(err)
+            cost += ca.sumsqr(y_k - self.y_data_p[:, k])
             Y_pred.append(y_k)
 
         # Initial history for starting the loop after max_delay steps
@@ -305,22 +219,44 @@ class SysIDSolver:
             history.pop()
 
             y_k = self.model.output(current_x)
-            err = (y_k - self.y_data_p[:, k]) / self.y_std_p
-            cost += ca.sumsqr(err)
+            cost += ca.sumsqr(y_k - self.y_data_p[:, k])
             Y_pred.append(y_k)
 
         self.Y_pred_sym = ca.horzcat(*Y_pred)
-        self.opti.minimize(cost + reg_cost)
+        self.opti.minimize(cost)
 
-        opts = {"ipopt.print_level": 5, "print_time": 1, "ipopt.sb": "yes"}
+        opts = {
+            "ipopt.print_level": 5,
+            "print_time": 1,
+            "ipopt.sb": "yes",
+            "ipopt.nlp_scaling_method": "gradient-based",
+        }
         self.opti.solver("ipopt", opts)
 
-    def solve(  # noqa: C901, PLR0912
-        self,
-        u_data: np.ndarray,
-        y_data: np.ndarray,
-        x0_guess: np.ndarray | None = None,
-    ) -> SysIDResult:
+    @classmethod
+    def from_config(cls, config: dict[str, Any]) -> SysIDSolver:
+        """Create a SysIDSolver from a configuration dictionary.
+
+        Parameters
+        ----------
+        config : dict[str, Any]
+            Dictionary containing the solver configuration.
+
+        Returns
+        -------
+        SysIDSolver
+            A configured SysIDSolver instance.
+        """
+        base_params = JansenRitParams.from_config(config["params"])
+        return cls(
+            dt=config["dt"],
+            base_params=base_params,
+            free_params=config["free_params"],
+            n_steps=config["n_steps"],
+            D=config.get("D", 1),
+        )
+
+    def solve(self, u_data: np.ndarray, y_data: np.ndarray) -> SysIDResult:
         """Run the SysID optimization on the provided dataset.
 
         Parameters
@@ -349,42 +285,6 @@ class SysIDSolver:
         self.opti.set_value(self.u_data_p, u_data.T)
         self.opti.set_value(self.y_data_p, y_data.T)
 
-        # Channel std
-        y_std = np.std(y_data, axis=0).reshape(-1, 1)
-        y_std[y_std < 1e-6] = 1.0  # avoid division by zero
-        self.opti.set_value(self.y_std_p, y_std)
-
-        # Initial guess for state at step 0
-        if x0_guess is None:
-            x0_guess = np.zeros((6, self.n_nodes))
-
-        # Warm-start state variables using a forward simulation rollout
-        from neuro.jansen_rit import JansenRitDynamics  # noqa: PLC0415
-
-        dyn = JansenRitDynamics(
-            dt=self.dt,
-            params=self.base,
-            initial_state=x0_guess,
-        )
-        x_guess = [x0_guess]
-        for k in range(self.n_steps - 1):
-            dyn.evaluate(k * self.dt, u_data[k])
-            x_guess.append(dyn.x.copy())
-
-        # Set initial guesses for state variables
-        self.opti.set_initial(self.x0_var, x_guess[0])
-
-        for i, x_var in enumerate(self.x_vars):
-            self.opti.set_initial(x_var, x_guess[i + 1])
-
-        for x_var, step_idx in self.ms_vars:
-            self.opti.set_initial(x_var, x_guess[step_idx])
-
-        # Initial guesses: scaled params start at 1.0 (nominal); the weight triangle
-        # starts at its base structural values.
-        for p, v in self._var_map.items():
-            self.opti.set_initial(v, self._w_tri_target if p == "w_weights" else 1.0)
-
         # Try solving
         try:
             sol = self.opti.solve()
@@ -395,25 +295,10 @@ class SysIDSolver:
             cost_val = sol.value(self.opti.f)
             y_pred_val = sol.value(self.Y_pred_sym).T
 
-        # Extract parameters
-        kwargs = {}
-        eeg_gain = None
-        for p in self.free_params:
-            val = sol.value(self._actual_map[p])
-            if p == "eeg_gain":
-                eeg_gain = val
-            elif p in ["A", "mean_input"]:
-                kwargs[p] = np.asarray(val).flatten()
-            elif p == "w_weights":
-                kwargs[p] = np.asarray(val, dtype=np.float64)
-            else:
-                kwargs[p] = float(val)
-
-        new_params = dataclasses.replace(self.base, **kwargs)
+        kwargs = {k: sol.value(getattr(self.sym_params, k)) for k in self.free_params}
 
         return SysIDResult(
-            params=new_params,
-            eeg_gain=eeg_gain,
+            free_params=kwargs,
             cost=cost_val,
             trajectory=y_pred_val,
         )

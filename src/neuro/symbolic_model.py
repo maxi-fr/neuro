@@ -8,9 +8,11 @@ symbolic functions in :mod:`neuro.jansen_rit_casadi`.
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol, Self
 
 import numpy as np
+import yaml
 
 from neuro.jansen_rit import JansenRitParams
 from neuro.jansen_rit_casadi import (
@@ -26,13 +28,21 @@ if TYPE_CHECKING:
     import casadi as ca
 
 
+def load_config(filepath: str | Path) -> dict[str, Any]:
+    """Load a YAML configuration file into a raw dictionary."""
+    with Path(filepath).open() as f:
+        config = yaml.safe_load(f)
+        if not isinstance(config, dict):
+            msg = f"Config file {filepath} must be a dictionary"
+            raise TypeError(msg)
+        return config
+
+
 class SymbolicModel(Protocol):
     """Abstract discrete-time model: ``x_next = step(history, u)``, ``y = output(x)``.
 
     The optimizers (MPC / SysID) drive a model purely through this interface, so the
-    JR-specific dynamics stay isolated behind it. The model never touches the solver's
-    ``Opti`` instance: everything it exposes is data or pure symbolic expressions the
-    solver consumes.
+    JR-specific dynamics stay isolated behind it.
 
     The "state" is the per-step live state of shape ``state_shape``. A delayed model
     carries its bounded past as a newest-first ``history`` list of length
@@ -45,9 +55,14 @@ class SymbolicModel(Protocol):
     n_elec: int
     n_channels: int
 
+    @classmethod
+    def from_config(cls, config: dict[str, Any]) -> Self:
+        """Instantiate a symbolic model from a config dict."""
+        ...
+
     def step(self, history: Sequence[ca.SX | ca.MX], u: ca.SX | ca.MX) -> ca.SX | ca.MX:
         """Advance one step: newest-first ``history`` bundle and control ``u`` -> next live state."""
-        ...
+        raise NotImplementedError
 
     def output(self, x: ca.SX | ca.MX) -> ca.SX | ca.MX:
         """Map a live state to the measured output ``y``."""

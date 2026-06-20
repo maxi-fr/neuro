@@ -121,6 +121,7 @@ class Connectome:
                 hemispheres=conn.hemispheres[region_idx],
                 delays=conn.delays[np.ix_(region_idx, region_idx)],
                 gain=conn.gain[:, region_idx],
+                gamma=conn.gamma[..., region_idx],
                 region_index={str(conn.region_labels[i]): idx for idx, i in enumerate(region_idx)},
             )
 

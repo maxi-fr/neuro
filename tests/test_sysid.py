@@ -27,11 +27,10 @@ def test_sysid_smoke() -> None:
         n_steps=n_steps,
         D=n_steps,
     )
-
-    res = solver.solve(u_data, y_data, x0_guess=x_open[:, :, 0])
+    res = solver.solve(u_data, y_data)
 
     # Should recover A=4.0 approximately
-    A_val = np.atleast_1d(res.params.A)[0]  # noqa: N806
+    A_val = np.atleast_1d(res.free_params["A"])[0]  # noqa: N806
     assert A_val > 3.5
 
 
@@ -54,11 +53,10 @@ def test_sysid_weights_symmetric_zero_diagonal() -> None:
     _, x_open = simulate_network(params=base, duration=n_steps * dt, dt=dt, seed=0)
     y_data = (x_open[1, :, 1:] - x_open[2, :, 1:]).T  # (n_steps, n_nodes)
     u_data = np.zeros((n_steps, 1))
-
     solver = SysIDSolver(dt=dt, base_params=base, free_params=["w_weights"], n_steps=n_steps)
-    res = solver.solve(u_data, y_data, x0_guess=x_open[:, :, 0])
+    res = solver.solve(u_data, y_data)
 
-    w = np.asarray(res.params.w_weights)
+    w = np.asarray(res.free_params["w_weights"])
     assert w.shape == (n_nodes, n_nodes)
     assert np.allclose(w, w.T, atol=1e-8)  # symmetric by construction
     assert np.allclose(np.diag(w), 0.0, atol=1e-8)  # zero diagonal

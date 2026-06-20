@@ -1,0 +1,39 @@
+t_end: 20.0
+
+dynamics:
+  class_path: neuro.jansen_rit.JansenRitDynamics
+  dt: 0.001
+  K: 0.75
+  seed: 42
+  speed: 50.0
+  target_electrode: ["Fp1", "Fp2", "O1", "O2"]
+  sigma: 20.0
+  params:
+    A: 4.5
+
+reference:
+  class_path: simulate.reference.StepReference
+  dt: 0.001
+  step_value: 0.0
+
+sensors:
+  class_path: simulate.sensor.GaussianSensor
+  dt: 0.001
+  std_dev: 0.0
+  measurement:
+    class_path: neuro.measurement.EEGMeasurement
+    speed: 50.0
+
+estimator:
+  class_path: simulate.estimator.IdentityEstimator
+  dt: 0.001
+
+controller:
+  class_path: neuro.control.WaveformController
+  dt: 0.001
+  duration: 20.0
+  input_type: prbs
+  n_u: 4
+  amp: 1.5
+  input_seed: 42
+  hold_ms: 100.0

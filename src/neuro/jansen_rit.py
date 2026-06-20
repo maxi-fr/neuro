@@ -86,25 +86,27 @@ class JansenRitParams:
         Spatial profile mapping electrode stimulation to brain regions.
     """
 
-    A: float | FloatArray = 3.25
-    B: float = 22.0
-    a: float = 100.0
-    b: float = 50.0
-    C1: float = 135.0
-    C2: float = 108.0  # 0.8 * C, C = 135
-    C3: float = 33.75  # 0.25 * C
-    C4: float = 33.75  # 0.25 * C
-    e0: float = 2.5
-    v0: float = 6.0
-    r: float = 0.56
-    mean_input: float | FloatArray = 90.0
-    sigma: float = 500.0
+    A: float | FloatArray = field(default=3.25, metadata={"bounds": (0.0, 10.0)})
+    B: float = field(default=22.0, metadata={"bounds": (0.0, 100.0)})
+    a: float = field(default=100.0, metadata={"bounds": (10.0, 500.0)})
+    b: float = field(default=50.0, metadata={"bounds": (1.0, 200.0)})
+    C1: float = field(default=135.0, metadata={"bounds": (10.0, 500.0)})
+    C2: float = field(default=108.0, metadata={"bounds": (10.0, 500.0)})  # 0.8 * C, C = 135
+    C3: float = field(default=33.75, metadata={"bounds": (1.0, 200.0)})  # 0.25 * C
+    C4: float = field(default=33.75, metadata={"bounds": (1.0, 200.0)})  # 0.25 * C
+    e0: float = field(default=2.5, metadata={"bounds": (0.1, 10.0)})
+    v0: float = field(default=6.0, metadata={"bounds": (0.1, 20.0)})
+    r: float = field(default=0.56, metadata={"bounds": (0.1, 2.0)})
+    mean_input: float | FloatArray = field(default=90.0, metadata={"bounds": (0.0, 500.0)})
+    sigma: float = field(default=500.0, metadata={"bounds": (0.0, 0.0)})
 
     # Network parameters (mirrors JRSymbolicParams)
-    eeg_gain: FloatArray = field(default_factory=lambda: np.ones((1, 1), dtype=np.float64))
+    eeg_gain: FloatArray = field(
+        default_factory=lambda: np.ones((1, 1), dtype=np.float64), metadata={"bounds": (0.0, 10.0)}
+    )
     w_weights: FloatArray = field(default_factory=lambda: np.zeros((1, 1), dtype=np.float64))
     delay_steps: npt.NDArray[np.int64] = field(default_factory=lambda: np.zeros((1, 1), dtype=np.int64))
-    K: float = 1.0
+    K: float = field(default=1.0, metadata={"bounds": (0.0, 10.0)})
     gamma: FloatArray = field(default_factory=lambda: np.zeros((1, 1), dtype=np.float64))
 
     def to_numba_tuple(self, n_nodes: int) -> tuple[Any, ...]:

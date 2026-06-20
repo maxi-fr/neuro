@@ -1024,6 +1024,7 @@ pyyaml==6.0.3 \
     --hash=sha256:f7057c9a337546edc7973c0d3ba84ddcdf0daa14533c2065749c9075001090e6
     # via
     #   marimo
+    #   neuro
     #   pre-commit
     #   pymdown-extensions
     #   simulate
