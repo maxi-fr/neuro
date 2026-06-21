@@ -65,13 +65,14 @@ class SysIDSolver:
     # this multiple of the largest base weight.
     _W_UB_FACTOR: ClassVar[float] = 10.0
 
-    def __init__(  # noqa: C901, PLR0912, PLR0915
+    def __init__(  # noqa: C901, PLR0912, PLR0913, PLR0915
         self,
         dt: float,
         base_params: JansenRitParams,
         free_params: list[str],
         n_steps: int,
         D: int = 1,  # noqa: N803
+        ipopt_options: dict[str, Any] | None = None,
     ) -> None:
         """Initialize the SysID NLP.
 
@@ -89,6 +90,10 @@ class SysIDSolver:
         D : int
             Subrecord length for Partially Constrained Multiple Shooting (PCMS).
             D=1 corresponds to Multiple Shooting. D>=n_steps corresponds to Single Shooting.
+        ipopt_options : dict[str, Any] | None
+            Extra solver options merged over the defaults, e.g.
+            ``{"ipopt.hessian_approximation": "limited-memory"}`` for a low-memory L-BFGS
+            solve. Do not pass ``{"expand": True}`` (see the solver setup below).
         """
         self.opti = ca.Opti()
         self.dt = dt
@@ -125,6 +130,13 @@ class SysIDSolver:
         sym_kwargs["eeg_gain"] = base_params.eeg_gain
         sym_kwargs["gamma"] = gamma
 
+        # Placeholder params mirror ``sym_kwargs`` but swap each free parameter for a fresh
+        # ``MX.sym``. The single-step ca.Functions built below close over these placeholders
+        # (not the live Opti variables), so each free param is passed in as a Function input.
+        ph_kwargs: dict[str, Any] = dict(sym_kwargs)
+        free_placeholders: list[ca.MX] = []
+        free_actuals: list[ca.MX] = []
+
         # For each free parameter, create an Opti variable
         for p in self.free_params:
             if p == "w_weights":
@@ -147,6 +159,11 @@ class SysIDSolver:
                     ]
                 )
                 sym_kwargs[p] = w_sym
+
+                w_ph = ca.MX.sym("w_weights", self.n_nodes, self.n_nodes)
+                ph_kwargs[p] = w_ph
+                free_placeholders.append(w_ph)
+                free_actuals.append(w_sym)
                 continue
 
             if not hasattr(base_params, p):
@@ -158,15 +175,24 @@ class SysIDSolver:
                 shape = (1, self.n_nodes)
             elif p == "eeg_gain":
                 shape = base_params.eeg_gain.shape
+            elif p == "gamma":
+                shape = (self.n_elec, self.n_nodes)
             else:
                 shape = (1, 1)
 
             v = self.opti.variable(*shape)
             sym_kwargs[p] = v
 
+            v_ph = ca.MX.sym(p, *shape)
+            ph_kwargs[p] = v_ph
+            free_placeholders.append(v_ph)
+            free_actuals.append(v)
+
             prior = getattr(base_params, p)
             if p == "eeg_gain":
                 prior = np.abs(base_params.eeg_gain).mean() or 1.0
+            elif p == "gamma":
+                prior = gamma  # 2D-reshaped base gamma, shape (n_elec, n_nodes)
             self.opti.set_initial(v, prior)
 
             # Bounds
@@ -182,22 +208,34 @@ class SysIDSolver:
         self.model = JRSymbolicModel(self.sym_params, dt)
         self.max_delay = self.model.history_depth
 
+        # Compile a single Heun step and the output map into ca.Functions. Calling these in
+        # the cost loop inserts one call node per step instead of inlining the whole O(N^2)
+        # step graph n_steps times, which is what otherwise exhausts memory on long horizons.
+        # The free-parameter decision variables are passed in as Function inputs (the
+        # ``free_actuals``) via matching placeholders in ``ph_model``.
+        ph_model = JRSymbolicModel(JRSymbolicParams(**ph_kwargs), dt)
+        self._free_actuals = free_actuals
+
+        xh_syms = [ca.MX.sym(f"xh{i}", *self.model.state_shape) for i in range(self.max_delay + 1)]
+        u_step = ca.MX.sym("u_step", self.n_elec, 1)
+        self._F_step = ca.Function("F_step", [*xh_syms, u_step, *free_placeholders], [ph_model.step(xh_syms, u_step)])
+
+        x_out = ca.MX.sym("x_out", *self.model.state_shape)
+        self._F_out = ca.Function("F_out", [x_out, *free_placeholders], [ph_model.output(x_out)])
+
         # Initial state variable (at step 0)
         self.x0_var = self.opti.variable(*self.model.state_shape)
 
         # Intermediate state variables for steps 1 to max_delay
         self.x_vars = [self.opti.variable(*self.model.state_shape) for _ in range(self.max_delay)]
 
-        cost = 0
-
         Y_pred = []
 
         # For the first max_delay steps, the states are already decision variables.
-        # We compute the cost and predictions directly from them.
+        # We compute the predictions directly from them.
         for k in range(self.max_delay):
             current_x = self.x_vars[k]
-            y_k = self.model.output(current_x)
-            cost += ca.sumsqr(y_k - self.y_data_p[:, k])
+            y_k = self._F_out(current_x, *self._free_actuals)
             Y_pred.append(y_k)
 
         # Initial history for starting the loop after max_delay steps
@@ -206,7 +244,7 @@ class SysIDSolver:
         self.ms_vars = []
 
         for k in range(self.max_delay, n_steps):
-            x_next = self.model.step(history, self.u_data_p[:, k])
+            x_next = self._F_step(*history, self.u_data_p[:, k], *self._free_actuals)
 
             if (k + 1) % D == 0 and (k + 1) < n_steps:
                 current_x = self.opti.variable(*self.model.state_shape)
@@ -218,19 +256,26 @@ class SysIDSolver:
             history.insert(0, current_x)
             history.pop()
 
-            y_k = self.model.output(current_x)
-            cost += ca.sumsqr(y_k - self.y_data_p[:, k])
+            y_k = self._F_out(current_x, *self._free_actuals)
             Y_pred.append(y_k)
 
+        # Single least-squares cost over the whole horizon; ``Y_pred`` is ordered to match
+        # the columns of ``y_data_p``, so this equals the per-step sum of ``sumsqr`` terms.
         self.Y_pred_sym = ca.horzcat(*Y_pred)
+        cost = ca.sumsqr(self.Y_pred_sym - self.y_data_p)
         self.opti.minimize(cost)
 
-        opts = {
+        opts: dict[str, Any] = {
             "ipopt.print_level": 5,
             "print_time": 1,
             "ipopt.sb": "yes",
             "ipopt.nlp_scaling_method": "gradient-based",
         }
+        # Caller overrides merge last (e.g. ``ipopt.hessian_approximation: limited-memory``
+        # for a low-memory L-BFGS solve). Never enable ``expand``: it re-inlines the per-step
+        # ca.Function call nodes into one flat graph and reintroduces the construction OOM.
+        if ipopt_options:
+            opts.update(ipopt_options)
         self.opti.solver("ipopt", opts)
 
     @classmethod
@@ -254,6 +299,7 @@ class SysIDSolver:
             free_params=config["free_params"],
             n_steps=config["n_steps"],
             D=config.get("D", 1),
+            ipopt_options=config.get("ipopt_options"),
         )
 
     def solve(self, u_data: np.ndarray, y_data: np.ndarray) -> SysIDResult:

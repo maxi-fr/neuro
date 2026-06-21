@@ -1,0 +1,32 @@
+# Reduced 10-node Jansen-Rit model identified from full 76-node / 62-channel EEG.
+#
+# Anchoring: the output projection ``eeg_gain`` (the (62,10) leadfield slice) is held
+# FIXED so the 10 latent nodes stay pinned to real regions. Only the dynamics (A),
+# coupling (w_weights) and input projection (gamma) are identified -- identifying the
+# output projection too leaves the latent nodes unanchored (permutation/scaling gauge).
+#
+# Prerequisite: ``data_file`` must come from a SEPARATE full-plant (76-node) run driven
+# by PRBS stimulation through the SAME electrode montage, logging all 62 EEG channels
+# (``universal_y_mea``) and the per-electrode control (``universal_u``). gamma is only
+# identifiable from the stimulated epochs -- with zero input it is unobservable.
+
+dt: 0.001          # fit step; keep fine enough that short tract delays don't round to 0
+downsample: 10     # raw plant runs at dt=1e-4 -> stride 10 gives the 1e-3 fit grid
+n_steps: 2000
+D: 100             # PCMS subrecord length (the docstring sweet spot, not single-shooting)
+free_params:
+  - A
+  - w_weights
+  - gamma
+
+data_file: "results/sysid_plant_76node/log.npz"
+
+base_model:
+  n_nodes: 10                          # first 10 TVB regions; eeg_gain slice -> (62, 10)
+  speed: 50.0
+  target_electrode: [CP5, T7, Fp1, O1] # MUST match the montage used to generate the data
+  sigma: 20.0                          # gamma spatial spread in mm -- NOT the noise std
+  w_weights_scale: 1.0                 # start w_weights from the real subset weights
+  params:
+    A: 3.25
+    sigma: 0.0                         # noise std; the symbolic model is deterministic anyway

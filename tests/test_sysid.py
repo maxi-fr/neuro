@@ -61,3 +61,40 @@ def test_sysid_weights_symmetric_zero_diagonal() -> None:
     assert np.allclose(w, w.T, atol=1e-8)  # symmetric by construction
     assert np.allclose(np.diag(w), 0.0, atol=1e-8)  # zero diagonal
     assert (w >= -1e-8).all()  # nonnegative weights
+
+
+def test_sysid_gamma_free_param_shape() -> None:
+    """Freeing ``gamma`` builds an (n_elec, n_nodes) input projection and solves."""
+    dt = 1e-3
+    n_steps = 150
+    n_nodes = 2
+    gamma_true = np.array([[1.0, -0.5]])
+
+    base = JansenRitParams(
+        A=3.25,
+        sigma=0.0,
+        w_weights=np.zeros((n_nodes, n_nodes)),
+        delay_steps=np.zeros((n_nodes, n_nodes), dtype=np.int64),
+        eeg_gain=np.eye(n_nodes),
+        gamma=gamma_true,
+    )
+
+    # Stimulate the plant so gamma is excited, then mirror the constant-current
+    # schedule simulate_network applies internally over the same window.
+    amp = 10.0
+    stim_window = (0.02, 0.10)
+    _, x_open = simulate_network(
+        params=base, duration=n_steps * dt, dt=dt, seed=0, u_hat_tES=amp, stim_window=stim_window
+    )
+    y_data = (x_open[1, :, 1:] - x_open[2, :, 1:]).T  # (n_steps, n_nodes)
+
+    t_grid = np.arange(n_steps) * dt
+    u_data = np.where((t_grid >= stim_window[0]) & (t_grid < stim_window[1]), amp, 0.0).reshape(-1, 1)
+
+    # Single shooting (D=n_steps): no continuity constraints to seed badly.
+    solver = SysIDSolver(dt=dt, base_params=base, free_params=["gamma"], n_steps=n_steps, D=n_steps)
+    res = solver.solve(u_data, y_data)
+
+    g = np.asarray(res.free_params["gamma"])
+    assert g.size == n_nodes  # (n_elec, n_nodes) input projection, not the old (1,1) scalar
+    assert np.isfinite(res.cost)

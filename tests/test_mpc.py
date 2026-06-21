@@ -108,3 +108,59 @@ def test_mpc_smoke_limit_cycle() -> None:
 
     # Error should be lower with MPC
     assert np.sum(y_vals**2) < np.sum(zero_ctrl_y**2)
+
+
+def test_mpc_multinode_delayed_build_and_update() -> None:
+    """Build + solve a multi-node MPC with coupling and heterogeneous delays.
+
+    Exercises the delayed, coupled path through the wrapped single-step ca.Function (the
+    1-node smoke test above does not touch coupling or the delay history).
+    """
+    dt = 1e-3
+    n_nodes = 3
+    base = JansenRitParams(sigma=0.0)
+
+    rng = np.random.default_rng(0)
+    w = rng.uniform(0.0, 0.4, (n_nodes, n_nodes))
+    w = np.triu(w, 1)
+    w = w + w.T
+    delays = np.array([[0, 2, 1], [2, 0, 1], [1, 1, 0]], dtype=np.int64)
+
+    params = JRSymbolicParams(
+        A=np.full((1, n_nodes), base.A),
+        B=base.B,
+        a=base.a,
+        b=base.b,
+        C1=base.C1,
+        C2=base.C2,
+        C3=base.C3,
+        C4=base.C4,
+        e0=base.e0,
+        v0=base.v0,
+        r=base.r,
+        mean_input=np.full((1, n_nodes), base.mean_input),
+        sigma=0.0,
+        eeg_gain=np.ones((1, n_nodes)),
+        gamma=np.ones((1, n_nodes)),
+        K=1.0,
+        w_weights=w,
+        delay_steps=delays,
+    )
+
+    mpc = MPCController(
+        dt=dt,
+        model=JRSymbolicModel(params, dt),
+        horizon_steps=8,
+        R=0.01,
+        R_du=0.01,
+        bounds=(-5.0, 5.0),
+    )
+
+    x_hat = np.zeros((6, n_nodes))
+    x_hat[1, :] = 1.0
+    for _k in range(3):
+        u, _ = mpc.update(t=_k * dt, ref=0.0, x_hat=x_hat)
+        u_arr = np.atleast_1d(np.asarray(u, dtype=np.float64))
+        assert np.all(np.isfinite(u_arr))
+        assert np.all(u_arr >= -5.0 - 1e-5)
+        assert np.all(u_arr <= 5.0 + 1e-5)

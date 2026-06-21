@@ -34,6 +34,7 @@ class MPCController(Controller[MPCLog]):
         R: float,  # noqa: N803
         R_du: float,  # noqa: N803
         bounds: tuple[float, float],
+        ipopt_options: dict[str, Any] | None = None,
     ) -> None:
         """Initialize the MPC controller.
 
@@ -54,6 +55,10 @@ class MPCController(Controller[MPCLog]):
             Control derivative (smoothness) penalty weight.
         bounds : tuple[float, float]
             Minimum and maximum limits for the control signal.
+        ipopt_options : dict[str, Any] | None
+            Extra solver options merged over the defaults, e.g.
+            ``{"ipopt.hessian_approximation": "limited-memory"}``. Do not pass
+            ``{"expand": True}`` (it re-inlines the per-step ca.Function call nodes).
         """
         super().__init__(dt)
         self.opti = ca.Opti()
@@ -77,17 +82,28 @@ class MPCController(Controller[MPCLog]):
 
         cost = 0
 
+        # Compile a single dynamics step and the output map into ca.Functions. Calling these
+        # in the horizon loop inserts one call node per step instead of inlining the whole
+        # O(N^2) step graph horizon_steps times, keeping the build and per-solve derivative
+        # graphs small on whole-brain networks. The model is numeric (no free parameters), so
+        # history + control are the only Function inputs.
+        xh_syms = [ca.MX.sym(f"xh{i}", *model.state_shape) for i in range(self.max_delay_steps + 1)]
+        u_sym = ca.MX.sym("u_mpc", self.n_elec, 1)
+        f_step = ca.Function("F_step", [*xh_syms, u_sym], [model.step(xh_syms, u_sym)])
+        x_out = ca.MX.sym("x_out", *model.state_shape)
+        f_out = ca.Function("F_out", [x_out], [model.output(x_out)])
+
         # Multiple shooting: explicit state variables per step
         X_vars = [self.opti.variable(*model.state_shape) for _ in range(horizon_steps)]
         history = list(self.x0_history_p)
         for k in range(horizon_steps):
-            x_next = model.step(history, self.U[:, k])
+            x_next = f_step(*history, self.U[:, k])
             self.opti.subject_to(X_vars[k] == x_next)
 
             history.insert(0, X_vars[k])
             history.pop()
 
-            y_k = model.output(X_vars[k])
+            y_k = f_out(X_vars[k])
             err = y_k - self.y_ref_p[:, k]
             cost += ca.sumsqr(err)
 
@@ -103,7 +119,11 @@ class MPCController(Controller[MPCLog]):
         lb, ub = bounds
         self.opti.subject_to(self.opti.bounded(lb, self.U, ub))
 
-        opts = {"ipopt.print_level": 0, "print_time": 0, "ipopt.sb": "yes"}
+        opts: dict[str, Any] = {"ipopt.print_level": 0, "print_time": 0, "ipopt.sb": "yes"}
+        # Caller overrides merge last; never enable ``expand`` (it re-inlines the per-step
+        # ca.Function call nodes into one flat graph).
+        if ipopt_options:
+            opts.update(ipopt_options)
         self.opti.solver("ipopt", opts)
 
         # Rolling state tracking
@@ -139,6 +159,7 @@ class MPCController(Controller[MPCLog]):
             R=R,
             R_du=R_du,
             bounds=bounds,
+            ipopt_options=config.get("ipopt_options"),
         )
 
     def update(

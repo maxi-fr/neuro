@@ -11,6 +11,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol, Self
 
+import casadi as ca
 import numpy as np
 import yaml
 
@@ -24,8 +25,6 @@ from neuro.jansen_rit_casadi import (
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
-
-    import casadi as ca
 
 
 def load_config(filepath: str | Path) -> dict[str, Any]:
@@ -88,11 +87,17 @@ class JRSymbolicModel:
         self.history_depth = int(np.max(params.delay_steps))
         self.n_channels = params.eeg_gain.shape[0]
 
-        gamma = np.asarray(params.gamma, dtype=np.float64)
-        if gamma.ndim == 1:
-            gamma = gamma.reshape(1, -1)
-        self.gamma = gamma
-        self.n_elec = gamma.shape[0]
+        gamma = params.gamma
+        if isinstance(gamma, (ca.SX, ca.MX)):
+            # Symbolic gamma (a SysID decision variable) flows straight into
+            # project_control; it is already shaped (n_elec, n_nodes).
+            self.gamma = gamma
+        else:
+            gamma = np.asarray(gamma, dtype=np.float64)
+            if gamma.ndim == 1:
+                gamma = gamma.reshape(1, -1)
+            self.gamma = gamma
+        self.n_elec = self.gamma.shape[0]
 
     @classmethod
     def from_config(cls, config: dict[str, Any]) -> Self:

@@ -51,26 +51,26 @@ class JRSymbolicParams:
     gamma: ca.SX | np.ndarray = field(default_factory=lambda: np.zeros((1, 1), dtype=np.float64))
 
 
-def sigmoid(v: ca.SX | float, params: JRSymbolicParams) -> ca.SX:
+def sigmoid(v: ca.SX | ca.MX | float, params: JRSymbolicParams) -> ca.SX | ca.MX:
     """Compute the sigmoidal transformation mapping average membrane potential to firing rate.
 
     Parameters
     ----------
-    v : ca.SX | float
+    v : ca.SX | ca.MX | float
         Average membrane potential.
     params : JRSymbolicParams
         Symbolic parameters for the network.
 
     Returns
     -------
-    ca.SX
+    ca.SX | ca.MX
         Average firing rate.
     """
     return 2 * params.e0 / (1.0 + ca.exp(params.r * (params.v0 - v)))
 
 
 def f_rhs(
-    X: ca.SX | ca.MX, coupling: ca.SX | ca.MX, u: ca.SX | ca.MX | float, params: JRSymbolicParams
+    X: ca.SX | ca.MX, coupling: ca.SX | ca.MX, u: ca.SX | ca.MX | float | np.ndarray, params: JRSymbolicParams
 ) -> ca.SX | ca.MX:
     """Compute the continuous-time right-hand side (RHS) derivatives for the network nodes.
 
@@ -126,26 +126,27 @@ def get_network_coupling(X_history_list: Sequence[ca.SX | ca.MX], params: JRSymb
     """
     K = params.K
     W = params.w_weights
-    D = params.delay_steps
+    D = np.asarray(params.delay_steps)
 
     N: int = X_history_list[0].shape[1]
+
+    # Group edges by their integer delay so each unique delay contributes a single masked
+    # matmul ``W_d @ S(lfp(X[t-d]))`` instead of an O(N^2) scalar double loop. ``S(lfp)`` for
+    # a given delay is built once over all nodes (the loop rebuilt it once per source node).
+    # Same arithmetic, regrouped; the graph shrinks from O(N^2) nodes to O(#unique_delays).
     coupling_vector = type(X_history_list[0])(1, N)
+    for d in np.unique(D):
+        mask = ca.DM((d == D).astype(np.float64))  # (N, N) numeric edge mask
+        w_d = ca.times(W, mask)  # elementwise; W may be numeric or symbolic
+        s_past = sigmoid(lfp(X_history_list[int(d)]), params).T  # (N, 1)
+        coupling_vector = coupling_vector + ca.mtimes(w_d, s_past).T  # (1, N)
 
-    for i in range(N):
-        c_i: ca.SX | float = 0
-        for j in range(N):
-            delay_steps: int = int(D[i, j])
-            X_past = X_history_list[delay_steps]
-            c_i += K * W[i, j] * sigmoid(X_past[1, j] - X_past[2, j], params)
-
-        coupling_vector[0, i] = c_i
-
-    return coupling_vector
+    return K * coupling_vector
 
 
 def heun_step(
     X_history_list: Sequence[ca.SX | ca.MX],
-    u: ca.SX | ca.MX | float,
+    u: ca.SX | ca.MX | float | np.ndarray,
     params: JRSymbolicParams,
     dt: float,
 ) -> ca.SX | ca.MX:
@@ -222,20 +223,24 @@ def eeg(
     return y
 
 
-def project_control(u_elec: ca.SX | ca.MX | float | np.ndarray, gamma_2d: np.ndarray) -> ca.SX | ca.MX:
+def project_control(
+    u_elec: ca.SX | ca.MX | float | np.ndarray, gamma_2d: np.ndarray | ca.SX | ca.MX
+) -> ca.SX | ca.MX | np.ndarray:
     """Project per-electrode tES current ``u`` onto nodes via ``gamma``.
 
     Parameters
     ----------
     u_elec : ca.SX | ca.MX | float | np.ndarray
         Control input applied to the electrodes.
-    gamma_2d : np.ndarray
-        Spatial projection matrix from electrodes to brain nodes.
+    gamma_2d : np.ndarray | ca.SX | ca.MX
+        Spatial projection matrix from electrodes to brain nodes; symbolic when
+        ``gamma`` is a SysID decision variable.
 
     Returns
     -------
-    ca.SX | ca.MX
-        The projected input to each node, of shape (1, N).
+    ca.SX | ca.MX | np.ndarray
+        The projected input to each node, of shape (1, N); ``np.ndarray`` only for
+        the all-numeric path, which still broadcasts into a symbolic graph.
     """
     u_elec_t = u_elec
     if isinstance(u_elec, (ca.SX, ca.MX)):
