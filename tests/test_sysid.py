@@ -98,3 +98,31 @@ def test_sysid_gamma_free_param_shape() -> None:
     g = np.asarray(res.free_params["gamma"])
     assert g.size == n_nodes  # (n_elec, n_nodes) input projection, not the old (1,1) scalar
     assert np.isfinite(res.cost)
+
+
+def test_sysid_psd_loss_recovers_a() -> None:
+    """A combined time + log-Welch-PSD loss still recovers the excitatory gain A."""
+    dt = 1e-3
+    n_steps = 500
+
+    base = JansenRitParams(A=3.25, sigma=0.0)
+    true_params = JansenRitParams(A=4.0, sigma=0.0)
+    _, x_open = simulate_network(params=true_params, duration=0.5, dt=dt, seed=42)
+
+    y_data = (x_open[1, 0, 1:] - x_open[2, 0, 1:]).reshape(-1, 1)
+    u_data = np.zeros((n_steps, 1))
+
+    solver = SysIDSolver(
+        dt=dt,
+        base_params=base,
+        free_params=["A"],
+        n_steps=n_steps,
+        D=n_steps,
+        psd_loss={"weight": 1.0, "nperseg": 128, "band": [1.0, 100.0]},
+    )
+    res = solver.solve(u_data, y_data)
+
+    assert solver.psd_freqs is not None
+    assert solver.psd_freqs.max() <= 100.0  # band mask applied
+    a_val = np.atleast_1d(res.free_params["A"])[0]
+    assert a_val > 3.5

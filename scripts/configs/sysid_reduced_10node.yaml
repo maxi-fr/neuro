@@ -10,16 +10,42 @@
 # (``universal_y_mea``) and the per-electrode control (``universal_u``). gamma is only
 # identifiable from the stimulated epochs -- with zero input it is unobservable.
 
-dt: 0.001          # fit step; keep fine enough that short tract delays don't round to 0
-downsample: 10     # raw plant runs at dt=1e-4 -> stride 10 gives the 1e-3 fit grid
-n_steps: 2000
+dt: 0.001          # matches the plant log (fs = 1000 Hz)
+downsample: 1      # log is already at 1e-3; no further decimation
+n_steps: 2000      # first pass over 2 s; raise once the fit is validated
 D: 100             # PCMS subrecord length (the docstring sweet spot, not single-shooting)
 free_params:
   - A
   - w_weights
   - gamma
 
-data_file: "results/sysid_plant_76node/log.npz"
+# 76-node plant log: universal_x (N,6,76), universal_y_mea (N,62), universal_u (N,4) on the
+# [CP5,T7,Fp1,O1] montage. NOTE: at dt=1e-3 the short intra-hemisphere tract delays round to
+# ~0 steps, so the reduced model's coupling is effectively instantaneous.
+data_file: "results/sysid_plant_excited/log.npz"
+
+# Many decision variables (A,w_weights,gamma + multiple-shooting states); a limited-memory
+# (L-BFGS) Hessian and an iteration cap keep the first solve tractable.
+ipopt_options:
+  ipopt.hessian_approximation: limited-memory
+  ipopt.max_iter: 150
+
+# Differentiable log-Welch PSD term added to the time-domain cost. The deterministic
+# reduced model cannot reproduce the stochastic plant's exact phase, only its spectral
+# content -- this term matches that. log-power cancels the per-channel leadfield scaling,
+# so the 62 channels stay balanced without z-scoring. Keep time_weight > 0: the PSD term
+# is phase-blind and gamma's stimulus->response timing lives only in the time term.
+#
+# At fs = 1/dt = 1000 Hz, nperseg=1000 gives 1 Hz bins; noverlap=500 -> 3 averaged
+# segments over n_steps=2000. ``weight`` is scale-dependent: the raw time term is far
+# larger than the log-PSD term, so do one calibration run (weight: 0.0) to read the time
+# cost, then raise ``weight`` until the spectral contribution is comparable.
+psd_loss:
+  weight: 1.0
+  time_weight: 1.0
+  nperseg: 1000
+  noverlap: 500
+  band: [1.0, 40.0]
 
 base_model:
   n_nodes: 10                          # first 10 TVB regions; eeg_gain slice -> (62, 10)

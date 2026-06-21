@@ -23,6 +23,54 @@ class SysIDResult:
     trajectory: np.ndarray  # Predicted lfp
 
 
+@dataclasses.dataclass(frozen=True)
+class _WelchPlan:
+    """Precomputed constants for a differentiable one-sided Welch PSD.
+
+    The DFT is the linear map ``Re = Y_seg @ cw``, ``Im = Y_seg @ sw`` with the periodic
+    Hann window folded into the cosine/sine matrices; power is ``Re**2 + Im**2`` averaged
+    over the overlapping segments. Comparing in log-power makes the constant per-channel
+    leadfield scaling cancel in the loss difference.
+    """
+
+    starts: list[int]  # segment start indices into the time axis
+    seg_len: int
+    cw: ca.DM  # (seg_len, n_freqs) windowed cosine matrix
+    sw: ca.DM  # (seg_len, n_freqs) windowed -sine matrix
+    idx: list[int]  # retained one-sided frequency-bin indices (after band masking)
+    freqs: np.ndarray  # frequencies (Hz) of the retained bins
+
+
+def _welch_plan(n_steps: int, dt: float, nperseg: int, noverlap: int, band: tuple[float, float] | None) -> _WelchPlan:
+    """Build the constant matrices for a differentiable Welch PSD over an ``n_steps`` horizon."""
+    seg_len = min(nperseg, n_steps)
+    noverlap = min(noverlap, seg_len - 1)
+    hop = seg_len - noverlap
+    starts = list(range(0, n_steps - seg_len + 1, hop)) or [0]
+
+    n = np.arange(seg_len)
+    k = np.arange(seg_len // 2 + 1)  # one-sided bins
+    ang = 2.0 * np.pi * np.outer(n, k) / seg_len  # (seg_len, n_freqs)
+    window = 0.5 - 0.5 * np.cos(2.0 * np.pi * n / seg_len)  # periodic Hann
+
+    cw = ca.DM(window[:, None] * np.cos(ang))
+    sw = ca.DM(window[:, None] * -np.sin(ang))
+
+    freqs = k * (1.0 / dt) / seg_len
+    idx = np.where((freqs >= band[0]) & (freqs <= band[1]))[0] if band is not None else np.arange(k.size)
+    return _WelchPlan(starts, seg_len, cw, sw, idx.tolist(), freqs[idx])
+
+
+def _log_welch_psd(y: ca.MX, plan: _WelchPlan, eps: float = 1e-12) -> ca.MX:
+    """Differentiable one-sided log Welch PSD of a ``(n_channels, n_steps)`` signal."""
+    power = ca.MX.zeros(y.shape[0], plan.cw.shape[1])
+    for s in plan.starts:
+        y_seg = y[:, s : s + plan.seg_len]
+        power = power + (ca.mtimes(y_seg, plan.cw) ** 2 + ca.mtimes(y_seg, plan.sw) ** 2)
+    power = power / len(plan.starts)
+    return ca.log(power[:, plan.idx] + eps)
+
+
 class SysIDSolver:
     """System identification solver for the Jansen-Rit network.
 
@@ -73,6 +121,7 @@ class SysIDSolver:
         n_steps: int,
         D: int = 1,  # noqa: N803
         ipopt_options: dict[str, Any] | None = None,
+        psd_loss: dict[str, Any] | None = None,
     ) -> None:
         """Initialize the SysID NLP.
 
@@ -94,6 +143,15 @@ class SysIDSolver:
             Extra solver options merged over the defaults, e.g.
             ``{"ipopt.hessian_approximation": "limited-memory"}`` for a low-memory L-BFGS
             solve. Do not pass ``{"expand": True}`` (see the solver setup below).
+        psd_loss : dict[str, Any] | None
+            When given, adds a differentiable log Welch power-spectrum term to the cost:
+            ``time_weight * sumsqr(Y - Y_data) + weight * sumsqr(logPSD(Y) - logPSD(Y_data))``.
+            Keys: ``weight`` (required, spectral term coefficient), ``time_weight`` (default
+            1.0; set 0.0 for a pure-spectral fit), ``nperseg`` (default ``min(256, n_steps)``;
+            must be large enough at ``fs = 1/dt`` to resolve the rhythm), ``noverlap``
+            (default ``nperseg // 2``), and ``band`` (optional ``[fmin, fmax]`` in Hz). A
+            spectral term is phase-blind, so it complements rather than replaces the
+            time-domain term, especially for identifying ``gamma``.
         """
         self.opti = ca.Opti()
         self.dt = dt
@@ -263,6 +321,24 @@ class SysIDSolver:
         # the columns of ``y_data_p``, so this equals the per-step sum of ``sumsqr`` terms.
         self.Y_pred_sym = ca.horzcat(*Y_pred)
         cost = ca.sumsqr(self.Y_pred_sym - self.y_data_p)
+
+        # Optional differentiable log Welch PSD term. ``y_data_p`` is a parameter, so its
+        # PSD is the same symbolic map and updates whenever the data is set in ``solve``.
+        self.psd_freqs: np.ndarray | None = None
+        if psd_loss:
+            nperseg = int(psd_loss.get("nperseg", min(256, n_steps)))
+            band = psd_loss.get("band")
+            plan = _welch_plan(
+                n_steps,
+                dt,
+                nperseg,
+                int(psd_loss.get("noverlap", nperseg // 2)),
+                tuple(band) if band is not None else None,
+            )
+            self.psd_freqs = plan.freqs
+            psd_cost = ca.sumsqr(_log_welch_psd(self.Y_pred_sym, plan) - _log_welch_psd(self.y_data_p, plan))
+            cost = float(psd_loss.get("time_weight", 1.0)) * cost + float(psd_loss["weight"]) * psd_cost
+
         self.opti.minimize(cost)
 
         opts: dict[str, Any] = {
@@ -300,6 +376,7 @@ class SysIDSolver:
             n_steps=config["n_steps"],
             D=config.get("D", 1),
             ipopt_options=config.get("ipopt_options"),
+            psd_loss=config.get("psd_loss"),
         )
 
     def solve(self, u_data: np.ndarray, y_data: np.ndarray) -> SysIDResult:

@@ -63,6 +63,8 @@ def _configure_solver(config: dict, dt: float, d_steps: int, n_steps: int, free_
         free_params=free_params,
         n_steps=n_steps,
         D=d_steps,
+        ipopt_options=config.get("ipopt_options"),
+        psd_loss=config.get("psd_loss"),
     )
 
 
