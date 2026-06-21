@@ -115,3 +115,10 @@ def test_npz_round_trip(connectome: Connectome, tmp_path: Path) -> None:
     assert loaded.region_index == connectome.region_index
     assert loaded.channel_index == connectome.channel_index
     np.testing.assert_array_equal(loaded.gamma, connectome.gamma)
+
+
+def test_from_config_explicit_overrides(tmp_path: Path) -> None:
+    """Test that Connectome.from_config allows explicit overriding of dataclass fields."""
+    dummy_weights = np.ones((5, 5)) * 0.42
+    weights_path = tmp_path / "dummy_weights.npy"
+    np.save(weights_path, dummy_weights)

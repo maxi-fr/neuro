@@ -27,3 +27,5 @@ artifacts/
 simulations/
 data/
 results/
+*.npy
+*.npz

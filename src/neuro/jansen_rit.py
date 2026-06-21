@@ -36,6 +36,8 @@ import numpy as np
 import numpy.typing as npt
 from simulate.dynamics import Dynamics
 
+from neuro.config import parse_array
+
 FloatArray = npt.NDArray[np.float64]
 
 
@@ -172,6 +174,10 @@ class JansenRitParams:
                 f"Network parameters {sorted(conflicts)} come from the connectome and cannot be overridden in 'params'"
             )
             raise ValueError(msg)
+
+        for key in ["A", "mean_input"]:
+            if params_cfg.get(key) is not None:
+                params_cfg[key] = parse_array(params_cfg[key])
 
         if params_cfg.get("A") is not None:
             a_config = params_cfg.pop("A")

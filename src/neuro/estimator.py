@@ -9,6 +9,7 @@ import numpy as np
 from filterpy.kalman import MerweScaledSigmaPoints, UnscentedKalmanFilter
 from simulate.estimator import Estimator
 
+from neuro.config import parse_array
 from neuro.jansen_rit import JansenRitParams, _heun_step_jit, project_control, sigmoid_jit
 
 
@@ -519,7 +520,7 @@ class UKFEstimator(Estimator[UKFEstimatorLog]):
 
         initial_K = float(config.get("initial_K", config.get("K", 0.0)))
 
-        initial_w = config.get("initial_w")
+        initial_w = parse_array(config.get("initial_w"))
         initial_w = np.asarray(initial_w, dtype=np.float64) if initial_w is not None else params.w_weights.copy()
 
         alpha = float(config.get("alpha", 1e-3))
@@ -531,7 +532,7 @@ class UKFEstimator(Estimator[UKFEstimatorLog]):
         q_g = float(config.get("q_g", 1e-5))
         p_g = float(config.get("p_g", 1e-2))
 
-        initial_g = config.get("initial_g")
+        initial_g = parse_array(config.get("initial_g"))
         if initial_g is not None:
             initial_g = np.asarray(initial_g, dtype=np.float64)
 
@@ -539,7 +540,7 @@ class UKFEstimator(Estimator[UKFEstimatorLog]):
         q_a = float(config.get("q_a", 1e-5))
         p_a = float(config.get("p_a", 1e-2))
 
-        initial_a = config.get("initial_a")
+        initial_a = parse_array(config.get("initial_a"))
         if initial_a is not None:
             initial_a = np.asarray(initial_a, dtype=np.float64)
 
@@ -547,7 +548,7 @@ class UKFEstimator(Estimator[UKFEstimatorLog]):
         q_input = float(config.get("q_input", 1e-3))
         p_input = float(config.get("p_input", 1e-2))
 
-        initial_input = config.get("initial_input")
+        initial_input = parse_array(config.get("initial_input"))
         if initial_input is not None:
             initial_input = np.asarray(initial_input, dtype=np.float64)
 

@@ -21,10 +21,13 @@ from __future__ import annotations
 import dataclasses
 import warnings
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import numpy.typing as npt
+
+from neuro.config import parse_array
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -93,6 +96,36 @@ class Connectome:
     channel_index: dict[str, int]
     gamma: FloatArray
 
+    def __post_init__(self) -> None:
+        """Validate that array shapes match the number of regions and channels."""
+        n_nodes = len(self.region_labels)
+        n_channels = len(self.channel_labels)
+
+        if self.weights.shape != (n_nodes, n_nodes):
+            msg = f"weights shape {self.weights.shape} does not match ({n_nodes}, {n_nodes})"
+            raise ValueError(msg)
+        if self.tract_lengths.shape != (n_nodes, n_nodes):
+            msg = f"tract_lengths shape {self.tract_lengths.shape} does not match ({n_nodes}, {n_nodes})"
+            raise ValueError(msg)
+        if self.centres.shape != (n_nodes, 3):
+            msg = f"centres shape {self.centres.shape} does not match ({n_nodes}, 3)"
+            raise ValueError(msg)
+        if self.hemispheres.shape != (n_nodes,):
+            msg = f"hemispheres shape {self.hemispheres.shape} does not match ({n_nodes},)"
+            raise ValueError(msg)
+        if self.delays.shape != (n_nodes, n_nodes):
+            msg = f"delays shape {self.delays.shape} does not match ({n_nodes}, {n_nodes})"
+            raise ValueError(msg)
+        if self.gain.shape != (n_channels, n_nodes):
+            msg = f"gain shape {self.gain.shape} does not match ({n_channels}, {n_nodes})"
+            raise ValueError(msg)
+        if self.gamma.ndim == 1 and self.gamma.shape != (n_nodes,):
+            msg = f"gamma shape {self.gamma.shape} does not match ({n_nodes},)"
+            raise ValueError(msg)
+        if self.gamma.ndim == 2 and self.gamma.shape[1] != n_nodes:  # noqa: PLR2004
+            msg = f"gamma shape {self.gamma.shape} does not match (*, {n_nodes})"
+            raise ValueError(msg)
+
     def to_npz(self, path: str | Path) -> None:
         """Save the connectome to an NPZ file."""
         np.savez(
@@ -141,7 +174,7 @@ class Connectome:
         conn = load_connectome(speed=speed)
 
         n_nodes_val = config.get("n_nodes")
-        selected_regions = config.get("selected_regions")
+        selected_regions = parse_array(config.get("selected_regions"))
 
         region_idx = None
         if selected_regions is not None:
@@ -163,7 +196,7 @@ class Connectome:
                 region_index={str(conn.region_labels[i]): idx for idx, i in enumerate(region_idx)},
             )
 
-        selected_channels_cfg = config.get("selected_channels")
+        selected_channels_cfg = parse_array(config.get("selected_channels"))
         if selected_channels_cfg is not None:
             channel_idx = []
             for ch in selected_channels_cfg:
@@ -181,7 +214,7 @@ class Connectome:
                 channel_index={str(conn.channel_labels[i]): idx for idx, i in enumerate(channel_idx)},
             )
 
-        target_electrode = config.get("target_electrode")
+        target_electrode = parse_array(config.get("target_electrode"))
         if target_electrode is not None:
             if isinstance(target_electrode, (str, int, np.integer)):
                 electrodes_list = [target_electrode]
@@ -203,6 +236,16 @@ class Connectome:
             from dataclasses import replace  # noqa: PLC0415
 
             conn = replace(conn, gamma=gamma)
+
+        overrides = {}
+        for field in dataclasses.fields(cls):
+            if field.name in config:
+                overrides[field.name] = parse_array(config[field.name])
+
+        if overrides:
+            from dataclasses import replace  # noqa: PLC0415
+
+            conn = replace(conn, **overrides)
 
         return conn
 
