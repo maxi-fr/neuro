@@ -6,6 +6,7 @@ regions and named EEG channels.
 """
 
 import re
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -94,3 +95,23 @@ def test_hemispheres_split(connectome: Connectome) -> None:
     assert right > 0
     assert left > 0
     assert right + left == _N_REGIONS
+
+
+def test_npz_round_trip(connectome: Connectome, tmp_path: Path) -> None:
+    """The connectome can be saved to and loaded from an NPZ file."""
+    path = tmp_path / "connectome.npz"
+    connectome.to_npz(path)
+    loaded = Connectome.from_npz(path)
+
+    np.testing.assert_array_equal(loaded.weights, connectome.weights)
+    np.testing.assert_array_equal(loaded.tract_lengths, connectome.tract_lengths)
+    np.testing.assert_array_equal(loaded.centres, connectome.centres)
+    np.testing.assert_array_equal(loaded.region_labels, connectome.region_labels)
+    np.testing.assert_array_equal(loaded.hemispheres, connectome.hemispheres)
+    assert loaded.speed == connectome.speed
+    np.testing.assert_array_equal(loaded.delays, connectome.delays)
+    np.testing.assert_array_equal(loaded.gain, connectome.gain)
+    np.testing.assert_array_equal(loaded.channel_labels, connectome.channel_labels)
+    assert loaded.region_index == connectome.region_index
+    assert loaded.channel_index == connectome.channel_index
+    np.testing.assert_array_equal(loaded.gamma, connectome.gamma)

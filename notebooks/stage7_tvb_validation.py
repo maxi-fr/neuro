@@ -139,10 +139,19 @@ def _(
     tvb = run_reference(_sim, float(duration_slider.value))
 
     # Hand-rolled run, same network and gains.
+    hr_params = JansenRitParams.from_config(
+        {
+            "connectome": conn,
+            "dt": 1e-4,
+            "params": {
+                "A": a_gains,
+                "sigma": _sigma,
+                "K": k_slider.value,
+            },
+        }
+    )
     hr_t, _x = simulate_network(
-        params=JansenRitParams(A=a_gains, sigma=_sigma),
-        connectome=conn,
-        K=k_slider.value,
+        params=hr_params,
         duration=float(duration_slider.value),
         dt=1e-4,
         seed=int(seed_slider.value),

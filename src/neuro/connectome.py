@@ -28,6 +28,7 @@ import numpy.typing as npt
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
+    from pathlib import Path
 
 with warnings.catch_warnings():
     warnings.simplefilter("ignore", UserWarning)
@@ -91,6 +92,43 @@ class Connectome:
     region_index: dict[str, int]
     channel_index: dict[str, int]
     gamma: FloatArray
+
+    def to_npz(self, path: str | Path) -> None:
+        """Save the connectome to an NPZ file."""
+        np.savez(
+            path,
+            weights=self.weights,
+            tract_lengths=self.tract_lengths,
+            centres=self.centres,
+            region_labels=self.region_labels,
+            hemispheres=self.hemispheres,
+            speed=np.array(self.speed),
+            delays=self.delays,
+            gain=self.gain,
+            channel_labels=self.channel_labels,
+            gamma=self.gamma,
+        )
+
+    @classmethod
+    def from_npz(cls, path: str | Path) -> Connectome:
+        """Load the connectome from an NPZ file."""
+        with np.load(path) as data:
+            region_labels = data["region_labels"].astype(np.str_)
+            channel_labels = data["channel_labels"].astype(np.str_)
+            return cls(
+                weights=data["weights"],
+                tract_lengths=data["tract_lengths"],
+                centres=data["centres"],
+                region_labels=region_labels,
+                hemispheres=data["hemispheres"],
+                speed=float(data["speed"]),
+                delays=data["delays"],
+                gain=data["gain"],
+                channel_labels=channel_labels,
+                region_index={str(label): idx for idx, label in enumerate(region_labels)},
+                channel_index={str(label): idx for idx, label in enumerate(channel_labels)},
+                gamma=data["gamma"],
+            )
 
     @classmethod
     def from_config(cls, config: dict[str, Any]) -> Connectome:  # noqa: C901, PLR0912

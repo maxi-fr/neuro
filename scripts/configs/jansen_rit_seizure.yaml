@@ -1,4 +1,4 @@
-t_end: 10.0
+t_end: 50.0
 dynamics:
   class_path: neuro.jansen_rit.JansenRitDynamics
   dt: 0.0001

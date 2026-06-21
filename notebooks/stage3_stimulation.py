@@ -176,16 +176,23 @@ def _(
     a_gains[ez_idxs] = 3.6
     a_gains[pz_idxs] = 3.4
     noise_sigma = 0.0 if deterministic_toggle.value else JansenRitParams().sigma
-    params = JansenRitParams(A=a_gains, sigma=noise_sigma)
-
     # 3. Stimulation window
     stim_window = (float(onset_slider.value), float(offset_slider.value))
 
     # 4. Run network simulation
+    params = JansenRitParams.from_config(
+        {
+            "connectome": conn_scaled,
+            "dt": 1e-4,
+            "params": {
+                "A": a_gains,
+                "sigma": noise_sigma,
+                "K": k_slider.value,
+            },
+        }
+    )
     t, x_traj = simulate_network(
         params=params,
-        connectome=conn_scaled,
-        K=k_slider.value,
         duration=float(duration_slider.value),
         dt=1e-4,
         seed=int(seed_slider.value),

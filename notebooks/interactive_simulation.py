@@ -137,10 +137,19 @@ def _(
 
     _noise_sigma = 0.0 if deterministic_toggle.value else JansenRitParams().sigma
 
+    _params = JansenRitParams.from_config(
+        {
+            "connectome": _conn,
+            "dt": 1e-4,
+            "params": {
+                "A": _a_gains,
+                "sigma": _noise_sigma,
+                "K": k_slider.value,
+            },
+        }
+    )
     t, _x_traj = simulate_network(
-        params=JansenRitParams(A=_a_gains, sigma=_noise_sigma),
-        connectome=_conn,
-        K=k_slider.value,
+        params=_params,
         duration=float(duration_slider.value),
         dt=1e-4,
         seed=int(seed_slider.value),

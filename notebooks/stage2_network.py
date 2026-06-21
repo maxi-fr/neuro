@@ -143,15 +143,23 @@ def _(
     a_gains[ez_idxs] = 3.6
     a_gains[pz_idxs] = 3.4
     sigma = 0.0 if deterministic_toggle.value else JansenRitParams().sigma
-    params = JansenRitParams(A=a_gains, sigma=sigma)
-
     # 5. Run simulation. Instantaneous coupling = a connectome with zeroed delays.
     if not use_delays_toggle.value:
         conn_scaled = replace(conn_scaled, delays=np.zeros_like(conn_scaled.delays))
+
+    params = JansenRitParams.from_config(
+        {
+            "connectome": conn_scaled,
+            "dt": 1e-4,
+            "params": {
+                "A": a_gains,
+                "sigma": sigma,
+                "K": k_slider.value,
+            },
+        }
+    )
     t, x_traj = simulate_network(
         params=params,
-        connectome=conn_scaled,
-        K=k_slider.value,
         duration=float(duration_slider.value),
         dt=1e-4,
         seed=int(seed_slider.value),
