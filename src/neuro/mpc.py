@@ -4,7 +4,6 @@ This controller optimizes a multi-step sequence of control inputs to minimize
 the error between the predicted EEG lfp and a reference signal, subject to
 control bounds and optionally smoothness penalties.
 """
-# ruff: noqa: N806
 
 from __future__ import annotations
 
@@ -31,8 +30,8 @@ class MPCController(Controller[MPCLog]):
         dt: float,
         model: SymbolicModel,
         horizon_steps: int,
-        R: float,  # noqa: N803
-        R_du: float,  # noqa: N803
+        R: float,
+        R_du: float,
         bounds: tuple[float, float],
         ipopt_options: dict[str, Any] | None = None,
     ) -> None:

@@ -1,4 +1,3 @@
-# ruff: noqa: N806
 from __future__ import annotations
 
 import dataclasses
@@ -361,7 +360,7 @@ class UKFEstimator(Estimator[UKFEstimatorLog]):
         def fx(x_aug: np.ndarray, dt_step: float, u_node: np.ndarray | float, k: int) -> np.ndarray:
             if isinstance(u_node, np.ndarray):
                 if u_node.ndim == 0:
-                    val = float(u_node.item())
+                    val = float(u_node.flat[0])
                     u_node_arr = np.full(self.n_nodes, val, dtype=np.float64)
                 else:
                     u_node_arr = np.asarray(u_node, dtype=np.float64)

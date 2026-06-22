@@ -144,7 +144,7 @@ def compute_channel_gramians(  # noqa: PLR0913
     x0: FloatArray,
     params: JansenRitParams,
     connectome: Connectome,
-    K: float,  # noqa: N803
+    K: float,
     dt: float,
     duration: float,
     epsilon: float = 1e-6,

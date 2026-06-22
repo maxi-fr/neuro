@@ -66,6 +66,8 @@ ignore = [
     "PGH003", # Use specific rule codes when ignoring type issues (simplified for ty)
     "COM812", # Trailing comma missing (conflicts with formatter)
     "ISC001", # Single line implicit string concatenation (conflicts with formatter)
+    "N806",
+    "N803"
 ]
 
 [tool.ruff.lint.isort]

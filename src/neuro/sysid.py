@@ -1,5 +1,4 @@
 """System Identification for the Jansen-Rit network using CasADi."""
-# ruff: noqa: N806
 
 from __future__ import annotations
 
@@ -118,7 +117,7 @@ class SysIDSolver:
         base_params: JansenRitParams,
         free_params: list[str],
         n_steps: int,
-        D: int = 1,  # noqa: N803
+        D: int = 1,
         ipopt_options: dict[str, Any] | None = None,
         psd_loss: dict[str, Any] | None = None,
     ) -> None:

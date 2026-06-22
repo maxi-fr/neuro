@@ -1,4 +1,3 @@
-# ruff: noqa: N806
 """Pure-JAX system identification for a reduced Jansen-Rit network.
 
 Exploration + gradient refinement, an autodiff alternative to the CasADi PCMS

@@ -1,4 +1,3 @@
-# ruff: noqa: N806, N803
 """CasADi symbolic implementation of the Jansen-Rit neural mass model.
 
 Provides differentiable RHS and Heun-step symbolic ``ca.SX`` expressions suitable

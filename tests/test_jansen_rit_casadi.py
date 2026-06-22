@@ -1,4 +1,3 @@
-# ruff: noqa: N806
 """Verify the CasADi Jansen-Rit implementation against the numba/NumPy reference."""
 
 from __future__ import annotations

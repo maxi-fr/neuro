@@ -115,7 +115,7 @@ class JansenRitParams:
         """Convert params to a JIT-friendly tuple, broadcasting regional parameters."""
         a_gains = self.A
         if n_nodes == 1:
-            a_gains_val = float(a_gains.item()) if isinstance(a_gains, np.ndarray) else float(a_gains)
+            a_gains_val = float(a_gains.flat[0]) if isinstance(a_gains, np.ndarray) else float(a_gains)
         else:
             a_gains_val = (
                 np.asarray(a_gains, dtype=np.float64)
@@ -192,7 +192,7 @@ class JansenRitParams:
 
 def _to_scalar(val: FloatArray | float) -> float:
     if isinstance(val, np.ndarray):
-        return float(val.item())
+        return float(val.flat[0])
     return float(val)
 
 
@@ -212,7 +212,7 @@ def sigmoid_jit(v: FloatArray | float, e0: float, v0: float, r: float) -> FloatA
 def _jr_rhs_jit(
     x: FloatArray, params_tuple: tuple[Any, ...], coupling: FloatArray | float, u_tes: FloatArray | float
 ) -> FloatArray:
-    A, B, a, b, C1, C2, C3, C4, e0, v0, r, mean_input, _ = params_tuple  # noqa: N806
+    A, B, a, b, C1, C2, C3, C4, e0, v0, r, mean_input, _ = params_tuple
 
     x1, x2, x3, x4, x5, x6 = x
 
@@ -340,7 +340,7 @@ def simulate_network(  # noqa: PLR0913
     dt: float,
     seed: int | None = None,
     initial_state: FloatArray | None = None,
-    u_hat_tES: float | FloatArray = 0.0,  # noqa: N803
+    u_hat_tES: float | FloatArray = 0.0,
     stim_window: tuple[float, float] | None = None,
 ) -> tuple[FloatArray, FloatArray]:
     """Integrate a node or coupled network from rest and return the full trajectory.

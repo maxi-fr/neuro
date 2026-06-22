@@ -14,7 +14,7 @@ def _():
     from neuro.jansen_rit import JansenRitParams, lfp, simulate_network
     from utils.plotting import plot_psd
 
-    DT_DEFAULT = 1e-4  # noqa: N806
+    DT_DEFAULT = 1e-4
     return (
         DT_DEFAULT,
         JansenRitParams,

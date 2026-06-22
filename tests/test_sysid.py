@@ -55,7 +55,7 @@ def test_sysid_smoke() -> None:
     res = solver.solve(u_data, y_data)
 
     # Should recover A=4.0 approximately
-    A_val = np.atleast_1d(res.free_params["A"])[0]  # noqa: N806
+    A_val = np.atleast_1d(res.free_params["A"])[0]
     assert A_val > 3.5
 
 

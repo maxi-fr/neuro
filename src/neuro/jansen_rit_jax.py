@@ -1,4 +1,3 @@
-# ruff: noqa: N806
 """JAX implementation of the Jansen-Rit neural mass model.
 
 A third backend next to the numba/NumPy plant (:mod:`neuro.jansen_rit`) and the

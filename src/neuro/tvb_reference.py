@@ -114,7 +114,7 @@ def build_reference_simulator(  # noqa: PLR0913
     connectome: Connectome,
     *,
     dt_ms: float = 0.1,
-    K: float = 0.75,  # noqa: N803
+    K: float = 0.75,
     nsig: float = 1e-4,
     ez: Sequence[str] = _DEFAULT_EZ,
     pz: Sequence[str] = _DEFAULT_PZ,
