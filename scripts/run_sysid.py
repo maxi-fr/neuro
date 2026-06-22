@@ -1,14 +1,12 @@
 """Script to run system identification on simulated Jansen-Rit data."""
 
 import argparse
-import dataclasses
 from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
 import yaml
 
-from neuro.jansen_rit import JansenRitParams
 from neuro.sysid import SysIDSolver
 
 MAX_PRINT_ELEMENTS = 4
@@ -44,30 +42,6 @@ def _load_data(data_file: str, n_steps: int, downsample: int) -> tuple[np.ndarra
     return u_data, y_data
 
 
-def _configure_solver(config: dict, dt: float, d_steps: int, n_steps: int, free_params: list[str]) -> SysIDSolver:
-    print("\n2. Configuring SysIDSolver...")
-    base_cfg = config.get("base_model", {})
-    base_params = JansenRitParams.from_config(base_cfg)
-
-    if "w_weights_scale" in base_cfg:
-        w_new = base_params.w_weights * float(base_cfg["w_weights_scale"])
-        base_params = dataclasses.replace(base_params, w_weights=w_new)
-
-    print(f"   Base A: {base_params.A}")
-    print(f"   Base w_weights norm: {np.linalg.norm(base_params.w_weights):.4f}")
-    print(f"   Free parameters: {free_params}")
-
-    return SysIDSolver(
-        dt=dt,
-        base_params=base_params,
-        free_params=free_params,
-        n_steps=n_steps,
-        D=d_steps,
-        ipopt_options=config.get("ipopt_options"),
-        psd_loss=config.get("psd_loss"),
-    )
-
-
 def main() -> None:
     """Run SysID on simulated data based on a YAML configuration file."""
     parser = argparse.ArgumentParser(description="Run SysID on simulated data.")
@@ -85,7 +59,6 @@ def main() -> None:
     dt = config.get("dt", 1e-3)
     downsample = config.get("downsample", 1)
     n_steps = config.get("n_steps", 200)
-    d_steps = config.get("D", n_steps)
     free_params = config.get("free_params", ["A"])
     data_file = config.get("data_file")
 
@@ -94,7 +67,10 @@ def main() -> None:
         return
 
     u_data, y_data = _load_data(data_file, n_steps, downsample)
-    solver = _configure_solver(config, dt, d_steps, n_steps, free_params)
+
+    print("\n2. Configuring SysIDSolver...")
+    print(f"   Free parameters: {free_params}")
+    solver = SysIDSolver.from_config(config)
 
     print("\n3. Solving...")
     res = solver.solve(u_data, y_data)

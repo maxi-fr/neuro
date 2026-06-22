@@ -1,0 +1,164 @@
+"""Run pure-JAX system identification of a reduced Jansen-Rit network.
+
+The autodiff alternative to ``scripts/run_sysid.py`` (CasADi PCMS): PCA-reduce the
+76-node plant to ``N`` virtual modes, then *explore* global knobs and *refine* the
+reduced ``A`` / ``w_weights`` with Optax against the uncontrolled EEG statistics.
+
+Usage::
+
+    uv run python scripts/run_sysid_jax.py --config scripts/sysid_jax_config.yaml
+"""
+
+from __future__ import annotations
+
+import argparse
+from pathlib import Path
+from typing import Any
+
+import numpy as np
+import yaml
+
+from neuro.connectome import load_connectome
+from neuro.jansen_rit import JansenRitParams
+from neuro.jansen_rit_jax import eeg_jax, enable_x64, from_jansen_rit_params
+from neuro.sysid_jax import (
+    IdentifyResult,
+    LossWeights,
+    RefineConfig,
+    StatConfig,
+    identify,
+    reduce_via_pca,
+    rollout_tbptt,
+)
+from utils.processing import compute_psd
+
+
+def _load_plant(sim_path: str, downsample: int, n_steps: int) -> tuple[np.ndarray, np.ndarray]:
+    """Load downsampled per-region LFP and EEG from a full-plant simulation log."""
+    with np.load(sim_path) as data:
+        x = np.asarray(data["universal_x"])[::downsample][:n_steps]  # (n_steps, 6, 76)
+        y_mea = np.asarray(data["universal_y_mea"])[::downsample][:n_steps]  # (n_steps, 62)
+    node_output = x[:, 1, :] - x[:, 2, :]  # (n_steps, 76)
+    return node_output, y_mea.T  # y_data: (62, n_steps)
+
+
+def _base_params(red: Any, cfg: dict[str, Any]) -> Any:  # noqa: ANN401
+    """Assemble the reduced-model base parameters (symmetric non-negative ``w`` init)."""
+    n = red.gain.shape[1]
+    rng = np.random.default_rng(int(cfg.get("seed", 0)))
+    w0 = rng.uniform(0.0, float(cfg.get("w_init_scale", 0.1)), (n, n))
+    w0 = np.triu(w0, 1)
+    w0 = (w0 + w0.T) / 2
+    jr = JansenRitParams(
+        A=np.full(n, float(cfg.get("a_init", 3.25))),
+        mean_input=float(cfg.get("mean_input", 150.0)),
+        sigma=0.0,
+        w_weights=w0,
+        delay_steps=red.delay_steps,
+        eeg_gain=red.gain,
+        gamma=np.zeros((1, n)),
+        K=float(cfg.get("K", 1.0)),
+    )
+    return from_jansen_rit_params(jr, n)
+
+
+def _report(  # noqa: PLR0913
+    result: IdentifyResult, y_data: np.ndarray, dt: float, window: int, band: tuple[float, float], burn_in: int
+) -> None:
+    """Print offline fit metrics: spectral-shape correlation and spatial-FC error."""
+    n = result.params.n_nodes
+    import jax.numpy as jnp  # noqa: PLC0415  (kept local so the module stays import-light)
+
+    y_fit = np.asarray(
+        eeg_jax(
+            rollout_tbptt(jnp.zeros((6, n)), jnp.zeros((y_data.shape[1], n)), result.params, dt, window),
+            result.params.eeg_gain,
+        )
+    )[:, burn_in:]
+    y_data = y_data[:, burn_in:]
+
+    def _logpsd(sig: np.ndarray) -> np.ndarray:
+        freqs, pxx = compute_psd(sig, dt_ms=dt * 1000.0)
+        mask = (freqs >= band[0]) & (freqs <= band[1])
+        return np.log(pxx[:, mask] + 1e-30)
+
+    psd_corr = float(np.corrcoef(_logpsd(y_data).ravel(), _logpsd(y_fit).ravel())[0, 1])
+    fc_err = float(np.mean((np.corrcoef(y_data) - np.corrcoef(y_fit)) ** 2))
+    print(f"   final loss        : {result.history[-1]:.5f}  (from {result.history[0]:.5f})")
+    print(f"   log-PSD corr      : {psd_corr:.4f}")
+    print(f"   spatial-FC MSE    : {fc_err:.5f}")
+    if result.explore_overrides:
+        print(f"   explore overrides : {result.explore_overrides}")
+
+
+def main() -> None:
+    """Run reduced-network JAX system identification from a YAML config."""
+    parser = argparse.ArgumentParser(description="Pure-JAX reduced Jansen-Rit system identification.")
+    parser.add_argument("--config", type=str, default="scripts/sysid_jax_config.yaml", help="Path to config YAML.")
+    args = parser.parse_args()
+
+    config_path = Path(args.config)
+    if not config_path.exists():
+        print(f"Config file not found: {config_path}")
+        return
+    cfg = yaml.safe_load(config_path.read_text())
+
+    enable_x64()
+    dt = float(cfg.get("dt", 1e-4)) * int(cfg.get("downsample", 1))  # effective reduced-model step
+    n_steps = int(cfg["n_steps"])
+    window = int(cfg.get("window", 300))
+    burn_in = int(cfg.get("burn_in", 0))
+    band = tuple(cfg.get("band", (4.0, 40.0)))
+
+    print("1. Loading full-plant simulation and connectome...")
+    node_output, y_data = _load_plant(cfg["sim"], int(cfg.get("downsample", 1)), n_steps)
+    conn = load_connectome()
+
+    print(f"2. PCA-reducing to N={cfg['n_components']} virtual modes...")
+    red = reduce_via_pca(node_output, conn.gain, conn.delays, dt, int(cfg["n_components"]))
+    print(f"   explained variance: {red.explained_variance * 100:.1f}%   gain {red.gain.shape}")
+
+    base = _base_params(red, cfg)
+    weights = LossWeights(**cfg.get("weights", {}))
+    stat_cfg = StatConfig(nperseg=cfg.get("nperseg"), band=band, spec_mode=cfg.get("spec_mode", "magnitude"))
+    refine_cfg = RefineConfig(**cfg.get("refine", {}))
+    explore = cfg.get("explore", {})
+
+    print("3. Exploring globals then refining (this can take a minute)...")
+    result = identify(
+        base,
+        list(cfg.get("free_params", ["A", "w_weights"])),
+        y_data,
+        dt,
+        window=window,
+        burn_in=burn_in,
+        w_max=cfg.get("w_max"),
+        weights=weights,
+        stat_cfg=stat_cfg,
+        refine_cfg=refine_cfg,
+        a_grid=explore.get("a_grid"),
+        k_grid=explore.get("k_grid"),
+        input_grid=explore.get("input_grid"),
+    )
+
+    print("4. Results:")
+    _report(result, y_data, dt, window, band, burn_in)
+
+    out = cfg.get("out", "results/sysid_jax_result.npz")
+    Path(out).parent.mkdir(parents=True, exist_ok=True)
+    np.savez(
+        out,
+        A=np.asarray(result.params.A),
+        w_weights=np.asarray(result.params.w_weights),
+        K=float(result.params.K),
+        mean_input=np.asarray(result.params.mean_input),
+        eeg_gain=red.gain,
+        components=red.components,
+        delay_steps=red.delay_steps,
+        history=np.asarray(result.history),
+    )
+    print(f"   saved -> {out}")
+
+
+if __name__ == "__main__":
+    main()

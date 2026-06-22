@@ -10,8 +10,7 @@ import casadi as ca
 import numpy as np
 
 from neuro.jansen_rit import JansenRitParams
-from neuro.jansen_rit_casadi import JRSymbolicParams
-from neuro.symbolic_model import JRSymbolicModel
+from neuro.symbolic_model import JRSymbolicModel, shoot
 
 
 @dataclasses.dataclass
@@ -113,7 +112,7 @@ class SysIDSolver:
     # this multiple of the largest base weight.
     _W_UB_FACTOR: ClassVar[float] = 10.0
 
-    def __init__(  # noqa: C901, PLR0912, PLR0913, PLR0915
+    def __init__(  # noqa: PLR0913
         self,
         dt: float,
         base_params: JansenRitParams,
@@ -156,166 +155,47 @@ class SysIDSolver:
         self.opti = ca.Opti()
         self.dt = dt
         self.free_params = free_params
-
-        self.n_nodes = base_params.w_weights.shape[0]
-        gamma = base_params.gamma
-
-        if gamma.ndim == 1:
-            gamma = gamma.reshape(1, -1)
-            self.n_elec = 1
-        else:
-            self.n_elec = gamma.shape[0]
-        self.n_channels = base_params.eeg_gain.shape[0]
-
         self.n_steps = n_steps
+
+        # One model whose free parameters are symbolic Function inputs (it owns the
+        # placeholders); the compiled f_step/f_out take them as trailing inputs.
+        self.model = JRSymbolicModel.with_free_params(base_params, dt, free_params)
+        self.n_nodes = self.model.state_shape[1]
+        self.n_elec = self.model.n_elec
+        self.n_channels = self.model.n_channels
+        self.max_delay = self.model.history_depth
+
+        # Free-parameter decision variables, grafted onto the model placeholders at every
+        # f_step/f_out call site and read back after the solve.
+        self._free_vars: dict[str, ca.MX] = {p: self._build_param_var(p, base_params) for p in free_params}
+        free_actuals = [self._free_vars[p] for p in free_params]
+        f_step, f_out = self.model.f_step, self.model.f_out
 
         # Data parameters
         self.u_data_p = self.opti.parameter(self.n_elec, n_steps)
         self.y_data_p = self.opti.parameter(self.n_channels, n_steps)
 
-        sym_kwargs: dict[str, Any] = {
-            "w_weights": base_params.w_weights,
-            "delay_steps": base_params.delay_steps,
-        }
-
-        # Initialize sym_kwargs with base values broadcasted if needed
-        for field in dataclasses.fields(JansenRitParams):
-            val = getattr(base_params, field.name)
-            if field.name in ["A", "mean_input"]:
-                val = np.broadcast_to(np.asarray(val), (1, self.n_nodes))
-            sym_kwargs[field.name] = val
-        sym_kwargs["K"] = base_params.K
-        sym_kwargs["eeg_gain"] = base_params.eeg_gain
-        sym_kwargs["gamma"] = gamma
-
-        # Placeholder params mirror ``sym_kwargs`` but swap each free parameter for a fresh
-        # ``MX.sym``. The single-step ca.Functions built below close over these placeholders
-        # (not the live Opti variables), so each free param is passed in as a Function input.
-        ph_kwargs: dict[str, Any] = dict(sym_kwargs)
-        free_placeholders: list[ca.MX] = []
-        free_actuals: list[ca.MX] = []
-
-        # For each free parameter, create an Opti variable
-        for p in self.free_params:
-            if p == "w_weights":
-                iu = np.triu_indices(self.n_nodes, k=1)
-                base_tri = np.asarray(base_params.w_weights, dtype=np.float64)[iu]
-                w_ub = self._W_UB_FACTOR * (float(np.abs(base_params.w_weights).max()) or 1.0)
-
-                w_var = self.opti.variable(1, base_tri.size)
-                prior = base_tri.reshape(1, -1)
-                self.opti.set_initial(w_var, prior)
-                self.opti.subject_to(self.opti.bounded(0.0, w_var, w_ub))
-
-                edges = {}
-                for idx, (i, j) in enumerate(zip(*iu, strict=True)):
-                    edges[int(i), int(j)] = edges[int(j), int(i)] = w_var[0, idx]
-                w_sym = ca.vertcat(
-                    *[
-                        ca.horzcat(*[edges.get((i, j), ca.MX(0.0)) for j in range(self.n_nodes)])
-                        for i in range(self.n_nodes)
-                    ]
-                )
-                sym_kwargs[p] = w_sym
-
-                w_ph = ca.MX.sym("w_weights", self.n_nodes, self.n_nodes)
-                ph_kwargs[p] = w_ph
-                free_placeholders.append(w_ph)
-                free_actuals.append(w_sym)
-                continue
-
-            if not hasattr(base_params, p):
-                msg = f"Unknown parameter {p}"
-                raise ValueError(msg)
-
-            # Determine shape
-            if p in ["A", "mean_input"]:
-                shape = (1, self.n_nodes)
-            elif p == "eeg_gain":
-                shape = base_params.eeg_gain.shape
-            elif p == "gamma":
-                shape = (self.n_elec, self.n_nodes)
-            else:
-                shape = (1, 1)
-
-            v = self.opti.variable(*shape)
-            sym_kwargs[p] = v
-
-            v_ph = ca.MX.sym(p, *shape)
-            ph_kwargs[p] = v_ph
-            free_placeholders.append(v_ph)
-            free_actuals.append(v)
-
-            prior = getattr(base_params, p)
-            if p == "eeg_gain":
-                prior = np.abs(base_params.eeg_gain).mean() or 1.0
-            elif p == "gamma":
-                prior = gamma  # 2D-reshaped base gamma, shape (n_elec, n_nodes)
-            self.opti.set_initial(v, prior)
-
-            # Bounds
-            lb = -np.inf
-            ub = np.inf
-            for f in dataclasses.fields(base_params):
-                if f.name == p:
-                    lb, ub = f.metadata.get("bounds", (-np.inf, np.inf))
-                    break
-            self.opti.subject_to(self.opti.bounded(lb, v, ub))
-
-        self.sym_params = JRSymbolicParams(**sym_kwargs)
-        self.model = JRSymbolicModel(self.sym_params, dt)
-        self.max_delay = self.model.history_depth
-
-        # Compile a single Heun step and the output map into ca.Functions. Calling these in
-        # the cost loop inserts one call node per step instead of inlining the whole O(N^2)
-        # step graph n_steps times, which is what otherwise exhausts memory on long horizons.
-        # The free-parameter decision variables are passed in as Function inputs (the
-        # ``free_actuals``) via matching placeholders in ``ph_model``.
-        ph_model = JRSymbolicModel(JRSymbolicParams(**ph_kwargs), dt)
-        self._free_actuals = free_actuals
-
-        xh_syms = [ca.MX.sym(f"xh{i}", *self.model.state_shape) for i in range(self.max_delay + 1)]
-        u_step = ca.MX.sym("u_step", self.n_elec, 1)
-        self._F_step = ca.Function("F_step", [*xh_syms, u_step, *free_placeholders], [ph_model.step(xh_syms, u_step)])
-
-        x_out = ca.MX.sym("x_out", *self.model.state_shape)
-        self._F_out = ca.Function("F_out", [x_out, *free_placeholders], [ph_model.output(x_out)])
-
-        # Initial state variable (at step 0)
+        # Unknown initial history: the first max_delay+1 states are decision variables, and
+        # the first max_delay predictions come straight from them.
         self.x0_var = self.opti.variable(*self.model.state_shape)
-
-        # Intermediate state variables for steps 1 to max_delay
         self.x_vars = [self.opti.variable(*self.model.state_shape) for _ in range(self.max_delay)]
+        Y_pred = [f_out(self.x_vars[k], *free_actuals) for k in range(self.max_delay)]
 
-        Y_pred = []
-
-        # For the first max_delay steps, the states are already decision variables.
-        # We compute the predictions directly from them.
-        for k in range(self.max_delay):
-            current_x = self.x_vars[k]
-            y_k = self._F_out(current_x, *self._free_actuals)
-            Y_pred.append(y_k)
-
-        # Initial history for starting the loop after max_delay steps
+        # Roll the rest of the horizon forward with PCMS sparsification (stride D).
         history = [self.x_vars[i] for i in range(self.max_delay - 1, -1, -1)] + [self.x0_var]
-
-        self.ms_vars = []
-
-        for k in range(self.max_delay, n_steps):
-            x_next = self._F_step(*history, self.u_data_p[:, k], *self._free_actuals)
-
-            if (k + 1) % D == 0 and (k + 1) < n_steps:
-                current_x = self.opti.variable(*self.model.state_shape)
-                self.opti.subject_to(current_x == x_next)
-                self.ms_vars.append((current_x, k + 1))
-            else:
-                current_x = x_next
-
-            history.insert(0, current_x)
-            history.pop()
-
-            y_k = self._F_out(current_x, *self._free_actuals)
-            Y_pred.append(y_k)
+        controls = [self.u_data_p[:, k] for k in range(self.max_delay, n_steps)]
+        y_rest, self.ms_vars = shoot(
+            self.opti,
+            f_step,
+            f_out,
+            history,
+            controls,
+            self.model.state_shape,
+            free=free_actuals,
+            stride=D,
+            step0=self.max_delay,
+        )
+        Y_pred.extend(y_rest)
 
         # Single least-squares cost over the whole horizon; ``Y_pred`` is ordered to match
         # the columns of ``y_data_p``, so this equals the per-step sum of ``sumsqr`` terms.
@@ -354,27 +234,81 @@ class SysIDSolver:
             opts.update(ipopt_options)
         self.opti.solver("ipopt", opts)
 
+    def _build_param_var(self, p: str, base_params: JansenRitParams) -> ca.MX:
+        """Build the Opti decision variable (prior + bounds) for free parameter ``p``.
+
+        Returns the actual MX grafted onto ``model.free_syms[p]`` and read back after the
+        solve -- a plain bounded variable, or for ``w_weights`` the symmetric zero-diagonal
+        matrix mirrored from an optimised strict-upper-triangle variable.
+        """
+        if p == "w_weights":
+            return self._build_w_weights_var(base_params)
+
+        if not hasattr(base_params, p):
+            msg = f"Unknown parameter {p}"
+            raise ValueError(msg)
+
+        v = self.opti.variable(*self.model.free_syms[p].shape)
+
+        prior = getattr(base_params, p)
+        if p == "eeg_gain":
+            prior = np.abs(base_params.eeg_gain).mean() or 1.0
+        elif p == "gamma":
+            g = np.asarray(base_params.gamma, dtype=np.float64)
+            prior = g.reshape(1, -1) if g.ndim == 1 else g
+        self.opti.set_initial(v, prior)
+
+        lb, ub = -np.inf, np.inf
+        for f in dataclasses.fields(base_params):
+            if f.name == p:
+                lb, ub = f.metadata.get("bounds", (-np.inf, np.inf))
+                break
+        self.opti.subject_to(self.opti.bounded(lb, v, ub))
+
+        return v
+
+    def _build_w_weights_var(self, base_params: JansenRitParams) -> ca.MX:
+        """Build the symmetric, zero-diagonal ``w_weights`` decision variable.
+
+        Only the strict upper triangle is optimised (nonnegative, capped at ``_W_UB_FACTOR``
+        times the largest base weight); the returned MX is the mirrored full matrix.
+        """
+        iu = np.triu_indices(self.n_nodes, k=1)
+        base_tri = np.asarray(base_params.w_weights, dtype=np.float64)[iu]
+        w_ub = self._W_UB_FACTOR * (float(np.abs(base_params.w_weights).max()) or 1.0)
+
+        w_var = self.opti.variable(1, base_tri.size)
+        self.opti.set_initial(w_var, base_tri.reshape(1, -1))
+        self.opti.subject_to(self.opti.bounded(0.0, w_var, w_ub))
+
+        edges = {}
+        for idx, (i, j) in enumerate(zip(*iu, strict=True)):
+            edges[int(i), int(j)] = edges[int(j), int(i)] = w_var[0, idx]
+        return ca.vertcat(
+            *[ca.horzcat(*[edges.get((i, j), ca.MX(0.0)) for j in range(self.n_nodes)]) for i in range(self.n_nodes)]
+        )
+
     @classmethod
     def from_config(cls, config: dict[str, Any]) -> SysIDSolver:
         """Create a SysIDSolver from a configuration dictionary.
 
-        Parameters
-        ----------
-        config : dict[str, Any]
-            Dictionary containing the solver configuration.
-
-        Returns
-        -------
-        SysIDSolver
-            A configured SysIDSolver instance.
+        The base network is read from the nested ``base_model`` block (a
+        :class:`JansenRitParams` config, optionally with a ``w_weights_scale`` to rescale
+        the prior connectivity). ``D`` defaults to ``n_steps`` (single shooting).
         """
-        base_params = JansenRitParams.from_config(config["params"])
+        base_cfg = config.get("base_model", {})
+        base_params = JansenRitParams.from_config(base_cfg)
+        if "w_weights_scale" in base_cfg:
+            base_params = dataclasses.replace(
+                base_params, w_weights=base_params.w_weights * float(base_cfg["w_weights_scale"])
+            )
+        n_steps = int(config["n_steps"])
         return cls(
-            dt=config["dt"],
+            dt=float(config["dt"]),
             base_params=base_params,
-            free_params=config["free_params"],
-            n_steps=config["n_steps"],
-            D=config.get("D", 1),
+            free_params=config.get("free_params", ["A"]),
+            n_steps=n_steps,
+            D=int(config.get("D", n_steps)),
             ipopt_options=config.get("ipopt_options"),
             psd_loss=config.get("psd_loss"),
         )
@@ -418,7 +352,7 @@ class SysIDSolver:
             cost_val = sol.value(self.opti.f)
             y_pred_val = sol.value(self.Y_pred_sym).T
 
-        kwargs = {k: sol.value(getattr(self.sym_params, k)) for k in self.free_params}
+        kwargs = {k: sol.value(self._free_vars[k]) for k in self.free_params}
 
         return SysIDResult(
             free_params=kwargs,

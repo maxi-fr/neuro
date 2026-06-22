@@ -15,7 +15,7 @@ import casadi as ca
 import numpy as np
 from simulate.controller import Controller
 
-from neuro.symbolic_model import JRSymbolicModel, SymbolicModel
+from neuro.symbolic_model import JRSymbolicModel, SymbolicModel, shoot
 
 
 @dataclasses.dataclass(frozen=True)
@@ -80,32 +80,20 @@ class MPCController(Controller[MPCLog]):
         # Decision variables
         self.U = self.opti.variable(self.n_elec, horizon_steps)
 
+        # The model is numeric (no free parameters), so history + control are the only inputs.
+        # Full multiple shooting (stride 1) over the horizon.
+        y_pred, _ = shoot(
+            self.opti,
+            model.f_step,
+            model.f_out,
+            list(self.x0_history_p),
+            [self.U[:, k] for k in range(horizon_steps)],
+            model.state_shape,
+        )
+
         cost = 0
-
-        # Compile a single dynamics step and the output map into ca.Functions. Calling these
-        # in the horizon loop inserts one call node per step instead of inlining the whole
-        # O(N^2) step graph horizon_steps times, keeping the build and per-solve derivative
-        # graphs small on whole-brain networks. The model is numeric (no free parameters), so
-        # history + control are the only Function inputs.
-        xh_syms = [ca.MX.sym(f"xh{i}", *model.state_shape) for i in range(self.max_delay_steps + 1)]
-        u_sym = ca.MX.sym("u_mpc", self.n_elec, 1)
-        f_step = ca.Function("F_step", [*xh_syms, u_sym], [model.step(xh_syms, u_sym)])
-        x_out = ca.MX.sym("x_out", *model.state_shape)
-        f_out = ca.Function("F_out", [x_out], [model.output(x_out)])
-
-        # Multiple shooting: explicit state variables per step
-        X_vars = [self.opti.variable(*model.state_shape) for _ in range(horizon_steps)]
-        history = list(self.x0_history_p)
         for k in range(horizon_steps):
-            x_next = f_step(*history, self.U[:, k])
-            self.opti.subject_to(X_vars[k] == x_next)
-
-            history.insert(0, X_vars[k])
-            history.pop()
-
-            y_k = f_out(X_vars[k])
-            err = y_k - self.y_ref_p[:, k]
-            cost += ca.sumsqr(err)
+            cost += ca.sumsqr(y_pred[k] - self.y_ref_p[:, k])
 
         for k in range(horizon_steps):
             cost += R * ca.sumsqr(self.U[:, k])

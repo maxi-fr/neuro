@@ -1,6 +1,6 @@
 import marimo
 
-__generated_with = "0.23.8"
+__generated_with = "0.23.10"
 app = marimo.App(width="medium")
 
 
@@ -25,12 +25,12 @@ def _(mo):
 
 
 @app.cell
-def _(load_connectome, np, x_data):
+def _(load_connectome, np):
     sim_path = r"results\simulation_2026-06-21_15-28-47\log.npz"
     connectome = load_connectome()
     with np.load(sim_path) as data:
         data["universal_y_mea"].T  # (n_sensors, n_samples)
-        data["universal_x"]
+        x_data = data["universal_x"]
         data["universal_u"]
 
     node_output = x_data[:, 1] - x_data[:, 2]
@@ -84,7 +84,7 @@ def _(connectome, n_components, np, pca):
     # Verify shapes
     print(f"Original Projection Matrix shape: {gain_original.shape}")
     print(f"Reduced Projection Matrix shape:  {gain_coarse.shape}")
-    return
+    return (gain_coarse,)
 
 
 @app.cell
@@ -102,10 +102,10 @@ def _(connectome, np, plt):
 
 
 @app.cell
-def _(gain_red, np, plt):
+def _(gain_coarse, np, plt):
     _fig, _ax = plt.subplots(figsize=(9, 4))
-    _vmax = float(np.abs(gain_red).max())
-    _im = _ax.imshow(gain_red, cmap="RdBu_r", aspect="auto", vmin=-_vmax, vmax=_vmax)
+    _vmax = float(np.abs(gain_coarse).max())
+    _im = _ax.imshow(gain_coarse, cmap="RdBu_r", aspect="auto", vmin=-_vmax, vmax=_vmax)
     _ax.set_title("EEG leadfield matrix L (62 channels x 76 regions)")
     _ax.set_xlabel("region")
     _ax.set_ylabel("channel")

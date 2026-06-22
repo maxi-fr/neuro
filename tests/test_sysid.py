@@ -2,9 +2,34 @@
 
 import numpy as np
 
+from neuro.connectome import Connectome
 from neuro.control import ZeroController
 from neuro.jansen_rit import JansenRitParams, simulate_network
+from neuro.symbolic_model import JRSymbolicModel
 from neuro.sysid import SysIDSolver
+
+
+def _toy_connectome(n_nodes: int = 2) -> Connectome:
+    """Small TVB-free connectome with zero delays (history_depth 0) for fast config tests."""
+    rng = np.random.default_rng(0)
+    weights = rng.random((n_nodes, n_nodes))
+    np.fill_diagonal(weights, 0.0)
+    labels = np.array([f"r{i}" for i in range(n_nodes)], dtype=np.str_)
+    channels = np.array([f"c{i}" for i in range(n_nodes)], dtype=np.str_)
+    return Connectome(
+        weights=weights,
+        tract_lengths=np.zeros((n_nodes, n_nodes)),
+        centres=rng.random((n_nodes, 3)),
+        region_labels=labels,
+        hemispheres=np.zeros(n_nodes, dtype=np.bool_),
+        speed=50.0,
+        delays=np.zeros((n_nodes, n_nodes)),
+        gain=np.eye(n_nodes),
+        channel_labels=channels,
+        region_index={label: idx for idx, label in enumerate(labels)},
+        channel_index={label: idx for idx, label in enumerate(channels)},
+        gamma=np.zeros((1, n_nodes)),
+    )
 
 
 def test_sysid_smoke() -> None:
@@ -126,3 +151,43 @@ def test_sysid_psd_loss_recovers_a() -> None:
     assert solver.psd_freqs.max() <= 100.0  # band mask applied
     a_val = np.atleast_1d(res.free_params["A"])[0]
     assert a_val > 3.5
+
+
+def test_with_free_params_exposes_free_function_inputs() -> None:
+    """``with_free_params`` makes each free parameter a trailing input of ``f_step``/``f_out``."""
+    n_nodes = 2
+    base = JansenRitParams(
+        A=3.25,
+        sigma=0.0,
+        w_weights=np.zeros((n_nodes, n_nodes)),
+        delay_steps=np.zeros((n_nodes, n_nodes), dtype=np.int64),
+        eeg_gain=np.eye(n_nodes),
+        gamma=np.zeros((1, n_nodes)),
+    )
+
+    model = JRSymbolicModel.with_free_params(base, dt=1e-3, free_params=["A", "w_weights"])
+
+    assert list(model.free_syms) == ["A", "w_weights"]
+    assert model.f_step.n_in() == 1 + 1 + 2  # one history state + control + two free params
+    assert model.f_out.n_in() == 1 + 2  # state + two free params
+
+
+def test_sysid_from_config_builds_from_base_model() -> None:
+    """``from_config`` reads the ``base_model`` block (incl. ``w_weights_scale``) and builds a solver."""
+    config = {
+        "dt": 1e-3,
+        "n_steps": 30,
+        "free_params": ["A", "w_weights"],
+        "base_model": {
+            "connectome": _toy_connectome(2),
+            "dt": 1e-3,
+            "params": {"K": 0.5, "A": 3.25, "sigma": 0.0},
+            "w_weights_scale": 2.0,
+        },
+    }
+
+    solver = SysIDSolver.from_config(config)
+
+    assert solver.n_steps == 30
+    assert solver.free_params == ["A", "w_weights"]
+    assert set(solver.model.free_syms) == {"A", "w_weights"}
