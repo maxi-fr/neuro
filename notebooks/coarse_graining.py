@@ -84,7 +84,29 @@ def _(connectome, n_components, np, pca):
     # Verify shapes
     print(f"Original Projection Matrix shape: {gain_original.shape}")
     print(f"Reduced Projection Matrix shape:  {gain_coarse.shape}")
-    return (gain_coarse,)
+    return gain_coarse, w_inverse
+
+
+@app.cell
+def _(connectome, np, pca, w_inverse):
+    # Project structural weights using V * W * V^T
+    # Note: PCA components can be negative. For strict non-negativity (as in structural tracts),
+    # one might use NMF instead, or take the absolute value of the projection matrix.
+    v = pca.components_
+    weights_coarse = v @ connectome.weights @ w_inverse
+
+    # Project delays using a weighted average based on connection strengths and the absolute PCA components
+    v_abs = np.abs(v)
+    w_original = connectome.weights
+    d_original = connectome.delays
+
+    numerator = v_abs @ (w_original * d_original) @ v_abs.T
+    denominator = v_abs @ w_original @ v_abs.T + 1e-9
+    delays_coarse = numerator / denominator
+
+    print(f"Reduced Weights shape: {weights_coarse.shape}")
+    print(f"Reduced Delays shape:  {delays_coarse.shape}")
+    return
 
 
 @app.cell

@@ -15,6 +15,7 @@ import argparse
 from pathlib import Path
 from typing import Any
 
+import jax.numpy as jnp
 import numpy as np
 import yaml
 
@@ -63,30 +64,30 @@ def _base_params(red: Any, cfg: dict[str, Any]) -> Any:  # noqa: ANN401
 
 
 def _report(  # noqa: PLR0913
-    result: IdentifyResult, y_data: np.ndarray, dt: float, window: int, band: tuple[float, float], burn_in: int
+    result: IdentifyResult, y_list: list[np.ndarray], dt: float, window: int, band: tuple[float, float], burn_in: int
 ) -> None:
-    """Print offline fit metrics: spectral-shape correlation and spatial-FC error."""
+    """Print offline fit metrics (mean over recordings): spectral-shape corr and FC error."""
     n = result.params.n_nodes
-    import jax.numpy as jnp  # noqa: PLC0415  (kept local so the module stays import-light)
 
     y_fit = np.asarray(
         eeg_jax(
-            rollout_tbptt(jnp.zeros((6, n)), jnp.zeros((y_data.shape[1], n)), result.params, dt, window),
+            rollout_tbptt(jnp.zeros((6, n)), jnp.zeros((y_list[0].shape[1], n)), result.params, dt, window),
             result.params.eeg_gain,
         )
     )[:, burn_in:]
-    y_data = y_data[:, burn_in:]
 
     def _logpsd(sig: np.ndarray) -> np.ndarray:
         freqs, pxx = compute_psd(sig, dt_ms=dt * 1000.0)
         mask = (freqs >= band[0]) & (freqs <= band[1])
         return np.log(pxx[:, mask] + 1e-30)
 
-    psd_corr = float(np.corrcoef(_logpsd(y_data).ravel(), _logpsd(y_fit).ravel())[0, 1])
-    fc_err = float(np.mean((np.corrcoef(y_data) - np.corrcoef(y_fit)) ** 2))
+    fit_logpsd = _logpsd(y_fit).ravel()
+    fc_fit = np.corrcoef(y_fit)
+    psd_corrs = [float(np.corrcoef(_logpsd(y[:, burn_in:]).ravel(), fit_logpsd)[0, 1]) for y in y_list]
+    fc_errs = [float(np.mean((np.corrcoef(y[:, burn_in:]) - fc_fit) ** 2)) for y in y_list]
     print(f"   final loss        : {result.history[-1]:.5f}  (from {result.history[0]:.5f})")
-    print(f"   log-PSD corr      : {psd_corr:.4f}")
-    print(f"   spatial-FC MSE    : {fc_err:.5f}")
+    print(f"   log-PSD corr      : {np.mean(psd_corrs):.4f}  (mean over {len(y_list)} recording(s))")
+    print(f"   spatial-FC MSE    : {np.mean(fc_errs):.5f}")
     if result.explore_overrides:
         print(f"   explore overrides : {result.explore_overrides}")
 
@@ -110,8 +111,12 @@ def main() -> None:
     burn_in = int(cfg.get("burn_in", 0))
     band = tuple(cfg.get("band", (4.0, 40.0)))
 
-    print("1. Loading full-plant simulation and connectome...")
-    node_output, y_data = _load_plant(cfg["sim"], int(cfg.get("downsample", 1)), n_steps)
+    sim_paths = list(cfg["sims"]) if "sims" in cfg else [cfg["sim"]]
+    print(f"1. Loading {len(sim_paths)} full-plant simulation(s) and connectome...")
+    loaded = [_load_plant(p, int(cfg.get("downsample", 1)), n_steps) for p in sim_paths]
+    y_list = [y for _, y in loaded]
+    # PCA basis is fit on every recording's LFP so it spans all noise realisations.
+    node_output = np.concatenate([no for no, _ in loaded], axis=0)
     conn = load_connectome()
 
     print(f"2. PCA-reducing to N={cfg['n_components']} virtual modes...")
@@ -128,7 +133,7 @@ def main() -> None:
     result = identify(
         base,
         list(cfg.get("free_params", ["A", "w_weights"])),
-        y_data,
+        y_list,
         dt,
         window=window,
         burn_in=burn_in,
@@ -142,7 +147,7 @@ def main() -> None:
     )
 
     print("4. Results:")
-    _report(result, y_data, dt, window, band, burn_in)
+    _report(result, y_list, dt, window, band, burn_in)
 
     out = cfg.get("out", "results/sysid_jax_result.npz")
     Path(out).parent.mkdir(parents=True, exist_ok=True)

@@ -70,6 +70,7 @@ _BOUNDS: dict[str, tuple[float, float]] = {
     "A": (0.0, 10.0),
     "mean_input": (0.0, 500.0),
     "K": (0.0, 10.0),
+    "eeg_gain": (0.0, 10.0),
 }
 _EPS = 1e-30
 
@@ -455,6 +456,41 @@ def build_targets(y_data: FloatArray, dt: float, cfg: StatConfig, burn_in: int =
     )
 
 
+def average_targets(targets_list: Sequence[_Targets]) -> _Targets:
+    """Average the data-side statistics over several recordings of the same regime.
+
+    For a deterministic, uncontrolled fit the rollout is identical across noise seeds, so
+    minimising the summed per-seed loss equals (up to a parameter-independent constant)
+    fitting the *mean* PSD / FC target -- one rollout, one averaged target. All recordings
+    must share the Welch sizing, i.e. have equal length (and thus identical ``bin_idx``).
+
+    Parameters
+    ----------
+    targets_list
+        Per-recording outputs of :func:`build_targets` (all same length).
+
+    Returns
+    -------
+    _Targets
+        A target whose ``data_logpsd``, ``corr_data`` and ``data_scaled`` are the
+        across-recording means; Welch settings are taken from the first recording.
+    """
+    first = targets_list[0]
+    if any(t.data_logpsd.shape != first.data_logpsd.shape for t in targets_list):
+        msg = "average_targets requires equal-length recordings (matching Welch bins)."
+        raise ValueError(msg)
+
+    def _avg(get: Callable[[_Targets], JaxArray]) -> JaxArray:
+        return jnp.mean(jnp.stack([get(t) for t in targets_list], axis=0), axis=0)
+
+    return replace(
+        first,
+        data_logpsd=_avg(lambda t: t.data_logpsd),
+        corr_data=_avg(lambda t: t.corr_data),
+        data_scaled=_avg(lambda t: t.data_scaled),
+    )
+
+
 def make_stat_loss(  # noqa: PLR0913
     targets: _Targets, weights: LossWeights, x0: JaxArray, controls: JaxArray, dt: float, window: int, burn_in: int = 0
 ) -> Callable[[JRParamsJax], JaxArray]:
@@ -615,7 +651,7 @@ class IdentifyResult:
 def identify(  # noqa: PLR0913
     base: JRParamsJax,
     free_names: Sequence[str],
-    y_data: FloatArray,
+    y_data: FloatArray | list[FloatArray],
     dt: float,
     *,
     window: int = 200,
@@ -639,7 +675,11 @@ def identify(  # noqa: PLR0913
     free_names
         Subset of ``{"A", "w_weights", "K", "mean_input"}`` to identify.
     y_data
-        Measured (uncontrolled) EEG, shape ``(n_channels, T)``.
+        Measured (uncontrolled) EEG, shape ``(n_channels, T)``, or a sequence of such
+        recordings of the *same regime* (different noise seeds). A sequence is averaged
+        into a single mean PSD / FC target via :func:`average_targets` (all recordings
+        must be the same length); set the time-domain loss weight to 0 in that case, as
+        the deterministic model cannot match any single realisation's phase.
     dt
         Integration step in seconds.
     window
@@ -668,14 +708,16 @@ def identify(  # noqa: PLR0913
     stat_cfg = stat_cfg or StatConfig()
     refine_cfg = refine_cfg or RefineConfig()
     n = base.n_nodes
-    n_steps = int(y_data.shape[1])
+    y_list = cast("list[FloatArray]", y_data if isinstance(y_data, list) else [y_data])
+    n_steps = int(y_list[0].shape[1])
 
     x0_arr = jnp.zeros((6, n), dtype=jnp.float64) if x0 is None else jnp.asarray(x0, dtype=jnp.float64)
     u_arr = jnp.zeros((n_steps, n), dtype=jnp.float64) if controls is None else jnp.asarray(controls, dtype=jnp.float64)
     if w_max is None:
         w_max = 10.0 * (float(jnp.max(jnp.abs(base.w_weights))) or 1.0)
 
-    targets = build_targets(y_data, dt, stat_cfg, burn_in)
+    targets_list = [build_targets(y, dt, stat_cfg, burn_in) for y in y_list]
+    targets = targets_list[0] if len(targets_list) == 1 else average_targets(targets_list)
     stat_loss = make_stat_loss(targets, weights, x0_arr, u_arr, dt, window, burn_in)
 
     overrides: dict[str, float] = {}
