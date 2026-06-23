@@ -51,7 +51,9 @@ def _base_params(red: Any, cfg: dict[str, Any]) -> Any:  # noqa: ANN401
     w0 = np.triu(w0, 1)
     w0 = (w0 + w0.T) / 2
     jr = JansenRitParams(
-        A=np.full(n, float(cfg.get("a_init", 3.25))),
+        A=np.full(n, float(cfg.get("a_init", 3.25)))
+        if isinstance(cfg.get("a_init"), (float, int))
+        else np.asarray(cfg.get("a_init")),
         mean_input=float(cfg.get("mean_input", 150.0)),
         sigma=0.0,
         w_weights=w0,

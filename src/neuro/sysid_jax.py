@@ -36,7 +36,7 @@ EEG match sits -- so reverse-mode AD through a long rollout explodes. We therefo
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Any, cast
 
 import jax
 import jax.numpy as jnp
@@ -44,6 +44,7 @@ import numpy as np
 import numpy.typing as npt
 import optax
 from sklearn.decomposition import PCA
+from tqdm import tqdm
 
 from neuro.jansen_rit import delays_to_steps
 from neuro.jansen_rit_jax import (
@@ -324,12 +325,15 @@ class StatConfig:
         ``"shape"`` compares the per-channel spectral *shape* via correlation
         (paper Eq. 12), invariant to a constant per-channel scale -- use it when the
         reduced gain's scale differs from the plant's, at the cost of ``A``-identifiability.
+    log_psd
+        Whether to log-transform the Welch PSD (default: ``True``).
     """
 
     nperseg: int | None = None
     noverlap: int | None = None
     band: tuple[float, float] = (1.0, 45.0)
     spec_mode: str = "magnitude"
+    log_psd: bool = True
 
 
 @dataclass(frozen=True)
@@ -346,7 +350,7 @@ class RefineConfig:
     """Optax refinement settings."""
 
     steps: int = 300
-    lr: float = 1e-2
+    lr: float | optax.Schedule | dict[str, Any] = 1e-2
     clip: float = 1.0
 
 
@@ -364,6 +368,7 @@ class _Targets:
     fs: float
     spec_mode: str = "magnitude"
     bin_idx: IntArray = field(default_factory=lambda: np.zeros(0, dtype=np.int64))
+    log_psd: bool = True
 
 
 def _welch_settings(n_steps: int, dt: float, cfg: StatConfig) -> tuple[int, int, float, IntArray]:
@@ -379,10 +384,15 @@ def _welch_settings(n_steps: int, dt: float, cfg: StatConfig) -> tuple[int, int,
     return nperseg, noverlap, fs_full, bin_idx
 
 
-def _log_psd(eeg: JaxArray, nperseg: int, noverlap: int, fs: float, bin_idx: IntArray) -> JaxArray:
-    """One-sided log Welch PSD over the retained band bins, shape ``(n_ch, n_bins)``."""
+def _log_psd(  # noqa: PLR0913
+    eeg: JaxArray, nperseg: int, noverlap: int, fs: float, bin_idx: IntArray, *, log: bool = True
+) -> JaxArray:
+    """One-sided Welch PSD over the retained band bins, optionally log-transformed."""
     _, pxx = jax.scipy.signal.welch(eeg, fs=fs, nperseg=nperseg, noverlap=noverlap, axis=-1)
-    return jnp.log(pxx[:, bin_idx] + _EPS)
+    pxx = pxx[:, bin_idx]
+    if log:
+        return jnp.log(pxx + 1e-12)
+    return pxx
 
 
 def _spec_mag_loss(model_logpsd: JaxArray, data_logpsd: JaxArray) -> JaxArray:
@@ -443,7 +453,7 @@ def build_targets(y_data: FloatArray, dt: float, cfg: StatConfig, burn_in: int =
     chan_mean = jnp.mean(y, axis=1, keepdims=True)
     chan_std = jnp.std(y, axis=1, keepdims=True) + 1e-12
     return _Targets(
-        data_logpsd=_log_psd(y, nperseg, noverlap, fs, bin_idx),
+        data_logpsd=_log_psd(y, nperseg, noverlap, fs, bin_idx, log=cfg.log_psd),
         corr_data=_chan_corr(y),
         data_scaled=(y - chan_mean) / chan_std,
         chan_mean=chan_mean,
@@ -453,6 +463,7 @@ def build_targets(y_data: FloatArray, dt: float, cfg: StatConfig, burn_in: int =
         fs=fs,
         spec_mode=cfg.spec_mode,
         bin_idx=bin_idx,
+        log_psd=cfg.log_psd,
     )
 
 
@@ -478,6 +489,9 @@ def average_targets(targets_list: Sequence[_Targets]) -> _Targets:
     first = targets_list[0]
     if any(t.data_logpsd.shape != first.data_logpsd.shape for t in targets_list):
         msg = "average_targets requires equal-length recordings (matching Welch bins)."
+        raise ValueError(msg)
+    if any(t.log_psd != first.log_psd for t in targets_list):
+        msg = "average_targets requires matching log_psd settings across targets."
         raise ValueError(msg)
 
     def _avg(get: Callable[[_Targets], JaxArray]) -> JaxArray:
@@ -524,7 +538,9 @@ def make_stat_loss(  # noqa: PLR0913
         eeg = eeg_jax(rollout_tbptt(x0, controls, p, dt, window), p.eeg_gain)[:, burn_in:]
         total = jnp.asarray(0.0, dtype=jnp.float64)
         if weights.spec:
-            model_logpsd = _log_psd(eeg, targets.nperseg, targets.noverlap, targets.fs, targets.bin_idx)
+            model_logpsd = _log_psd(
+                eeg, targets.nperseg, targets.noverlap, targets.fs, targets.bin_idx, log=targets.log_psd
+            )
             spec_term = (
                 _spec_shape_loss(model_logpsd, targets.data_logpsd)
                 if targets.spec_mode == "shape"
@@ -598,6 +614,37 @@ def explore_globals(
     return {"A": float(best[0]), "K": float(best[1]), "mean_input": float(best[2])}, np.asarray(losses)
 
 
+def _resolve_lr(
+    lr: float | optax.Schedule | dict[str, Any],
+) -> float | optax.Schedule:
+    """Resolve learning rate or dictionary configuration to a float or optax Schedule."""
+    if isinstance(lr, dict):
+        lr_dict = cast("dict[str, Any]", lr)
+        name = lr_dict.get("name")
+        if name == "exponential_decay":
+            return optax.exponential_decay(
+                init_value=float(lr_dict["init_value"]),
+                transition_steps=int(lr_dict["transition_steps"]),
+                decay_rate=float(lr_dict["decay_rate"]),
+                staircase=bool(lr_dict.get("staircase", False)),
+            )
+        if name == "cosine_decay":
+            return optax.cosine_decay_schedule(
+                init_value=float(lr_dict["init_value"]),
+                decay_steps=int(lr_dict["decay_steps"]),
+                alpha=float(lr_dict.get("alpha", 0.0)),
+            )
+        if name == "linear":
+            return optax.linear_schedule(
+                init_value=float(lr_dict["init_value"]),
+                end_value=float(lr_dict["end_value"]),
+                transition_steps=int(lr_dict["transition_steps"]),
+            )
+        msg = f"Unknown learning rate schedule name: {name!r}"
+        raise ValueError(msg)
+    return lr
+
+
 def refine(
     loss_fn: Callable[[dict[str, JaxArray]], JaxArray], theta0: dict[str, JaxArray], cfg: RefineConfig
 ) -> tuple[dict[str, JaxArray], list[float]]:
@@ -619,7 +666,8 @@ def refine(
     history
         Loss value after each step.
     """
-    opt = optax.chain(optax.clip_by_global_norm(cfg.clip), optax.adam(cfg.lr))
+    lr = _resolve_lr(cfg.lr)
+    opt = optax.chain(optax.clip_by_global_norm(cfg.clip), optax.adam(lr))
     state = opt.init(theta0)
 
     @jax.jit
@@ -631,9 +679,12 @@ def refine(
 
     theta = theta0
     history: list[float] = []
-    for _ in range(cfg.steps):
+    pbar = tqdm(range(cfg.steps), desc="Refining")
+    for _ in pbar:
         theta, state, value = step(theta, state)
-        history.append(float(value))
+        val = float(value)
+        history.append(val)
+        pbar.set_postfix(loss=f"{val:.4f}")
     return theta, history
 
 

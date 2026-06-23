@@ -14,6 +14,7 @@ from dataclasses import replace
 import jax
 import jax.numpy as jnp
 import numpy as np
+import pytest
 from scipy.signal import welch
 
 import neuro.sysid_jax as sj
@@ -199,7 +200,11 @@ def test_functional_recovery() -> None:
         w_max=2.0,
         weights=sj.LossWeights(spec=1.0, spatial=0.5),
         stat_cfg=_STAT,
-        refine_cfg=sj.RefineConfig(steps=200, lr=2e-2, clip=1.0),
+        refine_cfg=sj.RefineConfig(
+            steps=200,
+            lr={"name": "exponential_decay", "init_value": 0.08, "transition_steps": 20, "decay_rate": 0.7},
+            clip=1.0,
+        ),
     )
     # Loss drops sharply and the fitted model reproduces the spectral statistics.
     assert res.history[-1] < 0.5 * res.history[0]
@@ -221,3 +226,39 @@ def test_spec_shape_mode_is_scale_invariant() -> None:
     loss1 = sj.make_stat_loss(sj.build_targets(y, _DT, cfg), weights, x0, controls, _DT, _WINDOW)(p)
     loss2 = sj.make_stat_loss(sj.build_targets(5.0 * y, _DT, cfg), weights, x0, controls, _DT, _WINDOW)(p)
     np.testing.assert_allclose(float(loss1), float(loss2), rtol=1e-9, atol=1e-10)
+
+
+def test_log_psd_toggle() -> None:
+    p = _toy([3.4, 3.6, 3.8])
+    y = _synth(p)
+
+    cfg_log = sj.StatConfig(nperseg=512, band=(4.0, 40.0), log_psd=True)
+    cfg_nolog = sj.StatConfig(nperseg=512, band=(4.0, 40.0), log_psd=False)
+
+    targets_log = sj.build_targets(y, _DT, cfg_log)
+    targets_nolog = sj.build_targets(y, _DT, cfg_nolog)
+
+    assert targets_log.log_psd is True
+    assert targets_nolog.log_psd is False
+
+    # The actual target values should differ (log-transformed vs raw)
+    assert not np.allclose(targets_log.data_logpsd, targets_nolog.data_logpsd)
+
+    # Mixing them in average_targets should raise ValueError
+    with pytest.raises(ValueError, match="matching log_psd settings"):
+        sj.average_targets([targets_log, targets_nolog])
+
+    # Creating loss functions and verifying they produce different values
+    weights = sj.LossWeights(spec=1.0, spatial=0.0, time=0.0)
+    x0 = jnp.zeros((6, p.n_nodes))
+    controls = jnp.zeros((_N_STEPS, p.n_nodes))
+
+    loss_log_fn = sj.make_stat_loss(targets_log, weights, x0, controls, _DT, _WINDOW)
+    loss_nolog_fn = sj.make_stat_loss(targets_nolog, weights, x0, controls, _DT, _WINDOW)
+
+    # At a slightly perturbed point, the losses should differ
+    p_perturbed = replace(p, A=p.A + 0.1)
+    val_log = float(loss_log_fn(p_perturbed))
+    val_nolog = float(loss_nolog_fn(p_perturbed))
+
+    assert val_log != val_nolog

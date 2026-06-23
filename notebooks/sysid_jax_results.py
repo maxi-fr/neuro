@@ -1,6 +1,6 @@
 import marimo
 
-__generated_with = "0.23.10"
+__generated_with = "0.23.9"
 app = marimo.App(
     width="medium",
     app_title="Reduced sysid model vs ground truth",
@@ -64,7 +64,7 @@ def _(mo):
 
 @app.cell
 def _(Path, yaml):
-    config_path = Path("scripts/sysid_jax_config.yaml")
+    config_path = Path(__file__).parent.parent / "./scripts/sysid_jax_config.yaml"
     cfg = yaml.safe_load(config_path.read_text())
 
     downsample = int(cfg.get("downsample", 1))
@@ -73,8 +73,8 @@ def _(Path, yaml):
     dt = float(cfg.get("dt", 1e-4)) * downsample  # effective reduced-model step (s)
     dt_ms = dt * 1000.0
     band = tuple(cfg.get("band", (4.0, 40.0)))
-    sim_path = cfg["sim"]
-    out_path = cfg.get("out", "results/sysid_jax_result.npz")
+    sim_path = Path(__file__).parent.parent / cfg["sims"][0]
+    out_path = Path(__file__).parent.parent / cfg.get("out", "results/sysid_jax_result.npz")
 
     print(f"sim        : {sim_path}")
     print(f"result     : {out_path}")
