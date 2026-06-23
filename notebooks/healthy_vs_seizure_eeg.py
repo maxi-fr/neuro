@@ -1,6 +1,6 @@
 import marimo
 
-__generated_with = "0.23.10"
+__generated_with = "0.23.9"
 app = marimo.App(
     width="medium",
     app_title="Healthy vs. Seizure EEG Comparison",
@@ -269,6 +269,7 @@ def _(connectome, dt_ms, eeg_healthy, eeg_seizure, np, plt, trace_channels):
     _axes[1].set_ylabel("Channels")
     _axes[1].grid(visible=True, linestyle="--", alpha=0.3)
     _axes[1].spines[["top", "right"]].set_visible(False)
+    plt.show()
     return
 
 
@@ -327,6 +328,7 @@ def _(
         _ax.grid(visible=True, linestyle="--", alpha=0.3)
         _ax.set_ylim(bottom=1e-5)
         _ax.set_yscale("log")
+    plt.show()
     return
 
 
@@ -379,6 +381,7 @@ def _(band_energy, connectome, dt_ms, eeg_healthy, eeg_seizure, np, plt):
     _ax.legend(loc="lower right")
     _ax.spines[["top", "right"]].set_visible(False)
     _ax.grid(visible=True, axis="x", linestyle="--", alpha=0.3)
+    plt.show()
     return
 
 

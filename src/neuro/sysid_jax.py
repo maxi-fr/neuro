@@ -1,9 +1,8 @@
 """Pure-JAX system identification for a reduced Jansen-Rit network.
 
-Exploration + gradient refinement, an autodiff alternative to the CasADi PCMS
-solver in :mod:`neuro.sysid`. This is the workflow of Pille et al. 2025 (TVB-Optim):
-a coarse parameter-space *exploration* over a few global knobs to pick a good
-regime, followed by gradient *refinement* with Optax.
+Gradient *refinement* with Optax, an autodiff alternative to the CasADi PCMS
+solver in :mod:`neuro.sysid` (the refinement half of the Pille et al. 2025
+TVB-Optim workflow).
 
 Scope (this phase): offline, **uncontrolled** (``u = 0``) identification of a
 reduced ``N``-node model whose LFP ``x2 - x3`` is projected to the 62 EEG channels
@@ -12,10 +11,10 @@ by a *fixed* coarse leadfield ``eeg_gain`` (built by ``notebooks/coarse_graining
 Identified parameters
 ---------------------
 ``A`` (length ``N``), ``w_weights`` (``N x N``, kept **non-negative and symmetric**
-with zero diagonal, like :mod:`neuro.sysid`), and optionally the global scalars
-``K`` and ``mean_input``. Bounds are enforced *differentiably* via a bounded-sigmoid
-/ softplus reparametrisation rather than hard clamps, mirroring the paper's ``|w|``
-trick.
+with zero diagonal, like :mod:`neuro.sysid`), the per-channel ``eeg_gain``, and
+optionally the global scalars ``K`` and ``mean_input``. Bounds are enforced
+*differentiably* via a bounded-sigmoid / softplus reparametrisation rather than hard
+clamps, mirroring the paper's ``|w|`` trick.
 
 Robustness choices (see plan / paper section 9.5)
 -------------------------------------------------
@@ -24,9 +23,8 @@ EEG match sits -- so reverse-mode AD through a long rollout explodes. We therefo
 
 * **truncate backprop** to short windows (``window`` steps) via ``stop_gradient`` on
   the scan carry at each window boundary (the JAX analogue of a small PCMS ``D``);
-* make the loss **statistics-dominant** -- a phase-blind spectral *shape* term
-  (paper Eq. 12) plus a spatial channel-correlation (FC-like) term, both invariant
-  to the constant per-channel leadfield scale -- with the time-domain term a light,
+* make the loss **statistics-dominant** -- a phase-blind magnitude log-PSD term plus
+  a spatial channel-correlation (FC-like) term -- with the time-domain term a light,
   optional add-on (used mainly for self-consistency checks where the initial state
   is known).
 
@@ -36,7 +34,7 @@ EEG match sits -- so reverse-mode AD through a long rollout explodes. We therefo
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, cast
 
 import jax
 import jax.numpy as jnp
@@ -64,16 +62,16 @@ FloatArray = npt.NDArray[np.float64]
 IntArray = npt.NDArray[np.int64]
 JaxArray = jax.Array
 
-# Differentiable bounds for the free parameters, mirroring the ``bounds`` metadata on
-# :class:`neuro.jansen_rit.JansenRitParams`. ``w_weights`` is bounded separately by a
-# caller-provided ``w_max`` (cf. ``neuro.sysid.SysIDSolver._W_UB_FACTOR``).
+# Differentiable (low, high) bounds for the scalar/vector free parameters, mirroring the
+# ``bounds`` metadata on :class:`neuro.jansen_rit.JansenRitParams`. The data-dependent
+# ``w_weights`` cap is added at runtime by :func:`make_bounds` (cf.
+# ``neuro.sysid.SysIDSolver._W_UB_FACTOR``).
 _BOUNDS: dict[str, tuple[float, float]] = {
     "A": (0.0, 10.0),
     "mean_input": (0.0, 500.0),
     "K": (0.0, 10.0),
     "eeg_gain": (0.0, 10.0),
 }
-_EPS = 1e-30
 
 
 # --------------------------------------------------------------------------------------
@@ -184,7 +182,18 @@ def _w_from_tri(tri: JaxArray, n: int) -> JaxArray:
     return upper + upper.T
 
 
-def pack_theta(base: JRParamsJax, free_names: Sequence[str], *, w_max: float) -> dict[str, JaxArray]:
+def make_bounds(w_max: float) -> dict[str, tuple[float, float]]:
+    """Differentiable ``(low, high)`` bounds for every free parameter.
+
+    The fixed physical bounds (:data:`_BOUNDS`) plus the data-dependent connection-weight
+    cap ``(0, w_max)``, so :func:`pack_theta` / :func:`build_params` need only one mapping.
+    """
+    return {**_BOUNDS, "w_weights": (0.0, w_max)}
+
+
+def pack_theta(
+    base: JRParamsJax, free_names: Sequence[str], bounds: dict[str, tuple[float, float]]
+) -> dict[str, JaxArray]:
     """Build the unconstrained optimisation variables from a base parameter set.
 
     Parameters
@@ -192,9 +201,9 @@ def pack_theta(base: JRParamsJax, free_names: Sequence[str], *, w_max: float) ->
     base
         Base reduced-model parameters; free entries seed the initial guess.
     free_names
-        Subset of ``{"A", "w_weights", "K", "mean_input"}`` to identify.
-    w_max
-        Upper bound for each (non-negative) connection weight.
+        Subset of ``{"A", "w_weights", "eeg_gain", "K", "mean_input"}`` to identify.
+    bounds
+        ``(low, high)`` per free parameter (see :func:`make_bounds`).
 
     Returns
     -------
@@ -204,21 +213,20 @@ def pack_theta(base: JRParamsJax, free_names: Sequence[str], *, w_max: float) ->
     n = base.n_nodes
     theta: dict[str, JaxArray] = {}
     for name in free_names:
-        if name == "w_weights":
-            iu = np.triu_indices(n, k=1)
-            tri = np.asarray(base.w_weights, dtype=np.float64)[iu]
-            theta[name] = jnp.asarray(_to_raw(tri, 0.0, w_max))
-        elif name in _BOUNDS:
-            low, high = _BOUNDS[name]
-            theta[name] = jnp.asarray(_to_raw(np.asarray(getattr(base, name)), low, high))
-        else:
+        if name not in bounds:
             msg = f"Unknown or unsupported free parameter {name!r}"
             raise ValueError(msg)
+        low, high = bounds[name]
+        if name == "w_weights":
+            tri = np.asarray(base.w_weights, dtype=np.float64)[np.triu_indices(n, k=1)]
+            theta[name] = jnp.asarray(_to_raw(tri, low, high))
+        else:
+            theta[name] = jnp.asarray(_to_raw(np.asarray(getattr(base, name)), low, high))
     return theta
 
 
 def build_params(
-    theta: dict[str, JaxArray], base: JRParamsJax, free_names: Sequence[str], *, w_max: float
+    theta: dict[str, JaxArray], base: JRParamsJax, free_names: Sequence[str], bounds: dict[str, tuple[float, float]]
 ) -> JRParamsJax:
     """Rebuild full :class:`JRParamsJax` from raw ``theta`` with bounds applied.
 
@@ -230,8 +238,8 @@ def build_params(
         Base parameters supplying every non-free field.
     free_names
         The identified parameter names.
-    w_max
-        Upper bound for each connection weight.
+    bounds
+        ``(low, high)`` per free parameter (see :func:`make_bounds`).
 
     Returns
     -------
@@ -240,12 +248,9 @@ def build_params(
     """
     updates: dict[str, JaxArray] = {}
     for name in free_names:
-        if name == "w_weights":
-            tri = _to_constrained(theta[name], 0.0, w_max)
-            updates[name] = _w_from_tri(tri, base.n_nodes)
-        else:
-            low, high = _BOUNDS[name]
-            updates[name] = _to_constrained(theta[name], low, high)
+        low, high = bounds[name]
+        constrained = _to_constrained(theta[name], low, high)
+        updates[name] = _w_from_tri(constrained, base.n_nodes) if name == "w_weights" else constrained
     return replace(base, **updates)
 
 
@@ -301,6 +306,11 @@ def rollout_tbptt(x0: JaxArray, controls_node: JaxArray, p: JRParamsJax, dt: flo
     return jnp.transpose(x_seq, (1, 2, 0))
 
 
+def model_eeg(p: JRParamsJax, x0: JaxArray, controls: JaxArray, dt: float, window: int) -> JaxArray:
+    """Deterministic model EEG: a TBPTT rollout projected through ``eeg_gain``, shape ``(n_ch, T)``."""
+    return eeg_jax(rollout_tbptt(x0, controls, p, dt, window), p.eeg_gain)
+
+
 # --------------------------------------------------------------------------------------
 # Loss configuration and statistics targets
 # --------------------------------------------------------------------------------------
@@ -319,12 +329,6 @@ class StatConfig:
         Segment overlap; ``None`` uses ``nperseg // 2``.
     band
         Inclusive frequency band (Hz) the loss is computed over.
-    spec_mode
-        ``"magnitude"`` compares log-PSD directly (amplitude-sensitive -- keeps the
-        amplitude ``A`` controls; best when the reduced ``eeg_gain`` scale is trusted).
-        ``"shape"`` compares the per-channel spectral *shape* via correlation
-        (paper Eq. 12), invariant to a constant per-channel scale -- use it when the
-        reduced gain's scale differs from the plant's, at the cost of ``A``-identifiability.
     log_psd
         Whether to log-transform the Welch PSD (default: ``True``).
     """
@@ -332,7 +336,6 @@ class StatConfig:
     nperseg: int | None = None
     noverlap: int | None = None
     band: tuple[float, float] = (1.0, 45.0)
-    spec_mode: str = "magnitude"
     log_psd: bool = True
 
 
@@ -350,7 +353,7 @@ class RefineConfig:
     """Optax refinement settings."""
 
     steps: int = 300
-    lr: float | optax.Schedule | dict[str, Any] = 1e-2
+    lr: float | optax.Schedule = 1e-2
     clip: float = 1.0
 
 
@@ -366,7 +369,6 @@ class _Targets:
     nperseg: int
     noverlap: int
     fs: float
-    spec_mode: str = "magnitude"
     bin_idx: IntArray = field(default_factory=lambda: np.zeros(0, dtype=np.int64))
     log_psd: bool = True
 
@@ -398,18 +400,6 @@ def _log_psd(  # noqa: PLR0913
 def _spec_mag_loss(model_logpsd: JaxArray, data_logpsd: JaxArray) -> JaxArray:
     """Phase-blind, amplitude-sensitive log-PSD MSE (keeps the amplitude ``A`` controls)."""
     return jnp.mean((model_logpsd - data_logpsd) ** 2)
-
-
-def _spec_shape_loss(model_logpsd: JaxArray, data_logpsd: JaxArray) -> JaxArray:
-    """Phase-blind, amplitude-invariant spectral-shape loss (paper Eq. 12).
-
-    Mean over channels of ``1 - Pearson(log S_model, log S_data)``, in ``[0, 2]``.
-    """
-    a = model_logpsd - model_logpsd.mean(axis=1, keepdims=True)
-    b = data_logpsd - data_logpsd.mean(axis=1, keepdims=True)
-    num = jnp.sum(a * b, axis=1)
-    den = jnp.sqrt(jnp.sum(a * a, axis=1) * jnp.sum(b * b, axis=1)) + 1e-12
-    return jnp.mean(1.0 - num / den)
 
 
 def _chan_corr(eeg: JaxArray) -> JaxArray:
@@ -461,7 +451,6 @@ def build_targets(y_data: FloatArray, dt: float, cfg: StatConfig, burn_in: int =
         nperseg=nperseg,
         noverlap=noverlap,
         fs=fs,
-        spec_mode=cfg.spec_mode,
         bin_idx=bin_idx,
         log_psd=cfg.log_psd,
     )
@@ -535,18 +524,13 @@ def make_stat_loss(  # noqa: PLR0913
     """
 
     def loss(p: JRParamsJax) -> JaxArray:
-        eeg = eeg_jax(rollout_tbptt(x0, controls, p, dt, window), p.eeg_gain)[:, burn_in:]
+        eeg = model_eeg(p, x0, controls, dt, window)[:, burn_in:]
         total = jnp.asarray(0.0, dtype=jnp.float64)
         if weights.spec:
             model_logpsd = _log_psd(
                 eeg, targets.nperseg, targets.noverlap, targets.fs, targets.bin_idx, log=targets.log_psd
             )
-            spec_term = (
-                _spec_shape_loss(model_logpsd, targets.data_logpsd)
-                if targets.spec_mode == "shape"
-                else _spec_mag_loss(model_logpsd, targets.data_logpsd)
-            )
-            total = total + weights.spec * spec_term
+            total = total + weights.spec * _spec_mag_loss(model_logpsd, targets.data_logpsd)
         if weights.spatial:
             total = total + weights.spatial * _spatial_loss(eeg, targets.corr_data)
         if weights.time:
@@ -558,93 +542,8 @@ def make_stat_loss(  # noqa: PLR0913
 
 
 # --------------------------------------------------------------------------------------
-# Exploration and refinement
+# Refinement
 # --------------------------------------------------------------------------------------
-def explore_globals(
-    base: JRParamsJax,
-    stat_loss: Callable[[JRParamsJax], JaxArray],
-    *,
-    a_grid: Sequence[float] | None = None,
-    k_grid: Sequence[float] | None = None,
-    input_grid: Sequence[float] | None = None,
-) -> tuple[dict[str, float], FloatArray]:
-    """Grid-search the global knobs ``A``, ``K`` and ``mean_input`` for a good init.
-
-    Evaluates ``stat_loss`` on the Cartesian product of the grids and returns the argmin
-    as override values plus the full loss grid. ``A`` is searched as a single global scalar
-    (broadcast to all nodes): the limit-cycle PSD-vs-``A`` landscape is flat/multimodal, so
-    in-basin gradient on ``A`` crawls -- exploration is what localises it (Pille et al.).
-    The grid is walked sequentially with :func:`jax.lax.map` (not ``vmap``) so a large grid
-    over a long trajectory does not materialise every rollout at once.
-
-    Parameters
-    ----------
-    base
-        Base parameters (its ``A`` / ``K`` / ``mean_input`` are the defaults when a grid
-        is ``None``).
-    stat_loss
-        A statistics loss ``loss(p)`` from :func:`make_stat_loss`.
-    a_grid, k_grid, input_grid
-        Candidate values for the global excitatory gain ``A``, coupling ``K`` and the
-        (uniform) mean input.
-
-    Returns
-    -------
-    overrides
-        ``{"A": ..., "K": ..., "mean_input": ...}`` minimising the loss.
-    losses
-        Loss for every ``(A, K, mean_input)`` combination, shape ``(len(a)*len(k)*len(i),)``.
-    """
-    ag = list(a_grid) if a_grid is not None else [float(jnp.mean(base.A))]
-    kg = list(k_grid) if k_grid is not None else [float(base.K)]
-    ig = list(input_grid) if input_grid is not None else [float(jnp.mean(base.mean_input))]
-    combos = jnp.asarray([[a, k, i] for a in ag for k in kg for i in ig], dtype=jnp.float64)
-
-    def one(aki: JaxArray) -> JaxArray:
-        p = replace(
-            base,
-            A=jnp.broadcast_to(aki[0], (base.n_nodes,)),
-            K=aki[1],
-            mean_input=jnp.broadcast_to(aki[2], (base.n_nodes,)),
-        )
-        return stat_loss(p)
-
-    losses = jax.lax.map(one, combos)
-    best = combos[int(jnp.argmin(losses))]
-    return {"A": float(best[0]), "K": float(best[1]), "mean_input": float(best[2])}, np.asarray(losses)
-
-
-def _resolve_lr(
-    lr: float | optax.Schedule | dict[str, Any],
-) -> float | optax.Schedule:
-    """Resolve learning rate or dictionary configuration to a float or optax Schedule."""
-    if isinstance(lr, dict):
-        lr_dict = cast("dict[str, Any]", lr)
-        name = lr_dict.get("name")
-        if name == "exponential_decay":
-            return optax.exponential_decay(
-                init_value=float(lr_dict["init_value"]),
-                transition_steps=int(lr_dict["transition_steps"]),
-                decay_rate=float(lr_dict["decay_rate"]),
-                staircase=bool(lr_dict.get("staircase", False)),
-            )
-        if name == "cosine_decay":
-            return optax.cosine_decay_schedule(
-                init_value=float(lr_dict["init_value"]),
-                decay_steps=int(lr_dict["decay_steps"]),
-                alpha=float(lr_dict.get("alpha", 0.0)),
-            )
-        if name == "linear":
-            return optax.linear_schedule(
-                init_value=float(lr_dict["init_value"]),
-                end_value=float(lr_dict["end_value"]),
-                transition_steps=int(lr_dict["transition_steps"]),
-            )
-        msg = f"Unknown learning rate schedule name: {name!r}"
-        raise ValueError(msg)
-    return lr
-
-
 def refine(
     loss_fn: Callable[[dict[str, JaxArray]], JaxArray], theta0: dict[str, JaxArray], cfg: RefineConfig
 ) -> tuple[dict[str, JaxArray], list[float]]:
@@ -657,7 +556,7 @@ def refine(
     theta0
         Initial raw variables (from :func:`pack_theta`).
     cfg
-        Optimiser settings.
+        Optimiser settings (``lr`` may be a constant or an :class:`optax.Schedule`).
 
     Returns
     -------
@@ -666,8 +565,7 @@ def refine(
     history
         Loss value after each step.
     """
-    lr = _resolve_lr(cfg.lr)
-    opt = optax.chain(optax.clip_by_global_norm(cfg.clip), optax.adam(lr))
+    opt = optax.chain(optax.clip_by_global_norm(cfg.clip), optax.adam(cfg.lr))
     state = opt.init(theta0)
 
     @jax.jit
@@ -693,10 +591,7 @@ class IdentifyResult:
     """Result of an :func:`identify` run."""
 
     params: JRParamsJax
-    theta: dict[str, JaxArray]
     history: list[float]
-    explore_overrides: dict[str, float]
-    explore_losses: FloatArray
 
 
 def identify(  # noqa: PLR0913
@@ -713,18 +608,15 @@ def identify(  # noqa: PLR0913
     weights: LossWeights | None = None,
     stat_cfg: StatConfig | None = None,
     refine_cfg: RefineConfig | None = None,
-    a_grid: Sequence[float] | None = None,
-    k_grid: Sequence[float] | None = None,
-    input_grid: Sequence[float] | None = None,
 ) -> IdentifyResult:
-    """Explore global knobs then gradient-refine the reduced-model parameters.
+    """Gradient-refine the reduced-model parameters against the EEG statistics.
 
     Parameters
     ----------
     base
-        Base reduced-model parameters (fixed ``eeg_gain``, ``delay_steps``, ``sigma``...).
+        Base reduced-model parameters (fixed ``delay_steps``, ``sigma``...).
     free_names
-        Subset of ``{"A", "w_weights", "K", "mean_input"}`` to identify.
+        Subset of ``{"A", "w_weights", "eeg_gain", "K", "mean_input"}`` to identify.
     y_data
         Measured (uncontrolled) EEG, shape ``(n_channels, T)``, or a sequence of such
         recordings of the *same regime* (different noise seeds). A sequence is averaged
@@ -746,14 +638,11 @@ def identify(  # noqa: PLR0913
         Upper bound per connection weight; defaults to ``10 x`` the max base weight (or 1).
     weights, stat_cfg, refine_cfg
         Loss weights, Welch settings, and optimiser settings (sensible defaults used).
-    a_grid, k_grid, input_grid
-        Optional exploration grids for the global ``A``, ``K`` and ``mean_input``; if any
-        is given, the best combination is used as the refinement init.
 
     Returns
     -------
     IdentifyResult
-        Identified parameters, raw variables, loss history, and exploration outcome.
+        Identified parameters and the loss history.
     """
     weights = weights or LossWeights()
     stat_cfg = stat_cfg or StatConfig()
@@ -766,29 +655,17 @@ def identify(  # noqa: PLR0913
     u_arr = jnp.zeros((n_steps, n), dtype=jnp.float64) if controls is None else jnp.asarray(controls, dtype=jnp.float64)
     if w_max is None:
         w_max = 10.0 * (float(jnp.max(jnp.abs(base.w_weights))) or 1.0)
+    bounds = make_bounds(w_max)
 
     targets_list = [build_targets(y, dt, stat_cfg, burn_in) for y in y_list]
     targets = targets_list[0] if len(targets_list) == 1 else average_targets(targets_list)
     stat_loss = make_stat_loss(targets, weights, x0_arr, u_arr, dt, window, burn_in)
 
-    overrides: dict[str, float] = {}
-    losses = np.zeros(0, dtype=np.float64)
-    if a_grid is not None or k_grid is not None or input_grid is not None:
-        overrides, losses = explore_globals(base, stat_loss, a_grid=a_grid, k_grid=k_grid, input_grid=input_grid)
-        base = replace(
-            base,
-            A=jnp.broadcast_to(jnp.asarray(overrides["A"]), (n,)),
-            K=jnp.asarray(overrides["K"]),
-            mean_input=jnp.broadcast_to(jnp.asarray(overrides["mean_input"]), (n,)),
-        )
-
-    theta0 = pack_theta(base, free_names, w_max=w_max)
+    theta0 = pack_theta(base, free_names, bounds)
 
     def loss_theta(theta: dict[str, JaxArray]) -> JaxArray:
-        return stat_loss(build_params(theta, base, free_names, w_max=w_max))
+        return stat_loss(build_params(theta, base, free_names, bounds))
 
     theta, history = refine(loss_theta, theta0, refine_cfg)
-    params = build_params(theta, base, free_names, w_max=w_max)
-    return IdentifyResult(
-        params=params, theta=theta, history=history, explore_overrides=overrides, explore_losses=losses
-    )
+    params = build_params(theta, base, free_names, bounds)
+    return IdentifyResult(params=params, history=history)
