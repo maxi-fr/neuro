@@ -202,7 +202,7 @@ class WaveformController(Controller[WaveformControllerLog]):
     step ``k = round(t / dt)`` (clamped to the last sample). Used to inject persistently-exciting
     tES inputs (random-amplitude steps ``ras``, a random binary signal ``prbs``, or a
     ``multisine``) for plant identification -- configured by
-    ``scripts/configs/jansen_rit_seizure_excited.yaml``.
+    ``configs/simulation/jansen_rit_seizure_excited.yaml``.
     """
 
     def __init__(self, dt: float, schedule: ArrayLike) -> None:

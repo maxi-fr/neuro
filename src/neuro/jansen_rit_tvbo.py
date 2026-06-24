@@ -84,6 +84,29 @@ def build_tvbo_network(params: JansenRitParams, dt: float, seed: int | None = No
     )
 
 
+def lfp_jax(x: jax.Array) -> jax.Array:
+    """Observed output ``y = x2 - x3`` from a state or trajectory."""
+    return x[1] - x[2]
+
+
+def eeg_jax(x: jax.Array, gain: jax.Array) -> jax.Array:
+    """Map state to EEG measurement ``gain @ lfp``.
+
+    Parameters
+    ----------
+    x
+        State matrix of shape ``(6, N)`` (or ``(6, N, T)``).
+    gain
+        Leadfield matrix of shape ``(n_channels, N)``.
+
+    Returns
+    -------
+    jax.Array
+        EEG output, shape ``(n_channels,)`` (or ``(n_channels, T)``).
+    """
+    return gain @ lfp_jax(x)
+
+
 def simulate_tvbo(
     params: JansenRitParams, duration: float, dt: float, seed: int | None = None
 ) -> tuple[FloatArray, FloatArray]:

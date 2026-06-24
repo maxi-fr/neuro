@@ -1,7 +1,7 @@
 """Feasibility test of tracking a whole-brain seizure with a reduced region-space UKF.
 
 Loads the 62-channel seizure EEG from a capture run -- simulate a seizure plant through the
-orchestrator (``scripts/configs/jansen_rit_seizure.yaml`` via ``scripts/run_simulation.py``) and
+orchestrator (``configs/simulation/jansen_rit_seizure.yaml`` via ``scripts/run_simulation.py``) and
 point ``--data`` at the resulting ``log.npz`` -- and drives a *reduced* ``M``-region Jansen-Rit
 UKF. Unlike a channel-space surrogate, the reduced nodes are
 actual brain regions -- the EZ/PZ plus their strongest structural neighbours -- so a node sits on
@@ -102,7 +102,7 @@ def main(  # noqa: PLR0913, PLR0915
     connectome = load_connectome(speed=50.0)
 
     # Seizure EEG comes from a capture run: simulate a seizure plant through the orchestrator
-    # (scripts/configs/jansen_rit_seizure.yaml -> scripts/run_simulation.py) and point --data at
+    # (configs/simulation/jansen_rit_seizure.yaml -> scripts/run_simulation.py) and point --data at
     # the resulting log.npz; the 62-channel EEG is the universally-logged measurement.
     blob = np.load(data, allow_pickle=True)
     eeg = np.asarray(blob["universal_y_mea"], dtype=np.float64).T  # (62, T)

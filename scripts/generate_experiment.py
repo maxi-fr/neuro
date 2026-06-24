@@ -8,9 +8,9 @@ the controller is a :class:`~neuro.control.WaveformController`, ``controller.inp
 
 Usage
 -----
-    uv run python scripts/generate_experiment.py scripts/configs/jansen_rit_seizure_excited.yaml \
-        --n-trials 20 --output scripts/configs/plant_excited_experiment.yaml
-    uv run python scripts/run_simulation.py scripts/configs/plant_excited_experiment.yaml
+    uv run python scripts/generate_experiment.py configs/simulation/jansen_rit_seizure_excited.yaml \
+        --n-trials 20 --output configs/simulation/plant_excited_experiment.yaml
+    uv run python scripts/run_simulation.py configs/simulation/plant_excited_experiment.yaml
 """
 
 from __future__ import annotations

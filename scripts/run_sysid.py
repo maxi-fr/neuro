@@ -45,7 +45,7 @@ def _load_data(data_file: str, n_steps: int, downsample: int) -> tuple[np.ndarra
 def main() -> None:
     """Run SysID on simulated data based on a YAML configuration file."""
     parser = argparse.ArgumentParser(description="Run SysID on simulated data.")
-    parser.add_argument("--config", type=str, default="scripts/sysid_config.yaml", help="Path to config YAML.")
+    parser.add_argument("--config", type=str, default="configs/sysid/sysid_config.yaml", help="Path to config YAML.")
     args = parser.parse_args()
 
     config_path = Path(args.config)

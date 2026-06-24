@@ -1,0 +1,190 @@
+experiments:
+- t_end: 5.0
+  dynamics:
+    class_path: neuro.jansen_rit.JansenRitDynamics
+    dt: 0.0001
+    K: 0.75
+    seed: 42
+    speed: 50.0
+    target_electrode:
+    - CP5
+    - T7
+    gamma_sigma: 20.0
+    params:
+      A:
+      - 3.25
+      - 3.25
+      - 3.25
+      - 3.25
+      - 3.25
+      - 3.25
+      - 3.25
+      - 3.25
+      - 3.25
+      - 3.25
+      - 3.25
+      - 3.25
+      - 3.25
+      - 3.25
+      - 3.25
+      - 3.25
+      - 3.25
+      - 3.25
+      - 3.25
+      - 3.25
+      - 3.25
+      - 3.25
+      - 3.25
+      - 3.25
+      - 3.25
+      - 3.25
+      - 3.25
+      - 3.25
+      - 3.25
+      - 3.25
+      - 3.25
+      - 3.25
+      - 3.25
+      - 3.25
+      - 3.25
+      - 3.25
+      - 3.25
+      - 3.25
+      - 3.25
+      - 3.25
+      - 3.6
+      - 3.25
+      - 3.25
+      - 3.25
+      - 3.25
+      - 3.25
+      - 3.25
+      - 3.6
+      - 3.25
+      - 3.25
+      - 3.25
+      - 3.25
+      - 3.25
+      - 3.25
+      - 3.25
+      - 3.25
+      - 3.25
+      - 3.25
+      - 3.25
+      - 3.25
+      - 3.25
+      - 3.25
+      - 3.6
+      - 3.25
+      - 3.25
+      - 3.25
+      - 3.25
+      - 3.25
+      - 3.25
+      - 3.4
+      - 3.25
+      - 3.25
+      - 3.4
+      - 3.25
+      - 3.25
+      - 3.25
+  reference:
+    class_path: simulate.reference.StepReference
+    dt: 0.0001
+    step_value: 0.0
+  sensors:
+    class_path: simulate.sensor.GaussianSensor
+    dt: 0.0001
+    std_dev: 0.0
+    measurement:
+      class_path: neuro.measurement.EEGMeasurement
+      speed: 50.0
+  estimator:
+    class_path: simulate.estimator.IdentityEstimator
+    dt: 0.0001
+  controller:
+    class_path: neuro.control.WaveformController
+    dt: 0.0001
+    n_u: 2
+    input_type: prbs
+    amp: 50.0
+    hold_ms: 50.0
+    transient_ms: 1000.0
+    duration: 5.0
+    input_seed: 100042
+- dynamics:
+    seed: 43
+  controller:
+    input_seed: 100043
+- dynamics:
+    seed: 44
+  controller:
+    input_seed: 100044
+- dynamics:
+    seed: 45
+  controller:
+    input_seed: 100045
+- dynamics:
+    seed: 46
+  controller:
+    input_seed: 100046
+- dynamics:
+    seed: 47
+  controller:
+    input_seed: 100047
+- dynamics:
+    seed: 48
+  controller:
+    input_seed: 100048
+- dynamics:
+    seed: 49
+  controller:
+    input_seed: 100049
+- dynamics:
+    seed: 50
+  controller:
+    input_seed: 100050
+- dynamics:
+    seed: 51
+  controller:
+    input_seed: 100051
+- dynamics:
+    seed: 52
+  controller:
+    input_seed: 100052
+- dynamics:
+    seed: 53
+  controller:
+    input_seed: 100053
+- dynamics:
+    seed: 54
+  controller:
+    input_seed: 100054
+- dynamics:
+    seed: 55
+  controller:
+    input_seed: 100055
+- dynamics:
+    seed: 56
+  controller:
+    input_seed: 100056
+- dynamics:
+    seed: 57
+  controller:
+    input_seed: 100057
+- dynamics:
+    seed: 58
+  controller:
+    input_seed: 100058
+- dynamics:
+    seed: 59
+  controller:
+    input_seed: 100059
+- dynamics:
+    seed: 60
+  controller:
+    input_seed: 100060
+- dynamics:
+    seed: 61
+  controller:
+    input_seed: 100061

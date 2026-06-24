@@ -2,7 +2,7 @@
 
 The EZ/PZ seizure regime -- a seizure originating in ``lHC``/``lPHC``/``lAMYG`` (EZ) and
 propagating to ``lTCI``/``lTCV`` (PZ), with all other regions healthy -- underpins the seizure
-YAML configs (``scripts/configs/jansen_rit_seizure*.yaml``, whose ``A`` vectors are
+YAML configs (``configs/simulation/jansen_rit_seizure*.yaml``, whose ``A`` vectors are
 :func:`build_seizure_a_gains`) and the smart UKF initialisation in
 ``scripts/run_ukf_feasibility.py``. Defining the regime once here keeps them in sync.
 """

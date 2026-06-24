@@ -1,0 +1,469 @@
+"""Unified short-horizon prediction API for comparing system-identification methods.
+
+Three identified models live in this project -- the JAX reduced PCA model
+(:mod:`neuro.sysid_jax`), the reduced-region UKF (:class:`neuro.estimator.UKFEstimator`),
+and an Equinox MLP predictor (``scripts/run_nn_predictor_jax.py``). They are fit and
+evaluated in isolation on different data, channels, units, and time steps. This module
+wraps each behind one :class:`Predictor` protocol so a notebook can compare them on
+identical held-out test windows.
+
+Conditioning is **measured-EEG only** (no hidden plant state): at each test start ``t0``
+every predictor rebuilds its state from a window of recent *measured* EEG, then runs
+open-loop to the horizon, applying the recorded future controls through the physical
+tES projection ``gamma`` (the data is a persistently-exciting tES recording). The two
+reduced physics models pre-load their slowly-varying parameters from train-only
+artifacts and only build the per-window *state* from the test context.
+
+Metrics are **scale-invariant** (NRMSE, Pearson correlation, correlation-based FC)
+because the EEG units are arbitrary (see the project's uncalibrated-units note) and the
+methods output different amplitude scales.
+
+64-bit JAX is required; call :func:`neuro.jansen_rit_jax.enable_x64` first.
+"""
+
+from __future__ import annotations
+
+import json
+from dataclasses import dataclass
+from pathlib import Path
+from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
+
+import equinox as eqx
+import jax
+import jax.numpy as jnp
+import numpy as np
+import numpy.typing as npt
+
+from neuro.estimator import UKFEstimator
+from neuro.jansen_rit import JansenRitParams
+from neuro.jansen_rit_jax import eeg_jax, from_jansen_rit_params
+from neuro.sysid_jax import rollout_tbptt
+
+if TYPE_CHECKING:
+    from neuro.jansen_rit_jax import JRParamsJax
+
+FloatArray = npt.NDArray[np.float64]
+JaxArray = jax.Array
+
+_N_STATE_ROWS = 6  # Jansen-Rit state rows x1..x6
+_EPS = 1e-12
+
+
+# --------------------------------------------------------------------------------------
+# Window container
+# --------------------------------------------------------------------------------------
+@dataclass(frozen=True)
+class PredictionWindow:
+    """Measurements a predictor may use at one test start ``t0``.
+
+    No hidden plant state is exposed -- each predictor reconstructs its own state from
+    ``y_ctx``. All arrays are given at the data sampling step ``dt_data``; predictors
+    downsample to their own native step internally.
+
+    Attributes
+    ----------
+    y_ctx
+        Measured EEG over the context window ending at ``t0``, shape ``(n_ch, ctx)``.
+    u_ctx
+        Per-electrode controls over the context, shape ``(ctx, n_elec)``.
+    u_future
+        Recorded/planned controls over the horizon, shape ``(H, n_elec)``.
+    dt_data
+        Sampling step (seconds) of ``y_ctx`` / ``u_ctx`` / ``u_future``.
+    """
+
+    y_ctx: FloatArray
+    u_ctx: FloatArray
+    u_future: FloatArray
+    dt_data: float
+
+
+@runtime_checkable
+class Predictor(Protocol):
+    """Common interface: build state from a context window, predict open-loop."""
+
+    name: str
+    dt: float
+
+    def predict(self, window: PredictionWindow, horizon_s: float) -> FloatArray:
+        """Return predicted EEG ``(n_ch, n_steps)`` at ``self.dt`` over ``horizon_s``."""
+        ...
+
+
+# --------------------------------------------------------------------------------------
+# Resampling helpers
+# --------------------------------------------------------------------------------------
+def _ds_factor(target_dt: float, data_dt: float) -> int:
+    """Integer decimation factor mapping ``data_dt`` up to ``target_dt`` (>= 1)."""
+    return max(1, round(target_dt / data_dt))
+
+
+def _resample_controls(u: FloatArray, factor: int, n_steps: int) -> FloatArray:
+    """Decimate a ``(T, n_elec)`` control series and pad/truncate to ``n_steps`` rows."""
+    u_ds = np.asarray(u, dtype=np.float64)[::factor]
+    if u_ds.shape[0] >= n_steps:
+        return u_ds[:n_steps]
+    pad = np.zeros((n_steps - u_ds.shape[0], u_ds.shape[1]), dtype=np.float64)
+    return np.concatenate([u_ds, pad], axis=0)
+
+
+def decimate_to(signal: FloatArray, native_dt: float, analysis_dt: float) -> FloatArray:
+    """Decimate a ``(n_ch, T)`` signal from ``native_dt`` onto the ``analysis_dt`` grid."""
+    return np.asarray(signal, dtype=np.float64)[:, :: _ds_factor(analysis_dt, native_dt)]
+
+
+# --------------------------------------------------------------------------------------
+# JAX reduced PCA model
+# --------------------------------------------------------------------------------------
+class JaxSysidPredictor:
+    """Reduced PCA Jansen-Rit model identified by :mod:`neuro.sysid_jax`.
+
+    The model does **not** fit per window. Instead it is run forward through the context
+    window (from a zero state, driven by the recorded controls) so its internal state
+    settles past the ``x0`` -> limit-cycle transient; the horizon prediction is the
+    continued deterministic rollout. Being deterministic and noise-free, it tracks the
+    model's own attractor under the recorded stimulation rather than a specific noise
+    realisation -- a stabilised free-run, not data assimilation.
+    """
+
+    name = "jax_sysid"
+
+    def __init__(
+        self,
+        params: JRParamsJax,
+        eeg_gain: FloatArray,
+        gamma_modes: FloatArray,
+        dt: float,
+    ) -> None:
+        self._params = params
+        self._eeg_gain = jnp.asarray(eeg_gain, dtype=jnp.float64)
+        self._gamma_modes = jnp.asarray(gamma_modes, dtype=jnp.float64)
+        self.dt = float(dt)
+        self._n_nodes = params.n_nodes
+
+    @classmethod
+    def load(cls, artifact: str | Path, gamma_full: FloatArray, **_kwargs: object) -> JaxSysidPredictor:
+        """Rebuild the predictor from a ``run_sysid_jax`` ``.npz`` and the full ``gamma``.
+
+        ``gamma_full`` is the ``(n_elec, R)`` physical tES projection over the full
+        connectome; it is projected into the saved PCA mode basis so the reduced model
+        can respond to the recorded stimulation.
+        """
+        with np.load(artifact) as res:
+            a_syn = np.asarray(res["A"], dtype=np.float64)
+            w_weights = np.asarray(res["w_weights"], dtype=np.float64)
+            k_global = float(res["K"])
+            mean_input = np.asarray(res["mean_input"], dtype=np.float64)
+            eeg_gain = np.asarray(res["eeg_gain"], dtype=np.float64)
+            components = np.asarray(res["components"], dtype=np.float64)
+            delay_steps = np.asarray(res["delay_steps"], dtype=np.int64)
+            dt = float(res["dt"]) if "dt" in res else 1e-3
+        n = int(a_syn.shape[0])
+        gamma_modes = np.atleast_2d(np.asarray(gamma_full, dtype=np.float64)) @ components.T
+        jr = JansenRitParams(
+            A=a_syn,
+            mean_input=mean_input,
+            sigma=0.0,
+            w_weights=w_weights,
+            delay_steps=delay_steps,
+            eeg_gain=eeg_gain,
+            gamma=gamma_modes,
+            K=k_global,
+        )
+        params = from_jansen_rit_params(jr, n)
+        return cls(params, eeg_gain, gamma_modes, dt)
+
+    def predict(self, window: PredictionWindow, horizon_s: float) -> FloatArray:
+        """Stabilise the state over the context, then continue the rollout for the horizon."""
+        factor = _ds_factor(self.dt, window.dt_data)
+        ctx_t = np.asarray(window.y_ctx)[:, ::factor].shape[1]
+        u_ctx = _resample_controls(window.u_ctx, factor, ctx_t)
+        n_steps = round(horizon_s / self.dt)
+        u_fut = _resample_controls(window.u_future, factor, n_steps)
+
+        u_all = jnp.asarray(np.concatenate([u_ctx, u_fut], axis=0), dtype=jnp.float64) @ self._gamma_modes
+        x0 = jnp.zeros((_N_STATE_ROWS, self._n_nodes), dtype=jnp.float64)
+        x_traj = rollout_tbptt(x0, u_all, self._params, self.dt, ctx_t + n_steps)
+        eeg = np.asarray(eeg_jax(x_traj, self._eeg_gain))  # (n_ch, ctx_t + n_steps)
+        return eeg[:, ctx_t:]
+
+
+# --------------------------------------------------------------------------------------
+# Reduced-region UKF
+# --------------------------------------------------------------------------------------
+class UKFPredictor:
+    """Reduced-region UKF (:class:`neuro.estimator.UKFEstimator`).
+
+    Pretrained ``A/W/K/input`` (converged on the train seeds) are loaded from the
+    artifact and held fixed; the per-window dynamic state is estimated by filtering the
+    standardised context EEG, then the model free-runs open-loop with the recorded
+    controls. Predictions are returned in raw EEG units (de-standardised).
+    """
+
+    name = "ukf"
+
+    def __init__(  # noqa: PLR0913
+        self,
+        gain: FloatArray,
+        gamma_m: FloatArray,
+        chan_mean: FloatArray,
+        chan_std: FloatArray,
+        initial_a: FloatArray,
+        initial_w: FloatArray,
+        initial_k: float,
+        initial_input: FloatArray,
+        dt: float,
+        noise: dict[str, float],
+    ) -> None:
+        self.dt = float(dt)
+        self._gain = np.asarray(gain, dtype=np.float64)  # (n_ch, M), raw units
+        self._gamma_m = np.atleast_2d(np.asarray(gamma_m, dtype=np.float64))  # (n_elec, M)
+        self._chan_mean = np.asarray(chan_mean, dtype=np.float64)
+        self._chan_std = np.asarray(chan_std, dtype=np.float64)
+        self._initial_a = np.asarray(initial_a, dtype=np.float64)
+        self._initial_w = np.asarray(initial_w, dtype=np.float64)
+        self._initial_k = float(initial_k)
+        self._initial_input = np.asarray(initial_input, dtype=np.float64)
+        self._noise = noise
+        self._n_nodes = self._gain.shape[1]
+
+    @classmethod
+    def load(cls, artifact: str | Path, **_kwargs: object) -> UKFPredictor:
+        """Rebuild the predictor from a ``run_ukf_predictor`` ``.npz`` artifact."""
+        with np.load(artifact) as res:
+            noise = {k: float(res[k]) for k in ("q_x5", "q_a", "p_a", "q_input", "p_input", "r_channel")}
+            return cls(
+                gain=np.asarray(res["gain"], dtype=np.float64),
+                gamma_m=np.asarray(res["gamma_m"], dtype=np.float64),
+                chan_mean=np.asarray(res["chan_mean"], dtype=np.float64),
+                chan_std=np.asarray(res["chan_std"], dtype=np.float64),
+                initial_a=np.asarray(res["initial_a"], dtype=np.float64),
+                initial_w=np.asarray(res["initial_w"], dtype=np.float64),
+                initial_k=float(res["initial_k"]),
+                initial_input=np.asarray(res["initial_input"], dtype=np.float64),
+                dt=float(res["dt"]),
+                noise=noise,
+            )
+
+    def _build_estimator(self) -> UKFEstimator:
+        # Warm-start from the train-fitted parameters and let the UKF re-estimate the
+        # dynamic state (and lightly track the params) over the test context. The
+        # covariances mirror the proven-stable feasibility config -- near-zero priors on
+        # the large W/A/input blocks make the sigma-point covariance singular (potrf fails).
+        gain_scaled = self._gain / self._chan_std[:, None]
+        return UKFEstimator(
+            dt=self.dt,
+            n_nodes=self._n_nodes,
+            gain=gain_scaled,
+            gamma=self._gamma_m,
+            delays=None,
+            params=JansenRitParams(),
+            estimate_a=True,
+            estimate_input=True,
+            estimate_eeg_gains=False,
+            q_x5=self._noise["q_x5"],
+            r_channel=self._noise["r_channel"],
+            q_a=self._noise["q_a"],
+            p_a=self._noise["p_a"],
+            q_input=self._noise["q_input"],
+            p_input=self._noise["p_input"],
+            initial_k=self._initial_k,
+            initial_w=self._initial_w,
+            initial_a=self._initial_a,
+            initial_input=self._initial_input,
+            q_k=0.0,
+            p_k=1e-12,
+        )
+
+    def predict(self, window: PredictionWindow, horizon_s: float) -> FloatArray:
+        """Filter the context to estimate state, then free-run open-loop."""
+        factor = _ds_factor(self.dt, window.dt_data)
+        y_ctx = np.asarray(window.y_ctx, dtype=np.float64)[:, ::factor]
+        ctx_t = y_ctx.shape[1]
+        u_ctx = _resample_controls(window.u_ctx, factor, ctx_t)
+        n_steps = round(horizon_s / self.dt)
+        u_fut = _resample_controls(window.u_future, factor, n_steps)
+
+        y_std = (y_ctx - self._chan_mean[:, None]) / self._chan_std[:, None]
+        est = self._build_estimator()
+
+        # Warm-up filter over the context to lock the dynamic state (params ~fixed).
+        for k in range(ctx_t):
+            est.update(k * self.dt, y_std[:, k], u_ctx[k])
+
+        # Open-loop free-run with the recorded controls projected onto the nodes.
+        u_fut_node = u_fut @ self._gamma_m  # (n_steps, n_elec) @ (n_elec, M) -> (n_steps, M)
+        x_free = est.ukf.x.copy()
+        preds_std = np.empty((self._gain.shape[0], n_steps), dtype=np.float64)
+        for h in range(n_steps):
+            x_free = est.ukf.fx(x_free, self.dt, u_fut_node[h], ctx_t + h)
+            preds_std[:, h] = est.ukf.hx(x_free)
+        return preds_std * self._chan_std[:, None] + self._chan_mean[:, None]
+
+
+# --------------------------------------------------------------------------------------
+# Equinox MLP predictor
+# --------------------------------------------------------------------------------------
+class NNPredictor:
+    """Equinox MLP trained for direct ``horizon``-step EEG prediction.
+
+    Native conditioning: the input is ``[y_past (n_y), u_past (n_u), u_future (horizon)]``
+    drawn from the tail of the context window plus the recorded future controls. Outputs
+    are inverse-scaled to raw EEG units.
+    """
+
+    name = "nn"
+
+    def __init__(  # noqa: PLR0913
+        self,
+        model: eqx.nn.MLP,
+        *,
+        n_y: int,
+        n_u: int,
+        horizon: int,
+        n_channels: int,
+        dt: float,
+        scalers: dict[str, FloatArray],
+    ) -> None:
+        self._model = model
+        self._n_y = n_y
+        self._n_u = n_u
+        self._horizon = horizon
+        self._n_ch = n_channels
+        self.dt = dt
+        self._x_mean = scalers["x_mean"]
+        self._x_scale = scalers["x_scale"]
+        self._y_mean = scalers["y_mean"]
+        self._y_scale = scalers["y_scale"]
+
+    @classmethod
+    def load(cls, artifact: str | Path, **_kwargs: object) -> NNPredictor:
+        """Rebuild the predictor from the eqx weights file + sidecar ``.json``/``.npz``."""
+        artifact = Path(artifact)
+        meta: dict[str, Any] = json.loads(artifact.with_suffix(".json").read_text())
+        with np.load(artifact.with_suffix(".scalers.npz")) as sc:
+            scalers = {k: np.asarray(sc[k], dtype=np.float64) for k in ("x_mean", "x_scale", "y_mean", "y_scale")}
+        skeleton = eqx.nn.MLP(
+            in_size=meta["in_size"],
+            out_size=meta["out_size"],
+            width_size=meta["hidden_size"],
+            depth=meta["depth"],
+            activation=jax.nn.relu,
+            key=jax.random.PRNGKey(0),
+        )
+        model = eqx.tree_deserialise_leaves(str(artifact), skeleton)
+        return cls(
+            model,
+            n_y=meta["n_y"],
+            n_u=meta["n_u"],
+            horizon=meta["horizon"],
+            n_channels=meta["n_channels"],
+            dt=meta["dt"],
+            scalers=scalers,
+        )
+
+    def predict(self, window: PredictionWindow, horizon_s: float) -> FloatArray:
+        """Assemble the network input from the context tail, predict, inverse-scale."""
+        factor = _ds_factor(self.dt, window.dt_data)
+        y_abs = np.asarray(window.y_ctx, dtype=np.float64)[:, ::factor].T  # (ctx, n_ch), absolute
+        u_abs = _resample_controls(window.u_ctx, factor, y_abs.shape[0])  # (ctx, n_elec)
+        n_steps = round(horizon_s / self.dt)
+
+        num_chunks = int(np.ceil(n_steps / self._horizon)) if n_steps > 0 else 0
+        if num_chunks == 0:
+            return np.empty((self._n_ch, 0), dtype=np.float64)
+
+        total_pred_steps = num_chunks * self._horizon
+        u_fut_abs_all = _resample_controls(window.u_future, factor, total_pred_steps)
+
+        y_abs_current = y_abs.copy()
+        u_abs_current = u_abs.copy()
+        y_pred_abs_all = []
+
+        for i in range(num_chunks):
+            chunk_u_fut_abs = u_fut_abs_all[i * self._horizon : (i + 1) * self._horizon]
+
+            y_src, u_src, u_fut = y_abs_current, u_abs_current, chunk_u_fut_abs
+
+            if y_src.shape[0] < self._n_y or u_src.shape[0] < self._n_u:
+                msg = f"context too short for NN history (need n_y={self._n_y}, n_u={self._n_u}; got {y_src.shape[0]})"
+                raise ValueError(msg)
+
+            x_in = np.concatenate([y_src[-self._n_y :].flatten(), u_src[-self._n_u :].flatten(), u_fut.flatten()])
+            x_scaled = (x_in - self._x_mean) / self._x_scale
+            y_scaled = np.asarray(self._model(jnp.asarray(x_scaled, dtype=jnp.float64)))
+            y_flat = y_scaled * self._y_scale + self._y_mean
+            y_pred = y_flat.reshape(self._horizon, self._n_ch)  # (horizon, n_ch)
+
+            y_pred_abs_all.append(y_pred)
+
+            y_abs_current = np.concatenate([y_abs_current, y_pred], axis=0)
+            u_abs_current = np.concatenate([u_abs_current, chunk_u_fut_abs], axis=0)
+
+        y_pred_final = np.concatenate(y_pred_abs_all, axis=0)
+        return y_pred_final.T[:, :n_steps]
+
+
+# --------------------------------------------------------------------------------------
+# Scale-invariant prediction metrics
+# --------------------------------------------------------------------------------------
+def nrmse(pred: FloatArray, true: FloatArray) -> float:
+    """Channel-mean RMSE normalised by each channel's true-window std (lower better)."""
+    pred = np.asarray(pred, dtype=np.float64)
+    true = np.asarray(true, dtype=np.float64)
+    rmse = np.sqrt(np.mean((pred - true) ** 2, axis=1))
+    std = np.std(true, axis=1) + _EPS
+    return float(np.mean(rmse / std))
+
+
+def pearson_corr(pred: FloatArray, true: FloatArray) -> float:
+    """Pooled Pearson correlation over all channels/samples of a window."""
+    pred = np.asarray(pred, dtype=np.float64).ravel()
+    true = np.asarray(true, dtype=np.float64).ravel()
+    if pred.std() < _EPS or true.std() < _EPS:
+        return float("nan")
+    return float(np.corrcoef(pred, true)[0, 1])
+
+
+def error_vs_leadtime(preds: list[FloatArray], trues: list[FloatArray]) -> FloatArray:
+    """Std-normalised RMSE per lead step, averaged over windows and channels.
+
+    Parameters
+    ----------
+    preds, trues
+        Equal-length lists of ``(n_ch, H)`` prediction/truth windows (same ``H``).
+
+    Returns
+    -------
+    FloatArray
+        NRMSE as a function of lead step, shape ``(H,)``.
+    """
+    errs = []
+    for pred, true in zip(preds, trues, strict=True):
+        std = np.std(true, axis=1, keepdims=True) + _EPS
+        errs.append(np.sqrt(np.mean(((pred - true) / std) ** 2, axis=0)))
+    return np.mean(np.stack(errs, axis=0), axis=0)
+
+
+def fc(eeg: FloatArray) -> FloatArray:
+    """Channel-by-channel functional-connectivity (correlation) matrix."""
+    return np.corrcoef(np.asarray(eeg, dtype=np.float64))
+
+
+def fc_error(pred_fc: FloatArray, true_fc: FloatArray) -> float:
+    """Mean-squared error of the off-diagonal FC entries."""
+    iu = np.triu_indices(true_fc.shape[0], k=1)
+    return float(np.mean((pred_fc[iu] - true_fc[iu]) ** 2))
+
+
+def fc_pattern_corr(pred_fc: FloatArray, true_fc: FloatArray) -> float:
+    """Correlation between the off-diagonal FC patterns (spatial agreement)."""
+    iu = np.triu_indices(true_fc.shape[0], k=1)
+    return float(np.corrcoef(pred_fc[iu], true_fc[iu])[0, 1])
+
+
+def persistence_baseline(window: PredictionWindow, horizon_s: float, analysis_dt: float) -> FloatArray:
+    """Constant-hold baseline: repeat the last context sample over the horizon grid."""
+    n_steps = round(horizon_s / analysis_dt)
+    last = np.asarray(window.y_ctx, dtype=np.float64)[:, -1:]
+    return np.repeat(last, n_steps, axis=1)

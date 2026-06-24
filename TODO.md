@@ -7,23 +7,16 @@
 ## Implementations
 
 <details>
-<summary>UKF research + implementation</summary>
+<summary>fix configs</summary>
 
-* Use library or implement myself?
-
-</details>
-
-<details>
-<summary>EEG channel selection</summary>
-
-*
+* base level config folder with all the different configs for the different scripts in subfolders
 
 </details>
 
 <details>
-<summary>Coupling should be calculated every time rhs is evaluated</summary>
+<summary>Idea: NN for JR identification</summary>
 
-*
+* "u", "x_k" -> MLP/RNN - "x_dot" -> heun -> "x_k+1" -> x_1-x_2 -> Linear -> "y_k+1"
 
 </details>
 

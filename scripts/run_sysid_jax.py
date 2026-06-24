@@ -1,12 +1,12 @@
 """Run pure-JAX system identification of a reduced Jansen-Rit network.
 
 The autodiff alternative to ``scripts/run_sysid.py`` (CasADi PCMS): PCA-reduce the
-76-node plant to ``N`` virtual modes, then *explore* global knobs and *refine* the
-reduced ``A`` / ``w_weights`` with Optax against the uncontrolled EEG statistics.
+76-node plant to ``N`` virtual modes, then *refine* the reduced ``A`` / ``w_weights``
+with Optax against the uncontrolled EEG statistics.
 
 Usage::
 
-    uv run python scripts/run_sysid_jax.py --config scripts/sysid_jax_config.yaml
+    uv run python scripts/run_sysid_jax.py --config configs/sysid/sysid_jax_config.yaml
 """
 
 from __future__ import annotations
@@ -17,21 +17,50 @@ from typing import Any
 
 import jax.numpy as jnp
 import numpy as np
+import optax
 import yaml
 
 from neuro.connectome import load_connectome
 from neuro.jansen_rit import JansenRitParams
-from neuro.jansen_rit_jax import eeg_jax, enable_x64, from_jansen_rit_params
+from neuro.jansen_rit_jax import enable_x64, from_jansen_rit_params
 from neuro.sysid_jax import (
     IdentifyResult,
     LossWeights,
     RefineConfig,
     StatConfig,
     identify,
+    model_eeg,
     reduce_via_pca,
-    rollout_tbptt,
 )
 from utils.processing import compute_psd
+
+
+def _build_lr(lr: float | dict[str, Any]) -> float | optax.Schedule:
+    """Turn a config ``lr`` (constant or ``{"name": ..., ...}`` schedule spec) into an optax LR."""
+    if not isinstance(lr, dict):
+        return lr
+    name = lr.get("name")
+    if name == "exponential_decay":
+        return optax.exponential_decay(
+            init_value=float(lr["init_value"]),
+            transition_steps=int(lr["transition_steps"]),
+            decay_rate=float(lr["decay_rate"]),
+            staircase=bool(lr.get("staircase", False)),
+        )
+    if name == "cosine_decay":
+        return optax.cosine_decay_schedule(
+            init_value=float(lr["init_value"]),
+            decay_steps=int(lr["decay_steps"]),
+            alpha=float(lr.get("alpha", 0.0)),
+        )
+    if name == "linear":
+        return optax.linear_schedule(
+            init_value=float(lr["init_value"]),
+            end_value=float(lr["end_value"]),
+            transition_steps=int(lr["transition_steps"]),
+        )
+    msg = f"Unknown learning rate schedule name: {name!r}"
+    raise ValueError(msg)
 
 
 def _load_plant(sim_path: str, downsample: int, n_steps: int) -> tuple[np.ndarray, np.ndarray]:
@@ -71,12 +100,9 @@ def _report(  # noqa: PLR0913
     """Print offline fit metrics (mean over recordings): spectral-shape corr and FC error."""
     n = result.params.n_nodes
 
-    y_fit = np.asarray(
-        eeg_jax(
-            rollout_tbptt(jnp.zeros((6, n)), jnp.zeros((y_list[0].shape[1], n)), result.params, dt, window),
-            result.params.eeg_gain,
-        )
-    )[:, burn_in:]
+    y_fit = np.asarray(model_eeg(result.params, jnp.zeros((6, n)), jnp.zeros((y_list[0].shape[1], n)), dt, window))[
+        :, burn_in:
+    ]
 
     def _logpsd(sig: np.ndarray) -> np.ndarray:
         freqs, pxx = compute_psd(sig, dt_ms=dt * 1000.0)
@@ -90,14 +116,14 @@ def _report(  # noqa: PLR0913
     print(f"   final loss        : {result.history[-1]:.5f}  (from {result.history[0]:.5f})")
     print(f"   log-PSD corr      : {np.mean(psd_corrs):.4f}  (mean over {len(y_list)} recording(s))")
     print(f"   spatial-FC MSE    : {np.mean(fc_errs):.5f}")
-    if result.explore_overrides:
-        print(f"   explore overrides : {result.explore_overrides}")
 
 
 def main() -> None:
     """Run reduced-network JAX system identification from a YAML config."""
     parser = argparse.ArgumentParser(description="Pure-JAX reduced Jansen-Rit system identification.")
-    parser.add_argument("--config", type=str, default="scripts/sysid_jax_config.yaml", help="Path to config YAML.")
+    parser.add_argument(
+        "--config", type=str, default="configs/sysid/sysid_jax_config.yaml", help="Path to config YAML."
+    )
     args = parser.parse_args()
 
     config_path = Path(args.config)
@@ -127,11 +153,12 @@ def main() -> None:
 
     base = _base_params(red, cfg)
     weights = LossWeights(**cfg.get("weights", {}))
-    stat_cfg = StatConfig(nperseg=cfg.get("nperseg"), band=band, spec_mode=cfg.get("spec_mode", "magnitude"))
-    refine_cfg = RefineConfig(**cfg.get("refine", {}))
-    explore = cfg.get("explore", {})
+    stat_cfg = StatConfig(nperseg=cfg.get("nperseg"), band=band)
+    refine_dict = dict(cfg.get("refine", {}))
+    refine_dict["lr"] = _build_lr(refine_dict.get("lr", 1e-2))
+    refine_cfg = RefineConfig(**refine_dict)
 
-    print("3. Exploring globals then refining (this can take a minute)...")
+    print("3. Refining (this can take a minute)...")
     result = identify(
         base,
         list(cfg.get("free_params", ["A", "w_weights"])),
@@ -143,9 +170,6 @@ def main() -> None:
         weights=weights,
         stat_cfg=stat_cfg,
         refine_cfg=refine_cfg,
-        a_grid=explore.get("a_grid"),
-        k_grid=explore.get("k_grid"),
-        input_grid=explore.get("input_grid"),
     )
 
     print("4. Results:")
@@ -163,6 +187,9 @@ def main() -> None:
         components=red.components,
         delay_steps=red.delay_steps,
         history=np.asarray(result.history),
+        dt=float(dt),
+        window=int(window),
+        band=np.asarray(band, dtype=np.float64),
     )
     print(f"   saved -> {out}")
 

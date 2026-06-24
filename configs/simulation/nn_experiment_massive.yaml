@@ -1,0 +1,510 @@
+experiments:
+- t_end: 5.0
+  dynamics:
+    class_path: neuro.jansen_rit.JansenRitDynamics
+    dt: 0.0001
+    K: 0.75
+    seed: 42
+    speed: 50.0
+    target_electrode:
+    - CP5
+    - T7
+    gamma_sigma: 20.0
+    params:
+      A:
+      - 3.25
+      - 3.25
+      - 3.25
+      - 3.25
+      - 3.25
+      - 3.25
+      - 3.25
+      - 3.25
+      - 3.25
+      - 3.25
+      - 3.25
+      - 3.25
+      - 3.25
+      - 3.25
+      - 3.25
+      - 3.25
+      - 3.25
+      - 3.25
+      - 3.25
+      - 3.25
+      - 3.25
+      - 3.25
+      - 3.25
+      - 3.25
+      - 3.25
+      - 3.25
+      - 3.25
+      - 3.25
+      - 3.25
+      - 3.25
+      - 3.25
+      - 3.25
+      - 3.25
+      - 3.25
+      - 3.25
+      - 3.25
+      - 3.25
+      - 3.25
+      - 3.25
+      - 3.25
+      - 3.6
+      - 3.25
+      - 3.25
+      - 3.25
+      - 3.25
+      - 3.25
+      - 3.25
+      - 3.6
+      - 3.25
+      - 3.25
+      - 3.25
+      - 3.25
+      - 3.25
+      - 3.25
+      - 3.25
+      - 3.25
+      - 3.25
+      - 3.25
+      - 3.25
+      - 3.25
+      - 3.25
+      - 3.25
+      - 3.6
+      - 3.25
+      - 3.25
+      - 3.25
+      - 3.25
+      - 3.25
+      - 3.25
+      - 3.4
+      - 3.25
+      - 3.25
+      - 3.4
+      - 3.25
+      - 3.25
+      - 3.25
+  reference:
+    class_path: simulate.reference.StepReference
+    dt: 0.0001
+    step_value: 0.0
+  sensors:
+    class_path: simulate.sensor.GaussianSensor
+    dt: 0.0001
+    std_dev: 0.0
+    measurement:
+      class_path: neuro.measurement.EEGMeasurement
+      speed: 50.0
+  estimator:
+    class_path: simulate.estimator.IdentityEstimator
+    dt: 0.0001
+  controller:
+    class_path: neuro.control.WaveformController
+    dt: 0.0001
+    n_u: 2
+    input_type: prbs
+    amp: 50.0
+    hold_ms: 50.0
+    transient_ms: 1000.0
+    duration: 5.0
+    input_seed: 100042
+- dynamics:
+    seed: 43
+  controller:
+    input_seed: 100043
+- dynamics:
+    seed: 44
+  controller:
+    input_seed: 100044
+- dynamics:
+    seed: 45
+  controller:
+    input_seed: 100045
+- dynamics:
+    seed: 46
+  controller:
+    input_seed: 100046
+- dynamics:
+    seed: 47
+  controller:
+    input_seed: 100047
+- dynamics:
+    seed: 48
+  controller:
+    input_seed: 100048
+- dynamics:
+    seed: 49
+  controller:
+    input_seed: 100049
+- dynamics:
+    seed: 50
+  controller:
+    input_seed: 100050
+- dynamics:
+    seed: 51
+  controller:
+    input_seed: 100051
+- dynamics:
+    seed: 52
+  controller:
+    input_seed: 100052
+- dynamics:
+    seed: 53
+  controller:
+    input_seed: 100053
+- dynamics:
+    seed: 54
+  controller:
+    input_seed: 100054
+- dynamics:
+    seed: 55
+  controller:
+    input_seed: 100055
+- dynamics:
+    seed: 56
+  controller:
+    input_seed: 100056
+- dynamics:
+    seed: 57
+  controller:
+    input_seed: 100057
+- dynamics:
+    seed: 58
+  controller:
+    input_seed: 100058
+- dynamics:
+    seed: 59
+  controller:
+    input_seed: 100059
+- dynamics:
+    seed: 60
+  controller:
+    input_seed: 100060
+- dynamics:
+    seed: 61
+  controller:
+    input_seed: 100061
+- dynamics:
+    seed: 62
+  controller:
+    input_seed: 100062
+- dynamics:
+    seed: 63
+  controller:
+    input_seed: 100063
+- dynamics:
+    seed: 64
+  controller:
+    input_seed: 100064
+- dynamics:
+    seed: 65
+  controller:
+    input_seed: 100065
+- dynamics:
+    seed: 66
+  controller:
+    input_seed: 100066
+- dynamics:
+    seed: 67
+  controller:
+    input_seed: 100067
+- dynamics:
+    seed: 68
+  controller:
+    input_seed: 100068
+- dynamics:
+    seed: 69
+  controller:
+    input_seed: 100069
+- dynamics:
+    seed: 70
+  controller:
+    input_seed: 100070
+- dynamics:
+    seed: 71
+  controller:
+    input_seed: 100071
+- dynamics:
+    seed: 72
+  controller:
+    input_seed: 100072
+- dynamics:
+    seed: 73
+  controller:
+    input_seed: 100073
+- dynamics:
+    seed: 74
+  controller:
+    input_seed: 100074
+- dynamics:
+    seed: 75
+  controller:
+    input_seed: 100075
+- dynamics:
+    seed: 76
+  controller:
+    input_seed: 100076
+- dynamics:
+    seed: 77
+  controller:
+    input_seed: 100077
+- dynamics:
+    seed: 78
+  controller:
+    input_seed: 100078
+- dynamics:
+    seed: 79
+  controller:
+    input_seed: 100079
+- dynamics:
+    seed: 80
+  controller:
+    input_seed: 100080
+- dynamics:
+    seed: 81
+  controller:
+    input_seed: 100081
+- dynamics:
+    seed: 82
+  controller:
+    input_seed: 100082
+- dynamics:
+    seed: 83
+  controller:
+    input_seed: 100083
+- dynamics:
+    seed: 84
+  controller:
+    input_seed: 100084
+- dynamics:
+    seed: 85
+  controller:
+    input_seed: 100085
+- dynamics:
+    seed: 86
+  controller:
+    input_seed: 100086
+- dynamics:
+    seed: 87
+  controller:
+    input_seed: 100087
+- dynamics:
+    seed: 88
+  controller:
+    input_seed: 100088
+- dynamics:
+    seed: 89
+  controller:
+    input_seed: 100089
+- dynamics:
+    seed: 90
+  controller:
+    input_seed: 100090
+- dynamics:
+    seed: 91
+  controller:
+    input_seed: 100091
+- dynamics:
+    seed: 92
+  controller:
+    input_seed: 100092
+- dynamics:
+    seed: 93
+  controller:
+    input_seed: 100093
+- dynamics:
+    seed: 94
+  controller:
+    input_seed: 100094
+- dynamics:
+    seed: 95
+  controller:
+    input_seed: 100095
+- dynamics:
+    seed: 96
+  controller:
+    input_seed: 100096
+- dynamics:
+    seed: 97
+  controller:
+    input_seed: 100097
+- dynamics:
+    seed: 98
+  controller:
+    input_seed: 100098
+- dynamics:
+    seed: 99
+  controller:
+    input_seed: 100099
+- dynamics:
+    seed: 100
+  controller:
+    input_seed: 100100
+- dynamics:
+    seed: 101
+  controller:
+    input_seed: 100101
+- dynamics:
+    seed: 102
+  controller:
+    input_seed: 100102
+- dynamics:
+    seed: 103
+  controller:
+    input_seed: 100103
+- dynamics:
+    seed: 104
+  controller:
+    input_seed: 100104
+- dynamics:
+    seed: 105
+  controller:
+    input_seed: 100105
+- dynamics:
+    seed: 106
+  controller:
+    input_seed: 100106
+- dynamics:
+    seed: 107
+  controller:
+    input_seed: 100107
+- dynamics:
+    seed: 108
+  controller:
+    input_seed: 100108
+- dynamics:
+    seed: 109
+  controller:
+    input_seed: 100109
+- dynamics:
+    seed: 110
+  controller:
+    input_seed: 100110
+- dynamics:
+    seed: 111
+  controller:
+    input_seed: 100111
+- dynamics:
+    seed: 112
+  controller:
+    input_seed: 100112
+- dynamics:
+    seed: 113
+  controller:
+    input_seed: 100113
+- dynamics:
+    seed: 114
+  controller:
+    input_seed: 100114
+- dynamics:
+    seed: 115
+  controller:
+    input_seed: 100115
+- dynamics:
+    seed: 116
+  controller:
+    input_seed: 100116
+- dynamics:
+    seed: 117
+  controller:
+    input_seed: 100117
+- dynamics:
+    seed: 118
+  controller:
+    input_seed: 100118
+- dynamics:
+    seed: 119
+  controller:
+    input_seed: 100119
+- dynamics:
+    seed: 120
+  controller:
+    input_seed: 100120
+- dynamics:
+    seed: 121
+  controller:
+    input_seed: 100121
+- dynamics:
+    seed: 122
+  controller:
+    input_seed: 100122
+- dynamics:
+    seed: 123
+  controller:
+    input_seed: 100123
+- dynamics:
+    seed: 124
+  controller:
+    input_seed: 100124
+- dynamics:
+    seed: 125
+  controller:
+    input_seed: 100125
+- dynamics:
+    seed: 126
+  controller:
+    input_seed: 100126
+- dynamics:
+    seed: 127
+  controller:
+    input_seed: 100127
+- dynamics:
+    seed: 128
+  controller:
+    input_seed: 100128
+- dynamics:
+    seed: 129
+  controller:
+    input_seed: 100129
+- dynamics:
+    seed: 130
+  controller:
+    input_seed: 100130
+- dynamics:
+    seed: 131
+  controller:
+    input_seed: 100131
+- dynamics:
+    seed: 132
+  controller:
+    input_seed: 100132
+- dynamics:
+    seed: 133
+  controller:
+    input_seed: 100133
+- dynamics:
+    seed: 134
+  controller:
+    input_seed: 100134
+- dynamics:
+    seed: 135
+  controller:
+    input_seed: 100135
+- dynamics:
+    seed: 136
+  controller:
+    input_seed: 100136
+- dynamics:
+    seed: 137
+  controller:
+    input_seed: 100137
+- dynamics:
+    seed: 138
+  controller:
+    input_seed: 100138
+- dynamics:
+    seed: 139
+  controller:
+    input_seed: 100139
+- dynamics:
+    seed: 140
+  controller:
+    input_seed: 100140
+- dynamics:
+    seed: 141
+  controller:
+    input_seed: 100141

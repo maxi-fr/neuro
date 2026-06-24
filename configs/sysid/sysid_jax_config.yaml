@@ -4,16 +4,17 @@
 
 dt: 1.0e-4            # full-plant integration step (s)
 downsample: 10        # -> effective reduced-model dt = 1e-3 (resolves the ~10 Hz rhythm)
-n_steps: 20000         # reduced-model steps to fit (after downsampling); 50000*10 = all 500k raw (~50 s)
+n_steps: 5000          # reduced-model steps to fit (after downsampling); 50000/10 = all 50k raw (5 s)
 window: 300           # truncated-backprop window (tames chaotic gradients)
-burn_in: 2000         # samples dropped before stats: skips the model's x0 -> limit-cycle transient (~2 s)
+burn_in: 1500         # samples dropped before stats: skips the 1 s zero-stim transient + model warm-up
 n_components: 10      # N reduced virtual modes
 
-# One or more same-regime recordings (different noise seeds). Their LFP is concatenated
-# for the PCA basis and their PSD/FC statistics are averaged into a single fit target.
+# Train-split seeds (disjoint from the eval test seeds sim_090..099). Their LFP is
+# concatenated for the PCA basis and their PSD/FC statistics are averaged into one target.
 sims:
-  - results/simulation_2026-06-23_08-18-38/log.npz
-  #- results/simulation_2026-06-23_09-11-14/log.npz
+  - results/simulation_2026-06-23_18-49-20/train/sim_000.npz
+  - results/simulation_2026-06-23_18-49-20/train/sim_001.npz
+  - results/simulation_2026-06-23_18-49-20/train/sim_002.npz
 
 free_params: [w_weights, eeg_gain]
 a_init: [3.25, 3.25, 3.25, 3.25, 3.4, 3.6, 3.25, 3.25, 3.25, 3.25]
