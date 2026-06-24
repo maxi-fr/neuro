@@ -111,30 +111,24 @@ def build_dataset_for_trajectory(
         Input features array of shape (samples, n_y * C_y + n_u * C_u + N * C_u).
     Y : np.ndarray
         Target labels array of shape (samples, N * C_y).
-
     """
-    y_source = y_data
-    u_source = u_data
+    T_src, C_y = y_data.shape
+    _, C_u = u_data.shape
 
-    T_src, _C_y = y_source.shape
-    _, _C_u = u_source.shape
-
-    X, Y = [], []
     start_idx = max(n_y - 1, n_u)
     end_idx = T_src - N
+    k = np.arange(start_idx, end_idx)
 
-    for k in range(start_idx, end_idx):
-        y_past = y_source[k - n_y + 1 : k + 1]  # shape: (n_y, C_y)
-        u_past = u_source[k - n_u : k]  # shape: (n_u, C_u)
-        u_future = u_source[k : k + N]  # shape: (N, C_u)
+    y_view = np.lib.stride_tricks.sliding_window_view(y_data, (n_y, C_y)).reshape(-1, n_y * C_y)
+    u_past_view = np.lib.stride_tricks.sliding_window_view(u_data, (n_u, C_u)).reshape(-1, n_u * C_u)
+    u_fut_view = np.lib.stride_tricks.sliding_window_view(u_data, (N, C_u)).reshape(-1, N * C_u)
 
-        x_k = np.concatenate([y_past.flatten(), u_past.flatten(), u_future.flatten()])
-        X.append(x_k)
+    X = np.concatenate([y_view[k - n_y + 1], u_past_view[k - n_u], u_fut_view[k]], axis=1)
 
-        y_future = y_source[k + 1 : k + 1 + N]  # shape: (N, C_y)
-        Y.append(y_future.flatten())
+    y_fut_view = np.lib.stride_tricks.sliding_window_view(y_data, (N, C_y)).reshape(-1, N * C_y)
+    Y = y_fut_view[k + 1]
 
-    return np.array(X), np.array(Y)
+    return X, Y
 
 
 def get_dataloaders(X: np.ndarray, Y: np.ndarray, batch_size: int = 128) -> Iterator[tuple[jax.Array, jax.Array]]:
@@ -234,16 +228,38 @@ def create_model(
             key=key,
         )
 
-    # Custom hidden sizes
     keys = jax.random.split(key, len(hidden_size) + 1)
     layers = []
     last_size = in_size
-    for size, k in zip(hidden_size, keys[:-1], strict=False):
+    for size, k in zip(hidden_size, keys[:-1], strict=True):
         layers.append(eqx.nn.Linear(last_size, size, key=k))
         layers.append(eqx.nn.Lambda(jax.nn.relu))
         last_size = size
     layers.append(eqx.nn.Linear(last_size, out_size, key=keys[-1]))
     return eqx.nn.Sequential(layers)
+
+
+@eqx.filter_jit
+def predict_batch(m: eqx.Module, x: jax.Array) -> jax.Array:
+    """Run model prediction on a batch."""
+    return jax.vmap(m)(x)
+
+
+def compute_loss(m: eqx.Module, x: jax.Array, y: jax.Array) -> jax.Array:
+    """Compute MSE loss for a batch."""
+    pred_y = predict_batch(m, x)
+    return jnp.mean((pred_y - y) ** 2)
+
+
+@eqx.filter_jit
+def step(
+    m: eqx.Module, opt_s: optax.OptState, x: jax.Array, y: jax.Array, optimizer: optax.GradientTransformation
+) -> tuple[eqx.Module, optax.OptState, jax.Array]:
+    """Perform one optimizer step."""
+    loss_val, grads = eqx.filter_value_and_grad(compute_loss)(m, x, y)
+    updates, new_opt_s = optimizer.update(grads, opt_s, m)  # type: ignore
+    new_m: eqx.Module = eqx.apply_updates(m, updates)
+    return new_m, new_opt_s, loss_val
 
 
 def train_model(  # noqa: PLR0913
@@ -292,29 +308,10 @@ def train_model(  # noqa: PLR0913
     optimizer = optax.adamw(learning_rate=learning_rate, weight_decay=weight_decay)
     opt_state = optimizer.init(eqx.filter(model, eqx.is_array))
 
-    @eqx.filter_value_and_grad
-    def compute_loss(m: eqx.Module, x: jax.Array, y: jax.Array) -> jax.Array:
-        pred_y = jax.vmap(m)(x)
-        return jnp.mean((pred_y - y) ** 2)
-
-    @eqx.filter_jit
-    def step(
-        m: eqx.Module, opt_s: optax.OptState, x: jax.Array, y: jax.Array
-    ) -> tuple[eqx.Module, optax.OptState, jax.Array]:
-        loss_val, grads = compute_loss(m, x, y)
-        updates, new_opt_s = optimizer.update(grads, opt_s, m)  # type: ignore
-        new_m: eqx.Module = eqx.apply_updates(m, updates)
-        return new_m, new_opt_s, loss_val
-
     print("\n2. Training JAX MLP with Optax (with Weight Decay and Early Stopping)...")
     best_val_loss = float("inf")
     best_model = model
     last_val_loss = float("nan")
-
-    @eqx.filter_jit
-    def evaluate_val(m: eqx.Module, x: jax.Array, y: jax.Array) -> jax.Array:
-        pred_y = jax.vmap(m)(x)
-        return jnp.mean((pred_y - y) ** 2)
 
     X_val_jnp = jnp.array(X_val_s)
     Y_val_jnp = jnp.array(Y_val_s)
@@ -327,14 +324,14 @@ def train_model(  # noqa: PLR0913
         epoch_loss = 0.0
         batches = 0
         for batch_x, batch_y in get_dataloaders(X_train_s, Y_train_s, batch_size):
-            model, opt_state, loss = step(model, opt_state, batch_x, batch_y)
+            model, opt_state, loss = step(model, opt_state, batch_x, batch_y, optimizer)
             epoch_loss += loss.item()
             batches += 1
 
         avg_train_loss = float(epoch_loss / batches)
         train_losses.append(avg_train_loss)
 
-        last_val_loss = float(evaluate_val(model, X_val_jnp, Y_val_jnp).item())
+        last_val_loss = float(compute_loss(model, X_val_jnp, Y_val_jnp).item())
         val_losses.append(last_val_loss)
 
         if last_val_loss < best_val_loss:
@@ -389,12 +386,7 @@ def evaluate_model(
     mse : float
         Mean squared error of the absolute predictions.
     """
-
-    @eqx.filter_jit
-    def predict(m: eqx.Module, x: jax.Array) -> jax.Array:
-        return jax.vmap(m)(x)
-
-    Y_pred_s = np.array(predict(model, jnp.array(X_val_s)))
+    Y_pred_s = np.array(predict_batch(model, jnp.array(X_val_s)))
     Y_pred_unscaled = scaler_Y.inverse_transform(Y_pred_s)
 
     mse = np.mean((Y_val - Y_pred_unscaled) ** 2)
@@ -404,7 +396,7 @@ def evaluate_model(
 
 def plot_predictions(  # noqa: PLR0913
     Y_val: np.ndarray,
-    Y_pred_abs_flat: np.ndarray,
+    Y_pred: np.ndarray,
     split_idx: int,
     dt_real: float,
     horizon: int,
@@ -417,8 +409,8 @@ def plot_predictions(  # noqa: PLR0913
     ----------
     Y_val : np.ndarray
         Target values for the validation set.
-    Y_pred_abs_flat : np.ndarray
-        Absolute predictions flattened per step/channel.
+    Y_pred : np.ndarray
+        Absolute predictions shaped as (samples, horizon, C_y).
     split_idx : int
         Index where the validation split starts.
     dt_real : float
@@ -450,8 +442,7 @@ def plot_predictions(  # noqa: PLR0913
         # Now overlay a few N-step predictions to explicitly show it predicts N steps ahead
         stride = horizon
         for idx in range(0, n_plot_samples - horizon, stride):
-            pred_indices = [step * C_y + ch for step in range(horizon)]
-            n_step_pred = Y_pred_abs_flat[idx, pred_indices]
+            n_step_pred = Y_pred[idx, :, ch]
 
             pred_time_axis = val_start_time + (idx + np.arange(horizon)) * dt_real
 
@@ -499,7 +490,7 @@ def main() -> None:  # noqa: PLR0915
     n_y = model_cfg.get("n_y", 5)
     n_u = model_cfg.get("n_u", 5)
     horizon = model_cfg.get("horizon", 5)
-    hidden_size = model_cfg.get("hidden_size", 128)
+    hidden_size = int(model_cfg.get("hidden_size", 128))
     depth = model_cfg.get("depth", 2)
 
     train_cfg = config.get("training", {})
@@ -576,7 +567,7 @@ def main() -> None:  # noqa: PLR0915
         {
             "in_size": int(in_size),
             "out_size": int(out_size),
-            "hidden_size": hidden_size if isinstance(hidden_size, list) else int(hidden_size),
+            "hidden_size": int(hidden_size),
             "depth": int(depth),
             "n_y": int(n_y),
             "n_u": int(n_u),
@@ -591,7 +582,8 @@ def main() -> None:  # noqa: PLR0915
     Y_pred_abs_flat, _mse = evaluate_model(model, scaler_Y, X_val_s, Y_val)
 
     plot_path = artifact_dir / "comparison.png"
-    plot_predictions(Y_val, Y_pred_abs_flat, split_idx, dt_real, horizon, C_y, str(plot_path))
+    Y_pred_unflat = Y_pred_abs_flat.reshape(-1, horizon, C_y)
+    plot_predictions(Y_val, Y_pred_unflat, split_idx, dt_real, horizon, C_y, str(plot_path))
 
 
 if __name__ == "__main__":
