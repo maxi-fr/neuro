@@ -7,9 +7,9 @@
 ## Implementations
 
 <details>
-<summary>fix configs</summary>
+<summary>Training NN </summary>
 
-* base level config folder with all the different configs for the different scripts in subfolders
+* implement early stopping and restarting of trials
 
 </details>
 

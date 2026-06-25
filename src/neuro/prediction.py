@@ -108,13 +108,25 @@ def _resample_controls(u: FloatArray, factor: int, n_steps: int) -> FloatArray:
 
 
 def decimate_to(signal: FloatArray, native_dt: float, analysis_dt: float) -> FloatArray:
-    """Decimate a ``(n_ch, T)`` signal from ``native_dt`` onto the ``analysis_dt`` grid."""
+    """Decimate a ``(n_ch, T)`` signal from ``native_dt`` onto the ``analysis_dt`` grid.
+
+    Parameters
+    ----------
+    signal : FloatArray
+        Input signal array, shape ``(n_channels, n_samples)``.
+    native_dt : float
+        The original sampling interval of the signal.
+    analysis_dt : float
+        The target sampling interval to decimate to.
+
+    Returns
+    -------
+    FloatArray
+        The decimated signal array, shape ``(n_channels, n_samples_decimated)``.
+    """
     return np.asarray(signal, dtype=np.float64)[:, :: _ds_factor(analysis_dt, native_dt)]
 
 
-# --------------------------------------------------------------------------------------
-# JAX reduced PCA model
-# --------------------------------------------------------------------------------------
 class JaxSysidPredictor:
     """Reduced PCA Jansen-Rit model identified by :mod:`neuro.sysid_jax`.
 
@@ -188,9 +200,6 @@ class JaxSysidPredictor:
         return eeg[:, ctx_t:]
 
 
-# --------------------------------------------------------------------------------------
-# Reduced-region UKF
-# --------------------------------------------------------------------------------------
 class UKFPredictor:
     """Reduced-region UKF (:class:`neuro.estimator.UKFEstimator`).
 
@@ -301,9 +310,40 @@ class UKFPredictor:
         return preds_std * self._chan_std[:, None] + self._chan_mean[:, None]
 
 
-# --------------------------------------------------------------------------------------
-# Equinox MLP predictor
-# --------------------------------------------------------------------------------------
+class AutoregressivePredictor(eqx.Module):
+    """Wrapper that unrolls a 1-step MLP model over a prediction horizon."""
+
+    model: eqx.Module
+    n_y: int = eqx.field(static=True)
+    n_u: int = eqx.field(static=True)
+    horizon: int = eqx.field(static=True)
+    C_y: int = eqx.field(static=True)
+    C_u: int = eqx.field(static=True)
+
+    def __call__(self, x: jax.Array) -> jax.Array:
+        """Run the autoregressive rollout."""
+        y_past_flat = x[: self.n_y * self.C_y]
+        u_past_flat = x[self.n_y * self.C_y : self.n_y * self.C_y + self.n_u * self.C_u]
+        u_future_flat = x[self.n_y * self.C_y + self.n_u * self.C_u :]
+
+        y_window = y_past_flat.reshape((self.n_y, self.C_y))
+        u_window = u_past_flat.reshape((self.n_u, self.C_u))
+        u_future = u_future_flat.reshape((self.horizon, self.C_u))
+
+        def scan_fn(
+            carry: tuple[jax.Array, jax.Array], u_curr: jax.Array
+        ) -> tuple[tuple[jax.Array, jax.Array], jax.Array]:
+            y_w, u_w = carry
+            new_u_w = jnp.concatenate([u_w[1:], u_curr[None, :]], axis=0)
+            mlp_input = jnp.concatenate([y_w.flatten(), new_u_w.flatten()])
+            y_next = self.model(mlp_input)  # type: ignore
+            new_y_w = jnp.concatenate([y_w[1:], y_next[None, :]], axis=0)
+            return (new_y_w, new_u_w), y_next
+
+        _, y_preds = jax.lax.scan(scan_fn, (y_window, u_window), u_future)
+        return y_preds.flatten()
+
+
 class NNPredictor:
     """Equinox MLP trained for direct ``horizon``-step EEG prediction.
 
@@ -316,7 +356,7 @@ class NNPredictor:
 
     def __init__(  # noqa: PLR0913
         self,
-        model: eqx.nn.MLP,
+        model: eqx.Module,
         *,
         n_y: int,
         n_u: int,
@@ -331,8 +371,8 @@ class NNPredictor:
         self._horizon = horizon
         self._n_ch = n_channels
         self.dt = dt
-        self._x_mean = scalers["x_mean"]
-        self._x_scale = scalers["x_scale"]
+        self._u_mean = scalers["u_mean"]
+        self._u_scale = scalers["u_scale"]
         self._y_mean = scalers["y_mean"]
         self._y_scale = scalers["y_scale"]
 
@@ -342,8 +382,9 @@ class NNPredictor:
         artifact = Path(artifact)
         meta: dict[str, Any] = json.loads(artifact.with_suffix(".json").read_text())
         with np.load(artifact.with_suffix(".scalers.npz")) as sc:
-            scalers = {k: np.asarray(sc[k], dtype=np.float64) for k in ("x_mean", "x_scale", "y_mean", "y_scale")}
-        skeleton = eqx.nn.MLP(
+            scalers = {k: np.asarray(sc[k], dtype=np.float64) for k in ("u_mean", "u_scale", "y_mean", "y_scale")}
+
+        mlp = eqx.nn.MLP(
             in_size=meta["in_size"],
             out_size=meta["out_size"],
             width_size=meta["hidden_size"],
@@ -351,7 +392,16 @@ class NNPredictor:
             activation=jax.nn.relu,
             key=jax.random.PRNGKey(0),
         )
+        skeleton = AutoregressivePredictor(
+            model=mlp,
+            n_y=meta["n_y"],
+            n_u=meta["n_u"],
+            horizon=meta["horizon"],
+            C_y=meta["n_channels"],
+            C_u=meta["n_controls"],
+        )
         model = eqx.tree_deserialise_leaves(str(artifact), skeleton)
+
         return cls(
             model,
             n_y=meta["n_y"],
@@ -389,9 +439,15 @@ class NNPredictor:
                 msg = f"context too short for NN history (need n_y={self._n_y}, n_u={self._n_u}; got {y_src.shape[0]})"
                 raise ValueError(msg)
 
-            x_in = np.concatenate([y_src[-self._n_y :].flatten(), u_src[-self._n_u :].flatten(), u_fut.flatten()])
-            x_scaled = (x_in - self._x_mean) / self._x_scale
-            y_scaled = np.asarray(self._model(jnp.asarray(x_scaled, dtype=jnp.float64)))
+            y_past = y_src[-self._n_y :]
+            u_past = u_src[-self._n_u :]
+
+            y_past_s = (y_past - self._y_mean) / self._y_scale
+            u_past_s = (u_past - self._u_mean) / self._u_scale
+            u_fut_s = (u_fut - self._u_mean) / self._u_scale
+
+            x_scaled = np.concatenate([y_past_s.flatten(), u_past_s.flatten(), u_fut_s.flatten()])
+            y_scaled = np.asarray(self._model(jnp.asarray(x_scaled, dtype=jnp.float64)))  # type: ignore
             y_flat = y_scaled * self._y_scale + self._y_mean
             y_pred = y_flat.reshape(self._horizon, self._n_ch)  # (horizon, n_ch)
 
@@ -404,11 +460,21 @@ class NNPredictor:
         return y_pred_final.T[:, :n_steps]
 
 
-# --------------------------------------------------------------------------------------
-# Scale-invariant prediction metrics
-# --------------------------------------------------------------------------------------
 def nrmse(pred: FloatArray, true: FloatArray) -> float:
-    """Channel-mean RMSE normalised by each channel's true-window std (lower better)."""
+    """Channel-mean RMSE normalised by each channel's true-window std (lower better).
+
+    Parameters
+    ----------
+    pred : FloatArray
+        Predicted EEG window, shape ``(n_channels, n_samples)``.
+    true : FloatArray
+        True EEG window, shape ``(n_channels, n_samples)``.
+
+    Returns
+    -------
+    float
+        The channel-mean normalised RMSE.
+    """
     pred = np.asarray(pred, dtype=np.float64)
     true = np.asarray(true, dtype=np.float64)
     rmse = np.sqrt(np.mean((pred - true) ** 2, axis=1))
@@ -417,7 +483,20 @@ def nrmse(pred: FloatArray, true: FloatArray) -> float:
 
 
 def pearson_corr(pred: FloatArray, true: FloatArray) -> float:
-    """Pooled Pearson correlation over all channels/samples of a window."""
+    """Pooled Pearson correlation over all channels/samples of a window.
+
+    Parameters
+    ----------
+    pred : FloatArray
+        Predicted EEG window, shape ``(n_channels, n_samples)``.
+    true : FloatArray
+        True EEG window, shape ``(n_channels, n_samples)``.
+
+    Returns
+    -------
+    float
+        The Pearson correlation coefficient between the flattened arrays.
+    """
     pred = np.asarray(pred, dtype=np.float64).ravel()
     true = np.asarray(true, dtype=np.float64).ravel()
     if pred.std() < _EPS or true.std() < _EPS:
@@ -430,8 +509,10 @@ def error_vs_leadtime(preds: list[FloatArray], trues: list[FloatArray]) -> Float
 
     Parameters
     ----------
-    preds, trues
-        Equal-length lists of ``(n_ch, H)`` prediction/truth windows (same ``H``).
+    preds : list of FloatArray
+        List of prediction windows, where each array has shape ``(n_channels, H)``.
+    trues : list of FloatArray
+        List of truth windows, where each array has shape ``(n_channels, H)``.
 
     Returns
     -------
@@ -446,24 +527,77 @@ def error_vs_leadtime(preds: list[FloatArray], trues: list[FloatArray]) -> Float
 
 
 def fc(eeg: FloatArray) -> FloatArray:
-    """Channel-by-channel functional-connectivity (correlation) matrix."""
+    """Channel-by-channel functional-connectivity (correlation) matrix.
+
+    Parameters
+    ----------
+    eeg : FloatArray
+        EEG signal window, shape ``(n_channels, n_samples)``.
+
+    Returns
+    -------
+    FloatArray
+        The Pearson correlation matrix, shape ``(n_channels, n_channels)``.
+    """
     return np.corrcoef(np.asarray(eeg, dtype=np.float64))
 
 
 def fc_error(pred_fc: FloatArray, true_fc: FloatArray) -> float:
-    """Mean-squared error of the off-diagonal FC entries."""
+    """Mean-squared error of the off-diagonal FC entries.
+
+    Parameters
+    ----------
+    pred_fc : FloatArray
+        Predicted functional connectivity matrix, shape ``(n_channels, n_channels)``.
+    true_fc : FloatArray
+        True functional connectivity matrix, shape ``(n_channels, n_channels)``.
+
+    Returns
+    -------
+    float
+        The mean squared error of the upper triangular off-diagonal elements.
+    """
     iu = np.triu_indices(true_fc.shape[0], k=1)
     return float(np.mean((pred_fc[iu] - true_fc[iu]) ** 2))
 
 
 def fc_pattern_corr(pred_fc: FloatArray, true_fc: FloatArray) -> float:
-    """Correlation between the off-diagonal FC patterns (spatial agreement)."""
+    """Correlation between the off-diagonal FC patterns (spatial agreement).
+
+    Parameters
+    ----------
+    pred_fc : FloatArray
+        Predicted functional connectivity matrix, shape ``(n_channels, n_channels)``.
+    true_fc : FloatArray
+        True functional connectivity matrix, shape ``(n_channels, n_channels)``.
+
+    Returns
+    -------
+    float
+        The Pearson correlation between the upper triangular off-diagonal elements.
+    """
     iu = np.triu_indices(true_fc.shape[0], k=1)
     return float(np.corrcoef(pred_fc[iu], true_fc[iu])[0, 1])
 
 
 def persistence_baseline(window: PredictionWindow, horizon_s: float, analysis_dt: float) -> FloatArray:
-    """Constant-hold baseline: repeat the last context sample over the horizon grid."""
+    """Constant-hold baseline: repeat the last context sample over the horizon grid.
+
+    Parameters
+    ----------
+    window : PredictionWindow
+        The current test context containing the measured EEG.
+    horizon_s : float
+        The prediction horizon in seconds.
+    analysis_dt : float
+        The sampling interval for the predicted signal in seconds.
+
+    Returns
+    -------
+    FloatArray
+        The constant-hold baseline prediction, shape ``(n_channels, n_steps)``,
+        where ``n_steps = round(horizon_s / analysis_dt)``.
+    """
     n_steps = round(horizon_s / analysis_dt)
     last = np.asarray(window.y_ctx, dtype=np.float64)[:, -1:]
     return np.repeat(last, n_steps, axis=1)

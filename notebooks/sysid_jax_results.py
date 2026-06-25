@@ -504,7 +504,7 @@ def _(
     _C_y = y_data.shape[0]
 
     # We want predictions for each starting point idx in 0..n_plot_samples
-    _Y_pred_abs_flat = []
+    _Y_pred_abs = []
 
     # Pre-compute dummy inputs for the prediction horizon
     _u_dummy = jnp.zeros((_horizon, params.n_nodes))
@@ -515,16 +515,15 @@ def _(
         _x_pred_traj = rollout_tbptt(_x0, _u_dummy, params, dt, window=_horizon)
         _y_pred_overlay = np.asarray(eeg_jax(_x_pred_traj, eeg_gain))  # (62, horizon)
 
-        # Flatten such that pred_indices = [step * C_y + ch for step in range(horizon)]
         # _y_pred_overlay is (C_y, horizon) -> _y_pred_overlay.T is (horizon, C_y)
-        _Y_pred_abs_flat.append(_y_pred_overlay.T.flatten())
+        _Y_pred_abs.append(_y_pred_overlay.T)
 
-    _Y_pred_abs_flat = np.array(_Y_pred_abs_flat)
+    _Y_pred_abs = np.array(_Y_pred_abs)
     _Y_val = y_data.T[: _n_plot_samples + _horizon]  # shape (n_samples, 62)
 
     def plot_predictions(
         Y_val: np.ndarray,
-        Y_pred_abs_flat: np.ndarray,
+        Y_pred: np.ndarray,
         split_idx: int,
         dt_real: float,
         horizon: int,
@@ -537,8 +536,8 @@ def _(
         ----------
         Y_val : np.ndarray
             Target values for the validation set.
-        Y_pred_abs_flat : np.ndarray
-            Absolute predictions flattened per step/channel.
+        Y_pred : np.ndarray
+            Absolute predictions, shape (samples, horizon, C_y).
         split_idx : int
             Index where the validation split starts.
         dt_real : float
@@ -570,8 +569,7 @@ def _(
             # Now overlay a few N-step predictions to explicitly show it predicts N steps ahead
             stride = horizon
             for idx in range(0, n_plot_samples - horizon, stride):
-                pred_indices = [step * C_y + ch for step in range(horizon)]
-                n_step_pred = Y_pred_abs_flat[idx, pred_indices]
+                n_step_pred = Y_pred[idx, :, ch]
 
                 pred_time_axis = val_start_time + (idx + np.arange(horizon)) * dt_real
 
@@ -592,7 +590,7 @@ def _(
 
     plot_predictions(
         Y_val=_Y_val,
-        Y_pred_abs_flat=_Y_pred_abs_flat,
+        Y_pred=_Y_pred_abs,
         split_idx=0,
         dt_real=dt,
         horizon=_horizon,

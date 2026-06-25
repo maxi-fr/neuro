@@ -23,10 +23,11 @@ from sklearn.preprocessing import StandardScaler
 from tqdm import tqdm
 
 from neuro.jansen_rit_jax import enable_x64
+from neuro.prediction import AutoregressivePredictor
 
 
 def save_artifact(
-    artifact: Path, model: eqx.Module, scaler_x: StandardScaler, scaler_y: StandardScaler, meta: dict[str, object]
+    artifact: Path, model: eqx.Module, scaler_u: StandardScaler, scaler_y: StandardScaler, meta: dict[str, object]
 ) -> None:
     """Persist the trained MLP (eqx leaves) plus a JSON sidecar and the scaler arrays.
 
@@ -42,22 +43,22 @@ def save_artifact(
         Path to the artifact file.
     model : eqx.Module
         The trained Equinox module (MLP).
-    scaler_x : StandardScaler
-        Scikit-learn StandardScaler fitted to the input features.
+    scaler_u : StandardScaler
+        Scikit-learn StandardScaler fitted to the input controls u.
     scaler_y : StandardScaler
-        Scikit-learn StandardScaler fitted to the output targets.
+        Scikit-learn StandardScaler fitted to the output targets y.
     meta : dict[str, object]
         Metadata dictionary to be saved alongside the model.
     """
     artifact.parent.mkdir(parents=True, exist_ok=True)
     eqx.tree_serialise_leaves(str(artifact), model)
     artifact.with_suffix(".json").write_text(json.dumps(meta, indent=2))
-    x_mean, x_scale = scaler_x.mean_, scaler_x.scale_
+    u_mean, u_scale = scaler_u.mean_, scaler_u.scale_
     y_mean, y_scale = scaler_y.mean_, scaler_y.scale_
-    if x_mean is None or x_scale is None or y_mean is None or y_scale is None:
+    if u_mean is None or u_scale is None or y_mean is None or y_scale is None:
         msg = "Scalers must be fitted before saving the artifact."
         raise ValueError(msg)
-    np.savez(artifact.with_suffix(".scalers.npz"), x_mean=x_mean, x_scale=x_scale, y_mean=y_mean, y_scale=y_scale)
+    np.savez(artifact.with_suffix(".scalers.npz"), u_mean=u_mean, u_scale=u_scale, y_mean=y_mean, y_scale=y_scale)
 
 
 def load_trajectory(data_file: str, n_steps: int, downsample: int) -> tuple[np.ndarray, np.ndarray]:
@@ -75,9 +76,9 @@ def load_trajectory(data_file: str, n_steps: int, downsample: int) -> tuple[np.n
     Returns
     -------
     u_data : np.ndarray
-        The stimulation input trajectory.
+        The stimulation input trajectory, shape ``(T, C_u)``.
     y_data : np.ndarray
-        The measured output (EEG) trajectory.
+        The measured output (EEG) trajectory, shape ``(T, C_y)``.
     """
     print(f"Loading data from {data_file}...")
     with np.load(data_file) as data:
@@ -137,18 +138,18 @@ def get_dataloaders(X: np.ndarray, Y: np.ndarray, batch_size: int = 128) -> Iter
     Parameters
     ----------
     X : np.ndarray
-        Input features array.
+        Input features array, shape ``(samples, n_features)``.
     Y : np.ndarray
-        Target labels array.
+        Target labels array, shape ``(samples, n_targets)``.
     batch_size : int, optional
         Number of samples per batch. Defaults to 128.
 
     Yields
     ------
     batch_x : jax.Array
-        A batch of input features.
+        A batch of input features, shape ``(batch_size, n_features)``.
     batch_y : jax.Array
-        A batch of target labels.
+        A batch of target labels, shape ``(batch_size, n_targets)``.
     """
     n_samples = X.shape[0]
     indices = np.arange(n_samples)
@@ -187,10 +188,9 @@ def prepare_datasets(  # noqa: PLR0913
     Returns
     -------
     X_full : np.ndarray
-        Input features array.
+        Input features array, shape ``(total_samples, n_features)``.
     Y_full : np.ndarray
-        Target labels array.
-
+        Target labels array, shape ``(total_samples, n_targets)``.
     C_y : int
         Number of output channels.
     """
@@ -210,53 +210,205 @@ def prepare_datasets(  # noqa: PLR0913
     return X_full, Y_full, C_y
 
 
-def create_model(
+def create_model(  # noqa: PLR0913
     in_size: int,
     out_size: int,
-    hidden_size: int | list[int],
+    hidden_size: int,
     depth: int,
     key: jax.Array,
+    n_y: int,
+    n_u: int,
+    horizon: int,
+    C_y: int,
+    C_u: int,
 ) -> eqx.Module:
-    """Create the MLP model, supporting either a single width or a list of widths."""
-    if isinstance(hidden_size, int):
-        return eqx.nn.MLP(
-            in_size=in_size,
-            out_size=out_size,
-            width_size=hidden_size,
-            depth=depth,
-            activation=jax.nn.relu,
-            key=key,
-        )
+    """Create the Autoregressive MLP model.
 
-    keys = jax.random.split(key, len(hidden_size) + 1)
-    layers = []
-    last_size = in_size
-    for size, k in zip(hidden_size, keys[:-1], strict=True):
-        layers.append(eqx.nn.Linear(last_size, size, key=k))
-        layers.append(eqx.nn.Lambda(jax.nn.relu))
-        last_size = size
-    layers.append(eqx.nn.Linear(last_size, out_size, key=keys[-1]))
-    return eqx.nn.Sequential(layers)
+    Parameters
+    ----------
+    in_size : int
+        Size of the input features.
+    out_size : int
+        Size of the output predictions.
+    hidden_size : int
+        Number of neurons in the hidden layers.
+    depth : int
+        Number of hidden layers.
+    key : jax.Array
+        JAX PRNG key for initialization.
+    n_y : int
+        Number of past output steps.
+    n_u : int
+        Number of past input steps.
+    horizon : int
+        Prediction horizon.
+    C_y : int
+        Number of output channels.
+    C_u : int
+        Number of input control channels.
+
+    Returns
+    -------
+    eqx.Module
+        The instantiated AutoregressivePredictor model.
+    """
+    mlp = eqx.nn.MLP(
+        in_size=in_size,
+        out_size=out_size,
+        width_size=hidden_size,
+        depth=depth,
+        activation=jax.nn.relu,
+        key=key,
+    )
+    return AutoregressivePredictor(model=mlp, n_y=n_y, n_u=n_u, horizon=horizon, C_y=C_y, C_u=C_u)
+
+
+def scale_dataset(  # noqa: PLR0913
+    X: np.ndarray,
+    Y: np.ndarray,
+    scaler_y: StandardScaler,
+    scaler_u: StandardScaler,
+    n_y: int,
+    n_u: int,
+    C_y: int,
+    C_u: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Scale datasets per-channel.
+
+    Parameters
+    ----------
+    X : np.ndarray
+        Input features array, shape ``(samples, n_features)``.
+    Y : np.ndarray
+        Target labels array, shape ``(samples, n_targets)``.
+    scaler_y : StandardScaler
+        Fitted scaler for the outputs.
+    scaler_u : StandardScaler
+        Fitted scaler for the inputs.
+    n_y : int
+        Number of past output steps.
+    n_u : int
+        Number of past input steps.
+    C_y : int
+        Number of output channels.
+    C_u : int
+        Number of input control channels.
+
+    Returns
+    -------
+    X_s : np.ndarray
+        Scaled input features array, shape ``(samples, n_features)``.
+    Y_s : np.ndarray
+        Scaled target labels array, shape ``(samples, n_targets)``.
+    """
+    y_past_flat = X[:, : n_y * C_y]
+    u_past_flat = X[:, n_y * C_y : n_y * C_y + n_u * C_u]
+    u_fut_flat = X[:, n_y * C_y + n_u * C_u :]
+
+    y_past_s = scaler_y.transform(y_past_flat.reshape(-1, C_y)).reshape(X.shape[0], -1)
+    u_past_s = scaler_u.transform(u_past_flat.reshape(-1, C_u)).reshape(X.shape[0], -1)
+    u_fut_s = scaler_u.transform(u_fut_flat.reshape(-1, C_u)).reshape(X.shape[0], -1)
+
+    X_s = np.concatenate([y_past_s, u_past_s, u_fut_s], axis=1)
+    Y_s = scaler_y.transform(Y.reshape(-1, C_y)).reshape(Y.shape[0], -1)
+
+    return X_s, Y_s
 
 
 @eqx.filter_jit
 def predict_batch(m: eqx.Module, x: jax.Array) -> jax.Array:
-    """Run model prediction on a batch."""
+    """Run model prediction on a batch.
+
+    Parameters
+    ----------
+    m : eqx.Module
+        The Equinox model.
+    x : jax.Array
+        Batch of input features, shape ``(batch_size, n_features)``.
+
+    Returns
+    -------
+    jax.Array
+        Batch of predictions, shape ``(batch_size, n_targets)``.
+    """
     return jax.vmap(m)(x)
 
 
-def compute_loss(m: eqx.Module, x: jax.Array, y: jax.Array) -> jax.Array:
-    """Compute MSE loss for a batch."""
+def compute_loss(m: eqx.Module, x: jax.Array, y: jax.Array, alpha: jax.Array, C_y: int) -> jax.Array:
+    """Compute Mixed MSE loss for a batch.
+
+    alpha: 1.0 = pure 1-step Teacher Forcing loss.
+           0.0 = pure N-step unrolled loss.
+
+    Parameters
+    ----------
+    m : eqx.Module
+        The Equinox model.
+    x : jax.Array
+        Batch of input features, shape ``(batch_size, n_features)``.
+    y : jax.Array
+        Batch of target labels, shape ``(batch_size, n_targets)``.
+    alpha : jax.Array
+        Curriculum learning parameter balancing 1-step and N-step loss.
+    C_y : int
+        Number of output channels.
+
+    Returns
+    -------
+    jax.Array
+        The computed scalar loss value.
+    """
     pred_y = predict_batch(m, x)
-    return jnp.mean((pred_y - y) ** 2)
+
+    # The first C_y elements correspond to the first step of the rollout,
+    # which relies purely on the ground-truth past context (1-step prediction).
+    loss_1step = jnp.mean((pred_y[:, :C_y] - y[:, :C_y]) ** 2)
+
+    # The full N-step unrolled loss
+    loss_Nstep = jnp.mean((pred_y - y) ** 2)
+
+    return alpha * loss_1step + (1.0 - alpha) * loss_Nstep
 
 
 @eqx.filter_jit
-def step(
-    m: eqx.Module, opt_s: optax.OptState, x: jax.Array, y: jax.Array, optimizer: optax.GradientTransformation
+def step(  # noqa: PLR0913
+    m: eqx.Module,
+    opt_s: optax.OptState,
+    x: jax.Array,
+    y: jax.Array,
+    alpha: jax.Array,
+    C_y: int,
+    optimizer: optax.GradientTransformation,
 ) -> tuple[eqx.Module, optax.OptState, jax.Array]:
-    """Perform one optimizer step."""
-    loss_val, grads = eqx.filter_value_and_grad(compute_loss)(m, x, y)
+    """Perform one optimizer step.
+
+    Parameters
+    ----------
+    m : eqx.Module
+        The Equinox model.
+    opt_s : optax.OptState
+        The current optimizer state.
+    x : jax.Array
+        Batch of input features, shape ``(batch_size, n_features)``.
+    y : jax.Array
+        Batch of target labels, shape ``(batch_size, n_targets)``.
+    alpha : jax.Array
+        Curriculum learning parameter.
+    C_y : int
+        Number of output channels.
+    optimizer : optax.GradientTransformation
+        The Optax optimizer.
+
+    Returns
+    -------
+    new_m : eqx.Module
+        The updated Equinox model.
+    new_opt_s : optax.OptState
+        The updated optimizer state.
+    loss_val : jax.Array
+        The scalar loss value for the batch.
+    """
+    loss_val, grads = eqx.filter_value_and_grad(compute_loss)(m, x, y, alpha, C_y)
     updates, new_opt_s = optimizer.update(grads, opt_s, m)  # type: ignore
     new_m: eqx.Module = eqx.apply_updates(m, updates)
     return new_m, new_opt_s, loss_val
@@ -272,6 +424,8 @@ def train_model(  # noqa: PLR0913
     batch_size: int,
     learning_rate: float,
     weight_decay: float,
+    curriculum_decay_fraction: float,
+    C_y: int,
 ) -> tuple[eqx.Module, list[float], list[float]]:
     """Train the MLP model using Optax.
 
@@ -280,13 +434,13 @@ def train_model(  # noqa: PLR0913
     model : eqx.Module
         The Equinox MLP model to train.
     X_train_s : np.ndarray
-        Scaled training inputs.
+        Scaled training inputs, shape ``(samples_train, n_features)``.
     Y_train_s : np.ndarray
-        Scaled training targets.
+        Scaled training targets, shape ``(samples_train, n_targets)``.
     X_val_s : np.ndarray
-        Scaled validation inputs.
+        Scaled validation inputs, shape ``(samples_val, n_features)``.
     Y_val_s : np.ndarray
-        Scaled validation targets.
+        Scaled validation targets, shape ``(samples_val, n_targets)``.
     epochs : int
         Number of training epochs.
     batch_size : int
@@ -295,6 +449,8 @@ def train_model(  # noqa: PLR0913
         Learning rate.
     weight_decay : float
         Weight decay.
+    C_y : int
+        Number of output channels.
 
     Returns
     -------
@@ -308,10 +464,9 @@ def train_model(  # noqa: PLR0913
     optimizer = optax.adamw(learning_rate=learning_rate, weight_decay=weight_decay)
     opt_state = optimizer.init(eqx.filter(model, eqx.is_array))
 
-    print("\n2. Training JAX MLP with Optax (with Weight Decay and Early Stopping)...")
+    print("\n2. Training JAX MLP with Optax (with Weight Decay and Curriculum Learning)...")
     best_val_loss = float("inf")
     best_model = model
-    last_val_loss = float("nan")
 
     X_val_jnp = jnp.array(X_val_s)
     Y_val_jnp = jnp.array(Y_val_s)
@@ -320,27 +475,35 @@ def train_model(  # noqa: PLR0913
     train_losses = []
     val_losses = []
 
-    for _epoch in pbar:
+    decay_epochs = int(epochs * curriculum_decay_fraction)
+
+    for epoch in pbar:
+        # Curriculum learning: decay alpha from 1.0 to 0.0
+        alpha = 1.0 - epoch / decay_epochs if epoch < decay_epochs else 0.0
+
+        alpha_jax = jnp.array(alpha, dtype=jnp.float32)
+
         epoch_loss = 0.0
         batches = 0
         for batch_x, batch_y in get_dataloaders(X_train_s, Y_train_s, batch_size):
-            model, opt_state, loss = step(model, opt_state, batch_x, batch_y, optimizer)
+            model, opt_state, loss = step(model, opt_state, batch_x, batch_y, alpha_jax, C_y, optimizer)
             epoch_loss += loss.item()
             batches += 1
 
         avg_train_loss = float(epoch_loss / batches)
         train_losses.append(avg_train_loss)
 
-        last_val_loss = float(compute_loss(model, X_val_jnp, Y_val_jnp).item())
+        # Validation loss is always evaluated cleanly on the pure N-step unrolled objective (alpha=0.0)
+        last_val_loss = float(compute_loss(model, X_val_jnp, Y_val_jnp, jnp.array(0.0), C_y).item())
         val_losses.append(last_val_loss)
 
         if last_val_loss < best_val_loss:
             best_val_loss = last_val_loss
             best_model = model
 
-        pbar.set_postfix(train_loss=f"{avg_train_loss:.6f}", val_loss=f"{last_val_loss:.6f}")
+        pbar.set_postfix(train_loss=f"{avg_train_loss:.4f}", val_loss=f"{last_val_loss:.4f}", alpha=f"{alpha:.2f}")
 
-    print(f"\nTraining completed. Best Val Loss (Scaled MSE): {best_val_loss:.6f}")
+    print(f"\nTraining completed. Best Val Loss (N-Step MSE): {best_val_loss:.6f}")
     return best_model, train_losses, val_losses
 
 
@@ -362,9 +525,10 @@ def plot_training_curves(train_losses: list[float], val_losses: list[float], plo
 
 def evaluate_model(
     model: eqx.Module,
-    scaler_Y: StandardScaler,
+    scaler_y: StandardScaler,
     X_val_s: np.ndarray,
     Y_val: np.ndarray,
+    C_y: int,
 ) -> tuple[np.ndarray, float]:
     """Evaluate the trained model.
 
@@ -372,22 +536,24 @@ def evaluate_model(
     ----------
     model : eqx.Module
         The trained Equinox MLP model.
-    scaler_Y : StandardScaler
+    scaler_y : StandardScaler
         Fitted scaler for the targets.
     X_val_s : np.ndarray
-        Scaled validation inputs.
+        Scaled validation inputs, shape ``(samples_val, n_features)``.
     Y_val : np.ndarray
-        Target values for the validation set.
+        Target values for the validation set, shape ``(samples_val, n_targets)``.
+    C_y : int
+        Number of output channels.
 
     Returns
     -------
     Y_pred_unscaled : np.ndarray
-        Absolute predictions flattened per step/channel.
+        Absolute predictions flattened per step/channel, shape ``(samples_val, n_targets)``.
     mse : float
         Mean squared error of the absolute predictions.
     """
     Y_pred_s = np.array(predict_batch(model, jnp.array(X_val_s)))
-    Y_pred_unscaled = scaler_Y.inverse_transform(Y_pred_s)
+    Y_pred_unscaled = scaler_y.inverse_transform(Y_pred_s.reshape(-1, C_y)).reshape(Y_pred_s.shape)
 
     mse = np.mean((Y_val - Y_pred_unscaled) ** 2)
     print(f"\nValidation MSE (Absolute Error): {mse:.4f}")
@@ -408,9 +574,9 @@ def plot_predictions(  # noqa: PLR0913
     Parameters
     ----------
     Y_val : np.ndarray
-        Target values for the validation set.
+        Target values for the validation set, shape ``(samples_val, n_targets)``.
     Y_pred : np.ndarray
-        Absolute predictions shaped as (samples, horizon, C_y).
+        Absolute predictions, shape ``(samples_val, horizon, C_y)``.
     split_idx : int
         Index where the validation split starts.
     dt_real : float
@@ -498,6 +664,9 @@ def main() -> None:  # noqa: PLR0915
     batch_size = train_cfg.get("batch_size", 128)
     learning_rate = float(train_cfg.get("learning_rate", 1e-3))
     weight_decay = float(train_cfg.get("weight_decay", 1e-4))
+    train_split = float(train_cfg.get("train_split", 0.8))
+    curriculum_decay_fraction = float(train_cfg.get("curriculum_decay_fraction", 0.8))
+    seed = int(train_cfg.get("seed", 42))
 
     artifact_dir = config.get("artifact")
     if artifact_dir is None:
@@ -525,24 +694,29 @@ def main() -> None:  # noqa: PLR0915
         return
 
     X_full, Y_full, C_y = prepare_datasets(data_files, n_steps_cfg, downsample, n_y, n_u, horizon)
+    C_u = (X_full.shape[1] - n_y * C_y) // (n_u + horizon)
 
-    split_idx = int(0.8 * len(X_full))
+    split_idx = int(train_split * len(X_full))
     X_train, X_val = X_full[:split_idx], X_full[split_idx:]
     Y_train, Y_val = Y_full[:split_idx], Y_full[split_idx:]
 
-    scaler_X = StandardScaler()
-    X_train_s = scaler_X.fit_transform(X_train)
-    X_val_s = scaler_X.transform(X_val)
+    y_past_train = X_train[:, : n_y * C_y].reshape(-1, C_y)
+    u_past_train = X_train[:, n_y * C_y : n_y * C_y + n_u * C_u].reshape(-1, C_u)
 
-    scaler_Y = StandardScaler()
-    Y_train_s = scaler_Y.fit_transform(Y_train)
-    Y_val_s = scaler_Y.transform(Y_val)
+    scaler_y = StandardScaler()
+    scaler_y.fit(y_past_train)
 
-    key = jax.random.PRNGKey(42)
-    in_size = X_train_s.shape[1]
-    out_size = Y_train_s.shape[1]
+    scaler_u = StandardScaler()
+    scaler_u.fit(u_past_train)
 
-    model = create_model(in_size, out_size, hidden_size, depth, key)
+    X_train_s, Y_train_s = scale_dataset(X_train, Y_train, scaler_y, scaler_u, n_y, n_u, C_y, C_u)
+    X_val_s, Y_val_s = scale_dataset(X_val, Y_val, scaler_y, scaler_u, n_y, n_u, C_y, C_u)
+
+    key = jax.random.PRNGKey(seed)
+    in_size = n_y * C_y + n_u * C_u
+    out_size = C_y
+
+    model = create_model(in_size, out_size, hidden_size, depth, key, n_y, n_u, horizon, C_y, C_u)
 
     model, train_losses, val_losses = train_model(
         model,
@@ -554,6 +728,8 @@ def main() -> None:  # noqa: PLR0915
         batch_size,
         learning_rate,
         weight_decay,
+        curriculum_decay_fraction,
+        C_y,
     )
 
     loss_plot_path = artifact_dir / "loss_curve.png"
@@ -562,8 +738,8 @@ def main() -> None:  # noqa: PLR0915
     save_artifact(
         artifact,
         model,
-        scaler_X,
-        scaler_Y,
+        scaler_u,
+        scaler_y,
         {
             "in_size": int(in_size),
             "out_size": int(out_size),
@@ -575,11 +751,12 @@ def main() -> None:  # noqa: PLR0915
             "downsample": int(downsample),
             "dt": float(dt_real),
             "n_channels": int(C_y),
+            "n_controls": int(C_u),
         },
     )
     print(f"Saved NN predictor artifact -> {artifact}")
 
-    Y_pred_abs_flat, _mse = evaluate_model(model, scaler_Y, X_val_s, Y_val)
+    Y_pred_abs_flat, _mse = evaluate_model(model, scaler_y, X_val_s, Y_val, C_y)
 
     plot_path = artifact_dir / "comparison.png"
     Y_pred_unflat = Y_pred_abs_flat.reshape(-1, horizon, C_y)
