@@ -480,6 +480,7 @@ def simulate_jax(  # noqa: PLR0913
     dt: float,
     key: JaxArray | None = None,
     x0: JaxArray | None = None,
+    history0: JaxArray | None = None,
     u_node_schedule: JaxArray | None = None,
 ) -> tuple[JaxArray, JaxArray]:
     """Integrate a network trajectory as a plant simulator.
@@ -503,6 +504,8 @@ def simulate_jax(  # noqa: PLR0913
         to :func:`simulate_network`.
     x0
         Initial state of shape ``(6, N)``; defaults to zeros.
+    history0
+        Initial history buffer of shape ``(max_history_len, N)``.
     u_node_schedule
         Per-step node-projected tES of shape ``(n_steps, N)``; defaults to zeros.
 
@@ -533,7 +536,8 @@ def simulate_jax(  # noqa: PLR0913
         x_next = heun_step_stoch_jax(x, u_node, coupling, p, dt, xi_k)
         return (x_next, history, k + 1), x_next
 
-    init = (x0, seed_history(x0, p), jnp.array(0, dtype=jnp.int64))
+    init_history = history0 if history0 is not None else seed_history(x0, p)
+    init = (x0, init_history, jnp.array(0, dtype=jnp.int64))
     _, x_seq = jax.lax.scan(body, init, (u, xi))
     x_traj = jnp.concatenate([x0[:, :, None], jnp.transpose(x_seq, (1, 2, 0))], axis=2)
     t = jnp.arange(n_steps + 1, dtype=jnp.float64) * dt

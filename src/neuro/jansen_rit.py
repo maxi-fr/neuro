@@ -489,7 +489,16 @@ class JansenRitDynamics(Dynamics[JansenRitDynamicsLog]):
 
         # Circular history buffer of S(y), seeded from the initial state.
         self.history = np.zeros((self.max_history_len, n_nodes), dtype=np.float64)
-        self.history[:, :] = sigmoid_jit(self.x[1] - self.x[2], params.e0, params.v0, params.r)
+        if params.initial_bounds is not None and self.max_history_len > 0:
+            bounds = np.asarray(params.initial_bounds, dtype=np.float64)
+            lo = bounds[:, 0:1]
+            hi = bounds[:, 1:2]
+            hist_x1 = self.rng.uniform(lo[1, 0], hi[1, 0], size=(self.max_history_len, n_nodes))
+            hist_x2 = self.rng.uniform(lo[2, 0], hi[2, 0], size=(self.max_history_len, n_nodes))
+            hist_y = hist_x1 - hist_x2
+            self.history[:, :] = sigmoid_jit(hist_y, params.e0, params.v0, params.r)
+        else:
+            self.history[:, :] = sigmoid_jit(self.x[1] - self.x[2], params.e0, params.v0, params.r)
         self.w_weights = weights
 
         self.rng = np.random.default_rng(seed)
