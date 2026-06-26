@@ -45,7 +45,9 @@ def _post_transient_output(a_gain: float, *, deterministic: bool) -> np.ndarray:
 def test_sigmoid_shape_and_bounds() -> None:
     """S(v0) = e0, S is monotonic increasing, and bounded in [0, 2 e0]."""
     params = JansenRitParams()
-    assert np.asarray(sigmoid_jit(params.v0, params.e0, params.v0, params.r), dtype=np.float64) == params.e0
+    assert (
+        np.asarray(sigmoid_jit(np.array([params.v0]), params.e0, params.v0, params.r), dtype=np.float64)[0] == params.e0
+    )
     v = np.linspace(-20.0, 30.0, 200)
     s = np.asarray(sigmoid_jit(v, params.e0, params.v0, params.r), dtype=np.float64)
     assert np.all(np.diff(s) > 0)
@@ -133,12 +135,12 @@ def test_heun_reduces_to_deterministic_when_noiseless() -> None:
     params = JansenRitParams(A=_A_EZ, sigma=0.0)
     dt = _DT
     n_steps = round(_DURATION / dt)
-    x = np.zeros(6, dtype=np.float64)
+    x = np.zeros((6, 1), dtype=np.float64)
     traj = np.empty((6, n_steps + 1), dtype=np.float64)
-    traj[:, 0] = x
+    traj[:, 0] = x.reshape(6)
     for k in range(n_steps):
-        x = heun_step(x, 0.0, params, dt, 0.0)
-        traj[:, k + 1] = x
+        x = heun_step(x, np.zeros(1), params, dt, np.zeros(1), np.zeros(1))
+        traj[:, k + 1] = x.reshape(6)
     assert np.isfinite(traj).all()
     y = steady_window((traj[1] - traj[2])[np.newaxis, :], dt * 1000.0, _TRANSIENT_MS)[0]
     assert np.ptp(y) > 5.0

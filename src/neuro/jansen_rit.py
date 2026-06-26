@@ -190,28 +190,14 @@ class JansenRitParams:
         return cls(**network_kwargs, **params_cfg)  # type: ignore
 
 
-def _to_scalar(val: FloatArray | float) -> float:
-    if isinstance(val, np.ndarray):
-        return float(val.item())  # ty:ignore[no-matching-overload]
-    return float(val)
-
-
-def _to_array(val: FloatArray | float, n_nodes: int) -> FloatArray:
-    if isinstance(val, np.ndarray):
-        return np.asarray(val, dtype=np.float64)
-    return np.full(n_nodes, val, dtype=np.float64)
-
-
 @numba.njit(fastmath=True, cache=True)
-def sigmoid_jit(v: FloatArray | float, e0: float, v0: float, r: float) -> FloatArray | float:
+def sigmoid_jit(v: FloatArray, e0: float, v0: float, r: float) -> FloatArray:
     """Evaluate the firing-rate sigmoid ``S(v) = 2 e0 / (1 + exp(r (v0 - v)))``."""
     return 2.0 * e0 / (1.0 + np.exp(r * (v0 - v)))
 
 
 @numba.njit(fastmath=True, cache=True)
-def _jr_rhs_jit(
-    x: FloatArray, params_tuple: tuple[Any, ...], coupling: FloatArray | float, u_tes: FloatArray | float
-) -> FloatArray:
+def _jr_rhs_jit(x: FloatArray, params_tuple: tuple[Any, ...], coupling: FloatArray, u_tes: FloatArray) -> FloatArray:
     A, B, a, b, C1, C2, C3, C4, e0, v0, r, mean_input, _ = params_tuple
 
     x1, x2, x3, x4, x5, x6 = x
@@ -220,45 +206,29 @@ def _jr_rhs_jit(
     exc = sigmoid_jit(C1 * x1, e0, v0, r)  # drive to excitatory interneurons
     inh = sigmoid_jit(C3 * x1, e0, v0, r)  # drive to inhibitory interneurons
 
-    dx1 = x4
-    dx4 = A * a * out - 2.0 * a * x4 - a * a * x1
-    dx2 = x5
-    dx5 = A * a * (mean_input + C2 * exc + coupling) - 2.0 * a * x5 - a * a * x2
-    dx3 = x6
-    dx6 = B * b * C4 * inh - 2.0 * b * x6 - b * b * x3
-
-    if x.ndim == 1:
-        res = np.empty(6, dtype=np.float64)
-        res[0] = dx1
-        res[1] = dx2
-        res[2] = dx3
-        res[3] = dx4
-        res[4] = dx5
-        res[5] = dx6
-        return res
-    res = np.empty((6, x.shape[1]), dtype=np.float64)
-    res[0, :] = dx1
-    res[1, :] = dx2
-    res[2, :] = dx3
-    res[3, :] = dx4
-    res[4, :] = dx5
-    res[5, :] = dx6
+    res = np.empty_like(x)
+    res[0, :] = x4
+    res[3, :] = A * a * out - 2.0 * a * x4 - a * a * x1
+    res[1, :] = x5
+    res[4, :] = A * a * (mean_input + C2 * exc + coupling) - 2.0 * a * x5 - a * a * x2
+    res[2, :] = x6
+    res[5, :] = B * b * C4 * inh - 2.0 * b * x6 - b * b * x3
     return res
 
 
 @numba.njit(fastmath=True, cache=True)
 def _heun_step_jit(  # noqa: PLR0913
     x: FloatArray,
-    u_tes: FloatArray | float,
+    u_tes: FloatArray,
     params_tuple: tuple[Any, ...],
     dt: float,
-    xi: FloatArray | float,
-    coupling: FloatArray | float,
+    xi: FloatArray,
+    coupling: FloatArray,
 ) -> FloatArray:
     sigma = params_tuple[12]
 
-    dw = np.zeros(x.shape, dtype=np.float64)
-    dw[4] = sigma * np.sqrt(dt) * xi  # additive noise enters x5 only
+    dw = np.zeros_like(x)
+    dw[4, :] = sigma * np.sqrt(dt) * xi  # additive noise enters x5 only
 
     f0 = _jr_rhs_jit(x, params_tuple, coupling, u_tes)
     x_pred = x + dt * f0 + dw
@@ -268,43 +238,35 @@ def _heun_step_jit(  # noqa: PLR0913
 
 def heun_step(  # noqa: PLR0913
     x: FloatArray,
-    u_tes: FloatArray | float,
+    u_tes: FloatArray,
     params: JansenRitParams,
     dt: float,
-    xi: FloatArray | float,
-    coupling: FloatArray | float = 0.0,
+    xi: FloatArray,
+    coupling: FloatArray,
 ) -> FloatArray:
     """Advance one stochastic-Heun step with additive noise on the ``x5'`` equation.
 
     Parameters
     ----------
     x
-        Current state, shape ``(6,)`` or ``(6, N)``.
+        Current state, shape ``(6, N)``.
     u_tes
-        tES stimulation vector/scalar entering the pyramidal sigmoid.
+        tES stimulation entering the pyramidal sigmoid, shape ``(N,)``.
     params
         Model parameters (``params.sigma`` scales the noise).
     dt
         Integration step in seconds.
     xi
-        Standard-normal draw(s) for this step: a scalar for one node, shape
-        ``(N,)`` for ``N`` nodes.
+        Standard-normal draws for this step, shape ``(N,)``.
     coupling
-        Network coupling term, shape ``(N,)`` or scalar.
+        Network coupling term, shape ``(N,)``.
 
     Returns
     -------
     FloatArray
         Next state, same shape as ``x``.
     """
-    n_nodes = 1 if x.ndim == 1 else x.shape[1]
-    params_tuple = params.to_numba_tuple(n_nodes)
-
-    if n_nodes == 1:
-        return _heun_step_jit(x, _to_scalar(u_tes), params_tuple, dt, _to_scalar(xi), _to_scalar(coupling))
-    return _heun_step_jit(
-        x, _to_array(u_tes, n_nodes), params_tuple, dt, _to_array(xi, n_nodes), _to_array(coupling, n_nodes)
-    )
+    return _heun_step_jit(x, u_tes, params.to_numba_tuple(x.shape[1]), dt, xi, coupling)
 
 
 @numba.njit(fastmath=True, cache=True)
@@ -414,7 +376,7 @@ def lfp(x_traj: FloatArray) -> FloatArray:
     return x_traj[1] - x_traj[2]
 
 
-def project_control(u: float | np.ndarray, gamma_2d: FloatArray, n_elec: int) -> FloatArray | float:
+def project_control(u: float | np.ndarray, gamma_2d: FloatArray, n_elec: int) -> FloatArray:
     """Project per-electrode tES current ``u`` onto nodes via ``gamma``.
 
     Parameters
@@ -428,13 +390,12 @@ def project_control(u: float | np.ndarray, gamma_2d: FloatArray, n_elec: int) ->
 
     Returns
     -------
-    FloatArray | float
-        Node-level stimulation ``u @ gamma_2d`` of shape ``(n_nodes,)``, or ``0.0``
-        when ``u`` is all-zero.
+    FloatArray
+        Node-level stimulation ``u @ gamma_2d`` of shape ``(n_nodes,)``.
     """
     u_vec = np.asarray(u, dtype=np.float64).reshape(-1)
     if not np.any(u_vec):
-        return 0.0
+        return np.zeros(gamma_2d.shape[1], dtype=np.float64)
     u_vec = np.atleast_1d(u)
     if u_vec.size == 1:
         u_vec = np.broadcast_to(u_vec, (n_elec,))
@@ -568,7 +529,7 @@ class JansenRitDynamics(Dynamics[JansenRitDynamicsLog]):
 
         u_node = project_control(u, self.gamma_2d, self.n_elec)
         xi = self.rng.standard_normal(n_nodes)
-        return _heun_step_jit(x, _to_array(u_node, n_nodes), self.params_tuple, self.dt, xi, coupling)
+        return _heun_step_jit(x, u_node, self.params_tuple, self.dt, xi, coupling)
 
     def _make_log(self) -> JansenRitDynamicsLog:
         """Build a snapshot log of the current network state."""

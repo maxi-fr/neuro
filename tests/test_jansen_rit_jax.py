@@ -72,7 +72,7 @@ def test_sigmoid_matches_numba() -> None:
     base = JansenRitParams()
     for val in np.linspace(-20.0, 20.0, 11):
         got = float(sigmoid_jax(val, base.e0, base.v0, base.r))
-        want = sigmoid_jit(val, base.e0, base.v0, base.r)
+        want = float(sigmoid_jit(np.array([val]), base.e0, base.v0, base.r)[0])
         np.testing.assert_allclose(got, want, rtol=1e-12, atol=1e-14)
 
 
@@ -83,9 +83,9 @@ def test_rhs_single_node_matches_numba() -> None:
     rng = np.random.default_rng(_SEED)
 
     for _ in range(5):
-        x = rng.standard_normal(6)
-        dx_numba = _jr_rhs_jit(x, params_tuple, 0.0, 0.0)
-        dx_jax = np.asarray(rhs_jax(jnp.asarray(x).reshape(6, 1), p, 0.0, 0.0)).flatten()
+        x = rng.standard_normal((6, 1))
+        dx_numba = _jr_rhs_jit(x, params_tuple, np.array([0.0]), np.array([0.0]))
+        dx_jax = np.asarray(rhs_jax(jnp.asarray(x), p, 0.0, 0.0))
         np.testing.assert_allclose(dx_jax, dx_numba, rtol=1e-10, atol=1e-12)
 
 
@@ -133,12 +133,12 @@ def test_heun_det_step_matches_numba() -> None:
     rng = np.random.default_rng(_SEED + 3)
 
     for _ in range(5):
-        x = rng.standard_normal(6)
+        x = rng.standard_normal((6, 1))
         u_val = float(rng.uniform(-0.5, 0.5))
         c_val = float(rng.uniform(-1.0, 1.0))
 
-        x_numba = heun_step(x, u_val, base, _DT, xi=0.0, coupling=c_val)
-        x_jax = np.asarray(heun_step_det_jax(jnp.asarray(x).reshape(6, 1), u_val, c_val, p, _DT)).flatten()
+        x_numba = heun_step(x, np.array([u_val]), base, _DT, np.zeros(1), np.array([c_val]))
+        x_jax = np.asarray(heun_step_det_jax(jnp.asarray(x), u_val, c_val, p, _DT))
         np.testing.assert_allclose(x_jax, x_numba, rtol=1e-10, atol=1e-12)
 
 
