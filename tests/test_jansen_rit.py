@@ -10,20 +10,17 @@ A "deterministic" run is just ``sigma = 0`` (the integrator is always stochastic
 Heun); the single node is the degenerate ``connectome=None`` network.
 """
 
-import dataclasses
 from dataclasses import replace
 
+import jax
+import jax.numpy as jnp
 import numpy as np
 
-from neuro.jansen_rit import (
-    JansenRitParams,
-    heun_step,
-    lfp,
-    sigmoid_jit,
-    simulate_network,
-)
-from neuro.jansen_rit_casadi import JRSymbolicParams
+from neuro.jansen_rit import JansenRitParams, lfp, simulate_network
+from neuro.jansen_rit_jax import from_jansen_rit_params, heun_step_stoch_jax, sigmoid_jax
 from utils.processing import compute_psd, steady_window
+
+jax.config.update("jax_enable_x64", True)  # noqa: FBT003
 
 _A_HEALTHY = 3.25
 _A_PZ = 3.4
@@ -46,9 +43,9 @@ def _post_transient_output(a_gain: float, *, deterministic: bool) -> np.ndarray:
 def test_sigmoid_shape_and_bounds() -> None:
     """S(v0) = e0, S is monotonic increasing, and bounded in [0, 2 e0]."""
     params = JansenRitParams()
-    assert np.asarray(sigmoid_jit(params.v0, params.e0, params.v0, params.r), dtype=np.float64) == params.e0
+    assert np.asarray(sigmoid_jax(params.v0, params.e0, params.v0, params.r), dtype=np.float64) == params.e0
     v = np.linspace(-20.0, 30.0, 200)
-    s = np.asarray(sigmoid_jit(v, params.e0, params.v0, params.r), dtype=np.float64)
+    s = np.asarray(sigmoid_jax(jnp.asarray(v), params.e0, params.v0, params.r), dtype=np.float64)
     assert np.all(np.diff(s) > 0)
     assert s.min() >= 0.0
     assert s.max() <= 2.0 * params.e0
@@ -132,14 +129,15 @@ def test_heun_reduces_to_deterministic_when_noiseless() -> None:
     the stochastic Heun scheme).
     """
     params = JansenRitParams(A=_A_EZ, sigma=0.0)
+    p = from_jansen_rit_params(params, n_nodes=1)
     dt = _DT
     n_steps = round(_DURATION / dt)
-    x = np.zeros(6, dtype=np.float64)
+    x = jnp.zeros((6, 1), dtype=jnp.float64)
     traj = np.empty((6, n_steps + 1), dtype=np.float64)
-    traj[:, 0] = x
+    traj[:, 0] = np.asarray(x).reshape(6)
     for k in range(n_steps):
-        x = heun_step(x, 0.0, params, dt, 0.0)
-        traj[:, k + 1] = x
+        x = heun_step_stoch_jax(x, 0.0, 0.0, p, dt, 0.0)
+        traj[:, k + 1] = np.asarray(x).reshape(6)
     assert np.isfinite(traj).all()
     y = steady_window((traj[1] - traj[2])[np.newaxis, :], dt * 1000.0, _TRANSIENT_MS)[0]
     assert np.ptp(y) > 5.0

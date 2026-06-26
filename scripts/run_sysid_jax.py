@@ -78,7 +78,7 @@ def _base_params(red: Any, cfg: dict[str, Any]) -> Any:  # noqa: ANN401
     rng = np.random.default_rng(int(cfg.get("seed", 0)))
     w0 = rng.uniform(0.0, float(cfg.get("w_init_scale", 0.1)), (n, n))
     w0 = np.triu(w0, 1)
-    w0 = (w0 + w0.T) / 2
+    w0 = w0 + w0.T
     jr = JansenRitParams(
         A=np.full(n, float(cfg.get("a_init", 3.25)))
         if isinstance(cfg.get("a_init"), (float, int))

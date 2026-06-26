@@ -1,4 +1,4 @@
-"""Verify the JAX Jansen-Rit implementation against the numba/NumPy reference."""
+"""Tests for the JAX Jansen-Rit implementation."""
 
 from __future__ import annotations
 
@@ -8,25 +8,14 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from neuro.jansen_rit import (
-    JansenRitParams,
-    _jr_rhs_jit,
-    heun_step,
-    sigmoid_jit,
-    simulate_network,
-)
-from neuro.jansen_rit import (
-    project_control as np_project_control,
-)
+from neuro.jansen_rit import JansenRitParams, simulate_network
 from neuro.jansen_rit_jax import (
     JRParamsJax,
     coupling_from_history_jax,
     eeg_jax,
     from_jansen_rit_params,
-    heun_step_det_jax,
     lfp_jax,
     project_control_jax,
-    rhs_jax,
     rollout_jax,
     sigmoid_jax,
     simulate_jax,
@@ -68,44 +57,6 @@ def test_x64_enabled() -> None:
     assert jnp.zeros(1).dtype == jnp.float64
 
 
-def test_sigmoid_matches_numba() -> None:
-    base = JansenRitParams()
-    for val in np.linspace(-20.0, 20.0, 11):
-        got = float(sigmoid_jax(val, base.e0, base.v0, base.r))
-        want = sigmoid_jit(val, base.e0, base.v0, base.r)
-        np.testing.assert_allclose(got, want, rtol=1e-12, atol=1e-14)
-
-
-def test_rhs_single_node_matches_numba() -> None:
-    base = JansenRitParams()
-    p = from_jansen_rit_params(base, 1)
-    params_tuple = base.to_numba_tuple(1)
-    rng = np.random.default_rng(_SEED)
-
-    for _ in range(5):
-        x = rng.standard_normal(6)
-        dx_numba = _jr_rhs_jit(x, params_tuple, 0.0, 0.0)
-        dx_jax = np.asarray(rhs_jax(jnp.asarray(x).reshape(6, 1), p, 0.0, 0.0)).flatten()
-        np.testing.assert_allclose(dx_jax, dx_numba, rtol=1e-10, atol=1e-12)
-
-
-def test_rhs_multi_node_matches_numba() -> None:
-    n_nodes = 3
-    base = _toy_params(n_nodes)
-    p = from_jansen_rit_params(base, n_nodes)
-    params_tuple = base.to_numba_tuple(n_nodes)
-    rng = np.random.default_rng(_SEED + 2)
-
-    for _ in range(5):
-        x_2d = rng.standard_normal((6, n_nodes))
-        c_val = rng.uniform(-1.0, 1.0, size=n_nodes)
-        u_val = rng.uniform(-0.5, 0.5, size=n_nodes)
-
-        dx_numba = _jr_rhs_jit(x_2d, params_tuple, c_val, u_val)
-        dx_jax = np.asarray(rhs_jax(jnp.asarray(x_2d), p, jnp.asarray(c_val), jnp.asarray(u_val)))
-        np.testing.assert_allclose(dx_jax, dx_numba, rtol=1e-10, atol=1e-12)
-
-
 def test_coupling_with_delays_matches_reference() -> None:
     n_nodes = 3
     base = _toy_params(n_nodes)
@@ -125,21 +76,6 @@ def test_coupling_with_delays_matches_reference() -> None:
         for j in range(n_nodes):
             want[i] += k_val * w[i, j] * history[(k - _D3[i, j]) % length, j]
     np.testing.assert_allclose(got, want, rtol=1e-10, atol=1e-12)
-
-
-def test_heun_det_step_matches_numba() -> None:
-    base = _toy_params(1, sigma=0.0)
-    p = from_jansen_rit_params(base, 1)
-    rng = np.random.default_rng(_SEED + 3)
-
-    for _ in range(5):
-        x = rng.standard_normal(6)
-        u_val = float(rng.uniform(-0.5, 0.5))
-        c_val = float(rng.uniform(-1.0, 1.0))
-
-        x_numba = heun_step(x, u_val, base, _DT, xi=0.0, coupling=c_val)
-        x_jax = np.asarray(heun_step_det_jax(jnp.asarray(x).reshape(6, 1), u_val, c_val, p, _DT)).flatten()
-        np.testing.assert_allclose(x_jax, x_numba, rtol=1e-10, atol=1e-12)
 
 
 def test_rollout_matches_simulate_network() -> None:
@@ -166,7 +102,7 @@ def test_rollout_with_tes_matches_simulate_network() -> None:
     # Build the node-projected control schedule the same way simulate_network does.
     t_grid = np.arange(n_steps) * _DT
     mask = (t_grid >= window[0]) & (t_grid < window[1])
-    u_node_row = np_project_control(np.array([u_amp]), gamma, 1)
+    u_node_row = np.array([u_amp]) @ gamma
     controls = np.zeros((n_steps, 3))
     controls[mask] = u_node_row
 
@@ -208,7 +144,7 @@ def test_lfp_eeg_project_control_match() -> None:
     u = rng.uniform(-1.0, 1.0, n_elec)
     np.testing.assert_allclose(
         np.asarray(project_control_jax(jnp.asarray(u), jnp.asarray(gamma))),
-        np_project_control(u, gamma, n_elec),
+        u @ gamma,
         rtol=1e-10,
         atol=1e-12,
     )

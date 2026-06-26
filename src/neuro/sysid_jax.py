@@ -1,36 +1,3 @@
-"""Pure-JAX system identification for a reduced Jansen-Rit network.
-
-Gradient *refinement* with Optax, an autodiff alternative to the CasADi PCMS
-solver in :mod:`neuro.sysid` (the refinement half of the Pille et al. 2025
-TVB-Optim workflow).
-
-Scope (this phase): offline, **uncontrolled** (``u = 0``) identification of a
-reduced ``N``-node model whose LFP ``x2 - x3`` is projected to the 62 EEG channels
-by a *fixed* coarse leadfield ``eeg_gain`` (built by ``notebooks/coarse_graining.py``).
-
-Identified parameters
----------------------
-``A`` (length ``N``), ``w_weights`` (``N x N``, kept **non-negative and symmetric**
-with zero diagonal, like :mod:`neuro.sysid`), the per-channel ``eeg_gain``, and
-optionally the global scalars ``K`` and ``mean_input``. Bounds are enforced
-*differentiably* via a bounded-sigmoid / softplus reparametrisation rather than hard
-clamps, mirroring the paper's ``|w|`` trick.
-
-Robustness choices (see plan / paper section 9.5)
--------------------------------------------------
-Jansen-Rit turns chaotic at the oscillatory bifurcation -- exactly where the best
-EEG match sits -- so reverse-mode AD through a long rollout explodes. We therefore:
-
-* **truncate backprop** to short windows (``window`` steps) via ``stop_gradient`` on
-  the scan carry at each window boundary (the JAX analogue of a small PCMS ``D``);
-* make the loss **statistics-dominant** -- a phase-blind magnitude log-PSD term plus
-  a spatial channel-correlation (FC-like) term -- with the time-domain term a light,
-  optional add-on (used mainly for self-consistency checks where the initial state
-  is known).
-
-64-bit precision is mandatory; call :func:`neuro.jansen_rit_jax.enable_x64` first.
-"""
-
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
@@ -64,8 +31,7 @@ JaxArray = jax.Array
 
 # Differentiable (low, high) bounds for the scalar/vector free parameters, mirroring the
 # ``bounds`` metadata on :class:`neuro.jansen_rit.JansenRitParams`. The data-dependent
-# ``w_weights`` cap is added at runtime by :func:`make_bounds` (cf.
-# ``neuro.sysid.SysIDSolver._W_UB_FACTOR``).
+# ``w_weights`` cap is added at runtime by :func:`make_bounds`.
 _BOUNDS: dict[str, tuple[float, float]] = {
     "A": (0.0, 10.0),
     "mean_input": (0.0, 500.0),
@@ -74,9 +40,6 @@ _BOUNDS: dict[str, tuple[float, float]] = {
 }
 
 
-# --------------------------------------------------------------------------------------
-# Reduced-model construction helpers
-# --------------------------------------------------------------------------------------
 @dataclass(frozen=True)
 class Reduction:
     """PCA reduction of the full network into ``N`` virtual modes."""
@@ -254,9 +217,6 @@ def build_params(
     return replace(base, **updates)
 
 
-# --------------------------------------------------------------------------------------
-# Truncated-backprop forward rollout (deterministic, differentiable)
-# --------------------------------------------------------------------------------------
 def rollout_tbptt(x0: JaxArray, controls_node: JaxArray, p: JRParamsJax, dt: float, window: int) -> JaxArray:
     """Deterministic Heun rollout with truncated backprop every ``window`` steps.
 
@@ -311,9 +271,6 @@ def model_eeg(p: JRParamsJax, x0: JaxArray, controls: JaxArray, dt: float, windo
     return eeg_jax(rollout_tbptt(x0, controls, p, dt, window), p.eeg_gain)
 
 
-# --------------------------------------------------------------------------------------
-# Loss configuration and statistics targets
-# --------------------------------------------------------------------------------------
 @dataclass(frozen=True)
 class StatConfig:
     """Welch PSD settings and spectral comparison mode.

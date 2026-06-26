@@ -1,19 +1,18 @@
 """JAX implementation of the Jansen-Rit neural mass model.
 
-A third backend next to the numba/NumPy plant (:mod:`neuro.jansen_rit`) and the
-CasADi symbolic model (:mod:`neuro.jansen_rit_casadi`). It is built from pure,
-``jax.lax.scan``-based functions so the same code serves two purposes:
+Pure, ``jax.lax.scan``-based functions so the same code serves three purposes:
 
 * **Plant simulation** -- :func:`simulate_jax` integrates a (possibly noisy) network
-  trajectory, JIT-compiled and vectorised over nodes.
+  trajectory, JIT-compiled and vectorised over nodes; :func:`step_jax` is the same
+  single-step update exposed standalone for the stateful
+  :class:`~neuro.jansen_rit.JansenRitDynamics` plant.
 * **System identification** -- :func:`rollout_jax` is a deterministic, differentiable
   forward model, so ``jax.grad`` / ``jax.jacobian`` flow through it w.r.t. the
-  continuous parameters (an autodiff alternative to the CasADi PCMS+IPOPT pipeline).
+  continuous parameters.
 
-The equations mirror :mod:`neuro.jansen_rit` exactly: state ``x = [x1..x6]`` laid out
-as ``(6, N)`` (rows are the paper's 1-6 indexing), observed output ``y = x2 - x3``,
-stochastic Heun with additive noise on the ``x5'`` equation, and delayed network
-coupling through a circular history buffer of ``S(y)``.
+State ``x = [x1..x6]`` is laid out as ``(6, N)`` (rows are the paper's 1-6 indexing),
+observed output ``y = x2 - x3``, stochastic Heun with additive noise on the ``x5'``
+equation, and delayed network coupling through a circular history buffer of ``S(y)``.
 
 .. important::
    JAX defaults to ``float32``, which silently breaks parity with the float64 NumPy
@@ -347,9 +346,8 @@ def heun_step_stoch_jax(  # noqa: PLR0913
 ) -> JaxArray:
     """Advance one stochastic Heun step with additive noise on the ``x5'`` equation.
 
-    Mirrors :func:`neuro.jansen_rit._heun_step_jit`: the noise increment
-    ``sigma * sqrt(dt) * xi`` enters row 4 only and is added to both the predictor and
-    the final state.
+    The noise increment ``sigma * sqrt(dt) * xi`` enters row 4 only and is added to
+    both the predictor and the final state.
 
     Parameters
     ----------
@@ -406,18 +404,35 @@ def coupling_from_history_jax(history: JaxArray, k: JaxArray | int, p: JRParamsJ
     return p.K * jnp.sum(p.w_weights * s_past, axis=1)
 
 
-def _seed_history(x0: JaxArray, p: JRParamsJax) -> JaxArray:
+def seed_history(x0: JaxArray, p: JRParamsJax) -> JaxArray:
+    """Seed a circular history buffer from the initial state, shape ``(max_history_len, N)``."""
     s0 = sigmoid_jax(lfp_jax(x0), p.e0, p.v0, p.r)
     return jnp.broadcast_to(s0, (p.max_history_len, p.n_nodes))
 
 
-def _update_history_and_coupling(
-    x: JaxArray, history: JaxArray, k: JaxArray, p: JRParamsJax
+def update_history_and_coupling(
+    x: JaxArray, history: JaxArray, k: JaxArray | int, p: JRParamsJax
 ) -> tuple[JaxArray, JaxArray]:
+    """Write ``S(y)`` for ``x`` into the history buffer at step ``k``, then read the delayed coupling."""
     s_y = sigmoid_jax(lfp_jax(x), p.e0, p.v0, p.r)
     history = history.at[k % p.max_history_len].set(s_y)
     coupling = coupling_from_history_jax(history, k, p)
     return coupling, history
+
+
+@jax.jit
+def step_jax(  # noqa: PLR0913
+    x: JaxArray, history: JaxArray, k: JaxArray | int, u_node: JaxArray, p: JRParamsJax, dt: float, xi: JaxArray
+) -> tuple[JaxArray, JaxArray]:
+    """One stochastic-Heun step with delayed coupling; advances both state and history.
+
+    JIT-compiled standalone (unlike the ``lax.scan`` bodies above) since this is the
+    single step :class:`~neuro.jansen_rit.JansenRitDynamics` calls once per ``dt`` from
+    a Python loop.
+    """
+    coupling, history = update_history_and_coupling(x, history, k, p)
+    x_next = heun_step_stoch_jax(x, u_node, coupling, p, dt, xi)
+    return x_next, history
 
 
 def rollout_jax(x0: JaxArray, controls_node: JaxArray, p: JRParamsJax, dt: float) -> tuple[JaxArray, JaxArray]:
@@ -448,11 +463,11 @@ def rollout_jax(x0: JaxArray, controls_node: JaxArray, p: JRParamsJax, dt: float
     ) -> tuple[tuple[JaxArray, JaxArray, JaxArray], JaxArray]:
         """Advance one deterministic Heun step over the scan carry."""
         x, history, k = carry
-        coupling, history = _update_history_and_coupling(x, history, k, p)
+        coupling, history = update_history_and_coupling(x, history, k, p)
         x_next = heun_step_det_jax(x, u_node, coupling, p, dt)
         return (x_next, history, k + 1), x_next
 
-    init = (x0, _seed_history(x0, p), jnp.array(0, dtype=jnp.int64))
+    init = (x0, seed_history(x0, p), jnp.array(0, dtype=jnp.int64))
     _, x_seq = jax.lax.scan(body, init, controls_node)
     x_traj = jnp.transpose(x_seq, (1, 2, 0))  # (T, 6, N) -> (6, N, T)
     return x_traj, lfp_jax(x_traj).T
@@ -514,11 +529,11 @@ def simulate_jax(  # noqa: PLR0913
         """Advance one stochastic Heun step over the scan carry."""
         x, history, k = carry
         u_node, xi_k = inp
-        coupling, history = _update_history_and_coupling(x, history, k, p)
+        coupling, history = update_history_and_coupling(x, history, k, p)
         x_next = heun_step_stoch_jax(x, u_node, coupling, p, dt, xi_k)
         return (x_next, history, k + 1), x_next
 
-    init = (x0, _seed_history(x0, p), jnp.array(0, dtype=jnp.int64))
+    init = (x0, seed_history(x0, p), jnp.array(0, dtype=jnp.int64))
     _, x_seq = jax.lax.scan(body, init, (u, xi))
     x_traj = jnp.concatenate([x0[:, :, None], jnp.transpose(x_seq, (1, 2, 0))], axis=2)
     t = jnp.arange(n_steps + 1, dtype=jnp.float64) * dt

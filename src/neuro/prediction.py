@@ -1,11 +1,10 @@
 """Unified short-horizon prediction API for comparing system-identification methods.
 
-Three identified models live in this project -- the JAX reduced PCA model
-(:mod:`neuro.sysid_jax`), the reduced-region UKF (:class:`neuro.estimator.UKFEstimator`),
-and an Equinox MLP predictor (``scripts/run_nn_predictor_jax.py``). They are fit and
-evaluated in isolation on different data, channels, units, and time steps. This module
-wraps each behind one :class:`Predictor` protocol so a notebook can compare them on
-identical held-out test windows.
+Two identified models live in this project -- the JAX reduced PCA model
+(:mod:`neuro.sysid_jax`) and an Equinox MLP predictor (``scripts/run_nn_predictor_jax.py``).
+They are fit and evaluated in isolation on different data, channels, units, and time
+steps. This module wraps each behind one :class:`Predictor` protocol so a notebook can
+compare them on identical held-out test windows.
 
 Conditioning is **measured-EEG only** (no hidden plant state): at each test start ``t0``
 every predictor rebuilds its state from a window of recent *measured* EEG, then runs
@@ -34,7 +33,6 @@ import jax.numpy as jnp
 import numpy as np
 import numpy.typing as npt
 
-from neuro.estimator import UKFEstimator
 from neuro.jansen_rit import JansenRitParams
 from neuro.jansen_rit_jax import eeg_jax, from_jansen_rit_params
 from neuro.sysid_jax import rollout_tbptt
@@ -198,116 +196,6 @@ class JaxSysidPredictor:
         x_traj = rollout_tbptt(x0, u_all, self._params, self.dt, ctx_t + n_steps)
         eeg = np.asarray(eeg_jax(x_traj, self._eeg_gain))  # (n_ch, ctx_t + n_steps)
         return eeg[:, ctx_t:]
-
-
-class UKFPredictor:
-    """Reduced-region UKF (:class:`neuro.estimator.UKFEstimator`).
-
-    Pretrained ``A/W/K/input`` (converged on the train seeds) are loaded from the
-    artifact and held fixed; the per-window dynamic state is estimated by filtering the
-    standardised context EEG, then the model free-runs open-loop with the recorded
-    controls. Predictions are returned in raw EEG units (de-standardised).
-    """
-
-    name = "ukf"
-
-    def __init__(  # noqa: PLR0913
-        self,
-        gain: FloatArray,
-        gamma_m: FloatArray,
-        chan_mean: FloatArray,
-        chan_std: FloatArray,
-        initial_a: FloatArray,
-        initial_w: FloatArray,
-        initial_k: float,
-        initial_input: FloatArray,
-        dt: float,
-        noise: dict[str, float],
-    ) -> None:
-        self.dt = float(dt)
-        self._gain = np.asarray(gain, dtype=np.float64)  # (n_ch, M), raw units
-        self._gamma_m = np.atleast_2d(np.asarray(gamma_m, dtype=np.float64))  # (n_elec, M)
-        self._chan_mean = np.asarray(chan_mean, dtype=np.float64)
-        self._chan_std = np.asarray(chan_std, dtype=np.float64)
-        self._initial_a = np.asarray(initial_a, dtype=np.float64)
-        self._initial_w = np.asarray(initial_w, dtype=np.float64)
-        self._initial_k = float(initial_k)
-        self._initial_input = np.asarray(initial_input, dtype=np.float64)
-        self._noise = noise
-        self._n_nodes = self._gain.shape[1]
-
-    @classmethod
-    def load(cls, artifact: str | Path, **_kwargs: object) -> UKFPredictor:
-        """Rebuild the predictor from a ``run_ukf_predictor`` ``.npz`` artifact."""
-        with np.load(artifact) as res:
-            noise = {k: float(res[k]) for k in ("q_x5", "q_a", "p_a", "q_input", "p_input", "r_channel")}
-            return cls(
-                gain=np.asarray(res["gain"], dtype=np.float64),
-                gamma_m=np.asarray(res["gamma_m"], dtype=np.float64),
-                chan_mean=np.asarray(res["chan_mean"], dtype=np.float64),
-                chan_std=np.asarray(res["chan_std"], dtype=np.float64),
-                initial_a=np.asarray(res["initial_a"], dtype=np.float64),
-                initial_w=np.asarray(res["initial_w"], dtype=np.float64),
-                initial_k=float(res["initial_k"]),
-                initial_input=np.asarray(res["initial_input"], dtype=np.float64),
-                dt=float(res["dt"]),
-                noise=noise,
-            )
-
-    def _build_estimator(self) -> UKFEstimator:
-        # Warm-start from the train-fitted parameters and let the UKF re-estimate the
-        # dynamic state (and lightly track the params) over the test context. The
-        # covariances mirror the proven-stable feasibility config -- near-zero priors on
-        # the large W/A/input blocks make the sigma-point covariance singular (potrf fails).
-        gain_scaled = self._gain / self._chan_std[:, None]
-        return UKFEstimator(
-            dt=self.dt,
-            n_nodes=self._n_nodes,
-            gain=gain_scaled,
-            gamma=self._gamma_m,
-            delays=None,
-            params=JansenRitParams(),
-            estimate_a=True,
-            estimate_input=True,
-            estimate_eeg_gains=False,
-            q_x5=self._noise["q_x5"],
-            r_channel=self._noise["r_channel"],
-            q_a=self._noise["q_a"],
-            p_a=self._noise["p_a"],
-            q_input=self._noise["q_input"],
-            p_input=self._noise["p_input"],
-            initial_k=self._initial_k,
-            initial_w=self._initial_w,
-            initial_a=self._initial_a,
-            initial_input=self._initial_input,
-            q_k=0.0,
-            p_k=1e-12,
-        )
-
-    def predict(self, window: PredictionWindow, horizon_s: float) -> FloatArray:
-        """Filter the context to estimate state, then free-run open-loop."""
-        factor = _ds_factor(self.dt, window.dt_data)
-        y_ctx = np.asarray(window.y_ctx, dtype=np.float64)[:, ::factor]
-        ctx_t = y_ctx.shape[1]
-        u_ctx = _resample_controls(window.u_ctx, factor, ctx_t)
-        n_steps = round(horizon_s / self.dt)
-        u_fut = _resample_controls(window.u_future, factor, n_steps)
-
-        y_std = (y_ctx - self._chan_mean[:, None]) / self._chan_std[:, None]
-        est = self._build_estimator()
-
-        # Warm-up filter over the context to lock the dynamic state (params ~fixed).
-        for k in range(ctx_t):
-            est.update(k * self.dt, y_std[:, k], u_ctx[k])
-
-        # Open-loop free-run with the recorded controls projected onto the nodes.
-        u_fut_node = u_fut @ self._gamma_m  # (n_steps, n_elec) @ (n_elec, M) -> (n_steps, M)
-        x_free = est.ukf.x.copy()
-        preds_std = np.empty((self._gain.shape[0], n_steps), dtype=np.float64)
-        for h in range(n_steps):
-            x_free = est.ukf.fx(x_free, self.dt, u_fut_node[h], ctx_t + h)
-            preds_std[:, h] = est.ukf.hx(x_free)
-        return preds_std * self._chan_std[:, None] + self._chan_mean[:, None]
 
 
 class AutoregressivePredictor(eqx.Module):

@@ -20,7 +20,7 @@ def _():
     from neuro import prediction as pred
     from neuro.connectome import compute_gamma, load_connectome
     from neuro.jansen_rit_jax import enable_x64
-    from neuro.prediction import JaxSysidPredictor, NNPredictor, PredictionWindow, UKFPredictor
+    from neuro.prediction import JaxSysidPredictor, NNPredictor, PredictionWindow
     from utils.plotting import plot_multistep_predictions
     from utils.processing import compute_psd
 
@@ -30,7 +30,6 @@ def _():
         NNPredictor,
         Path,
         PredictionWindow,
-        UKFPredictor,
         compute_gamma,
         compute_psd,
         glob,
@@ -49,7 +48,7 @@ def _(mo):
     mo.md(r"""
     # Short-horizon prediction analysis (one model at a time)
 
-    Evaluate a **single** identified model (JAX sysid, UKF, or NN — pick below) at predicting
+    Evaluate a **single** identified model (JAX sysid or NN — pick below) at predicting
     EEG over **200 ms / 400 ms** on **held-out** seeds of the seizure + PRBS-tES regime,
     against ground truth and a persistence baseline. The model is conditioned on a **400 ms
     window of measured EEG only** (no hidden plant state), then runs open-loop with the
@@ -167,12 +166,11 @@ def _(available_models, mo, model_default):
 
 
 @app.cell
-def _(JaxSysidPredictor, NNPredictor, UKFPredictor, cfg, gamma_full, ui_model):
+def _(JaxSysidPredictor, NNPredictor, cfg, gamma_full, ui_model):
     # Build ONLY the selected model's predictor from its train-only artifact.
     arts = cfg["artifacts"]
     builders = {
         "jax_sysid": lambda: JaxSysidPredictor.load(arts["jax_sysid"], gamma_full),
-        "ukf": lambda: UKFPredictor.load(arts["ukf"]),
         "nn": lambda: NNPredictor.load(arts["nn"]),
     }
     _sel = ui_model.value
@@ -278,7 +276,6 @@ def _(np):
     # Colour map + a nan-safe mean used by the summary cells.
     colors = {
         "jax_sysid": "#d62728",
-        "ukf": "#2ca02c",
         "nn": "#9467bd",
         "persistence": "#7f7f7f",
     }
