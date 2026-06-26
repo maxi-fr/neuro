@@ -1,9 +1,9 @@
-"""Whole-brain Jansen-Rit neural mass network, JAX-backed.
+"""Stage 1 -- single-node Jansen-Rit neural mass, hand-rolled in NumPy + numba.
 
-Implements the Yu et al. 2024 formulation (their Eq. 1-4). The state vector is
-``x = [x1, x2, x3, x4, x5, x6]`` with the paper's 1-6 indexing -- pyramidal pair
-``(x1, x4)``, excitatory pair ``(x2, x5)``, inhibitory pair ``(x3, x6)`` -- and the
-observed output is ``y = x2 - x3``::
+Implements the Yu et al. 2024 formulation (their Eq. 1-4) for one isolated,
+uncontrolled node. The state vector is ``x = [x1, x2, x3, x4, x5, x6]`` with the
+paper's 1-6 indexing -- pyramidal pair ``(x1, x4)``, excitatory pair ``(x2, x5)``,
+inhibitory pair ``(x3, x6)`` -- and the observed output is ``y = x2 - x3``::
 
     x1' = x4
     x4' = A a [ S(x2 - x3 + U_tES) ]                       - 2a x4 - a^2 x1
@@ -13,30 +13,30 @@ observed output is ``y = x2 - x3``::
     x6' = B b [ C4 S(C3 x1) ]                              - 2b x6 - b^2 x3
     S(v) = 2 e0 / (1 + exp(r (v0 - v)))
 
-The tES polarization ``U_tES`` and the network coupling sum ``K sum_j w_ij S(.)`` are
-zero for an isolated, uncontrolled node. Default parameters follow Yu et al. 2024,
-Table 1; the only free knob is the white-noise std ``sigma`` (the paper gives no
-value), tuned so the ``A = 3.25`` background sits near peak-to-peak amplitude 2.
+The tES polarization ``U_tES`` (Stage 3) and the network coupling sum
+``K sum_j w_ij S(.)`` (Stage 2) enter :func:`_jr_rhs_jit`; both are zero for an
+isolated, uncontrolled node. Default parameters follow Yu et al. 2024, Table 1; the only free knob is the
+white-noise std ``sigma`` (the paper gives no value), tuned so the ``A = 3.25``
+background sits near peak-to-peak amplitude 2.
 
 Integration is stochastic Heun with additive noise on the ``x5'`` equation; a
-noiseless run is just ``sigma = 0``. Everything is in SI seconds: ``a = 100``,
-``b = 50`` per second, ``dt = 1e-4`` s (0.1 ms). The actual dynamics equations live in
-:mod:`neuro.jansen_rit_jax`; :class:`JansenRitDynamics` below is the stateful
-``simulate.Dynamics`` plant wrapping them.
+noiseless run is just ``sigma = 0``. The right-hand side is written element-wise, so
+the same code runs a single node (state shape ``(6,)``) or ``N`` nodes (``(6, N)``).
+Everything is in SI seconds: ``a = 100``, ``b = 50`` per second, ``dt = 1e-4`` s
+(0.1 ms, matching the Stage 7 TVB reference step).
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Self
 
-import jax.numpy as jnp
+import numba
 import numpy as np
 import numpy.typing as npt
 from simulate.dynamics import Dynamics
 
 from neuro.config import parse_array
-from neuro.jansen_rit_jax import enable_x64, from_jansen_rit_params, project_control_jax, seed_history, step_jax
 
 FloatArray = npt.NDArray[np.float64]
 
@@ -111,6 +111,34 @@ class JansenRitParams:
     K: float = field(default=1.0, metadata={"bounds": (0.0, 10.0)})
     gamma: FloatArray = field(default_factory=lambda: np.zeros((1, 1), dtype=np.float64))
 
+    def to_numba_tuple(self, n_nodes: int) -> tuple[Any, ...]:
+        """Convert params to a JIT-friendly tuple, broadcasting regional parameters."""
+        a_gains = self.A
+        if n_nodes == 1:
+            a_gains_val = float(a_gains.item()) if isinstance(a_gains, np.ndarray) else float(a_gains)  # ty:ignore[no-matching-overload]
+        else:
+            a_gains_val = (
+                np.asarray(a_gains, dtype=np.float64)
+                if isinstance(a_gains, np.ndarray)
+                else np.full(n_nodes, a_gains, dtype=np.float64)
+            )
+
+        return (
+            a_gains_val,
+            self.B,
+            self.a,
+            self.b,
+            self.C1,
+            self.C2,
+            self.C3,
+            self.C4,
+            self.e0,
+            self.v0,
+            self.r,
+            self.mean_input,
+            self.sigma,
+        )
+
     @classmethod
     def from_config(cls, config: dict[str, Any]) -> JansenRitParams:
         """Build :class:`JansenRitParams` from a global config dict.
@@ -160,6 +188,149 @@ class JansenRitParams:
             )
 
         return cls(**network_kwargs, **params_cfg)  # type: ignore
+
+
+def _to_scalar(val: FloatArray | float) -> float:
+    if isinstance(val, np.ndarray):
+        return float(val.item())  # ty:ignore[no-matching-overload]
+    return float(val)
+
+
+def _to_array(val: FloatArray | float, n_nodes: int) -> FloatArray:
+    if isinstance(val, np.ndarray):
+        return np.asarray(val, dtype=np.float64)
+    return np.full(n_nodes, val, dtype=np.float64)
+
+
+@numba.njit(fastmath=True, cache=True)
+def sigmoid_jit(v: FloatArray | float, e0: float, v0: float, r: float) -> FloatArray | float:
+    """Evaluate the firing-rate sigmoid ``S(v) = 2 e0 / (1 + exp(r (v0 - v)))``."""
+    return 2.0 * e0 / (1.0 + np.exp(r * (v0 - v)))
+
+
+@numba.njit(fastmath=True, cache=True)
+def _jr_rhs_jit(
+    x: FloatArray, params_tuple: tuple[Any, ...], coupling: FloatArray | float, u_tes: FloatArray | float
+) -> FloatArray:
+    A, B, a, b, C1, C2, C3, C4, e0, v0, r, mean_input, _ = params_tuple
+
+    x1, x2, x3, x4, x5, x6 = x
+
+    out = sigmoid_jit(x2 - x3 + u_tes, e0, v0, r)  # pyramidal output; + U_tES (Stage 3)
+    exc = sigmoid_jit(C1 * x1, e0, v0, r)  # drive to excitatory interneurons
+    inh = sigmoid_jit(C3 * x1, e0, v0, r)  # drive to inhibitory interneurons
+
+    dx1 = x4
+    dx4 = A * a * out - 2.0 * a * x4 - a * a * x1
+    dx2 = x5
+    dx5 = A * a * (mean_input + C2 * exc + coupling) - 2.0 * a * x5 - a * a * x2
+    dx3 = x6
+    dx6 = B * b * C4 * inh - 2.0 * b * x6 - b * b * x3
+
+    if x.ndim == 1:
+        res = np.empty(6, dtype=np.float64)
+        res[0] = dx1
+        res[1] = dx2
+        res[2] = dx3
+        res[3] = dx4
+        res[4] = dx5
+        res[5] = dx6
+        return res
+    res = np.empty((6, x.shape[1]), dtype=np.float64)
+    res[0, :] = dx1
+    res[1, :] = dx2
+    res[2, :] = dx3
+    res[3, :] = dx4
+    res[4, :] = dx5
+    res[5, :] = dx6
+    return res
+
+
+@numba.njit(fastmath=True, cache=True)
+def _heun_step_jit(  # noqa: PLR0913
+    x: FloatArray,
+    u_tes: FloatArray | float,
+    params_tuple: tuple[Any, ...],
+    dt: float,
+    xi: FloatArray | float,
+    coupling: FloatArray | float,
+) -> FloatArray:
+    sigma = params_tuple[12]
+
+    dw = np.zeros(x.shape, dtype=np.float64)
+    dw[4] = sigma * np.sqrt(dt) * xi  # additive noise enters x5 only
+
+    f0 = _jr_rhs_jit(x, params_tuple, coupling, u_tes)
+    x_pred = x + dt * f0 + dw
+    f1 = _jr_rhs_jit(x_pred, params_tuple, coupling, u_tes)
+    return x + 0.5 * dt * (f0 + f1) + dw
+
+
+def heun_step(  # noqa: PLR0913
+    x: FloatArray,
+    u_tes: FloatArray | float,
+    params: JansenRitParams,
+    dt: float,
+    xi: FloatArray | float,
+    coupling: FloatArray | float = 0.0,
+) -> FloatArray:
+    """Advance one stochastic-Heun step with additive noise on the ``x5'`` equation.
+
+    Parameters
+    ----------
+    x
+        Current state, shape ``(6,)`` or ``(6, N)``.
+    u_tes
+        tES stimulation vector/scalar entering the pyramidal sigmoid.
+    params
+        Model parameters (``params.sigma`` scales the noise).
+    dt
+        Integration step in seconds.
+    xi
+        Standard-normal draw(s) for this step: a scalar for one node, shape
+        ``(N,)`` for ``N`` nodes.
+    coupling
+        Network coupling term, shape ``(N,)`` or scalar.
+
+    Returns
+    -------
+    FloatArray
+        Next state, same shape as ``x``.
+    """
+    n_nodes = 1 if x.ndim == 1 else x.shape[1]
+    params_tuple = params.to_numba_tuple(n_nodes)
+
+    if n_nodes == 1:
+        return _heun_step_jit(x, _to_scalar(u_tes), params_tuple, dt, _to_scalar(xi), _to_scalar(coupling))
+    return _heun_step_jit(
+        x, _to_array(u_tes, n_nodes), params_tuple, dt, _to_array(xi, n_nodes), _to_array(coupling, n_nodes)
+    )
+
+
+@numba.njit(fastmath=True, cache=True)
+def _dynamics_history_coupling_jit(  # noqa: PLR0913
+    history: FloatArray,
+    k: int,
+    max_history_len: int,
+    delay_steps: npt.NDArray[np.int64],
+    w_weights: FloatArray,
+    coupling_k: float,
+    s_y: FloatArray,
+) -> FloatArray:
+    # 1. Update circular history buffer
+    history[k % max_history_len, :] = s_y
+
+    # 2. Compute delayed coupling (O(N^2) loop with zero allocations)
+    n_nodes = w_weights.shape[0]
+    coupling = np.zeros(n_nodes, dtype=np.float64)
+    for i in range(n_nodes):
+        c_i = 0.0
+        for j in range(n_nodes):
+            delay = delay_steps[i, j]
+            row = (k - delay) % max_history_len
+            c_i += w_weights[i, j] * history[row, j]
+        coupling[i] = coupling_k * c_i
+    return coupling
 
 
 def simulate_network(  # noqa: PLR0913
@@ -243,6 +414,36 @@ def lfp(x_traj: FloatArray) -> FloatArray:
     return x_traj[1] - x_traj[2]
 
 
+def project_control(u: float | np.ndarray, gamma_2d: FloatArray, n_elec: int) -> FloatArray | float:
+    """Project per-electrode tES current ``u`` onto nodes via ``gamma``.
+
+    Parameters
+    ----------
+    u:
+        Per-electrode control input, shape ``(n_elec,)`` or broadcastable scalar.
+    gamma_2d:
+        Steering matrix of shape ``(n_elec, n_nodes)``.
+    n_elec:
+        Number of electrodes (must match ``gamma_2d.shape[0]``).
+
+    Returns
+    -------
+    FloatArray | float
+        Node-level stimulation ``u @ gamma_2d`` of shape ``(n_nodes,)``, or ``0.0``
+        when ``u`` is all-zero.
+    """
+    u_vec = np.asarray(u, dtype=np.float64).reshape(-1)
+    if not np.any(u_vec):
+        return 0.0
+    u_vec = np.atleast_1d(u)
+    if u_vec.size == 1:
+        u_vec = np.broadcast_to(u_vec, (n_elec,))
+    elif u_vec.size != n_elec:
+        msg = f"control has {u_vec.size} electrodes but gamma has {n_elec}"
+        raise ValueError(msg)
+    return u_vec @ gamma_2d
+
+
 @dataclass(frozen=True)
 class JansenRitDynamicsLog:
     """Dataclass log snapshot of the Jansen-Rit network state."""
@@ -253,19 +454,21 @@ class JansenRitDynamicsLog:
 class JansenRitDynamics(Dynamics[JansenRitDynamicsLog]):
     """Whole-brain Jansen-Rit network as a ``simulate`` :class:`Dynamics` plant.
 
-    A thin stateful wrapper around the JAX step function :func:`~neuro.jansen_rit_jax.step_jax`:
-    it owns ``self.x`` (the ``(6, N)`` state, required by the orchestrator's logging),
-    the delayed-coupling history buffer, and the per-step noise RNG, and delegates the
-    actual physics to :mod:`neuro.jansen_rit_jax`. ``integrator=None`` so the base
+    Wraps the standalone :func:`simulate_network` integration as a stateful,
+    single-step component for the :class:`~simulate.simulation.Simulation`
+    orchestrator. It owns its own stepping (``integrator=None``, so the base
     :meth:`~simulate.dynamics.Dynamics.update` treats :meth:`dynamics` as a discrete
-    ``x_next`` transition.
+    ``x_next`` transition) and uses :func:`_heun_step_jit` so the stochastic ``x5``
+    noise and delayed network coupling are preserved.
 
-    The control input ``u`` is the per-electrode tES current, projected to nodes
-    through ``connectome.gamma`` (no-op when ``gamma`` is unset, i.e. open loop).
-    Passing ``connectome=None`` yields the degenerate ``N=1`` isolated node (no
-    coupling, no stimulation). Everything is in SI seconds: ``dt`` is the integration
-    step and ``connectome.delays`` (ms) convert to steps via
-    ``round(delays / (dt * 1000))``.
+    The state ``self.x`` is the ``(6, N)`` network array; the orchestrator logs it as
+    the flattened ``(6 N,)`` vector that :meth:`~simulate.component.Component.from_col_vec`
+    produces. The control input ``u`` is the per-electrode tES current, projected to
+    nodes through ``connectome.gamma`` (no-op when ``gamma`` is unset, i.e. open loop).
+
+    Passing ``connectome=None`` yields the degenerate ``N=1`` isolated node (no coupling,
+    no stimulation). Everything is in SI seconds: ``dt`` is the integration step and
+    ``connectome.delays`` (ms) convert to steps via ``round(delays / (dt * 1000))``.
     """
 
     def __init__(
@@ -278,11 +481,22 @@ class JansenRitDynamics(Dynamics[JansenRitDynamicsLog]):
     ) -> None:
         """Initialize the network plant from params."""
         super().__init__(dt, integrator=None)
-        enable_x64()
+        self.K = params.K
 
         n_nodes = params.w_weights.shape[0]
-        self.p = from_jansen_rit_params(params, n_nodes)
-        self.n_elec = self.p.gamma.shape[0]
+        weights = params.w_weights
+        delays = params.delay_steps
+        gamma = params.gamma
+
+        a_vec = params.A
+        if np.isscalar(a_vec):
+            a_vec = np.full(n_nodes, a_vec, dtype=np.float64)
+        self.net_params = replace(params, A=a_vec)
+        self.params_tuple = self.net_params.to_numba_tuple(n_nodes)
+
+        # tES steering matrix gamma_2d of shape (n_elec, n_nodes); single electrode is n_elec=1.
+        self.gamma_2d = np.atleast_2d(gamma)
+        self.n_elec = self.gamma_2d.shape[0]
         # The control input is the per-electrode tES current; the orchestrator seeds u with this width.
         self.n_inputs = self.n_elec
 
@@ -294,7 +508,15 @@ class JansenRitDynamics(Dynamics[JansenRitDynamicsLog]):
         else:
             self.x = np.zeros((6, n_nodes), dtype=np.float64)
 
-        self.history = seed_history(jnp.asarray(self.x), self.p)
+        # Delays (ms) -> integer step lag; a connectome with zero delays is instantaneous.
+        self.delay_steps = delays
+        self.max_history_len = int(np.max(self.delay_steps)) + 1
+
+        # Circular history buffer of S(y), seeded from the initial state.
+        self.history = np.zeros((self.max_history_len, n_nodes), dtype=np.float64)
+        self.history[:, :] = sigmoid_jit(self.x[1] - self.x[2], params.e0, params.v0, params.r)
+        self.w_weights = weights
+
         self.rng = np.random.default_rng(seed)
 
     @classmethod
@@ -330,14 +552,23 @@ class JansenRitDynamics(Dynamics[JansenRitDynamicsLog]):
         ``dt`` (so each call lands on ``t = k * dt``), which holds for single-rate runs
         and any multirate setup where ``dt`` is an integer multiple of the base tick.
         """
+        n_nodes = x.shape[1]
         k = round(t / self.dt)
-        u_arr = np.atleast_1d(np.asarray(u, dtype=np.float64))
-        if u_arr.shape[0] == 1 and self.n_elec != 1:
-            u_arr = np.broadcast_to(u_arr, (self.n_elec,))
-        u_node = project_control_jax(jnp.asarray(u_arr), self.p.gamma)
-        xi = jnp.asarray(self.rng.standard_normal(self.p.n_nodes))
-        x_next, self.history = step_jax(jnp.asarray(x), self.history, k, u_node, self.p, self.dt, xi)
-        return np.asarray(x_next)
+
+        s_y = sigmoid_jit(x[1] - x[2], self.net_params.e0, self.net_params.v0, self.net_params.r)
+        coupling = _dynamics_history_coupling_jit(
+            self.history,
+            k,
+            self.max_history_len,
+            self.delay_steps,
+            self.w_weights,
+            self.K,
+            s_y,
+        )
+
+        u_node = project_control(u, self.gamma_2d, self.n_elec)
+        xi = self.rng.standard_normal(n_nodes)
+        return _heun_step_jit(x, _to_array(u_node, n_nodes), self.params_tuple, self.dt, xi, coupling)
 
     def _make_log(self) -> JansenRitDynamicsLog:
         """Build a snapshot log of the current network state."""
