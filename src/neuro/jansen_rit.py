@@ -30,13 +30,21 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Self
 
+import jax
 import jax.numpy as jnp
 import numpy as np
 import numpy.typing as npt
 from simulate.dynamics import Dynamics
 
 from neuro.config import parse_array
-from neuro.jansen_rit_jax import enable_x64, from_jansen_rit_params, project_control_jax, seed_history, step_jax
+from neuro.jansen_rit_jax import (
+    enable_x64,
+    from_jansen_rit_params,
+    project_control_jax,
+    seed_history,
+    simulate_jax,
+    step_jax,
+)
 
 FloatArray = npt.NDArray[np.float64]
 
@@ -110,6 +118,7 @@ class JansenRitParams:
     delay_steps: npt.NDArray[np.int64] = field(default_factory=lambda: np.zeros((1, 1), dtype=np.int64))
     K: float = field(default=1.0, metadata={"bounds": (0.0, 10.0)})
     gamma: FloatArray = field(default_factory=lambda: np.zeros((1, 1), dtype=np.float64))
+    initial_bounds: FloatArray | None = field(default=None, metadata={"bounds": None})
 
     @classmethod
     def from_config(cls, config: dict[str, Any]) -> JansenRitParams:
@@ -159,6 +168,9 @@ class JansenRitParams:
                 else float(a_config)
             )
 
+        if params_cfg.get("initial_bounds") is not None:
+            params_cfg["initial_bounds"] = np.asarray(params_cfg["initial_bounds"], dtype=np.float64)
+
         return cls(**network_kwargs, **params_cfg)  # type: ignore
 
 
@@ -203,19 +215,13 @@ def simulate_network(  # noqa: PLR0913
     x_traj
         State trajectory, shape ``(6, N, n_samples)`` (``N = 1`` for a single node).
     """
+    enable_x64()
+    n_nodes = params.w_weights.shape[0] if params.w_weights.ndim >= 1 else 1
+    p = from_jansen_rit_params(params, n_nodes)
+
     n_steps = round(duration / dt)
+    n_elec = p.gamma.shape[0]
 
-    dyn = JansenRitDynamics(
-        dt=dt,
-        params=params,
-        seed=seed,
-        initial_state=initial_state,
-    )
-    n_nodes = dyn.x.shape[1]
-
-    # Per-electrode constant-current schedule over the stim window. Built once here so
-    # the integration loop stays branch-free; the gamma projection lives in the component.
-    n_elec = dyn.n_elec
     u_amp = np.atleast_1d(np.asarray(u_hat_tES, dtype=np.float64))
     if u_amp.shape[0] == 1:
         u_amp = np.broadcast_to(u_amp, (n_elec,))
@@ -228,14 +234,34 @@ def simulate_network(  # noqa: PLR0913
         t_grid = np.arange(n_steps) * dt
         u_sched[(t_grid >= stim_window[0]) & (t_grid < stim_window[1])] = u_amp
 
-    x_traj = np.zeros((6, n_nodes, n_steps + 1), dtype=np.float64)
-    x_traj[:, :, 0] = dyn.x
-    for k in range(n_steps):
-        dyn.evaluate(k * dt, u_sched[k])
-        x_traj[:, :, k + 1] = dyn.x
+    # Project controls to nodes
+    u_node_schedule = jax.vmap(project_control_jax, in_axes=(0, None))(u_sched, p.gamma)
 
-    t = np.arange(n_steps + 1, dtype=np.float64) * dt
-    return t, x_traj
+    key = None if seed is None else jax.random.PRNGKey(seed)
+
+    _x0 = None
+    if initial_state is not None:
+        _x0 = jax.numpy.asarray(initial_state, dtype=jax.numpy.float64)
+    elif params.initial_bounds is not None:
+        bounds = np.asarray(params.initial_bounds, dtype=np.float64)
+        if bounds.shape != (6, 2):
+            msg = f"initial_bounds must have shape (6, 2), got {bounds.shape}"
+            raise ValueError(msg)
+        rng = np.random.default_rng(seed)
+        lo = bounds[:, 0:1]
+        hi = bounds[:, 1:2]
+        _x0 = jax.numpy.asarray(rng.uniform(lo, hi, size=(6, n_nodes)), dtype=jax.numpy.float64)
+
+    t, x_traj = simulate_jax(
+        p=p,
+        duration=duration,
+        dt=dt,
+        key=key,
+        x0=_x0,
+        u_node_schedule=u_node_schedule,
+    )
+
+    return np.asarray(t, dtype=np.float64), np.asarray(x_traj, dtype=np.float64)
 
 
 def lfp(x_traj: FloatArray) -> FloatArray:
@@ -286,16 +312,25 @@ class JansenRitDynamics(Dynamics[JansenRitDynamicsLog]):
         # The control input is the per-electrode tES current; the orchestrator seeds u with this width.
         self.n_inputs = self.n_elec
 
+        self.rng = np.random.default_rng(seed)
+
         if initial_state is not None:
             if initial_state.shape != (6, n_nodes):
                 msg = f"initial_state must have shape (6, {n_nodes}), got {initial_state.shape}"
                 raise ValueError(msg)
             self.x = initial_state.astype(np.float64).copy()
+        elif params.initial_bounds is not None:
+            bounds = np.asarray(params.initial_bounds, dtype=np.float64)
+            if bounds.shape != (6, 2):
+                msg = f"initial_bounds must have shape (6, 2), got {bounds.shape}"
+                raise ValueError(msg)
+            lo = bounds[:, 0:1]
+            hi = bounds[:, 1:2]
+            self.x = self.rng.uniform(lo, hi, size=(6, n_nodes))
         else:
             self.x = np.zeros((6, n_nodes), dtype=np.float64)
 
         self.history = seed_history(jnp.asarray(self.x), self.p)
-        self.rng = np.random.default_rng(seed)
 
     @classmethod
     def from_config(cls, config: dict[str, Any]) -> Self:

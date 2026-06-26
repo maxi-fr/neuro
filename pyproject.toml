@@ -12,8 +12,6 @@ dependencies = [
     "tvb-library>=2.10.0",
     "tvb-data>=3.0.0",
     "simulate",
-    "filterpy>=1.4.5",
-    "casadi>=3.7.2",
     "pyyaml>=6.0.3",
     "scikit-learn>=1.9.0",
     "optax>=0.2.8",

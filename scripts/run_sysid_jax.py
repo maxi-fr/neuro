@@ -2,7 +2,9 @@
 
 The autodiff alternative to ``scripts/run_sysid.py`` (CasADi PCMS): PCA-reduce the
 76-node plant to ``N`` virtual modes, then *refine* the reduced ``A`` / ``w_weights``
-with Optax against the uncontrolled EEG statistics.
+with Optax against a windowed N-step-ahead MSE (state evolves naturally over one
+continuous rollout per recording, real recorded tES stimulation driving it; see
+:func:`neuro.sysid_jax.identify`).
 
 Usage::
 
@@ -15,24 +17,14 @@ import argparse
 from pathlib import Path
 from typing import Any
 
-import jax.numpy as jnp
 import numpy as np
 import optax
 import yaml
 
-from neuro.connectome import load_connectome
+from neuro.connectome import compute_gamma, load_connectome
 from neuro.jansen_rit import JansenRitParams
 from neuro.jansen_rit_jax import enable_x64, from_jansen_rit_params
-from neuro.sysid_jax import (
-    IdentifyResult,
-    LossWeights,
-    RefineConfig,
-    StatConfig,
-    identify,
-    model_eeg,
-    reduce_via_pca,
-)
-from utils.processing import compute_psd
+from neuro.sysid_jax import IdentifyResult, PredConfig, RefineConfig, identify, reduce_via_pca
 
 
 def _build_lr(lr: float | dict[str, Any]) -> float | optax.Schedule:
@@ -63,16 +55,17 @@ def _build_lr(lr: float | dict[str, Any]) -> float | optax.Schedule:
     raise ValueError(msg)
 
 
-def _load_plant(sim_path: str, downsample: int, n_steps: int) -> tuple[np.ndarray, np.ndarray]:
-    """Load downsampled per-region LFP and EEG from a full-plant simulation log."""
+def _load_plant(sim_path: str, downsample: int, n_steps: int) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Load downsampled per-region LFP, target EEG, and per-electrode tES from a plant log."""
     with np.load(sim_path) as data:
         x = np.asarray(data["universal_x"])[::downsample][:n_steps]  # (n_steps, 6, 76)
         y_mea = np.asarray(data["universal_y_mea"])[::downsample][:n_steps]  # (n_steps, 62)
+        u = np.asarray(data["universal_u"])[::downsample][:n_steps]  # (n_steps, n_elec)
     node_output = x[:, 1, :] - x[:, 2, :]  # (n_steps, 76)
-    return node_output, y_mea.T  # y_data: (62, n_steps)
+    return node_output, y_mea.T, u  # y_data: (62, n_steps); u: (n_steps, n_elec)
 
 
-def _base_params(red: Any, cfg: dict[str, Any]) -> Any:  # noqa: ANN401
+def _base_params(red: Any, gamma_modes: np.ndarray, cfg: dict[str, Any]) -> Any:  # noqa: ANN401
     """Assemble the reduced-model base parameters (symmetric non-negative ``w`` init)."""
     n = red.gain.shape[1]
     rng = np.random.default_rng(int(cfg.get("seed", 0)))
@@ -88,34 +81,15 @@ def _base_params(red: Any, cfg: dict[str, Any]) -> Any:  # noqa: ANN401
         w_weights=w0,
         delay_steps=red.delay_steps,
         eeg_gain=red.gain,
-        gamma=np.zeros((1, n)),
+        gamma=gamma_modes,
         K=float(cfg.get("K", 1.0)),
     )
     return from_jansen_rit_params(jr, n)
 
 
-def _report(  # noqa: PLR0913
-    result: IdentifyResult, y_list: list[np.ndarray], dt: float, window: int, band: tuple[float, float], burn_in: int
-) -> None:
-    """Print offline fit metrics (mean over recordings): spectral-shape corr and FC error."""
-    n = result.params.n_nodes
-
-    y_fit = np.asarray(model_eeg(result.params, jnp.zeros((6, n)), jnp.zeros((y_list[0].shape[1], n)), dt, window))[
-        :, burn_in:
-    ]
-
-    def _logpsd(sig: np.ndarray) -> np.ndarray:
-        freqs, pxx = compute_psd(sig, dt_ms=dt * 1000.0)
-        mask = (freqs >= band[0]) & (freqs <= band[1])
-        return np.log(pxx[:, mask] + 1e-30)
-
-    fit_logpsd = _logpsd(y_fit).ravel()
-    fc_fit = np.corrcoef(y_fit)
-    psd_corrs = [float(np.corrcoef(_logpsd(y[:, burn_in:]).ravel(), fit_logpsd)[0, 1]) for y in y_list]
-    fc_errs = [float(np.mean((np.corrcoef(y[:, burn_in:]) - fc_fit) ** 2)) for y in y_list]
-    print(f"   final loss        : {result.history[-1]:.5f}  (from {result.history[0]:.5f})")
-    print(f"   log-PSD corr      : {np.mean(psd_corrs):.4f}  (mean over {len(y_list)} recording(s))")
-    print(f"   spatial-FC MSE    : {np.mean(fc_errs):.5f}")
+def _report(result: IdentifyResult) -> None:
+    """Print the training loss (a windowed N-step MSE)."""
+    print(f"   final loss        : {result.history[-1]:.6f}  (from {result.history[0]:.6f})")
 
 
 def main() -> None:
@@ -136,24 +110,36 @@ def main() -> None:
     dt = float(cfg.get("dt", 1e-4)) * int(cfg.get("downsample", 1))  # effective reduced-model step
     n_steps = int(cfg["n_steps"])
     window = int(cfg.get("window", 300))
-    burn_in = int(cfg.get("burn_in", 0))
-    band = tuple(cfg.get("band", (4.0, 40.0)))
+    electrodes = list(cfg["electrodes"])
+    gamma_sigma = float(cfg["gamma_sigma"])
 
     sim_paths = list(cfg["sims"]) if "sims" in cfg else [cfg["sim"]]
     print(f"1. Loading {len(sim_paths)} full-plant simulation(s) and connectome...")
     loaded = [_load_plant(p, int(cfg.get("downsample", 1)), n_steps) for p in sim_paths]
-    y_list = [y for _, y in loaded]
+    y_list = [y for _, y, _ in loaded]
+    u_list_elec = [u for _, _, u in loaded]  # (n_steps, n_elec) each, per-electrode (raw)
     # PCA basis is fit on every recording's LFP so it spans all noise realisations.
-    node_output = np.concatenate([no for no, _ in loaded], axis=0)
+    node_output = np.concatenate([no for no, _, _ in loaded], axis=0)
     conn = load_connectome()
+
+    n_elec_data = u_list_elec[0].shape[1]
+    if any(u.shape[1] != n_elec_data for u in u_list_elec):
+        msg = "universal_u electrode count differs across sims"
+        raise ValueError(msg)
+    if n_elec_data != len(electrodes):
+        msg = f"config electrodes={electrodes} (n={len(electrodes)}) does not match universal_u columns ({n_elec_data})"
+        raise ValueError(msg)
+    gamma_full = np.atleast_2d(compute_gamma(conn.centres, electrodes, gamma_sigma))  # (n_elec, 76)
 
     print(f"2. PCA-reducing to N={cfg['n_components']} virtual modes...")
     red = reduce_via_pca(node_output, conn.gain, conn.delays, dt, int(cfg["n_components"]))
     print(f"   explained variance: {red.explained_variance * 100:.1f}%   gain {red.gain.shape}")
 
-    base = _base_params(red, cfg)
-    weights = LossWeights(**cfg.get("weights", {}))
-    stat_cfg = StatConfig(nperseg=cfg.get("nperseg"), band=band)
+    gamma_modes = gamma_full @ red.components.T  # (n_elec, N) -- mirrors JaxSysidPredictor.load
+    controls_list = [u @ gamma_modes for u in u_list_elec]  # each (n_steps, N)
+
+    base = _base_params(red, gamma_modes, cfg)
+    pred_cfg = PredConfig(horizon=int(cfg["horizon"]), burn_in=int(cfg.get("burn_in", 0)), stride=cfg.get("stride"))
     refine_dict = dict(cfg.get("refine", {}))
     refine_dict["lr"] = _build_lr(refine_dict.get("lr", 1e-2))
     refine_cfg = RefineConfig(**refine_dict)
@@ -164,16 +150,15 @@ def main() -> None:
         list(cfg.get("free_params", ["A", "w_weights"])),
         y_list,
         dt,
+        pred_cfg=pred_cfg,
         window=window,
-        burn_in=burn_in,
+        controls=controls_list,
         w_max=cfg.get("w_max"),
-        weights=weights,
-        stat_cfg=stat_cfg,
         refine_cfg=refine_cfg,
     )
 
     print("4. Results:")
-    _report(result, y_list, dt, window, band, burn_in)
+    _report(result)
 
     out = cfg.get("out", "results/sysid_jax_result.npz")
     Path(out).parent.mkdir(parents=True, exist_ok=True)
@@ -188,8 +173,6 @@ def main() -> None:
         delay_steps=red.delay_steps,
         history=np.asarray(result.history),
         dt=float(dt),
-        window=int(window),
-        band=np.asarray(band, dtype=np.float64),
     )
     print(f"   saved -> {out}")
 

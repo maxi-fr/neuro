@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, cast
 
 import jax
@@ -272,40 +272,6 @@ def model_eeg(p: JRParamsJax, x0: JaxArray, controls: JaxArray, dt: float, windo
 
 
 @dataclass(frozen=True)
-class StatConfig:
-    """Welch PSD settings and spectral comparison mode.
-
-    Attributes
-    ----------
-    nperseg
-        Welch segment length. ``None`` sizes it for ~1 Hz resolution
-        (``min(T, round(fs))``), like :func:`neuro.utils.processing.compute_psd`: at the
-        sim's high ``fs`` a fixed small ``nperseg`` widens the bins past the EEG rhythm
-        and collapses it into DC (the psd-nperseg-resolution gotcha).
-    noverlap
-        Segment overlap; ``None`` uses ``nperseg // 2``.
-    band
-        Inclusive frequency band (Hz) the loss is computed over.
-    log_psd
-        Whether to log-transform the Welch PSD (default: ``True``).
-    """
-
-    nperseg: int | None = None
-    noverlap: int | None = None
-    band: tuple[float, float] = (1.0, 45.0)
-    log_psd: bool = True
-
-
-@dataclass(frozen=True)
-class LossWeights:
-    """Relative weights of the loss terms (statistics-dominant by default)."""
-
-    spec: float = 1.0
-    spatial: float = 0.5
-    time: float = 0.0
-
-
-@dataclass(frozen=True)
 class RefineConfig:
     """Optax refinement settings."""
 
@@ -315,185 +281,135 @@ class RefineConfig:
 
 
 @dataclass(frozen=True)
-class _Targets:
-    """Precomputed data-side statistics the model is fit against."""
+class PredConfig:
+    """N-step-ahead MSE loss settings, scored over windows of one continuous rollout.
 
-    data_logpsd: JaxArray
-    corr_data: JaxArray
-    data_scaled: JaxArray
-    chan_mean: JaxArray
-    chan_std: JaxArray
-    nperseg: int
-    noverlap: int
-    fs: float
-    bin_idx: IntArray = field(default_factory=lambda: np.zeros(0, dtype=np.int64))
-    log_psd: bool = True
+    The model state evolves continuously and naturally from a single ``x0`` across the
+    whole recording (real driving controls, no resets); horizon-length windows are then
+    sliced from the post-``burn_in`` trajectory purely to organise the MSE by lead time,
+    not to reinitialise state.
 
+    Attributes
+    ----------
+    horizon
+        Window length (steps) the MSE is organised into.
+    burn_in
+        Leading post-``x0`` samples discarded once, globally, before windowing (skips the
+        ``x0``-to-limit-cycle transient); applied identically to data and model.
+    stride
+        Step spacing between consecutive window starts. ``None`` defaults to ``horizon``
+        (non-overlapping windows).
+    """
 
-def _welch_settings(n_steps: int, dt: float, cfg: StatConfig) -> tuple[int, int, float, IntArray]:
-    fs_full = 1.0 / dt
-    requested = cfg.nperseg if cfg.nperseg is not None else round(fs_full)  # ~1 Hz resolution
-    nperseg = min(requested, n_steps)
-    noverlap = cfg.noverlap if cfg.noverlap is not None else nperseg // 2
-    noverlap = min(noverlap, nperseg - 1)
-    freqs = np.fft.rfftfreq(nperseg, d=dt)
-    bin_idx = np.where((freqs >= cfg.band[0]) & (freqs <= cfg.band[1]))[0].astype(np.int64)
-    if bin_idx.size == 0:
-        bin_idx = np.arange(freqs.size, dtype=np.int64)
-    return nperseg, noverlap, fs_full, bin_idx
+    horizon: int
+    burn_in: int = 0
+    stride: int | None = None
 
 
-def _log_psd(  # noqa: PLR0913
-    eeg: JaxArray, nperseg: int, noverlap: int, fs: float, bin_idx: IntArray, *, log: bool = True
-) -> JaxArray:
-    """One-sided Welch PSD over the retained band bins, optionally log-transformed."""
-    _, pxx = jax.scipy.signal.welch(eeg, fs=fs, nperseg=nperseg, noverlap=noverlap, axis=-1)
-    pxx = pxx[:, bin_idx]
-    if log:
-        return jnp.log(pxx + 1e-12)
-    return pxx
+def _window_starts(n_steps: int, horizon: int, stride: int) -> IntArray:
+    """Compute valid window-start indices ``t0`` s.t. ``[t0, t0 + horizon)`` fits."""
+    if n_steps < horizon:
+        return np.zeros(0, dtype=np.int64)
+    last_start = n_steps - horizon
+    return np.arange(0, last_start + 1, stride, dtype=np.int64)
 
 
-def _spec_mag_loss(model_logpsd: JaxArray, data_logpsd: JaxArray) -> JaxArray:
-    """Phase-blind, amplitude-sensitive log-PSD MSE (keeps the amplitude ``A`` controls)."""
-    return jnp.mean((model_logpsd - data_logpsd) ** 2)
+@dataclass(frozen=True)
+class _RecordingWindows:
+    """One recording's continuous-rollout inputs plus its precomputed target windows."""
+
+    x0: JaxArray  # (6, N)
+    controls: JaxArray  # (T, N)
+    targets: JaxArray  # (n_windows, n_channels, horizon)
+    starts: IntArray  # (n_windows,) -- window starts within the post-burn_in trajectory
 
 
-def _chan_corr(eeg: JaxArray) -> JaxArray:
-    """Channel-by-channel correlation matrix (FC-like), shape ``(n_ch, n_ch)``."""
-    e = eeg - eeg.mean(axis=1, keepdims=True)
-    cov = e @ e.T
-    d = jnp.sqrt(jnp.diag(cov)) + 1e-12
-    return cov / jnp.outer(d, d)
-
-
-def _spatial_loss(eeg: JaxArray, corr_data: JaxArray) -> JaxArray:
-    """Mean squared error of the off-diagonal channel-correlation entries."""
-    cm = _chan_corr(eeg)
-    iu = jnp.triu_indices(cm.shape[0], k=1)
-    return jnp.mean((cm[iu] - corr_data[iu]) ** 2)
-
-
-def build_targets(y_data: FloatArray, dt: float, cfg: StatConfig, burn_in: int = 0) -> _Targets:
-    """Precompute the data-side statistics (log-PSD shape, channel FC, scaled signal).
+def _build_recording_windows(  # noqa: PLR0913
+    y_data: FloatArray, controls: FloatArray, x0: JaxArray, burn_in: int, horizon: int, stride: int
+) -> _RecordingWindows:
+    """Slice one recording's post-``burn_in`` EEG into windows for the loss (no resets).
 
     Parameters
     ----------
     y_data
         Measured EEG, shape ``(n_channels, T)``.
-    dt
-        Integration step in seconds.
-    cfg
-        Welch settings.
-    burn_in
-        Number of leading samples to discard before computing statistics, so a startup
-        transient does not contaminate the (low-frequency) PSD bins. Must match the value
-        passed to :func:`make_stat_loss`.
-
-    Returns
-    -------
-    _Targets
-        Constants closed over by the loss.
-    """
-    y = jnp.asarray(y_data, dtype=jnp.float64)[:, burn_in:]
-    nperseg, noverlap, fs, bin_idx = _welch_settings(y.shape[1], dt, cfg)
-    chan_mean = jnp.mean(y, axis=1, keepdims=True)
-    chan_std = jnp.std(y, axis=1, keepdims=True) + 1e-12
-    return _Targets(
-        data_logpsd=_log_psd(y, nperseg, noverlap, fs, bin_idx, log=cfg.log_psd),
-        corr_data=_chan_corr(y),
-        data_scaled=(y - chan_mean) / chan_std,
-        chan_mean=chan_mean,
-        chan_std=chan_std,
-        nperseg=nperseg,
-        noverlap=noverlap,
-        fs=fs,
-        bin_idx=bin_idx,
-        log_psd=cfg.log_psd,
-    )
-
-
-def average_targets(targets_list: Sequence[_Targets]) -> _Targets:
-    """Average the data-side statistics over several recordings of the same regime.
-
-    For a deterministic, uncontrolled fit the rollout is identical across noise seeds, so
-    minimising the summed per-seed loss equals (up to a parameter-independent constant)
-    fitting the *mean* PSD / FC target -- one rollout, one averaged target. All recordings
-    must share the Welch sizing, i.e. have equal length (and thus identical ``bin_idx``).
-
-    Parameters
-    ----------
-    targets_list
-        Per-recording outputs of :func:`build_targets` (all same length).
-
-    Returns
-    -------
-    _Targets
-        A target whose ``data_logpsd``, ``corr_data`` and ``data_scaled`` are the
-        across-recording means; Welch settings are taken from the first recording.
-    """
-    first = targets_list[0]
-    if any(t.data_logpsd.shape != first.data_logpsd.shape for t in targets_list):
-        msg = "average_targets requires equal-length recordings (matching Welch bins)."
-        raise ValueError(msg)
-    if any(t.log_psd != first.log_psd for t in targets_list):
-        msg = "average_targets requires matching log_psd settings across targets."
-        raise ValueError(msg)
-
-    def _avg(get: Callable[[_Targets], JaxArray]) -> JaxArray:
-        return jnp.mean(jnp.stack([get(t) for t in targets_list], axis=0), axis=0)
-
-    return replace(
-        first,
-        data_logpsd=_avg(lambda t: t.data_logpsd),
-        corr_data=_avg(lambda t: t.corr_data),
-        data_scaled=_avg(lambda t: t.data_scaled),
-    )
-
-
-def make_stat_loss(  # noqa: PLR0913
-    targets: _Targets, weights: LossWeights, x0: JaxArray, controls: JaxArray, dt: float, window: int, burn_in: int = 0
-) -> Callable[[JRParamsJax], JaxArray]:
-    """Build ``loss(p)`` comparing a model rollout's statistics to ``targets``.
-
-    Parameters
-    ----------
-    targets
-        Output of :func:`build_targets`.
-    weights
-        Term weights (spectral shape, spatial FC, optional time MSE).
-    x0
-        Initial state, shape ``(6, N)``.
     controls
-        Node-projected control schedule, shape ``(T, N)`` (zeros = uncontrolled).
+        Node-projected control schedule, shape ``(T, N)``, fed to one continuous rollout.
+    x0
+        Initial state for the (single, continuous) rollout, shape ``(6, N)``.
+    burn_in, horizon, stride
+        See :class:`PredConfig`.
+
+    Returns
+    -------
+    _RecordingWindows
+        Empty ``targets``/``starts`` if the recording is too short for a single window.
+    """
+    y_post = y_data[:, burn_in:]
+    starts = _window_starts(y_post.shape[1], horizon, stride)
+    targets = np.stack([y_post[:, t0 : t0 + horizon] for t0 in starts], axis=0) if starts.size else np.zeros((0,))
+    return _RecordingWindows(
+        x0=x0,
+        controls=jnp.asarray(controls, dtype=jnp.float64),
+        targets=jnp.asarray(targets, dtype=jnp.float64),
+        starts=starts,
+    )
+
+
+def _channel_scale(targets: JaxArray) -> tuple[JaxArray, JaxArray]:
+    """Per-channel mean/std over all windows and horizon steps, shape ``(1, n_channels, 1)``.
+
+    EEG channel units are arbitrary/uncalibrated (see :mod:`neuro.prediction`'s
+    scale-invariant metrics note), so the loss z-scores both prediction and target with
+    these *fixed* (data-only, non-``p``-dependent) constants rather than comparing raw
+    amplitudes directly.
+    """
+    flat = jnp.moveaxis(targets, 1, 0).reshape(targets.shape[1], -1)  # (n_channels, n_windows*horizon)
+    mean = jnp.mean(flat, axis=1)[None, :, None]
+    std = jnp.std(flat, axis=1)[None, :, None] + 1e-12
+    return mean, std
+
+
+def make_pred_loss(
+    recordings: Sequence[_RecordingWindows], dt: float, window: int, burn_in: int
+) -> Callable[[JRParamsJax], JaxArray]:
+    """Build the windowed N-step-ahead MSE loss over one continuous rollout per recording.
+
+    Each recording's state evolves continuously and naturally from its own ``x0`` (no
+    per-window resets); the post-``burn_in`` trajectory is sliced into ``horizon``-length
+    windows purely to organise the (per-channel-normalised) MSE.
+
+    Parameters
+    ----------
+    recordings
+        Per-recording rollout inputs and precomputed target windows (see
+        :func:`_build_recording_windows`).
     dt
         Integration step in seconds.
     window
-        Truncated-backprop window length in steps.
+        Truncated-backprop window length passed to :func:`rollout_tbptt`.
     burn_in
-        Number of leading rollout samples to discard before computing statistics (the
-        model ramps from ``x0`` into its limit cycle); must match :func:`build_targets`.
+        Leading samples discarded from the model rollout before windowing; must match
+        the value used to build ``recordings``.
 
     Returns
     -------
     Callable
         ``loss(p: JRParamsJax) -> scalar`` -- jit/grad-friendly.
     """
+    chan_mean, chan_std = _channel_scale(jnp.concatenate([r.targets for r in recordings], axis=0))
+
+    def _recording_loss(p: JRParamsJax, rec: _RecordingWindows) -> JaxArray:
+        eeg = model_eeg(p, rec.x0, rec.controls, dt, window)[:, burn_in:]
+        horizon = rec.targets.shape[-1]
+        windows = jnp.stack([eeg[:, t0 : t0 + horizon] for t0 in rec.starts], axis=0)
+        eeg_scaled = (windows - chan_mean) / chan_std
+        target_scaled = (rec.targets - chan_mean) / chan_std
+        return jnp.mean((eeg_scaled - target_scaled) ** 2)
 
     def loss(p: JRParamsJax) -> JaxArray:
-        eeg = model_eeg(p, x0, controls, dt, window)[:, burn_in:]
-        total = jnp.asarray(0.0, dtype=jnp.float64)
-        if weights.spec:
-            model_logpsd = _log_psd(
-                eeg, targets.nperseg, targets.noverlap, targets.fs, targets.bin_idx, log=targets.log_psd
-            )
-            total = total + weights.spec * _spec_mag_loss(model_logpsd, targets.data_logpsd)
-        if weights.spatial:
-            total = total + weights.spatial * _spatial_loss(eeg, targets.corr_data)
-        if weights.time:
-            scaled = (eeg - targets.chan_mean) / targets.chan_std
-            total = total + weights.time * jnp.mean((scaled - targets.data_scaled) ** 2)
-        return total
+        per_recording = jnp.stack([_recording_loss(p, rec) for rec in recordings])
+        return jnp.mean(per_recording)
 
     return loss
 
@@ -557,16 +473,20 @@ def identify(  # noqa: PLR0913
     y_data: FloatArray | list[FloatArray],
     dt: float,
     *,
+    pred_cfg: PredConfig,
     window: int = 200,
-    burn_in: int = 0,
-    controls: FloatArray | None = None,
+    controls: FloatArray | list[FloatArray] | None = None,
     x0: FloatArray | None = None,
     w_max: float | None = None,
-    weights: LossWeights | None = None,
-    stat_cfg: StatConfig | None = None,
     refine_cfg: RefineConfig | None = None,
 ) -> IdentifyResult:
-    """Gradient-refine the reduced-model parameters against the EEG statistics.
+    """Gradient-refine reduced-model parameters against a windowed N-step-ahead MSE.
+
+    Each recording's state evolves continuously and naturally from ``x0`` across the
+    whole rollout (real driving ``controls``, no resets, see :func:`make_pred_loss`); the
+    post-``pred_cfg.burn_in`` trajectory is sliced into ``pred_cfg.horizon``-length
+    windows purely to organise the MSE. Multiple recordings each contribute their own
+    rollout and windows into one combined loss (no statistical averaging).
 
     Parameters
     ----------
@@ -575,53 +495,72 @@ def identify(  # noqa: PLR0913
     free_names
         Subset of ``{"A", "w_weights", "eeg_gain", "K", "mean_input"}`` to identify.
     y_data
-        Measured (uncontrolled) EEG, shape ``(n_channels, T)``, or a sequence of such
-        recordings of the *same regime* (different noise seeds). A sequence is averaged
-        into a single mean PSD / FC target via :func:`average_targets` (all recordings
-        must be the same length); set the time-domain loss weight to 0 in that case, as
-        the deterministic model cannot match any single realisation's phase.
+        Measured EEG, shape ``(n_channels, T)``, or a list of such recordings.
     dt
         Integration step in seconds.
+    pred_cfg
+        Horizon/burn-in/stride settings (see :class:`PredConfig`).
     window
-        Truncated-backprop window length in steps.
-    burn_in
-        Leading samples discarded before computing statistics (drops the model's
-        ``x0``-to-limit-cycle transient); applied identically to data and model.
+        Truncated-backprop window length passed to :func:`rollout_tbptt`.
     controls
-        Optional node-projected control schedule, shape ``(T, N)``; defaults to zeros.
+        Node-projected control schedule(s), shape ``(T, N)`` (or a list aligned with a
+        list ``y_data``); defaults to zeros per recording. Pointwise MSE is only
+        meaningful if this is a real, persistently-exciting driving input -- with zero
+        controls the model's free-running phase will not track ``y_data``.
     x0
-        Optional initial state, shape ``(6, N)``; defaults to zeros.
+        Initial state shared by every recording's rollout, shape ``(6, N)``; defaults to
+        zeros.
     w_max
         Upper bound per connection weight; defaults to ``10 x`` the max base weight (or 1).
-    weights, stat_cfg, refine_cfg
-        Loss weights, Welch settings, and optimiser settings (sensible defaults used).
+    refine_cfg
+        Optimiser settings (sensible defaults used).
 
     Returns
     -------
     IdentifyResult
         Identified parameters and the loss history.
     """
-    weights = weights or LossWeights()
-    stat_cfg = stat_cfg or StatConfig()
     refine_cfg = refine_cfg or RefineConfig()
     n = base.n_nodes
     y_list = cast("list[FloatArray]", y_data if isinstance(y_data, list) else [y_data])
-    n_steps = int(y_list[0].shape[1])
+    n_recordings = len(y_list)
 
     x0_arr = jnp.zeros((6, n), dtype=jnp.float64) if x0 is None else jnp.asarray(x0, dtype=jnp.float64)
-    u_arr = jnp.zeros((n_steps, n), dtype=jnp.float64) if controls is None else jnp.asarray(controls, dtype=jnp.float64)
+
+    if controls is None:
+        ctrl_list = [np.zeros((y.shape[1], n), dtype=np.float64) for y in y_list]
+    elif isinstance(controls, list):
+        ctrl_list = [np.asarray(c, dtype=np.float64) for c in controls]
+    else:
+        if n_recordings != 1:
+            msg = "controls must be a list aligned with y_data when y_data is a list"
+            raise TypeError(msg)
+        ctrl_list = [np.asarray(controls, dtype=np.float64)]
+
+    if len(ctrl_list) != n_recordings:
+        msg = f"controls has {len(ctrl_list)} recording(s) but y_data has {n_recordings}"
+        raise ValueError(msg)
+
+    stride = pred_cfg.stride if pred_cfg.stride is not None else pred_cfg.horizon
+    recordings = [
+        _build_recording_windows(y, c, x0_arr, pred_cfg.burn_in, pred_cfg.horizon, stride)
+        for y, c in zip(y_list, ctrl_list, strict=True)
+    ]
+    recordings = [r for r in recordings if r.targets.shape[0] > 0]
+    if not recordings:
+        msg = "no recording is long enough to produce a single window; reduce burn_in/horizon"
+        raise ValueError(msg)
+
     if w_max is None:
         w_max = 10.0 * (float(jnp.max(jnp.abs(base.w_weights))) or 1.0)
     bounds = make_bounds(w_max)
 
-    targets_list = [build_targets(y, dt, stat_cfg, burn_in) for y in y_list]
-    targets = targets_list[0] if len(targets_list) == 1 else average_targets(targets_list)
-    stat_loss = make_stat_loss(targets, weights, x0_arr, u_arr, dt, window, burn_in)
+    pred_loss = make_pred_loss(recordings, dt, window, pred_cfg.burn_in)
 
     theta0 = pack_theta(base, free_names, bounds)
 
     def loss_theta(theta: dict[str, JaxArray]) -> JaxArray:
-        return stat_loss(build_params(theta, base, free_names, bounds))
+        return pred_loss(build_params(theta, base, free_names, bounds))
 
     theta, history = refine(loss_theta, theta0, refine_cfg)
     params = build_params(theta, base, free_names, bounds)
