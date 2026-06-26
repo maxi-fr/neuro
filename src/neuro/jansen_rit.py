@@ -110,6 +110,7 @@ class JansenRitParams:
     delay_steps: npt.NDArray[np.int64] = field(default_factory=lambda: np.zeros((1, 1), dtype=np.int64))
     K: float = field(default=1.0, metadata={"bounds": (0.0, 10.0)})
     gamma: FloatArray = field(default_factory=lambda: np.zeros((1, 1), dtype=np.float64))
+    initial_bounds: FloatArray | None = field(default=None, metadata={"bounds": None})
 
     def to_numba_tuple(self, n_nodes: int) -> tuple[Any, ...]:
         """Convert params to a JIT-friendly tuple, broadcasting regional parameters."""
@@ -186,6 +187,9 @@ class JansenRitParams:
                 if isinstance(a_config, (list, tuple, np.ndarray))
                 else float(a_config)
             )
+
+        if params_cfg.get("initial_bounds") is not None:
+            params_cfg["initial_bounds"] = np.asarray(params_cfg["initial_bounds"], dtype=np.float64)
 
         return cls(**network_kwargs, **params_cfg)  # type: ignore
 
@@ -461,11 +465,21 @@ class JansenRitDynamics(Dynamics[JansenRitDynamicsLog]):
         # The control input is the per-electrode tES current; the orchestrator seeds u with this width.
         self.n_inputs = self.n_elec
 
+        self.rng = np.random.default_rng(seed)
+
         if initial_state is not None:
             if initial_state.shape != (6, n_nodes):
                 msg = f"initial_state must have shape (6, {n_nodes}), got {initial_state.shape}"
                 raise ValueError(msg)
             self.x = initial_state.astype(np.float64).copy()
+        elif params.initial_bounds is not None:
+            bounds = np.asarray(params.initial_bounds, dtype=np.float64)
+            if bounds.shape != (6, 2):
+                msg = f"initial_bounds must have shape (6, 2), got {bounds.shape}"
+                raise ValueError(msg)
+            lo = bounds[:, 0:1]
+            hi = bounds[:, 1:2]
+            self.x = self.rng.uniform(lo, hi, size=(6, n_nodes))
         else:
             self.x = np.zeros((6, n_nodes), dtype=np.float64)
 

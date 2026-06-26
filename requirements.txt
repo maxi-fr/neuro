@@ -29,20 +29,6 @@ beartype==0.22.9 \
     --hash=sha256:8f82b54aa723a2848a56008d18875f91c1db02c32ef6a62319a002e3e25a975f \
     --hash=sha256:d16c9bbc61ea14637596c5f6fbff2ee99cbe3573e46a716401734ef50c3060c2
     # via plum-dispatch
-casadi==3.7.2 \
-    --hash=sha256:08762169bd464d5a00a15bf28d2ff7deac41d24a1da842a13153a833cd247b61 \
-    --hash=sha256:2e37806a2d6a57320da79e200398239ae432a34569afbb0268598dd3381dafb9 \
-    --hash=sha256:4a92b5c28abb8d00ae24ce243fed36df36c53a511449aedcdf4db54f78efaf64 \
-    --hash=sha256:62b7b1f943456447205673865e130ec9d97a6f931239968a46d9a7b40ea8c4c3 \
-    --hash=sha256:63a406ead6582ddc730ea9bfcb100fc299d0793f2e6b177a967a1495846f9a72 \
-    --hash=sha256:8861213b7fc605a67cf9b46b29c05337b70c773c0b9615939a7c8a3361cabed1 \
-    --hash=sha256:8c22837ff751ab22ea3333198427e0dd2aa1f3974a10867de897fe26bcb57438 \
-    --hash=sha256:9b5683d06f7c5c2bc044585f2d3591d81ec0ad81de84db29765a8bca8247f9d7 \
-    --hash=sha256:b4d7bd8acdc4180306903ae1c9eddaf41be2a3ae2fa7154c57174ae64acdc60d \
-    --hash=sha256:b53e9cc44e9d45fd0276322e85c721977ab32fefe5147069cf57f23352253479 \
-    --hash=sha256:d1a996d5904ba74ee2c0bb9991344c9b0963adc08864ddce908fe92cfdf36bf0 \
-    --hash=sha256:f8faf88720477f63b48e96f443ba557931ddd3f5d7d08fc905148893b5c25917
-    # via neuro
 cffi==2.0.0 ; implementation_name == 'pypy' \
     --hash=sha256:00bdf7acc5f795150faa6957054fbbca2439db2f775ce831222b66f192f03beb \
     --hash=sha256:07b271772c100085dd28b74fa0cd81c8fb1a3ba18b21e03d7c27f3436a10606b \
@@ -264,9 +250,6 @@ filelock==3.29.4 \
     # via
     #   python-discovery
     #   virtualenv
-filterpy==1.4.5 \
-    --hash=sha256:4f2a4d39e4ea601b9ab42b2db08b5918a9538c168cff1c6895ae26646f3d73b1
-    # via neuro
 fonttools==4.63.0 \
     --hash=sha256:0eac00b9118c3c2f87d272e45341871c5b3066baa3c86897fa634a7c3fb59096 \
     --hash=sha256:1e874792a8212b44583ea02189d9e693906b2f78b261f372f95d6c563210ac1d \
@@ -615,7 +598,6 @@ matplotlib==3.11.0 \
     --hash=sha256:dfabef0230d0697aa0d717385194dd41162e00207a68bf4abf94c2bf4c27dca0 \
     --hash=sha256:e6b3e64dea5062c570f04358e2711859f3531b459f29516274fbad889079e4f3
     # via
-    #   filterpy
     #   neuro
     #   simulate
     #   tvb-library
@@ -799,9 +781,7 @@ numpy==2.4.6 \
     --hash=sha256:f3a3570c4a2a16746ac2c31a7c7c7b0c186b95ce902e33db6f28094ed7387dda \
     --hash=sha256:f74a575920ab21fe304421a3fc28793d82e299cae9eccb37084e9fc7f3617c20
     # via
-    #   casadi
     #   contourpy
-    #   filterpy
     #   jax
     #   jaxlib
     #   matplotlib
@@ -1272,7 +1252,6 @@ scipy==1.18.0 \
     --hash=sha256:f2a6af57bd9e4a75d70e4117e78a1bbee84f79ae3fbb6d0111005d6ebcc4cb8d \
     --hash=sha256:f351e0dd702687d12a402b867a1b4146a256923e1c38317cbc472f6372b94707
     # via
-    #   filterpy
     #   jax
     #   jaxlib
     #   scikit-learn
