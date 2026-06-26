@@ -311,7 +311,23 @@ class UKFPredictor:
 
 
 class AutoregressivePredictor(eqx.Module):
-    """Wrapper that unrolls a 1-step MLP model over a prediction horizon."""
+    """Wrapper that unrolls a 1-step MLP model over a prediction horizon.
+
+    Attributes
+    ----------
+    model : eqx.Module
+        The underlying 1-step MLP model.
+    n_y : int
+        The number of past EEG (output) steps the model needs as history.
+    n_u : int
+        The number of past control inputs the model needs as history.
+    horizon : int
+        The number of future steps to predict.
+    C_y : int
+        The number of EEG (output) channels.
+    C_u : int
+        The number of control (input) channels.
+    """
 
     model: eqx.Module
     n_y: int = eqx.field(static=True)

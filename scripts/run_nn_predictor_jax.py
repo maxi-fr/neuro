@@ -8,6 +8,7 @@ multiple trajectories.
 import argparse
 import datetime
 import json
+import shutil
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
@@ -21,6 +22,7 @@ import optax
 import yaml
 from sklearn.preprocessing import StandardScaler
 from tqdm import tqdm
+from tvboptim.observations.observation import compute_fc
 
 from neuro.jansen_rit_jax import enable_x64
 from neuro.prediction import AutoregressivePredictor
@@ -88,6 +90,108 @@ def load_trajectory(data_file: str, n_steps: int, downsample: int) -> tuple[np.n
     return u_data, y_data
 
 
+def extract_windows_flattened(data: np.ndarray, window_size: int) -> np.ndarray:
+    """Extract sliding windows from a 2D array and flatten the time dimension.
+
+    Parameters
+    ----------
+    data : np.ndarray
+        Input array of shape (T, C).
+    window_size : int
+        Size of the sliding window.
+
+    Returns
+    -------
+    np.ndarray
+        Flattened sliding windows of shape (T - window_size + 1, window_size * C).
+    """
+    _, channels = data.shape
+    view = np.lib.stride_tricks.sliding_window_view(data, (window_size, channels))
+    return view.reshape(-1, window_size * channels)
+
+
+def scale_flat_sequence(data_flat: np.ndarray, scaler: StandardScaler, channels: int) -> np.ndarray:
+    """Scale a flattened sequence per-channel.
+
+    Parameters
+    ----------
+    data_flat : np.ndarray
+        Flattened sequence of shape (samples, time_steps * channels).
+    scaler : StandardScaler
+        Fitted scaler to apply.
+    channels : int
+        Number of channels per time step.
+
+    Returns
+    -------
+    np.ndarray
+        Scaled flattened sequence of the same shape.
+    """
+    samples = data_flat.shape[0]
+    data_scaled = scaler.transform(data_flat.reshape(-1, channels))
+    return data_scaled.reshape(samples, -1)
+
+
+def unscale_flat_sequence(data_flat: np.ndarray, scaler: StandardScaler, channels: int) -> np.ndarray:
+    """Inverse-scale a flattened sequence per-channel.
+
+    Parameters
+    ----------
+    data_flat : np.ndarray
+        Flattened sequence of shape (samples, time_steps * channels).
+    scaler : StandardScaler
+        Fitted scaler to apply.
+    channels : int
+        Number of channels per time step.
+
+    Returns
+    -------
+    np.ndarray
+        Unscaled flattened sequence of the same shape.
+    """
+    samples = data_flat.shape[0]
+    data_unscaled = scaler.inverse_transform(data_flat.reshape(-1, channels))
+    return data_unscaled.reshape(samples, -1)
+
+
+def reshape_to_trajectory(data_flat: jax.Array | np.ndarray, horizon: int, channels: int) -> jax.Array | np.ndarray:
+    """Reshape a flattened trajectory back to (batch, horizon, channels).
+
+    Parameters
+    ----------
+    data_flat : Any
+        Flattened sequence of shape (batch, horizon * channels).
+    horizon : int
+        Number of time steps.
+    channels : int
+        Number of channels per time step.
+
+    Returns
+    -------
+    Any
+        Reshaped sequence of shape (batch, horizon, channels).
+    """
+    return data_flat.reshape(-1, horizon, channels)
+
+
+def reshape_flat_to_channels(data_flat: np.ndarray, channels: int) -> np.ndarray:
+    """Reshape a flattened sequence to have channels as the last dimension.
+
+    Parameters
+    ----------
+    data_flat : np.ndarray
+        Flattened sequence of shape (samples, time_steps * channels).
+    channels : int
+        Number of channels.
+
+    Returns
+    -------
+    np.ndarray
+        Reshaped sequence of shape (-1, channels).
+    """
+    return data_flat.reshape(-1, channels)
+
+
 def build_dataset_for_trajectory(
     u_data: np.ndarray, y_data: np.ndarray, n_y: int, n_u: int, N: int
 ) -> tuple[np.ndarray, np.ndarray]:
@@ -113,20 +217,20 @@ def build_dataset_for_trajectory(
     Y : np.ndarray
         Target labels array of shape (samples, N * C_y).
     """
-    T_src, C_y = y_data.shape
-    _, C_u = u_data.shape
+    T_src, _C_y = y_data.shape
+    _, _C_u = u_data.shape
 
     start_idx = max(n_y - 1, n_u)
     end_idx = T_src - N
     k = np.arange(start_idx, end_idx)
 
-    y_view = np.lib.stride_tricks.sliding_window_view(y_data, (n_y, C_y)).reshape(-1, n_y * C_y)
-    u_past_view = np.lib.stride_tricks.sliding_window_view(u_data, (n_u, C_u)).reshape(-1, n_u * C_u)
-    u_fut_view = np.lib.stride_tricks.sliding_window_view(u_data, (N, C_u)).reshape(-1, N * C_u)
+    y_view = extract_windows_flattened(y_data, n_y)
+    u_past_view = extract_windows_flattened(u_data, n_u)
+    u_fut_view = extract_windows_flattened(u_data, N)
 
     X = np.concatenate([y_view[k - n_y + 1], u_past_view[k - n_u], u_fut_view[k]], axis=1)
 
-    y_fut_view = np.lib.stride_tricks.sliding_window_view(y_data, (N, C_y)).reshape(-1, N * C_y)
+    y_fut_view = extract_windows_flattened(y_data, N)
     Y = y_fut_view[k + 1]
 
     return X, Y
@@ -305,12 +409,12 @@ def scale_dataset(  # noqa: PLR0913
     u_past_flat = X[:, n_y * C_y : n_y * C_y + n_u * C_u]
     u_fut_flat = X[:, n_y * C_y + n_u * C_u :]
 
-    y_past_s = scaler_y.transform(y_past_flat.reshape(-1, C_y)).reshape(X.shape[0], -1)
-    u_past_s = scaler_u.transform(u_past_flat.reshape(-1, C_u)).reshape(X.shape[0], -1)
-    u_fut_s = scaler_u.transform(u_fut_flat.reshape(-1, C_u)).reshape(X.shape[0], -1)
+    y_past_s = scale_flat_sequence(y_past_flat, scaler_y, C_y)
+    u_past_s = scale_flat_sequence(u_past_flat, scaler_u, C_u)
+    u_fut_s = scale_flat_sequence(u_fut_flat, scaler_u, C_u)
 
     X_s = np.concatenate([y_past_s, u_past_s, u_fut_s], axis=1)
-    Y_s = scaler_y.transform(Y.reshape(-1, C_y)).reshape(Y.shape[0], -1)
+    Y_s = scale_flat_sequence(Y, scaler_y, C_y)
 
     return X_s, Y_s
 
@@ -334,8 +438,16 @@ def predict_batch(m: eqx.Module, x: jax.Array) -> jax.Array:
     return jax.vmap(m)(x)
 
 
-def compute_loss(m: eqx.Module, x: jax.Array, y: jax.Array, alpha: jax.Array, C_y: int) -> jax.Array:
-    """Compute Mixed MSE loss for a batch.
+def compute_loss(  # noqa: PLR0913
+    m: eqx.Module,
+    x: jax.Array,
+    y: jax.Array,
+    alpha: jax.Array,
+    C_y: int,
+    w_psd: jax.Array,
+    w_fc: jax.Array,
+) -> jax.Array:
+    """Compute Mixed MSE loss for a batch along with PSD and FC losses.
 
     alpha: 1.0 = pure 1-step Teacher Forcing loss.
            0.0 = pure N-step unrolled loss.
@@ -347,11 +459,15 @@ def compute_loss(m: eqx.Module, x: jax.Array, y: jax.Array, alpha: jax.Array, C_
     x : jax.Array
         Batch of input features, shape ``(batch_size, n_features)``.
     y : jax.Array
-        Batch of target labels, shape ``(batch_size, n_targets)``.
+        Batch of target labels, shape ``(batch_size, horizon * C_y)``.
     alpha : jax.Array
         Curriculum learning parameter balancing 1-step and N-step loss.
     C_y : int
         Number of output channels.
+    w_psd : jax.Array
+        Weight for the PSD loss.
+    w_fc : jax.Array
+        Weight for the FC loss.
 
     Returns
     -------
@@ -367,7 +483,34 @@ def compute_loss(m: eqx.Module, x: jax.Array, y: jax.Array, alpha: jax.Array, C_
     # The full N-step unrolled loss
     loss_Nstep = jnp.mean((pred_y - y) ** 2)
 
-    return alpha * loss_1step + (1.0 - alpha) * loss_Nstep
+    mse_loss = alpha * loss_1step + (1.0 - alpha) * loss_Nstep
+
+    horizon = y.shape[1] // C_y
+
+    if horizon > 1:
+        # Reshape to (batch_size, horizon, C_y) to compute statistics over the trajectory
+        pred_traj = reshape_to_trajectory(pred_y, horizon, C_y)
+        true_traj = reshape_to_trajectory(y, horizon, C_y)
+
+        # Simple FFT-based PSD loss across the horizon dimension (axis=1)
+        pred_psd = jnp.abs(jnp.fft.rfft(pred_traj, axis=1)) ** 2
+        true_psd = jnp.abs(jnp.fft.rfft(true_traj, axis=1)) ** 2
+        eps = 1e-8
+        loss_psd = jnp.mean((jnp.log(pred_psd + eps) - jnp.log(true_psd + eps)) ** 2)
+
+        # Functional Connectivity loss across the horizon dimension
+        # compute_fc expects 2D (time, regions) or handles batched?
+        # The tvboptim compute_fc uses _as_2d which doesn't automatically batch.
+        # So we use jax.vmap to apply it over the batch dimension!
+        batched_compute_fc = jax.vmap(compute_fc)
+        pred_fc = batched_compute_fc(pred_traj)
+        true_fc = batched_compute_fc(true_traj)
+        loss_fc = jnp.mean((pred_fc - true_fc) ** 2)
+    else:
+        loss_psd = jnp.array(0.0)
+        loss_fc = jnp.array(0.0)
+
+    return mse_loss + w_psd * loss_psd + w_fc * loss_fc
 
 
 @eqx.filter_jit
@@ -379,6 +522,8 @@ def step(  # noqa: PLR0913
     alpha: jax.Array,
     C_y: int,
     optimizer: optax.GradientTransformation,
+    w_psd: jax.Array,
+    w_fc: jax.Array,
 ) -> tuple[eqx.Module, optax.OptState, jax.Array]:
     """Perform one optimizer step.
 
@@ -398,6 +543,10 @@ def step(  # noqa: PLR0913
         Number of output channels.
     optimizer : optax.GradientTransformation
         The Optax optimizer.
+    w_psd : jax.Array
+        Weight for the PSD loss.
+    w_fc : jax.Array
+        Weight for the FC loss.
 
     Returns
     -------
@@ -408,7 +557,7 @@ def step(  # noqa: PLR0913
     loss_val : jax.Array
         The scalar loss value for the batch.
     """
-    loss_val, grads = eqx.filter_value_and_grad(compute_loss)(m, x, y, alpha, C_y)
+    loss_val, grads = eqx.filter_value_and_grad(compute_loss)(m, x, y, alpha, C_y, w_psd, w_fc)
     updates, new_opt_s = optimizer.update(grads, opt_s, m)  # type: ignore
     new_m: eqx.Module = eqx.apply_updates(m, updates)
     return new_m, new_opt_s, loss_val
@@ -426,6 +575,8 @@ def train_model(  # noqa: PLR0913
     weight_decay: float,
     curriculum_decay_fraction: float,
     C_y: int,
+    w_psd: float = 0.0,
+    w_fc: float = 0.0,
 ) -> tuple[eqx.Module, list[float], list[float]]:
     """Train the MLP model using Optax.
 
@@ -449,8 +600,14 @@ def train_model(  # noqa: PLR0913
         Learning rate.
     weight_decay : float
         Weight decay.
+    curriculum_decay_fraction : float
+        Fraction of epochs to decay curriculum alpha.
     C_y : int
         Number of output channels.
+    w_psd : float
+        Weight for the PSD loss.
+    w_fc : float
+        Weight for the FC loss.
 
     Returns
     -------
@@ -477,8 +634,10 @@ def train_model(  # noqa: PLR0913
 
     decay_epochs = int(epochs * curriculum_decay_fraction)
 
+    w_psd_jax = jnp.array(w_psd, dtype=jnp.float32)
+    w_fc_jax = jnp.array(w_fc, dtype=jnp.float32)
+
     for epoch in pbar:
-        # Curriculum learning: decay alpha from 1.0 to 0.0
         alpha = 1.0 - epoch / decay_epochs if epoch < decay_epochs else 0.0
 
         alpha_jax = jnp.array(alpha, dtype=jnp.float32)
@@ -486,15 +645,18 @@ def train_model(  # noqa: PLR0913
         epoch_loss = 0.0
         batches = 0
         for batch_x, batch_y in get_dataloaders(X_train_s, Y_train_s, batch_size):
-            model, opt_state, loss = step(model, opt_state, batch_x, batch_y, alpha_jax, C_y, optimizer)
+            model, opt_state, loss = step(
+                model, opt_state, batch_x, batch_y, alpha_jax, C_y, optimizer, w_psd_jax, w_fc_jax
+            )
             epoch_loss += loss.item()
             batches += 1
 
         avg_train_loss = float(epoch_loss / batches)
         train_losses.append(avg_train_loss)
 
-        # Validation loss is always evaluated cleanly on the pure N-step unrolled objective (alpha=0.0)
-        last_val_loss = float(compute_loss(model, X_val_jnp, Y_val_jnp, jnp.array(0.0), C_y).item())
+        last_val_loss = float(
+            compute_loss(model, X_val_jnp, Y_val_jnp, jnp.array(0.0), C_y, w_psd_jax, w_fc_jax).item()
+        )
         val_losses.append(last_val_loss)
 
         if last_val_loss < best_val_loss:
@@ -553,7 +715,7 @@ def evaluate_model(
         Mean squared error of the absolute predictions.
     """
     Y_pred_s = np.array(predict_batch(model, jnp.array(X_val_s)))
-    Y_pred_unscaled = scaler_y.inverse_transform(Y_pred_s.reshape(-1, C_y)).reshape(Y_pred_s.shape)
+    Y_pred_unscaled = unscale_flat_sequence(Y_pred_s, scaler_y, C_y)
 
     mse = np.mean((Y_val - Y_pred_unscaled) ** 2)
     print(f"\nValidation MSE (Absolute Error): {mse:.4f}")
@@ -667,6 +829,8 @@ def main() -> None:  # noqa: PLR0915
     train_split = float(train_cfg.get("train_split", 0.8))
     curriculum_decay_fraction = float(train_cfg.get("curriculum_decay_fraction", 0.8))
     seed = int(train_cfg.get("seed", 42))
+    w_psd = float(train_cfg.get("w_psd", 0.0))
+    w_fc = float(train_cfg.get("w_fc", 0.0))
 
     artifact_dir = config.get("artifact")
     if artifact_dir is None:
@@ -675,6 +839,7 @@ def main() -> None:  # noqa: PLR0915
     artifact_dir: Path = Path(artifact_dir)
 
     artifact_dir.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(config_path, artifact_dir / config_path.name)
     artifact = artifact_dir / "model.eqx"
 
     data_path_str = args.data_path or sim_cfg.get("data_path")
@@ -700,8 +865,8 @@ def main() -> None:  # noqa: PLR0915
     X_train, X_val = X_full[:split_idx], X_full[split_idx:]
     Y_train, Y_val = Y_full[:split_idx], Y_full[split_idx:]
 
-    y_past_train = X_train[:, : n_y * C_y].reshape(-1, C_y)
-    u_past_train = X_train[:, n_y * C_y : n_y * C_y + n_u * C_u].reshape(-1, C_u)
+    y_past_train = reshape_flat_to_channels(X_train[:, : n_y * C_y], C_y)
+    u_past_train = reshape_flat_to_channels(X_train[:, n_y * C_y : n_y * C_y + n_u * C_u], C_u)
 
     scaler_y = StandardScaler()
     scaler_y.fit(y_past_train)
@@ -730,6 +895,8 @@ def main() -> None:  # noqa: PLR0915
         weight_decay,
         curriculum_decay_fraction,
         C_y,
+        w_psd=w_psd,
+        w_fc=w_fc,
     )
 
     loss_plot_path = artifact_dir / "loss_curve.png"
@@ -758,8 +925,15 @@ def main() -> None:  # noqa: PLR0915
 
     Y_pred_abs_flat, _mse = evaluate_model(model, scaler_y, X_val_s, Y_val, C_y)
 
+    stats_path = artifact_dir / "training_stats.json"
+    stats = {
+        "train_loss": train_losses,
+        "val_loss": val_losses,
+    }
+    stats_path.write_text(json.dumps(stats, indent=2))
+
     plot_path = artifact_dir / "comparison.png"
-    Y_pred_unflat = Y_pred_abs_flat.reshape(-1, horizon, C_y)
+    Y_pred_unflat = np.asarray(reshape_to_trajectory(Y_pred_abs_flat, horizon, C_y))
     plot_predictions(Y_val, Y_pred_unflat, split_idx, dt_real, horizon, C_y, str(plot_path))
 
 

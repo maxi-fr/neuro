@@ -7,17 +7,19 @@ simulation:
   data_path: results/simulation_2026-06-23_18-49-20/train
 
 model:
-  n_y: 5
-  n_u: 5
+  n_y: 10
+  n_u: 10
   horizon: 20
   hidden_size: 128
   depth: 6
 
 training:
-  epochs: 500
-  batch_size: 128
-  learning_rate: 0.0005
+  epochs: 300
+  batch_size: 528
+  learning_rate: 0.001
   weight_decay: 0.1
   train_split: 0.8
-  curriculum_decay_fraction: 0.8
+  curriculum_decay_fraction: 0.5
   seed: 42
+  w_psd: 0.0
+  w_fc: 0.0
