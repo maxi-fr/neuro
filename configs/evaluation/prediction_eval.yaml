@@ -18,7 +18,7 @@ train_sims_glob: results/simulation_2026-06-23_18-49-20/train/*.npz  # for the d
 artifacts:
   jax_sysid: results/sysid_jax_result.npz
   ukf: results/ukf_predictor.npz
-  nn: artifacts/nn_predictor_2026-06-24_01-37-56/model.eqx
+  nn: artifacts\nn_predictor_2026-06-25_22-55-54\model.eqx
 
 # --- tES projection for the physics models (matches jansen_rit_seizure_excited.yaml) ---
 electrodes: [CP5, T7]

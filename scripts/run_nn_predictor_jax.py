@@ -26,6 +26,7 @@ from tvboptim.observations.observation import compute_fc
 
 from neuro.jansen_rit_jax import enable_x64
 from neuro.prediction import AutoregressivePredictor
+from utils.plotting import plot_multistep_predictions
 
 
 def save_artifact(
@@ -722,74 +723,6 @@ def evaluate_model(
     return Y_pred_unscaled, float(mse)
 
 
-def plot_predictions(  # noqa: PLR0913
-    Y_val: np.ndarray,
-    Y_pred: np.ndarray,
-    split_idx: int,
-    dt_real: float,
-    horizon: int,
-    C_y: int,
-    plot_path: str = "nn_predictor_jax_comparison.png",
-) -> None:
-    """Plot N-step predictions vs true continuous data.
-
-    Parameters
-    ----------
-    Y_val : np.ndarray
-        Target values for the validation set, shape ``(samples_val, n_targets)``.
-    Y_pred : np.ndarray
-        Absolute predictions, shape ``(samples_val, horizon, C_y)``.
-    split_idx : int
-        Index where the validation split starts.
-    dt_real : float
-        Real time delta per step.
-    horizon : int
-        Prediction horizon.
-    C_y : int
-        Number of output channels.
-    plot_path : str, optional
-        Path to save the plot. Defaults to "nn_predictor_jax_comparison.png".
-    """
-    print("\n3. Plotting N-step horizon predictions...")
-
-    num_channels_plot = min(4, C_y)
-    _fig, axes = plt.subplots(num_channels_plot, 1, figsize=(10, 8), sharex=True)
-    if num_channels_plot == 1:
-        axes = [axes]
-
-    # Plot a subset of the validation dataset continuous ground truth
-    n_plot_samples = min(200, len(Y_val))
-    val_start_time = split_idx * dt_real
-    time_axis = val_start_time + np.arange(n_plot_samples) * dt_real
-
-    for ch in range(num_channels_plot):
-        # Extract the 1-step truth for a continuous line
-        true_continuous = Y_val[:n_plot_samples, ch]
-        axes[ch].plot(time_axis, true_continuous, label="True Data", color="black", linewidth=1.5)
-
-        # Now overlay a few N-step predictions to explicitly show it predicts N steps ahead
-        stride = horizon
-        for idx in range(0, n_plot_samples - horizon, stride):
-            n_step_pred = Y_pred[idx, :, ch]
-
-            pred_time_axis = val_start_time + (idx + np.arange(horizon)) * dt_real
-
-            label = "N-Step Prediction" if idx == 0 else ""
-            axes[ch].plot(
-                pred_time_axis, n_step_pred, label=label, color="red", linestyle="--", marker="o", markersize=3
-            )
-
-        axes[ch].set_ylabel(f"Ch {ch}")
-        if ch == 0:
-            axes[ch].legend()
-            axes[ch].set_title(f"EEG {horizon}-Step Ahead Prediction (First {num_channels_plot} Channels)")
-
-    axes[-1].set_xlabel("Time (seconds)")
-    plt.tight_layout()
-    plt.savefig(plot_path, dpi=300)
-    print(f"Plot saved to {plot_path}")
-
-
 def main() -> None:  # noqa: PLR0915
     """Execute the main script."""
     enable_x64()
@@ -934,7 +867,20 @@ def main() -> None:  # noqa: PLR0915
 
     plot_path = artifact_dir / "comparison.png"
     Y_pred_unflat = np.asarray(reshape_to_trajectory(Y_pred_abs_flat, horizon, C_y))
-    plot_predictions(Y_val, Y_pred_unflat, split_idx, dt_real, horizon, C_y, str(plot_path))
+
+    n_plot_samples = min(200, len(Y_val))
+    split_idx * dt_real
+    fig, _ = plot_multistep_predictions(
+        y_true=Y_val[:n_plot_samples],
+        y_pred=Y_pred_unflat[:n_plot_samples],
+        dt=dt_real,
+        channels=list(range(min(4, C_y))),
+        stride=horizon,
+        title=f"EEG {horizon}-Step Ahead Prediction",
+    )
+    fig.savefig(str(plot_path), dpi=300)
+    plt.close(fig)
+    print(f"Plot saved to {plot_path}")
 
 
 if __name__ == "__main__":

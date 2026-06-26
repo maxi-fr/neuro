@@ -21,7 +21,7 @@ def _():
     from neuro.jansen_rit import JansenRitParams
     from neuro.jansen_rit_jax import eeg_jax, enable_x64, from_jansen_rit_params
     from neuro.sysid_jax import rollout_tbptt
-    from utils.plotting import plot_signals
+    from utils.plotting import plot_multistep_predictions, plot_signals
     from utils.processing import compute_psd
 
     enable_x64()  # float64 parity; must run before any jnp array is created
@@ -35,6 +35,7 @@ def _():
         load_connectome,
         mo,
         np,
+        plot_multistep_predictions,
         plot_signals,
         plt,
         rollout_tbptt,
@@ -476,7 +477,7 @@ def _(mo):
     mo.md(r"""
     ### Multi-Step Prediction Overlay
 
-    Using the `plot_predictions` function from `run_nn_predictor_jax.py` to visualise
+    Using the `plot_multistep_predictions` function from `utils.plotting` to visualise
     the reduced model's short-horizon predictions overlaid on the continuous ground truth.
     """)
     return
@@ -491,7 +492,7 @@ def _(
     jnp,
     np,
     params,
-    plt,
+    plot_multistep_predictions,
     rollout_tbptt,
     x_data,
     y_data,
@@ -521,85 +522,17 @@ def _(
     _Y_pred_abs = np.array(_Y_pred_abs)
     _Y_val = y_data.T[: _n_plot_samples + _horizon]  # shape (n_samples, 62)
 
-    def plot_predictions(
-        Y_val: np.ndarray,
-        Y_pred: np.ndarray,
-        split_idx: int,
-        dt_real: float,
-        horizon: int,
-        C_y: int,
-        plot_path: str = "nn_predictor_jax_comparison.png",
-    ) -> None:
-        """Plot N-step predictions vs true continuous data.
-
-        Parameters
-        ----------
-        Y_val : np.ndarray
-            Target values for the validation set.
-        Y_pred : np.ndarray
-            Absolute predictions, shape (samples, horizon, C_y).
-        split_idx : int
-            Index where the validation split starts.
-        dt_real : float
-            Real time delta per step.
-        horizon : int
-            Prediction horizon.
-        C_y : int
-            Number of output channels.
-        plot_path : str, optional
-            Path to save the plot. Defaults to "nn_predictor_jax_comparison.png".
-        """
-        print("\n3. Plotting N-step horizon predictions...")
-
-        num_channels_plot = min(4, C_y)
-        _fig, axes = plt.subplots(num_channels_plot, 1, figsize=(10, 8), sharex=True)
-        if num_channels_plot == 1:
-            axes = [axes]
-
-        # Plot a subset of the validation dataset continuous ground truth
-        n_plot_samples = min(200, len(Y_val))
-        val_start_time = split_idx * dt_real
-        time_axis = val_start_time + np.arange(n_plot_samples) * dt_real
-
-        for ch in range(num_channels_plot):
-            # Extract the 1-step truth for a continuous line
-            true_continuous = Y_val[:n_plot_samples, ch]
-            axes[ch].plot(time_axis, true_continuous, label="True Data", color="black", linewidth=1.5)
-
-            # Now overlay a few N-step predictions to explicitly show it predicts N steps ahead
-            stride = horizon
-            for idx in range(0, n_plot_samples - horizon, stride):
-                n_step_pred = Y_pred[idx, :, ch]
-
-                pred_time_axis = val_start_time + (idx + np.arange(horizon)) * dt_real
-
-                label = "N-Step Prediction" if idx == 0 else ""
-                axes[ch].plot(
-                    pred_time_axis, n_step_pred, label=label, color="red", linestyle="--", marker="o", markersize=3
-                )
-
-            axes[ch].set_ylabel(f"Ch {ch}")
-            if ch == 0:
-                axes[ch].legend()
-                axes[ch].set_title(f"EEG {horizon}-Step Ahead Prediction (First {num_channels_plot} Channels)")
-
-        axes[-1].set_xlabel("Time (seconds)")
-        plt.tight_layout()
-        plt.savefig(plot_path, dpi=300)
-        print(f"Plot saved to {plot_path}")
-
-    plot_predictions(
-        Y_val=_Y_val,
-        Y_pred=_Y_pred_abs,
-        split_idx=0,
-        dt_real=dt,
-        horizon=_horizon,
-        C_y=_C_y,
-        plot_path="sysid_predictions_overlay.png",
+    _fig_overlay, _ = plot_multistep_predictions(
+        y_true=_Y_val[:_n_plot_samples],
+        y_pred=_Y_pred_abs[:_n_plot_samples],
+        dt=dt,
+        channels=list(range(min(4, _C_y))),
+        stride=_horizon,
+        title=f"EEG {_horizon}-Step Ahead Prediction",
     )
+    _fig_overlay.savefig("sysid_predictions_overlay.png", dpi=300)
 
     # Return the current figure so it renders in the notebook
-    _fig_overlay = plt.gcf()
     _fig_overlay
     return
 

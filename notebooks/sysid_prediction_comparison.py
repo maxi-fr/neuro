@@ -21,6 +21,7 @@ def _():
     from neuro.connectome import compute_gamma, load_connectome
     from neuro.jansen_rit_jax import enable_x64
     from neuro.prediction import JaxSysidPredictor, NNPredictor, PredictionWindow, UKFPredictor
+    from utils.plotting import plot_multistep_predictions
     from utils.processing import compute_psd
 
     enable_x64()  # float64 parity; before any jnp array
@@ -36,6 +37,7 @@ def _():
         load_connectome,
         mo,
         np,
+        plot_multistep_predictions,
         plt,
         pred,
         yaml,
@@ -78,7 +80,7 @@ def _(Path, compute_gamma, load_connectome, mo, np, yaml):
     available_models = list(cfg["artifacts"])
     model_default = str(cfg.get("model", available_models[0]))
     rng = np.random.default_rng(int(cfg.get("seed", 42)))
-    out_dir = Path(cfg.get("out_dir", "results/prediction_eval"))
+    out_dir = Path(__file__).parent.parent / cfg.get("out_dir", "results/prediction_eval")
     out_dir.mkdir(parents=True, exist_ok=True)
 
     # Physical tES projection (the reduced physics models need it to respond to stimulation).
@@ -130,8 +132,9 @@ def _(Path, compute_gamma, load_connectome, mo, np, yaml):
 @app.cell
 def _(Path, cfg, glob, np):
     # Load held-out test recordings (measured EEG + controls only) and assert disjointness.
-    train_files = set(glob.glob(cfg["train_sims_glob"]))
-    test_files = [str(Path(p)) for p in cfg["test_sims"]]
+    _base = Path(__file__).parent.parent
+    train_files = set(glob.glob(str(_base / cfg["train_sims_glob"])))
+    test_files = [str(_base / p) for p in cfg["test_sims"]]
     overlap = set(test_files) & train_files
     if overlap:
         msg = f"test/train seed overlap: {sorted(overlap)}"
@@ -444,28 +447,49 @@ def _(
     emit_fig,
     example,
     np,
+    plot_multistep_predictions,
     plt,
     ui_channels,
     ui_trace,
 ):
     _chans = [channel_labels.index(c) for c in ui_channels.value] or [0]
-    _lo_ms, _hi_ms = float(ui_trace.value[0]), float(ui_trace.value[1])
+    _lo_s, _hi_s = float(ui_trace.value[0]) / 1000.0, float(ui_trace.value[1]) / 1000.0
     _fig, _axes = plt.subplots(len(_chans), 1, figsize=(11, 2.0 * len(_chans) + 1), sharex=True, layout="constrained")
     _axes = np.atleast_1d(_axes)
     if example:
         _true = example["true"]
-        _t = np.arange(_true.shape[1]) * analysis_dt * 1000.0
-        _mask = (_t >= _lo_ms) & (_t <= _hi_ms)
-        for _ax, _ch in zip(_axes, _chans, strict=True):
-            _ax.plot(_t[_mask], _true[_ch, _mask], color="black", linewidth=1.8, label="truth")
-            for _m, _pf in example["preds"].items():
-                _n = min(_pf.shape[1], _true.shape[1])
-                _mk = _mask[:_n]
-                _ax.plot(_t[:_n][_mk], _pf[_ch, :_n][_mk], color=colors.get(_m), linewidth=1.4, alpha=0.85, label=_m)
-            _ax.set_ylabel(channel_labels[_ch])
-            _ax.spines[["top", "right"]].set_visible(False)
-        _axes[0].legend(ncol=4, framealpha=0.9)
-    _axes[-1].set_xlabel("time (ms)")
+        _n_samples = _true.shape[1]
+        _C = _true.shape[0]
+
+        for _i, (_m, _pf) in enumerate(example["preds"].items()):
+            _horizon = _pf.shape[1]
+            _y_pred = np.full((_n_samples, _horizon, _C), np.nan)
+            _y_pred[0, :_horizon, :] = _pf.T
+
+            plot_multistep_predictions(
+                y_true=_true.T,
+                y_pred=_y_pred,
+                dt=analysis_dt,
+                channels=_chans,
+                channel_names=channel_labels,
+                anchors=[0],
+                t_start=_lo_s,
+                t_end=_hi_s,
+                pred_kwargs={"color": colors.get(_m), "label": _m},
+                true_kwargs={"label": "truth"} if _i == 0 else {"label": None},
+                title="Example single-window traces (longest horizon)",
+                axes=_axes,
+            )
+
+        handles, labels = _axes[0].get_legend_handles_labels()
+        by_label = dict(zip(labels, handles, strict=False))
+        # Ensure 'truth' is first in legend if present
+        ordered_labels = (
+            ["truth"] + [lbl for lbl in by_label if lbl != "truth"] if "truth" in by_label else by_label.keys()
+        )
+        ordered_handles = [by_label[lbl] for lbl in ordered_labels]
+        _axes[0].legend(ordered_handles, ordered_labels, ncol=4, framealpha=0.9)
+
     emit_fig(_fig, "example_traces")
     return
 

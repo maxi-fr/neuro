@@ -203,7 +203,7 @@ def _draw_fans(  # noqa: PLR0913
         style: dict[str, Any] = dict(pred_style)
         if cmap is not None:
             style["color"] = cmap(k / denom)
-        style["label"] = "Prediction" if (add_labels and k == 0) else None
+        style["label"] = style.get("label", "Prediction") if (add_labels and k == 0) else None
         ax.plot(pred_t, pred_y, **style)
 
         if marker_style is not None:

@@ -364,7 +364,7 @@ def _(fig_eeg_out, fig_node_out, mo, save_button, save_dir_input):
 
     from pathlib import Path
 
-    _out_dir = Path(save_dir_input.value)
+    _out_dir = Path(__file__).parent.parent / save_dir_input.value
     _out_dir.mkdir(parents=True, exist_ok=True)
 
     _activity_path = _out_dir / "activity_plot.png"
