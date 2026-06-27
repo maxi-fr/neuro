@@ -7,7 +7,7 @@ dynamics:
   # Run/scenario knobs only; model physics constants default to JansenRitParams values.
   class_path: neuro.jansen_rit.JansenRitDynamics
   dt: 0.0001
-  seed: 42
+  seed: 69
   speed: 50.0
   params:
     A: 3.25

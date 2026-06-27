@@ -381,7 +381,7 @@ def _(
     n_trials = 50  # evaluate from multiple random start points
 
     # pick random valid start times
-    np.random.seed(42)
+    np.random.seed(69)
     t0s = np.random.randint(0, n_t_pred - max(horizons) - 1, size=n_trials)
 
     mses = {h: [] for h in horizons}

@@ -73,7 +73,7 @@ def _(connectome, mo):
     speed_slider = mo.ui.slider(5.0, 100.0, 5.0, value=50.0, label="Conduction Speed (mm/ms)")
     duration_slider = mo.ui.slider(2.0, 20.0, 1.0, value=10.0, label="Simulation Duration (s)")
     transient_slider = mo.ui.slider(0.0, 5.0, 0.5, value=2.0, label="Transient drop (s)")
-    seed_slider = mo.ui.slider(0, 100, 1, value=42, label="RNG Seed")
+    seed_slider = mo.ui.slider(0, 100, 1, value=69, label="RNG Seed")
     deterministic_toggle = mo.ui.checkbox(value=False, label="Deterministic (no noise)")
 
     # We select some channels from the left hemisphere (EZ side) and right hemisphere (healthy side)

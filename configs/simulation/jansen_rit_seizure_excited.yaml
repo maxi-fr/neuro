@@ -8,8 +8,10 @@ t_end: 5.0
 dynamics:
   class_path: neuro.jansen_rit.JansenRitDynamics
   dt: 0.0001
-  seed: 42
+  seed: 69
   speed: 50.0
+  initial_state_file: "data/burn_in_states.npz"
+  initial_state_index: 0
   target_electrode: [CP5, T7]
   gamma_spread: 20.0
   params:
@@ -35,9 +37,9 @@ controller:
   class_path: neuro.control.WaveformController
   dt: 0.0001
   n_u: 2              # one entry per target_electrode (CP5, T7)
-  input_type: prbs   # ras | prbs | multisine
-  amp: 50.0
+  input_type: ras   # ras | prbs | multisine
+  amp: 3.0
   hold_ms: 50.0
   transient_ms: 1000.0  # zero stimulation during the leading transient
-  duration: 5.0         # schedule length in seconds; keep equal to t_end
-  input_seed: 100042
+  duration: 10.0         # schedule length in seconds; keep equal to t_end
+  input_seed: 10069

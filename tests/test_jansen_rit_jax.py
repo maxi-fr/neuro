@@ -37,7 +37,7 @@ from neuro.jansen_rit_jax import (
 jax.config.update("jax_enable_x64", True)  # noqa: FBT003
 
 _DT = 1e-4
-_SEED = 42
+_SEED = 69
 
 # Mixed delays so the circular-buffer gather is genuinely exercised.
 _D3 = np.array([[0, 2, 1], [1, 0, 2], [2, 1, 0]], dtype=np.int64)

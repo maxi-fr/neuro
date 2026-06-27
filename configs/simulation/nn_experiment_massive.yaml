@@ -3,7 +3,9 @@ experiments:
   dynamics:
     class_path: neuro.jansen_rit.JansenRitDynamics
     dt: 0.0001
-    seed: 42
+    seed: 69
+    initial_state_file: "data/burn_in_states.npz"
+    initial_state_index: 0  # optional: defaults to 0
     speed: 50.0
     target_electrode:
     - CP5
@@ -107,11 +109,11 @@ experiments:
     dt: 0.0001
     n_u: 2
     input_type: prbs
-    amp: 50.0
+    amp: 3.0
     hold_ms: 50.0
     transient_ms: 1000.0
     duration: 5.0
-    input_seed: 100042
+    input_seed: 100069
 - dynamics:
     seed: 43
   controller:

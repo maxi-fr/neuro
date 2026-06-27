@@ -20,6 +20,6 @@ training:
   weight_decay: 0.1
   train_split: 0.8
   curriculum_decay_fraction: 0.5
-  seed: 42
+  seed: 69
   w_psd: 0.0
   w_fc: 0.0

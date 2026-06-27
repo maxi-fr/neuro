@@ -29,7 +29,7 @@ context_ms: 400          # measured-EEG window each method warms up / conditions
 analysis_dt: 1.0e-2      # common grid for cross-method comparison (= NN step)
 channels: null           # null -> all 62 EEG channels
 n_windows: 20            # random test start points per recording set
-seed: 42
+seed: 69
 model: jax_sysid         # the single model to evaluate (one at a time); options are the artifacts keys
 
 # --- Display defaults (interactive UI seeds; also used in script mode) ---

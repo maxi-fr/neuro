@@ -22,7 +22,7 @@ FloatArray = npt.NDArray[np.float64]
 DT = 1e-4
 K = 0.54
 SPEED = 50.0
-SEED = 42
+SEED = 69
 
 EZ_REGIONS = ("lHC", "lPHC", "lAMYG")
 PZ_REGIONS = ("lTCI", "lTCV")

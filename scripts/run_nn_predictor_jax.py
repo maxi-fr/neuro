@@ -761,7 +761,7 @@ def main() -> None:  # noqa: PLR0915
     weight_decay = float(train_cfg.get("weight_decay", 1e-4))
     train_split = float(train_cfg.get("train_split", 0.8))
     curriculum_decay_fraction = float(train_cfg.get("curriculum_decay_fraction", 0.8))
-    seed = int(train_cfg.get("seed", 42))
+    seed = int(train_cfg.get("seed", 69))
     w_psd = float(train_cfg.get("w_psd", 0.0))
     w_fc = float(train_cfg.get("w_fc", 0.0))
 

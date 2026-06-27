@@ -63,7 +63,7 @@ def test_network_all_healthy_control(connectome: Connectome) -> None:
         params=JansenRitParams.from_config({"connectome": connectome, "dt": _DT, "params": {"K": 0.5357, "A": 3.25}}),
         duration=2.0,
         dt=_DT,
-        seed=42,
+        seed=69,
     )
     y_noise = lfp(x_traj_noise)
     y_noise_steady = y_noise[:, round(1.0 / _DT) :]
@@ -87,7 +87,7 @@ def test_network_recruitment(connectome: Connectome, ez_pz_indices: tuple[list[i
         ),
         duration=4.0,
         dt=_DT,
-        seed=42,
+        seed=69,
     )
     y = lfp(x_traj)
 
@@ -139,7 +139,7 @@ def test_network_coupling_correctness(connectome: Connectome, ez_pz_indices: tup
         ),
         duration=4.0,
         dt=_DT,
-        seed=42,
+        seed=69,
     )
     y = lfp(x_traj)
     y_steady = y[:, round(1.0 / _DT) :]
@@ -242,7 +242,7 @@ def test_network_delays_vs_instantaneous(connectome: Connectome, ez_pz_indices: 
         ),
         duration=4.0,
         dt=_DT,
-        seed=42,
+        seed=69,
     )
     y_delayed = lfp(x_traj_delayed)
 
@@ -254,7 +254,7 @@ def test_network_delays_vs_instantaneous(connectome: Connectome, ez_pz_indices: 
         ),
         duration=4.0,
         dt=_DT,
-        seed=42,
+        seed=69,
     )
     y_instant = lfp(x_traj_instant)
 

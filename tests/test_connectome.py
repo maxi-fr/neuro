@@ -119,6 +119,6 @@ def test_npz_round_trip(connectome: Connectome, tmp_path: Path) -> None:
 
 def test_from_config_explicit_overrides(tmp_path: Path) -> None:
     """Test that Connectome.from_config allows explicit overriding of dataclass fields."""
-    dummy_weights = np.ones((5, 5)) * 0.42
+    dummy_weights = np.ones((5, 5)) * 0.69
     weights_path = tmp_path / "dummy_weights.npy"
     np.save(weights_path, dummy_weights)

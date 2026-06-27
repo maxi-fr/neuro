@@ -37,7 +37,7 @@ def _():
 def _(load_connectome):
     sim_dt = 1e-4
     sim_k = 0.54
-    sim_seed = 42
+    sim_seed = 69
 
     connectome = load_connectome(speed=50.0)
     return connectome, sim_dt, sim_k, sim_seed

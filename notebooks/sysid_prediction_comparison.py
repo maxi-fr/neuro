@@ -78,7 +78,7 @@ def _(Path, compute_gamma, load_connectome, mo, np, yaml):
     n_windows = int(cfg["n_windows"])
     available_models = list(cfg["artifacts"])
     model_default = str(cfg.get("model", available_models[0]))
-    rng = np.random.default_rng(int(cfg.get("seed", 42)))
+    rng = np.random.default_rng(int(cfg.get("seed", 69)))
     out_dir = Path(__file__).parent.parent / cfg.get("out_dir", "results/prediction_eval")
     out_dir.mkdir(parents=True, exist_ok=True)
 

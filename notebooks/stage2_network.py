@@ -64,7 +64,7 @@ def _(mo, region_options):
     isolated_node_dropdown = mo.ui.dropdown(
         options=region_options, value="None", label="Isolate a region (zero incoming weights)"
     )
-    seed_slider = mo.ui.slider(0, 100, 1, value=42, label="RNG Seed")
+    seed_slider = mo.ui.slider(0, 100, 1, value=69, label="RNG Seed")
 
     mo.hstack(
         [

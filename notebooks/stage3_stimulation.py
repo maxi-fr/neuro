@@ -1,6 +1,6 @@
 import marimo
 
-__generated_with = "0.23.10"
+__generated_with = "0.23.9"
 app = marimo.App(
     width="medium",
     app_title="Stage 3 Stimulation: Immediate tES",
@@ -78,7 +78,7 @@ def _(electrode_options, mo):
     k_slider = mo.ui.slider(0.0, 2.0, 0.05, value=0.54, label="Global Coupling K")
     speed_slider = mo.ui.slider(5.0, 100.0, 5.0, value=50.0, label="Conduction Speed (mm/ms)")
     duration_slider = mo.ui.slider(1.0, 50.0, 0.5, value=5.0, label="Simulation Duration (s)")
-    seed_slider = mo.ui.slider(0, 100, 1, value=42, label="RNG Seed")
+    seed_slider = mo.ui.slider(0, 100, 1, value=69, label="RNG Seed")
     deterministic_toggle = mo.ui.checkbox(value=False, label="Deterministic (RK4, no noise)")
 
     mo.hstack(

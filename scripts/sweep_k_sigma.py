@@ -26,7 +26,7 @@ def main() -> None:
     # We sweep K_eff directly (where K_eff = 0.54 / divisor)
     k_vals = [0.59, 0.50, 0.51, 0.52, 0.53, 0.54]
     sigma_vals = [350, 400, 450, 500, 550]
-    seeds = [42, 7, 13, 99, 123, 59, 60, 62, 62, 63]
+    seeds = [69, 7, 13, 99, 123, 59, 60, 62, 62, 63]
 
     print(f"{'K':>6} | {'Sigma':>6} | {'N_seizing (min-median-max)':>26} | {'Std Dev':>7} | {'N_seeds':>7}")
     print("-" * 60)
@@ -36,7 +36,7 @@ def main() -> None:
 
     for i, K in enumerate(k_vals):
         for j, sigma in enumerate(sigma_vals):
-            run_seeds = seeds if sigma > 0 else [42]
+            run_seeds = seeds if sigma > 0 else [69]
 
             seizing_counts = []
 

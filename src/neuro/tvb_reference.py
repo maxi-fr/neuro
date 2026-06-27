@@ -121,7 +121,7 @@ def build_reference_simulator(  # noqa: PLR0913
     a_ez: float = _A_EZ,
     a_pz: float = _A_PZ,
     a_bg: float = _A_BG,
-    seed: int = 42,
+    seed: int = 69,
     with_eeg: bool = True,
 ) -> simulator.Simulator:
     """Build a configured TVB Jansen-Rit reference simulator for the EZ/PZ network.

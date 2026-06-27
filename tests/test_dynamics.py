@@ -102,7 +102,7 @@ def test_simulation_matches_simulate_network() -> None:
 
 def test_dynamics_from_config_builds_network() -> None:
     """from_config loads the TVB connectome and one step yields a finite (6, N) state."""
-    dyn = JansenRitDynamics.from_config({"dt": _DT, "K": 0.5357, "params": {"A": 3.25}, "seed": 42, "speed": 50.0})
+    dyn = JansenRitDynamics.from_config({"dt": _DT, "K": 0.5357, "params": {"A": 3.25}, "seed": 69, "speed": 50.0})
     assert dyn.x.shape == (_STATE_DIM, _N_REGIONS_TVB)
 
     out, _ = dyn.evaluate(0.0, 0.0)

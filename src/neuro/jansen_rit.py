@@ -34,6 +34,7 @@ from typing import Any, Self
 import numba
 import numpy as np
 import numpy.typing as npt
+from simulate.component import NoLog
 from simulate.dynamics import Dynamics
 
 from neuro.config import parse_array
@@ -409,14 +410,7 @@ def project_control(u: float | np.ndarray, gamma_2d: FloatArray, n_elec: int) ->
     return u_vec @ gamma_2d
 
 
-@dataclass(frozen=True)
-class JansenRitDynamicsLog:
-    """Dataclass log snapshot of the Jansen-Rit network state."""
-
-    x: np.ndarray
-
-
-class JansenRitDynamics(Dynamics[JansenRitDynamicsLog]):
+class JansenRitDynamics(Dynamics[NoLog]):
     """Whole-brain Jansen-Rit network as a ``simulate`` :class:`Dynamics` plant.
 
     Wraps the standalone :func:`simulate_network` integration as a stateful,
@@ -436,13 +430,13 @@ class JansenRitDynamics(Dynamics[JansenRitDynamicsLog]):
     ``connectome.delays`` (ms) convert to steps via ``round(delays / (dt * 1000))``.
     """
 
-    def __init__(
+    def __init__(  # noqa: PLR0915
         self,
-        *,
         dt: float,
         params: JansenRitParams,
         seed: int | None = None,
         initial_state: FloatArray | None = None,
+        initial_history: FloatArray | None = None,
     ) -> None:
         """Initialize the network plant from params."""
         super().__init__(dt, integrator=None)
@@ -489,7 +483,12 @@ class JansenRitDynamics(Dynamics[JansenRitDynamicsLog]):
 
         # Circular history buffer of S(y), seeded from the initial state.
         self.history = np.zeros((self.max_history_len, n_nodes), dtype=np.float64)
-        if params.initial_bounds is not None and self.max_history_len > 0:
+        if initial_history is not None:
+            if initial_history.shape != (self.max_history_len, n_nodes):
+                msg = f"initial_history must have shape {(self.max_history_len, n_nodes)}, got {initial_history.shape}"
+                raise ValueError(msg)
+            self.history[:, :] = initial_history.astype(np.float64).copy()
+        elif params.initial_bounds is not None and self.max_history_len > 0:
             bounds = np.asarray(params.initial_bounds, dtype=np.float64)
             lo = bounds[:, 0:1]
             hi = bounds[:, 1:2]
@@ -511,10 +510,21 @@ class JansenRitDynamics(Dynamics[JansenRitDynamicsLog]):
         model should be nested under the ``params`` key.
         """
         params = JansenRitParams.from_config(config)
+
+        initial_state = None
+        initial_history = None
+        if "initial_state_file" in config:
+            data = np.load(config["initial_state_file"])
+            idx = config.get("initial_state_index", 0)
+            initial_state = data["x0"][idx]
+            initial_history = data["history0"][idx]
+
         return cls(
             dt=float(config["dt"]),
             params=params,
             seed=config.get("seed"),
+            initial_state=initial_state,
+            initial_history=initial_history,
         )
 
     def dynamics(self, t: float, x: np.ndarray, u: np.ndarray) -> np.ndarray:
@@ -543,6 +553,6 @@ class JansenRitDynamics(Dynamics[JansenRitDynamicsLog]):
         xi = self.rng.standard_normal(n_nodes)
         return _heun_step_jit(x, u_node, self.params_tuple, self.dt, xi, coupling)
 
-    def _make_log(self) -> JansenRitDynamicsLog:
+    def _make_log(self) -> NoLog:
         """Build a snapshot log of the current network state."""
-        return JansenRitDynamicsLog(x=self.x.copy())
+        return NoLog()

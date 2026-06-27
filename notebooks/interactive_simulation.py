@@ -1,6 +1,6 @@
 import marimo
 
-__generated_with = "0.23.8"
+__generated_with = "0.23.9"
 app = marimo.App(
     width="medium",
     app_title="Interactive Simulation & EEG Plotter",
@@ -84,7 +84,7 @@ def _(mo):
     speed_slider = mo.ui.slider(5.0, 100.0, 5.0, value=50.0, label="Conduction speed (mm/ms)")
     duration_slider = mo.ui.slider(1.0, 10.0, 0.5, value=4.0, label="Simulation duration (s)")
     deterministic_toggle = mo.ui.checkbox(value=False, label="Deterministic (RK4, no noise)")
-    seed_slider = mo.ui.slider(0, 100, 1, value=42, label="RNG Seed")
+    seed_slider = mo.ui.slider(0, 100, 1, value=69, label="RNG Seed")
 
     mo.hstack(
         [

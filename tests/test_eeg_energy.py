@@ -61,7 +61,7 @@ def eeg_energy(connectome: Connectome) -> np.ndarray:
         ),
         duration=15.0,
         dt=_DT,
-        seed=42,
+        seed=69,
     )
     y = lfp(x_traj)
     dt_ms = _DT * 1000.0

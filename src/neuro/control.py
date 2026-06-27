@@ -234,5 +234,7 @@ class WaveformController(Controller[WaveformControllerLog]):
         x_hat: float | np.ndarray,  # noqa: ARG002
     ) -> tuple[float | np.ndarray, WaveformControllerLog]:
         """Emit the scheduled per-electrode current for the current step."""
-        k = min(round(t / self.dt), self.schedule.shape[0] - 1)
+        k = round(t / self.dt)
+        if k >= self.schedule.shape[0]:
+            return np.zeros(self.n_u, dtype=np.float64), WaveformControllerLog()
         return self.schedule[k], WaveformControllerLog()
