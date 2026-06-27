@@ -4,8 +4,6 @@ experiments:
     class_path: neuro.jansen_rit.JansenRitDynamics
     dt: 0.0001
     seed: 69
-    initial_state_file: "data/burn_in_states.npz"
-    initial_state_index: 0  # optional: defaults to 0
     speed: 50.0
     target_electrode:
     - CP5

@@ -1,12 +1,14 @@
 experiments:
-- t_end: 50.0
+- t_end: 5.0
   dynamics:
     class_path: neuro.jansen_rit.JansenRitDynamics
     dt: 0.0001
     seed: 1023
-    initial_state_file: data\burn_in_states.npz
-    initial_state_index: 800
     speed: 50.0
+    target_electrode:
+    - CP5
+    - T7
+    gamma_spread: 20.0
     params:
       K: 0.5357
       A:
@@ -101,303 +103,408 @@ experiments:
     class_path: simulate.estimator.IdentityEstimator
     dt: 0.0001
   controller:
-    class_path: neuro.control.ZeroController
+    class_path: neuro.control.WaveformController
     dt: 0.0001
-    n_u: 1
+    n_u: 2
+    input_type: ras
+    amp: 3.0
+    hold_ms: 50.0
+    transient_ms: 1000.0
+    duration: 10.0
+    input_seed: 101023
 - dynamics:
     seed: 1024
-    initial_state_index: 801
+  controller:
+    input_seed: 101024
 - dynamics:
     seed: 1025
-    initial_state_index: 802
+  controller:
+    input_seed: 101025
 - dynamics:
     seed: 1026
-    initial_state_index: 803
+  controller:
+    input_seed: 101026
 - dynamics:
     seed: 1027
-    initial_state_index: 804
+  controller:
+    input_seed: 101027
 - dynamics:
     seed: 1028
-    initial_state_index: 805
+  controller:
+    input_seed: 101028
 - dynamics:
     seed: 1029
-    initial_state_index: 806
+  controller:
+    input_seed: 101029
 - dynamics:
     seed: 1030
-    initial_state_index: 807
+  controller:
+    input_seed: 101030
 - dynamics:
     seed: 1031
-    initial_state_index: 808
+  controller:
+    input_seed: 101031
 - dynamics:
     seed: 1032
-    initial_state_index: 809
+  controller:
+    input_seed: 101032
 - dynamics:
     seed: 1033
-    initial_state_index: 810
+  controller:
+    input_seed: 101033
 - dynamics:
     seed: 1034
-    initial_state_index: 811
+  controller:
+    input_seed: 101034
 - dynamics:
     seed: 1035
-    initial_state_index: 812
+  controller:
+    input_seed: 101035
 - dynamics:
     seed: 1036
-    initial_state_index: 813
+  controller:
+    input_seed: 101036
 - dynamics:
     seed: 1037
-    initial_state_index: 814
+  controller:
+    input_seed: 101037
 - dynamics:
     seed: 1038
-    initial_state_index: 815
+  controller:
+    input_seed: 101038
 - dynamics:
     seed: 1039
-    initial_state_index: 816
+  controller:
+    input_seed: 101039
 - dynamics:
     seed: 1040
-    initial_state_index: 817
+  controller:
+    input_seed: 101040
 - dynamics:
     seed: 1041
-    initial_state_index: 818
+  controller:
+    input_seed: 101041
 - dynamics:
     seed: 1042
-    initial_state_index: 819
+  controller:
+    input_seed: 101042
 - dynamics:
     seed: 1043
-    initial_state_index: 820
+  controller:
+    input_seed: 101043
 - dynamics:
     seed: 1044
-    initial_state_index: 821
+  controller:
+    input_seed: 101044
 - dynamics:
     seed: 1045
-    initial_state_index: 822
+  controller:
+    input_seed: 101045
 - dynamics:
     seed: 1046
-    initial_state_index: 823
+  controller:
+    input_seed: 101046
 - dynamics:
     seed: 1047
-    initial_state_index: 824
+  controller:
+    input_seed: 101047
 - dynamics:
     seed: 1048
-    initial_state_index: 825
+  controller:
+    input_seed: 101048
 - dynamics:
     seed: 1049
-    initial_state_index: 826
+  controller:
+    input_seed: 101049
 - dynamics:
     seed: 1050
-    initial_state_index: 827
+  controller:
+    input_seed: 101050
 - dynamics:
     seed: 1051
-    initial_state_index: 828
+  controller:
+    input_seed: 101051
 - dynamics:
     seed: 1052
-    initial_state_index: 829
+  controller:
+    input_seed: 101052
 - dynamics:
     seed: 1053
-    initial_state_index: 830
+  controller:
+    input_seed: 101053
 - dynamics:
     seed: 1054
-    initial_state_index: 831
+  controller:
+    input_seed: 101054
 - dynamics:
     seed: 1055
-    initial_state_index: 832
+  controller:
+    input_seed: 101055
 - dynamics:
     seed: 1056
-    initial_state_index: 833
+  controller:
+    input_seed: 101056
 - dynamics:
     seed: 1057
-    initial_state_index: 834
+  controller:
+    input_seed: 101057
 - dynamics:
     seed: 1058
-    initial_state_index: 835
+  controller:
+    input_seed: 101058
 - dynamics:
     seed: 1059
-    initial_state_index: 836
+  controller:
+    input_seed: 101059
 - dynamics:
     seed: 1060
-    initial_state_index: 837
+  controller:
+    input_seed: 101060
 - dynamics:
     seed: 1061
-    initial_state_index: 838
+  controller:
+    input_seed: 101061
 - dynamics:
     seed: 1062
-    initial_state_index: 839
+  controller:
+    input_seed: 101062
 - dynamics:
     seed: 1063
-    initial_state_index: 840
+  controller:
+    input_seed: 101063
 - dynamics:
     seed: 1064
-    initial_state_index: 841
+  controller:
+    input_seed: 101064
 - dynamics:
     seed: 1065
-    initial_state_index: 842
+  controller:
+    input_seed: 101065
 - dynamics:
     seed: 1066
-    initial_state_index: 843
+  controller:
+    input_seed: 101066
 - dynamics:
     seed: 1067
-    initial_state_index: 844
+  controller:
+    input_seed: 101067
 - dynamics:
     seed: 1068
-    initial_state_index: 845
+  controller:
+    input_seed: 101068
 - dynamics:
     seed: 1069
-    initial_state_index: 846
+  controller:
+    input_seed: 101069
 - dynamics:
     seed: 1070
-    initial_state_index: 847
+  controller:
+    input_seed: 101070
 - dynamics:
     seed: 1071
-    initial_state_index: 848
+  controller:
+    input_seed: 101071
 - dynamics:
     seed: 1072
-    initial_state_index: 849
+  controller:
+    input_seed: 101072
 - dynamics:
     seed: 1073
-    initial_state_index: 850
+  controller:
+    input_seed: 101073
 - dynamics:
     seed: 1074
-    initial_state_index: 851
+  controller:
+    input_seed: 101074
 - dynamics:
     seed: 1075
-    initial_state_index: 852
+  controller:
+    input_seed: 101075
 - dynamics:
     seed: 1076
-    initial_state_index: 853
+  controller:
+    input_seed: 101076
 - dynamics:
     seed: 1077
-    initial_state_index: 854
+  controller:
+    input_seed: 101077
 - dynamics:
     seed: 1078
-    initial_state_index: 855
+  controller:
+    input_seed: 101078
 - dynamics:
     seed: 1079
-    initial_state_index: 856
+  controller:
+    input_seed: 101079
 - dynamics:
     seed: 1080
-    initial_state_index: 857
+  controller:
+    input_seed: 101080
 - dynamics:
     seed: 1081
-    initial_state_index: 858
+  controller:
+    input_seed: 101081
 - dynamics:
     seed: 1082
-    initial_state_index: 859
+  controller:
+    input_seed: 101082
 - dynamics:
     seed: 1083
-    initial_state_index: 860
+  controller:
+    input_seed: 101083
 - dynamics:
     seed: 1084
-    initial_state_index: 861
+  controller:
+    input_seed: 101084
 - dynamics:
     seed: 1085
-    initial_state_index: 862
+  controller:
+    input_seed: 101085
 - dynamics:
     seed: 1086
-    initial_state_index: 863
+  controller:
+    input_seed: 101086
 - dynamics:
     seed: 1087
-    initial_state_index: 864
+  controller:
+    input_seed: 101087
 - dynamics:
     seed: 1088
-    initial_state_index: 865
+  controller:
+    input_seed: 101088
 - dynamics:
     seed: 1089
-    initial_state_index: 866
+  controller:
+    input_seed: 101089
 - dynamics:
     seed: 1090
-    initial_state_index: 867
+  controller:
+    input_seed: 101090
 - dynamics:
     seed: 1091
-    initial_state_index: 868
+  controller:
+    input_seed: 101091
 - dynamics:
     seed: 1092
-    initial_state_index: 869
+  controller:
+    input_seed: 101092
 - dynamics:
     seed: 1093
-    initial_state_index: 870
+  controller:
+    input_seed: 101093
 - dynamics:
     seed: 1094
-    initial_state_index: 871
+  controller:
+    input_seed: 101094
 - dynamics:
     seed: 1095
-    initial_state_index: 872
+  controller:
+    input_seed: 101095
 - dynamics:
     seed: 1096
-    initial_state_index: 873
+  controller:
+    input_seed: 101096
 - dynamics:
     seed: 1097
-    initial_state_index: 874
+  controller:
+    input_seed: 101097
 - dynamics:
     seed: 1098
-    initial_state_index: 875
+  controller:
+    input_seed: 101098
 - dynamics:
     seed: 1099
-    initial_state_index: 876
+  controller:
+    input_seed: 101099
 - dynamics:
     seed: 1100
-    initial_state_index: 877
+  controller:
+    input_seed: 101100
 - dynamics:
     seed: 1101
-    initial_state_index: 878
+  controller:
+    input_seed: 101101
 - dynamics:
     seed: 1102
-    initial_state_index: 879
+  controller:
+    input_seed: 101102
 - dynamics:
     seed: 1103
-    initial_state_index: 880
+  controller:
+    input_seed: 101103
 - dynamics:
     seed: 1104
-    initial_state_index: 881
+  controller:
+    input_seed: 101104
 - dynamics:
     seed: 1105
-    initial_state_index: 882
+  controller:
+    input_seed: 101105
 - dynamics:
     seed: 1106
-    initial_state_index: 883
+  controller:
+    input_seed: 101106
 - dynamics:
     seed: 1107
-    initial_state_index: 884
+  controller:
+    input_seed: 101107
 - dynamics:
     seed: 1108
-    initial_state_index: 885
+  controller:
+    input_seed: 101108
 - dynamics:
     seed: 1109
-    initial_state_index: 886
+  controller:
+    input_seed: 101109
 - dynamics:
     seed: 1110
-    initial_state_index: 887
+  controller:
+    input_seed: 101110
 - dynamics:
     seed: 1111
-    initial_state_index: 888
+  controller:
+    input_seed: 101111
 - dynamics:
     seed: 1112
-    initial_state_index: 889
+  controller:
+    input_seed: 101112
 - dynamics:
     seed: 1113
-    initial_state_index: 890
+  controller:
+    input_seed: 101113
 - dynamics:
     seed: 1114
-    initial_state_index: 891
+  controller:
+    input_seed: 101114
 - dynamics:
     seed: 1115
-    initial_state_index: 892
+  controller:
+    input_seed: 101115
 - dynamics:
     seed: 1116
-    initial_state_index: 893
+  controller:
+    input_seed: 101116
 - dynamics:
     seed: 1117
-    initial_state_index: 894
+  controller:
+    input_seed: 101117
 - dynamics:
     seed: 1118
-    initial_state_index: 895
+  controller:
+    input_seed: 101118
 - dynamics:
     seed: 1119
-    initial_state_index: 896
+  controller:
+    input_seed: 101119
 - dynamics:
     seed: 1120
-    initial_state_index: 897
+  controller:
+    input_seed: 101120
 - dynamics:
     seed: 1121
-    initial_state_index: 898
+  controller:
+    input_seed: 101121
 - dynamics:
     seed: 1122
-    initial_state_index: 899
+  controller:
+    input_seed: 101122

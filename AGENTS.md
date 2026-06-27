@@ -46,6 +46,7 @@ When editing existing code:
 * Don't "improve" adjacent code, comments, or formatting.
 * Don't refactor things that aren't broken.
 * Match existing style, even if you'd do it differently.
+* Always update doc-strings of functions you change
 
 However, integrate cleanly. Don't force square pegs into round holes. Do not contort new code to fit outdated, poorly written, or convoluted structures just to minimize the lines changed. Leave the immediate code better than you found it.
 

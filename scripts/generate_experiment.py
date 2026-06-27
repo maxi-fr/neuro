@@ -26,13 +26,11 @@ from simulate.config import load_config
 _INPUT_SEED_OFFSET = 100_000
 
 
-def build_experiments(  # noqa: PLR0913
+def build_experiments(
     base: dict[str, Any],
     n_trials: int,
     seed_base: int,
     input_seed_offset: int,
-    initial_state_file: Path | None = None,
-    initial_state_index_base: int = 0,
 ) -> dict[str, Any]:
     """Expand a base config into an ``experiments`` list with a per-trial seed sweep.
 
@@ -45,17 +43,12 @@ def build_experiments(  # noqa: PLR0913
 
     first = copy.deepcopy(base)
     first.setdefault("dynamics", {})["seed"] = seed_base
-    if initial_state_file is not None:
-        first["dynamics"]["initial_state_file"] = str(initial_state_file)
-        first["dynamics"]["initial_state_index"] = initial_state_index_base
     if is_waveform:
         first.setdefault("controller", {})["input_seed"] = seed_base + input_seed_offset
 
     experiments: list[dict[str, Any]] = [first]
     for idx in range(1, n_trials):
         override: dict[str, Any] = {"dynamics": {"seed": seed_base + idx}}
-        if initial_state_file is not None:
-            override["dynamics"]["initial_state_index"] = initial_state_index_base + idx
         if is_waveform:
             override["controller"] = {"input_seed": seed_base + idx + input_seed_offset}
         experiments.append(override)
@@ -74,18 +67,6 @@ def parse_args() -> argparse.Namespace:
         default=_INPUT_SEED_OFFSET,
         help="Offset added to the plant seed for the WaveformController input RNG.",
     )
-    parser.add_argument(
-        "--initial-state-file",
-        type=Path,
-        default=None,
-        help="Optional path to .npz file containing burn-in states.",
-    )
-    parser.add_argument(
-        "--initial-state-index-base",
-        type=int,
-        default=0,
-        help="Index into the initial_state_file array for trial 0; incremented per trial.",
-    )
     parser.add_argument("--output", type=Path, required=True, help="Path for the generated experiments YAML.")
     return parser.parse_args()
 
@@ -99,8 +80,6 @@ def main() -> None:
         args.n_trials,
         args.seed_base,
         args.input_seed_offset,
-        initial_state_file=args.initial_state_file,
-        initial_state_index_base=args.initial_state_index_base,
     )
     with args.output.open("w", encoding="utf-8") as handle:
         yaml.safe_dump(experiments, handle, sort_keys=False, default_flow_style=False)

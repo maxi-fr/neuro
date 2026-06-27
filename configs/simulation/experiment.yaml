@@ -4,8 +4,6 @@ experiments:
     class_path: neuro.jansen_rit.JansenRitDynamics
     dt: 0.0001
     seed: 1023
-    initial_state_file: data\burn_in_states.npz
-    initial_state_index: 800
     speed: 50.0
     params:
       K: 0.5357
@@ -106,298 +104,199 @@ experiments:
     n_u: 1
 - dynamics:
     seed: 1024
-    initial_state_index: 801
 - dynamics:
     seed: 1025
-    initial_state_index: 802
 - dynamics:
     seed: 1026
-    initial_state_index: 803
 - dynamics:
     seed: 1027
-    initial_state_index: 804
 - dynamics:
     seed: 1028
-    initial_state_index: 805
 - dynamics:
     seed: 1029
-    initial_state_index: 806
 - dynamics:
     seed: 1030
-    initial_state_index: 807
 - dynamics:
     seed: 1031
-    initial_state_index: 808
 - dynamics:
     seed: 1032
-    initial_state_index: 809
 - dynamics:
     seed: 1033
-    initial_state_index: 810
 - dynamics:
     seed: 1034
-    initial_state_index: 811
 - dynamics:
     seed: 1035
-    initial_state_index: 812
 - dynamics:
     seed: 1036
-    initial_state_index: 813
 - dynamics:
     seed: 1037
-    initial_state_index: 814
 - dynamics:
     seed: 1038
-    initial_state_index: 815
 - dynamics:
     seed: 1039
-    initial_state_index: 816
 - dynamics:
     seed: 1040
-    initial_state_index: 817
 - dynamics:
     seed: 1041
-    initial_state_index: 818
 - dynamics:
     seed: 1042
-    initial_state_index: 819
 - dynamics:
     seed: 1043
-    initial_state_index: 820
 - dynamics:
     seed: 1044
-    initial_state_index: 821
 - dynamics:
     seed: 1045
-    initial_state_index: 822
 - dynamics:
     seed: 1046
-    initial_state_index: 823
 - dynamics:
     seed: 1047
-    initial_state_index: 824
 - dynamics:
     seed: 1048
-    initial_state_index: 825
 - dynamics:
     seed: 1049
-    initial_state_index: 826
 - dynamics:
     seed: 1050
-    initial_state_index: 827
 - dynamics:
     seed: 1051
-    initial_state_index: 828
 - dynamics:
     seed: 1052
-    initial_state_index: 829
 - dynamics:
     seed: 1053
-    initial_state_index: 830
 - dynamics:
     seed: 1054
-    initial_state_index: 831
 - dynamics:
     seed: 1055
-    initial_state_index: 832
 - dynamics:
     seed: 1056
-    initial_state_index: 833
 - dynamics:
     seed: 1057
-    initial_state_index: 834
 - dynamics:
     seed: 1058
-    initial_state_index: 835
 - dynamics:
     seed: 1059
-    initial_state_index: 836
 - dynamics:
     seed: 1060
-    initial_state_index: 837
 - dynamics:
     seed: 1061
-    initial_state_index: 838
 - dynamics:
     seed: 1062
-    initial_state_index: 839
 - dynamics:
     seed: 1063
-    initial_state_index: 840
 - dynamics:
     seed: 1064
-    initial_state_index: 841
 - dynamics:
     seed: 1065
-    initial_state_index: 842
 - dynamics:
     seed: 1066
-    initial_state_index: 843
 - dynamics:
     seed: 1067
-    initial_state_index: 844
 - dynamics:
     seed: 1068
-    initial_state_index: 845
 - dynamics:
     seed: 1069
-    initial_state_index: 846
 - dynamics:
     seed: 1070
-    initial_state_index: 847
 - dynamics:
     seed: 1071
-    initial_state_index: 848
 - dynamics:
     seed: 1072
-    initial_state_index: 849
 - dynamics:
     seed: 1073
-    initial_state_index: 850
 - dynamics:
     seed: 1074
-    initial_state_index: 851
 - dynamics:
     seed: 1075
-    initial_state_index: 852
 - dynamics:
     seed: 1076
-    initial_state_index: 853
 - dynamics:
     seed: 1077
-    initial_state_index: 854
 - dynamics:
     seed: 1078
-    initial_state_index: 855
 - dynamics:
     seed: 1079
-    initial_state_index: 856
 - dynamics:
     seed: 1080
-    initial_state_index: 857
 - dynamics:
     seed: 1081
-    initial_state_index: 858
 - dynamics:
     seed: 1082
-    initial_state_index: 859
 - dynamics:
     seed: 1083
-    initial_state_index: 860
 - dynamics:
     seed: 1084
-    initial_state_index: 861
 - dynamics:
     seed: 1085
-    initial_state_index: 862
 - dynamics:
     seed: 1086
-    initial_state_index: 863
 - dynamics:
     seed: 1087
-    initial_state_index: 864
 - dynamics:
     seed: 1088
-    initial_state_index: 865
 - dynamics:
     seed: 1089
-    initial_state_index: 866
 - dynamics:
     seed: 1090
-    initial_state_index: 867
 - dynamics:
     seed: 1091
-    initial_state_index: 868
 - dynamics:
     seed: 1092
-    initial_state_index: 869
 - dynamics:
     seed: 1093
-    initial_state_index: 870
 - dynamics:
     seed: 1094
-    initial_state_index: 871
 - dynamics:
     seed: 1095
-    initial_state_index: 872
 - dynamics:
     seed: 1096
-    initial_state_index: 873
 - dynamics:
     seed: 1097
-    initial_state_index: 874
 - dynamics:
     seed: 1098
-    initial_state_index: 875
 - dynamics:
     seed: 1099
-    initial_state_index: 876
 - dynamics:
     seed: 1100
-    initial_state_index: 877
 - dynamics:
     seed: 1101
-    initial_state_index: 878
 - dynamics:
     seed: 1102
-    initial_state_index: 879
 - dynamics:
     seed: 1103
-    initial_state_index: 880
 - dynamics:
     seed: 1104
-    initial_state_index: 881
 - dynamics:
     seed: 1105
-    initial_state_index: 882
 - dynamics:
     seed: 1106
-    initial_state_index: 883
 - dynamics:
     seed: 1107
-    initial_state_index: 884
 - dynamics:
     seed: 1108
-    initial_state_index: 885
 - dynamics:
     seed: 1109
-    initial_state_index: 886
 - dynamics:
     seed: 1110
-    initial_state_index: 887
 - dynamics:
     seed: 1111
-    initial_state_index: 888
 - dynamics:
     seed: 1112
-    initial_state_index: 889
 - dynamics:
     seed: 1113
-    initial_state_index: 890
 - dynamics:
     seed: 1114
-    initial_state_index: 891
 - dynamics:
     seed: 1115
-    initial_state_index: 892
 - dynamics:
     seed: 1116
-    initial_state_index: 893
 - dynamics:
     seed: 1117
-    initial_state_index: 894
 - dynamics:
     seed: 1118
-    initial_state_index: 895
 - dynamics:
     seed: 1119
-    initial_state_index: 896
 - dynamics:
     seed: 1120
-    initial_state_index: 897
 - dynamics:
     seed: 1121
-    initial_state_index: 898
 - dynamics:
     seed: 1122
-    initial_state_index: 899

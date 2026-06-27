@@ -10,8 +10,6 @@ dynamics:
   dt: 0.0001
   seed: 69
   speed: 50.0
-  initial_state_file: "data/burn_in_states.npz"
-  initial_state_index: 0
   target_electrode: [CP5, T7]
   gamma_spread: 20.0
   params:
