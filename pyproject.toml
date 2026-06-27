@@ -17,6 +17,7 @@ dependencies = [
     "optax>=0.2.8",
     "marimo>=0.23.10",
     "tvboptim>=0.3.0",
+    "optuna>=4.9.0",
 ]
 
 [project.optional-dependencies]
