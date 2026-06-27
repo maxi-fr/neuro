@@ -1,6 +1,6 @@
 import marimo
 
-__generated_with = "0.23.8"
+__generated_with = "0.23.10"
 app = marimo.App(
     width="medium",
     app_title="Stage 3 Stimulation: Immediate tES",
@@ -69,7 +69,7 @@ def _(electrode_options, mo):
     electrode_multiselect = mo.ui.multiselect(
         options=electrode_options, value=["CP5"], label="Cathode montage (select ≥1)"
     )
-    sigma_slider = mo.ui.slider(5.0, 100.0, 5.0, value=20.0, label="Spatial Spread σ_stim (mm)")
+    spread_slider = mo.ui.slider(5.0, 100.0, 5.0, value=20.0, label="Spatial Spread σ_stim (mm)")
     u_intensity_slider = mo.ui.slider(-3.0, 3.0, 0.25, value=1.5, label="Total tES Intensity u_hat_tES")
 
     onset_slider = mo.ui.slider(0.0, 10.0, 0.5, value=0.0, label="Stimulation Onset (s)")
@@ -90,7 +90,7 @@ def _(electrode_options, mo):
                         "_Selecting e.g. CP5+CP6 reproduces the Patient-6 dual-cathode montage; the total current is split equally across electrodes._"
                     ),
                     electrode_multiselect,
-                    sigma_slider,
+                    spread_slider,
                     u_intensity_slider,
                     onset_slider,
                     offset_slider,
@@ -118,8 +118,8 @@ def _(electrode_options, mo):
         offset_slider,
         onset_slider,
         seed_slider,
-        sigma_slider,
         speed_slider,
+        spread_slider,
         u_intensity_slider,
     )
 
@@ -139,9 +139,9 @@ def _(
     onset_slider,
     replace,
     seed_slider,
-    sigma_slider,
     simulate_network,
     speed_slider,
+    spread_slider,
     u_intensity_slider,
 ):
     # 1. Update connectome and compute gamma steering matrix (n_elec, 76)
@@ -152,7 +152,7 @@ def _(
     gamma = compute_gamma(
         connectome.centres,
         target_electrode=selected_electrodes,
-        sigma=sigma_slider.value,
+        spread=spread_slider.value,
     )
     conn_scaled = replace(conn_scaled, gamma=gamma)
 

@@ -21,6 +21,7 @@ import numpy as np
 import optax
 import yaml
 
+from neuro.config import parse_array
 from neuro.connectome import compute_gamma, load_connectome
 from neuro.jansen_rit import JansenRitParams
 from neuro.jansen_rit_jax import enable_x64, from_jansen_rit_params
@@ -72,10 +73,9 @@ def _base_params(red: Any, gamma_modes: np.ndarray, cfg: dict[str, Any]) -> Any:
     w0 = rng.uniform(0.0, float(cfg.get("w_init_scale", 0.1)), (n, n))
     w0 = np.triu(w0, 1)
     w0 = w0 + w0.T
+    a_config = parse_array(cfg.get("a_init", 3.25))
     jr = JansenRitParams(
-        A=np.full(n, float(cfg.get("a_init", 3.25)))
-        if isinstance(cfg.get("a_init"), (float, int))
-        else np.asarray(cfg.get("a_init")),
+        A=np.full(n, float(a_config)) if isinstance(a_config, (float, int)) else np.asarray(a_config, dtype=np.float64),
         mean_input=float(cfg.get("mean_input", 150.0)),
         sigma=0.0,
         w_weights=w0,
@@ -110,8 +110,9 @@ def main() -> None:
     dt = float(cfg.get("dt", 1e-4)) * int(cfg.get("downsample", 1))  # effective reduced-model step
     n_steps = int(cfg["n_steps"])
     window = int(cfg.get("window", 300))
-    electrodes = list(cfg["electrodes"])
-    gamma_sigma = float(cfg["gamma_sigma"])
+    electrodes = parse_array(cfg["target_electrode"])
+    electrodes = [str(electrodes)] if isinstance(electrodes, (str, np.str_)) else list(electrodes)
+    gamma_spread = float(cfg["gamma_spread"])
 
     sim_paths = list(cfg["sims"]) if "sims" in cfg else [cfg["sim"]]
     print(f"1. Loading {len(sim_paths)} full-plant simulation(s) and connectome...")
@@ -129,7 +130,7 @@ def main() -> None:
     if n_elec_data != len(electrodes):
         msg = f"config electrodes={electrodes} (n={len(electrodes)}) does not match universal_u columns ({n_elec_data})"
         raise ValueError(msg)
-    gamma_full = np.atleast_2d(compute_gamma(conn.centres, electrodes, gamma_sigma))  # (n_elec, 76)
+    gamma_full = np.atleast_2d(compute_gamma(conn.centres, electrodes, gamma_spread))  # (n_elec, 76)
 
     print(f"2. PCA-reducing to N={cfg['n_components']} virtual modes...")
     red = reduce_via_pca(node_output, conn.gain, conn.delays, dt, int(cfg["n_components"]))

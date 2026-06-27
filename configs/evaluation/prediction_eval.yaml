@@ -20,8 +20,8 @@ artifacts:
   nn: artifacts\nn_predictor_2026-06-25_22-55-54\model.eqx
 
 # --- tES projection for the physics models (matches jansen_rit_seizure_excited.yaml) ---
-electrodes: [CP5, T7]
-gamma_sigma: 20.0
+target_electrode: [CP5, T7]
+gamma_spread: 20.0
 
 # --- Evaluation protocol ---
 horizons_ms: [200, 400]

@@ -173,14 +173,10 @@ class Connectome:
         speed = float(config.get("speed", 50.0))
         conn = load_connectome(speed=speed)
 
-        n_nodes_val = config.get("n_nodes")
         selected_regions = parse_array(config.get("selected_regions"))
-
         region_idx = None
         if selected_regions is not None:
             region_idx = np.array(selected_regions, dtype=np.int64)
-        elif n_nodes_val is not None:
-            region_idx = np.arange(int(n_nodes_val), dtype=np.int64)
 
         if region_idx is not None:
             conn = dataclasses.replace(
@@ -231,7 +227,7 @@ class Connectome:
             gamma = compute_gamma(
                 conn.centres,
                 target_electrode=resolved_electrodes if len(resolved_electrodes) > 1 else resolved_electrodes[0],
-                sigma=float(config.get("sigma", 20.0)),
+                spread=float(config.get("gamma_spread", 20.0)),
             )
             from dataclasses import replace  # noqa: PLC0415
 
@@ -359,7 +355,7 @@ def load_connectome(speed: float = 50.0) -> Connectome:
 def compute_gamma(
     centres: FloatArray,
     target_electrode: str | Sequence[str] = "CP5",
-    sigma: float | Sequence[float] = 20.0,
+    spread: float | Sequence[float] = 20.0,
     sensors_file: str = _SENSORS_FILE,
 ) -> FloatArray:
     """Compute the normalized spatial projection gamma for tES stimulation.
@@ -371,7 +367,7 @@ def compute_gamma(
     target_electrode
         Label of the stimulating electrode (e.g. 'CP5'), or a sequence of labels
         for a multi-electrode montage (e.g. ('CP5', 'CP6')).
-    sigma
+    spread
         Spatial standard deviation (spread) in mm; a scalar shared across
         electrodes, or one value per electrode.
     sensors_file
@@ -402,14 +398,14 @@ def compute_gamma(
         return gamma / np.abs(gamma).max()
 
     if isinstance(target_electrode, str):
-        if not isinstance(sigma, (int, float)):
-            msg = "sigma must be a scalar when target_electrode is a single label."
+        if not isinstance(spread, (int, float)):
+            msg = "spread must be a scalar when target_electrode is a single label."
             raise TypeError(msg)
-        return _gamma_one(target_electrode, sigma)
+        return _gamma_one(target_electrode, spread)
 
     electrodes = list(target_electrode)
-    sigmas = [sigma] * len(electrodes) if isinstance(sigma, (int, float)) else list(sigma)
-    if len(sigmas) != len(electrodes):
-        msg = f"sigma sequence length {len(sigmas)} must match {len(electrodes)} electrodes."
+    spreads = [spread] * len(electrodes) if isinstance(spread, (int, float)) else list(spread)
+    if len(spreads) != len(electrodes):
+        msg = f"spread sequence length {len(spreads)} must match {len(electrodes)} electrodes."
         raise ValueError(msg)
-    return np.stack([_gamma_one(e, s) for e, s in zip(electrodes, sigmas, strict=True)])
+    return np.stack([_gamma_one(e, s) for e, s in zip(electrodes, spreads, strict=True)])

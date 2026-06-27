@@ -3,14 +3,14 @@ experiments:
   dynamics:
     class_path: neuro.jansen_rit.JansenRitDynamics
     dt: 0.0001
-    K: 0.5357
     seed: 42
     speed: 50.0
     target_electrode:
     - CP5
     - T7
-    gamma_sigma: 20.0
+    gamma_spread: 20.0
     params:
+      K: 0.5357
       A:
       - 3.25
       - 3.25

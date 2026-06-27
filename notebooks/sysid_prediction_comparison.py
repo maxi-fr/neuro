@@ -84,7 +84,9 @@ def _(Path, compute_gamma, load_connectome, mo, np, yaml):
 
     # Physical tES projection (the reduced physics models need it to respond to stimulation).
     _conn = load_connectome(speed=float(cfg.get("speed", 50.0)))
-    gamma_full = np.atleast_2d(compute_gamma(_conn.centres, list(cfg["electrodes"]), float(cfg["gamma_sigma"])))
+    _elec = cfg["target_electrode"]
+    _elec_list = [_elec] if isinstance(_elec, str) else list(_elec)
+    gamma_full = np.atleast_2d(compute_gamma(_conn.centres, _elec_list, float(cfg["gamma_spread"])))
     channel_labels = [str(c) for c in _conn.channel_labels]
 
     # Plot defaults (overridable interactively, or via config for script mode).

@@ -24,9 +24,9 @@ w_init_scale: 5.0
 w_max: 8.0
 
 # tES projection for the reduced model to respond to the recorded stimulation
-# (matches jansen_rit_seizure_excited.yaml's target_electrode / gamma_sigma).
-electrodes: [CP5, T7]
-gamma_sigma: 20.0
+# (matches jansen_rit_seizure_excited.yaml's target_electrode / gamma_spread).
+target_electrode: [CP5, T7]
+gamma_spread: 20.0
 
 # Windowed N-step-ahead MSE loss shape (see neuro.sysid_jax.PredConfig). State evolves
 # continuously and naturally from x0 over the whole rollout (no resets); the post-burn_in

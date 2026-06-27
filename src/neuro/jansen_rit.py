@@ -508,19 +508,8 @@ class JansenRitDynamics(Dynamics[JansenRitDynamicsLog]):
         """Instantiate from a raw config dict.
 
         Config keys for the dynamics component are flat. Parameters for the physical
-        model should be nested under the ``params`` key. ``speed``, ``K`` and ``dt``
-        are required.
+        model should be nested under the ``params`` key.
         """
-        # Ensure we use "sigma" consistently instead of "gamma_sigma"
-        if "gamma_sigma" in config and "sigma" not in config:
-            config["sigma"] = config["gamma_sigma"]
-
-        # Ensure K is passed properly if it's top-level
-        if "params" not in config:
-            config["params"] = {}
-        if "K" in config and "K" not in config["params"]:
-            config["params"]["K"] = float(config["K"])
-
         params = JansenRitParams.from_config(config)
         return cls(
             dt=float(config["dt"]),
