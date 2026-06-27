@@ -56,8 +56,7 @@ def _(load_connectome):
 @app.cell
 def _(mo, region_options):
     # Interactive UI controls
-    k_slider = mo.ui.slider(0.0, 2.0, 0.05, value=0.75, label="Global Coupling Strength K")
-    divisor_slider = mo.ui.slider(1.0, 3.0, 0.05, value=1.40, label="Weights divisor (SC density scaling)")
+    k_slider = mo.ui.slider(0.0, 2.0, 0.05, value=0.54, label="Global Coupling Strength K")
     speed_slider = mo.ui.slider(5.0, 100.0, 5.0, value=50.0, label="Conduction speed (mm/ms)")
     duration_slider = mo.ui.slider(1.0, 10.0, 0.5, value=4.0, label="Simulation duration (s)")
     deterministic_toggle = mo.ui.checkbox(value=False, label="Deterministic (RK4, no noise)")
@@ -72,7 +71,6 @@ def _(mo, region_options):
             mo.vstack(
                 [
                     k_slider,
-                    divisor_slider,
                     speed_slider,
                     duration_slider,
                 ]
@@ -90,7 +88,6 @@ def _(mo, region_options):
     )
     return (
         deterministic_toggle,
-        divisor_slider,
         duration_slider,
         isolated_node_dropdown,
         k_slider,
@@ -105,7 +102,6 @@ def _(
     JansenRitParams,
     connectome,
     deterministic_toggle,
-    divisor_slider,
     duration_slider,
     isolated_node_dropdown,
     k_slider,
@@ -122,9 +118,6 @@ def _(
 
     # 1. Update speed and compute delays
     conn_scaled = replace(connectome, speed=speed_slider.value, delays=connectome.tract_lengths / speed_slider.value)
-
-    # 2. Scale weights by the divisor
-    conn_scaled = replace(conn_scaled, weights=conn_scaled.weights / divisor_slider.value)
 
     # 3. Handle region isolation (zeroing incoming weights)
     if isolated_node_dropdown.value != "None":

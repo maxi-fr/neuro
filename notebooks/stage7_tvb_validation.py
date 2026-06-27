@@ -1,12 +1,11 @@
 import marimo
 
-__generated_with = "0.23.8"
+__generated_with = "0.23.9"
 app = marimo.App(width="medium", app_title="Stage 7: TVB Reference Validation")
 
 
 @app.cell
 def _():
-    from dataclasses import replace
 
     import marimo as mo
     import numpy as np
@@ -28,7 +27,6 @@ def _():
         np,
         plt,
         reference_eeg_gain,
-        replace,
         run_reference,
         simulate_network,
         steady_window,
@@ -66,24 +64,22 @@ def _(mo):
 
 @app.cell
 def _(load_connectome):
-    connectome = load_connectome()
-    return (connectome,)
+    conn = load_connectome()
+    return (conn,)
 
 
 @app.cell
-def _(connectome, mo):
-    k_slider = mo.ui.slider(0.0, 2.0, 0.05, value=0.75, label="Global Coupling K")
-    divisor_slider = mo.ui.slider(1.0, 3.0, 0.05, value=1.40, label="Weights Divisor")
-    duration_slider = mo.ui.slider(2.0, 10.0, 1.0, value=4.0, label="Duration (s)")
-    seed_slider = mo.ui.slider(0, 100, 1, value=42, label="RNG Seed")
+def _(mo):
+    k_slider = mo.ui.slider(0.0, 2.0, 0.02, value=0.60, label="Global Coupling K")
+    duration_slider = mo.ui.slider(2.0, 10.0, 1.0, value=5.0, label="Duration (s)")
+    seed_slider = mo.ui.slider(0, 100, 1, value=23, label="RNG Seed")
     nsig_slider = mo.ui.slider(0.0, 5e-4, 1e-5, value=1e-4, label="TVB noise nsig")
-    sigma_slider = mo.ui.slider(0.0, 1000.0, 50.0, value=500.0, label="Hand-rolled noise sigma")
+    sigma_slider = mo.ui.slider(0.0, 500.0, 25.0, value=225.0, label="Hand-rolled noise sigma")
     deterministic_toggle = mo.ui.checkbox(value=False, label="Deterministic (no noise)")
 
-    _ = connectome
     mo.hstack(
         [
-            mo.vstack([mo.md("#### 🧠 Network"), k_slider, divisor_slider]),
+            mo.vstack([mo.md("#### 🧠 Network"), k_slider]),
             mo.vstack([mo.md("#### ⏱️ Window"), duration_slider, seed_slider]),
             mo.vstack([mo.md("#### 🎲 Noise"), nsig_slider, sigma_slider, deterministic_toggle]),
         ],
@@ -92,7 +88,6 @@ def _(connectome, mo):
     )
     return (
         deterministic_toggle,
-        divisor_slider,
         duration_slider,
         k_slider,
         nsig_slider,
@@ -102,8 +97,7 @@ def _(connectome, mo):
 
 
 @app.cell
-def _(connectome, divisor_slider, np, replace):
-    conn = replace(connectome, weights=connectome.weights / divisor_slider.value)
+def _(conn, np):
     ez = ("lHC", "lPHC", "lAMYG")
     pz = ("lTCI", "lTCV")
     a_gains = np.full(len(conn.region_labels), 3.25)
@@ -111,7 +105,7 @@ def _(connectome, divisor_slider, np, replace):
         a_gains[conn.region_index[_nm]] = 3.6
     for _nm in pz:
         a_gains[conn.region_index[_nm]] = 3.4
-    return a_gains, conn
+    return (a_gains,)
 
 
 @app.cell

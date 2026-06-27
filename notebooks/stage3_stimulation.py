@@ -75,8 +75,7 @@ def _(electrode_options, mo):
     onset_slider = mo.ui.slider(0.0, 10.0, 0.5, value=0.0, label="Stimulation Onset (s)")
     offset_slider = mo.ui.slider(0.0, 10.0, 0.5, value=2.5, label="Stimulation Offset (s)")
 
-    k_slider = mo.ui.slider(0.0, 2.0, 0.05, value=0.75, label="Global Coupling K")
-    divisor_slider = mo.ui.slider(1.0, 3.0, 0.05, value=1.40, label="Weights Divisor")
+    k_slider = mo.ui.slider(0.0, 2.0, 0.05, value=0.54, label="Global Coupling K")
     speed_slider = mo.ui.slider(5.0, 100.0, 5.0, value=50.0, label="Conduction Speed (mm/ms)")
     duration_slider = mo.ui.slider(1.0, 50.0, 0.5, value=5.0, label="Simulation Duration (s)")
     seed_slider = mo.ui.slider(0, 100, 1, value=42, label="RNG Seed")
@@ -101,7 +100,6 @@ def _(electrode_options, mo):
                 [
                     mo.md("#### 🧠 Network & Integration Settings"),
                     k_slider,
-                    divisor_slider,
                     speed_slider,
                     duration_slider,
                     seed_slider,
@@ -114,7 +112,6 @@ def _(electrode_options, mo):
     )
     return (
         deterministic_toggle,
-        divisor_slider,
         duration_slider,
         electrode_multiselect,
         k_slider,
@@ -133,7 +130,6 @@ def _(
     compute_gamma,
     connectome,
     deterministic_toggle,
-    divisor_slider,
     duration_slider,
     electrode_multiselect,
     k_slider,
@@ -150,7 +146,6 @@ def _(
 ):
     # 1. Update connectome and compute gamma steering matrix (n_elec, 76)
     conn_scaled = replace(connectome, speed=speed_slider.value, delays=connectome.tract_lengths / speed_slider.value)
-    conn_scaled = replace(conn_scaled, weights=conn_scaled.weights / divisor_slider.value)
 
     selected_electrodes = list(electrode_multiselect.value) or ["CP5"]
     n_elec = len(selected_electrodes)

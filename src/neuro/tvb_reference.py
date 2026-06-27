@@ -114,7 +114,7 @@ def build_reference_simulator(  # noqa: PLR0913
     connectome: Connectome,
     *,
     dt_ms: float = 0.1,
-    K: float = 0.75,
+    K: float = 0.54,
     nsig: float = 1e-4,
     ez: Sequence[str] = _DEFAULT_EZ,
     pz: Sequence[str] = _DEFAULT_PZ,
@@ -130,7 +130,7 @@ def build_reference_simulator(  # noqa: PLR0913
     ----------
     connectome
         Structural data (weights, tract lengths, speed) shared with the hand-rolled
-        engine; pre-scale ``weights`` (e.g. ``/ 1.40``) before passing if desired.
+        engine; pre-scale ``weights`` (e.g. ````) before passing if desired.
     dt_ms
         Integration step in milliseconds (0.1 ms == the hand-rolled ``dt = 1e-4`` s).
     K

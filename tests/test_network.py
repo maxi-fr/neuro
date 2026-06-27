@@ -20,14 +20,8 @@ _DT = 1e-4
 
 @pytest.fixture(scope="module")
 def connectome() -> Connectome:
-    """Load the TVB connectome once for the module and scale its weights.
-
-    Dividing by 1.40 calibrates the TVB human connectome density so that
-    the all-healthy control stays quiescent, while the EZ/PZ network
-    successfully recruits downstream nodes under noise.
-    """
-    conn = load_connectome()
-    return replace(conn, weights=conn.weights / 1.40)
+    """Load the TVB connectome once for the module."""
+    return load_connectome()
 
 
 @pytest.fixture(scope="module")
@@ -49,11 +43,11 @@ def _get_onset_time(y: np.ndarray, t: np.ndarray, threshold: float = 5.0) -> flo
 
 
 def test_network_all_healthy_control(connectome: Connectome) -> None:
-    """If all nodes are healthy (A = 3.25) and K = 0.75, the network stays quiescent."""
+    """If all nodes are healthy (A = 3.25) and K = 0.5357, the network stays quiescent."""
     # Deterministic (sigma = 0) control stays flat
     _, x_traj = simulate_network(
         params=JansenRitParams.from_config(
-            {"connectome": connectome, "dt": _DT, "params": {"K": 0.75, "A": 3.25, "sigma": 0.0}}
+            {"connectome": connectome, "dt": _DT, "params": {"K": 0.5357, "A": 3.25, "sigma": 0.0}}
         ),
         duration=2.0,
         dt=_DT,
@@ -66,7 +60,7 @@ def test_network_all_healthy_control(connectome: Connectome) -> None:
 
     # Stochastic control stays in background range (< 5.0)
     _t, x_traj_noise = simulate_network(
-        params=JansenRitParams.from_config({"connectome": connectome, "dt": _DT, "params": {"K": 0.75, "A": 3.25}}),
+        params=JansenRitParams.from_config({"connectome": connectome, "dt": _DT, "params": {"K": 0.5357, "A": 3.25}}),
         duration=2.0,
         dt=_DT,
         seed=42,
@@ -88,7 +82,9 @@ def test_network_recruitment(connectome: Connectome, ez_pz_indices: tuple[list[i
     a_gains[pz_idxs] = 3.4
 
     t, x_traj = simulate_network(
-        params=JansenRitParams.from_config({"connectome": connectome, "dt": _DT, "params": {"K": 0.75, "A": a_gains}}),
+        params=JansenRitParams.from_config(
+            {"connectome": connectome, "dt": _DT, "params": {"K": 0.5357, "A": a_gains}}
+        ),
         duration=4.0,
         dt=_DT,
         seed=42,
@@ -139,7 +135,7 @@ def test_network_coupling_correctness(connectome: Connectome, ez_pz_indices: tup
 
     _t, x_traj = simulate_network(
         params=JansenRitParams.from_config(
-            {"connectome": custom_connectome, "dt": _DT, "params": {"K": 0.75, "A": a_gains}}
+            {"connectome": custom_connectome, "dt": _DT, "params": {"K": 0.5357, "A": a_gains}}
         ),
         duration=4.0,
         dt=_DT,
@@ -205,7 +201,7 @@ def test_history_coupling_index_robust_to_accumulated_time() -> None:
     """
     connectome = _two_node_delayed_connectome()
     params = JansenRitParams.from_config(
-        {"connectome": connectome, "dt": _DT, "params": {"K": 0.75, "A": np.array([3.6, 3.25]), "sigma": 0.0}}
+        {"connectome": connectome, "dt": _DT, "params": {"K": 0.5357, "A": np.array([3.6, 3.25]), "sigma": 0.0}}
     )
     initial_state = np.zeros((6, 2))
     initial_state[0, 0] = 1.0  # kick node 0 off the (unstable) equilibrium so it limit-cycles
@@ -241,7 +237,9 @@ def test_network_delays_vs_instantaneous(connectome: Connectome, ez_pz_indices: 
     a_gains[pz_idxs] = 3.4
 
     t, x_traj_delayed = simulate_network(
-        params=JansenRitParams.from_config({"connectome": connectome, "dt": _DT, "params": {"K": 0.75, "A": a_gains}}),
+        params=JansenRitParams.from_config(
+            {"connectome": connectome, "dt": _DT, "params": {"K": 0.5357, "A": a_gains}}
+        ),
         duration=4.0,
         dt=_DT,
         seed=42,
@@ -252,7 +250,7 @@ def test_network_delays_vs_instantaneous(connectome: Connectome, ez_pz_indices: 
     conn_instant = replace(connectome, delays=np.zeros_like(connectome.delays))
     _, x_traj_instant = simulate_network(
         params=JansenRitParams.from_config(
-            {"connectome": conn_instant, "dt": _DT, "params": {"K": 0.75, "A": a_gains}}
+            {"connectome": conn_instant, "dt": _DT, "params": {"K": 0.5357, "A": a_gains}}
         ),
         duration=4.0,
         dt=_DT,

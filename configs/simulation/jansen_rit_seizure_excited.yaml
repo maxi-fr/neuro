@@ -8,7 +8,7 @@ t_end: 5.0
 dynamics:
   class_path: neuro.jansen_rit.JansenRitDynamics
   dt: 0.0001
-  K: 0.75
+  K: 0.5357
   seed: 42
   speed: 50.0
   target_electrode: [CP5, T7]

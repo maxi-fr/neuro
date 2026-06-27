@@ -99,16 +99,16 @@ class JansenRitParams:
     e0: float = field(default=2.5, metadata={"bounds": (0.1, 10.0)})
     v0: float = field(default=6.0, metadata={"bounds": (0.1, 20.0)})
     r: float = field(default=0.56, metadata={"bounds": (0.1, 2.0)})
-    mean_input: float | FloatArray = field(default=90.0, metadata={"bounds": (0.0, 500.0)})
+    mean_input: float | FloatArray = field(default=90.0, metadata={"bounds": (0.0, 300.0)})
     sigma: float = field(default=500.0, metadata={"bounds": (0.0, 0.0)})
 
     # Network parameters (mirrors JRSymbolicParams)
     eeg_gain: FloatArray = field(
-        default_factory=lambda: np.ones((1, 1), dtype=np.float64), metadata={"bounds": (0.0, 10.0)}
+        default_factory=lambda: np.ones((1, 1), dtype=np.float64), metadata={"bounds": (-10.0, 10.0)}
     )
     w_weights: FloatArray = field(default_factory=lambda: np.zeros((1, 1), dtype=np.float64))
     delay_steps: npt.NDArray[np.int64] = field(default_factory=lambda: np.zeros((1, 1), dtype=np.int64))
-    K: float = field(default=1.0, metadata={"bounds": (0.0, 10.0)})
+    K: float = field(default=1.0, metadata={"bounds": (0.0, 5.0)})
     gamma: FloatArray = field(default_factory=lambda: np.zeros((1, 1), dtype=np.float64))
     initial_bounds: FloatArray | None = field(default=None, metadata={"bounds": None})
 
@@ -232,7 +232,7 @@ def _heun_step_jit(  # noqa: PLR0913
     sigma = params_tuple[12]
 
     dw = np.zeros_like(x)
-    dw[4, :] = sigma * np.sqrt(dt) * xi  # additive noise enters x5 only
+    dw[4, :] = sigma * np.sqrt(dt) * xi
 
     f0 = _jr_rhs_jit(x, params_tuple, coupling, u_tes)
     x_pred = x + dt * f0 + dw

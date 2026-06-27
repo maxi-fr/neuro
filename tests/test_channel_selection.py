@@ -117,7 +117,7 @@ def test_compute_channel_gramians_node_subset_shape() -> None:
     x0 = np.zeros((6, 2))
 
     gramians = compute_channel_gramians(
-        x0, params, connectome, K=0.75, dt=_DT, duration=0.05, epsilon=1e-5, decimate=10, node_subset=[1]
+        x0, params, connectome, K=0.54, dt=_DT, duration=0.05, epsilon=1e-5, decimate=10, node_subset=[1]
     )
     # Only node 1's six states are perturbed, so each Gramian is 6x6, not 12x12.
     assert gramians.shape == (2, 6, 6)
@@ -132,7 +132,7 @@ def test_compute_channel_gramians_shape_and_psd() -> None:
         x0,
         params,
         connectome,
-        K=0.75,
+        K=0.54,
         dt=_DT,
         duration=0.05,
         epsilon=1e-5,

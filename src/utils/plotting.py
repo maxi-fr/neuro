@@ -128,7 +128,7 @@ def plot_signals(  # noqa: PLR0913
     else:
         # Overlaid plot
         for sig, name, col in zip(selected_signals, selected_names, colors, strict=False):
-            ax.plot(time_sec, sig, label=name, color=col, alpha=0.75, linewidth=1.2)
+            ax.plot(time_sec, sig, label=name, color=col, alpha=0.54, linewidth=1.2)
         ax.legend(loc="upper right", framealpha=0.9)
 
     ax.set_xlabel("Time (s)", fontsize=11, fontweight="bold")

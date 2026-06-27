@@ -41,8 +41,7 @@ def _channel_side(label: str) -> str:
 @pytest.fixture(scope="module")
 def connectome() -> Connectome:
     """Load the TVB connectome once and calibrate its weight density."""
-    conn = load_connectome()
-    return replace(conn, weights=conn.weights / 1.40)
+    return load_connectome()
 
 
 @pytest.fixture(scope="module")
@@ -57,7 +56,9 @@ def eeg_energy(connectome: Connectome) -> np.ndarray:
     a_gains[pz_idxs] = 3.4
 
     _, x_traj = simulate_network(
-        params=JansenRitParams.from_config({"connectome": connectome, "dt": _DT, "params": {"K": 0.75, "A": a_gains}}),
+        params=JansenRitParams.from_config(
+            {"connectome": connectome, "dt": _DT, "params": {"K": 0.5357, "A": a_gains}}
+        ),
         duration=15.0,
         dt=_DT,
         seed=42,

@@ -80,8 +80,7 @@ def _(mo):
 
 @app.cell
 def _(mo):
-    k_slider = mo.ui.slider(0.0, 2.0, 0.05, value=0.75, label="Global Coupling Strength K")
-    divisor_slider = mo.ui.slider(1.0, 3.0, 0.05, value=1.40, label="Weights divisor (SC density scaling)")
+    k_slider = mo.ui.slider(0.0, 2.0, 0.05, value=0.54, label="Global Coupling Strength K")
     speed_slider = mo.ui.slider(5.0, 100.0, 5.0, value=50.0, label="Conduction speed (mm/ms)")
     duration_slider = mo.ui.slider(1.0, 10.0, 0.5, value=4.0, label="Simulation duration (s)")
     deterministic_toggle = mo.ui.checkbox(value=False, label="Deterministic (RK4, no noise)")
@@ -89,7 +88,7 @@ def _(mo):
 
     mo.hstack(
         [
-            mo.vstack([mo.md("### 🧠 Coupling & Speed"), k_slider, divisor_slider, speed_slider]),
+            mo.vstack([mo.md("### 🧠 Coupling & Speed"), k_slider, speed_slider]),
             mo.vstack([mo.md("### ⏱️ Time & Noise"), duration_slider, deterministic_toggle, seed_slider]),
         ],
         justify="space-between",
@@ -97,7 +96,6 @@ def _(mo):
     )
     return (
         deterministic_toggle,
-        divisor_slider,
         duration_slider,
         k_slider,
         seed_slider,
@@ -110,7 +108,6 @@ def _(
     JansenRitParams,
     connectome,
     deterministic_toggle,
-    divisor_slider,
     duration_slider,
     ez_names,
     k_slider,
@@ -124,7 +121,6 @@ def _(
 ):
     # Scale connectome connectivity and delays
     _conn = replace(connectome, speed=speed_slider.value, delays=connectome.tract_lengths / speed_slider.value)
-    _conn = replace(_conn, weights=_conn.weights / divisor_slider.value)
 
     # Set up EZ, PZ and Healthy gains
     _n_nodes = len(connectome.region_labels)
@@ -261,7 +257,7 @@ def _(
                     if _r_name in ("lHC", "lPHC", "lAMYG")
                     else (f"{_r_name} (PZ)" if _r_name in ("lTCI", "lTCV") else f"{_r_name} (Healthy)")
                 )
-                _ax.plot(_time_sec, _sig, color=_col, alpha=0.75, linewidth=1.2, label=_display_lbl)
+                _ax.plot(_time_sec, _sig, color=_col, alpha=0.54, linewidth=1.2, label=_display_lbl)
             _ax.legend(loc="upper right", framealpha=0.9)
 
         _ax.set_xlabel("Time (s)", fontsize=11, fontweight="bold")
@@ -326,7 +322,7 @@ def _(
                 _ch_idx = connectome.channel_index[_ch_name]
                 _sig = eeg[_ch_idx, :]
                 _col = _colors[_idx]
-                _ax.plot(_time_sec, _sig, color=_col, alpha=0.75, linewidth=1.2, label=_ch_name)
+                _ax.plot(_time_sec, _sig, color=_col, alpha=0.54, linewidth=1.2, label=_ch_name)
             _ax.legend(loc="upper right", framealpha=0.9)
 
         _ax.set_xlabel("Time (s)", fontsize=11, fontweight="bold")

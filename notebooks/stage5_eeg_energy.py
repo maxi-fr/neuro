@@ -65,8 +65,7 @@ def _(load_connectome):
 def _(connectome, mo):
     channel_options = sorted(map(str, connectome.channel_labels))
 
-    k_slider = mo.ui.slider(0.0, 2.0, 0.05, value=0.75, label="Global Coupling K")
-    divisor_slider = mo.ui.slider(1.0, 3.0, 0.05, value=1.40, label="Weights Divisor")
+    k_slider = mo.ui.slider(0.0, 2.0, 0.05, value=0.54, label="Global Coupling K")
     speed_slider = mo.ui.slider(5.0, 100.0, 5.0, value=50.0, label="Conduction Speed (mm/ms)")
     duration_slider = mo.ui.slider(5.0, 50.0, 5.0, value=50.0, label="Duration (s) — 50 s reproduces Fig 5a")
     transient_slider = mo.ui.slider(0.0, 5.0, 0.5, value=2.0, label="Transient drop (s)")
@@ -78,7 +77,7 @@ def _(connectome, mo):
 
     mo.hstack(
         [
-            mo.vstack([mo.md("#### 🧠 Network & Integration"), k_slider, divisor_slider, speed_slider]),
+            mo.vstack([mo.md("#### 🧠 Network & Integration"), k_slider, speed_slider]),
             mo.vstack(
                 [mo.md("#### ⏱️ Window & Noise"), duration_slider, transient_slider, seed_slider, deterministic_toggle]
             ),
@@ -89,7 +88,6 @@ def _(connectome, mo):
     )
     return (
         deterministic_toggle,
-        divisor_slider,
         duration_slider,
         k_slider,
         seed_slider,
@@ -105,7 +103,6 @@ def _(
     band_energy,
     connectome,
     deterministic_toggle,
-    divisor_slider,
     duration_slider,
     k_slider,
     lfp,
@@ -119,7 +116,6 @@ def _(
 ):
     # Calibrated connectome (weight density + conduction speed).
     conn = replace(connectome, speed=speed_slider.value, delays=connectome.tract_lengths / speed_slider.value)
-    conn = replace(conn, weights=conn.weights / divisor_slider.value)
 
     # Canonical EZ/PZ configuration.
     n_nodes = len(connectome.region_labels)

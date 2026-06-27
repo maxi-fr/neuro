@@ -36,7 +36,7 @@ def _():
 @app.cell
 def _(load_connectome):
     sim_dt = 1e-4
-    sim_k = 0.75
+    sim_k = 0.54
     sim_seed = 42
 
     connectome = load_connectome(speed=50.0)

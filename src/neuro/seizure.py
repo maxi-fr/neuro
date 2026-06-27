@@ -20,7 +20,7 @@ if TYPE_CHECKING:
 FloatArray = npt.NDArray[np.float64]
 
 DT = 1e-4
-K = 0.75
+K = 0.54
 SPEED = 50.0
 SEED = 42
 

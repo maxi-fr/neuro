@@ -69,8 +69,7 @@ def _(connectome, mo):
     channel_options = sorted(map(str, connectome.channel_labels))
 
     # Controls
-    k_slider = mo.ui.slider(0.0, 2.0, 0.05, value=0.75, label="Global Coupling Strength K")
-    divisor_slider = mo.ui.slider(1.0, 3.0, 0.05, value=1.40, label="Weights Divisor")
+    k_slider = mo.ui.slider(0.0, 2.0, 0.05, value=0.54, label="Global Coupling Strength K")
     speed_slider = mo.ui.slider(5.0, 100.0, 5.0, value=50.0, label="Conduction Speed (mm/ms)")
     duration_slider = mo.ui.slider(2.0, 20.0, 1.0, value=10.0, label="Simulation Duration (s)")
     transient_slider = mo.ui.slider(0.0, 5.0, 0.5, value=2.0, label="Transient drop (s)")
@@ -87,7 +86,7 @@ def _(connectome, mo):
 
     mo.hstack(
         [
-            mo.vstack([mo.md("#### ⚙️ Parameters"), k_slider, divisor_slider, speed_slider]),
+            mo.vstack([mo.md("#### ⚙️ Parameters"), k_slider, speed_slider]),
             mo.vstack(
                 [mo.md("#### ⏱️ Simulation"), duration_slider, transient_slider, seed_slider, deterministic_toggle]
             ),
@@ -98,7 +97,6 @@ def _(connectome, mo):
     )
     return (
         deterministic_toggle,
-        divisor_slider,
         duration_slider,
         k_slider,
         seed_slider,
@@ -113,7 +111,6 @@ def _(
     JansenRitParams,
     connectome,
     deterministic_toggle,
-    divisor_slider,
     duration_slider,
     k_slider,
     lfp,
@@ -127,7 +124,6 @@ def _(
 ):
     # Setup network connectivity
     conn = replace(connectome, speed=speed_slider.value, delays=connectome.tract_lengths / speed_slider.value)
-    conn = replace(conn, weights=conn.weights / divisor_slider.value)
     n_nodes = len(connectome.region_labels)
 
     # 1. Healthy Brain gains (A = 3.25 everywhere)
