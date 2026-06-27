@@ -578,6 +578,7 @@ def train_model(  # noqa: PLR0913
     C_y: int,
     w_psd: float = 0.0,
     w_fc: float = 0.0,
+    patience: int = 50,
 ) -> tuple[eqx.Module, list[float], list[float]]:
     """Train the MLP model using Optax.
 
@@ -609,6 +610,8 @@ def train_model(  # noqa: PLR0913
         Weight for the PSD loss.
     w_fc : float
         Weight for the FC loss.
+    patience : int
+        Number of epochs with no improvement after which training will be stopped.
 
     Returns
     -------
@@ -638,6 +641,8 @@ def train_model(  # noqa: PLR0913
     w_psd_jax = jnp.array(w_psd, dtype=jnp.float32)
     w_fc_jax = jnp.array(w_fc, dtype=jnp.float32)
 
+    epochs_without_improvement = 0
+
     for epoch in pbar:
         alpha = 1.0 - epoch / decay_epochs if epoch < decay_epochs else 0.0
 
@@ -663,8 +668,15 @@ def train_model(  # noqa: PLR0913
         if last_val_loss < best_val_loss:
             best_val_loss = last_val_loss
             best_model = model
+            epochs_without_improvement = 0
+        else:
+            epochs_without_improvement += 1
 
         pbar.set_postfix(train_loss=f"{avg_train_loss:.4f}", val_loss=f"{last_val_loss:.4f}", alpha=f"{alpha:.2f}")
+
+        if epochs_without_improvement >= patience:
+            print(f"\nEarly stopping triggered at epoch {epoch}. No improvement for {patience} epochs.")
+            break
 
     print(f"\nTraining completed. Best Val Loss (N-Step MSE): {best_val_loss:.6f}")
     return best_model, train_losses, val_losses
@@ -764,6 +776,7 @@ def main() -> None:  # noqa: PLR0915
     seed = int(train_cfg.get("seed", 69))
     w_psd = float(train_cfg.get("w_psd", 0.0))
     w_fc = float(train_cfg.get("w_fc", 0.0))
+    patience = int(train_cfg.get("patience", 50))
 
     artifact_dir = config.get("artifact")
     if artifact_dir is None:
@@ -830,6 +843,7 @@ def main() -> None:  # noqa: PLR0915
         C_y,
         w_psd=w_psd,
         w_fc=w_fc,
+        patience=patience,
     )
 
     loss_plot_path = artifact_dir / "loss_curve.png"
