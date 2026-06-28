@@ -22,6 +22,7 @@ training:
   w_psd: 0.0
   w_fc: 0.0
   patience: 50
+  global_scaling: false
 
 sweep:
   n_trials: 50
@@ -41,7 +42,7 @@ sweep:
     depth:
       type: int
       low: 0
-      high: 6
+      high: 5
   training:
     learning_rate:
       type: loguniform
@@ -58,3 +59,9 @@ sweep:
       type: float
       low: 0.5
       high: 0.9
+    scaler:
+      type: categorical
+      choices: ["standard", "robust"]
+    global_scaling:
+      type: categorical
+      choices: [true, false]

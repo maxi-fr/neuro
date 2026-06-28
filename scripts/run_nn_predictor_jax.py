@@ -16,7 +16,7 @@ import jax
 import matplotlib.pyplot as plt
 import numpy as np
 import yaml
-from sklearn.preprocessing import StandardScaler
+from sklearn.preprocessing import RobustScaler, StandardScaler
 
 from neuro.jansen_rit_jax import enable_x64
 from neuro.nn_training import (
@@ -75,6 +75,8 @@ def main() -> None:  # noqa: PLR0915
     w_psd = float(train_cfg.get("w_psd", 0.0))
     w_fc = float(train_cfg.get("w_fc", 0.0))
     patience = int(train_cfg.get("patience", 50))
+    scaler_type = train_cfg.get("scaler", "standard")
+    global_scaling = train_cfg.get("global_scaling", False)
 
     artifact_dir = config.get("artifact")
     if artifact_dir is None:
@@ -112,14 +114,26 @@ def main() -> None:  # noqa: PLR0915
     y_past_train = reshape_flat_to_channels(X_train[:, : n_y * C_y], C_y)
     u_past_train = reshape_flat_to_channels(X_train[:, n_y * C_y : n_y * C_y + n_u * C_u], C_u)
 
-    scaler_y = StandardScaler()
-    scaler_y.fit(y_past_train)
+    if scaler_type == "robust":
+        scaler_y = RobustScaler()
+        scaler_u = RobustScaler()
+    else:
+        scaler_y = StandardScaler()
+        scaler_u = StandardScaler()
 
-    scaler_u = StandardScaler()
-    scaler_u.fit(u_past_train)
+    if global_scaling:
+        scaler_y.fit(y_past_train.reshape(-1, 1))
+        scaler_u.fit(u_past_train.reshape(-1, 1))
+    else:
+        scaler_y.fit(y_past_train)
+        scaler_u.fit(u_past_train)
 
-    X_train_s, Y_train_s = scale_dataset(X_train, Y_train, scaler_y, scaler_u, n_y, n_u, C_y, C_u)
-    X_val_s, Y_val_s = scale_dataset(X_val, Y_val, scaler_y, scaler_u, n_y, n_u, C_y, C_u)
+    X_train_s, Y_train_s = scale_dataset(
+        X_train, Y_train, scaler_y, scaler_u, n_y, n_u, C_y, C_u, global_scaling=global_scaling
+    )
+    X_val_s, Y_val_s = scale_dataset(
+        X_val, Y_val, scaler_y, scaler_u, n_y, n_u, C_y, C_u, global_scaling=global_scaling
+    )
 
     key = jax.random.PRNGKey(seed)
     in_size = n_y * C_y + n_u * C_u
@@ -168,7 +182,7 @@ def main() -> None:  # noqa: PLR0915
     )
     print(f"Saved NN predictor artifact -> {artifact}")
 
-    Y_pred_abs_flat, _mse = evaluate_model(model, scaler_y, X_val_s, Y_val, C_y)
+    Y_pred_abs_flat, _mse = evaluate_model(model, scaler_y, X_val_s, Y_val, C_y, global_scaling=global_scaling)
 
     stats_path = artifact_dir / "training_stats.json"
     stats = {

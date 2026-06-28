@@ -15,7 +15,7 @@ import jax.numpy as jnp
 import matplotlib.pyplot as plt
 import numpy as np
 import optax
-from sklearn.preprocessing import StandardScaler
+from sklearn.preprocessing import RobustScaler, StandardScaler
 from tqdm import tqdm
 from tvboptim.observations.observation import compute_fc
 
@@ -23,7 +23,11 @@ from neuro.prediction import AutoregressivePredictor
 
 
 def save_artifact(
-    artifact: Path, model: eqx.Module, scaler_u: StandardScaler, scaler_y: StandardScaler, meta: dict[str, object]
+    artifact: Path,
+    model: eqx.Module,
+    scaler_u: StandardScaler | RobustScaler,
+    scaler_y: StandardScaler | RobustScaler,
+    meta: dict[str, object],
 ) -> None:
     """Persist the trained MLP (eqx leaves) plus a JSON sidecar and the scaler arrays.
 
@@ -39,18 +43,20 @@ def save_artifact(
         Path to the artifact file.
     model : eqx.Module
         The trained Equinox module (MLP).
-    scaler_u : StandardScaler
-        Scikit-learn StandardScaler fitted to the input controls u.
-    scaler_y : StandardScaler
-        Scikit-learn StandardScaler fitted to the output targets y.
+    scaler_u : StandardScaler | RobustScaler
+        Scikit-learn StandardScaler or RobustScaler fitted to the input controls u.
+    scaler_y : StandardScaler | RobustScaler
+        Scikit-learn StandardScaler or RobustScaler fitted to the output targets y.
     meta : dict[str, object]
         Metadata dictionary to be saved alongside the model.
     """
     artifact.parent.mkdir(parents=True, exist_ok=True)
     eqx.tree_serialise_leaves(str(artifact), model)
     artifact.with_suffix(".json").write_text(json.dumps(meta, indent=2))
-    u_mean, u_scale = scaler_u.mean_, scaler_u.scale_
-    y_mean, y_scale = scaler_y.mean_, scaler_y.scale_
+    u_mean = getattr(scaler_u, "mean_", getattr(scaler_u, "center_", None))
+    u_scale = getattr(scaler_u, "scale_", None)
+    y_mean = getattr(scaler_y, "mean_", getattr(scaler_y, "center_", None))
+    y_scale = getattr(scaler_y, "scale_", None)
     if u_mean is None or u_scale is None or y_mean is None or y_scale is None:
         msg = "Scalers must be fitted before saving the artifact."
         raise ValueError(msg)
@@ -103,14 +109,19 @@ def extract_windows_flattened(data: np.ndarray, window_size: int) -> np.ndarray:
     return view.reshape(-1, window_size * channels)
 
 
-def scale_flat_sequence(data_flat: np.ndarray, scaler: StandardScaler, channels: int) -> np.ndarray:
+def scale_flat_sequence(
+    data_flat: np.ndarray,
+    scaler: StandardScaler | RobustScaler,
+    channels: int,
+    global_scaling: bool,  # noqa: FBT001
+) -> np.ndarray:
     """Scale a flattened sequence per-channel.
 
     Parameters
     ----------
     data_flat : np.ndarray
         Flattened sequence of shape (samples, time_steps * channels).
-    scaler : StandardScaler
+    scaler : StandardScaler | RobustScaler
         Fitted scaler to apply.
     channels : int
         Number of channels per time step.
@@ -121,18 +132,26 @@ def scale_flat_sequence(data_flat: np.ndarray, scaler: StandardScaler, channels:
         Scaled flattened sequence of the same shape.
     """
     samples = data_flat.shape[0]
-    data_scaled = scaler.transform(data_flat.reshape(-1, channels))
+    if global_scaling:
+        data_scaled = scaler.transform(data_flat.reshape(-1, 1))
+    else:
+        data_scaled = scaler.transform(data_flat.reshape(-1, channels))
     return data_scaled.reshape(samples, -1)
 
 
-def unscale_flat_sequence(data_flat: np.ndarray, scaler: StandardScaler, channels: int) -> np.ndarray:
+def unscale_flat_sequence(
+    data_flat: np.ndarray,
+    scaler: StandardScaler | RobustScaler,
+    channels: int,
+    global_scaling: bool,  # noqa: FBT001
+) -> np.ndarray:
     """Inverse-scale a flattened sequence per-channel.
 
     Parameters
     ----------
     data_flat : np.ndarray
         Flattened sequence of shape (samples, time_steps * channels).
-    scaler : StandardScaler
+    scaler : StandardScaler | RobustScaler
         Fitted scaler to apply.
     channels : int
         Number of channels per time step.
@@ -143,7 +162,10 @@ def unscale_flat_sequence(data_flat: np.ndarray, scaler: StandardScaler, channel
         Unscaled flattened sequence of the same shape.
     """
     samples = data_flat.shape[0]
-    data_unscaled = scaler.inverse_transform(data_flat.reshape(-1, channels))
+    if global_scaling:
+        data_unscaled = scaler.inverse_transform(data_flat.reshape(-1, 1))
+    else:
+        data_unscaled = scaler.inverse_transform(data_flat.reshape(-1, channels))
     return data_unscaled.reshape(samples, -1)
 
 
@@ -361,12 +383,13 @@ def create_model(  # noqa: PLR0913
 def scale_dataset(  # noqa: PLR0913
     X: np.ndarray,
     Y: np.ndarray,
-    scaler_y: StandardScaler,
-    scaler_u: StandardScaler,
+    scaler_y: StandardScaler | RobustScaler,
+    scaler_u: StandardScaler | RobustScaler,
     n_y: int,
     n_u: int,
     C_y: int,
     C_u: int,
+    global_scaling: bool,  # noqa: FBT001
 ) -> tuple[np.ndarray, np.ndarray]:
     """Scale datasets per-channel.
 
@@ -376,9 +399,9 @@ def scale_dataset(  # noqa: PLR0913
         Input features array, shape ``(samples, n_features)``.
     Y : np.ndarray
         Target labels array, shape ``(samples, n_targets)``.
-    scaler_y : StandardScaler
+    scaler_y : StandardScaler | RobustScaler
         Fitted scaler for the outputs.
-    scaler_u : StandardScaler
+    scaler_u : StandardScaler | RobustScaler
         Fitted scaler for the inputs.
     n_y : int
         Number of past output steps.
@@ -400,12 +423,12 @@ def scale_dataset(  # noqa: PLR0913
     u_past_flat = X[:, n_y * C_y : n_y * C_y + n_u * C_u]
     u_fut_flat = X[:, n_y * C_y + n_u * C_u :]
 
-    y_past_s = scale_flat_sequence(y_past_flat, scaler_y, C_y)
-    u_past_s = scale_flat_sequence(u_past_flat, scaler_u, C_u)
-    u_fut_s = scale_flat_sequence(u_fut_flat, scaler_u, C_u)
+    y_past_s = scale_flat_sequence(y_past_flat, scaler_y, C_y, global_scaling)
+    u_past_s = scale_flat_sequence(u_past_flat, scaler_u, C_u, global_scaling)
+    u_fut_s = scale_flat_sequence(u_fut_flat, scaler_u, C_u, global_scaling)
 
     X_s = np.concatenate([y_past_s, u_past_s, u_fut_s], axis=1)
-    Y_s = scale_flat_sequence(Y, scaler_y, C_y)
+    Y_s = scale_flat_sequence(Y, scaler_y, C_y, global_scaling)
 
     return X_s, Y_s
 
@@ -687,12 +710,14 @@ def plot_training_curves(train_losses: list[float], val_losses: list[float], plo
     plt.savefig(plot_path, dpi=300)
 
 
-def evaluate_model(
+def evaluate_model(  # noqa: PLR0913
     model: eqx.Module,
-    scaler_y: StandardScaler,
+    scaler_y: StandardScaler | RobustScaler,
     X_val_s: np.ndarray,
     Y_val: np.ndarray,
     C_y: int,
+    *,
+    global_scaling: bool,
 ) -> tuple[np.ndarray, float]:
     """Evaluate the trained model.
 
@@ -700,7 +725,7 @@ def evaluate_model(
     ----------
     model : eqx.Module
         The trained Equinox MLP model.
-    scaler_y : StandardScaler
+    scaler_y : StandardScaler | RobustScaler
         Fitted scaler for the targets.
     X_val_s : np.ndarray
         Scaled validation inputs, shape ``(samples_val, n_features)``.
@@ -717,7 +742,7 @@ def evaluate_model(
         Mean squared error of the absolute predictions.
     """
     Y_pred_s = np.array(predict_batch(model, jnp.array(X_val_s)))
-    Y_pred_unscaled = unscale_flat_sequence(Y_pred_s, scaler_y, C_y)
+    Y_pred_unscaled = unscale_flat_sequence(Y_pred_s, scaler_y, C_y, global_scaling)
 
     mse = np.mean((Y_val - Y_pred_unscaled) ** 2)
     return Y_pred_unscaled, float(mse)
