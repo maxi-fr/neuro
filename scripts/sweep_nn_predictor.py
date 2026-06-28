@@ -182,8 +182,9 @@ def objective(  # noqa: PLR0915
     Y_pred_unflat = np.asarray(reshape_to_trajectory(Y_pred_abs_flat, horizon, C_y))
 
     n_plot_samples = min(200, len(Y_val))
+    y_true_anchors = X_val[:n_plot_samples, (n_y - 1) * C_y : n_y * C_y]
     fig, _ = plot_multistep_predictions(
-        y_true=Y_val[:n_plot_samples],
+        y_true=y_true_anchors,
         y_pred=Y_pred_unflat[:n_plot_samples],
         dt=dt_real,
         channels=list(range(min(4, C_y))),
