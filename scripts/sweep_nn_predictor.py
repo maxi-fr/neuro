@@ -65,6 +65,14 @@ def objective(  # noqa: PLR0915
     suggest_params(trial, sweep_cfg, "model", config)
     suggest_params(trial, sweep_cfg, "training", config)
 
+    print(f"\n{'=' * 40}")
+    print(f"Starting Trial {trial.number}")
+    print(f"{'=' * 40}")
+    print("Suggested hyperparameters:")
+    for k, v in trial.params.items():
+        print(f"  {k}: {v}")
+    print("-" * 40)
+
     sim_cfg = config.get("simulation", {})
     downsample = sim_cfg.get("downsample", 1)
     n_steps_cfg = sim_cfg.get("n_steps", 2000)
@@ -128,22 +136,28 @@ def objective(  # noqa: PLR0915
 
     model = create_model(in_size, out_size, hidden_size, depth, key, n_y, n_u, horizon, C_y, C_u)
 
-    model, train_losses, val_losses = train_model(
-        model,
-        X_train_s,
-        Y_train_s,
-        X_val_s,
-        Y_val_s,
-        epochs,
-        batch_size,
-        learning_rate,
-        weight_decay,
-        curriculum_decay_fraction,
-        C_y,
-        w_psd=w_psd,
-        w_fc=w_fc,
-        patience=patience,
-    )
+    try:
+        model, train_losses, val_losses = train_model(
+            model,
+            X_train_s,
+            Y_train_s,
+            X_val_s,
+            Y_val_s,
+            epochs,
+            batch_size,
+            learning_rate,
+            weight_decay,
+            curriculum_decay_fraction,
+            C_y,
+            w_psd=w_psd,
+            w_fc=w_fc,
+            patience=patience,
+        )
+    except ValueError as e:
+        if "NaN" in str(e):
+            print(f"Trial {trial.number} pruned: {e}")
+            raise optuna.TrialPruned from e
+        raise
 
     loss_plot_path = trial_dir / "loss_curve.png"
     plot_training_curves(train_losses, val_losses, str(loss_plot_path))
@@ -169,6 +183,8 @@ def objective(  # noqa: PLR0915
     )
 
     Y_pred_abs_flat, mse = evaluate_model(model, scaler_y, X_val_s, Y_val, C_y)
+
+    print(f"\nTrial {trial.number} completed with MSE: {mse}")
 
     stats_path = trial_dir / "training_stats.json"
     stats = {

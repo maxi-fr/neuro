@@ -654,6 +654,10 @@ def train_model(  # noqa: PLR0913
         )
         val_losses.append(last_val_loss)
 
+        if np.isnan(avg_train_loss) or np.isnan(last_val_loss):
+            msg = "Loss is NaN. Aborting training."
+            raise ValueError(msg)
+
         if last_val_loss < best_val_loss:
             best_val_loss = last_val_loss
             best_model = model
