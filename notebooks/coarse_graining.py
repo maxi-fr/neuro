@@ -29,9 +29,9 @@ def _(load_connectome, np):
     sim_path = r"results\simulation_2026-06-21_15-28-47\log.npz"
     connectome = load_connectome()
     with np.load(sim_path) as data:
-        data["universal_y_mea"].T  # (n_sensors, n_samples)
-        x_data = data["universal_x"]
-        data["universal_u"]
+        data["y_mea"].T  # (n_sensors, n_samples)
+        x_data = data["x"]
+        data["u"]
 
     node_output = x_data[:, 1] - x_data[:, 2]
     return connectome, node_output

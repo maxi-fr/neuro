@@ -68,14 +68,34 @@ def _(Path, yaml):
     config_path = Path(__file__).parent.parent / "./configs/sysid/sysid_jax_config.yaml"
     cfg = yaml.safe_load(config_path.read_text())
 
-    downsample = int(cfg.get("downsample", 1))
-    n_steps = int(cfg["n_steps"])
-    window = int(cfg.get("window", 300))
-    dt = float(cfg.get("dt", 1e-4)) * downsample  # effective reduced-model step (s)
+    sim_cfg = cfg.get("simulation", {})
+    train_cfg = cfg.get("training", {})
+
+    downsample = int(sim_cfg.get("downsample", 1))
+    n_steps = int(sim_cfg["n_steps"])
+    window = int(train_cfg.get("window", 300))
+    dt = float(sim_cfg.get("dt", 1e-4)) * downsample  # effective reduced-model step (s)
     dt_ms = dt * 1000.0
     band = tuple(cfg.get("band", (4.0, 40.0)))
-    sim_path = Path(__file__).parent.parent / cfg["sims"][0]
-    out_path = Path(__file__).parent.parent / cfg.get("out", "results/sysid_jax_result.npz")
+
+    # Determine simulation path
+    data_path_str = sim_cfg["data_path"]
+    data_path = Path(__file__).parent.parent / data_path_str
+    sim_paths = sorted([str(p) for p in data_path.glob("*.npz")])
+    sim_path = Path(sim_paths[0])
+
+    # Determine output path
+    legacy_out = cfg.get("out")
+    if legacy_out:
+        out_path = Path(__file__).parent.parent / legacy_out
+    else:
+        # Search for the latest artifact directory
+        artifacts_root = Path(__file__).parent.parent / "artifacts"
+        sysid_dirs = sorted(artifacts_root.glob("sysid_jax_*"))
+        if sysid_dirs:
+            out_path = sysid_dirs[-1] / "sysid_jax_result.npz"
+        else:
+            out_path = Path(__file__).parent.parent / "results/sysid_jax_result.npz"
 
     print(f"sim        : {sim_path}")
     print(f"result     : {out_path}")
@@ -87,8 +107,8 @@ def _(Path, yaml):
 def _(downsample, n_steps, np, sim_path):
     # Ground truth from the full-plant simulation log (mirrors run_sysid_jax._load_plant).
     with np.load(sim_path) as _data:
-        x_data = np.asarray(_data["universal_x"])[::downsample][:n_steps]  # (n_steps, 6, 76)
-        _y_mea = np.asarray(_data["universal_y_mea"])[::downsample][:n_steps]  # (n_steps, 62)
+        x_data = np.asarray(_data["x"])[::downsample][:n_steps]  # (n_steps, 6, 76)
+        _y_mea = np.asarray(_data["y_mea"])[::downsample][:n_steps]  # (n_steps, 62)
     node_output = x_data[:, 1, :] - x_data[:, 2, :]  # (n_steps, 76) per-region LFP
     y_data = _y_mea.T  # (62, n_steps) ground-truth EEG
     print(f"node_output {node_output.shape}   y_data {y_data.shape}")

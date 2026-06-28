@@ -3,42 +3,41 @@
 # N-step-ahead MSE: state evolves naturally over one continuous rollout per recording,
 # driven by the real recorded tES stimulation.
 
-dt: 1.0e-4            # full-plant integration step (s)
-downsample: 10        # -> effective reduced-model dt = 1e-3 (resolves the ~10 Hz rhythm)
-n_steps: 5000          # reduced-model steps to fit (after downsampling); 50000/10 = all 50k raw (5 s)
-window: 300           # truncated-backprop window (tames chaotic gradients over the full rollout)
-n_components: 10      # N reduced virtual modes
+simulation:
+  dt: 1.0e-4            # full-plant integration step (s)
+  downsample: 10        # -> effective reduced-model dt = 1e-3 (resolves the ~10 Hz rhythm)
+  n_steps: 5000          # reduced-model steps to fit (after downsampling); 50000/10 = all 50k raw (5 s)
+  data_path: data/experiment_excited/train
+  n_sims: 20             # load only the first 3 simulations to keep refinement fast
 
-# Train-split seeds (disjoint from the eval test seeds sim_090..099). Their LFP is
-# concatenated for the PCA basis; their windows are concatenated into one training batch.
-sims:
-  - results/simulation_2026-06-23_18-49-20/train/sim_000.npz
-  - results/simulation_2026-06-23_18-49-20/train/sim_001.npz
-  - results/simulation_2026-06-23_18-49-20/train/sim_002.npz
+model:
+  n_components: 10      # N reduced virtual modes
+  free_params: [w_weights, eeg_gain]
+  a_init: [3.25, 3.25, 3.25, 3.25, 3.4, 3.6, 3.25, 3.25, 3.25, 3.25]
+  mean_input: 150.0
+  K: 1.0
+  w_init_scale: 5.0
+  w_max: 8.0
 
-free_params: [w_weights, eeg_gain]
-a_init: [3.25, 3.25, 3.25, 3.25, 3.4, 3.6, 3.25, 3.25, 3.25, 3.25]
-mean_input: 150.0
-K: 1.0
-w_init_scale: 5.0
-w_max: 8.0
+  # tES projection for the reduced model to respond to the recorded stimulation
+  # (matches jansen_rit_seizure_excited.yaml's target_electrode / gamma_spread).
+  target_electrode: [CP5, T7]
+  gamma_spread: 20.0
 
-# tES projection for the reduced model to respond to the recorded stimulation
-# (matches jansen_rit_seizure_excited.yaml's target_electrode / gamma_spread).
-target_electrode: [CP5, T7]
-gamma_spread: 20.0
+  # Windowed N-step-ahead MSE loss shape (see neuro.sysid_jax.PredConfig). State evolves
+  # continuously and naturally from x0 over the whole rollout (no resets); the post-burn_in
+  # trajectory is sliced into horizon-length windows purely to organise the MSE.
+  horizon: 200          # window length (steps, at reduced-model dt) the MSE is organised into
+  burn_in: 1500         # samples dropped once before windowing: skips the x0-to-limit-cycle transient
+  stride: null          # null -> defaults to horizon (non-overlapping windows)
 
-# Windowed N-step-ahead MSE loss shape (see neuro.sysid_jax.PredConfig). State evolves
-# continuously and naturally from x0 over the whole rollout (no resets); the post-burn_in
-# trajectory is sliced into horizon-length windows purely to organise the MSE.
-horizon: 200          # window length (steps, at reduced-model dt) the MSE is organised into
-burn_in: 1500         # samples dropped once before windowing: skips the x0-to-limit-cycle transient
-stride: null          # null -> defaults to horizon (non-overlapping windows)
-
-# Gradient refinement settings.
-refine:
+# Training and refinement settings
+training:
+  window: 300           # truncated-backprop window (tames chaotic gradients over the full rollout)
+  seed: 0
   steps: 1000
   lr: {"name": "cosine_decay", "init_value": 0.02, "decay_steps": 1000, "alpha": 0.001}
   clip: 1.0
 
+# Output path for legacy compatibility (also copied to artifacts/)
 out: results/sysid_jax_result.npz

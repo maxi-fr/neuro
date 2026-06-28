@@ -4,18 +4,18 @@ simulation:
   dt: 0.0001
   downsample: 100        # effective dt = 1e-2 s
   n_steps: 50000
-  data_path: results/simulation_2026-06-23_18-49-20/train
+  data_path: data\experiment_excited\train
 
 model:
-  n_y: 10
-  n_u: 10
+  n_y: 14
+  n_u: 13
   horizon: 20
-  hidden_size: 128
-  depth: 6
+  hidden_size: 64
+  depth: 5
 
 training:
-  epochs: 300
-  batch_size: 528
+  epochs: 250
+  batch_size: 128
   learning_rate: 0.001
   weight_decay: 0.1
   train_split: 0.8

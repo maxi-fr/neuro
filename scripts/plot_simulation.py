@@ -74,15 +74,15 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
 
     activity = None
     with np.load(npz_path) as data:
-        eeg: FloatArray = data["universal_y_mea"].T  # (n_sensors, n_samples)
-        u: FloatArray = data["universal_u"]
+        eeg: FloatArray = data["y_mea"].T  # (n_sensors, n_samples)
+        u: FloatArray = data["u"]
 
         # Calculate network synchronization from logs if Jansen-Rit dynamics are used
         r_sync = None
         is_jansen_rit = "JansenRit" in config["dynamics"]["class_path"]
-        if is_jansen_rit and "universal_x" in data:
+        if is_jansen_rit and "x" in data:
             try:
-                x_flat = data["universal_x"].squeeze()
+                x_flat = data["x"].squeeze()
                 if x_flat.ndim == 1:
                     x_flat = x_flat[np.newaxis, :]
                 n_samples_logged = x_flat.shape[0]

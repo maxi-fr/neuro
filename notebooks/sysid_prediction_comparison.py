@@ -144,8 +144,8 @@ def _(Path, cfg, glob, np):
     recordings = []
     for _p in test_files:
         with np.load(_p) as _d:
-            _y = np.asarray(_d["universal_y_mea"], dtype=np.float64).T  # (62, T)
-            _u = np.asarray(_d["universal_u"], dtype=np.float64)  # (T, n_elec)
+            _y = np.asarray(_d["y_mea"], dtype=np.float64).T  # (62, T)
+            _u = np.asarray(_d["u"], dtype=np.float64)  # (T, n_elec)
         recordings.append((_y, _u))
     print(f"loaded {len(recordings)} test recording(s); train/test disjoint OK")
     return (recordings,)

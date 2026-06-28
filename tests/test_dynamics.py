@@ -76,7 +76,7 @@ def test_simulation_matches_simulate_network() -> None:
     """A full orchestrated open-loop Simulation reproduces simulate_network's state trajectory.
 
     Same plant seed/params/coupling, a zero controller and a noise-free sensor, all at a single
-    rate, so the logged ``universal_x`` must equal ``simulate_network``'s ``x_traj`` bit-for-bit.
+    rate, so the logged ``x`` must equal ``simulate_network``'s ``x_traj`` bit-for-bit.
     """
     conn = _toy_connectome(3)
     params = JansenRitParams.from_config({"connectome": conn, "dt": _DT, "params": {"K": 0.5, "A": 3.6, "sigma": 0.0}})

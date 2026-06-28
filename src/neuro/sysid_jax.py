@@ -414,9 +414,6 @@ def make_pred_loss(
     return loss
 
 
-# --------------------------------------------------------------------------------------
-# Refinement
-# --------------------------------------------------------------------------------------
 def refine(
     loss_fn: Callable[[dict[str, JaxArray]], JaxArray], theta0: dict[str, JaxArray], cfg: RefineConfig
 ) -> tuple[dict[str, JaxArray], list[float]]:
