@@ -1316,7 +1316,7 @@ scipy==1.18.0 \
     #   jaxlib
     #   scikit-learn
     #   tvb-library
-simulate @ git+https://github.com/maxi-fr/simulate.git@2363bd30c7833fed73de8f8416217b2faac18ece
+simulate @ git+https://github.com/maxi-fr/simulate.git@18353c3540059cf36d9e4efa6e6590c6d71b911d
     # via neuro
 six==1.17.0 \
     --hash=sha256:4721f391ed90541fddacab5acf947aa0d3dc7d27b2e1e8eda2be8970586c3274 \

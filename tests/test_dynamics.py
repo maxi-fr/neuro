@@ -93,7 +93,7 @@ def test_simulation_matches_simulate_network() -> None:
     )
     sim.run()
 
-    logs = sim.logger.universal_logs
+    logs = sim.logger.core_logs
     orch_x = np.stack([np.asarray(entry["x"], dtype=np.float64) for entry in logs], axis=-1)
     n = x_ref.shape[2]
     assert orch_x.shape[2] >= n

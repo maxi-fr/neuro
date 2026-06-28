@@ -716,8 +716,7 @@ def evaluate_model(  # noqa: PLR0913
     X_val_s: np.ndarray,
     Y_val: np.ndarray,
     C_y: int,
-    *,
-    global_scaling: bool,
+    global_scaling: bool,  # noqa: FBT001
 ) -> tuple[np.ndarray, float]:
     """Evaluate the trained model.
 
