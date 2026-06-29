@@ -1,6 +1,6 @@
 # AGENT instructions
 
-## Project Architectur
+## Project Architecture
 
 * src/        # Implementations inside packages.
 * scripts/    # CLI entry points.
