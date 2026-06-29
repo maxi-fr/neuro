@@ -32,7 +32,7 @@ import equinox as eqx
 import numpy as np
 import numpy.typing as npt
 
-from neuro.prediction import MLPArtifact
+from neuro.prediction import MLPArtifact, unzscore, zscore
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -170,14 +170,14 @@ class NNSymbolicModel:
         u_mean_tiled = np.tile(artifact.u_mean, n_u).reshape(-1, 1)
         u_scale_tiled = np.tile(artifact.u_scale, n_u).reshape(-1, 1)
 
-        y_scaled_flat = (y_flat - y_mean_tiled) / y_scale_tiled
-        new_u_scaled_flat = (new_u_flat - u_mean_tiled) / u_scale_tiled
+        y_scaled_flat = zscore(y_flat, y_mean_tiled, y_scale_tiled)
+        new_u_scaled_flat = zscore(new_u_flat, u_mean_tiled, u_scale_tiled)
 
         mlp_in = ca.vertcat(y_scaled_flat, new_u_scaled_flat)
         y_next_scaled = _mlp_forward_ca(mlp_in, self._layers)
         y_mean = artifact.y_mean.reshape(-1, 1)
         y_scale = artifact.y_scale.reshape(-1, 1)
-        y_next_raw = y_next_scaled * y_scale + y_mean
+        y_next_raw = unzscore(y_next_scaled, y_mean, y_scale)
 
         new_y_flat = ca.vertcat(y_flat[n_ch:], y_next_raw)
         return ca.vertcat(new_y_flat, new_u_flat)

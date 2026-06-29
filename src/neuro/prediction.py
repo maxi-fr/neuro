@@ -360,6 +360,20 @@ class MLPArtifact:
         )
 
 
+def zscore(x: Any, mean: Any, scale: Any) -> Any:  # noqa: ANN401
+    """Standardize ``x`` using precomputed per-channel ``mean``/``scale``.
+
+    Works unchanged for NumPy/JAX arrays and CasADi ``SX``/``MX`` symbols, since all three
+    overload elementwise ``-``/``/`` identically.
+    """
+    return (x - mean) / scale
+
+
+def unzscore(x: Any, mean: Any, scale: Any) -> Any:  # noqa: ANN401
+    """Invert :func:`zscore`, mapping standardized values back to raw units."""
+    return x * scale + mean
+
+
 class NNPredictor:
     """Equinox MLP trained for direct ``horizon``-step EEG prediction.
 
@@ -436,14 +450,14 @@ class NNPredictor:
             y_past = y_src[-self._n_y :]
             u_past = u_src[-self._n_u :]
 
-            y_past_s = (y_past - self._y_mean) / self._y_scale
-            u_past_s = (u_past - self._u_mean) / self._u_scale
-            u_fut_s = (u_fut - self._u_mean) / self._u_scale
+            y_past_s = zscore(y_past, self._y_mean, self._y_scale)
+            u_past_s = zscore(u_past, self._u_mean, self._u_scale)
+            u_fut_s = zscore(u_fut, self._u_mean, self._u_scale)
 
             x_scaled = np.concatenate([y_past_s.flatten(), u_past_s.flatten(), u_fut_s.flatten()])
             y_scaled = np.asarray(self._model(jnp.asarray(x_scaled, dtype=jnp.float64)))  # type: ignore
             y_pred_scaled = y_scaled.reshape(self._horizon, self._n_ch)
-            y_pred = y_pred_scaled * self._y_scale + self._y_mean
+            y_pred = unzscore(y_pred_scaled, self._y_mean, self._y_scale)
 
             y_pred_abs_all.append(y_pred)
 
