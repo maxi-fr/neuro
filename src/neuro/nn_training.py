@@ -5,9 +5,7 @@ of EEG data from past EEG and past/future stimulation inputs. It supports traini
 multiple trajectories.
 """
 
-import json
 from collections.abc import Iterator
-from pathlib import Path
 
 import equinox as eqx
 import jax
@@ -20,47 +18,6 @@ from tqdm import tqdm
 from tvboptim.observations.observation import compute_fc
 
 from neuro.prediction import AutoregressivePredictor
-
-
-def save_artifact(
-    artifact: Path,
-    model: eqx.Module,
-    scaler_u: StandardScaler | RobustScaler,
-    scaler_y: StandardScaler | RobustScaler,
-    meta: dict[str, object],
-) -> None:
-    """Persist the trained MLP (eqx leaves) plus a JSON sidecar and the scaler arrays.
-
-    The comparison notebook's ``neuro.prediction.NNPredictor.load`` rebuilds an MLP
-    skeleton from ``meta`` (architecture sizes), deserialises the leaves, and
-    inverse-scales with the saved ``StandardScaler`` statistics. Three files share the
-    artifact stem: ``<stem>.eqx`` (weights), ``<stem>.json`` (meta), and
-    ``<stem>.scalers.npz`` (scaler mean/scale arrays).
-
-    Parameters
-    ----------
-    artifact : Path
-        Path to the artifact file.
-    model : eqx.Module
-        The trained Equinox module (MLP).
-    scaler_u : StandardScaler | RobustScaler
-        Scikit-learn StandardScaler or RobustScaler fitted to the input controls u.
-    scaler_y : StandardScaler | RobustScaler
-        Scikit-learn StandardScaler or RobustScaler fitted to the output targets y.
-    meta : dict[str, object]
-        Metadata dictionary to be saved alongside the model.
-    """
-    artifact.parent.mkdir(parents=True, exist_ok=True)
-    eqx.tree_serialise_leaves(str(artifact), model)
-    artifact.with_suffix(".json").write_text(json.dumps(meta, indent=2))
-    u_mean = getattr(scaler_u, "mean_", getattr(scaler_u, "center_", None))
-    u_scale = getattr(scaler_u, "scale_", None)
-    y_mean = getattr(scaler_y, "mean_", getattr(scaler_y, "center_", None))
-    y_scale = getattr(scaler_y, "scale_", None)
-    if u_mean is None or u_scale is None or y_mean is None or y_scale is None:
-        msg = "Scalers must be fitted before saving the artifact."
-        raise ValueError(msg)
-    np.savez(artifact.with_suffix(".scalers.npz"), u_mean=u_mean, u_scale=u_scale, y_mean=y_mean, y_scale=y_scale)
 
 
 def load_trajectory(data_file: str, n_steps: int, downsample: int) -> tuple[np.ndarray, np.ndarray]:

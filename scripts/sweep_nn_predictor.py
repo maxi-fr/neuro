@@ -23,10 +23,10 @@ from neuro.nn_training import (
     prepare_datasets,
     reshape_flat_to_channels,
     reshape_to_trajectory,
-    save_artifact,
     scale_dataset,
     train_model,
 )
+from neuro.prediction import AutoregressivePredictor, MLPArtifact
 from utils.plotting import plot_multistep_predictions
 
 
@@ -172,25 +172,25 @@ def objective(  # noqa: PLR0915
     loss_plot_path = trial_dir / "loss_curve.png"
     plot_training_curves(train_losses, val_losses, str(loss_plot_path))
 
-    save_artifact(
-        artifact,
-        model,
-        scaler_u,
-        scaler_y,
-        {
-            "in_size": int(in_size),
-            "out_size": int(out_size),
-            "hidden_size": int(hidden_size),
-            "depth": int(depth),
-            "n_y": int(n_y),
-            "n_u": int(n_u),
-            "horizon": int(horizon),
-            "downsample": int(downsample),
-            "dt": float(dt_real),
-            "n_channels": int(C_y),
-            "n_controls": int(C_u),
-        },
-    )
+    if not isinstance(model, AutoregressivePredictor):
+        msg = f"expected train_model to return an AutoregressivePredictor, got {type(model)}"
+        raise TypeError(msg)
+    u_mean = getattr(scaler_u, "mean_", getattr(scaler_u, "center_", None))
+    u_scale = getattr(scaler_u, "scale_", None)
+    y_mean = getattr(scaler_y, "mean_", getattr(scaler_y, "center_", None))
+    y_scale = getattr(scaler_y, "scale_", None)
+    if u_mean is None or u_scale is None or y_mean is None or y_scale is None:
+        msg = "Scalers must be fitted before saving the artifact."
+        raise ValueError(msg)
+    MLPArtifact(
+        model=model,
+        dt=float(dt_real),
+        downsample=int(downsample),
+        u_mean=np.asarray(u_mean, dtype=np.float64),
+        u_scale=np.asarray(u_scale, dtype=np.float64),
+        y_mean=np.asarray(y_mean, dtype=np.float64),
+        y_scale=np.asarray(y_scale, dtype=np.float64),
+    ).save(artifact)
 
     Y_pred_abs_flat, mse = evaluate_model(model, scaler_y, X_val_s, Y_val, C_y, global_scaling)
 
