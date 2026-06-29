@@ -203,7 +203,7 @@ class AutoregressivePredictor(eqx.Module):
 
     Attributes
     ----------
-    model : eqx.Module
+    model : eqx.nn.MLP
         The underlying 1-step MLP model.
     n_y : int
         The number of past EEG (output) steps the model needs as history.
@@ -217,7 +217,7 @@ class AutoregressivePredictor(eqx.Module):
         The number of control (input) channels.
     """
 
-    model: eqx.Module
+    model: eqx.nn.MLP
     n_y: int = eqx.field(static=True)
     n_u: int = eqx.field(static=True)
     horizon: int = eqx.field(static=True)
@@ -240,12 +240,124 @@ class AutoregressivePredictor(eqx.Module):
             y_w, u_w = carry
             new_u_w = jnp.concatenate([u_w[1:], u_curr[None, :]], axis=0)
             mlp_input = jnp.concatenate([y_w.flatten(), new_u_w.flatten()])
-            y_next = self.model(mlp_input)  # type: ignore
+            y_next = self.model(mlp_input)
             new_y_w = jnp.concatenate([y_w[1:], y_next[None, :]], axis=0)
             return (new_y_w, new_u_w), y_next
 
         _, y_preds = jax.lax.scan(scan_fn, (y_window, u_window), u_future)
         return y_preds.flatten()
+
+
+@dataclass(frozen=True)
+class MLPArtifact:
+    """Loaded ``run_nn_predictor_jax`` artifact: the live predictor, native dt, and scalers.
+
+    The canonical artifact representation, shared by the training script (:meth:`save`),
+    :class:`NNPredictor` (:meth:`load`), and the CasADi port in
+    :mod:`neuro.nn_predictor_casadi`. Architecture sizes (``n_y``, ``n_u``, ``horizon``,
+    ``n_channels``, ``n_controls``) are not duplicated here -- they are read straight off
+    ``model``, the single source of truth once it is built or deserialised.
+
+    Attributes
+    ----------
+    model : AutoregressivePredictor
+        The trained (or freshly built) predictor.
+    dt : float
+        The model's native time step, seconds.
+    downsample : int
+        Downsampling factor relative to the simulation's base ``dt``.
+    u_mean, u_scale, y_mean, y_scale : FloatArray
+        Per-channel ``StandardScaler`` statistics used to z-score controls/outputs.
+    """
+
+    model: AutoregressivePredictor
+    dt: float
+    downsample: int
+    u_mean: FloatArray
+    u_scale: FloatArray
+    y_mean: FloatArray
+    y_scale: FloatArray
+
+    @property
+    def n_y(self) -> int:
+        """Number of past EEG (output) steps in the model's history window."""
+        return self.model.n_y
+
+    @property
+    def n_u(self) -> int:
+        """Number of past control (input) steps in the model's history window."""
+        return self.model.n_u
+
+    @property
+    def horizon(self) -> int:
+        """Direct-prediction horizon of the underlying model."""
+        return self.model.horizon
+
+    @property
+    def n_channels(self) -> int:
+        """Number of EEG output channels."""
+        return self.model.C_y
+
+    @property
+    def n_controls(self) -> int:
+        """Number of control input channels."""
+        return self.model.C_u
+
+    @classmethod
+    def load(cls, artifact: str | Path) -> MLPArtifact:
+        """Load the 3-file artifact (``.eqx``/``.json``/``.scalers.npz``) from disk."""
+        artifact = Path(artifact)
+        meta: dict[str, Any] = json.loads(artifact.with_suffix(".json").read_text())
+        with np.load(artifact.with_suffix(".scalers.npz")) as sc:
+            scalers = {k: np.asarray(sc[k], dtype=np.float64) for k in ("u_mean", "u_scale", "y_mean", "y_scale")}
+
+        mlp = eqx.nn.MLP(
+            in_size=meta["in_size"],
+            out_size=meta["out_size"],
+            width_size=meta["hidden_size"],
+            depth=meta["depth"],
+            activation=jax.nn.relu,
+            key=jax.random.PRNGKey(0),
+        )
+        skeleton = AutoregressivePredictor(
+            model=mlp,
+            n_y=meta["n_y"],
+            n_u=meta["n_u"],
+            horizon=meta["horizon"],
+            C_y=meta["n_channels"],
+            C_u=meta["n_controls"],
+        )
+        model = eqx.tree_deserialise_leaves(str(artifact), skeleton)
+
+        return cls(model=model, dt=float(meta["dt"]), downsample=int(meta["downsample"]), **scalers)
+
+    def save(self, artifact: str | Path) -> None:
+        """Persist the predictor (eqx leaves) plus a JSON sidecar and the scaler arrays."""
+        artifact = Path(artifact)
+        artifact.parent.mkdir(parents=True, exist_ok=True)
+        eqx.tree_serialise_leaves(str(artifact), self.model)
+        mlp = self.model.model
+        meta = {
+            "in_size": int(mlp.in_size),
+            "out_size": int(mlp.out_size),
+            "hidden_size": int(mlp.width_size),
+            "depth": int(mlp.depth),
+            "n_y": self.n_y,
+            "n_u": self.n_u,
+            "horizon": self.horizon,
+            "downsample": self.downsample,
+            "dt": self.dt,
+            "n_channels": self.n_channels,
+            "n_controls": self.n_controls,
+        }
+        artifact.with_suffix(".json").write_text(json.dumps(meta, indent=2))
+        np.savez(
+            artifact.with_suffix(".scalers.npz"),
+            u_mean=self.u_mean,
+            u_scale=self.u_scale,
+            y_mean=self.y_mean,
+            y_scale=self.y_scale,
+        )
 
 
 class NNPredictor:
@@ -282,38 +394,16 @@ class NNPredictor:
 
     @classmethod
     def load(cls, artifact: str | Path, **_kwargs: object) -> NNPredictor:
-        """Rebuild the predictor from the eqx weights file + sidecar ``.json``/``.npz``."""
-        artifact = Path(artifact)
-        meta: dict[str, Any] = json.loads(artifact.with_suffix(".json").read_text())
-        with np.load(artifact.with_suffix(".scalers.npz")) as sc:
-            scalers = {k: np.asarray(sc[k], dtype=np.float64) for k in ("u_mean", "u_scale", "y_mean", "y_scale")}
-
-        mlp = eqx.nn.MLP(
-            in_size=meta["in_size"],
-            out_size=meta["out_size"],
-            width_size=meta["hidden_size"],
-            depth=meta["depth"],
-            activation=jax.nn.relu,
-            key=jax.random.PRNGKey(0),
-        )
-        skeleton = AutoregressivePredictor(
-            model=mlp,
-            n_y=meta["n_y"],
-            n_u=meta["n_u"],
-            horizon=meta["horizon"],
-            C_y=meta["n_channels"],
-            C_u=meta["n_controls"],
-        )
-        model = eqx.tree_deserialise_leaves(str(artifact), skeleton)
-
+        """Rebuild the predictor from a saved :class:`MLPArtifact`."""
+        art = MLPArtifact.load(artifact)
         return cls(
-            model,
-            n_y=meta["n_y"],
-            n_u=meta["n_u"],
-            horizon=meta["horizon"],
-            n_channels=meta["n_channels"],
-            dt=meta["dt"],
-            scalers=scalers,
+            art.model,
+            n_y=art.n_y,
+            n_u=art.n_u,
+            horizon=art.horizon,
+            n_channels=art.n_channels,
+            dt=art.dt,
+            scalers={"u_mean": art.u_mean, "u_scale": art.u_scale, "y_mean": art.y_mean, "y_scale": art.y_scale},
         )
 
     def predict(self, window: PredictionWindow, horizon_s: float) -> FloatArray:
@@ -352,8 +442,8 @@ class NNPredictor:
 
             x_scaled = np.concatenate([y_past_s.flatten(), u_past_s.flatten(), u_fut_s.flatten()])
             y_scaled = np.asarray(self._model(jnp.asarray(x_scaled, dtype=jnp.float64)))  # type: ignore
-            y_flat = y_scaled * self._y_scale + self._y_mean
-            y_pred = y_flat.reshape(self._horizon, self._n_ch)  # (horizon, n_ch)
+            y_pred_scaled = y_scaled.reshape(self._horizon, self._n_ch)
+            y_pred = y_pred_scaled * self._y_scale + self._y_mean
 
             y_pred_abs_all.append(y_pred)
 
