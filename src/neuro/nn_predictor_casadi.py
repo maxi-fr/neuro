@@ -105,10 +105,12 @@ def _mlp_forward_ca(
 class NNSymbolicModel:
     """CasADi-symbolic, single-step equivalent of the Equinox NN predictor.
 
-    The "state" is the concatenation of the raw-unit y-window (``n_y x n_channels``)
-    and u-window (``n_u x n_controls``), flattened row-major. All recurrence memory
-    lives in this state vector, so :attr:`history_depth` is ``0`` and :meth:`step`
-    reduces to a pure ``x_next = F(x, u)`` map.
+    The "state" is the concatenation of the y-window (``n_y x n_channels``) and u-window
+    (``n_u x n_controls``), flattened row-major. All recurrence memory lives in this state
+    vector, so :attr:`history_depth` is ``0`` and :meth:`step` reduces to a pure
+    ``x_next = F(x, u)`` map. When the artifact carries a fixed PCA projection the y-window
+    holds the ``k``-dimensional latent components rather than raw EEG (so ``n_channels`` is
+    ``k``); :meth:`output` decodes them back to the ``n_eeg_channels`` raw EEG channels.
 
     Attributes
     ----------
@@ -139,8 +141,13 @@ class NNSymbolicModel:
 
     @property
     def n_channels(self) -> int:
-        """Number of EEG output channels."""
+        """Number of channels carried in the state per step (latent components with a projection)."""
         return self.artifact.n_channels
+
+    @property
+    def n_eeg_channels(self) -> int:
+        """Number of raw EEG channels at the output boundary (equals ``n_channels`` without a projection)."""
+        return self.artifact.n_eeg_channels
 
     @property
     def free_syms(self) -> dict[str, ca.MX]:
@@ -226,9 +233,19 @@ class NNSymbolicModel:
         return ca.vertcat(new_y_flat, new_u_flat)
 
     def output(self, x: ca.SX | ca.MX) -> ca.SX | ca.MX:
-        """Slice the most-recently-predicted raw EEG values out of a state vector."""
+        """Slice the most-recent predicted sample from the state, decoded to raw EEG.
+
+        Without a projection the sliced values are already raw EEG. With a fixed PCA
+        projection the state holds latent components, so the last latent vector ``z`` is
+        decoded back to EEG via ``y = E.T @ z + mean`` (the symbolic mirror of
+        :meth:`MLPArtifact.decode`), matching :meth:`neuro.prediction.NNPredictor.predict`.
+        """
         n_y, n_ch = self.artifact.n_y, self.artifact.n_channels
-        return x[(n_y - 1) * n_ch : n_y * n_ch]
+        z_last = x[(n_y - 1) * n_ch : n_y * n_ch]
+        basis, mean = self.artifact.latent_basis, self.artifact.latent_mean
+        if basis is None or mean is None:
+            return z_last
+        return ca.mtimes(basis.T, z_last) + mean.reshape(-1, 1)
 
     @cached_property
     def f_step(self) -> ca.Function:

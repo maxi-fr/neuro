@@ -283,6 +283,11 @@ class MLPArtifact:
         Downsampling factor relative to the simulation's base ``dt``.
     u_mean, u_scale, y_mean, y_scale : FloatArray
         Per-channel ``StandardScaler`` statistics used to z-score controls/outputs.
+    latent_basis, latent_mean : FloatArray | None
+        Optional fixed PCA projection (see :func:`neuro.nn_training.fit_latent_projection`).
+        When set, the model runs in the ``k``-dimensional latent space and the EEG is
+        encoded ``z = (y - latent_mean) @ latent_basis.T`` / decoded ``y = z @ latent_basis
+        + latent_mean``; ``None`` means the model operates directly on raw EEG channels.
     """
 
     model: AutoregressivePredictor
@@ -292,6 +297,8 @@ class MLPArtifact:
     u_scale: FloatArray
     y_mean: FloatArray
     y_scale: FloatArray
+    latent_basis: FloatArray | None = None
+    latent_mean: FloatArray | None = None
 
     @property
     def n_y(self) -> int:
@@ -318,6 +325,29 @@ class MLPArtifact:
         """Number of control input channels."""
         return self.model.C_u
 
+    @property
+    def n_eeg_channels(self) -> int:
+        """Number of raw EEG channels (the latent basis' input dimension, else ``n_channels``)."""
+        return self.latent_basis.shape[1] if self.latent_basis is not None else self.n_channels
+
+    def encode(self, y: FloatArray) -> FloatArray:
+        """Project raw EEG ``(..., n_eeg_channels)`` onto the latent components.
+
+        Returns the input unchanged when the artifact carries no projection.
+        """
+        if self.latent_basis is None:
+            return np.asarray(y, dtype=np.float64)
+        return (np.asarray(y, dtype=np.float64) - self.latent_mean) @ self.latent_basis.T
+
+    def decode(self, z: FloatArray) -> FloatArray:
+        """Reconstruct raw EEG from latent components ``(..., n_channels)``.
+
+        Returns the input unchanged when the artifact carries no projection.
+        """
+        if self.latent_basis is None:
+            return np.asarray(z, dtype=np.float64)
+        return np.asarray(z, dtype=np.float64) @ self.latent_basis + self.latent_mean
+
     @classmethod
     def load(cls, artifact: str | Path) -> MLPArtifact:
         """Load the 3-file artifact (``.eqx``/``.json``/``.scalers.npz``) from disk."""
@@ -325,6 +355,7 @@ class MLPArtifact:
         meta: dict[str, Any] = json.loads(artifact.with_suffix(".json").read_text())
         with np.load(artifact.with_suffix(".scalers.npz")) as sc:
             scalers = {k: np.asarray(sc[k], dtype=np.float64) for k in ("u_mean", "u_scale", "y_mean", "y_scale")}
+            latent = {k: np.asarray(sc[k], dtype=np.float64) for k in ("latent_basis", "latent_mean") if k in sc.files}
 
         activation_name = meta.get("activation", "relu")
         mlp = eqx.nn.MLP(
@@ -346,7 +377,7 @@ class MLPArtifact:
         )
         model = eqx.tree_deserialise_leaves(str(artifact), skeleton)
 
-        return cls(model=model, dt=float(meta["dt"]), downsample=int(meta["downsample"]), **scalers)
+        return cls(model=model, dt=float(meta["dt"]), downsample=int(meta["downsample"]), **scalers, **latent)
 
     def save(self, artifact: str | Path) -> None:
         """Persist the predictor (eqx leaves) plus a JSON sidecar and the scaler arrays."""
@@ -367,15 +398,20 @@ class MLPArtifact:
             "dt": self.dt,
             "n_channels": self.n_channels,
             "n_controls": self.n_controls,
+            "enable_projection": self.latent_basis is not None,
+            "n_eeg_channels": self.n_eeg_channels,
         }
         artifact.with_suffix(".json").write_text(json.dumps(meta, indent=2))
-        np.savez(
-            artifact.with_suffix(".scalers.npz"),
-            u_mean=self.u_mean,
-            u_scale=self.u_scale,
-            y_mean=self.y_mean,
-            y_scale=self.y_scale,
-        )
+        scaler_arrays = {
+            "u_mean": self.u_mean,
+            "u_scale": self.u_scale,
+            "y_mean": self.y_mean,
+            "y_scale": self.y_scale,
+        }
+        if self.latent_basis is not None and self.latent_mean is not None:
+            scaler_arrays["latent_basis"] = self.latent_basis
+            scaler_arrays["latent_mean"] = self.latent_mean
+        np.savez(artifact.with_suffix(".scalers.npz"), **scaler_arrays)  # ty: ignore[invalid-argument-type]
 
 
 def zscore(x: Any, mean: Any, scale: Any) -> Any:  # noqa: ANN401
@@ -412,17 +448,23 @@ class NNPredictor:
         n_channels: int,
         dt: float,
         scalers: dict[str, FloatArray],
+        latent_basis: FloatArray | None = None,
+        latent_mean: FloatArray | None = None,
     ) -> None:
         self._model = model
         self._n_y = n_y
         self._n_u = n_u
         self._horizon = horizon
-        self._n_ch = n_channels
+        self._n_ch = n_channels  # raw EEG channels (output dimension)
         self.dt = dt
         self._u_mean = scalers["u_mean"]
         self._u_scale = scalers["u_scale"]
         self._y_mean = scalers["y_mean"]
         self._y_scale = scalers["y_scale"]
+        self._latent_basis = latent_basis
+        self._latent_mean = latent_mean
+        # The model and y-scaler operate in latent space when a projection is set.
+        self._k = latent_basis.shape[0] if latent_basis is not None else n_channels
 
     @classmethod
     def load(cls, artifact: str | Path, **_kwargs: object) -> NNPredictor:
@@ -433,15 +475,24 @@ class NNPredictor:
             n_y=art.n_y,
             n_u=art.n_u,
             horizon=art.horizon,
-            n_channels=art.n_channels,
+            n_channels=art.n_eeg_channels,
             dt=art.dt,
             scalers={"u_mean": art.u_mean, "u_scale": art.u_scale, "y_mean": art.y_mean, "y_scale": art.y_scale},
+            latent_basis=art.latent_basis,
+            latent_mean=art.latent_mean,
         )
 
     def predict(self, window: PredictionWindow, horizon_s: float) -> FloatArray:
-        """Assemble the network input from the context tail, predict, inverse-scale."""
+        """Assemble the network input from the context tail, predict, inverse-scale.
+
+        When the artifact carries a latent projection, the measured EEG context is encoded
+        into the ``k``-dimensional latent space before the autoregressive rollout and the
+        predictions are decoded back to raw EEG channels before being returned.
+        """
         factor = _ds_factor(self.dt, window.dt_data)
         y_abs = np.asarray(window.y_ctx, dtype=np.float64)[:, ::factor].T  # (ctx, n_ch), absolute
+        if self._latent_basis is not None:
+            y_abs = (y_abs - self._latent_mean) @ self._latent_basis.T  # (ctx, k), latent
         u_abs = _resample_controls(window.u_ctx, factor, y_abs.shape[0])  # (ctx, n_elec)
         n_steps = round(horizon_s / self.dt)
 
@@ -474,7 +525,7 @@ class NNPredictor:
 
             x_scaled = np.concatenate([y_past_s.flatten(), u_past_s.flatten(), u_fut_s.flatten()])
             y_scaled = np.asarray(self._model(jnp.asarray(x_scaled, dtype=jnp.float64)))  # type: ignore
-            y_pred_scaled = y_scaled.reshape(self._horizon, self._n_ch)
+            y_pred_scaled = y_scaled.reshape(self._horizon, self._k)
             y_pred = unzscore(y_pred_scaled, self._y_mean, self._y_scale)
 
             y_pred_abs_all.append(y_pred)
@@ -482,7 +533,9 @@ class NNPredictor:
             y_abs_current = np.concatenate([y_abs_current, y_pred], axis=0)
             u_abs_current = np.concatenate([u_abs_current, chunk_u_fut_abs], axis=0)
 
-        y_pred_final = np.concatenate(y_pred_abs_all, axis=0)
+        y_pred_final = np.concatenate(y_pred_abs_all, axis=0)  # (total_pred_steps, k)
+        if self._latent_basis is not None:
+            y_pred_final = y_pred_final @ self._latent_basis + self._latent_mean  # decode to (steps, n_ch)
         return y_pred_final.T[:, :n_steps]
 
 

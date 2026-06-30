@@ -269,6 +269,11 @@ class MPCController(Controller[MPCControllerLog]):
     continuity defects ``x_{k+1} = F(x_k, u_k)`` and per-electrode box bounds ``|u| <=
     u_max`` -- and applies the first control (receding horizon).
 
+    When the artifact carries a fixed PCA projection, each measurement is encoded to the
+    ``k`` latent components before entering the window, so the shooting state (and hence the
+    NLP) shrinks from ``n_y * n_eeg + ...`` to ``n_y * k + ...``; ``f_out`` decodes back to
+    raw EEG so the ``||y_k||^2`` cost is still the (retained-subspace) EEG power.
+
     The controller ``dt`` should equal the predictor's native step
     (:attr:`MLPArtifact.dt`); the orchestrator's zero-order hold then applies each control
     across the corresponding number of plant steps. The ``reference`` input is ignored --
@@ -459,7 +464,9 @@ class MPCController(Controller[MPCControllerLog]):
         x_hat: float | np.ndarray,
     ) -> tuple[float | np.ndarray, MPCControllerLog]:
         """Ingest the current EEG measurement, solve the NLP, and emit the first control."""
-        y = np.atleast_1d(np.asarray(x_hat, dtype=np.float64)).reshape(-1)
+        y_eeg = np.atleast_1d(np.asarray(x_hat, dtype=np.float64)).reshape(-1)
+        # Encode to the model's state space: latent components with a projection, else a no-op.
+        y = self.model.artifact.encode(y_eeg)
         self._y_buf = np.vstack([self._y_buf[1:], y])
         self._n_seen += 1
 

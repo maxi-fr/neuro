@@ -66,6 +66,43 @@ def _build_artifact(
     return artifact
 
 
+def _build_projection_artifact(
+    tmp_path: Path,
+    *,
+    n_y: int = 4,
+    n_u: int = 3,
+    horizon: int = 3,
+    k: int = 2,
+    n_eeg: int = 6,
+    n_controls: int = 2,
+) -> Path:
+    """Save a tiny artifact whose predictor runs in a ``k``-dim PCA latent space."""
+    rng = np.random.default_rng(_SEED)
+    q, _ = np.linalg.qr(rng.standard_normal((n_eeg, n_eeg)))
+    basis = np.ascontiguousarray(q[:, :k].T)
+    mean = rng.standard_normal(n_eeg)
+    mlp = eqx.nn.MLP(
+        in_size=n_y * k + n_u * n_controls,
+        out_size=k,
+        width_size=5,
+        depth=2,
+        activation=jax.nn.relu,
+        key=jax.random.PRNGKey(0),
+    )
+    wrapped = AutoregressivePredictor(
+        model=mlp, n_y=n_y, n_u=n_u, horizon=horizon, C_y=k, C_u=n_controls, activation="relu"
+    )
+    scalers = {
+        "u_mean": rng.uniform(-1.0, 1.0, n_controls),
+        "u_scale": rng.uniform(0.5, 2.0, n_controls),
+        "y_mean": rng.uniform(-1.0, 1.0, k),
+        "y_scale": rng.uniform(0.5, 2.0, k),
+    }
+    artifact = tmp_path / "art_proj"
+    MLPArtifact(model=wrapped, dt=0.01, downsample=1, latent_basis=basis, latent_mean=mean, **scalers).save(artifact)
+    return artifact
+
+
 def _drive(controller: MPCController, n_steps: int, n_channels: int) -> list[tuple[np.ndarray, MPCControllerLog]]:
     """Feed ``n_steps`` random EEG measurements through ``update`` and collect the outputs."""
     rng = np.random.default_rng(_SEED + 1)
@@ -220,3 +257,29 @@ def test_closed_loop_simulation_runs(tmp_path: Path) -> None:
     us = np.stack([np.atleast_1d(np.asarray(entry["u"], dtype=np.float64)) for entry in sim.logger.core_logs])
     assert us.shape[1] == 2  # n_elec
     assert np.all(np.abs(us) <= u_max + 1e-6)
+
+
+def test_projection_shrinks_shooting_state_and_respects_bounds(tmp_path: Path) -> None:
+    """With a PCA-projection artifact the MPC's shooting state is latent-sized and the loop runs.
+
+    The controller is fed raw ``n_eeg``-channel measurements and encodes them to the ``k``
+    latent components internally, so the NLP state is ``n_y*k + n_u*n_elec`` rather than
+    ``n_y*n_eeg + ...`` -- the whole point of the projection for solve time.
+    """
+    n_y, n_u, k, n_eeg, n_controls = 4, 3, 2, 6, 2
+    u_max = 0.5
+    model = NNSymbolicModel.from_artifact(
+        _build_projection_artifact(tmp_path, n_y=n_y, n_u=n_u, k=k, n_eeg=n_eeg, n_controls=n_controls)
+    )
+    controller = MPCController(dt=0.01, model=model, u_max=u_max, horizon=3, w_y=1.0, w_u=0.0)
+
+    assert model.n_channels == k
+    assert model.n_eeg_channels == n_eeg
+    assert model.state_shape[0] == n_y * k + n_u * n_controls  # latent-sized, not n_y*n_eeg
+
+    # Feed raw EEG measurements (dim n_eeg); the controller encodes them internally.
+    u, log = _drive(controller, n_steps=n_y + 2, n_channels=n_eeg)[-1]
+    assert not log.warmup
+    assert u.shape == (n_controls,)
+    assert np.isfinite(u).all()
+    assert np.all(np.abs(u) <= u_max + 1e-6)

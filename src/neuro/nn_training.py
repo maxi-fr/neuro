@@ -13,6 +13,7 @@ import jax.numpy as jnp
 import matplotlib.pyplot as plt
 import numpy as np
 import optax
+from sklearn.decomposition import PCA
 from sklearn.preprocessing import RobustScaler, StandardScaler
 from tqdm import tqdm
 from tvboptim.observations.observation import compute_fc
@@ -243,6 +244,7 @@ def prepare_datasets(  # noqa: PLR0913
     n_y: int,
     n_u: int,
     horizon: int,
+    projection: tuple[np.ndarray, np.ndarray] | None = None,
 ) -> tuple[np.ndarray, np.ndarray, int]:
     """Load data and build dataset across multiple trajectories.
 
@@ -260,6 +262,11 @@ def prepare_datasets(  # noqa: PLR0913
         Number of past input steps to include.
     horizon : int
         Prediction horizon.
+    projection : tuple[np.ndarray, np.ndarray] | None
+        Optional ``(E, mean)`` latent projection from :func:`fit_latent_projection`.
+        When given, each trajectory's EEG is encoded ``y -> (y - mean) @ E.T`` before
+        windowing, so the returned ``C_y`` is the latent dimension ``k`` instead of the
+        raw EEG channel count.
 
     Returns
     -------
@@ -268,12 +275,15 @@ def prepare_datasets(  # noqa: PLR0913
     Y_full : np.ndarray
         Target labels array, shape ``(total_samples, n_targets)``.
     C_y : int
-        Number of output channels.
+        Number of output channels (latent dimension ``k`` when ``projection`` is set).
     """
     all_X, all_Y = [], []
     C_y = 1
     for df in data_files:
         u, y = load_trajectory(df, n_steps_cfg, downsample)
+        if projection is not None:
+            basis, mean = projection
+            y = (y - mean) @ basis.T
         C_y = y.shape[1]
         X_traj, Y_traj = build_dataset_for_trajectory(u, y, n_y, n_u, horizon)
         all_X.append(X_traj)
@@ -282,6 +292,50 @@ def prepare_datasets(  # noqa: PLR0913
     X_full = np.concatenate(all_X, axis=0)
     Y_full = np.concatenate(all_Y, axis=0)
     return X_full, Y_full, C_y
+
+
+def fit_latent_projection(
+    data_files: list[str],
+    n_steps_cfg: int,
+    downsample: int,
+    latent_dim: int | None = None,
+    explained_variance: float | None = None,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Fit a fixed orthonormal PCA basis on the concatenated training EEG.
+
+    The basis maps the full EEG channel space onto ``k`` latent components so the
+    predictor can train and run in the reduced space. The projection is
+    ``z = (y - mean) @ E.T`` with inverse ``y = z @ E + mean``; the mean is part of the
+    map (PCA centres the data) and must be applied on both encode and decode.
+
+    Parameters
+    ----------
+    data_files : list[str]
+        Paths to the trajectory ``.npz`` files to fit the basis on.
+    n_steps_cfg : int
+        Number of steps to load per trajectory (matches :func:`prepare_datasets`).
+    downsample : int
+        Downsampling factor (matches :func:`prepare_datasets`).
+    latent_dim : int | None
+        Number of latent components ``k``. Takes precedence when set.
+    explained_variance : float | None
+        If ``latent_dim`` is ``None``, the smallest ``k`` reaching this cumulative
+        explained-variance fraction (in ``(0, 1)``) is chosen automatically.
+
+    Returns
+    -------
+    E : np.ndarray
+        Orthonormal PCA basis, shape ``(k, C_y)``.
+    mean : np.ndarray
+        Per-channel training mean, shape ``(C_y,)``.
+    """
+    if latent_dim is None and explained_variance is None:
+        msg = "fit_latent_projection requires either latent_dim or explained_variance"
+        raise ValueError(msg)
+    y_all = np.concatenate([load_trajectory(df, n_steps_cfg, downsample)[1] for df in data_files], axis=0)
+    pca = PCA(n_components=latent_dim if latent_dim is not None else explained_variance)
+    pca.fit(np.asarray(y_all, dtype=np.float64))
+    return np.asarray(pca.components_, dtype=np.float64), np.asarray(pca.mean_, dtype=np.float64)
 
 
 def create_model(  # noqa: PLR0913

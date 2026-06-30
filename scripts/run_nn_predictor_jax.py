@@ -22,6 +22,7 @@ from neuro.jansen_rit_jax import enable_x64
 from neuro.nn_training import (
     create_model,
     evaluate_model,
+    fit_latent_projection,
     plot_training_curves,
     prepare_datasets,
     reshape_flat_to_channels,
@@ -33,7 +34,7 @@ from neuro.prediction import AutoregressivePredictor, MLPArtifact
 from utils.plotting import plot_multistep_predictions
 
 
-def main() -> None:  # noqa: PLR0915
+def main() -> None:  # noqa: PLR0915, C901, PLR0912
     """Execute the main script."""
     enable_x64()
     parser = argparse.ArgumentParser(description="Run JAX NN Predictor on multiple trajectories.")
@@ -64,6 +65,10 @@ def main() -> None:  # noqa: PLR0915
     hidden_size = int(model_cfg.get("hidden_size", 128))
     depth = model_cfg.get("depth", 2)
     activation = model_cfg.get("activation", "relu")
+    projection_cfg = model_cfg.get("projection", {})
+    enable_projection = bool(projection_cfg.get("enable", False))
+    latent_dim = projection_cfg.get("latent_dim")
+    explained_variance = projection_cfg.get("explained_variance")
 
     train_cfg = config.get("training", {})
     epochs = train_cfg.get("epochs", 100)
@@ -105,7 +110,14 @@ def main() -> None:  # noqa: PLR0915
         print(f"No .npz data files found in: {data_path}")
         return
 
-    X_full, Y_full, C_y = prepare_datasets(data_files, n_steps_cfg, downsample, n_y, n_u, horizon)
+    projection: tuple[np.ndarray, np.ndarray] | None = None
+    if enable_projection:
+        if w_psd > 0 or w_fc > 0:
+            msg = "Latent projection is incompatible with the per-channel PSD/FC losses (set w_psd=w_fc=0)."
+            raise ValueError(msg)
+        projection = fit_latent_projection(data_files, n_steps_cfg, downsample, latent_dim, explained_variance)
+
+    X_full, Y_full, C_y = prepare_datasets(data_files, n_steps_cfg, downsample, n_y, n_u, horizon, projection)
     C_u = (X_full.shape[1] - n_y * C_y) // (n_u + horizon)
 
     split_idx = int(train_split * len(X_full))
@@ -180,6 +192,8 @@ def main() -> None:  # noqa: PLR0915
         u_scale=np.asarray(u_scale, dtype=np.float64),
         y_mean=np.asarray(y_mean, dtype=np.float64),
         y_scale=np.asarray(y_scale, dtype=np.float64),
+        latent_basis=projection[0] if projection is not None else None,
+        latent_mean=projection[1] if projection is not None else None,
     ).save(artifact)
     print(f"Saved NN predictor artifact -> {artifact}")
 

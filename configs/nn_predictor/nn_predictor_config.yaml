@@ -12,6 +12,10 @@ model:
   horizon: 20
   hidden_size: 64
   depth: 5
+  projection:                # project the 62 EEG channels onto a fixed PCA latent space
+    enable: false
+    latent_dim: 16           # number of latent components k (takes precedence)
+    explained_variance: null # used to auto-pick k when latent_dim is null (e.g. 0.95)
 
 training:
   epochs: 250

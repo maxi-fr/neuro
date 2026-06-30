@@ -10,6 +10,10 @@ model:
   horizon: 20
   hidden_size: 128
   depth: 2
+  projection:                # project the 62 EEG channels onto a fixed PCA latent space
+    enable: false
+    latent_dim: 16           # number of latent components k; keep FIXED across a sweep (the
+    explained_variance: null # objective MSE is latent-space, so it is not comparable across k)
 
 training:
   epochs: 250
