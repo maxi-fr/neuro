@@ -136,6 +136,49 @@ def test_single_step_matches_manual_scan_iteration(
     np.testing.assert_allclose(y_next_ca, y_next_raw_want, rtol=1e-10, atol=1e-12)
 
 
+def test_single_step_matches_jax_with_global_scalar_scalers(tmp_path: Path) -> None:
+    """f_step matches the JAX reference when scalers are global scalars (shape (1,)).
+
+    ``global_scaling=True`` trains a single shared mean/scale rather than a per-channel
+    vector; the CasADi port must broadcast it across all channels just as numpy does on
+    the JAX side, not tile it by ``n_y``/``n_u`` only.
+    """
+    n_y, n_u, horizon, n_channels, n_controls = 3, 2, 4, 5, 2
+    in_size = n_y * n_channels + n_u * n_controls
+    mlp = eqx.nn.MLP(
+        in_size=in_size, out_size=n_channels, width_size=5, depth=2, activation=jax.nn.relu, key=jax.random.PRNGKey(0)
+    )
+    wrapped = AutoregressivePredictor(model=mlp, n_y=n_y, n_u=n_u, horizon=horizon, C_y=n_channels, C_u=n_controls)
+    scalers = {  # global (scalar) statistics, as produced by global_scaling=True
+        "u_mean": np.array([0.3]),
+        "u_scale": np.array([1.7]),
+        "y_mean": np.array([-0.9]),
+        "y_scale": np.array([2.5]),
+    }
+    artifact = tmp_path / "art"
+    MLPArtifact(model=wrapped, dt=0.01, downsample=1, **scalers).save(artifact)
+    model = NNSymbolicModel.from_artifact(artifact)
+
+    rng = np.random.default_rng(_SEED + 9)
+    y_w_raw = rng.standard_normal((n_y, n_channels))
+    u_w_raw = rng.standard_normal((n_u, n_controls))
+    u_curr = rng.standard_normal(n_controls)
+
+    x0 = np.concatenate([y_w_raw.flatten(), u_w_raw.flatten()])
+    x_next = _np2(model.f_step(x0, u_curr)).flatten()
+    y_next_ca = _np2(model.f_out(x_next)).flatten()
+
+    new_u_w = np.concatenate([u_w_raw[1:], u_curr[None, :]], axis=0)
+    mlp_in = np.concatenate(
+        [
+            ((y_w_raw - scalers["y_mean"]) / scalers["y_scale"]).flatten(),
+            ((new_u_w - scalers["u_mean"]) / scalers["u_scale"]).flatten(),
+        ]
+    )
+    y_next_raw_want = np.asarray(mlp(jnp.asarray(mlp_in))) * scalers["y_scale"] + scalers["y_mean"]
+    np.testing.assert_allclose(y_next_ca, y_next_raw_want, rtol=1e-10, atol=1e-12)
+
+
 def test_output_slices_most_recent_row_not_oldest(tmp_path: Path) -> None:
     """f_out must return the LAST row of the y-window, not the first.
 

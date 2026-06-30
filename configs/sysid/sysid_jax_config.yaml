@@ -12,7 +12,7 @@ simulation:
 
 model:
   n_components: 10      # N reduced virtual modes
-  free_params: [w_weights, eeg_gain]
+  free_params: [K, w_weights, eeg_gain]
   a_init: [3.25, 3.25, 3.25, 3.25, 3.4, 3.6, 3.25, 3.25, 3.25, 3.25]
   mean_input: 150.0
   K: 1.0
@@ -28,7 +28,7 @@ model:
   # continuously and naturally from x0 over the whole rollout (no resets); the post-burn_in
   # trajectory is sliced into horizon-length windows purely to organise the MSE.
   horizon: 200          # window length (steps, at reduced-model dt) the MSE is organised into
-  burn_in: 1500         # samples dropped once before windowing: skips the x0-to-limit-cycle transient
+  burn_in: 1000         # samples dropped once before windowing: skips the x0-to-limit-cycle transient
   stride: null          # null -> defaults to horizon (non-overlapping windows)
 
 # Training and refinement settings
@@ -36,8 +36,5 @@ training:
   window: 300           # truncated-backprop window (tames chaotic gradients over the full rollout)
   seed: 0
   steps: 1000
-  lr: {"name": "cosine_decay", "init_value": 0.02, "decay_steps": 1000, "alpha": 0.001}
+  lr: {"name": "cosine_decay", "init_value": 0.001, "decay_steps": 1000, "alpha": 0.001}
   clip: 1.0
-
-# Output path for legacy compatibility (also copied to artifacts/)
-out: results/sysid_jax_result.npz

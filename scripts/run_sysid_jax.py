@@ -64,9 +64,9 @@ def _build_lr(lr: float | dict[str, Any]) -> float | optax.Schedule:
 def _load_plant(sim_path: str, downsample: int, n_steps: int) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Load downsampled per-region LFP, target EEG, and per-electrode tES from a plant log."""
     with np.load(sim_path) as data:
-        x = np.asarray(data["x"])[::downsample][:n_steps]  # (n_steps, 6, 76)
-        y_mea = np.asarray(data["y_mea"])[::downsample][:n_steps]  # (n_steps, 62)
-        u = np.asarray(data["u"])[::downsample][:n_steps]  # (n_steps, n_elec)
+        x = np.asarray(data["universal_x"])[::downsample][:n_steps]  # (n_steps, 6, 76)
+        y_mea = np.asarray(data["universal_y_mea"])[::downsample][:n_steps]  # (n_steps, 62)
+        u = np.asarray(data["universal_u"])[::downsample][:n_steps]  # (n_steps, n_elec)
     node_output = x[:, 1, :] - x[:, 2, :]  # (n_steps, 76)
     return node_output, y_mea.T, u  # y_data: (62, n_steps); u: (n_steps, n_elec)
 
@@ -242,14 +242,6 @@ def main() -> None:  # noqa: C901, PLR0915
     )
     print(f"   saved -> {out_npz_path}")
 
-    # Copy to legacy path for backward compatibility if configured
-    legacy_out = cfg.get("out")
-    if legacy_out:
-        legacy_out_path = Path(legacy_out)
-        legacy_out_path.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(out_npz_path, legacy_out_path)
-        print(f"   copied to legacy path -> {legacy_out_path}")
-
     # Plot and save loss curves
     loss_plot_path = artifact_dir / "loss_curve.png"
     plt.figure(figsize=(8, 5))
@@ -269,7 +261,7 @@ def main() -> None:  # noqa: C901, PLR0915
     try:
         # Load the first simulation's full state trajectory
         with np.load(sim_paths[0]) as data:
-            x_full = np.asarray(data["x"])[::downsample][:n_steps]  # (n_steps, 6, 76)
+            x_full = np.asarray(data["universal_x"])[::downsample][:n_steps]  # (n_steps, 6, 76)
 
         x_reduced = x_full @ red.components.T  # (n_steps, 6, N)
         C_y = y_list[0].shape[0]  # number of EEG channels
