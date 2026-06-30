@@ -11,7 +11,9 @@ precomputed persistently-exciting tES schedule for plant identification.
 :class:`MPCController` closes the loop: it embeds the CasADi NN predictor
 (:class:`~neuro.nn_predictor_casadi.NNSymbolicModel`) as the dynamics model of a
 receding-horizon NLP that minimizes predicted EEG power under per-electrode
-amplitude bounds.
+amplitude bounds. :class:`LinearMPCController` is the same receding-horizon objective for a
+*linear* (0-hidden-layer) predictor, posed as a convex QP and solved with OSQP (a
+stacked/sparse formulation) or qpOASES (a condensed/dense one).
 """
 
 from __future__ import annotations
@@ -479,3 +481,235 @@ class MPCController(Controller[MPCControllerLog]):
         u0, cost, success = self._solve(x0)
         self._u_buf = np.vstack([self._u_buf[1:], u0.reshape(1, self.n_elec)])
         return u0, MPCControllerLog(cost=cost, success=success, warmup=False)
+
+
+@dataclasses.dataclass(frozen=True)
+class LinearMPCControllerLog:
+    """Per-step linear-MPC diagnostics: the optimal cost, solver success, and a warm-up flag."""
+
+    cost: float
+    success: bool
+    warmup: bool
+
+
+class LinearMPCController(Controller[LinearMPCControllerLog]):
+    """Receding-horizon MPC for a *linear* (0-hidden-layer) NN predictor, solved as a QP.
+
+    A depth-0 :class:`~neuro.nn_predictor_casadi.NNSymbolicModel` is an exact affine map
+    ``x_{k+1} = F(x_k, u_k)`` with an affine EEG output, so suppressing predicted EEG power
+    under box bounds is a convex quadratic program -- no need for the nonlinear NLP that
+    :class:`MPCController` builds. As there, the "state" is the rolling window of the last
+    ``n_y`` EEG measurements and ``n_u`` applied controls; each call builds the window-state,
+    solves the QP over ``horizon`` steps -- minimizing ``sum_k ( w_y ||y_k||^2 + w_u ||u_k||^2
+    )`` subject to per-electrode box bounds ``|u| <= u_max`` -- and applies the first control.
+
+    Two equivalent QP formulations are selectable via ``formulation``:
+
+    * ``"sparse"`` -- the *stacked* multiple-shooting QP whose decision variables are the
+      controls ``[u_0, ..., u_{H-1}]`` and every intermediate state ``[x_1, ..., x_H]``, tied
+      by the affine continuity constraints ``x_{k+1} = F(x_k, u_k)``. The constraint Jacobian
+      is sparse/banded, solved with **OSQP** (the ``ca.qpsol`` ``"osqp"`` plugin).
+    * ``"dense"`` -- the *condensed* QP whose only decision variables are the controls; the
+      states are eliminated by unrolling ``F`` from the current window-state, giving a dense
+      Hessian solved with the active-set **qpOASES** (the ``ca.qpsol`` ``"qpoases"`` plugin).
+
+    Both solve the same problem (to solver tolerance); ``"sparse"`` scales better to long
+    horizons, ``"dense"`` to small ``horizon * n_elec``. Projection artifacts are handled
+    exactly as in :class:`MPCController` (the window holds latent components; ``f_out``/the
+    output map decodes back to EEG). The controller ``dt`` should equal the predictor's native
+    step and the reference is ignored -- the objective is suppression, not tracking.
+    """
+
+    def __init__(  # noqa: PLR0913
+        self,
+        dt: float,
+        model: NNSymbolicModel,
+        u_max: ArrayLike,
+        horizon: int | None = None,
+        w_y: float = 1.0,
+        w_u: float = 0.0,
+        *,
+        formulation: str = "sparse",
+        osqp_eps: float = 1e-9,
+    ) -> None:
+        """Initialize the linear MPC and build its (re-used) QP solver.
+
+        Parameters
+        ----------
+        dt
+            Controller update step in seconds; should equal the predictor's native dt.
+        model
+            The CasADi NN predictor used as the prediction model. Must be linear: its inner
+            ``eqx.nn.MLP`` must have ``depth == 0`` (a single affine layer), otherwise the QP
+            would silently use the quadratic Taylor expansion of a nonlinear map.
+        u_max
+            Per-electrode amplitude bound: a scalar shared by every electrode or a
+            length-``n_elec`` vector. The box constraint is ``-u_max <= u <= u_max``.
+        horizon
+            Prediction/control horizon in steps; defaults to the model's native horizon.
+        w_y
+            Weight on predicted EEG power in the cost.
+        w_u
+            Weight on control effort (quadratic) in the cost.
+        formulation
+            ``"sparse"`` (stacked states, OSQP) or ``"dense"`` (condensed, qpOASES).
+        osqp_eps
+            OSQP absolute/relative convergence tolerance (``"sparse"`` only); the default
+            ``1e-9`` is far tighter than OSQP's loose ``1e-3`` default so the suppression QP is
+            solved accurately.
+        """
+        super().__init__(dt)
+        if formulation not in ("sparse", "dense"):
+            msg = f"formulation must be 'sparse' or 'dense', got {formulation!r}"
+            raise ValueError(msg)
+        depth = model.artifact.model.model.depth
+        if depth != 0:
+            msg = (
+                "LinearMPCController requires a linear predictor (0 hidden layers); got an MLP "
+                f"with depth {depth}. Use MPCController for a nonlinear predictor."
+            )
+            raise ValueError(msg)
+
+        self.model = model
+        self.horizon = int(horizon) if horizon is not None else model.artifact.horizon
+        self.w_y = float(w_y)
+        self.w_u = float(w_u)
+        self.formulation = formulation
+        self.osqp_eps = float(osqp_eps)
+
+        self.n_y = model.artifact.n_y
+        self.n_u_steps = model.artifact.n_u
+        self.n_channels = model.n_channels
+        self.n_elec = model.n_elec
+
+        u_max_arr = np.atleast_1d(np.asarray(u_max, dtype=np.float64))
+        if u_max_arr.size == 1:
+            u_max_arr = np.broadcast_to(u_max_arr, (self.n_elec,))
+        elif u_max_arr.size != self.n_elec:
+            msg = f"u_max has {u_max_arr.size} entries but n_elec is {self.n_elec}"
+            raise ValueError(msg)
+        self.u_max = np.ascontiguousarray(u_max_arr)
+
+        # History windows (oldest first, newest last)
+        self._y_buf = np.zeros((self.n_y, self.n_channels), dtype=np.float64)
+        self._u_buf = np.zeros((self.n_u_steps, self.n_elec), dtype=np.float64)
+        self._n_seen = 0
+        self._u_prev: np.ndarray | None = None
+
+        self._build_solver()
+
+    @classmethod
+    def from_config(cls, config: dict[str, Any]) -> Self:
+        """Instantiate from a config dict, loading the NN predictor artifact from disk."""
+        from neuro.nn_predictor_casadi import NNSymbolicModel  # noqa: PLC0415
+
+        return cls(
+            dt=float(config["dt"]),
+            model=NNSymbolicModel.from_artifact(config["artifact"]),
+            u_max=config["u_max"],
+            horizon=int(config["horizon"]) if config.get("horizon") is not None else None,
+            w_y=float(config.get("w_y", 1.0)),
+            w_u=float(config.get("w_u", 0.0)),
+            formulation=str(config.get("formulation", "sparse")),
+            osqp_eps=float(config.get("osqp_eps", 1e-9)),
+        )
+
+    def _build_solver(self) -> None:
+        """Build the QP and its OSQP (``"sparse"``) or qpOASES (``"dense"``) solver, once.
+
+        ``"sparse"`` stacks the controls and every intermediate state as decision variables and
+        ties them with the affine continuity constraints; ``"dense"`` keeps only the controls
+        and unrolls the affine state map from the ``x0`` parameter (no equality constraints).
+        Both accumulate the same quadratic cost. The inline symbolic ``model.step``/
+        ``model.output`` (rather than the compiled ``f_step``/``f_out``) keep the graph a flat
+        affine expression, so ``ca.qpsol`` extracts an exact constant Hessian.
+        """
+        n_state = self.model.state_shape[0]
+        n_ctrl, h = self.n_elec, self.horizon
+
+        x0_p = ca.MX.sym("x0", n_state)
+        u_vars = [ca.MX.sym(f"u_{k}", n_ctrl) for k in range(h)]
+
+        cost = ca.MX(0)
+        if self.formulation == "dense":
+            x_curr = x0_p
+            for k in range(h):
+                x_curr = self.model.step([x_curr], u_vars[k])
+                y_next = self.model.output(x_curr)
+                cost = cost + self.w_y * ca.sumsqr(y_next) + self.w_u * ca.sumsqr(u_vars[k])
+            qp = {"x": ca.vertcat(*u_vars), "f": cost, "p": x0_p}
+            self._lbx = np.tile(-self.u_max, h)
+            self._ubx = np.tile(self.u_max, h)
+            self._has_g = False
+        else:  # sparse
+            x_vars = [ca.MX.sym(f"x_{k}", n_state) for k in range(1, h + 1)]
+            defects, x_prev = [], x0_p
+            for k in range(h):
+                x_lift = x_vars[k]
+                defects.append(x_lift - self.model.step([x_prev], u_vars[k]))
+                y_next = self.model.output(x_lift)
+                cost = cost + self.w_y * ca.sumsqr(y_next) + self.w_u * ca.sumsqr(u_vars[k])
+                x_prev = x_lift
+            qp = {"x": ca.vertcat(*u_vars, *x_vars), "f": cost, "g": ca.vertcat(*defects), "p": x0_p}
+            n_x_vars = h * n_state
+            self._lbx = np.concatenate([np.tile(-self.u_max, h), np.full(n_x_vars, -np.inf)])
+            self._ubx = np.concatenate([np.tile(self.u_max, h), np.full(n_x_vars, np.inf)])
+            self._has_g = True
+
+        opts: dict[str, Any] = {"print_time": False, "error_on_fail": False}
+        if self.formulation == "sparse":
+            plugin = "osqp"
+            opts["osqp"] = {"verbose": False, "eps_abs": self.osqp_eps, "eps_rel": self.osqp_eps}
+        else:
+            plugin = "qpoases"
+            opts["printLevel"] = "none"
+        self._solver = ca.qpsol("mpc", plugin, qp, opts)
+
+    def _solve(self, x0: np.ndarray) -> tuple[np.ndarray, float, bool]:
+        """Solve the QP for window-state ``x0``; return ``(u_0*, cost, success)``."""
+        m, h = self.n_elec, self.horizon
+        u_guess = self._u_prev if self._u_prev is not None else np.zeros((h, m))
+
+        if self.formulation == "dense":
+            w0 = u_guess.reshape(-1)
+        else:
+            # Forward-simulate from x0 to seed the lifted states with a feasible guess.
+            x = x0
+            x_guess = []
+            for step in range(h):
+                x = np.asarray(self.model.f_step(x, u_guess[step])).reshape(-1)
+                x_guess.append(x)
+            w0 = np.concatenate([u_guess.reshape(-1), *x_guess])
+
+        call: dict[str, Any] = {"x0": w0, "lbx": self._lbx, "ubx": self._ubx, "p": x0}
+        if self._has_g:
+            call["lbg"], call["ubg"] = 0.0, 0.0
+        sol = self._solver(**call)
+
+        u_opt = np.asarray(sol["x"]).reshape(-1)[: h * m].reshape(h, m)
+        self._u_prev = np.vstack([u_opt[1:], u_opt[-1:]])
+        success = bool(self._solver.stats()["success"])
+        return u_opt[0], float(sol["f"]), success
+
+    def update(
+        self,
+        t: float,  # noqa: ARG002
+        ref: float | np.ndarray,  # noqa: ARG002
+        x_hat: float | np.ndarray,
+    ) -> tuple[float | np.ndarray, LinearMPCControllerLog]:
+        """Ingest the current EEG measurement, solve the QP, and emit the first control."""
+        y_eeg = np.atleast_1d(np.asarray(x_hat, dtype=np.float64)).reshape(-1)
+        # Encode to the model's state space: latent components with a projection, else a no-op.
+        y = self.model.artifact.encode(y_eeg)
+        self._y_buf = np.vstack([self._y_buf[1:], y])
+        self._n_seen += 1
+
+        # While the window is still zero-padded, hold off stimulating.
+        if self._n_seen < self.n_y:
+            self._u_buf = np.vstack([self._u_buf[1:], np.zeros((1, self.n_elec))])
+            return np.zeros(self.n_elec, dtype=np.float64), LinearMPCControllerLog(cost=0.0, success=True, warmup=True)
+
+        x0 = np.concatenate([self._y_buf.reshape(-1), self._u_buf.reshape(-1)])
+        u0, cost, success = self._solve(x0)
+        self._u_buf = np.vstack([self._u_buf[1:], u0.reshape(1, self.n_elec)])
+        return u0, LinearMPCControllerLog(cost=cost, success=success, warmup=False)
