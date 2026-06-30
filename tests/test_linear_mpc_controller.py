@@ -115,7 +115,7 @@ def _drive(
     rng = np.random.default_rng(_SEED + 1)
     out = []
     for k in range(n_steps):
-        u, log = controller.update(k * controller.dt, ref=0.0, x_hat=rng.standard_normal(n_channels))
+        u, log = controller.update(k * controller.dt, ref=np.array([0.0]), x_hat=rng.standard_normal(n_channels))
         out.append((np.atleast_1d(np.asarray(u, dtype=np.float64)), log))
     return out
 

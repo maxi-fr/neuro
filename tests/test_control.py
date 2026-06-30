@@ -15,7 +15,7 @@ _DT = 0.1
 def test_zero_controller_outputs_zero_vector() -> None:
     """ZeroController ignores its inputs and returns an (n_u,) zero control."""
     controller = ZeroController(dt=_DT, n_u=3)
-    u, _ = controller.update(0.0, ref=1.0, x_hat=np.ones(5))
+    u, _ = controller.update(0.0, ref=np.array([1.0]), x_hat=np.ones(5))
     np.testing.assert_array_equal(np.atleast_1d(u), np.zeros(3))
 
 
@@ -30,10 +30,10 @@ def test_stim_window_controller_holds_amplitude_inside_window() -> None:
     """The fixed amplitude is emitted for onset <= t < offset, zero elsewhere."""
     controller = StimWindowController(dt=_DT, onset=1.0, offset=2.0, amplitude=1.5)
 
-    u_before, log_before = controller.update(0.5, ref=0.0, x_hat=0.0)
-    u_onset, log_onset = controller.update(1.0, ref=0.0, x_hat=0.0)
-    u_inside, _ = controller.update(1.5, ref=0.0, x_hat=0.0)
-    u_offset, log_offset = controller.update(2.0, ref=0.0, x_hat=0.0)
+    u_before, log_before = controller.update(0.5, ref=np.array([0.0]), x_hat=np.array([0.0]))
+    u_onset, log_onset = controller.update(1.0, ref=np.array([0.0]), x_hat=np.array([0.0]))
+    u_inside, _ = controller.update(1.5, ref=np.array([0.0]), x_hat=np.array([0.0]))
+    u_offset, log_offset = controller.update(2.0, ref=np.array([0.0]), x_hat=np.array([0.0]))
 
     assert u_before == 0.0
     assert not log_before.active
@@ -47,9 +47,9 @@ def test_stim_window_controller_holds_amplitude_inside_window() -> None:
 def test_stim_window_controller_per_electrode_amplitude() -> None:
     """A per-electrode amplitude vector is emitted as an (n_u,) control inside the window."""
     controller = StimWindowController(dt=_DT, onset=0.0, offset=1.0, amplitude=[0.5, -0.5], n_u=2)
-    u_inside, _ = controller.update(0.5, ref=0.0, x_hat=0.0)
+    u_inside, _ = controller.update(0.5, ref=np.array([0.0]), x_hat=np.array([0.0]))
     np.testing.assert_array_equal(u_inside, np.array([0.5, -0.5]))
-    u_outside, _ = controller.update(1.5, ref=0.0, x_hat=0.0)
+    u_outside, _ = controller.update(1.5, ref=np.array([0.0]), x_hat=np.array([0.0]))
     np.testing.assert_array_equal(u_outside, np.zeros(2))
 
 

@@ -213,7 +213,7 @@ def test_history_coupling_index_robust_to_accumulated_time() -> None:
         xs[:, :, 0] = dyn.x
         t = 0.0
         for k in range(n_steps):
-            dyn.evaluate(t if accumulate else k * _DT, 0.0)
+            dyn.evaluate(t if accumulate else k * _DT, np.array([0.0]))
             xs[:, :, k + 1] = dyn.x
             t += _DT
         return xs

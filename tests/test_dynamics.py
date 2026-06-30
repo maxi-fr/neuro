@@ -68,7 +68,7 @@ def test_dynamics_matches_simulate_network() -> None:
 
     dyn = JansenRitDynamics(dt=_DT, params=params, seed=7)
     for k in range(n_steps):
-        out, _ = dyn.evaluate(k * _DT, 0.0)
+        out, _ = dyn.evaluate(k * _DT, np.array([0.0]))
         np.testing.assert_allclose(np.asarray(out).reshape(6, 3), x_ref[:, :, k + 1], atol=1e-12)
 
 
@@ -86,7 +86,7 @@ def test_simulation_matches_simulate_network() -> None:
     sim = Simulation(
         t_end=duration,
         dynamics=JansenRitDynamics(dt=_DT, params=params, seed=7),
-        reference=StepReference(dt=_DT, step_value=0.0),
+        reference=StepReference(dt=_DT, step_value=np.array([0.0])),
         sensors=GaussianSensor(dt=_DT, measurement=full_state_measurement, std_dev=0.0),
         estimator=IdentityEstimator(dt=_DT),
         controller=ZeroController(dt=_DT, n_u=1),
@@ -105,7 +105,7 @@ def test_dynamics_from_config_builds_network() -> None:
     dyn = JansenRitDynamics.from_config({"dt": _DT, "K": 0.5357, "params": {"A": 3.25}, "seed": 69, "speed": 50.0})
     assert dyn.x.shape == (_STATE_DIM, _N_REGIONS_TVB)
 
-    out, _ = dyn.evaluate(0.0, 0.0)
+    out, _ = dyn.evaluate(0.0, np.array([0.0]))
     out = np.asarray(out)
     assert out.shape == (_STATE_DIM, _N_REGIONS_TVB)
     assert np.isfinite(out).all()
@@ -118,7 +118,7 @@ def test_eeg_measurement_applies_gain() -> None:
     x_grid = x_flat.reshape(6, m.n_nodes)
     expected = m.gain @ (x_grid[1] - x_grid[2])
 
-    eeg = m(0.0, x_flat, 0.0)
+    eeg = m(0.0, x_flat, np.array([0.0]))
     np.testing.assert_allclose(eeg, expected)
     assert eeg.shape == (_N_CHANNELS_TVB,)
 
@@ -135,7 +135,7 @@ def test_eeg_measurement_n_nodes_slices_gain() -> None:
     assert m.gain.shape == (_N_CHANNELS_TVB, 2)
 
     x_flat = np.arange(6 * 2, dtype=np.float64)
-    eeg = m(0.0, x_flat, 0.0)
+    eeg = m(0.0, x_flat, np.array([0.0]))
     assert eeg.shape == (_N_CHANNELS_TVB,)
 
 
@@ -146,7 +146,7 @@ def test_eeg_measurement_selected_channels() -> None:
     x_grid = x_flat.reshape(6, m.n_nodes)
     expected = (m.gain @ (x_grid[1] - x_grid[2]))[[1, 3]]
 
-    eeg = m(0.0, x_flat, 0.0)
+    eeg = m(0.0, x_flat, np.array([0.0]))
     np.testing.assert_allclose(eeg, expected)
     assert eeg.shape == (2,)
 

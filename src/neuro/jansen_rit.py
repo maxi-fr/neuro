@@ -381,13 +381,13 @@ def lfp(x_traj: FloatArray) -> FloatArray:
     return x_traj[1] - x_traj[2]
 
 
-def project_control(u: float | np.ndarray, gamma_2d: FloatArray, n_elec: int) -> FloatArray:
+def project_control(u: np.ndarray, gamma_2d: FloatArray, n_elec: int) -> FloatArray:
     """Project per-electrode tES current ``u`` onto nodes via ``gamma``.
 
     Parameters
     ----------
     u:
-        Per-electrode control input, shape ``(n_elec,)`` or broadcastable scalar.
+        Per-electrode control input, shape ``(n_elec,)``.
     gamma_2d:
         Steering matrix of shape ``(n_elec, n_nodes)``.
     n_elec:
@@ -398,16 +398,12 @@ def project_control(u: float | np.ndarray, gamma_2d: FloatArray, n_elec: int) ->
     FloatArray
         Node-level stimulation ``u @ gamma_2d`` of shape ``(n_nodes,)``.
     """
-    u_vec = np.asarray(u, dtype=np.float64).reshape(-1)
-    if not np.any(u_vec):
+    if not np.any(u):
         return np.zeros(gamma_2d.shape[1], dtype=np.float64)
-    u_vec = np.atleast_1d(u)
-    if u_vec.size == 1:
-        u_vec = np.broadcast_to(u_vec, (n_elec,))
-    elif u_vec.size != n_elec:
-        msg = f"control has {u_vec.size} electrodes but gamma has {n_elec}"
+    if u.size != n_elec:
+        msg = f"control has {u.size} electrodes but gamma has {n_elec}"
         raise ValueError(msg)
-    return u_vec @ gamma_2d
+    return u @ gamma_2d
 
 
 class JansenRitDynamics(Dynamics[NoLog]):

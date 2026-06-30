@@ -8,6 +8,8 @@ the sample rate and additive noise) instead of a bespoke sensor.
 
 from __future__ import annotations
 
+from typing import Any, Self
+
 import numpy as np
 import numpy.typing as npt
 
@@ -52,14 +54,24 @@ class EEGMeasurement:
             resolved = [connectome.channel_index[ch] if isinstance(ch, str) else int(ch) for ch in selected_channels]
             self.selected_channels = np.array(resolved, dtype=np.int64)
 
+    @classmethod
+    def from_config(cls, config: dict[str, Any]) -> Self:
+        """Instantiate the component from a raw configuration dictionary."""
+        speed = float(config.get("speed", 50.0))
+        n_nodes = config.get("n_nodes")
+        if n_nodes is not None:
+            n_nodes = int(n_nodes)
+        selected_channels = config.get("selected_channels")
+        return cls(speed=speed, n_nodes=n_nodes, selected_channels=selected_channels)
+
     def __call__(
         self,
         _t: float,
-        x: float | np.ndarray,
-        _u: float | np.ndarray,
+        x: np.ndarray,
+        _u: np.ndarray,
     ) -> FloatArray:
         """Collapse the network state ``x`` to an EEG channel vector."""
-        x_grid = np.asarray(x, dtype=np.float64).reshape(6, self.n_nodes)
+        x_grid = x.reshape(6, self.n_nodes)
         eeg = self.gain @ regional_lfp(x_grid)
         if self.selected_channels is not None:
             eeg = eeg[self.selected_channels]

@@ -99,18 +99,18 @@ def benchmark_horizon(  # noqa: PLR0913
     k = 0
     # Fill the window: the first n_y-1 updates are warm-up (emit zero, no solve).
     for _ in range(n_y - 1):
-        ctrl.update(k * dt, 0.0, sample())
+        ctrl.update(k * dt, np.array([0.0]), sample())
         k += 1
 
     # The next update triggers the first (cold-started) solve.
     t0 = time.perf_counter()
-    ctrl.update(k * dt, 0.0, sample())
+    ctrl.update(k * dt, np.array([0.0]), sample())
     cold_update_ms = (time.perf_counter() - t0) * 1e3
     k += 1
 
     # A couple of untimed warm solves to reach steady warm-start behaviour.
     for _ in range(2):
-        ctrl.update(k * dt, 0.0, sample())
+        ctrl.update(k * dt, np.array([0.0]), sample())
         k += 1
 
     warm_update_ms: list[float] = []
@@ -119,7 +119,7 @@ def benchmark_horizon(  # noqa: PLR0913
     n_success = 0
     for _ in range(n_solves):
         t0 = time.perf_counter()
-        _u, log = ctrl.update(k * dt, 0.0, sample())
+        _u, log = ctrl.update(k * dt, np.array([0.0]), sample())
         warm_update_ms.append((time.perf_counter() - t0) * 1e3)
         stats = ctrl._solver.stats()  # noqa: SLF001 -- introspection for benchmarking
         warm_ipopt_ms.append(float(stats.get("t_wall_total", float("nan")) * 1e3))

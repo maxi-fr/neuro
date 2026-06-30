@@ -57,9 +57,9 @@ class ZeroController(Controller[ZeroControllerLog]):
     def update(
         self,
         t: float,  # noqa: ARG002
-        ref: float | np.ndarray,  # noqa: ARG002
-        x_hat: float | np.ndarray,  # noqa: ARG002
-    ) -> tuple[float | np.ndarray, ZeroControllerLog]:
+        ref: np.ndarray,  # noqa: ARG002
+        x_hat: np.ndarray,  # noqa: ARG002
+    ) -> tuple[np.ndarray, ZeroControllerLog]:
         """Return a zero control vector regardless of reference or state."""
         return np.zeros(self.n_u, dtype=np.float64), ZeroControllerLog()
 
@@ -134,9 +134,9 @@ class StimWindowController(Controller[StimWindowControllerLog]):
     def update(
         self,
         t: float,
-        ref: float | np.ndarray,  # noqa: ARG002
-        x_hat: float | np.ndarray,  # noqa: ARG002
-    ) -> tuple[float | np.ndarray, StimWindowControllerLog]:
+        ref: np.ndarray,  # noqa: ARG002
+        x_hat: np.ndarray,  # noqa: ARG002
+    ) -> tuple[np.ndarray, StimWindowControllerLog]:
         """Emit the stimulation amplitude inside the window, zero outside it."""
         active = self.onset <= t < self.offset
         u = self.amplitude.reshape(-1) if active else np.zeros(self.n_u, dtype=np.float64)
@@ -240,9 +240,9 @@ class WaveformController(Controller[WaveformControllerLog]):
     def update(
         self,
         t: float,
-        ref: float | np.ndarray,  # noqa: ARG002
-        x_hat: float | np.ndarray,  # noqa: ARG002
-    ) -> tuple[float | np.ndarray, WaveformControllerLog]:
+        ref: np.ndarray,  # noqa: ARG002
+        x_hat: np.ndarray,  # noqa: ARG002
+    ) -> tuple[np.ndarray, WaveformControllerLog]:
         """Emit the scheduled per-electrode current for the current step."""
         k = round(t / self.dt)
         if k >= self.schedule.shape[0]:
@@ -462,11 +462,11 @@ class MPCController(Controller[MPCControllerLog]):
     def update(
         self,
         t: float,  # noqa: ARG002
-        ref: float | np.ndarray,  # noqa: ARG002
-        x_hat: float | np.ndarray,
-    ) -> tuple[float | np.ndarray, MPCControllerLog]:
+        ref: np.ndarray,  # noqa: ARG002
+        x_hat: np.ndarray,
+    ) -> tuple[np.ndarray, MPCControllerLog]:
         """Ingest the current EEG measurement, solve the NLP, and emit the first control."""
-        y_eeg = np.atleast_1d(np.asarray(x_hat, dtype=np.float64)).reshape(-1)
+        y_eeg = x_hat.reshape(-1)
         # Encode to the model's state space: latent components with a projection, else a no-op.
         y = self.model.artifact.encode(y_eeg)
         self._y_buf = np.vstack([self._y_buf[1:], y])
@@ -694,11 +694,11 @@ class LinearMPCController(Controller[LinearMPCControllerLog]):
     def update(
         self,
         t: float,  # noqa: ARG002
-        ref: float | np.ndarray,  # noqa: ARG002
-        x_hat: float | np.ndarray,
-    ) -> tuple[float | np.ndarray, LinearMPCControllerLog]:
+        ref: np.ndarray,  # noqa: ARG002
+        x_hat: np.ndarray,
+    ) -> tuple[np.ndarray, LinearMPCControllerLog]:
         """Ingest the current EEG measurement, solve the QP, and emit the first control."""
-        y_eeg = np.atleast_1d(np.asarray(x_hat, dtype=np.float64)).reshape(-1)
+        y_eeg = x_hat.reshape(-1)
         # Encode to the model's state space: latent components with a projection, else a no-op.
         y = self.model.artifact.encode(y_eeg)
         self._y_buf = np.vstack([self._y_buf[1:], y])
