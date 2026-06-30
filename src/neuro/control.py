@@ -284,6 +284,7 @@ class MPCController(Controller[MPCControllerLog]):
         w_y: float = 1.0,
         w_u: float = 0.0,
         *,
+        shooting_depth: int = 1,
         max_iter: int = 100,
         max_cpu_time: float | None = None,
         expand: bool = False,
@@ -323,6 +324,7 @@ class MPCController(Controller[MPCControllerLog]):
         self.horizon = int(horizon) if horizon is not None else model.artifact.horizon
         self.w_y = float(w_y)
         self.w_u = float(w_u)
+        self.shooting_depth = int(shooting_depth)
         self.max_iter = int(max_iter)
         self.max_cpu_time = float(max_cpu_time) if max_cpu_time is not None else None
         self.expand = bool(expand)
@@ -361,46 +363,55 @@ class MPCController(Controller[MPCControllerLog]):
             horizon=int(config["horizon"]) if config.get("horizon") is not None else None,
             w_y=float(config.get("w_y", 1.0)),
             w_u=float(config.get("w_u", 0.0)),
+            shooting_depth=int(config.get("shooting_depth", 1)),
             max_iter=int(config.get("max_iter", 100)),
             max_cpu_time=float(max_cpu_time) if max_cpu_time is not None else None,
             expand=bool(config.get("expand", False)),
         )
 
     def _build_solver(self) -> None:
-        """Build the output-condensed multiple-shooting NLP and its IPOPT solver, once.
+        """Build the PCMS multiple-shooting NLP and its IPOPT solver, once.
 
-        Lifting the full shift-register state per step would make ~94% of the variables and
-        defects trivial identity copies (the y-window is just past predictions; the u-window
-        is a deterministic function of the decision controls and the known history). So the
-        decision vector lifts **only the predicted EEG output** per step: the controls
-        ``[u_0, ..., u_{H-1}]`` (box-bounded by ``u_max``) followed by the outputs ``[y_1, ...,
-        y_H]`` (free). The parameter ``x0`` is the current window-state; its y-/u-windows are
-        sliced out and rolled forward symbolically, appending each decision ``u_k``/``y_k`` and
-        dropping the oldest block. The defects ``y_k - predict_output(window_k) = 0`` reproduce
-        the full-state continuity exactly. IPOPT uses a limited-memory Hessian approximation
-        because the predictor's ReLU activations make the exact Hessian non-smooth/degenerate.
+        The problem is partitioned into segments of size D (shooting_depth). The decision
+        variables are the control sequence ``[u_0, ..., u_{H-1}]`` and the sparse sequence of
+        intermediate state shooting roots ``[phi_1, ..., phi_{floor((H-1)/D)}]``.
+        The parameter ``x0`` is the current window-state (phi_0). The state maps exactly
+        via the CasADi f_step block and constraints close the gaps between the segments.
         """
         n_state = self.model.state_shape[0]
-        n_ch, n_ctrl, h = self.n_channels, self.n_elec, self.horizon
+        n_ctrl, h = self.n_elec, self.horizon
+        D = self.shooting_depth
 
         x0_p = ca.MX.sym("x0", n_state)
         u_vars = [ca.MX.sym(f"u_{k}", n_ctrl) for k in range(h)]
-        y_vars = [ca.MX.sym(f"y_{k}", n_ch) for k in range(1, h + 1)]
 
-        # Initial rolling windows (oldest first), sliced from the parameter window-state.
-        y_win = [x0_p[i * n_ch : (i + 1) * n_ch] for i in range(self.n_y)]
-        split = self.n_y * n_ch
-        u_win = [x0_p[split + i * n_ctrl : split + (i + 1) * n_ctrl] for i in range(self.n_u_steps)]
+        n_segments = (h - 1) // D
+        phi_vars = [ca.MX.sym(f"phi_{k}", n_state) for k in range(1, n_segments + 1)]
+
+        def get_phi(idx: int) -> ca.MX:
+            return x0_p if idx == 0 else phi_vars[idx - 1]
 
         defects, cost = [], ca.MX(0)
-        for k in range(h):
-            u_win = [*u_win[1:], u_vars[k]]  # drop oldest control, append the new one
-            y_pred = self.model.predict_output(ca.vertcat(*y_win), ca.vertcat(*u_win))
-            defects.append(y_vars[k] - y_pred)
-            cost = cost + self.w_y * ca.sumsqr(y_vars[k]) + self.w_u * ca.sumsqr(u_vars[k])
-            y_win = [*y_win[1:], y_vars[k]]  # drop oldest output, append the lifted prediction
+        for k in range(n_segments + 1):
+            x_curr = get_phi(k)
+            start_step = k * D
+            end_step = min((k + 1) * D, h)
 
-        nlp = {"x": ca.vertcat(*u_vars, *y_vars), "f": cost, "g": ca.vertcat(*defects), "p": x0_p}
+            for step in range(start_step, end_step):
+                u_curr = u_vars[step]
+                x_next = self.model.f_step(x_curr, u_curr)
+                y_next = self.model.f_out(x_next)
+
+                cost = cost + self.w_y * ca.sumsqr(y_next) + self.w_u * ca.sumsqr(u_curr)
+                x_curr = x_next
+
+            if k < n_segments:
+                defects.append(x_curr - get_phi(k + 1))
+
+        x_nlp = ca.vertcat(*u_vars, *phi_vars) if phi_vars else ca.vertcat(*u_vars)
+
+        g_nlp = ca.vertcat(*defects) if defects else ca.MX(0)
+        nlp = {"x": x_nlp, "f": cost, "g": g_nlp, "p": x0_p}
         opts = {
             "print_time": False,
             "expand": self.expand,
@@ -413,27 +424,30 @@ class MPCController(Controller[MPCControllerLog]):
             opts["ipopt.max_cpu_time"] = self.max_cpu_time
         self._solver = ca.nlpsol("mpc", "ipopt", nlp, opts)
 
-        self._lbx = np.concatenate([np.tile(-self.u_max, h), np.full(h * n_ch, -np.inf)])
-        self._ubx = np.concatenate([np.tile(self.u_max, h), np.full(h * n_ch, np.inf)])
+        n_phi_vars = len(phi_vars) * n_state
+        self._lbx = np.concatenate([np.tile(-self.u_max, h), np.full(n_phi_vars, -np.inf)])
+        self._ubx = np.concatenate([np.tile(self.u_max, h), np.full(n_phi_vars, np.inf)])
 
     def _solve(self, x0: np.ndarray) -> tuple[np.ndarray, float, bool]:
         """Solve the NLP for window-state ``x0``; return ``(u_0*, cost, success)``."""
         m, h = self.n_elec, self.horizon
+        D = self.shooting_depth
         u_guess = self._u_prev if self._u_prev is not None else np.zeros((h, m))
 
-        # Forward-simulate from x0 to seed the lifted outputs with a (near-)feasible guess.
+        # Forward-simulate from x0 to seed the lifted states with a (near-)feasible guess.
         x = x0
-        y_rows = []
-        for k in range(h):
-            x = np.asarray(self.model.f_step(x, u_guess[k])).reshape(-1)
-            y_rows.append(np.asarray(self.model.f_out(x)).reshape(-1))
-        w0 = np.concatenate([u_guess.reshape(-1), *y_rows])
+        phi_guess = []
+        for step in range(h):
+            x = np.asarray(self.model.f_step(x, u_guess[step])).reshape(-1)
+            if (step + 1) % D == 0 and (step + 1) < h:
+                phi_guess.append(x)
+
+        w0 = np.concatenate([u_guess.reshape(-1), *phi_guess]) if phi_guess else u_guess.reshape(-1)
 
         sol = self._solver(x0=w0, lbx=self._lbx, ubx=self._ubx, lbg=0.0, ubg=0.0, p=x0)
         u_opt = np.asarray(sol["x"]).reshape(-1)[: h * m].reshape(h, m)
-        self._u_prev = np.vstack([u_opt[1:], u_opt[-1:]])  # shift one step for next warm start
-        # The first control is applied regardless; the ReLU kinks can keep IPOPT from
-        # certifying full KKT convergence, so an "acceptable" point also counts as success.
+        self._u_prev = np.vstack([u_opt[1:], u_opt[-1:]])
+
         status = self._solver.stats()["return_status"]
         success = status in {"Solve_Succeeded", "Solved_To_Acceptable_Level"}
         return u_opt[0], float(sol["f"]), success
