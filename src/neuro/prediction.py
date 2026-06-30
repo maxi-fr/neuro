@@ -38,6 +38,8 @@ from neuro.jansen_rit_jax import eeg_jax, from_jansen_rit_params
 from neuro.sysid_jax import rollout_tbptt
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from neuro.jansen_rit_jax import JRParamsJax
 
 FloatArray = npt.NDArray[np.float64]
@@ -45,6 +47,18 @@ JaxArray = jax.Array
 
 _N_STATE_ROWS = 6  # Jansen-Rit state rows x1..x6
 _EPS = 1e-12
+
+
+def get_activation(name: str) -> Callable[[JaxArray], JaxArray]:
+    """Return the JAX activation function by name."""
+    if name == "relu":
+        return jax.nn.relu
+    if name == "tanh":
+        return jax.nn.tanh
+    if name == "softplus":
+        return jax.nn.softplus
+    msg = f"Unsupported activation: {name}"
+    raise ValueError(msg)
 
 
 # --------------------------------------------------------------------------------------
@@ -223,6 +237,7 @@ class AutoregressivePredictor(eqx.Module):
     horizon: int = eqx.field(static=True)
     C_y: int = eqx.field(static=True)
     C_u: int = eqx.field(static=True)
+    activation: str = eqx.field(static=True, default="relu")
 
     def __call__(self, x: jax.Array) -> jax.Array:
         """Run the autoregressive rollout."""
@@ -311,12 +326,13 @@ class MLPArtifact:
         with np.load(artifact.with_suffix(".scalers.npz")) as sc:
             scalers = {k: np.asarray(sc[k], dtype=np.float64) for k in ("u_mean", "u_scale", "y_mean", "y_scale")}
 
+        activation_name = meta.get("activation", "relu")
         mlp = eqx.nn.MLP(
             in_size=meta["in_size"],
             out_size=meta["out_size"],
             width_size=meta["hidden_size"],
             depth=meta["depth"],
-            activation=jax.nn.relu,
+            activation=get_activation(activation_name),
             key=jax.random.PRNGKey(0),
         )
         skeleton = AutoregressivePredictor(
@@ -326,6 +342,7 @@ class MLPArtifact:
             horizon=meta["horizon"],
             C_y=meta["n_channels"],
             C_u=meta["n_controls"],
+            activation=activation_name,
         )
         model = eqx.tree_deserialise_leaves(str(artifact), skeleton)
 
@@ -342,6 +359,7 @@ class MLPArtifact:
             "out_size": int(mlp.out_size),
             "hidden_size": int(mlp.width_size),
             "depth": int(mlp.depth),
+            "activation": self.model.activation,
             "n_y": self.n_y,
             "n_u": self.n_u,
             "horizon": self.horizon,

@@ -52,7 +52,9 @@ def _build_artifact(
         activation=jax.nn.relu,
         key=jax.random.PRNGKey(0),
     )
-    wrapped = AutoregressivePredictor(model=mlp, n_y=n_y, n_u=n_u, horizon=horizon, C_y=n_channels, C_u=n_controls)
+    wrapped = AutoregressivePredictor(
+        model=mlp, n_y=n_y, n_u=n_u, horizon=horizon, C_y=n_channels, C_u=n_controls, activation="relu"
+    )
     scalers = {
         "u_mean": rng.uniform(-1.0, 1.0, n_controls),
         "u_scale": rng.uniform(0.5, 2.0, n_controls),

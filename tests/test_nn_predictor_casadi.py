@@ -19,14 +19,22 @@ if TYPE_CHECKING:
 jax.config.update("jax_enable_x64", True)  # noqa: FBT003
 
 from neuro.nn_predictor_casadi import NNSymbolicModel, _extract_mlp_layers, _mlp_forward_ca  # noqa: E402
-from neuro.prediction import AutoregressivePredictor, MLPArtifact, NNPredictor, PredictionWindow  # noqa: E402
+from neuro.prediction import (  # noqa: E402
+    AutoregressivePredictor,
+    MLPArtifact,
+    NNPredictor,
+    PredictionWindow,
+    get_activation,
+)
 
 _SEED = 42
 
 _CASES = [
-    pytest.param(2, 2, 3, 5, 2, 2, 2, id="normal"),
-    pytest.param(2, 2, 3, 5, 0, 2, 2, id="depth0"),
-    pytest.param(1, 1, 3, 5, 2, 2, 2, id="window1"),
+    pytest.param(2, 2, 3, 5, 2, 2, 2, "relu", id="normal"),
+    pytest.param(2, 2, 3, 5, 2, 2, 2, "tanh", id="tanh"),
+    pytest.param(2, 2, 3, 5, 2, 2, 2, "softplus", id="softplus"),
+    pytest.param(2, 2, 3, 5, 0, 2, 2, "relu", id="depth0"),
+    pytest.param(1, 1, 3, 5, 2, 2, 2, "relu", id="window1"),
 ]
 
 
@@ -43,6 +51,7 @@ def _build_artifact(
     depth: int,
     n_channels: int,
     n_controls: int,
+    activation: str = "relu",
 ) -> tuple[Path, eqx.nn.MLP, dict[str, np.ndarray]]:
     """Build and save a tiny artifact via ``MLPArtifact.save``, returning its path, MLP, and scalers."""
     rng = np.random.default_rng(_SEED)
@@ -53,10 +62,12 @@ def _build_artifact(
         out_size=out_size,
         width_size=hidden_size,
         depth=depth,
-        activation=jax.nn.relu,
+        activation=get_activation(activation),
         key=jax.random.PRNGKey(0),
     )
-    wrapped = AutoregressivePredictor(model=mlp, n_y=n_y, n_u=n_u, horizon=horizon, C_y=n_channels, C_u=n_controls)
+    wrapped = AutoregressivePredictor(
+        model=mlp, n_y=n_y, n_u=n_u, horizon=horizon, C_y=n_channels, C_u=n_controls, activation=activation
+    )
 
     scalers = {
         "u_mean": rng.uniform(-1.0, 1.0, n_controls),
@@ -71,7 +82,9 @@ def _build_artifact(
     return artifact, mlp, scalers
 
 
-@pytest.mark.parametrize(("n_y", "n_u", "horizon", "hidden_size", "depth", "n_channels", "n_controls"), _CASES)
+@pytest.mark.parametrize(
+    ("n_y", "n_u", "horizon", "hidden_size", "depth", "n_channels", "n_controls", "activation"), _CASES
+)
 def test_mlp_forward_matches_jax(
     tmp_path: Path,
     n_y: int,
@@ -81,15 +94,18 @@ def test_mlp_forward_matches_jax(
     depth: int,
     n_channels: int,
     n_controls: int,
+    activation: str,
 ) -> None:
     """The CasADi MLP forward pass matches the Equinox MLP bit-for-bit."""
-    artifact, mlp, _ = _build_artifact(tmp_path, n_y, n_u, horizon, hidden_size, depth, n_channels, n_controls)
+    artifact, mlp, _ = _build_artifact(
+        tmp_path, n_y, n_u, horizon, hidden_size, depth, n_channels, n_controls, activation
+    )
     mlp_artifact = MLPArtifact.load(artifact)
 
     in_size = n_y * n_channels + n_u * n_controls
     x_sym = ca.SX.sym("x", in_size, 1)
     layers = _extract_mlp_layers(mlp_artifact.model.model)
-    fn = ca.Function("f", [x_sym], [_mlp_forward_ca(x_sym, layers)])
+    fn = ca.Function("f", [x_sym], [_mlp_forward_ca(x_sym, layers, activation)])
 
     rng = np.random.default_rng(_SEED + 1)
     for _ in range(5):
@@ -99,7 +115,9 @@ def test_mlp_forward_matches_jax(
         np.testing.assert_allclose(got, want, rtol=1e-10, atol=1e-12)
 
 
-@pytest.mark.parametrize(("n_y", "n_u", "horizon", "hidden_size", "depth", "n_channels", "n_controls"), _CASES)
+@pytest.mark.parametrize(
+    ("n_y", "n_u", "horizon", "hidden_size", "depth", "n_channels", "n_controls", "activation"), _CASES
+)
 def test_single_step_matches_manual_scan_iteration(
     tmp_path: Path,
     n_y: int,
@@ -109,9 +127,12 @@ def test_single_step_matches_manual_scan_iteration(
     depth: int,
     n_channels: int,
     n_controls: int,
+    activation: str,
 ) -> None:
     """f_step/f_out match one hand-written iteration of the JAX scan body."""
-    artifact, mlp, scalers = _build_artifact(tmp_path, n_y, n_u, horizon, hidden_size, depth, n_channels, n_controls)
+    artifact, mlp, scalers = _build_artifact(
+        tmp_path, n_y, n_u, horizon, hidden_size, depth, n_channels, n_controls, activation
+    )
     model = NNSymbolicModel.from_artifact(artifact)
 
     rng = np.random.default_rng(_SEED + 2)
@@ -148,7 +169,9 @@ def test_single_step_matches_jax_with_global_scalar_scalers(tmp_path: Path) -> N
     mlp = eqx.nn.MLP(
         in_size=in_size, out_size=n_channels, width_size=5, depth=2, activation=jax.nn.relu, key=jax.random.PRNGKey(0)
     )
-    wrapped = AutoregressivePredictor(model=mlp, n_y=n_y, n_u=n_u, horizon=horizon, C_y=n_channels, C_u=n_controls)
+    wrapped = AutoregressivePredictor(
+        model=mlp, n_y=n_y, n_u=n_u, horizon=horizon, C_y=n_channels, C_u=n_controls, activation="relu"
+    )
     scalers = {  # global (scalar) statistics, as produced by global_scaling=True
         "u_mean": np.array([0.3]),
         "u_scale": np.array([1.7]),
@@ -197,7 +220,9 @@ def test_output_slices_most_recent_row_not_oldest(tmp_path: Path) -> None:
     np.testing.assert_array_equal(got, y_w[-1])
 
 
-@pytest.mark.parametrize(("n_y", "n_u", "horizon", "hidden_size", "depth", "n_channels", "n_controls"), _CASES)
+@pytest.mark.parametrize(
+    ("n_y", "n_u", "horizon", "hidden_size", "depth", "n_channels", "n_controls", "activation"), _CASES
+)
 def test_multistep_rollout_matches_nn_predictor(
     tmp_path: Path,
     n_y: int,
@@ -207,9 +232,12 @@ def test_multistep_rollout_matches_nn_predictor(
     depth: int,
     n_channels: int,
     n_controls: int,
+    activation: str,
 ) -> None:
     """Chaining f_step/f_out over several steps matches NNPredictor.predict()."""
-    artifact, _mlp, _scalers = _build_artifact(tmp_path, n_y, n_u, horizon, hidden_size, depth, n_channels, n_controls)
+    artifact, _mlp, _scalers = _build_artifact(
+        tmp_path, n_y, n_u, horizon, hidden_size, depth, n_channels, n_controls, activation
+    )
     model = NNSymbolicModel.from_artifact(artifact)
     jax_predictor = NNPredictor.load(artifact)
 
@@ -239,8 +267,10 @@ def test_multistep_rollout_matches_nn_predictor(
 
 def test_mlp_artifact_round_trip_preserves_exact_weights_and_meta(tmp_path: Path) -> None:
     """MLPArtifact.save/.load round-trips weights/biases and metadata bit-exactly."""
-    n_y, n_u, horizon, hidden_size, depth, n_channels, n_controls = 2, 2, 3, 5, 2, 2, 2
-    artifact, mlp, scalers = _build_artifact(tmp_path, n_y, n_u, horizon, hidden_size, depth, n_channels, n_controls)
+    n_y, n_u, horizon, hidden_size, depth, n_channels, n_controls, activation = 2, 2, 3, 5, 2, 2, 2, "relu"
+    artifact, mlp, scalers = _build_artifact(
+        tmp_path, n_y, n_u, horizon, hidden_size, depth, n_channels, n_controls, activation
+    )
 
     mlp_artifact = MLPArtifact.load(artifact)
     got_layers = _extract_mlp_layers(mlp_artifact.model.model)

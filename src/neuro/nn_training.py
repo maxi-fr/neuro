@@ -17,7 +17,7 @@ from sklearn.preprocessing import RobustScaler, StandardScaler
 from tqdm import tqdm
 from tvboptim.observations.observation import compute_fc
 
-from neuro.prediction import AutoregressivePredictor
+from neuro.prediction import AutoregressivePredictor, get_activation
 
 
 def load_trajectory(data_file: str, n_steps: int, downsample: int) -> tuple[np.ndarray, np.ndarray]:
@@ -295,6 +295,7 @@ def create_model(  # noqa: PLR0913
     horizon: int,
     C_y: int,
     C_u: int,
+    activation: str = "relu",
 ) -> eqx.Module:
     """Create the Autoregressive MLP model.
 
@@ -331,10 +332,12 @@ def create_model(  # noqa: PLR0913
         out_size=out_size,
         width_size=hidden_size,
         depth=depth,
-        activation=jax.nn.relu,
+        activation=get_activation(activation),
         key=key,
     )
-    return AutoregressivePredictor(model=mlp, n_y=n_y, n_u=n_u, horizon=horizon, C_y=C_y, C_u=C_u)
+    return AutoregressivePredictor(
+        model=mlp, n_y=n_y, n_u=n_u, horizon=horizon, C_y=C_y, C_u=C_u, activation=activation
+    )
 
 
 def scale_dataset(  # noqa: PLR0913

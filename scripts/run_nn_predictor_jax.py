@@ -63,6 +63,7 @@ def main() -> None:  # noqa: PLR0915
     horizon = model_cfg.get("horizon", 5)
     hidden_size = int(model_cfg.get("hidden_size", 128))
     depth = model_cfg.get("depth", 2)
+    activation = model_cfg.get("activation", "relu")
 
     train_cfg = config.get("training", {})
     epochs = train_cfg.get("epochs", 100)
@@ -139,7 +140,7 @@ def main() -> None:  # noqa: PLR0915
     in_size = n_y * C_y + n_u * C_u
     out_size = C_y
 
-    model = create_model(in_size, out_size, hidden_size, depth, key, n_y, n_u, horizon, C_y, C_u)
+    model = create_model(in_size, out_size, hidden_size, depth, key, n_y, n_u, horizon, C_y, C_u, activation=activation)
 
     model, train_losses, val_losses = train_model(
         model,

@@ -64,7 +64,9 @@ def _extract_mlp_layers(mlp: eqx.nn.MLP) -> list[tuple[FloatArray, FloatArray]]:
     return layers
 
 
-def _mlp_forward_ca(x: ca.SX | ca.MX, layers: Sequence[tuple[FloatArray, FloatArray]]) -> ca.SX | ca.MX:
+def _mlp_forward_ca(
+    x: ca.SX | ca.MX, layers: Sequence[tuple[FloatArray, FloatArray]], activation: str
+) -> ca.SX | ca.MX:
     """Evaluate an MLP forward pass symbolically, replicating ``eqx.nn.MLP.__call__``.
 
     ReLU is applied after every layer except the last; the last layer has no activation
@@ -76,6 +78,8 @@ def _mlp_forward_ca(x: ca.SX | ca.MX, layers: Sequence[tuple[FloatArray, FloatAr
         Input column vector, shape ``(in_size, 1)``.
     layers : Sequence[(FloatArray, FloatArray)]
         Per-layer ``(weight, bias)`` pairs as returned by :func:`_extract_mlp_layers`.
+    activation : str
+        The activation function name ("relu", "tanh", or "softplus").
 
     Returns
     -------
@@ -83,7 +87,16 @@ def _mlp_forward_ca(x: ca.SX | ca.MX, layers: Sequence[tuple[FloatArray, FloatAr
         Output column vector, shape ``(out_size, 1)``.
     """
     for w, b in layers[:-1]:
-        x = ca.fmax(ca.mtimes(w, x) + b.reshape(-1, 1), 0.0)
+        z = ca.mtimes(w, x) + b.reshape(-1, 1)
+        if activation == "relu":
+            x = ca.fmax(z, 0.0)
+        elif activation == "tanh":
+            x = ca.tanh(z)
+        elif activation == "softplus":
+            x = ca.log(1 + ca.exp(z))
+        else:
+            msg = f"Unsupported activation: {activation}"
+            raise ValueError(msg)
     w_last, b_last = layers[-1]
     return ca.mtimes(w_last, x) + b_last.reshape(-1, 1)
 
@@ -188,7 +201,7 @@ class NNSymbolicModel:
         new_u_scaled_flat = zscore(new_u_flat, u_mean_tiled, u_scale_tiled)
 
         mlp_in = ca.vertcat(y_scaled_flat, new_u_scaled_flat)
-        y_next_scaled = _mlp_forward_ca(mlp_in, self._layers)
+        y_next_scaled = _mlp_forward_ca(mlp_in, self._layers, self.artifact.model.activation)
         return unzscore(y_next_scaled, y_mean_ch.reshape(-1, 1), y_scale_ch.reshape(-1, 1))
 
     def step(self, history: Sequence[ca.SX | ca.MX], u: ca.SX | ca.MX) -> ca.SX | ca.MX:
