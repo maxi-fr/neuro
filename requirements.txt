@@ -666,6 +666,7 @@ matplotlib==3.11.0 \
     --hash=sha256:e6b3e64dea5062c570f04358e2711859f3531b459f29516274fbad889079e4f3
     # via
     #   neuro
+    #   seaborn
     #   simulate
     #   tvb-library
     #   tvboptim
@@ -740,6 +741,7 @@ narwhals==2.22.1 \
     --hash=sha256:d62920805a0a43b7ff8b54b0c0d3142d796f8a9301836ada37e573d6a33cbcd9
     # via
     #   marimo
+    #   plotly
     #   scikit-learn
 nest-asyncio2==1.7.2 \
     --hash=sha256:1921d70b92cc4612c374928d081552efb59b83d91b2b789d935c665fa01729a8 \
@@ -863,6 +865,7 @@ numpy==2.4.6 \
     #   pandas-stubs
     #   scikit-learn
     #   scipy
+    #   seaborn
     #   simulate
     #   tvb-library
     #   tvboptim
@@ -898,6 +901,7 @@ packaging==26.2 \
     #   marimo
     #   matplotlib
     #   optuna
+    #   plotly
     #   pytest
 pandas==3.0.3 \
     --hash=sha256:08d789b41f87e0905880e293cedf6197ce71fe67cc081358b1e148a491b9bd13 \
@@ -933,6 +937,8 @@ pandas==3.0.3 \
     --hash=sha256:dd1a5d1def6a46002e964510bdc67c368aa0951df5d1d9f8365336f5a1f490cd \
     --hash=sha256:e3a2ec42c98ffa2565a67e08e218d06d72576d758d90facb7c00805194d8f360
     # via
+    #   neuro
+    #   seaborn
     #   simulate
     #   tvboptim
 pandas-stubs==3.0.3.260530 \
@@ -1007,6 +1013,10 @@ platformdirs==4.10.0 \
     #   jupyter-core
     #   python-discovery
     #   virtualenv
+plotly==6.8.0 \
+    --hash=sha256:13c5c4a0f70b74cab1913eda0de49b826df5931708eb6f9c3010040614700ec8 \
+    --hash=sha256:e088e7ddc68d4f70e3d66659224727a45296d71d2b8284181862d3d8f1f0d88f
+    # via neuro
 pluggy==1.6.0 \
     --hash=sha256:7dcc130b76258d33b90f61b658791dede3486c3e6bfb003ee5c9bfb396dd22f3 \
     --hash=sha256:e920276dd6813095e9377c0bc5566d94c932c33b27a3e3945d8389c374dd4746
@@ -1333,6 +1343,10 @@ scipy==1.18.0 \
     #   jaxlib
     #   scikit-learn
     #   tvb-library
+seaborn==0.13.2 \
+    --hash=sha256:636f8336facf092165e27924f223d3c62ca560b1f2bb5dff7ab7fad265361987 \
+    --hash=sha256:93e60a40988f4d65e9f4885df477e2fdaff6b73a9ded434c1ab356dd57eefff7
+    # via neuro
 simulate @ git+https://github.com/maxi-fr/simulate.git@ba0e5096a0ad947d2de67be7919675faeb29ff6c
     # via neuro
 six==1.17.0 \

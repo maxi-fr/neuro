@@ -49,8 +49,12 @@ def load_trajectory(data_file: str, n_steps: int, downsample: int) -> tuple[Floa
     """
     with np.load(data_file) as data:
         max_idx = n_steps * downsample
-        y_data = data["y_mea"][:max_idx:downsample]
-        u_data = data["u"][:max_idx:downsample]
+        try:
+            y_data = data["y_mea"][:max_idx:downsample]
+            u_data = data["u"][:max_idx:downsample]
+        except:  # noqa: E722 # only because old experiment data used old keys
+            y_data = data["universal_y_mea"][:max_idx:downsample]
+            u_data = data["universal_u"][:max_idx:downsample]
     return u_data, y_data
 
 

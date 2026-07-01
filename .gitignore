@@ -29,3 +29,5 @@ data/
 results/
 *.npy
 *.npz
+notebooks/layouts/
+notebooks/assets/

@@ -3,7 +3,7 @@
 simulation:
   dt: 0.0001
   downsample: 100        # effective dt = 1e-2 s
-  n_steps: 50000
+  n_steps: 500           # downsampled steps per trajectory (50000 raw / 100 = 5 s)
   data_path: data\experiment_excited\train
 
 model:
