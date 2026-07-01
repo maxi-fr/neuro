@@ -33,6 +33,8 @@ from neuro.prediction import AutoregressivePredictor, MLPArtifact  # noqa: E402
 if TYPE_CHECKING:
     from pathlib import Path
 
+    from neuro.types import FloatArray
+
 _SEED = 7
 
 
@@ -110,7 +112,7 @@ def _build_projection_artifact(
 
 def _drive(
     controller: LinearMPCController | MPCController, n_steps: int, n_channels: int
-) -> list[tuple[np.ndarray, Any]]:
+) -> list[tuple[FloatArray, Any]]:
     """Feed ``n_steps`` deterministic EEG measurements through ``update`` and collect the outputs."""
     rng = np.random.default_rng(_SEED + 1)
     out = []

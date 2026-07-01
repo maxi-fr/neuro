@@ -20,6 +20,8 @@ import pytest
 if TYPE_CHECKING:
     from pathlib import Path
 
+    from neuro.types import FloatArray
+
 # float64 parity is mandatory; enable before any array is created.
 jax.config.update("jax_enable_x64", True)  # noqa: FBT003
 
@@ -49,7 +51,7 @@ def _write_trajectory(path: Path, n_steps: int, n_eeg: int, n_controls: int) -> 
     return str(path)
 
 
-def _orthonormal_basis(rng: np.random.Generator, k: int, n_eeg: int) -> np.ndarray:
+def _orthonormal_basis(rng: np.random.Generator, k: int, n_eeg: int) -> FloatArray:
     """Return an orthonormal ``(k, n_eeg)`` basis (orthonormal rows)."""
     q, _ = np.linalg.qr(rng.standard_normal((n_eeg, n_eeg)))
     return np.ascontiguousarray(q[:, :k].T)
@@ -65,7 +67,7 @@ def _build_projection_artifact(
     n_eeg: int,
     n_controls: int,
     zero_model: bool = False,
-) -> tuple[Path, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+) -> tuple[Path, FloatArray, FloatArray, FloatArray, FloatArray]:
     """Save a projection artifact (model runs in ``k``-dim latent space).
 
     Returns ``(artifact_path, E, mean, y_mean_latent, y_scale_latent)``.

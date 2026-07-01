@@ -22,6 +22,7 @@ from neuro.jansen_rit import (
     sigmoid_jit,
     simulate_network,
 )
+from neuro.types import FloatArray
 from utils.processing import compute_psd, steady_window
 
 _A_HEALTHY = 3.25
@@ -33,7 +34,7 @@ _SEED = 7
 _DT = 1e-4
 
 
-def _post_transient_output(a_gain: float, *, deterministic: bool) -> np.ndarray:
+def _post_transient_output(a_gain: float, *, deterministic: bool) -> FloatArray:
     """Run one node at gain ``a_gain`` and return its steady-state lfp ``y``."""
     sigma = 0.0 if deterministic else JansenRitParams().sigma
     params = JansenRitParams(A=a_gain, sigma=sigma)

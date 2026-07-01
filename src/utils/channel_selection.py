@@ -15,7 +15,6 @@ from dataclasses import replace
 from typing import TYPE_CHECKING, Literal
 
 import numpy as np
-import numpy.typing as npt
 from scipy.linalg import qr
 
 from neuro.jansen_rit import JansenRitParams, lfp, simulate_network
@@ -24,8 +23,7 @@ if TYPE_CHECKING:
     from collections.abc import Sequence
 
     from neuro.connectome import Connectome
-
-FloatArray = npt.NDArray[np.float64]
+    from neuro.types import FloatArray
 
 
 def pca_loading_scores(signals: FloatArray, variance_threshold: float = 0.95) -> tuple[FloatArray, FloatArray]:

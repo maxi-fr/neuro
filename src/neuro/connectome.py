@@ -33,6 +33,8 @@ if TYPE_CHECKING:
     from collections.abc import Sequence
     from pathlib import Path
 
+    from neuro.types import FloatArray
+
 with warnings.catch_warnings():
     warnings.simplefilter("ignore", UserWarning)
     from tvb.datatypes.connectivity import Connectivity
@@ -40,7 +42,6 @@ with warnings.catch_warnings():
     from tvb.datatypes.region_mapping import RegionMapping
     from tvb.datatypes.sensors import SensorsEEG
 
-FloatArray = npt.NDArray[np.float64]
 StrArray = npt.NDArray[np.str_]
 
 _SENSORS_FILE = "eeg_unitvector_62.txt.bz2"

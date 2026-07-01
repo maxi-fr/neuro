@@ -19,9 +19,10 @@ import matplotlib as mpl
 
 mpl.use("Agg")  # non-interactive backend so the script works headless
 
+from typing import TYPE_CHECKING
+
 import matplotlib.pyplot as plt
 import numpy as np
-import numpy.typing as npt
 from simulate.config import load_config
 
 from neuro.connectome import load_connectome
@@ -29,7 +30,8 @@ from utils.plotting import plot_psd, plot_signals
 from utils.processing import steady_window, synchronization
 from utils.save_plots import ThesisPlotSaver
 
-FloatArray = npt.NDArray[np.float64]
+if TYPE_CHECKING:
+    from neuro.types import FloatArray
 
 N_CHANNELS_TO_PLOT = 8
 PSD_NPERSEG = 8192  # High resolution spectral segment length for EEG bands

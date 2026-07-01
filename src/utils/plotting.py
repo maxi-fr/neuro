@@ -6,7 +6,6 @@ from typing import TYPE_CHECKING, Any, cast
 
 import matplotlib.pyplot as plt
 import numpy as np
-import numpy.typing as npt
 
 from .processing import compute_psd
 
@@ -16,8 +15,8 @@ if TYPE_CHECKING:
     from matplotlib.axes import Axes
     from matplotlib.figure import Figure
 
-FloatArray = npt.NDArray[np.float64]
-IntArray = npt.NDArray[np.intp]
+    from neuro.types import FloatArray, IntArray
+
 
 _DEFAULT_N_FANS = 10
 

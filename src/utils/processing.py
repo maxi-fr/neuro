@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import numpy as np
-import numpy.typing as npt
 from scipy.signal import detrend, welch
 
-FloatArray = npt.NDArray[np.float64]
+if TYPE_CHECKING:
+    from neuro.types import FloatArray
 
 
 def compute_psd(

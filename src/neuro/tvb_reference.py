@@ -36,7 +36,6 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 import numpy as np
-import numpy.typing as npt
 
 from neuro.connectome import (
     _PROJECTION_FILE,
@@ -58,8 +57,8 @@ if TYPE_CHECKING:
     from collections.abc import Sequence
 
     from neuro.connectome import Connectome
+    from neuro.types import FloatArray
 
-FloatArray = npt.NDArray[np.float64]
 
 # Yu et al. 2024 parameters in TVB's millisecond units (see the module docstring).
 _A_BG, _A_PZ, _A_EZ = 3.25, 3.4, 3.6

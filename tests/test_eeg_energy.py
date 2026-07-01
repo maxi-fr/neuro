@@ -24,6 +24,7 @@ import pytest
 
 from neuro.connectome import Connectome, load_connectome
 from neuro.jansen_rit import JansenRitParams, lfp, simulate_network
+from neuro.types import FloatArray
 from utils.processing import band_energy, steady_window
 
 _FIG3C_TRIO = (("CP5", "CP6"), ("P3", "P4"), ("F3", "F4"))  # (left, right homolog)
@@ -45,7 +46,7 @@ def connectome() -> Connectome:
 
 
 @pytest.fixture(scope="module")
-def eeg_energy(connectome: Connectome) -> np.ndarray:
+def eeg_energy(connectome: Connectome) -> FloatArray:
     """Per-channel normalized 0-50 Hz energy of the canonical seizure network."""
     n_nodes = len(connectome.region_labels)
     ez_idxs = [connectome.region_index[name] for name in ("lHC", "lPHC", "lAMYG")]
@@ -71,13 +72,13 @@ def eeg_energy(connectome: Connectome) -> np.ndarray:
     return band_energy(eeg, dt_ms, band=(0.0, 50.0))
 
 
-def test_top_channels_are_ipsilateral(connectome: Connectome, eeg_energy: np.ndarray) -> None:
+def test_top_channels_are_ipsilateral(connectome: Connectome, eeg_energy: FloatArray) -> None:
     """The strongest channels are all left-hemisphere, ipsilateral to the EZ (Fig 3c)."""
     top8 = connectome.channel_labels[np.argsort(eeg_energy)[::-1][:8]]
     assert all(_channel_side(str(ch)) != "R" for ch in top8), list(map(str, top8))
 
 
-def test_fig3c_trio_beats_contralateral_homologs(connectome: Connectome, eeg_energy: np.ndarray) -> None:
+def test_fig3c_trio_beats_contralateral_homologs(connectome: Connectome, eeg_energy: FloatArray) -> None:
     """Each Fig-3c left channel carries far more energy than its right homolog."""
     for left, right in _FIG3C_TRIO:
         e_left = eeg_energy[connectome.channel_index[left]]
@@ -85,7 +86,7 @@ def test_fig3c_trio_beats_contralateral_homologs(connectome: Connectome, eeg_ene
         assert e_left > e_right, f"{left}={e_left:.3f} !> {right}={e_right:.3f}"
 
 
-def test_fig3c_channels_are_elevated(connectome: Connectome, eeg_energy: np.ndarray) -> None:
+def test_fig3c_channels_are_elevated(connectome: Connectome, eeg_energy: FloatArray) -> None:
     """The Fig-3c trio (F3/P3/CP5) sits well above the median channel energy."""
     median = float(np.median(eeg_energy))
     for left, _ in _FIG3C_TRIO:

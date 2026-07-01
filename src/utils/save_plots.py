@@ -12,6 +12,8 @@ import matplotlib as mpl
 import matplotlib.pyplot as plt
 import numpy as np
 
+from neuro.types import FloatArray
+
 
 class ThesisPlotSaver:
     """For saving plots and metadata."""
@@ -131,7 +133,7 @@ class ThesisPlotSaver:
         name: str,
         metadata: dict[str, Any] | None = None,
         *,
-        data: dict[str, np.ndarray] | None = None,
+        data: dict[str, FloatArray] | None = None,
         overwrite: bool = False,
     ) -> None:
         """Save the figure(s), PGF graphic(s), and JSON metadata into a target folder."""

@@ -6,7 +6,7 @@ import datetime
 import json
 import shutil
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import jax
 import matplotlib.pyplot as plt
@@ -28,6 +28,9 @@ from neuro.nn_training import (
 )
 from neuro.prediction import AutoregressivePredictor, MLPArtifact
 from utils.plotting import plot_multistep_predictions
+
+if TYPE_CHECKING:
+    from neuro.types import FloatArray
 
 
 def suggest_params(trial: optuna.Trial, sweep_cfg: dict[str, Any], group: str, config: dict[str, Any]) -> None:
@@ -114,7 +117,7 @@ def objective(  # noqa: PLR0915
 
     artifact = trial_dir / "model.eqx"
 
-    projection: tuple[np.ndarray, np.ndarray] | None = None
+    projection: tuple[FloatArray, FloatArray] | None = None
     if enable_projection:
         if w_psd > 0 or w_fc > 0:
             msg = "Latent projection is incompatible with the per-channel PSD/FC losses (set w_psd=w_fc=0)."

@@ -14,6 +14,7 @@ import pytest
 
 from neuro.connectome import Connectome, load_connectome
 from neuro.jansen_rit import JansenRitDynamics, JansenRitParams, lfp, simulate_network
+from neuro.types import FloatArray
 
 _DT = 1e-4
 
@@ -34,7 +35,7 @@ def ez_pz_indices(connectome: Connectome) -> tuple[list[int], list[int]]:
     return ez_idxs, pz_idxs
 
 
-def _get_onset_time(y: np.ndarray, t: np.ndarray, threshold: float = 5.0) -> float:
+def _get_onset_time(y: FloatArray, t: FloatArray, threshold: float = 5.0) -> float:
     """Find the first time the absolute signal crosses a threshold."""
     idx = np.where(np.abs(y) > threshold)[0]
     if len(idx) == 0:
@@ -207,7 +208,7 @@ def test_history_coupling_index_robust_to_accumulated_time() -> None:
     initial_state[0, 0] = 1.0  # kick node 0 off the (unstable) equilibrium so it limit-cycles
     n_steps = 30000  # 3 s at dt = 1e-4, enough for the downstream node to be driven
 
-    def run(*, accumulate: bool) -> np.ndarray:
+    def run(*, accumulate: bool) -> FloatArray:
         dyn = JansenRitDynamics(dt=_DT, params=params, seed=0, initial_state=initial_state)
         xs = np.zeros((6, 2, n_steps + 1))
         xs[:, :, 0] = dyn.x

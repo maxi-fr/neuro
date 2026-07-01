@@ -31,21 +31,20 @@ import equinox as eqx
 import jax
 import jax.numpy as jnp
 import numpy as np
-import numpy.typing as npt
 
 jax.config.update("jax_enable_x64", val=True)
 
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-FloatArray = npt.NDArray[np.float64]
-JaxArray = jax.Array
+    from neuro.types import FloatArray
+
 
 _N_STATE_ROWS = 6  # Jansen-Rit state rows x1..x6
 _EPS = 1e-12
 
 
-def get_activation(name: str) -> Callable[[JaxArray], JaxArray]:
+def get_activation(name: str) -> Callable[[jax.Array], jax.Array]:
     """Return the JAX activation function by name."""
     if name == "relu":
         return jax.nn.relu

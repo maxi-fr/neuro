@@ -30,7 +30,6 @@ from typing import TYPE_CHECKING, Self
 import casadi as ca
 import equinox as eqx
 import numpy as np
-import numpy.typing as npt
 
 from neuro.prediction import MLPArtifact, unzscore, zscore
 
@@ -38,7 +37,7 @@ if TYPE_CHECKING:
     from collections.abc import Sequence
     from pathlib import Path
 
-FloatArray = npt.NDArray[np.float64]
+    from neuro.types import FloatArray
 
 
 def _extract_mlp_layers(mlp: eqx.nn.MLP) -> list[tuple[FloatArray, FloatArray]]:

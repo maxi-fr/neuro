@@ -19,11 +19,12 @@ from tqdm import tqdm
 from tvboptim.observations.observation import compute_fc
 
 from neuro.prediction import AutoregressivePredictor, get_activation
+from neuro.types import FloatArray
 
 jax.config.update("jax_enable_x64", val=True)
 
 
-def load_trajectory(data_file: str, n_steps: int, downsample: int) -> tuple[np.ndarray, np.ndarray]:
+def load_trajectory(data_file: str, n_steps: int, downsample: int) -> tuple[FloatArray, FloatArray]:
     """Load a single simulation trajectory.
 
     Parameters
@@ -37,9 +38,9 @@ def load_trajectory(data_file: str, n_steps: int, downsample: int) -> tuple[np.n
 
     Returns
     -------
-    u_data : np.ndarray
+    u_data : FloatArray
         The stimulation input trajectory, shape ``(T, C_u)``.
-    y_data : np.ndarray
+    y_data : FloatArray
         The measured output (EEG) trajectory, shape ``(T, C_y)``.
     """
     with np.load(data_file) as data:
@@ -49,19 +50,19 @@ def load_trajectory(data_file: str, n_steps: int, downsample: int) -> tuple[np.n
     return u_data, y_data
 
 
-def extract_windows_flattened(data: np.ndarray, window_size: int) -> np.ndarray:
+def extract_windows_flattened(data: FloatArray, window_size: int) -> FloatArray:
     """Extract sliding windows from a 2D array and flatten the time dimension.
 
     Parameters
     ----------
-    data : np.ndarray
+    data : FloatArray
         Input array of shape (T, C).
     window_size : int
         Size of the sliding window.
 
     Returns
     -------
-    np.ndarray
+    FloatArray
         Flattened sliding windows of shape (T - window_size + 1, window_size * C).
     """
     _, channels = data.shape
@@ -70,16 +71,16 @@ def extract_windows_flattened(data: np.ndarray, window_size: int) -> np.ndarray:
 
 
 def scale_flat_sequence(
-    data_flat: np.ndarray,
+    data_flat: FloatArray,
     scaler: StandardScaler | RobustScaler,
     channels: int,
     global_scaling: bool,  # noqa: FBT001
-) -> np.ndarray:
+) -> FloatArray:
     """Scale a flattened sequence per-channel.
 
     Parameters
     ----------
-    data_flat : np.ndarray
+    data_flat : FloatArray
         Flattened sequence of shape (samples, time_steps * channels).
     scaler : StandardScaler | RobustScaler
         Fitted scaler to apply.
@@ -88,7 +89,7 @@ def scale_flat_sequence(
 
     Returns
     -------
-    np.ndarray
+    FloatArray
         Scaled flattened sequence of the same shape.
     """
     samples = data_flat.shape[0]
@@ -100,16 +101,16 @@ def scale_flat_sequence(
 
 
 def unscale_flat_sequence(
-    data_flat: np.ndarray,
+    data_flat: FloatArray,
     scaler: StandardScaler | RobustScaler,
     channels: int,
     global_scaling: bool,  # noqa: FBT001
-) -> np.ndarray:
+) -> FloatArray:
     """Inverse-scale a flattened sequence per-channel.
 
     Parameters
     ----------
-    data_flat : np.ndarray
+    data_flat : FloatArray
         Flattened sequence of shape (samples, time_steps * channels).
     scaler : StandardScaler | RobustScaler
         Fitted scaler to apply.
@@ -118,7 +119,7 @@ def unscale_flat_sequence(
 
     Returns
     -------
-    np.ndarray
+    FloatArray
         Unscaled flattened sequence of the same shape.
     """
     samples = data_flat.shape[0]
@@ -129,7 +130,7 @@ def unscale_flat_sequence(
     return data_unscaled.reshape(samples, -1)
 
 
-def reshape_to_trajectory(data_flat: jax.Array | np.ndarray, horizon: int, channels: int) -> jax.Array | np.ndarray:
+def reshape_to_trajectory(data_flat: jax.Array | FloatArray, horizon: int, channels: int) -> jax.Array | FloatArray:
     """Reshape a flattened trajectory back to (batch, horizon, channels).
 
     Parameters
@@ -149,34 +150,34 @@ def reshape_to_trajectory(data_flat: jax.Array | np.ndarray, horizon: int, chann
     return data_flat.reshape(-1, horizon, channels)
 
 
-def reshape_flat_to_channels(data_flat: np.ndarray, channels: int) -> np.ndarray:
+def reshape_flat_to_channels(data_flat: FloatArray, channels: int) -> FloatArray:
     """Reshape a flattened sequence to have channels as the last dimension.
 
     Parameters
     ----------
-    data_flat : np.ndarray
+    data_flat : FloatArray
         Flattened sequence of shape (samples, time_steps * channels).
     channels : int
         Number of channels.
 
     Returns
     -------
-    np.ndarray
+    FloatArray
         Reshaped sequence of shape (-1, channels).
     """
     return data_flat.reshape(-1, channels)
 
 
 def build_dataset_for_trajectory(
-    u_data: np.ndarray, y_data: np.ndarray, n_y: int, n_u: int, N: int
-) -> tuple[np.ndarray, np.ndarray]:
+    u_data: FloatArray, y_data: FloatArray, n_y: int, n_u: int, N: int
+) -> tuple[FloatArray, FloatArray]:
     """Build the input/output pairs for the multi-step predictor.
 
     Parameters
     ----------
-    u_data : np.ndarray
+    u_data : FloatArray
         The stimulation input trajectory of shape (T, C_u).
-    y_data : np.ndarray
+    y_data : FloatArray
         The measured output (EEG) trajectory of shape (T, C_y).
     n_y : int
         Number of past output steps to include in the input feature.
@@ -187,9 +188,9 @@ def build_dataset_for_trajectory(
 
     Returns
     -------
-    X : np.ndarray
+    X : FloatArray
         Input features array of shape (samples, n_y * C_y + n_u * C_u + N * C_u).
-    Y : np.ndarray
+    Y : FloatArray
         Target labels array of shape (samples, N * C_y).
     """
     T_src, _C_y = y_data.shape
@@ -211,14 +212,14 @@ def build_dataset_for_trajectory(
     return X, Y
 
 
-def get_dataloaders(X: np.ndarray, Y: np.ndarray, batch_size: int = 128) -> Iterator[tuple[jax.Array, jax.Array]]:
+def get_dataloaders(X: FloatArray, Y: FloatArray, batch_size: int = 128) -> Iterator[tuple[jax.Array, jax.Array]]:
     """Generate batches of data.
 
     Parameters
     ----------
-    X : np.ndarray
+    X : FloatArray
         Input features array, shape ``(samples, n_features)``.
-    Y : np.ndarray
+    Y : FloatArray
         Target labels array, shape ``(samples, n_targets)``.
     batch_size : int, optional
         Number of samples per batch. Defaults to 128.
@@ -246,8 +247,8 @@ def prepare_datasets(  # noqa: PLR0913
     n_y: int,
     n_u: int,
     horizon: int,
-    projection: tuple[np.ndarray, np.ndarray] | None = None,
-) -> tuple[np.ndarray, np.ndarray, int]:
+    projection: tuple[FloatArray, FloatArray] | None = None,
+) -> tuple[FloatArray, FloatArray, int]:
     """Load data and build dataset across multiple trajectories.
 
     Parameters
@@ -264,7 +265,7 @@ def prepare_datasets(  # noqa: PLR0913
         Number of past input steps to include.
     horizon : int
         Prediction horizon.
-    projection : tuple[np.ndarray, np.ndarray] | None
+    projection : tuple[FloatArray, FloatArray] | None
         Optional ``(E, mean)`` latent projection from :func:`fit_latent_projection`.
         When given, each trajectory's EEG is encoded ``y -> (y - mean) @ E.T`` before
         windowing, so the returned ``C_y`` is the latent dimension ``k`` instead of the
@@ -272,9 +273,9 @@ def prepare_datasets(  # noqa: PLR0913
 
     Returns
     -------
-    X_full : np.ndarray
+    X_full : FloatArray
         Input features array, shape ``(total_samples, n_features)``.
-    Y_full : np.ndarray
+    Y_full : FloatArray
         Target labels array, shape ``(total_samples, n_targets)``.
     C_y : int
         Number of output channels (latent dimension ``k`` when ``projection`` is set).
@@ -302,7 +303,7 @@ def fit_latent_projection(
     downsample: int,
     latent_dim: int | None = None,
     explained_variance: float | None = None,
-) -> tuple[np.ndarray, np.ndarray]:
+) -> tuple[FloatArray, FloatArray]:
     """Fit a fixed orthonormal PCA basis on the concatenated training EEG.
 
     The basis maps the full EEG channel space onto ``k`` latent components so the
@@ -326,9 +327,9 @@ def fit_latent_projection(
 
     Returns
     -------
-    E : np.ndarray
+    E : FloatArray
         Orthonormal PCA basis, shape ``(k, C_y)``.
-    mean : np.ndarray
+    mean : FloatArray
         Per-channel training mean, shape ``(C_y,)``.
     """
     if latent_dim is None and explained_variance is None:
@@ -397,8 +398,8 @@ def create_model(  # noqa: PLR0913
 
 
 def scale_dataset(  # noqa: PLR0913
-    X: np.ndarray,
-    Y: np.ndarray,
+    X: FloatArray,
+    Y: FloatArray,
     scaler_y: StandardScaler | RobustScaler,
     scaler_u: StandardScaler | RobustScaler,
     n_y: int,
@@ -406,14 +407,14 @@ def scale_dataset(  # noqa: PLR0913
     C_y: int,
     C_u: int,
     global_scaling: bool,  # noqa: FBT001
-) -> tuple[np.ndarray, np.ndarray]:
+) -> tuple[FloatArray, FloatArray]:
     """Scale datasets per-channel.
 
     Parameters
     ----------
-    X : np.ndarray
+    X : FloatArray
         Input features array, shape ``(samples, n_features)``.
-    Y : np.ndarray
+    Y : FloatArray
         Target labels array, shape ``(samples, n_targets)``.
     scaler_y : StandardScaler | RobustScaler
         Fitted scaler for the outputs.
@@ -430,9 +431,9 @@ def scale_dataset(  # noqa: PLR0913
 
     Returns
     -------
-    X_s : np.ndarray
+    X_s : FloatArray
         Scaled input features array, shape ``(samples, n_features)``.
-    Y_s : np.ndarray
+    Y_s : FloatArray
         Scaled target labels array, shape ``(samples, n_targets)``.
     """
     y_past_flat = X[:, : n_y * C_y]
@@ -595,10 +596,10 @@ def step(  # noqa: PLR0913
 
 def train_model(  # noqa: PLR0913
     model: eqx.Module,
-    X_train_s: np.ndarray,
-    Y_train_s: np.ndarray,
-    X_val_s: np.ndarray,
-    Y_val_s: np.ndarray,
+    X_train_s: FloatArray,
+    Y_train_s: FloatArray,
+    X_val_s: FloatArray,
+    Y_val_s: FloatArray,
     epochs: int,
     batch_size: int,
     learning_rate: float,
@@ -615,13 +616,13 @@ def train_model(  # noqa: PLR0913
     ----------
     model : eqx.Module
         The Equinox MLP model to train.
-    X_train_s : np.ndarray
+    X_train_s : FloatArray
         Scaled training inputs, shape ``(samples_train, n_features)``.
-    Y_train_s : np.ndarray
+    Y_train_s : FloatArray
         Scaled training targets, shape ``(samples_train, n_targets)``.
-    X_val_s : np.ndarray
+    X_val_s : FloatArray
         Scaled validation inputs, shape ``(samples_val, n_features)``.
-    Y_val_s : np.ndarray
+    Y_val_s : FloatArray
         Scaled validation targets, shape ``(samples_val, n_targets)``.
     epochs : int
         Number of training epochs.
@@ -729,11 +730,11 @@ def plot_training_curves(train_losses: list[float], val_losses: list[float], plo
 def evaluate_model(  # noqa: PLR0913
     model: eqx.Module,
     scaler_y: StandardScaler | RobustScaler,
-    X_val_s: np.ndarray,
-    Y_val: np.ndarray,
+    X_val_s: FloatArray,
+    Y_val: FloatArray,
     C_y: int,
     global_scaling: bool,  # noqa: FBT001
-) -> tuple[np.ndarray, float]:
+) -> tuple[FloatArray, float]:
     """Evaluate the trained model.
 
     Parameters
@@ -742,16 +743,16 @@ def evaluate_model(  # noqa: PLR0913
         The trained Equinox MLP model.
     scaler_y : StandardScaler | RobustScaler
         Fitted scaler for the targets.
-    X_val_s : np.ndarray
+    X_val_s : FloatArray
         Scaled validation inputs, shape ``(samples_val, n_features)``.
-    Y_val : np.ndarray
+    Y_val : FloatArray
         Target values for the validation set, shape ``(samples_val, n_targets)``.
     C_y : int
         Number of output channels.
 
     Returns
     -------
-    Y_pred_unscaled : np.ndarray
+    Y_pred_unscaled : FloatArray
         Absolute predictions flattened per step/channel, shape ``(samples_val, n_targets)``.
     mse : float
         Mean squared error of the absolute predictions.

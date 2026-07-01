@@ -12,12 +12,11 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 import numpy as np
-import numpy.typing as npt
 
 if TYPE_CHECKING:
     from neuro.connectome import Connectome
+    from neuro.types import FloatArray
 
-FloatArray = npt.NDArray[np.float64]
 
 DT = 1e-4
 K = 0.54

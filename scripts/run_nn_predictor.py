@@ -10,7 +10,7 @@ import datetime
 import json
 import shutil
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import jax
 import matplotlib.pyplot as plt
@@ -31,6 +31,9 @@ from neuro.nn_training import (
 )
 from neuro.prediction import AutoregressivePredictor, MLPArtifact
 from utils.plotting import plot_multistep_predictions
+
+if TYPE_CHECKING:
+    from neuro.types import FloatArray
 
 
 def main() -> None:  # noqa: PLR0915, C901, PLR0912
@@ -108,7 +111,7 @@ def main() -> None:  # noqa: PLR0915, C901, PLR0912
         print(f"No .npz data files found in: {data_path}")
         return
 
-    projection: tuple[np.ndarray, np.ndarray] | None = None
+    projection: tuple[FloatArray, FloatArray] | None = None
     if enable_projection:
         if w_psd > 0 or w_fc > 0:
             msg = "Latent projection is incompatible with the per-channel PSD/FC losses (set w_psd=w_fc=0)."

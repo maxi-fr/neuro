@@ -8,14 +8,14 @@ the sample rate and additive noise) instead of a bespoke sensor.
 
 from __future__ import annotations
 
-from typing import Any, Self
+from typing import TYPE_CHECKING, Any, Self
 
 import numpy as np
-import numpy.typing as npt
 
 from neuro.jansen_rit import lfp as regional_lfp
 
-FloatArray = npt.NDArray[np.float64]
+if TYPE_CHECKING:
+    from neuro.types import FloatArray
 
 
 class EEGMeasurement:
@@ -67,8 +67,8 @@ class EEGMeasurement:
     def __call__(
         self,
         _t: float,
-        x: np.ndarray,
-        _u: np.ndarray,
+        x: FloatArray,
+        _u: FloatArray,
     ) -> FloatArray:
         """Collapse the network state ``x`` to an EEG channel vector."""
         x_grid = x.reshape(6, self.n_nodes)

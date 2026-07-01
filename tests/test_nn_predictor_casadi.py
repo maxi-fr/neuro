@@ -14,6 +14,8 @@ import pytest
 if TYPE_CHECKING:
     from pathlib import Path
 
+    from neuro.types import FloatArray
+
 # float64 parity is mandatory; enable before any array is created (Linear layers read
 # this flag at construction time via default_floating_dtype()).
 jax.config.update("jax_enable_x64", True)  # noqa: FBT003
@@ -38,7 +40,7 @@ _CASES = [
 ]
 
 
-def _np2(result: object) -> np.ndarray:
+def _np2(result: object) -> FloatArray:
     return np.array(ca.DM(result))
 
 
@@ -52,7 +54,7 @@ def _build_artifact(
     n_channels: int,
     n_controls: int,
     activation: str = "relu",
-) -> tuple[Path, eqx.nn.MLP, dict[str, np.ndarray]]:
+) -> tuple[Path, eqx.nn.MLP, dict[str, FloatArray]]:
     """Build and save a tiny artifact via ``MLPArtifact.save``, returning its path, MLP, and scalers."""
     rng = np.random.default_rng(_SEED)
     in_size = n_y * n_channels + n_u * n_controls

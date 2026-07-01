@@ -29,6 +29,7 @@ if TYPE_CHECKING:
     from numpy.typing import ArrayLike
 
     from neuro.nn_predictor_casadi import NNSymbolicModel
+    from neuro.types import FloatArray
 
 
 @dataclasses.dataclass(frozen=True)
@@ -57,9 +58,9 @@ class ZeroController(Controller[ZeroControllerLog]):
     def update(
         self,
         t: float,  # noqa: ARG002
-        ref: np.ndarray,  # noqa: ARG002
-        x_hat: np.ndarray,  # noqa: ARG002
-    ) -> tuple[np.ndarray, ZeroControllerLog]:
+        ref: FloatArray,  # noqa: ARG002
+        x_hat: FloatArray,  # noqa: ARG002
+    ) -> tuple[FloatArray, ZeroControllerLog]:
         """Return a zero control vector regardless of reference or state."""
         return np.zeros(self.n_u, dtype=np.float64), ZeroControllerLog()
 
@@ -134,9 +135,9 @@ class StimWindowController(Controller[StimWindowControllerLog]):
     def update(
         self,
         t: float,
-        ref: np.ndarray,  # noqa: ARG002
-        x_hat: np.ndarray,  # noqa: ARG002
-    ) -> tuple[np.ndarray, StimWindowControllerLog]:
+        ref: FloatArray,  # noqa: ARG002
+        x_hat: FloatArray,  # noqa: ARG002
+    ) -> tuple[FloatArray, StimWindowControllerLog]:
         """Emit the stimulation amplitude inside the window, zero outside it."""
         active = self.onset <= t < self.offset
         u = self.amplitude.reshape(-1) if active else np.zeros(self.n_u, dtype=np.float64)
@@ -148,7 +149,7 @@ _MULTISINE_F_MAX_HZ = 15
 _EPS = 1e-12
 
 
-def _multisine(n_samples: int, n_elec: int, amp: float, dt: float, rng: np.random.Generator) -> np.ndarray:
+def _multisine(n_samples: int, n_elec: int, amp: float, dt: float, rng: np.random.Generator) -> FloatArray:
     """Build a random-phase multisine of peak amplitude ``amp``, one column per electrode."""
     t = np.arange(n_samples) * dt
     freqs = np.arange(_MULTISINE_F_MIN_HZ, _MULTISINE_F_MAX_HZ + 1)
@@ -170,7 +171,7 @@ def build_input_schedule(  # noqa: PLR0913
     hold_ms: float,
     dt: float,
     rng: np.random.Generator,
-) -> np.ndarray:
+) -> FloatArray:
     """Build the per-step tES schedule ``(n_steps, n_elec)``; zero during the leading transient.
 
     ``ras`` holds a random uniform amplitude per block, ``prbs`` a random binary +/-amp, and
@@ -240,9 +241,9 @@ class WaveformController(Controller[WaveformControllerLog]):
     def update(
         self,
         t: float,
-        ref: np.ndarray,  # noqa: ARG002
-        x_hat: np.ndarray,  # noqa: ARG002
-    ) -> tuple[np.ndarray, WaveformControllerLog]:
+        ref: FloatArray,  # noqa: ARG002
+        x_hat: FloatArray,  # noqa: ARG002
+    ) -> tuple[FloatArray, WaveformControllerLog]:
         """Emit the scheduled per-electrode current for the current step."""
         k = round(t / self.dt)
         if k >= self.schedule.shape[0]:
@@ -353,7 +354,7 @@ class MPCController(Controller[MPCControllerLog]):
         self._y_buf = np.zeros((self.n_y, self.n_channels), dtype=np.float64)
         self._u_buf = np.zeros((self.n_u_steps, self.n_elec), dtype=np.float64)
         self._n_seen = 0
-        self._u_prev: np.ndarray | None = None  # last optimal control sequence, shifted
+        self._u_prev: FloatArray | None = None  # last optimal control sequence, shifted
 
         self._build_solver()
 
@@ -435,7 +436,7 @@ class MPCController(Controller[MPCControllerLog]):
         self._lbx = np.concatenate([np.tile(-self.u_max, h), np.full(n_phi_vars, -np.inf)])
         self._ubx = np.concatenate([np.tile(self.u_max, h), np.full(n_phi_vars, np.inf)])
 
-    def _solve(self, x0: np.ndarray) -> tuple[np.ndarray, float, bool]:
+    def _solve(self, x0: FloatArray) -> tuple[FloatArray, float, bool]:
         """Solve the NLP for window-state ``x0``; return ``(u_0*, cost, success)``."""
         m, h = self.n_elec, self.horizon
         D = self.shooting_depth
@@ -462,9 +463,9 @@ class MPCController(Controller[MPCControllerLog]):
     def update(
         self,
         t: float,  # noqa: ARG002
-        ref: np.ndarray,  # noqa: ARG002
-        x_hat: np.ndarray,
-    ) -> tuple[np.ndarray, MPCControllerLog]:
+        ref: FloatArray,  # noqa: ARG002
+        x_hat: FloatArray,
+    ) -> tuple[FloatArray, MPCControllerLog]:
         """Ingest the current EEG measurement, solve the NLP, and emit the first control."""
         y_eeg = x_hat.reshape(-1)
         # Encode to the model's state space: latent components with a projection, else a no-op.
@@ -594,7 +595,7 @@ class LinearMPCController(Controller[LinearMPCControllerLog]):
         self._y_buf = np.zeros((self.n_y, self.n_channels), dtype=np.float64)
         self._u_buf = np.zeros((self.n_u_steps, self.n_elec), dtype=np.float64)
         self._n_seen = 0
-        self._u_prev: np.ndarray | None = None
+        self._u_prev: FloatArray | None = None
 
         self._build_solver()
 
@@ -665,7 +666,7 @@ class LinearMPCController(Controller[LinearMPCControllerLog]):
             opts["printLevel"] = "none"
         self._solver = ca.qpsol("mpc", plugin, qp, opts)
 
-    def _solve(self, x0: np.ndarray) -> tuple[np.ndarray, float, bool]:
+    def _solve(self, x0: FloatArray) -> tuple[FloatArray, float, bool]:
         """Solve the QP for window-state ``x0``; return ``(u_0*, cost, success)``."""
         m, h = self.n_elec, self.horizon
         u_guess = self._u_prev if self._u_prev is not None else np.zeros((h, m))
@@ -694,9 +695,9 @@ class LinearMPCController(Controller[LinearMPCControllerLog]):
     def update(
         self,
         t: float,  # noqa: ARG002
-        ref: np.ndarray,  # noqa: ARG002
-        x_hat: np.ndarray,
-    ) -> tuple[np.ndarray, LinearMPCControllerLog]:
+        ref: FloatArray,  # noqa: ARG002
+        x_hat: FloatArray,
+    ) -> tuple[FloatArray, LinearMPCControllerLog]:
         """Ingest the current EEG measurement, solve the QP, and emit the first control."""
         y_eeg = x_hat.reshape(-1)
         # Encode to the model's state space: latent components with a projection, else a no-op.

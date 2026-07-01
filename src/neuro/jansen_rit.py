@@ -29,7 +29,7 @@ Everything is in SI seconds: ``a = 100``, ``b = 50`` per second, ``dt = 1e-4`` s
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
-from typing import Any, Self
+from typing import TYPE_CHECKING, Any, Self
 
 import numba
 import numpy as np
@@ -39,7 +39,8 @@ from simulate.dynamics import Dynamics
 
 from neuro.config import parse_array
 
-FloatArray = npt.NDArray[np.float64]
+if TYPE_CHECKING:
+    from neuro.types import FloatArray
 
 
 def delays_to_steps(delays_ms: FloatArray, dt: float) -> npt.NDArray[np.int64]:
@@ -381,7 +382,7 @@ def lfp(x_traj: FloatArray) -> FloatArray:
     return x_traj[1] - x_traj[2]
 
 
-def project_control(u: np.ndarray, gamma_2d: FloatArray, n_elec: int) -> FloatArray:
+def project_control(u: FloatArray, gamma_2d: FloatArray, n_elec: int) -> FloatArray:
     """Project per-electrode tES current ``u`` onto nodes via ``gamma``.
 
     Parameters
@@ -507,7 +508,7 @@ class JansenRitDynamics(Dynamics[NoLog]):
             seed=config.get("seed"),
         )
 
-    def dynamics(self, t: float, x: np.ndarray, u: np.ndarray) -> np.ndarray:
+    def dynamics(self, t: float, x: FloatArray, u: FloatArray) -> FloatArray:
         """Advance the network one stochastic-Heun step (``sigma = 0`` is noiseless).
 
         The circular-history write/read index is recovered from ``t`` via

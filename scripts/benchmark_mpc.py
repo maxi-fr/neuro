@@ -39,6 +39,8 @@ from neuro.nn_predictor_casadi import NNSymbolicModel  # noqa: E402
 if TYPE_CHECKING:
     from collections.abc import Callable
 
+    from neuro.types import FloatArray
+
 
 @dataclass(frozen=True)
 class BenchResult:
@@ -55,7 +57,7 @@ class BenchResult:
     n_success: int
 
 
-def _eeg_sampler(model: NNSymbolicModel, rng: np.random.Generator) -> Callable[[], np.ndarray]:
+def _eeg_sampler(model: NNSymbolicModel, rng: np.random.Generator) -> Callable[[], FloatArray]:
     """Return a callable drawing one realistic-magnitude EEG vector from the model's scalers."""
     n_ch = model.n_channels
     mean = np.broadcast_to(model.artifact.y_mean, (n_ch,))
