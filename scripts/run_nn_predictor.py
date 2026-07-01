@@ -6,13 +6,10 @@ multiple trajectories.
 """
 
 import argparse
-import datetime
 import shutil
 from pathlib import Path
-from typing import Any
 
-import yaml
-
+from neuro.config import load_config, resolve_artifact_dir, resolve_data_files
 from neuro.nn_training import train_and_save_predictor
 
 
@@ -26,35 +23,14 @@ def main() -> None:
     args = parser.parse_args()
 
     config_path = Path(args.config)
-    if not config_path.exists():
-        print(f"Config file not found: {config_path}")
+    try:
+        config = load_config(config_path)
+        data_files = resolve_data_files(config, args.data_path)
+    except (FileNotFoundError, ValueError) as e:
+        print(e)
         return
 
-    with config_path.open() as f:
-        config: dict[str, Any] = yaml.safe_load(f)
-
-    sim_cfg = config.get("simulation", {})
-    data_path_str = args.data_path or sim_cfg.get("data_path")
-    if not data_path_str:
-        print("data_path not specified in config or arguments.")
-        return
-
-    data_path = Path(data_path_str)
-    if not data_path.is_dir():
-        print(f"data_path is not a valid directory: {data_path}")
-        return
-
-    data_files = sorted([str(p) for p in data_path.glob("*.npz")])
-    if not data_files:
-        print(f"No .npz data files found in: {data_path}")
-        return
-
-    artifact_dir = config.get("artifact")
-    if artifact_dir is None:
-        local_now = datetime.datetime.now(datetime.UTC).astimezone()
-        artifact_dir = f"artifacts/nn_predictor_{local_now.strftime('%Y-%m-%d_%H-%M-%S')}"
-    artifact_dir = Path(artifact_dir)
-    artifact_dir.mkdir(parents=True, exist_ok=True)
+    artifact_dir = resolve_artifact_dir(config.artifact, "nn_predictor")
     shutil.copy2(config_path, artifact_dir / config_path.name)
 
     train_and_save_predictor(config, data_files, artifact_dir)

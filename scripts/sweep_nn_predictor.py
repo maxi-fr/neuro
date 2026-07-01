@@ -1,52 +1,41 @@
 """Script to run hyperparameter search for the JAX-based NN predictor using Optuna."""
 
 import argparse
-import copy
-import datetime
 import shutil
 from pathlib import Path
-from typing import Any
 
 import optuna
 import yaml
 
+from neuro.config import (
+    ModelConfig,
+    NNPredictorConfig,
+    TrainingConfig,
+    load_config,
+    resolve_artifact_dir,
+    resolve_data_files,
+)
 from neuro.nn_training import train_and_save_predictor
 
 
-def suggest_params(trial: optuna.Trial, sweep_cfg: dict[str, Any], group: str, config: dict[str, Any]) -> None:
-    """Suggest parameters for a given group (e.g. 'model' or 'training') and update the config."""
-    if group not in sweep_cfg or not isinstance(sweep_cfg[group], dict):
-        return
-
-    for param_name, param_def in sweep_cfg[group].items():
-        if not isinstance(param_def, dict) or "type" not in param_def:
-            continue
-
-        ptype = param_def["type"]
-        if ptype == "categorical":
-            config[group][param_name] = trial.suggest_categorical(param_name, param_def["choices"])
-        elif ptype == "int":
-            config[group][param_name] = trial.suggest_int(
-                param_name, param_def["low"], param_def["high"], log=param_def.get("log", False)
-            )
-        elif ptype == "float":
-            config[group][param_name] = trial.suggest_float(
-                param_name, param_def["low"], param_def["high"], log=param_def.get("log", False)
-            )
-        elif ptype == "loguniform":
-            config[group][param_name] = trial.suggest_float(param_name, param_def["low"], param_def["high"], log=True)
-
-
 def objective(
-    trial: optuna.Trial, base_config: dict[str, Any], data_files: list[str], base_artifact_dir: Path
+    trial: optuna.Trial, base_config: NNPredictorConfig, data_files: list[str], base_artifact_dir: Path
 ) -> float:
-    """Optuna objective function for training and evaluating the NN predictor."""
-    # Create a deep copy of the config so we don't overwrite the base
-    config = copy.deepcopy(base_config)
+    """Optuna objective: apply the trial's suggested params, then train and evaluate the predictor."""
+    sweep = base_config.sweep
+    if sweep is None:
+        msg = "objective requires a config with a 'sweep' section."
+        raise RuntimeError(msg)
 
-    sweep_cfg = config.get("sweep", {})
-    suggest_params(trial, sweep_cfg, "model", config)
-    suggest_params(trial, sweep_cfg, "training", config)
+    model_overrides = {name: spec.suggest(trial, name) for name, spec in sweep.model.items()}
+    training_overrides = {name: spec.suggest(trial, name) for name, spec in sweep.training.items()}
+    # Re-validate the merged sections so an override that is not a real hyperparameter raises.
+    config = base_config.model_copy(
+        update={
+            "model": ModelConfig.model_validate({**base_config.model.model_dump(), **model_overrides}),
+            "training": TrainingConfig.model_validate({**base_config.training.model_dump(), **training_overrides}),
+        }
+    )
 
     print(f"\n{'=' * 40}")
     print(f"Starting Trial {trial.number}")
@@ -60,9 +49,10 @@ def objective(
     trial_dir = base_artifact_dir / f"trial_{trial.number}"
     trial_dir.mkdir(parents=True, exist_ok=True)
 
-    # Save the specific config used for this trial
+    # Save the resolved config used for this trial (without the sweep search space).
+    trial_config = config.model_dump(exclude={"sweep"})
     with (trial_dir / "trial_config.yaml").open("w") as f:
-        yaml.dump(config, f)
+        yaml.dump(trial_config, f)
 
     # Vary the seed across trials to avoid correlation if params are identical.
     try:
@@ -87,39 +77,18 @@ def main() -> None:
     args = parser.parse_args()
 
     config_path = Path(args.config)
-    if not config_path.exists():
-        print(f"Config file not found: {config_path}")
+    try:
+        config = load_config(config_path)
+        data_files = resolve_data_files(config, args.data_path)
+    except (FileNotFoundError, ValueError) as e:
+        print(e)
         return
 
-    with config_path.open() as f:
-        config: dict[str, Any] = yaml.safe_load(f)
-
-    sim_cfg = config.get("simulation", {})
-    data_path_str = args.data_path or sim_cfg.get("data_path")
-    if not data_path_str:
-        print("data_path not specified in config or arguments.")
+    if config.sweep is None:
+        print("No 'sweep' section found in config.")
         return
 
-    data_path = Path(data_path_str)
-    if not data_path.is_dir():
-        print(f"data_path is not a valid directory: {data_path}")
-        return
-
-    data_files = sorted([str(p) for p in data_path.glob("*.npz")])
-    if not data_files:
-        print(f"No .npz data files found in: {data_path}")
-        return
-
-    sweep_cfg = config.get("sweep", {})
-    n_trials = sweep_cfg.get("n_trials", 20)
-
-    artifact_dir = sweep_cfg.get("artifact")
-    if artifact_dir is None:
-        local_now = datetime.datetime.now(datetime.UTC).astimezone()
-        artifact_dir = f"artifacts/sweep_nn_predictor_{local_now.strftime('%Y-%m-%d_%H-%M-%S')}"
-    base_artifact_dir: Path = Path(artifact_dir)
-    base_artifact_dir.mkdir(parents=True, exist_ok=True)
-
+    base_artifact_dir = resolve_artifact_dir(config.sweep.artifact, "sweep_nn_predictor")
     shutil.copy2(config_path, base_artifact_dir / config_path.name)
 
     study_name = "nn_predictor_sweep"
@@ -127,7 +96,9 @@ def main() -> None:
     storage_url = f"sqlite:///{db_path.resolve()}"
 
     study = optuna.create_study(study_name=study_name, storage=storage_url, direction="minimize", load_if_exists=True)
-    study.optimize(lambda trial: objective(trial, config, data_files, base_artifact_dir), n_trials=n_trials)
+    study.optimize(
+        lambda trial: objective(trial, config, data_files, base_artifact_dir), n_trials=config.sweep.n_trials
+    )
 
     print("\n================== SWEEP COMPLETED ==================")
     print("Best trial:")

@@ -8,7 +8,6 @@ multiple trajectories.
 import json
 from collections.abc import Iterator
 from pathlib import Path
-from typing import Any
 
 import equinox as eqx
 import jax
@@ -21,6 +20,7 @@ from sklearn.preprocessing import RobustScaler, StandardScaler
 from tqdm import tqdm
 from tvboptim.observations.observation import compute_fc
 
+from neuro.config import NNPredictorConfig
 from neuro.prediction import AutoregressivePredictor, MLPArtifact, get_activation
 from neuro.types import FloatArray
 from utils.plotting import plot_multistep_predictions
@@ -769,7 +769,7 @@ def evaluate_model(  # noqa: PLR0913
 
 
 def train_and_save_predictor(  # noqa: PLR0915
-    config: dict[str, Any],
+    config: NNPredictorConfig,
     data_files: list[str],
     artifact_dir: Path,
     *,
@@ -783,9 +783,9 @@ def train_and_save_predictor(  # noqa: PLR0915
 
     Parameters
     ----------
-    config : dict[str, Any]
-        Fully-resolved configuration with ``simulation``, ``model`` and ``training``
-        sections (as loaded from the YAML config, with any sweep overrides applied).
+    config : NNPredictorConfig
+        Typed, validated configuration with ``simulation``, ``model`` and ``training``
+        sections (with any sweep overrides already applied by the caller).
     data_files : list[str]
         Paths to the ``.npz`` trajectory files to train on.
     artifact_dir : Path
@@ -799,36 +799,36 @@ def train_and_save_predictor(  # noqa: PLR0915
     float
         Mean squared error of the absolute predictions on the validation set.
     """
-    sim_cfg = config.get("simulation", {})
-    downsample = sim_cfg.get("downsample", 1)
-    n_steps_cfg = sim_cfg.get("n_steps", 2000)
-    dt_real = sim_cfg.get("dt", 1e-4) * downsample
+    sim_cfg = config.simulation
+    downsample = sim_cfg.downsample
+    n_steps_cfg = sim_cfg.n_steps
+    dt_real = sim_cfg.dt * downsample
 
-    model_cfg = config.get("model", {})
-    n_y = model_cfg.get("n_y", 5)
-    n_u = model_cfg.get("n_u", 5)
-    horizon = model_cfg.get("horizon", 5)
-    hidden_size = int(model_cfg.get("hidden_size", 128))
-    depth = int(model_cfg.get("depth", 2))
-    activation = model_cfg.get("activation", "relu")
-    projection_cfg = model_cfg.get("projection", {})
-    enable_projection = bool(projection_cfg.get("enable", False))
-    latent_dim = projection_cfg.get("latent_dim")
-    explained_variance = projection_cfg.get("explained_variance")
+    model_cfg = config.model
+    n_y = model_cfg.n_y
+    n_u = model_cfg.n_u
+    horizon = model_cfg.horizon
+    hidden_size = model_cfg.hidden_size
+    depth = model_cfg.depth
+    activation = model_cfg.activation
+    projection_cfg = model_cfg.projection
+    enable_projection = projection_cfg.enable
+    latent_dim = projection_cfg.latent_dim
+    explained_variance = projection_cfg.explained_variance
 
-    train_cfg = config.get("training", {})
-    epochs = int(train_cfg.get("epochs", 100))
-    batch_size = int(train_cfg.get("batch_size", 128))
-    learning_rate = float(train_cfg.get("learning_rate", 1e-3))
-    weight_decay = float(train_cfg.get("weight_decay", 1e-4))
-    train_split = float(train_cfg.get("train_split", 0.8))
-    curriculum_decay_fraction = float(train_cfg.get("curriculum_decay_fraction", 0.8))
-    seed = int(train_cfg.get("seed", 69)) + seed_offset
-    w_psd = float(train_cfg.get("w_psd", 0.0))
-    w_fc = float(train_cfg.get("w_fc", 0.0))
-    patience = int(train_cfg.get("patience", 50))
-    scaler_type = train_cfg.get("scaler", "standard")
-    global_scaling = bool(train_cfg.get("global_scaling", False))
+    train_cfg = config.training
+    epochs = train_cfg.epochs
+    batch_size = train_cfg.batch_size
+    learning_rate = train_cfg.learning_rate
+    weight_decay = train_cfg.weight_decay
+    train_split = train_cfg.train_split
+    curriculum_decay_fraction = train_cfg.curriculum_decay_fraction
+    seed = train_cfg.seed + seed_offset
+    w_psd = train_cfg.w_psd
+    w_fc = train_cfg.w_fc
+    patience = train_cfg.patience
+    scaler_type = train_cfg.scaler
+    global_scaling = train_cfg.global_scaling
 
     projection: tuple[FloatArray, FloatArray] | None = None
     if enable_projection:

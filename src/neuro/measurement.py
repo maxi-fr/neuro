@@ -11,11 +11,21 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any, Self
 
 import numpy as np
+from pydantic import Field
 
+from neuro.config import StrictConfig
 from neuro.jansen_rit import lfp as regional_lfp
 
 if TYPE_CHECKING:
     from neuro.types import FloatArray
+
+
+class _EEGMeasurementConfig(StrictConfig):
+    """Config schema for :class:`EEGMeasurement`."""
+
+    speed: float = Field(default=50.0, gt=0)
+    n_nodes: int | None = Field(default=None, ge=1)
+    selected_channels: list[str | int] | None = None
 
 
 class EEGMeasurement:
@@ -57,12 +67,8 @@ class EEGMeasurement:
     @classmethod
     def from_config(cls, config: dict[str, Any]) -> Self:
         """Instantiate the component from a raw configuration dictionary."""
-        speed = float(config.get("speed", 50.0))
-        n_nodes = config.get("n_nodes")
-        if n_nodes is not None:
-            n_nodes = int(n_nodes)
-        selected_channels = config.get("selected_channels")
-        return cls(speed=speed, n_nodes=n_nodes, selected_channels=selected_channels)
+        cfg = _EEGMeasurementConfig.model_validate(config)
+        return cls(speed=cfg.speed, n_nodes=cfg.n_nodes, selected_channels=cfg.selected_channels)
 
     def __call__(
         self,

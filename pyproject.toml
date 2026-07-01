@@ -19,6 +19,7 @@ dependencies = [
     "tvboptim>=0.3.0",
     "optuna>=4.9.0",
     "casadi>=3.7.2",
+    "pydantic>=2.13.4",
 ]
 
 [project.optional-dependencies]

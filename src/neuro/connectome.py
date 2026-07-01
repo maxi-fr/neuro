@@ -27,7 +27,7 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 import numpy.typing as npt
 
-from neuro.config import parse_array
+from neuro.config import parse_array, reject_unknown
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -165,12 +165,23 @@ class Connectome:
             )
 
     @classmethod
-    def from_config(cls, config: dict[str, Any]) -> Connectome:  # noqa: C901, PLR0912
+    def config_keys(cls) -> set[str]:
+        """Return the config keys accepted by :meth:`from_config` (for strict typo rejection)."""
+        special = {"selected_regions", "selected_channels", "target_electrode", "gamma_spread"}
+        return special | {f.name for f in dataclasses.fields(cls)}
+
+    @classmethod
+    def from_config(cls, config: dict[str, Any], *, strict: bool = True) -> Connectome:  # noqa: C901, PLR0912
         """Instantiate the connectome from a configuration dictionary.
 
         Loads the base TVB connectome, applies any node/region/channel subsetting,
-        and computes the tES spatial projection `gamma` if configured.
+        and computes the tES spatial projection `gamma` if configured. When ``strict``
+        is set, any key outside :meth:`config_keys` raises
+        :class:`~neuro.config.ConfigError`; callers that share the dict with other
+        parsers (e.g. :meth:`JansenRitParams.from_config`) pass ``strict=False``.
         """
+        if strict:
+            reject_unknown(config, cls.config_keys(), "Connectome")
         speed = float(config.get("speed", 50.0))
         conn = load_connectome(speed=speed)
 

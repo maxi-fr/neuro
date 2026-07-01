@@ -37,7 +37,7 @@ import numpy.typing as npt
 from simulate.component import NoLog
 from simulate.dynamics import Dynamics
 
-from neuro.config import parse_array
+from neuro.config import parse_array, reject_unknown
 
 if TYPE_CHECKING:
     from neuro.types import FloatArray
@@ -143,18 +143,25 @@ class JansenRitParams:
         )
 
     @classmethod
-    def from_config(cls, config: dict[str, Any]) -> JansenRitParams:
+    def from_config(cls, config: dict[str, Any], *, strict: bool = True) -> JansenRitParams:
         """Build :class:`JansenRitParams` from a global config dict.
 
         Extracts the network topology via ``Connectome.from_config`` (or uses a provided
         `connectome` key) and the scalar parameters strictly from the nested `"params"` key.
+        When ``strict`` is set, any top-level key outside ``{connectome, dt, params}`` plus
+        the connectome's own keys raises :class:`~neuro.config.ConfigError`. A caller that
+        has already validated the shared dict (e.g. :meth:`JansenRitDynamics.from_config`)
+        passes ``strict=False`` so its own extra keys are not rejected here.
         """
+        from neuro.connectome import Connectome  # noqa: PLC0415
+
+        if strict:
+            reject_unknown(config, {"connectome", "dt", "params"} | Connectome.config_keys(), "JansenRitParams")
+
         # Load the connectome
         conn = config.get("connectome")
         if conn is None:
-            from neuro.connectome import Connectome  # noqa: PLC0415
-
-            conn = Connectome.from_config(config)
+            conn = Connectome.from_config(config, strict=False)
 
         dt = float(config.get("dt", 0.001))
 
@@ -498,9 +505,16 @@ class JansenRitDynamics(Dynamics[NoLog]):
         """Instantiate from a raw config dict.
 
         Config keys for the dynamics component are flat. Parameters for the physical
-        model should be nested under the ``params`` key.
+        model should be nested under the ``params`` key. As the entry point for the shared
+        dynamics dict, this validates the full set of accepted keys (``dt``, ``seed`` plus
+        everything :meth:`JansenRitParams.from_config` and ``Connectome.from_config`` accept)
+        and delegates with ``strict=False`` so the nested parsers do not reject each other's
+        keys; an unknown key raises :class:`~neuro.config.ConfigError`.
         """
-        params = JansenRitParams.from_config(config)
+        from neuro.connectome import Connectome  # noqa: PLC0415
+
+        reject_unknown(config, {"dt", "seed", "connectome", "params"} | Connectome.config_keys(), "JansenRitDynamics")
+        params = JansenRitParams.from_config(config, strict=False)
 
         return cls(
             dt=float(config["dt"]),

@@ -19,11 +19,14 @@ stacked/sparse formulation) or qpOASES (a condensed/dense one).
 from __future__ import annotations
 
 import dataclasses
-from typing import TYPE_CHECKING, Any, Self
+from typing import TYPE_CHECKING, Any, Literal, Self
 
 import casadi as ca
 import numpy as np
+from pydantic import Field
 from simulate.controller import Controller
+
+from neuro.config import StrictConfig
 
 if TYPE_CHECKING:
     from numpy.typing import ArrayLike
@@ -35,6 +38,13 @@ if TYPE_CHECKING:
 @dataclasses.dataclass(frozen=True)
 class ZeroControllerLog:
     """Dataclass for ZeroController logging."""
+
+
+class _ZeroControllerConfig(StrictConfig):
+    """Config schema for :class:`ZeroController`."""
+
+    dt: float = Field(gt=0)
+    n_u: int = Field(default=1, ge=1)
 
 
 class ZeroController(Controller[ZeroControllerLog]):
@@ -53,7 +63,8 @@ class ZeroController(Controller[ZeroControllerLog]):
     @classmethod
     def from_config(cls, config: dict[str, Any]) -> Self:
         """Instantiate the component from a raw configuration dictionary."""
-        return cls(dt=float(config["dt"]), n_u=int(config.get("n_u", 1)))
+        cfg = _ZeroControllerConfig.model_validate(config)
+        return cls(dt=cfg.dt, n_u=cfg.n_u)
 
     def update(
         self,
@@ -70,6 +81,16 @@ class StimWindowControllerLog:
     """Dataclass for StimWindowController logging."""
 
     active: bool
+
+
+class _StimWindowControllerConfig(StrictConfig):
+    """Config schema for :class:`StimWindowController`."""
+
+    dt: float = Field(gt=0)
+    onset: float = Field(ge=0)
+    offset: float = Field(ge=0)
+    amplitude: float | list[float]
+    n_u: int = Field(default=1, ge=1)
 
 
 class StimWindowController(Controller[StimWindowControllerLog]):
@@ -124,13 +145,8 @@ class StimWindowController(Controller[StimWindowControllerLog]):
     @classmethod
     def from_config(cls, config: dict[str, Any]) -> Self:
         """Instantiate the component from a raw configuration dictionary."""
-        return cls(
-            dt=float(config["dt"]),
-            onset=float(config["onset"]),
-            offset=float(config["offset"]),
-            amplitude=config["amplitude"],
-            n_u=int(config.get("n_u", 1)),
-        )
+        cfg = _StimWindowControllerConfig.model_validate(config)
+        return cls(dt=cfg.dt, onset=cfg.onset, offset=cfg.offset, amplitude=cfg.amplitude, n_u=cfg.n_u)
 
     def update(
         self,
@@ -206,6 +222,19 @@ class WaveformControllerLog:
     """Dataclass for WaveformController logging (the emitted control is logged universally)."""
 
 
+class _WaveformControllerConfig(StrictConfig):
+    """Config schema for :class:`WaveformController`."""
+
+    dt: float = Field(gt=0)
+    input_type: Literal["ras", "prbs", "multisine"]
+    duration: float = Field(gt=0)
+    n_u: int = Field(ge=1)
+    amp: float = Field(ge=0)
+    input_seed: int = Field(ge=0)
+    transient_ms: float = Field(default=0.0, ge=0)
+    hold_ms: float = Field(default=50.0, gt=0)
+
+
 class WaveformController(Controller[WaveformControllerLog]):
     """Open-loop controller that plays back a precomputed per-electrode tES waveform.
 
@@ -225,18 +254,18 @@ class WaveformController(Controller[WaveformControllerLog]):
     @classmethod
     def from_config(cls, config: dict[str, Any]) -> Self:
         """Build the schedule from the excitation parameters in the config dict."""
-        dt = float(config["dt"])
+        cfg = _WaveformControllerConfig.model_validate(config)
         schedule = build_input_schedule(
-            input_type=str(config["input_type"]),
-            n_steps=round(float(config["duration"]) / dt),
-            transient_steps=round(float(config.get("transient_ms", 0.0)) / (dt * 1000.0)),
-            n_elec=int(config["n_u"]),
-            amp=float(config["amp"]),
-            hold_ms=float(config.get("hold_ms", 50.0)),
-            dt=dt,
-            rng=np.random.default_rng(int(config["input_seed"])),
+            input_type=cfg.input_type,
+            n_steps=round(cfg.duration / cfg.dt),
+            transient_steps=round(cfg.transient_ms / (cfg.dt * 1000.0)),
+            n_elec=cfg.n_u,
+            amp=cfg.amp,
+            hold_ms=cfg.hold_ms,
+            dt=cfg.dt,
+            rng=np.random.default_rng(cfg.input_seed),
         )
-        return cls(dt=dt, schedule=schedule)
+        return cls(dt=cfg.dt, schedule=schedule)
 
     def update(
         self,
@@ -258,6 +287,21 @@ class MPCControllerLog:
     cost: float
     success: bool
     warmup: bool
+
+
+class _MPCControllerConfig(StrictConfig):
+    """Config schema for :class:`MPCController`."""
+
+    dt: float = Field(gt=0)
+    artifact: str
+    u_max: float | list[float]
+    horizon: int | None = Field(default=None, ge=1)
+    w_y: float = Field(default=1.0, ge=0)
+    w_u: float = Field(default=0.0, ge=0)
+    shooting_depth: int = Field(default=1, ge=1)
+    max_iter: int = Field(default=100, ge=1)
+    max_cpu_time: float | None = Field(default=None, gt=0)
+    expand: bool = False
 
 
 class MPCController(Controller[MPCControllerLog]):
@@ -363,18 +407,18 @@ class MPCController(Controller[MPCControllerLog]):
         """Instantiate from a config dict, loading the NN predictor artifact from disk."""
         from neuro.nn_predictor_casadi import NNSymbolicModel  # noqa: PLC0415
 
-        max_cpu_time = config.get("max_cpu_time")
+        cfg = _MPCControllerConfig.model_validate(config)
         return cls(
-            dt=float(config["dt"]),
-            model=NNSymbolicModel.from_artifact(config["artifact"]),
-            u_max=config["u_max"],
-            horizon=int(config["horizon"]) if config.get("horizon") is not None else None,
-            w_y=float(config.get("w_y", 1.0)),
-            w_u=float(config.get("w_u", 0.0)),
-            shooting_depth=int(config.get("shooting_depth", 1)),
-            max_iter=int(config.get("max_iter", 100)),
-            max_cpu_time=float(max_cpu_time) if max_cpu_time is not None else None,
-            expand=bool(config.get("expand", False)),
+            dt=cfg.dt,
+            model=NNSymbolicModel.from_artifact(cfg.artifact),
+            u_max=cfg.u_max,
+            horizon=cfg.horizon,
+            w_y=cfg.w_y,
+            w_u=cfg.w_u,
+            shooting_depth=cfg.shooting_depth,
+            max_iter=cfg.max_iter,
+            max_cpu_time=cfg.max_cpu_time,
+            expand=cfg.expand,
         )
 
     def _build_solver(self) -> None:
@@ -493,6 +537,19 @@ class LinearMPCControllerLog:
     warmup: bool
 
 
+class _LinearMPCControllerConfig(StrictConfig):
+    """Config schema for :class:`LinearMPCController`."""
+
+    dt: float = Field(gt=0)
+    artifact: str
+    u_max: float | list[float]
+    horizon: int | None = Field(default=None, ge=1)
+    w_y: float = Field(default=1.0, ge=0)
+    w_u: float = Field(default=0.0, ge=0)
+    formulation: Literal["sparse", "dense"] = "sparse"
+    osqp_eps: float = Field(default=1e-9, gt=0)
+
+
 class LinearMPCController(Controller[LinearMPCControllerLog]):
     """Receding-horizon MPC for a *linear* (0-hidden-layer) NN predictor, solved as a QP.
 
@@ -604,15 +661,16 @@ class LinearMPCController(Controller[LinearMPCControllerLog]):
         """Instantiate from a config dict, loading the NN predictor artifact from disk."""
         from neuro.nn_predictor_casadi import NNSymbolicModel  # noqa: PLC0415
 
+        cfg = _LinearMPCControllerConfig.model_validate(config)
         return cls(
-            dt=float(config["dt"]),
-            model=NNSymbolicModel.from_artifact(config["artifact"]),
-            u_max=config["u_max"],
-            horizon=int(config["horizon"]) if config.get("horizon") is not None else None,
-            w_y=float(config.get("w_y", 1.0)),
-            w_u=float(config.get("w_u", 0.0)),
-            formulation=str(config.get("formulation", "sparse")),
-            osqp_eps=float(config.get("osqp_eps", 1e-9)),
+            dt=cfg.dt,
+            model=NNSymbolicModel.from_artifact(cfg.artifact),
+            u_max=cfg.u_max,
+            horizon=cfg.horizon,
+            w_y=cfg.w_y,
+            w_u=cfg.w_u,
+            formulation=cfg.formulation,
+            osqp_eps=cfg.osqp_eps,
         )
 
     def _build_solver(self) -> None:
