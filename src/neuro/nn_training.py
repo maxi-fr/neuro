@@ -20,6 +20,8 @@ from tvboptim.observations.observation import compute_fc
 
 from neuro.prediction import AutoregressivePredictor, get_activation
 
+jax.config.update("jax_enable_x64", val=True)
+
 
 def load_trajectory(data_file: str, n_steps: int, downsample: int) -> tuple[np.ndarray, np.ndarray]:
     """Load a single simulation trajectory.

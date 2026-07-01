@@ -129,6 +129,9 @@ testpaths = ["tests"]
 
 [tool.ty]
 
+[tool.ty.environment]
+python = ".venv"
+
 [tool.ty.src]
 exclude = ["notebooks/"]
 

@@ -18,7 +18,6 @@ import numpy as np
 import yaml
 from sklearn.preprocessing import RobustScaler, StandardScaler
 
-from neuro.jansen_rit_jax import enable_x64
 from neuro.nn_training import (
     create_model,
     evaluate_model,
@@ -36,7 +35,6 @@ from utils.plotting import plot_multistep_predictions
 
 def main() -> None:  # noqa: PLR0915, C901, PLR0912
     """Execute the main script."""
-    enable_x64()
     parser = argparse.ArgumentParser(description="Run JAX NN Predictor on multiple trajectories.")
     parser.add_argument(
         "--config", type=str, default="configs/nn_predictor/nn_predictor_config.yaml", help="Path to config YAML."

@@ -33,14 +33,10 @@ import jax.numpy as jnp
 import numpy as np
 import numpy.typing as npt
 
-from neuro.jansen_rit import JansenRitParams
-from neuro.jansen_rit_jax import eeg_jax, from_jansen_rit_params
-from neuro.sysid_jax import rollout_tbptt
+jax.config.update("jax_enable_x64", val=True)
 
 if TYPE_CHECKING:
     from collections.abc import Callable
-
-    from neuro.jansen_rit_jax import JRParamsJax
 
 FloatArray = npt.NDArray[np.float64]
 JaxArray = jax.Array
@@ -61,9 +57,6 @@ def get_activation(name: str) -> Callable[[JaxArray], JaxArray]:
     raise ValueError(msg)
 
 
-# --------------------------------------------------------------------------------------
-# Window container
-# --------------------------------------------------------------------------------------
 @dataclass(frozen=True)
 class PredictionWindow:
     """Measurements a predictor may use at one test start ``t0``.
@@ -102,9 +95,6 @@ class Predictor(Protocol):
         ...
 
 
-# --------------------------------------------------------------------------------------
-# Resampling helpers
-# --------------------------------------------------------------------------------------
 def _ds_factor(target_dt: float, data_dt: float) -> int:
     """Integer decimation factor mapping ``data_dt`` up to ``target_dt`` (>= 1)."""
     return max(1, round(target_dt / data_dt))
@@ -137,79 +127,6 @@ def decimate_to(signal: FloatArray, native_dt: float, analysis_dt: float) -> Flo
         The decimated signal array, shape ``(n_channels, n_samples_decimated)``.
     """
     return np.asarray(signal, dtype=np.float64)[:, :: _ds_factor(analysis_dt, native_dt)]
-
-
-class JaxSysidPredictor:
-    """Reduced PCA Jansen-Rit model identified by :mod:`neuro.sysid_jax`.
-
-    The model does **not** fit per window. Instead it is run forward through the context
-    window (from a zero state, driven by the recorded controls) so its internal state
-    settles past the ``x0`` -> limit-cycle transient; the horizon prediction is the
-    continued deterministic rollout. Being deterministic and noise-free, it tracks the
-    model's own attractor under the recorded stimulation rather than a specific noise
-    realisation -- a stabilised free-run, not data assimilation.
-    """
-
-    name = "jax_sysid"
-
-    def __init__(
-        self,
-        params: JRParamsJax,
-        eeg_gain: FloatArray,
-        gamma_modes: FloatArray,
-        dt: float,
-    ) -> None:
-        self._params = params
-        self._eeg_gain = jnp.asarray(eeg_gain, dtype=jnp.float64)
-        self._gamma_modes = jnp.asarray(gamma_modes, dtype=jnp.float64)
-        self.dt = float(dt)
-        self._n_nodes = params.n_nodes
-
-    @classmethod
-    def load(cls, artifact: str | Path, gamma_full: FloatArray, **_kwargs: object) -> JaxSysidPredictor:
-        """Rebuild the predictor from a ``run_sysid_jax`` ``.npz`` and the full ``gamma``.
-
-        ``gamma_full`` is the ``(n_elec, R)`` physical tES projection over the full
-        connectome; it is projected into the saved PCA mode basis so the reduced model
-        can respond to the recorded stimulation.
-        """
-        with np.load(artifact) as res:
-            a_syn = np.asarray(res["A"], dtype=np.float64)
-            w_weights = np.asarray(res["w_weights"], dtype=np.float64)
-            k_global = float(res["K"])
-            mean_input = np.asarray(res["mean_input"], dtype=np.float64)
-            eeg_gain = np.asarray(res["eeg_gain"], dtype=np.float64)
-            components = np.asarray(res["components"], dtype=np.float64)
-            delay_steps = np.asarray(res["delay_steps"], dtype=np.int64)
-            dt = float(res["dt"]) if "dt" in res else 1e-3
-        n = int(a_syn.shape[0])
-        gamma_modes = np.atleast_2d(np.asarray(gamma_full, dtype=np.float64)) @ components.T
-        jr = JansenRitParams(
-            A=a_syn,
-            mean_input=mean_input,
-            sigma=0.0,
-            w_weights=w_weights,
-            delay_steps=delay_steps,
-            eeg_gain=eeg_gain,
-            gamma=gamma_modes,
-            K=k_global,
-        )
-        params = from_jansen_rit_params(jr, n)
-        return cls(params, eeg_gain, gamma_modes, dt)
-
-    def predict(self, window: PredictionWindow, horizon_s: float) -> FloatArray:
-        """Stabilise the state over the context, then continue the rollout for the horizon."""
-        factor = _ds_factor(self.dt, window.dt_data)
-        ctx_t = np.asarray(window.y_ctx)[:, ::factor].shape[1]
-        u_ctx = _resample_controls(window.u_ctx, factor, ctx_t)
-        n_steps = round(horizon_s / self.dt)
-        u_fut = _resample_controls(window.u_future, factor, n_steps)
-
-        u_all = jnp.asarray(np.concatenate([u_ctx, u_fut], axis=0), dtype=jnp.float64) @ self._gamma_modes
-        x0 = jnp.zeros((_N_STATE_ROWS, self._n_nodes), dtype=jnp.float64)
-        x_traj = rollout_tbptt(x0, u_all, self._params, self.dt, ctx_t + n_steps)
-        eeg = np.asarray(eeg_jax(x_traj, self._eeg_gain))  # (n_ch, ctx_t + n_steps)
-        return eeg[:, ctx_t:]
 
 
 class AutoregressivePredictor(eqx.Module):

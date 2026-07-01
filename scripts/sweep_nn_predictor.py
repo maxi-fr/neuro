@@ -15,7 +15,6 @@ import optuna
 import yaml
 from sklearn.preprocessing import RobustScaler, StandardScaler
 
-from neuro.jansen_rit_jax import enable_x64
 from neuro.nn_training import (
     create_model,
     evaluate_model,
@@ -239,7 +238,6 @@ def objective(  # noqa: PLR0915
 
 def main() -> None:
     """Execute the hyperparameter sweep script."""
-    enable_x64()
     parser = argparse.ArgumentParser(description="Run Optuna Sweep for JAX NN Predictor.")
     parser.add_argument(
         "--config", type=str, default="configs/nn_predictor/sweep_config.yaml", help="Path to sweep config YAML."
