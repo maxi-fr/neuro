@@ -18,7 +18,7 @@ from neuro.types import FloatArray
 class ThesisPlotSaver:
     """For saving plots and metadata."""
 
-    def __init__(self, textwidth_pt: float = 418.25, base_dir: str = "plots") -> None:
+    def __init__(self, textwidth_pt: float = 418.25, base_dir: str = "artifacts") -> None:
         """
         Initialize the saver with LaTeX document dimensions and global styles.
 

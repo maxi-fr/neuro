@@ -6,8 +6,8 @@ and plots/saves EEG traces and power spectral density.
 
 Usage
 -----
-    uv run python scripts/plot_simulation.py --dir simulations/jansen_rit_baseline
-    uv run python scripts/plot_simulation.py --dir simulations/jansen_rit_baseline --transient-ms 1000
+    uv run python scripts/plot_simulation.py --dir artifacts/jansen_rit_baseline
+    uv run python scripts/plot_simulation.py --dir artifacts/jansen_rit_baseline --transient-ms 1000
 """
 
 from __future__ import annotations

@@ -46,7 +46,7 @@ def main() -> None:
 
     if args.output_dir is None:
         local_now = datetime.now(UTC).astimezone()
-        output_dir_str = f"results/simulation_{local_now.strftime('%Y-%m-%d_%H-%M-%S')}"
+        output_dir_str = f"artifacts/simulation_{local_now.strftime('%Y-%m-%d_%H-%M-%S')}"
     else:
         output_dir_str = args.output_dir
 

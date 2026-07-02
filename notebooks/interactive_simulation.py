@@ -337,7 +337,7 @@ def _(mo):
 
 @app.cell
 def _(mo):
-    save_dir_input = mo.ui.text(value="plots", label="Save Directory:")
+    save_dir_input = mo.ui.text(value="artifacts", label="Save Directory:")
     save_button = mo.ui.button(label="💾 Save Plots to Disk", tooltip="Saves both plots as PNG files")
 
     mo.hstack([save_dir_input, save_button], gap=2)

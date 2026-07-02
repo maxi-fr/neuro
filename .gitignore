@@ -24,9 +24,7 @@ CLAUDE.md
 __marimo__/
 artifacts/
 artifacts
-simulations/
 data/
-results/
 *.npy
 *.npz
 notebooks/layouts/

@@ -302,6 +302,7 @@ class _MPCControllerConfig(StrictConfig):
     max_iter: int = Field(default=100, ge=1)
     max_cpu_time: float | None = Field(default=None, gt=0)
     expand: bool = False
+    ipopt_options: dict[str, Any] | None = None
 
 
 class MPCController(Controller[MPCControllerLog]):
@@ -340,6 +341,7 @@ class MPCController(Controller[MPCControllerLog]):
         max_iter: int = 100,
         max_cpu_time: float | None = None,
         expand: bool = False,
+        ipopt_options: dict[str, Any] | None = None,
     ) -> None:
         """Initialize the MPC and build its (re-used) IPOPT solver.
 
@@ -359,17 +361,14 @@ class MPCController(Controller[MPCControllerLog]):
         w_u
             Weight on control effort (quadratic) in the cost.
         max_iter
-            Hard cap on IPOPT iterations per solve. MPC only needs a good first move, not a
-            certified optimum; when the cap is hit the best warm-started iterate is applied
+            Hard cap on IPOPT iterations per solve. When the cap is hit the best warm-started iterate is applied
             and ``success`` is ``False`` (capped, not failed).
         max_cpu_time
             Optional per-solve wall-time budget in seconds (IPOPT ``max_cpu_time``); ``None``
             leaves it unbounded.
         expand
-            Expand the NLP from MX to SX before building the solver. Off by default: for this
-            MLP-heavy graph (a deep net unrolled over the horizon) the SX expansion is huge --
-            it inflates build time by ~10x and is slower per IPOPT iteration than MX, whose
-            compact matrix ops stay BLAS-backed. Benchmarks bear this out; leave it off.
+            Expand the NLP from MX to SX before building the solver. Off by default: (for this
+            MLP-heavy graphthe SX expansion is huge).
         """
         super().__init__(dt)
         self.model = model
@@ -380,6 +379,7 @@ class MPCController(Controller[MPCControllerLog]):
         self.max_iter = int(max_iter)
         self.max_cpu_time = float(max_cpu_time) if max_cpu_time is not None else None
         self.expand = bool(expand)
+        self.ipopt_options = dict(ipopt_options) if ipopt_options is not None else {}
 
         self.n_y = model.artifact.n_y
         self.n_u_steps = model.artifact.n_u
@@ -394,11 +394,11 @@ class MPCController(Controller[MPCControllerLog]):
             raise ValueError(msg)
         self.u_max = np.ascontiguousarray(u_max_arr)
 
-        # History windows (oldest first, newest last), zero-padded until filled.
+        # History windows (oldest first, newest last)
         self._y_buf = np.zeros((self.n_y, self.n_channels), dtype=np.float64)
         self._u_buf = np.zeros((self.n_u_steps, self.n_elec), dtype=np.float64)
         self._n_seen = 0
-        self._u_prev: FloatArray | None = None  # last optimal control sequence, shifted
+        self._u_prev: FloatArray | None = None
 
         self._build_solver()
 
@@ -419,6 +419,7 @@ class MPCController(Controller[MPCControllerLog]):
             max_iter=cfg.max_iter,
             max_cpu_time=cfg.max_cpu_time,
             expand=cfg.expand,
+            ipopt_options=cfg.ipopt_options,
         )
 
     def _build_solver(self) -> None:
@@ -474,6 +475,10 @@ class MPCController(Controller[MPCControllerLog]):
         }
         if self.max_cpu_time is not None:
             opts["ipopt.max_cpu_time"] = self.max_cpu_time
+
+        for k, v in self.ipopt_options.items():
+            opts[f"ipopt.{k}" if not k.startswith("ipopt.") else k] = v
+
         self._solver = ca.nlpsol("mpc", "ipopt", nlp, opts)
 
         n_phi_vars = len(phi_vars) * n_state

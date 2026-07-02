@@ -23,7 +23,7 @@ def _():
 def _(Path, mo):
     mo.md("# 📊 Thesis Plot Inspector & Resizer")
 
-    plots_dir: Path = Path(__file__).parent.parent / "plots"
+    plots_dir: Path = Path(__file__).parent.parent / "artifacts"
     available_plots: list[str] = []
 
     if plots_dir.exists() and plots_dir.is_dir():
@@ -47,7 +47,7 @@ def _(Path, mo):
 def _(Any, Path, json, mo, plot_selector: "mo.ui.dropdown"):
     mo.stop(not plot_selector.value, mo.md("💡 *Select a plot above to view assets and metadata.*"))
 
-    selected_folder: Path = Path(__file__).parent.parent / "plots" / plot_selector.value
+    selected_folder: Path = Path(__file__).parent.parent / "artifacts" / plot_selector.value
     base_file: Path = selected_folder / plot_selector.value
 
     # Load metadata safely with Path objects
