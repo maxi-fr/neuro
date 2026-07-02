@@ -1,6 +1,6 @@
 import marimo
 
-__generated_with = "0.23.9"
+__generated_with = "0.23.10"
 app = marimo.App(
     width="medium",
     app_title="Stage 3 Stimulation: Immediate tES",
@@ -15,14 +15,13 @@ def _():
     import numpy as np
     from matplotlib import pyplot as plt
 
-    from neuro.connectome import compute_gamma, load_connectome
+    from neuro.connectome import Connectome
     from neuro.jansen_rit import JansenRitParams, lfp, simulate_network
 
     return (
+        Connectome,
         JansenRitParams,
-        compute_gamma,
         lfp,
-        load_connectome,
         mo,
         np,
         plt,
@@ -57,8 +56,8 @@ def _(mo):
 
 
 @app.cell
-def _(load_connectome):
-    connectome = load_connectome()
+def _(Connectome):
+    connectome = Connectome.from_config({})
     electrode_options = sorted(connectome.channel_labels)
     return connectome, electrode_options
 
@@ -126,12 +125,14 @@ def _(electrode_options, mo):
 
 @app.cell
 def _(
+    JansenRitDynamics,
     JansenRitParams,
-    compute_gamma,
+    conn,
     connectome,
     deterministic_toggle,
     duration_slider,
     electrode_multiselect,
+    gamma_spread_slider,
     k_slider,
     lfp,
     np,
@@ -142,6 +143,7 @@ def _(
     simulate_network,
     speed_slider,
     spread_slider,
+    target_electrode,
     u_intensity_slider,
 ):
     # 1. Update connectome and compute gamma steering matrix (n_elec, 76)
@@ -149,7 +151,7 @@ def _(
 
     selected_electrodes = list(electrode_multiselect.value) or ["CP5"]
     n_elec = len(selected_electrodes)
-    gamma = compute_gamma(
+    gamma = _compute_gamma(
         connectome.centres,
         target_electrode=selected_electrodes,
         spread=spread_slider.value,
@@ -175,25 +177,20 @@ def _(
     stim_window = (float(onset_slider.value), float(offset_slider.value))
 
     # 4. Run network simulation
-    params = JansenRitParams.from_config(
-        {
-            "connectome": conn_scaled,
-            "dt": 1e-4,
-            "params": {
-                "A": a_gains,
-                "sigma": noise_sigma,
-                "K": k_slider.value,
-            },
-        }
-    )
-    t, x_traj = simulate_network(
+    params = JansenRitParams.from_config({"A": a_gains, "sigma": noise_sigma})
+    dyn = JansenRitDynamics(
+        dt=0.0001,
         params=params,
-        duration=float(duration_slider.value),
-        dt=1e-4,
+        conn=replace(
+            conn,
+            K=k_slider.value,
+            gamma=_compute_gamma(
+                conn.centres, target_electrode=target_electrode, spread=float(gamma_spread_slider.value)
+            ),
+        ),
         seed=int(seed_slider.value),
-        u_hat_tES=u_amp,
-        stim_window=stim_window,
     )
+    (t, x_traj) = simulate_network(dyn=dyn, duration=float(duration_slider.value))
     y = lfp(x_traj)
     return conn_scaled, ez_idxs, gamma_field, pz_idxs, stim_window, t, y
 

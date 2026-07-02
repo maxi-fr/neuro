@@ -1,4 +1,4 @@
-"""Stage 0 regression harness for :func:`neuro.connectome.load_connectome`.
+"""Stage 0 regression harness for :meth:`neuro.connectome.Connectome.from_config`.
 
 Snapshots the structural-data invariants every later stage relies on: array
 shapes, the EEG gain ``L``, delay sanity, and the presence of the paper's EZ/PZ
@@ -11,7 +11,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from neuro.connectome import Connectome, load_connectome
+from neuro.connectome import Connectome
 
 _N_REGIONS = 76
 _N_CHANNELS = 62
@@ -22,7 +22,7 @@ _NAMED_CHANNELS = ("CP5", "CP6", "PO3", "P1", "P3", "F3", "F5", "AF3", "O1")
 @pytest.fixture(scope="module")
 def connectome() -> Connectome:
     """Load the TVB connectome once for the whole module."""
-    return load_connectome()
+    return Connectome.from_config({})
 
 
 def test_structural_array_shapes(connectome: Connectome) -> None:
@@ -103,6 +103,7 @@ def test_npz_round_trip(connectome: Connectome, tmp_path: Path) -> None:
     connectome.to_npz(path)
     loaded = Connectome.from_npz(path)
 
+    assert loaded.K == connectome.K
     np.testing.assert_array_equal(loaded.weights, connectome.weights)
     np.testing.assert_array_equal(loaded.tract_lengths, connectome.tract_lengths)
     np.testing.assert_array_equal(loaded.centres, connectome.centres)
@@ -117,8 +118,15 @@ def test_npz_round_trip(connectome: Connectome, tmp_path: Path) -> None:
     np.testing.assert_array_equal(loaded.gamma, connectome.gamma)
 
 
-def test_from_config_explicit_overrides(tmp_path: Path) -> None:
-    """Test that Connectome.from_config allows explicit overriding of dataclass fields."""
-    dummy_weights = np.ones((5, 5)) * 0.69
-    weights_path = tmp_path / "dummy_weights.npy"
-    np.save(weights_path, dummy_weights)
+def test_from_config_target_electrode_builds_gamma() -> None:
+    """A ``target_electrode`` yields a normalized, cathodic (negative-peak) gamma."""
+    conn = Connectome.from_config({"target_electrode": "CP5", "gamma_spread": 20.0})
+    assert conn.gamma.shape == (_N_REGIONS,)
+    assert np.isclose(np.abs(conn.gamma).max(), 1.0)
+    assert conn.gamma.min() < 0.0
+
+
+def test_from_config_default_gamma_is_zero() -> None:
+    """Without a ``target_electrode`` the projection is all-zero (open loop)."""
+    conn = Connectome.from_config({})
+    np.testing.assert_array_equal(conn.gamma, np.zeros(_N_REGIONS))

@@ -1,6 +1,6 @@
 import marimo
 
-__generated_with = "0.23.9"
+__generated_with = "0.23.10"
 app = marimo.App(
     width="medium",
     app_title="Interactive Simulation & EEG Plotter",
@@ -15,13 +15,13 @@ def _():
     import numpy as np
     from matplotlib import pyplot as plt
 
-    from neuro.connectome import load_connectome
+    from neuro.connectome import Connectome
     from neuro.jansen_rit import JansenRitParams, lfp, simulate_network
 
     return (
+        Connectome,
         JansenRitParams,
         lfp,
-        load_connectome,
         mo,
         np,
         plt,
@@ -31,8 +31,8 @@ def _():
 
 
 @app.cell
-def _(load_connectome):
-    connectome = load_connectome()
+def _(Connectome):
+    connectome = Connectome.from_config({})
     return (connectome,)
 
 
@@ -105,7 +105,9 @@ def _(mo):
 
 @app.cell
 def _(
+    JansenRitDynamics,
     JansenRitParams,
+    conn,
     connectome,
     deterministic_toggle,
     duration_slider,
@@ -133,23 +135,11 @@ def _(
 
     _noise_sigma = 0.0 if deterministic_toggle.value else JansenRitParams().sigma
 
-    _params = JansenRitParams.from_config(
-        {
-            "connectome": _conn,
-            "dt": 1e-4,
-            "params": {
-                "A": _a_gains,
-                "sigma": _noise_sigma,
-                "K": k_slider.value,
-            },
-        }
+    _params = JansenRitParams.from_config({"A": _a_gains, "sigma": _noise_sigma})
+    dyn__params = JansenRitDynamics(
+        dt=0.0001, params=_params, conn=replace(conn, K=k_slider.value), seed=int(seed_slider.value)
     )
-    t, _x_traj = simulate_network(
-        params=_params,
-        duration=float(duration_slider.value),
-        dt=1e-4,
-        seed=int(seed_slider.value),
-    )
+    (t, _x_traj) = simulate_network(dyn=dyn__params, duration=float(duration_slider.value))
     y = lfp(_x_traj)
     # Project node activity to EEG
     eeg = _conn.gain @ y

@@ -19,12 +19,9 @@ def imports():
     import optuna.visualization as ov
     import yaml
 
-    from neuro.jansen_rit_jax import enable_x64
     from neuro.nn_training import prepare_datasets, reshape_to_trajectory
     from neuro.prediction import MLPArtifact
     from utils.plotting import plot_multistep_predictions
-
-    enable_x64()
 
     notebook_dir = Path(__file__).parent
     artifact_base = notebook_dir.parent / "artifacts"

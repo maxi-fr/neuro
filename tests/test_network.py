@@ -12,17 +12,27 @@ from dataclasses import replace
 import numpy as np
 import pytest
 
-from neuro.connectome import Connectome, load_connectome
+from neuro.connectome import Connectome
 from neuro.jansen_rit import JansenRitDynamics, JansenRitParams, lfp, simulate_network
 from neuro.types import FloatArray
 
 _DT = 1e-4
+_K = 0.5357  # canonical global coupling used across these seizure-network tests
 
 
 @pytest.fixture(scope="module")
 def connectome() -> Connectome:
     """Load the TVB connectome once for the module."""
-    return load_connectome()
+    return Connectome.from_config({})
+
+
+def _run(
+    conn: Connectome, *, a: float | FloatArray, duration: float, seed: int | None = None, deterministic: bool = False
+) -> tuple[FloatArray, FloatArray]:
+    """Build the plant on ``conn`` (at coupling ``_K``) and integrate it for ``duration`` s."""
+    params = JansenRitParams(A=a, sigma=0.0) if deterministic else JansenRitParams(A=a)
+    dyn = JansenRitDynamics(dt=_DT, params=params, conn=replace(conn, K=_K), seed=seed)
+    return simulate_network(dyn=dyn, duration=duration)
 
 
 @pytest.fixture(scope="module")
@@ -46,13 +56,7 @@ def _get_onset_time(y: FloatArray, t: FloatArray, threshold: float = 5.0) -> flo
 def test_network_all_healthy_control(connectome: Connectome) -> None:
     """If all nodes are healthy (A = 3.25) and K = 0.5357, the network stays quiescent."""
     # Deterministic (sigma = 0) control stays flat
-    _, x_traj = simulate_network(
-        params=JansenRitParams.from_config(
-            {"connectome": connectome, "dt": _DT, "params": {"K": 0.5357, "A": 3.25, "sigma": 0.0}}
-        ),
-        duration=2.0,
-        dt=_DT,
-    )
+    _, x_traj = _run(connectome, a=3.25, duration=2.0, deterministic=True)
     y = lfp(x_traj)
     # Steady window after transient
     y_steady = y[:, round(1.0 / _DT) :]
@@ -60,12 +64,7 @@ def test_network_all_healthy_control(connectome: Connectome) -> None:
     assert np.all(ptps < 0.05)
 
     # Stochastic control stays in background range (< 5.0)
-    _t, x_traj_noise = simulate_network(
-        params=JansenRitParams.from_config({"connectome": connectome, "dt": _DT, "params": {"K": 0.5357, "A": 3.25}}),
-        duration=2.0,
-        dt=_DT,
-        seed=69,
-    )
+    _t, x_traj_noise = _run(connectome, a=3.25, duration=2.0, seed=69)
     y_noise = lfp(x_traj_noise)
     y_noise_steady = y_noise[:, round(1.0 / _DT) :]
     ptps_noise = np.ptp(y_noise_steady, axis=1)
@@ -82,14 +81,7 @@ def test_network_recruitment(connectome: Connectome, ez_pz_indices: tuple[list[i
     a_gains[ez_idxs] = 3.6
     a_gains[pz_idxs] = 3.4
 
-    t, x_traj = simulate_network(
-        params=JansenRitParams.from_config(
-            {"connectome": connectome, "dt": _DT, "params": {"K": 0.5357, "A": a_gains}}
-        ),
-        duration=4.0,
-        dt=_DT,
-        seed=69,
-    )
+    t, x_traj = _run(connectome, a=a_gains, duration=4.0, seed=69)
     y = lfp(x_traj)
 
     # EZ nodes should oscillate immediately
@@ -134,14 +126,7 @@ def test_network_coupling_correctness(connectome: Connectome, ez_pz_indices: tup
     lhc_idx = connectome.region_index["lHC"]
     custom_connectome.weights[lhc_idx, :] = 0.0
 
-    _t, x_traj = simulate_network(
-        params=JansenRitParams.from_config(
-            {"connectome": custom_connectome, "dt": _DT, "params": {"K": 0.5357, "A": a_gains}}
-        ),
-        duration=4.0,
-        dt=_DT,
-        seed=69,
-    )
+    _t, x_traj = _run(custom_connectome, a=a_gains, duration=4.0, seed=69)
     y = lfp(x_traj)
     y_steady = y[:, round(1.0 / _DT) :]
     ptps = np.ptp(y_steady, axis=1)
@@ -164,6 +149,7 @@ def _two_node_delayed_connectome() -> Connectome:
     delays = np.zeros((2, 2))
     delays[1, 0] = 5.0  # ms -> round(5 / (dt * 1000)) = 50 steps at dt = 1e-4
     return Connectome(
+        K=_K,
         weights=weights,
         tract_lengths=np.zeros((2, 2)),
         centres=np.zeros((2, 3)),
@@ -201,15 +187,13 @@ def test_history_coupling_index_robust_to_accumulated_time() -> None:
     node would read the wrong delay slot and the two trajectories would diverge.
     """
     connectome = _two_node_delayed_connectome()
-    params = JansenRitParams.from_config(
-        {"connectome": connectome, "dt": _DT, "params": {"K": 0.5357, "A": np.array([3.6, 3.25]), "sigma": 0.0}}
-    )
+    params = JansenRitParams(A=np.array([3.6, 3.25]), sigma=0.0)
     initial_state = np.zeros((6, 2))
     initial_state[0, 0] = 1.0  # kick node 0 off the (unstable) equilibrium so it limit-cycles
     n_steps = 30000  # 3 s at dt = 1e-4, enough for the downstream node to be driven
 
     def run(*, accumulate: bool) -> FloatArray:
-        dyn = JansenRitDynamics(dt=_DT, params=params, seed=0, initial_state=initial_state)
+        dyn = JansenRitDynamics(dt=_DT, params=params, conn=connectome, seed=0, initial_state=initial_state)
         xs = np.zeros((6, 2, n_steps + 1))
         xs[:, :, 0] = dyn.x
         t = 0.0
@@ -237,26 +221,12 @@ def test_network_delays_vs_instantaneous(connectome: Connectome, ez_pz_indices: 
     a_gains[ez_idxs] = 3.6
     a_gains[pz_idxs] = 3.4
 
-    t, x_traj_delayed = simulate_network(
-        params=JansenRitParams.from_config(
-            {"connectome": connectome, "dt": _DT, "params": {"K": 0.5357, "A": a_gains}}
-        ),
-        duration=4.0,
-        dt=_DT,
-        seed=69,
-    )
+    t, x_traj_delayed = _run(connectome, a=a_gains, duration=4.0, seed=69)
     y_delayed = lfp(x_traj_delayed)
 
     # Instantaneous coupling = a connectome whose conduction delays are all zero.
     conn_instant = replace(connectome, delays=np.zeros_like(connectome.delays))
-    _, x_traj_instant = simulate_network(
-        params=JansenRitParams.from_config(
-            {"connectome": conn_instant, "dt": _DT, "params": {"K": 0.5357, "A": a_gains}}
-        ),
-        duration=4.0,
-        dt=_DT,
-        seed=69,
-    )
+    _, x_traj_instant = _run(conn_instant, a=a_gains, duration=4.0, seed=69)
     y_instant = lfp(x_traj_instant)
 
     # Both networks should successfully seize/recruit

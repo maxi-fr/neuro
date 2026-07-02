@@ -10,9 +10,9 @@ def _():
     import numpy as np
     from matplotlib import pyplot as plt
 
-    from neuro.connectome import load_connectome
+    from neuro.connectome import Connectome
 
-    return load_connectome, mo, np, plt
+    return Connectome, mo, np, plt
 
 
 @app.cell
@@ -32,8 +32,8 @@ def _(mo):
 
 
 @app.cell
-def _(load_connectome):
-    connectome = load_connectome()
+def _(Connectome):
+    connectome = Connectome.from_config({})
     return (connectome,)
 
 

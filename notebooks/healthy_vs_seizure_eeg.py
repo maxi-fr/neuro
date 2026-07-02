@@ -1,6 +1,6 @@
 import marimo
 
-__generated_with = "0.23.9"
+__generated_with = "0.23.10"
 app = marimo.App(
     width="medium",
     app_title="Healthy vs. Seizure EEG Comparison",
@@ -15,16 +15,16 @@ def _():
     import numpy as np
     from matplotlib import pyplot as plt
 
-    from neuro.connectome import load_connectome
+    from neuro.connectome import Connectome
     from neuro.jansen_rit import JansenRitParams, lfp, simulate_network
     from utils.plotting import plot_psd
     from utils.processing import band_energy, steady_window
 
     return (
+        Connectome,
         JansenRitParams,
         band_energy,
         lfp,
-        load_connectome,
         mo,
         np,
         plot_psd,
@@ -59,8 +59,8 @@ def _(mo):
 
 
 @app.cell
-def _(load_connectome):
-    connectome = load_connectome()
+def _(Connectome):
+    connectome = Connectome.from_config({})
     return (connectome,)
 
 
@@ -108,6 +108,7 @@ def _(connectome, mo):
 
 @app.cell
 def _(
+    JansenRitDynamics,
     JansenRitParams,
     connectome,
     deterministic_toggle,
@@ -141,43 +142,19 @@ def _(
     noise_sigma = 0.0 if deterministic_toggle.value else JansenRitParams().sigma
 
     # --- Run Healthy Brain Simulation ---
-    params_healthy = JansenRitParams.from_config(
-        {
-            "connectome": conn,
-            "dt": 1e-4,
-            "params": {
-                "A": a_gains_healthy,
-                "sigma": noise_sigma,
-                "K": k_slider.value,
-            },
-        }
+    params_healthy = JansenRitParams.from_config({"A": a_gains_healthy, "sigma": noise_sigma})
+    dyn_healthy = JansenRitDynamics(
+        dt=0.0001, params=params_healthy, conn=replace(conn, K=k_slider.value), seed=int(seed_slider.value)
     )
-    t, x_traj_healthy = simulate_network(
-        params=params_healthy,
-        duration=float(duration_slider.value),
-        dt=1e-4,
-        seed=int(seed_slider.value),
-    )
+    (t, x_traj_healthy) = simulate_network(dyn=dyn_healthy, duration=float(duration_slider.value))
     y_healthy = lfp(x_traj_healthy)
 
     # --- Run Epileptic Brain Simulation ---
-    params_seizure = JansenRitParams.from_config(
-        {
-            "connectome": conn,
-            "dt": 1e-4,
-            "params": {
-                "A": a_gains_seizure,
-                "sigma": noise_sigma,
-                "K": k_slider.value,
-            },
-        }
+    params_seizure = JansenRitParams.from_config({"A": a_gains_seizure, "sigma": noise_sigma})
+    dyn_seizure = JansenRitDynamics(
+        dt=0.0001, params=params_seizure, conn=replace(conn, K=k_slider.value), seed=int(seed_slider.value)
     )
-    _, x_traj_seizure = simulate_network(
-        params=params_seizure,
-        duration=float(duration_slider.value),
-        dt=1e-4,
-        seed=int(seed_slider.value),
-    )
+    (_, x_traj_seizure) = simulate_network(dyn=dyn_seizure, duration=float(duration_slider.value))
     y_seizure = lfp(x_traj_seizure)
 
     # Clean transients and project to EEG

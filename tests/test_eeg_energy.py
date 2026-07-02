@@ -22,8 +22,8 @@ from dataclasses import replace
 import numpy as np
 import pytest
 
-from neuro.connectome import Connectome, load_connectome
-from neuro.jansen_rit import JansenRitParams, lfp, simulate_network
+from neuro.connectome import Connectome
+from neuro.jansen_rit import JansenRitDynamics, JansenRitParams, lfp, simulate_network
 from neuro.types import FloatArray
 from utils.processing import band_energy, steady_window
 
@@ -42,7 +42,7 @@ def _channel_side(label: str) -> str:
 @pytest.fixture(scope="module")
 def connectome() -> Connectome:
     """Load the TVB connectome once and calibrate its weight density."""
-    return load_connectome()
+    return Connectome.from_config({})
 
 
 @pytest.fixture(scope="module")
@@ -56,14 +56,8 @@ def eeg_energy(connectome: Connectome) -> FloatArray:
     a_gains[ez_idxs] = 3.6
     a_gains[pz_idxs] = 3.4
 
-    _, x_traj = simulate_network(
-        params=JansenRitParams.from_config(
-            {"connectome": connectome, "dt": _DT, "params": {"K": 0.5357, "A": a_gains}}
-        ),
-        duration=15.0,
-        dt=_DT,
-        seed=69,
-    )
+    dyn = JansenRitDynamics(dt=_DT, params=JansenRitParams(A=a_gains), conn=replace(connectome, K=0.5357), seed=69)
+    _, x_traj = simulate_network(dyn=dyn, duration=15.0)
     y = lfp(x_traj)
     dt_ms = _DT * 1000.0
     y_steady = steady_window(y, dt_ms, transient_ms=2000.0)

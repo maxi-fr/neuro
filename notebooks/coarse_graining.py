@@ -11,9 +11,9 @@ def _():
     import numpy as np
     from sklearn.decomposition import PCA
 
-    from neuro.connectome import load_connectome
+    from neuro.connectome import Connectome
 
-    return PCA, load_connectome, mo, np, plt
+    return Connectome, PCA, mo, np, plt
 
 
 @app.cell(hide_code=True)
@@ -25,9 +25,9 @@ def _(mo):
 
 
 @app.cell
-def _(load_connectome, np):
+def _(Connectome, np):
     sim_path = r"results\simulation_2026-06-21_15-28-47\log.npz"
-    connectome = load_connectome()
+    connectome = Connectome.from_config({})
     with np.load(sim_path) as data:
         data["y_mea"].T  # (n_sensors, n_samples)
         x_data = data["x"]

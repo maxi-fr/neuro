@@ -1,4 +1,5 @@
 import sys
+from dataclasses import replace
 from pathlib import Path
 
 import matplotlib.pyplot as plt
@@ -7,13 +8,16 @@ import numpy as np
 # Add project root to sys.path so we can import modules
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-from neuro.connectome import load_connectome
-from neuro.jansen_rit import JansenRitParams, lfp, simulate_network
+from neuro.connectome import Connectome
+from neuro.jansen_rit import JansenRitDynamics, JansenRitParams, lfp, simulate_network
+
+# Per-state (6,) uniform bounds used to randomize the initial state across seeds.
+_INITIAL_BOUNDS = np.array([[-1.0, 1.0], [-500.0, 500.0], [-50.0, 50.0], [-6.0, 6.0], [-20.0, 20.0], [-500.0, 500.0]])
 
 
 def main() -> None:
     """Run a parameter sweep over K and sigma to find the seizure threshold."""
-    conn = load_connectome()
+    conn = Connectome.from_config({})
     ez = ("lHC", "lPHC", "lAMYG")
     pz = ("lTCI", "lTCV")
 
@@ -34,39 +38,24 @@ def main() -> None:
     # To store median seizing nodes for the heatmap
     heatmap_data = np.zeros((len(k_vals), len(sigma_vals)))
 
+    n_nodes = len(conn.region_labels)
+    lo = _INITIAL_BOUNDS[:, 0:1]
+    hi = _INITIAL_BOUNDS[:, 1:2]
+
     for i, K in enumerate(k_vals):
+        conn_k = replace(conn, K=K)
         for j, sigma in enumerate(sigma_vals):
             run_seeds = seeds if sigma > 0 else [69]
 
             seizing_counts = []
 
             for seed in run_seeds:
-                hr_params = JansenRitParams.from_config(
-                    {
-                        "connectome": conn,
-                        "dt": 1e-4,
-                        "params": {
-                            "A": a_gains,
-                            "sigma": sigma,
-                            "K": K,
-                            "initial_bounds": [
-                                [-1.0, 1.0],
-                                [-500.0, 500.0],
-                                [-50.0, 50.0],
-                                [-6.0, 6.0],
-                                [-20.0, 20.0],
-                                [-500.0, 500.0],
-                            ],
-                        },
-                    }
-                )
+                params = JansenRitParams(A=a_gains, sigma=sigma)
+                rng = np.random.default_rng(seed)
+                initial_state = rng.uniform(lo, hi, size=(6, n_nodes))
+                dyn = JansenRitDynamics(dt=1e-4, params=params, conn=conn_k, seed=seed, initial_state=initial_state)
 
-                hr_t, hr_x = simulate_network(
-                    params=hr_params,
-                    duration=5.0,
-                    dt=1e-4,
-                    seed=seed,
-                )
+                hr_t, hr_x = simulate_network(dyn=dyn, duration=5.0)
 
                 hr_y = lfp(hr_x)
 

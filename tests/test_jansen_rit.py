@@ -7,7 +7,7 @@ follow Yu et al. 2024, Table 1 (``I = 90``); the seizure is a ~3 Hz spike-wave,
 which is this epilepsy model's actual rhythm (not 8-12 Hz alpha).
 
 A "deterministic" run is just ``sigma = 0`` (the integrator is always stochastic
-Heun); the single node is the degenerate ``connectome=None`` network.
+Heun); the single node is the degenerate one-node connectome (no coupling).
 """
 
 import dataclasses
@@ -15,9 +15,11 @@ from dataclasses import replace
 
 import numpy as np
 
+from neuro.connectome import Connectome
 from neuro.jansen_rit import (
+    JansenRitDynamics,
     JansenRitParams,
-    heun_step,
+    _heun_step_jit,
     lfp,
     sigmoid_jit,
     simulate_network,
@@ -34,11 +36,38 @@ _SEED = 7
 _DT = 1e-4
 
 
+def _single_node_connectome() -> Connectome:
+    """Degenerate one-node, one-channel connectome (no coupling) for isolated-node runs."""
+    return Connectome(
+        K=1.0,
+        weights=np.zeros((1, 1)),
+        tract_lengths=np.zeros((1, 1)),
+        centres=np.zeros((1, 3)),
+        region_labels=np.array(["n0"]),
+        hemispheres=np.array([False]),
+        speed=1.0,
+        delays=np.zeros((1, 1)),
+        gain=np.ones((1, 1)),
+        channel_labels=np.array(["c0"]),
+        region_index={"n0": 0},
+        channel_index={"c0": 0},
+        gamma=np.zeros(1),
+    )
+
+
+def _simulate_single_node(
+    params: JansenRitParams, *, duration: float = _DURATION, seed: int | None = _SEED
+) -> tuple[FloatArray, FloatArray]:
+    """Integrate a single isolated node and return ``(t, x_traj)``."""
+    dyn = JansenRitDynamics(dt=_DT, params=params, conn=_single_node_connectome(), seed=seed)
+    return simulate_network(dyn=dyn, duration=duration)
+
+
 def _post_transient_output(a_gain: float, *, deterministic: bool) -> FloatArray:
     """Run one node at gain ``a_gain`` and return its steady-state lfp ``y``."""
     sigma = 0.0 if deterministic else JansenRitParams().sigma
     params = JansenRitParams(A=a_gain, sigma=sigma)
-    _, x = simulate_network(params=params, duration=_DURATION, dt=_DT, seed=_SEED)
+    _, x = _simulate_single_node(params)
     y = lfp(x)  # shape (1, n_samples) for the single node
     return steady_window(y, _DT * 1000.0, _TRANSIENT_MS)[0]
 
@@ -87,7 +116,7 @@ def test_ez_phase_plane_is_an_orbit() -> None:
     ``x5 - x6``; a fixed point would collapse to a point in both.
     """
     params = replace(JansenRitParams(), A=_A_EZ, sigma=0.0)
-    _, x = simulate_network(params=params, duration=_DURATION, dt=_DT, seed=_SEED)
+    _, x = _simulate_single_node(params)
     n_drop = round(_TRANSIENT_MS / (_DT * 1000.0))
     y = (x[1, 0] - x[2, 0])[n_drop:]
     dy = (x[4, 0] - x[5, 0])[n_drop:]
@@ -123,12 +152,12 @@ def test_all_runs_stay_finite() -> None:
         for deterministic in (True, False):
             sigma = 0.0 if deterministic else JansenRitParams().sigma
             params = JansenRitParams(A=a_gain, sigma=sigma)
-            _, x = simulate_network(params=params, duration=_DURATION, dt=_DT, seed=_SEED)
+            _, x = _simulate_single_node(params)
             assert np.isfinite(x).all()
 
 
 def test_heun_reduces_to_deterministic_when_noiseless() -> None:
-    """heun_step with sigma = 0 stays finite and still produces the EZ limit cycle.
+    """The Heun step with sigma = 0 stays finite and still produces the EZ limit cycle.
 
     Confirms the noiseless integrator is well-behaved (the deterministic limit of
     the stochastic Heun scheme).
@@ -140,7 +169,7 @@ def test_heun_reduces_to_deterministic_when_noiseless() -> None:
     traj = np.empty((6, n_steps + 1), dtype=np.float64)
     traj[:, 0] = x.reshape(6)
     for k in range(n_steps):
-        x = heun_step(x, np.zeros(1), params, dt, np.zeros(1), np.zeros(1))
+        x = _heun_step_jit(x, np.zeros(1), params.to_numba_tuple(x.shape[1]), dt, np.zeros(1), np.zeros(1))
         traj[:, k + 1] = x.reshape(6)
     assert np.isfinite(traj).all()
     y = steady_window((traj[1] - traj[2])[np.newaxis, :], dt * 1000.0, _TRANSIENT_MS)[0]

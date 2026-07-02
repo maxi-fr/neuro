@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING, Literal
 import numpy as np
 from scipy.linalg import qr
 
-from neuro.jansen_rit import JansenRitParams, lfp, simulate_network
+from neuro.jansen_rit import JansenRitDynamics, JansenRitParams, lfp, simulate_network
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -198,27 +198,14 @@ def compute_channel_gramians(  # noqa: PLR0913
     nodes = list(range(n_nodes)) if node_subset is None else list(node_subset)
     perturbed = [(state_idx, node_idx) for state_idx in range(n_state) for node_idx in nodes]
     n_dim = len(perturbed)
-    # Overlay the connectome's network structure onto the local (noiseless) params once;
-    # only the initial state varies between runs.
-    network = JansenRitParams.from_config({"connectome": connectome, "dt": dt, "params": {"K": K}})
-    sim_params = replace(
-        params,
-        sigma=0.0,
-        eeg_gain=network.eeg_gain,
-        w_weights=network.w_weights,
-        delay_steps=network.delay_steps,
-        gamma=network.gamma,
-        K=network.K,
-    )
+    # Deterministic (noiseless) sensitivity runs on this connectome at coupling K; only the
+    # initial state varies between runs, so the plant is rebuilt per run from these fixed pieces.
+    sim_conn = replace(connectome, K=K)
+    sim_params = replace(params, sigma=0.0)
 
     def _run_eeg(x_init: FloatArray) -> FloatArray:
-        _, x_traj = simulate_network(
-            params=sim_params,
-            duration=duration,
-            dt=dt,
-            initial_state=x_init,
-            seed=0,
-        )
+        dyn = JansenRitDynamics(dt=dt, params=sim_params, conn=sim_conn, seed=0, initial_state=x_init)
+        _, x_traj = simulate_network(dyn=dyn, duration=duration)
         eeg = connectome.gain @ lfp(x_traj)
         return eeg[:, ::decimate]
 

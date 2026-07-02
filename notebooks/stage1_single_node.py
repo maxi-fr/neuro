@@ -1,6 +1,6 @@
 import marimo
 
-__generated_with = "0.23.8"
+__generated_with = "0.23.10"
 app = marimo.App(width="medium", app_title="Stage 1 Single-node Jansen-Rit")
 
 
@@ -51,13 +51,21 @@ def _(mo):
 
 
 @app.cell
-def _(DT_DEFAULT, JansenRitParams, lfp, simulate_network):
+def _(
+    Connectome,
+    DT_DEFAULT,
+    JansenRitDynamics,
+    JansenRitParams,
+    lfp,
+    simulate_network,
+):
     def run(a_gain, *, sigma=None, duration=20.0, seed=7, deterministic=False):
         """Simulate one node and return ``(t, y, x)`` for gain ``a_gain``."""
         base = JansenRitParams()
         noise = 0.0 if deterministic else (base.sigma if sigma is None else sigma)
         params = JansenRitParams(A=a_gain, sigma=noise)
-        t, x_traj = simulate_network(params=params, duration=duration, dt=DT_DEFAULT, seed=seed)
+        dyn = JansenRitDynamics(dt=DT_DEFAULT, params=params, conn=Connectome.from_config({}), seed=seed)
+        (t, x_traj) = simulate_network(dyn=dyn, duration=duration)
         x = x_traj[:, 0, :]  # drop the singleton node dim -> (6, n_samples)
         return t, lfp(x), x
 

@@ -1,6 +1,6 @@
 import marimo
 
-__generated_with = "0.23.8"
+__generated_with = "0.23.10"
 app = marimo.App(
     width="medium",
     app_title="Stage 5: EEG Projection & Spectral Energy",
@@ -15,15 +15,15 @@ def _():
     import numpy as np
     from matplotlib import pyplot as plt
 
-    from neuro.connectome import load_connectome
+    from neuro.connectome import Connectome
     from neuro.jansen_rit import JansenRitParams, lfp, simulate_network
     from utils.processing import band_energy, steady_window
 
     return (
+        Connectome,
         JansenRitParams,
         band_energy,
         lfp,
-        load_connectome,
         mo,
         np,
         plt,
@@ -56,8 +56,8 @@ def _(mo):
 
 
 @app.cell
-def _(load_connectome):
-    connectome = load_connectome()
+def _(Connectome):
+    connectome = Connectome.from_config({})
     return (connectome,)
 
 
@@ -99,6 +99,7 @@ def _(connectome, mo):
 
 @app.cell
 def _(
+    JansenRitDynamics,
     JansenRitParams,
     band_energy,
     connectome,
@@ -126,23 +127,9 @@ def _(
     a_gains[pz_idxs] = 3.4
 
     noise_sigma = 0.0 if deterministic_toggle.value else JansenRitParams().sigma
-    params = JansenRitParams.from_config(
-        {
-            "connectome": conn,
-            "dt": 1e-4,
-            "params": {
-                "A": a_gains,
-                "sigma": noise_sigma,
-                "K": k_slider.value,
-            },
-        }
-    )
-    t, x_traj = simulate_network(
-        params=params,
-        duration=float(duration_slider.value),
-        dt=1e-4,
-        seed=int(seed_slider.value),
-    )
+    params = JansenRitParams.from_config({"A": a_gains, "sigma": noise_sigma})
+    dyn = JansenRitDynamics(dt=0.0001, params=params, conn=replace(conn, K=k_slider.value), seed=int(seed_slider.value))
+    (t, x_traj) = simulate_network(dyn=dyn, duration=float(duration_slider.value))
     y = lfp(x_traj)
 
     dt_ms = (t[1] - t[0]) * 1000.0

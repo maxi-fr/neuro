@@ -18,7 +18,6 @@ Two conventions are fixed here and relied on by later stages:
 
 from __future__ import annotations
 
-import dataclasses
 import warnings
 from dataclasses import dataclass
 from pathlib import Path
@@ -26,8 +25,9 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import numpy.typing as npt
+from pydantic import Field
 
-from neuro.config import parse_array, reject_unknown
+from neuro.config import StrictConfig
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -47,6 +47,15 @@ StrArray = npt.NDArray[np.str_]
 _SENSORS_FILE = "eeg_unitvector_62.txt.bz2"
 _PROJECTION_FILE = "projection_eeg_62_surface_16k.mat"
 _REGION_MAPPING_FILE = "regionMapping_16k_76.txt"
+
+
+class _ConnectomeConfig(StrictConfig):
+    """Config schema for :meth:`Connectome.from_config`."""
+
+    speed: float = Field(default=50.0, gt=0)
+    K: float = 1.0
+    target_electrode: str | int | list[str | int] | None = None
+    gamma_spread: float | list[float] = 20.0
 
 
 @dataclass(frozen=True)
@@ -84,6 +93,7 @@ class Connectome:
         single electrode or ``(n_electrodes, 76)`` for a multi-electrode montage.
     """
 
+    K: float  # global coupling constant
     weights: FloatArray
     tract_lengths: FloatArray
     centres: FloatArray
@@ -127,10 +137,19 @@ class Connectome:
             msg = f"gamma shape {self.gamma.shape} does not match (*, {n_nodes})"
             raise ValueError(msg)
 
+    def delay_steps(self, dt: float) -> npt.NDArray[np.int64]:
+        """Conduction delays as integer step lags for integration step ``dt`` (s).
+
+        ``self.delays`` is in ms, so ``round(delays / (dt * 1000))`` gives the lag in
+        steps; a connectome with zero delays is instantaneous (all-zero lags).
+        """
+        return np.round(self.delays / (dt * 1000.0)).astype(np.int64)
+
     def to_npz(self, path: str | Path) -> None:
         """Save the connectome to an NPZ file."""
         np.savez(
             path,
+            K=np.array(self.K),
             weights=self.weights,
             tract_lengths=self.tract_lengths,
             centres=self.centres,
@@ -150,6 +169,7 @@ class Connectome:
             region_labels = data["region_labels"].astype(np.str_)
             channel_labels = data["channel_labels"].astype(np.str_)
             return cls(
+                K=float(data["K"]),
                 weights=data["weights"],
                 tract_lengths=data["tract_lengths"],
                 centres=data["centres"],
@@ -165,97 +185,63 @@ class Connectome:
             )
 
     @classmethod
-    def config_keys(cls) -> set[str]:
-        """Return the config keys accepted by :meth:`from_config` (for strict typo rejection)."""
-        special = {"selected_regions", "selected_channels", "target_electrode", "gamma_spread"}
-        return special | {f.name for f in dataclasses.fields(cls)}
+    def from_config(cls, config: dict[str, Any]) -> Connectome:
+        """Load the TVB structural backbone and EEG forward operator from a config dict.
 
-    @classmethod
-    def from_config(cls, config: dict[str, Any], *, strict: bool = True) -> Connectome:  # noqa: C901, PLR0912
-        """Instantiate the connectome from a configuration dictionary.
+        The dict is validated strictly against :class:`_ConnectomeConfig` (unknown keys are
+        rejected before any TVB data is touched). ``speed`` sets the conduction speed
+        (mm/ms; the paper uses 50), ``K`` the global coupling, and an optional
+        ``target_electrode`` / ``gamma_spread`` build the tES projection ``gamma``.
 
-        Loads the base TVB connectome, applies any node/region/channel subsetting,
-        and computes the tES spatial projection `gamma` if configured. When ``strict``
-        is set, any key outside :meth:`config_keys` raises
-        :class:`~neuro.config.ConfigError`; callers that share the dict with other
-        parsers (e.g. :meth:`JansenRitParams.from_config`) pass ``strict=False``.
+        Returns
+        -------
+        Connectome
+            All 76 TVB regions with weights, delays, centres, labels, hemispheres, the
+            ``(62, 76)`` EEG gain ``L``, and ``gamma`` (zeros unless an electrode is given).
         """
-        if strict:
-            reject_unknown(config, cls.config_keys(), "Connectome")
-        speed = float(config.get("speed", 50.0))
-        conn = load_connectome(speed=speed)
+        cfg = _ConnectomeConfig.model_validate(config)
 
-        selected_regions = parse_array(config.get("selected_regions"))
-        region_idx = None
-        if selected_regions is not None:
-            region_idx = np.array(selected_regions, dtype=np.int64)
+        conn = Connectivity.from_file()
+        conn.speed = np.array([cfg.speed])
+        conn.configure()  # derives the hemisphere mask absent from the default zip
 
-        if region_idx is not None:
-            conn = dataclasses.replace(
-                conn,
-                weights=conn.weights[np.ix_(region_idx, region_idx)],
-                tract_lengths=conn.tract_lengths[np.ix_(region_idx, region_idx)],
-                centres=conn.centres[region_idx],
-                region_labels=conn.region_labels[region_idx],
-                hemispheres=conn.hemispheres[region_idx],
-                delays=conn.delays[np.ix_(region_idx, region_idx)],
-                gain=conn.gain[:, region_idx],
-                gamma=conn.gamma[..., region_idx],
-                region_index={str(conn.region_labels[i]): idx for idx, i in enumerate(region_idx)},
+        weights = np.asarray(conn.weights, dtype=np.float64)
+        tract_lengths = np.asarray(conn.tract_lengths, dtype=np.float64)
+        centres = np.asarray(conn.centres, dtype=np.float64)
+        region_labels = np.asarray(conn.region_labels, dtype=np.str_)
+        hemispheres = np.asarray(conn.hemispheres, dtype=np.bool_)
+        delays = tract_lengths / cfg.speed
+
+        gain, channel_labels = _build_eeg_gain()
+
+        region_index = {label: idx for idx, label in enumerate(region_labels)}
+        channel_index = {label: idx for idx, label in enumerate(channel_labels)}
+
+        gamma: FloatArray = np.zeros(len(region_labels), dtype=np.float64)
+        if cfg.target_electrode is not None:
+            electrodes = cfg.target_electrode if isinstance(cfg.target_electrode, list) else [cfg.target_electrode]
+            resolved = [str(channel_labels[el]) if isinstance(el, int) else str(el) for el in electrodes]
+            gamma = _compute_gamma(
+                centres,
+                target_electrode=resolved if len(resolved) > 1 else resolved[0],
+                spread=cfg.gamma_spread,
             )
 
-        selected_channels_cfg = parse_array(config.get("selected_channels"))
-        if selected_channels_cfg is not None:
-            channel_idx = []
-            for ch in selected_channels_cfg:
-                if isinstance(ch, str):
-                    channel_idx.append(conn.channel_index[ch])
-                else:
-                    channel_idx.append(int(ch))
-            channel_idx = np.array(channel_idx, dtype=np.int64)
-            from dataclasses import replace  # noqa: PLC0415
-
-            conn = replace(
-                conn,
-                gain=conn.gain[channel_idx, :],
-                channel_labels=conn.channel_labels[channel_idx],
-                channel_index={str(conn.channel_labels[i]): idx for idx, i in enumerate(channel_idx)},
-            )
-
-        target_electrode = parse_array(config.get("target_electrode"))
-        if target_electrode is not None:
-            if isinstance(target_electrode, (str, int, np.integer)):
-                electrodes_list = [target_electrode]
-            else:
-                electrodes_list = list(target_electrode)
-
-            resolved_electrodes = []
-            for el in electrodes_list:
-                if isinstance(el, (int, np.integer)):
-                    resolved_electrodes.append(str(conn.channel_labels[int(el)]))
-                else:
-                    resolved_electrodes.append(str(el))
-
-            gamma = compute_gamma(
-                conn.centres,
-                target_electrode=resolved_electrodes if len(resolved_electrodes) > 1 else resolved_electrodes[0],
-                spread=float(config.get("gamma_spread", 20.0)),
-            )
-            from dataclasses import replace  # noqa: PLC0415
-
-            conn = replace(conn, gamma=gamma)
-
-        overrides = {}
-        for field in dataclasses.fields(cls):
-            if field.name in config:
-                overrides[field.name] = parse_array(config[field.name])
-
-        if overrides:
-            from dataclasses import replace  # noqa: PLC0415
-
-            conn = replace(conn, **overrides)
-
-        return conn
+        return cls(
+            K=cfg.K,
+            weights=weights,
+            tract_lengths=tract_lengths,
+            centres=centres,
+            region_labels=region_labels,
+            hemispheres=hemispheres,
+            speed=cfg.speed,
+            delays=delays,
+            gain=gain,
+            channel_labels=channel_labels,
+            region_index=region_index,
+            channel_index=channel_index,
+            gamma=gamma,
+        )
 
 
 def _mirror_partner_permutation(locations: FloatArray) -> npt.NDArray[np.int64]:
@@ -318,53 +304,7 @@ def _build_eeg_gain() -> tuple[FloatArray, StrArray]:
     return gain, channel_labels
 
 
-def load_connectome(speed: float = 50.0) -> Connectome:
-    """Load the TVB structural backbone and EEG forward operator.
-
-    Parameters
-    ----------
-    speed
-        Conduction speed in mm/ms; the paper uses 50.
-
-    Returns
-    -------
-    Connectome
-        All 76 TVB regions with weights, delays, centres, labels, hemispheres,
-        and the ``(62, 76)`` EEG gain ``L``.
-    """
-    conn = Connectivity.from_file()
-    conn.speed = np.array([speed])
-    conn.configure()  # derives the hemisphere mask absent from the default zip
-
-    weights = np.asarray(conn.weights, dtype=np.float64)
-    tract_lengths = np.asarray(conn.tract_lengths, dtype=np.float64)
-    centres = np.asarray(conn.centres, dtype=np.float64)
-    region_labels = np.asarray(conn.region_labels, dtype=np.str_)
-    hemispheres = np.asarray(conn.hemispheres, dtype=np.bool_)
-    delays = tract_lengths / speed
-
-    gain, channel_labels = _build_eeg_gain()
-
-    region_index = {label: idx for idx, label in enumerate(region_labels)}
-    channel_index = {label: idx for idx, label in enumerate(channel_labels)}
-
-    return Connectome(
-        weights=weights,
-        tract_lengths=tract_lengths,
-        centres=centres,
-        region_labels=region_labels,
-        hemispheres=hemispheres,
-        speed=speed,
-        delays=delays,
-        gain=gain,
-        channel_labels=channel_labels,
-        region_index=region_index,
-        channel_index=channel_index,
-        gamma=np.zeros(len(region_labels)),
-    )
-
-
-def compute_gamma(
+def _compute_gamma(
     centres: FloatArray,
     target_electrode: str | Sequence[str] = "CP5",
     spread: float | Sequence[float] = 20.0,
@@ -402,11 +342,10 @@ def compute_gamma(
             msg = f"Electrode {electrode} not found in sensors."
             raise ValueError(msg)
         electrode_loc = np.asarray(sensors.locations[labels.index(target)], dtype=np.float64)
-        # Euclidean distance from electrode to all region centroids
         dists = np.linalg.norm(centres - electrode_loc, axis=1)
         # Gaussian falloff (negative for cathodic stimulation)
         gamma = -np.exp(-(dists**2) / (2.0 * spread**2))
-        # Normalize so that the maximum absolute value is exactly 1.0
+
         return gamma / np.abs(gamma).max()
 
     if isinstance(target_electrode, str):

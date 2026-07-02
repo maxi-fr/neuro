@@ -4,9 +4,10 @@ experiments:
     class_path: neuro.jansen_rit.JansenRitDynamics
     dt: 0.0001
     seed: 1023
-    speed: 50.0
-    params:
+    connectome:
+      speed: 50.0
       K: 0.5357
+    params:
       A:
       - 3.25
       - 3.25

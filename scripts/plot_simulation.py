@@ -25,7 +25,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from simulate.config import load_config
 
-from neuro.connectome import load_connectome
+from neuro.connectome import Connectome
 from utils.plotting import plot_psd, plot_signals
 from utils.processing import steady_window, synchronization
 from utils.save_plots import ThesisPlotSaver
@@ -156,7 +156,7 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
     fig_nodes = None
     if activity is not None:
         try:
-            connectome = load_connectome()
+            connectome = Connectome.from_config({})
             ez_node = "lHC"
             pz_node = "lTCI"
             healthy_node = "rHC"

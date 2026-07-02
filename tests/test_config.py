@@ -7,7 +7,6 @@ from pydantic import ValidationError
 
 from neuro.config import (
     CategoricalParam,
-    ConfigError,
     FloatParam,
     IntParam,
     LogUniformParam,
@@ -136,11 +135,11 @@ def test_eeg_measurement_rejects_unknown_key() -> None:
 
 def test_connectome_rejects_unknown_key() -> None:
     # Rejection happens before any TVB data is loaded.
-    with pytest.raises(ConfigError, match="Connectome"):
+    with pytest.raises(ValidationError, match="Connectome"):
         Connectome.from_config({"gamma_spread": 20.0, "gama_spread": 20.0})
 
 
 def test_jansen_rit_dynamics_rejects_unknown_key() -> None:
     # `seed` is valid at the dynamics level; a typo of it is rejected up front.
-    with pytest.raises(ConfigError, match="JansenRitDynamics"):
-        JansenRitDynamics.from_config({"dt": 1e-4, "params": {"K": 1.0}, "seedd": 1})
+    with pytest.raises(ValidationError, match="JansenRitDynamics"):
+        JansenRitDynamics.from_config({"dt": 1e-4, "connectome": {"K": 1.0}, "seedd": 1})

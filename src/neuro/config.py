@@ -1,14 +1,11 @@
 """Configuration utilities.
 
-The NN-predictor configuration (:class:`NNPredictorConfig` and its sections) and the
-self-contained ``simulate`` components (controllers, :class:`~neuro.measurement.EEGMeasurement`)
-are parsed with pydantic models built on :class:`StrictConfig`, which forbids unknown keys and
-validates types/ranges, so a typo or out-of-range value raises ``pydantic.ValidationError``
-instead of silently defaulting.
-
-The shared Jansen-Rit config dict (``Connectome`` / ``JansenRitParams`` /
-``JansenRitDynamics``) is validated separately with :func:`reject_unknown`, which the
-outermost parser applies on the union of accepted keys while delegating with ``strict=False``.
+All configuration -- the NN-predictor pipeline (:class:`NNPredictorConfig` and its sections),
+the ``simulate`` components (controllers, :class:`~neuro.measurement.EEGMeasurement`) and the
+Jansen-Rit stack (``Connectome`` / ``JansenRitParams`` / ``JansenRitDynamics``) -- is parsed
+with pydantic models built on :class:`StrictConfig`, which forbids unknown keys and validates
+types/ranges, so a typo or out-of-range value raises ``pydantic.ValidationError`` instead of
+silently defaulting.
 """
 
 from __future__ import annotations
@@ -22,14 +19,9 @@ import yaml
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable
     from typing import Self
 
     import optuna
-
-
-class ConfigError(ValueError):
-    """Raised when a configuration mapping fails validation."""
 
 
 def parse_array(val: Any) -> Any:  # noqa: ANN401
@@ -50,18 +42,6 @@ def parse_array(val: Any) -> Any:  # noqa: ANN401
         msg = f"NPZ file {val} is empty"
         raise ValueError(msg)
     return val
-
-
-def reject_unknown(data: dict[str, Any], allowed: Iterable[str], ctx: str) -> None:
-    """Raise :class:`ConfigError` if ``data`` has keys outside ``allowed``.
-
-    Used for the Jansen-Rit stack, where one dict is shared across several ``from_config``
-    parsers, so a pydantic model with ``extra="forbid"`` cannot be applied per-class.
-    """
-    unknown = set(data) - set(allowed)
-    if unknown:
-        msg = f"Unknown key(s) in '{ctx}': {sorted(unknown)}. Allowed keys: {sorted(allowed)}."
-        raise ConfigError(msg)
 
 
 class StrictConfig(BaseModel):
@@ -224,7 +204,7 @@ class NNPredictorConfig(StrictConfig):
 def load_config(path: Path) -> NNPredictorConfig:
     """Load and strictly validate an NN-predictor YAML config from ``path``.
 
-    Raises :class:`FileNotFoundError` if the file is missing and :class:`ConfigError`
+    Raises :class:`FileNotFoundError` if the file is missing and ``pydantic.ValidationError``
     if the YAML contains unknown or malformed keys.
     """
     if not path.exists():

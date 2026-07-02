@@ -18,7 +18,7 @@ from simulate.reference import StepReference
 from simulate.sensor import GaussianSensor, full_state_measurement
 from simulate.simulation import Simulation
 
-from neuro.connectome import Connectome, load_connectome
+from neuro.connectome import Connectome
 from neuro.control import ZeroController
 from neuro.jansen_rit import JansenRitDynamics, JansenRitParams, simulate_network
 from neuro.measurement import EEGMeasurement
@@ -39,6 +39,7 @@ def _toy_connectome(n_nodes: int = 3) -> Connectome:
     labels = np.array([f"r{i}" for i in range(n_nodes)], dtype=np.str_)
     channels = np.array([f"c{i}" for i in range(4)], dtype=np.str_)
     return Connectome(
+        K=0.5,
         weights=weights,
         tract_lengths=tract_lengths,
         centres=rng.random((n_nodes, 3)),
@@ -57,16 +58,14 @@ def _toy_connectome(n_nodes: int = 3) -> Connectome:
 def test_dynamics_matches_simulate_network() -> None:
     """Stepping the component reproduces simulate_network exactly (same seed/params)."""
     conn = _toy_connectome(3)
-    params = JansenRitParams.from_config({"connectome": conn, "dt": _DT, "params": {"K": 0.5, "A": 3.6, "sigma": 0.0}})
+    params = JansenRitParams(A=3.6, sigma=0.0)
     _t, x_ref = simulate_network(
-        params=params,
+        dyn=JansenRitDynamics(dt=_DT, params=params, conn=conn, seed=7),
         duration=0.01,
-        dt=_DT,
-        seed=7,
     )
     n_steps = x_ref.shape[2] - 1
 
-    dyn = JansenRitDynamics(dt=_DT, params=params, seed=7)
+    dyn = JansenRitDynamics(dt=_DT, params=params, conn=conn, seed=7)
     for k in range(n_steps):
         out, _ = dyn.evaluate(k * _DT, np.array([0.0]))
         np.testing.assert_allclose(np.asarray(out).reshape(6, 3), x_ref[:, :, k + 1], atol=1e-12)
@@ -79,13 +78,13 @@ def test_simulation_matches_simulate_network() -> None:
     rate, so the logged ``x`` must equal ``simulate_network``'s ``x_traj`` bit-for-bit.
     """
     conn = _toy_connectome(3)
-    params = JansenRitParams.from_config({"connectome": conn, "dt": _DT, "params": {"K": 0.5, "A": 3.6, "sigma": 0.0}})
+    params = JansenRitParams(A=3.6, sigma=0.0)
     duration = 0.01
-    _t, x_ref = simulate_network(params=params, duration=duration, dt=_DT, seed=7)
+    _t, x_ref = simulate_network(dyn=JansenRitDynamics(dt=_DT, params=params, conn=conn, seed=7), duration=duration)
 
     sim = Simulation(
         t_end=duration,
-        dynamics=JansenRitDynamics(dt=_DT, params=params, seed=7),
+        dynamics=JansenRitDynamics(dt=_DT, params=params, conn=conn, seed=7),
         reference=StepReference(dt=_DT, step_value=np.array([0.0])),
         sensors=GaussianSensor(dt=_DT, measurement=full_state_measurement, std_dev=0.0),
         estimator=IdentityEstimator(dt=_DT),
@@ -102,7 +101,9 @@ def test_simulation_matches_simulate_network() -> None:
 
 def test_dynamics_from_config_builds_network() -> None:
     """from_config loads the TVB connectome and one step yields a finite (6, N) state."""
-    dyn = JansenRitDynamics.from_config({"dt": _DT, "params": {"K": 0.5357, "A": 3.25}, "seed": 69, "speed": 50.0})
+    dyn = JansenRitDynamics.from_config(
+        {"dt": _DT, "connectome": {"speed": 50.0, "K": 0.5357}, "params": {"A": 3.25}, "seed": 69}
+    )
     assert dyn.x.shape == (_STATE_DIM, _N_REGIONS_TVB)
 
     out, _ = dyn.evaluate(0.0, np.array([0.0]))
@@ -154,7 +155,7 @@ def test_eeg_measurement_selected_channels() -> None:
 def test_eeg_measurement_selected_channels_by_name() -> None:
     """Channel names resolve to the connectome's channel indices."""
     m = EEGMeasurement(speed=50.0, selected_channels=["F3", "P3"])
-    conn = load_connectome(speed=50.0)
+    conn = Connectome.from_config({"speed": 50.0})
     assert m.selected_channels is not None
     np.testing.assert_array_equal(
         m.selected_channels,

@@ -246,10 +246,13 @@ def test_closed_loop_simulation_runs(tmp_path: Path, formulation: str) -> None:
             "class_path": "neuro.jansen_rit.JansenRitDynamics",
             "dt": 1e-4,
             "seed": 69,
-            "speed": 50.0,
-            "target_electrode": ["CP5", "T7"],
-            "gamma_spread": 20.0,
-            "params": {"K": 0.5357, "A": 3.25},
+            "connectome": {
+                "speed": 50.0,
+                "target_electrode": ["CP5", "T7"],
+                "gamma_spread": 20.0,
+                "K": 0.5357,
+            },
+            "params": {"A": 3.25},
         },
         "reference": {"class_path": "simulate.reference.StepReference", "dt": 1e-4, "step_value": 0.0},
         "sensors": {

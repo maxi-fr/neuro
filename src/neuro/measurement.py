@@ -49,9 +49,9 @@ class EEGMeasurement:
         selected_channels: list[int | str] | None = None,
     ) -> None:
         """Load the ``(n_channels, n_nodes)`` EEG forward operator for ``speed``."""
-        from neuro.connectome import load_connectome  # noqa: PLC0415
+        from neuro.connectome import Connectome  # noqa: PLC0415
 
-        connectome = load_connectome(speed=speed)
+        connectome = Connectome.from_config({"speed": speed})
         gain = connectome.gain
         if n_nodes is not None:
             gain = gain[:, : int(n_nodes)]

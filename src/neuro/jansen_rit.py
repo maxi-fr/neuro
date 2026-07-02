@@ -34,18 +34,33 @@ from typing import TYPE_CHECKING, Any, Self
 import numba
 import numpy as np
 import numpy.typing as npt
+from pydantic import Field
 from simulate.component import NoLog
 from simulate.dynamics import Dynamics
 
-from neuro.config import parse_array, reject_unknown
+from neuro.config import StrictConfig, parse_array
+from neuro.connectome import Connectome, _ConnectomeConfig
 
 if TYPE_CHECKING:
     from neuro.types import FloatArray
 
 
-def delays_to_steps(delays_ms: FloatArray, dt: float) -> npt.NDArray[np.int64]:
-    """Convert conduction delays (ms) to integer step lags for integration step ``dt`` (s)."""
-    return np.round(delays_ms / (dt * 1000.0)).astype(np.int64)
+class _JansenRitParamsConfig(StrictConfig):
+    """Config schema for :meth:`JansenRitParams.from_config` (the biophysical scalars)."""
+
+    A: float | list[float] | str = 3.25
+    B: float = 22.0
+    a: float = 100.0
+    b: float = 50.0
+    C1: float = 135.0
+    C2: float = 108.0
+    C3: float = 33.75
+    C4: float = 33.75
+    e0: float = 2.5
+    v0: float = 6.0
+    r: float = 0.56
+    mean_input: float = 90.0
+    sigma: float = 500.0
 
 
 @dataclass(frozen=True)
@@ -78,41 +93,24 @@ class JansenRitParams:
     sigma
         Standard deviation of the additive Gaussian white noise ``zeta`` on the
         ``x5'`` equation; ``sigma = 0`` gives a noiseless (deterministic) run.
-    eeg_gain
-        Leadfield matrix for observing the brain regions, mapping source to sensors.
-    w_weights
-        Network connectivity weight matrix.
-    delay_steps
-        Network delay matrix in integer steps.
-    K
-        Global coupling scaling factor.
-    gamma
-        Spatial profile mapping electrode stimulation to brain regions.
+
+    The network structure (weights, delays, EEG gain, ``gamma``, global coupling ``K``)
+    lives on :class:`~neuro.connectome.Connectome`, not here.
     """
 
-    A: float | FloatArray = field(default=3.25, metadata={"bounds": (0.0, 10.0)})
-    B: float = field(default=22.0, metadata={"bounds": (0.0, 100.0)})
-    a: float = field(default=100.0, metadata={"bounds": (10.0, 500.0)})
-    b: float = field(default=50.0, metadata={"bounds": (1.0, 200.0)})
-    C1: float = field(default=135.0, metadata={"bounds": (10.0, 500.0)})
-    C2: float = field(default=108.0, metadata={"bounds": (10.0, 500.0)})  # 0.8 * C, C = 135
-    C3: float = field(default=33.75, metadata={"bounds": (1.0, 200.0)})  # 0.25 * C
-    C4: float = field(default=33.75, metadata={"bounds": (1.0, 200.0)})  # 0.25 * C
-    e0: float = field(default=2.5, metadata={"bounds": (0.1, 10.0)})
-    v0: float = field(default=6.0, metadata={"bounds": (0.1, 20.0)})
-    r: float = field(default=0.56, metadata={"bounds": (0.1, 2.0)})
-    mean_input: float | FloatArray = field(default=90.0, metadata={"bounds": (0.0, 300.0)})
-    sigma: float = field(default=500.0, metadata={"bounds": (0.0, 0.0)})
-
-    # Network parameters (mirrors JRSymbolicParams)
-    eeg_gain: FloatArray = field(
-        default_factory=lambda: np.ones((1, 1), dtype=np.float64), metadata={"bounds": (-10.0, 10.0)}
-    )
-    w_weights: FloatArray = field(default_factory=lambda: np.zeros((1, 1), dtype=np.float64))
-    delay_steps: npt.NDArray[np.int64] = field(default_factory=lambda: np.zeros((1, 1), dtype=np.int64))
-    K: float = field(default=1.0, metadata={"bounds": (0.0, 5.0)})
-    gamma: FloatArray = field(default_factory=lambda: np.zeros((1, 1), dtype=np.float64))
-    initial_bounds: FloatArray | None = field(default=None, metadata={"bounds": None})
+    A: float | FloatArray = field(default=3.25)
+    B: float = field(default=22.0)
+    a: float = field(default=100.0)
+    b: float = field(default=50.0)
+    C1: float = field(default=135.0)
+    C2: float = field(default=108.0)  # 0.8 * C, C = 135
+    C3: float = field(default=33.75)  # 0.25 * C
+    C4: float = field(default=33.75)  # 0.25 * C
+    e0: float = field(default=2.5)
+    v0: float = field(default=6.0)
+    r: float = field(default=0.56)
+    mean_input: float = field(default=90.0)
+    sigma: float = field(default=500.0)
 
     def to_numba_tuple(self, n_nodes: int) -> tuple[Any, ...]:
         """Convert params to a JIT-friendly tuple, broadcasting regional parameters."""
@@ -143,64 +141,17 @@ class JansenRitParams:
         )
 
     @classmethod
-    def from_config(cls, config: dict[str, Any], *, strict: bool = True) -> JansenRitParams:
-        """Build :class:`JansenRitParams` from a global config dict.
+    def from_config(cls, config: dict[str, Any]) -> JansenRitParams:
+        """Build :class:`JansenRitParams` from a strictly-validated config dict.
 
-        Extracts the network topology via ``Connectome.from_config`` (or uses a provided
-        `connectome` key) and the scalar parameters strictly from the nested `"params"` key.
-        When ``strict`` is set, any top-level key outside ``{connectome, dt, params}`` plus
-        the connectome's own keys raises :class:`~neuro.config.ConfigError`. A caller that
-        has already validated the shared dict (e.g. :meth:`JansenRitDynamics.from_config`)
-        passes ``strict=False`` so its own extra keys are not rejected here.
+        ``A`` may be a scalar gain, a per-region list, or a path to an ``.npy``/``.npz``
+        array (resolved via :func:`~neuro.config.parse_array`); every other field is a scalar.
+        Unknown keys raise ``pydantic.ValidationError``.
         """
-        from neuro.connectome import Connectome  # noqa: PLC0415
-
-        if strict:
-            reject_unknown(config, {"connectome", "dt", "params"} | Connectome.config_keys(), "JansenRitParams")
-
-        # Load the connectome
-        conn = config.get("connectome")
-        if conn is None:
-            conn = Connectome.from_config(config, strict=False)
-
-        dt = float(config.get("dt", 0.001))
-
-        if "params" not in config:
-            msg = "JansenRitParams.from_config requires a nested 'params' dictionary in the config."
-            raise ValueError(msg)
-
-        params_cfg = dict(config["params"])
-
-        network_kwargs = {
-            "eeg_gain": conn.gain,
-            "w_weights": conn.weights,
-            "delay_steps": delays_to_steps(conn.delays, dt),
-            "gamma": conn.gamma,
-        }
-
-        conflicts = network_kwargs.keys() & params_cfg.keys()
-        if conflicts:
-            msg = (
-                f"Network parameters {sorted(conflicts)} come from the connectome and cannot be overridden in 'params'"
-            )
-            raise ValueError(msg)
-
-        for key in ["A", "mean_input"]:
-            if params_cfg.get(key) is not None:
-                params_cfg[key] = parse_array(params_cfg[key])
-
-        if params_cfg.get("A") is not None:
-            a_config = params_cfg.pop("A")
-            params_cfg["A"] = (
-                np.asarray(a_config, dtype=np.float64)
-                if isinstance(a_config, (list, tuple, np.ndarray))
-                else float(a_config)
-            )
-
-        if params_cfg.get("initial_bounds") is not None:
-            params_cfg["initial_bounds"] = np.asarray(params_cfg["initial_bounds"], dtype=np.float64)
-
-        return cls(**network_kwargs, **params_cfg)  # type: ignore
+        kwargs = _JansenRitParamsConfig.model_validate(config).model_dump()
+        a = parse_array(kwargs["A"])
+        kwargs["A"] = np.asarray(a, dtype=np.float64) if isinstance(a, (list, tuple, np.ndarray)) else float(a)
+        return cls(**kwargs)
 
 
 @numba.njit(fastmath=True, cache=True)
@@ -215,7 +166,7 @@ def _jr_rhs_jit(x: FloatArray, params_tuple: tuple[Any, ...], coupling: FloatArr
 
     x1, x2, x3, x4, x5, x6 = x
 
-    out = sigmoid_jit(x2 - x3 + u_tes, e0, v0, r)  # pyramidal output; + U_tES (Stage 3)
+    out = sigmoid_jit(x2 - x3 + u_tes, e0, v0, r)  # pyramidal output; + U_tES
     exc = sigmoid_jit(C1 * x1, e0, v0, r)  # drive to excitatory interneurons
     inh = sigmoid_jit(C3 * x1, e0, v0, r)  # drive to inhibitory interneurons
 
@@ -249,39 +200,6 @@ def _heun_step_jit(  # noqa: PLR0913
     return x + 0.5 * dt * (f0 + f1) + dw
 
 
-def heun_step(  # noqa: PLR0913
-    x: FloatArray,
-    u_tes: FloatArray,
-    params: JansenRitParams,
-    dt: float,
-    xi: FloatArray,
-    coupling: FloatArray,
-) -> FloatArray:
-    """Advance one stochastic-Heun step with additive noise on the ``x5'`` equation.
-
-    Parameters
-    ----------
-    x
-        Current state, shape ``(6, N)``.
-    u_tes
-        tES stimulation entering the pyramidal sigmoid, shape ``(N,)``.
-    params
-        Model parameters (``params.sigma`` scales the noise).
-    dt
-        Integration step in seconds.
-    xi
-        Standard-normal draws for this step, shape ``(N,)``.
-    coupling
-        Network coupling term, shape ``(N,)``.
-
-    Returns
-    -------
-    FloatArray
-        Next state, same shape as ``x``.
-    """
-    return _heun_step_jit(x, u_tes, params.to_numba_tuple(x.shape[1]), dt, xi, coupling)
-
-
 @numba.njit(fastmath=True, cache=True)
 def _dynamics_history_coupling_jit(  # noqa: PLR0913
     history: FloatArray,
@@ -292,10 +210,8 @@ def _dynamics_history_coupling_jit(  # noqa: PLR0913
     coupling_k: float,
     s_y: FloatArray,
 ) -> FloatArray:
-    # 1. Update circular history buffer
     history[k % max_history_len, :] = s_y
 
-    # 2. Compute delayed coupling (O(N^2) loop with zero allocations)
     n_nodes = w_weights.shape[0]
     coupling = np.zeros(n_nodes, dtype=np.float64)
     for i in range(n_nodes):
@@ -308,34 +224,24 @@ def _dynamics_history_coupling_jit(  # noqa: PLR0913
     return coupling
 
 
-def simulate_network(  # noqa: PLR0913
+def simulate_network(
     *,
-    params: JansenRitParams,
+    dyn: JansenRitDynamics,
     duration: float,
-    dt: float,
-    seed: int | None = None,
-    initial_state: FloatArray | None = None,
     u_hat_tES: float | FloatArray = 0.0,
     stim_window: tuple[float, float] | None = None,
 ) -> tuple[FloatArray, FloatArray]:
-    """Integrate a node or coupled network from rest and return the full trajectory.
+    """Step a prebuilt plant from its current state and return the full trajectory.
 
-    Passing ``connectome=None`` runs the degenerate ``N = 1`` isolated node (no
-    coupling, no stimulation); a real connectome runs the whole-brain network.
+    The plant ``dyn`` already owns its step ``dt``, RNG seed, connectome and initial
+    state; a single-node ``dyn`` (``N = 1``) is the degenerate isolated node.
 
     Parameters
     ----------
-    params
-        Model parameters. If ``params.A`` is an array, it specifies regional gains.
-        ``params.sigma = 0`` gives a noiseless (deterministic) run.
+    dyn
+        The Jansen-Rit plant to integrate; stepped ``round(duration / dyn.dt)`` times.
     duration
         Simulated time in seconds.
-    dt
-        Integration step in seconds.
-    seed
-        Seed for the noise stream.
-    initial_state
-        Initial state array of shape ``(6, N)``. If ``None``, defaults to zeros.
     u_hat_tES
         Constant tES current applied during ``stim_window``. A scalar (shared by
         every electrode) or shape ``(n_electrodes,)`` for per-electrode currents.
@@ -349,14 +255,8 @@ def simulate_network(  # noqa: PLR0913
     x_traj
         State trajectory, shape ``(6, N, n_samples)`` (``N = 1`` for a single node).
     """
+    dt = dyn.dt
     n_steps = round(duration / dt)
-
-    dyn = JansenRitDynamics(
-        dt=dt,
-        params=params,
-        seed=seed,
-        initial_state=initial_state,
-    )
     n_nodes = dyn.x.shape[1]
 
     # Per-electrode constant-current schedule over the stim window. Built once here so
@@ -414,6 +314,19 @@ def project_control(u: FloatArray, gamma_2d: FloatArray, n_elec: int) -> FloatAr
     return u @ gamma_2d
 
 
+class _JansenRitDynamicsConfig(StrictConfig):
+    """Config schema for :meth:`JansenRitDynamics.from_config`.
+
+    ``connectome`` and ``params`` nest the two sub-schemas, so a single validation pass
+    strictly type-checks the whole tree and rejects unknown keys at every level.
+    """
+
+    dt: float = Field(gt=0)
+    seed: int | None = None
+    connectome: _ConnectomeConfig = Field(default_factory=_ConnectomeConfig)
+    params: _JansenRitParamsConfig = Field(default_factory=_JansenRitParamsConfig)
+
+
 class JansenRitDynamics(Dynamics[NoLog]):
     """Whole-brain Jansen-Rit network as a ``simulate`` :class:`Dynamics` plant.
 
@@ -427,28 +340,33 @@ class JansenRitDynamics(Dynamics[NoLog]):
     The state ``self.x`` is the ``(6, N)`` network array; the orchestrator logs it as
     the flattened ``(6 N,)`` vector that :meth:`~simulate.component.Component.from_col_vec`
     produces. The control input ``u`` is the per-electrode tES current, projected to
-    nodes through ``connectome.gamma`` (no-op when ``gamma`` is unset, i.e. open loop).
+    nodes through ``conn.gamma`` (no-op when ``gamma`` is zero, i.e. open loop).
 
-    Passing ``connectome=None`` yields the degenerate ``N=1`` isolated node (no coupling,
-    no stimulation). Everything is in SI seconds: ``dt`` is the integration step and
-    ``connectome.delays`` (ms) convert to steps via ``round(delays / (dt * 1000))``.
+    A single-node ``conn`` (``N = 1``, zero weights/delays) is the degenerate isolated
+    node. Everything is in SI seconds: ``dt`` is the integration step and ``conn.delays``
+    (ms) convert to steps via ``round(delays / (dt * 1000))``.
     """
 
     def __init__(
         self,
         dt: float,
         params: JansenRitParams,
+        conn: Connectome,
         seed: int | None = None,
         initial_state: FloatArray | None = None,
     ) -> None:
-        """Initialize the network plant from params."""
-        super().__init__(dt, integrator=None)
-        self.K = params.K
+        """Initialize the network plant from ``params`` and the structural ``conn``.
 
-        n_nodes = params.w_weights.shape[0]
-        weights = params.w_weights
-        delays = params.delay_steps
-        gamma = params.gamma
+        ``initial_state`` is the ``(6, N)`` starting state; when ``None`` the network
+        starts from rest (all zeros). ``seed`` seeds the noise RNG.
+        """
+        super().__init__(dt, integrator=None)
+        self.K = conn.K
+
+        n_nodes = conn.weights.shape[0]
+        weights = conn.weights
+        delays = conn.delay_steps(dt)
+        gamma = conn.gamma
 
         a_vec = params.A
         if np.isscalar(a_vec):
@@ -462,21 +380,11 @@ class JansenRitDynamics(Dynamics[NoLog]):
         # The control input is the per-electrode tES current; the orchestrator seeds u with this width.
         self.n_inputs = self.n_elec
 
-        self.rng = np.random.default_rng(seed)
-
         if initial_state is not None:
             if initial_state.shape != (6, n_nodes):
                 msg = f"initial_state must have shape (6, {n_nodes}), got {initial_state.shape}"
                 raise ValueError(msg)
             self.x = initial_state.astype(np.float64).copy()
-        elif params.initial_bounds is not None:
-            bounds = np.asarray(params.initial_bounds, dtype=np.float64)
-            if bounds.shape != (6, 2):
-                msg = f"initial_bounds must have shape (6, 2), got {bounds.shape}"
-                raise ValueError(msg)
-            lo = bounds[:, 0:1]
-            hi = bounds[:, 1:2]
-            self.x = self.rng.uniform(lo, hi, size=(6, n_nodes))
         else:
             self.x = np.zeros((6, n_nodes), dtype=np.float64)
 
@@ -486,41 +394,25 @@ class JansenRitDynamics(Dynamics[NoLog]):
 
         # Circular history buffer of S(y), seeded from the initial state.
         self.history = np.zeros((self.max_history_len, n_nodes), dtype=np.float64)
-        if params.initial_bounds is not None and self.max_history_len > 0:
-            bounds = np.asarray(params.initial_bounds, dtype=np.float64)
-            lo = bounds[:, 0:1]
-            hi = bounds[:, 1:2]
-            hist_x1 = self.rng.uniform(lo[1, 0], hi[1, 0], size=(self.max_history_len, n_nodes))
-            hist_x2 = self.rng.uniform(lo[2, 0], hi[2, 0], size=(self.max_history_len, n_nodes))
-            hist_y = hist_x1 - hist_x2
-            self.history[:, :] = sigmoid_jit(hist_y, params.e0, params.v0, params.r)
-        else:
-            self.history[:, :] = sigmoid_jit(self.x[1] - self.x[2], params.e0, params.v0, params.r)
+        self.history[:, :] = sigmoid_jit(self.x[1] - self.x[2], params.e0, params.v0, params.r)
         self.w_weights = weights
 
         self.rng = np.random.default_rng(seed)
 
     @classmethod
     def from_config(cls, config: dict[str, Any]) -> Self:
-        """Instantiate from a raw config dict.
+        """Instantiate the plant from a raw config dict.
 
-        Config keys for the dynamics component are flat. Parameters for the physical
-        model should be nested under the ``params`` key. As the entry point for the shared
-        dynamics dict, this validates the full set of accepted keys (``dt``, ``seed`` plus
-        everything :meth:`JansenRitParams.from_config` and ``Connectome.from_config`` accept)
-        and delegates with ``strict=False`` so the nested parsers do not reject each other's
-        keys; an unknown key raises :class:`~neuro.config.ConfigError`.
+        The dict is validated strictly against :class:`_JansenRitDynamicsConfig`: ``dt`` and
+        ``seed`` are flat, the structural settings nest under ``connectome`` and the
+        biophysical scalars under ``params``. Any unknown key (at any level) raises
+        ``pydantic.ValidationError``.
         """
-        from neuro.connectome import Connectome  # noqa: PLC0415
+        cfg = _JansenRitDynamicsConfig.model_validate(config)
+        conn = Connectome.from_config(cfg.connectome.model_dump())
+        params = JansenRitParams.from_config(cfg.params.model_dump())
 
-        reject_unknown(config, {"dt", "seed", "connectome", "params"} | Connectome.config_keys(), "JansenRitDynamics")
-        params = JansenRitParams.from_config(config, strict=False)
-
-        return cls(
-            dt=float(config["dt"]),
-            params=params,
-            seed=config.get("seed"),
-        )
+        return cls(dt=cfg.dt, params=params, conn=conn, seed=cfg.seed)
 
     def dynamics(self, t: float, x: FloatArray, u: FloatArray) -> FloatArray:
         """Advance the network one stochastic-Heun step (``sigma = 0`` is noiseless).

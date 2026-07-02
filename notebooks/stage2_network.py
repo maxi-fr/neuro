@@ -1,6 +1,6 @@
 import marimo
 
-__generated_with = "0.23.8"
+__generated_with = "0.23.10"
 app = marimo.App(
     width="medium",
     app_title="Stage 2 Network: Jansen-Rit Whole-Brain",
@@ -15,13 +15,13 @@ def _():
     import numpy as np
     from matplotlib import pyplot as plt
 
-    from neuro.connectome import load_connectome
+    from neuro.connectome import Connectome
     from neuro.jansen_rit import JansenRitParams, lfp, simulate_network
 
     return (
+        Connectome,
         JansenRitParams,
         lfp,
-        load_connectome,
         mo,
         np,
         plt,
@@ -47,8 +47,8 @@ def _(mo):
 
 
 @app.cell
-def _(load_connectome):
-    connectome = load_connectome()
+def _(Connectome):
+    connectome = Connectome.from_config({})
     region_options = ["None", *list(connectome.region_labels)]
     return connectome, region_options
 
@@ -99,7 +99,9 @@ def _(mo, region_options):
 
 @app.cell
 def _(
+    JansenRitDynamics,
     JansenRitParams,
+    conn,
     connectome,
     deterministic_toggle,
     duration_slider,
@@ -140,23 +142,9 @@ def _(
     if not use_delays_toggle.value:
         conn_scaled = replace(conn_scaled, delays=np.zeros_like(conn_scaled.delays))
 
-    params = JansenRitParams.from_config(
-        {
-            "connectome": conn_scaled,
-            "dt": 1e-4,
-            "params": {
-                "A": a_gains,
-                "sigma": sigma,
-                "K": k_slider.value,
-            },
-        }
-    )
-    t, x_traj = simulate_network(
-        params=params,
-        duration=float(duration_slider.value),
-        dt=1e-4,
-        seed=int(seed_slider.value),
-    )
+    params = JansenRitParams.from_config({"A": a_gains, "sigma": sigma})
+    dyn = JansenRitDynamics(dt=0.0001, params=params, conn=replace(conn, K=k_slider.value), seed=int(seed_slider.value))
+    (t, x_traj) = simulate_network(dyn=dyn, duration=float(duration_slider.value))
     y = lfp(x_traj)
     return ez_idxs, pz_idxs, t, y
 

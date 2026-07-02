@@ -20,11 +20,12 @@ dynamics:
   class_path: neuro.jansen_rit.JansenRitDynamics
   dt: 0.0001
   seed: 69
-  speed: 50.0
-  target_electrode: [CP5, T7]
-  gamma_spread: 20.0
-  params:
+  connectome:
+    speed: 50.0
+    target_electrode: [CP5, T7]
+    gamma_spread: 20.0
     K: 0.5357
+  params:
     A: [3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25,
       3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25,
       3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25,

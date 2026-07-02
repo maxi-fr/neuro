@@ -1,6 +1,6 @@
 import marimo
 
-__generated_with = "0.23.9"
+__generated_with = "0.23.10"
 app = marimo.App(width="medium", app_title="Stage 7: TVB Reference Validation")
 
 
@@ -11,18 +11,18 @@ def _():
     import numpy as np
     from matplotlib import pyplot as plt
 
-    from neuro.connectome import load_connectome
+    from neuro.connectome import Connectome
     from neuro.jansen_rit import JansenRitParams, lfp, simulate_network
     from neuro.tvb_reference import build_reference_simulator, reference_eeg_gain, run_reference
     from utils.processing import band_energy, compute_psd, steady_window
 
     return (
+        Connectome,
         JansenRitParams,
         band_energy,
         build_reference_simulator,
         compute_psd,
         lfp,
-        load_connectome,
         mo,
         np,
         plt,
@@ -63,8 +63,8 @@ def _(mo):
 
 
 @app.cell
-def _(load_connectome):
-    conn = load_connectome()
+def _(Connectome):
+    conn = Connectome.from_config({})
     return (conn,)
 
 
@@ -110,6 +110,7 @@ def _(conn, np):
 
 @app.cell
 def _(
+    JansenRitDynamics,
     JansenRitParams,
     a_gains,
     build_reference_simulator,
@@ -118,7 +119,9 @@ def _(
     duration_slider,
     k_slider,
     lfp,
+    np,
     nsig_slider,
+    replace,
     run_reference,
     seed_slider,
     sigma_slider,
@@ -133,31 +136,19 @@ def _(
     tvb = run_reference(_sim, float(duration_slider.value))
 
     # Hand-rolled run, same network and gains.
-    hr_params = JansenRitParams.from_config(
-        {
-            "connectome": conn,
-            "dt": 1e-4,
-            "params": {
-                "A": a_gains,
-                "sigma": _sigma,
-                "K": k_slider.value,
-                "initial_bounds": [
-                    [-1.0, 1.0],
-                    [-500.0, 500.0],
-                    [-50.0, 50.0],
-                    [-6.0, 6.0],
-                    [-20.0, 20.0],
-                    [-500.0, 500.0],
-                ],
-            },
-        }
+    _bounds = np.array([[-1.0, 1.0], [-500.0, 500.0], [-50.0, 50.0], [-6.0, 6.0], [-20.0, 20.0], [-500.0, 500.0]])
+    _initial_state = np.random.default_rng(int(seed_slider.value)).uniform(
+        _bounds[:, 0:1], _bounds[:, 1:2], size=(6, len(conn.region_labels))
     )
-    hr_t, _x = simulate_network(
+    hr_params = JansenRitParams.from_config({"A": a_gains, "sigma": _sigma})
+    hr_dyn = JansenRitDynamics(
+        dt=0.0001,
         params=hr_params,
-        duration=float(duration_slider.value),
-        dt=1e-4,
+        conn=replace(conn, K=k_slider.value),
         seed=int(seed_slider.value),
+        initial_state=_initial_state,
     )
+    (hr_t, _x) = simulate_network(dyn=hr_dyn, duration=float(duration_slider.value))
     hr_y = lfp(_x)
     hr_eeg = conn.gain @ hr_y
     return hr_eeg, hr_t, hr_y, tvb

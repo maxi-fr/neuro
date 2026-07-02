@@ -20,6 +20,7 @@ def _two_node_connectome() -> Connectome:
     weights = np.zeros((2, 2))
     weights[1, 0] = 0.6
     return Connectome(
+        K=1.0,
         weights=weights,
         tract_lengths=np.zeros((2, 2)),
         centres=np.zeros((2, 3)),
