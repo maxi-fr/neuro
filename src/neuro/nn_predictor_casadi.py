@@ -6,11 +6,12 @@ CasADi-based MPC. Reuses :class:`neuro.prediction.MLPArtifact` to load the artif
 the extracted weights are bit-identical to what JAX uses -- no retraining or
 reimplementation of the network.
 
-Unlike :mod:`neuro.prediction`, where the recursion over a horizon happens entirely in
-normalized (z-scored) space, :func:`NNSymbolicModel.step`/:func:`NNSymbolicModel.output`
-keep raw physical units at their boundary (matching how the project's previous CasADi
-Jansen-Rit adapter kept ``f_step``/``f_out`` in raw state units); normalization is an
-internal-only detail baked into the compiled graph as numeric constants.
+The state carries the y/u windows in model space -- standardized channels, or the latent
+PCA components under a projection -- matching what :meth:`MLPArtifact.encode` produces, so
+the MPC shooting state stays in the reduced latent space. :func:`NNSymbolicModel.step`
+consumes the raw control, standardizing it into the graph as numeric constants, and
+:func:`NNSymbolicModel.output` decodes the model-space state back to raw EEG (inverse PCA,
+then inverse standardization).
 
 The model has no free/symbolic parameters (:attr:`NNSymbolicModel.free_syms` is always
 empty) -- it is purely a fitted numeric map, unlike a physics model with physically
@@ -31,7 +32,8 @@ import casadi as ca
 import equinox as eqx
 import numpy as np
 
-from neuro.prediction import MLPArtifact, unzscore, zscore
+from neuro.prediction import MLPArtifact
+from neuro.transforms import unzscore, zscore
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -163,23 +165,23 @@ class NNSymbolicModel:
         return tuple(_extract_mlp_layers(mlp))
 
     def predict_output(self, y_flat: ca.SX | ca.MX, new_u_flat: ca.SX | ca.MX) -> ca.SX | ca.MX:
-        """Predict the next raw-unit EEG sample from a flat y-window and (shifted) u-window.
+        """Predict the next model-space EEG sample from a flat y-window and (shifted) u-window.
 
         This is the network-evaluation core shared by :meth:`step` (which packs the result
         back into a full state) and the output-condensed MPC (which lifts only this output).
         The windows are row-major flattens (matching ``jnp.ndarray.flatten()``); ``new_u_flat``
         must already include the newest control as its last ``n_controls`` block, exactly as
-        :meth:`step` builds it. The mean/scale constants are first broadcast to per-channel
-        length (so both per-channel scalers of length ``n_channels`` and a single global scalar
-        are handled, matching the numpy broadcasting the JAX path relies on), then tiled across
-        the window length to normalize the flat vector directly (CasADi, unlike numpy, does not
-        broadcast a ``(1, n)`` constant against an ``(m, n)`` symbolic matrix, so working in
-        flat-vector form throughout avoids that entirely).
+        :meth:`step` builds it. The y-window already carries model-space values (standardized
+        channels, or latent components under a projection), so it feeds the network directly;
+        only the raw control window is standardized here. The u standardizer's mean/scale are
+        broadcast to per-control length (handling both per-channel arrays and a single global
+        scalar) then tiled across the window, since CasADi -- unlike numpy -- does not broadcast
+        a ``(1, n)`` constant against an ``(m, n)`` symbolic matrix.
 
         Parameters
         ----------
         y_flat
-            The raw-unit y-window flattened row-major, shape ``(n_y * n_channels, 1)``.
+            The model-space y-window flattened row-major, shape ``(n_y * n_channels, 1)``.
         new_u_flat
             The raw-unit u-window flattened row-major, shape ``(n_u * n_controls, 1)``, newest
             control last.
@@ -187,34 +189,26 @@ class NNSymbolicModel:
         Returns
         -------
         ca.SX | ca.MX
-            The next raw-unit EEG prediction, shape ``(n_channels, 1)``.
+            The next model-space EEG prediction, shape ``(n_channels, 1)``.
         """
-        artifact = self.artifact
-        n_y, n_u = artifact.n_y, artifact.n_u
-        n_ch, n_ctrl = artifact.n_channels, artifact.n_controls
+        n_u, n_ctrl = self.artifact.n_u, self.artifact.n_controls
+        u_std = self.artifact.u_pipeline.standardizer
+        if u_std is None:
+            msg = "u-pipeline must carry a standardizer"
+            raise ValueError(msg)
 
-        y_mean_ch = np.broadcast_to(artifact.y_mean, (n_ch,))
-        y_scale_ch = np.broadcast_to(artifact.y_scale, (n_ch,))
-        u_mean_ch = np.broadcast_to(artifact.u_mean, (n_ctrl,))
-        u_scale_ch = np.broadcast_to(artifact.u_scale, (n_ctrl,))
+        u_mean_tiled = np.tile(np.broadcast_to(u_std.center, (n_ctrl,)), n_u).reshape(-1, 1)
+        u_scale_tiled = np.tile(np.broadcast_to(u_std.scale, (n_ctrl,)), n_u).reshape(-1, 1)
 
-        y_mean_tiled = np.tile(y_mean_ch, n_y).reshape(-1, 1)
-        y_scale_tiled = np.tile(y_scale_ch, n_y).reshape(-1, 1)
-        u_mean_tiled = np.tile(u_mean_ch, n_u).reshape(-1, 1)
-        u_scale_tiled = np.tile(u_scale_ch, n_u).reshape(-1, 1)
-
-        y_scaled_flat = zscore(y_flat, y_mean_tiled, y_scale_tiled)
-        new_u_scaled_flat = zscore(new_u_flat, u_mean_tiled, u_scale_tiled)
-
-        mlp_in = ca.vertcat(y_scaled_flat, new_u_scaled_flat)
-        y_next_scaled = _mlp_forward_ca(mlp_in, self._layers, self.artifact.model.activation)
-        return unzscore(y_next_scaled, y_mean_ch.reshape(-1, 1), y_scale_ch.reshape(-1, 1))
+        new_u_scaled_flat = zscore(new_u_flat, u_mean_tiled, u_scale_tiled)  # ty: ignore[invalid-argument-type]
+        mlp_in = ca.vertcat(y_flat, new_u_scaled_flat)
+        return _mlp_forward_ca(mlp_in, self._layers, self.artifact.model.activation)
 
     def step(self, history: Sequence[ca.SX | ca.MX], u: ca.SX | ca.MX) -> ca.SX | ca.MX:
-        """Advance one step: ``history == [x]`` (raw units), ``u`` raw control -> ``x_next``.
+        """Advance one step: ``history == [x]`` (model space), ``u`` raw control -> ``x_next``.
 
-        The state packs the y-window/u-window as row-major flattens, so "drop the oldest step,
-        append the newest" is just slicing off/on a contiguous block of
+        The state packs the model-space y-window/u-window as row-major flattens, so "drop the
+        oldest step, append the newest" is just slicing off/on a contiguous block of
         ``n_channels``/``n_controls`` entries -- no reshape into a 2-D window is needed. The
         network evaluation itself is delegated to :meth:`predict_output`.
         """
@@ -226,25 +220,33 @@ class NNSymbolicModel:
         u_flat = x[n_y * n_ch :]
 
         new_u_flat = ca.vertcat(u_flat[n_ctrl:], u)
-        y_next_raw = self.predict_output(y_flat, new_u_flat)
+        y_next_model = self.predict_output(y_flat, new_u_flat)
 
-        new_y_flat = ca.vertcat(y_flat[n_ch:], y_next_raw)
+        new_y_flat = ca.vertcat(y_flat[n_ch:], y_next_model)
         return ca.vertcat(new_y_flat, new_u_flat)
 
     def output(self, x: ca.SX | ca.MX) -> ca.SX | ca.MX:
-        """Slice the most-recent predicted sample from the state, decoded to raw EEG.
+        """Slice the most-recent model-space sample from the state and decode to raw EEG.
 
-        Without a projection the sliced values are already raw EEG. With a fixed PCA
-        projection the state holds latent components, so the last latent vector ``z`` is
-        decoded back to EEG via ``y = E.T @ z + mean`` (the symbolic mirror of
-        :meth:`MLPArtifact.decode`), matching :meth:`neuro.prediction.NNPredictor.predict`.
+        The state holds model-space values, so the last vector is decoded by inverting the
+        y-pipeline: undo the PCA projection (``y = E.T @ z + mean``) when present, then undo
+        the channel standardization. This is the symbolic mirror of :meth:`MLPArtifact.decode`,
+        matching :meth:`neuro.prediction.NNPredictor.predict`.
         """
         n_y, n_ch = self.artifact.n_y, self.artifact.n_channels
         z_last = x[(n_y - 1) * n_ch : n_y * n_ch]
-        basis, mean = self.artifact.latent_basis, self.artifact.latent_mean
-        if basis is None or mean is None:
-            return z_last
-        return ca.mtimes(basis.T, z_last) + mean.reshape(-1, 1)
+
+        pca = self.artifact.y_pipeline.pca
+        y_std = ca.mtimes(pca.basis.T, z_last) + pca.mean.reshape(-1, 1) if pca is not None else z_last
+
+        std = self.artifact.y_pipeline.standardizer
+        if std is None:
+            msg = "y-pipeline must carry a standardizer"
+            raise ValueError(msg)
+        n_eeg = self.n_eeg_channels
+        center = np.broadcast_to(std.center, (n_eeg,)).reshape(-1, 1)
+        scale = np.broadcast_to(std.scale, (n_eeg,)).reshape(-1, 1)
+        return unzscore(y_std, center, scale)  # ty: ignore[invalid-return-type]
 
     @cached_property
     def f_step(self) -> ca.Function:

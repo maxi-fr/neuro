@@ -144,21 +144,27 @@ $$
 
 ### 3.1 Optional latent PCA projection
 
-If `model.latent_dim = k` is set (and $k <$ number of EEG channels),
-[`fit_latent_projection`](../src/neuro/nn_training.py) fits a fixed orthonormal PCA basis
-$E \in \mathbb{R}^{k \times C}$ with per-channel mean $\mu \in \mathbb{R}^{C}$ on the **concatenated
-training EEG**. Every trajectory's EEG is encoded before windowing:
+If `model.latent_dim = k` is set (and $k <$ number of EEG channels), the y-transform gains a fixed
+orthonormal PCA step *after* the channel standardizer (see §4.2), so **model space** is
+standardize-then-project. [`PCAProjection.fit`](../src/neuro/transforms.py) fits the basis
+$E \in \mathbb{R}^{k \times C}$ with mean $\mu \in \mathbb{R}^{C}$ on the **standardized training
+EEG** (train split only). With $\tilde{y}$ the standardized channels:
 
 $$
-z_t = (y_t - \mu)\,E^{\top} \in \mathbb{R}^{k}, \qquad
-\hat{y}_t = z_t E + \mu \quad(\text{decode}).
+z_t = (\tilde{y}_t - \mu)\,E^{\top} \in \mathbb{R}^{k}, \qquad
+\tilde{y}_t = z_t E + \mu \quad(\text{decode}).
 $$
 
-The whole pipeline then runs with $C \leftarrow k$ (the network predicts latent components). At
-evaluation the predictions and targets are decoded back to raw EEG channels so the reported MSE is
-comparable across `latent_dim`. **Constraint:** the projection is incompatible with the per-channel
-PSD/FC losses, so `w_psd = w_fc = 0` is required when `latent_dim` is active (enforced with a
-`ValueError`). In all shipped configs `latent_dim = null` (projection disabled).
+The network's *inputs* and *rollout* then live in the $k$-dimensional latent space (so the MPC can
+run in the reduced state), but the **losses are still computed in EEG channel space**: each
+model-space prediction $\hat{z}$ is decoded through the fixed, differentiable inverse projection
+$\hat{z}E + \mu$ before the loss (§6). Because $E$ is orthonormal this leaves the MSE gradient
+unchanged up to a constant (§6.4), while making the PSD/FC terms meaningful — they operate on real
+EEG channels rather than the decorrelated latent components. Consequently PSD/FC are **no longer
+incompatible** with a projection (`w_psd`, `w_fc` may be > 0 with `latent_dim` set; see
+[`latent_stats.yaml`](../configs/nn_predictor/latent_stats.yaml)). At evaluation predictions are
+decoded fully back to raw EEG so the reported MSE is comparable across `latent_dim`. Most shipped
+configs use `latent_dim = null` (projection disabled).
 
 ---
 
@@ -177,32 +183,36 @@ $$
 Holding out the tail (rather than random sampling) limits leakage between the heavily-overlapping
 sliding windows: a random split would put nearly-identical adjacent windows in both sets.
 
-### 4.2 Scaling
+### 4.2 Transforms (standardize, then optionally project)
 
-Scalers are **fit on the training split only** and reused for validation and at inference, so no
-validation statistics leak in. Two scalers are fit — `scaler_y` (EEG) and `scaler_u` (control) —
-using only the **past** blocks of $X_\text{train}$ (`y_past` and `u_past`), reshaped to
-$(\cdot, C)$ / $(\cdot, m)$.
+The EEG and control transforms are [`Pipeline`](../src/neuro/transforms.py)s of per-timestep-vector
+maps, **fit on the training split only** (so no validation statistics leak in) and reused for
+validation and at inference. Both PCA and the scalers share one `fit` / `transform` /
+`inverse_transform` interface — a [`Standardizer`](../src/neuro/transforms.py) and a
+[`PCAProjection`](../src/neuro/transforms.py) — so the projection is just another pipeline step
+rather than a special case:
 
-- `scaler = "standard"` → `StandardScaler`: subtract mean, divide by std.
-- `scaler = "robust"` → `RobustScaler`: subtract median, divide by IQR (robust to the large EEG
-  bursts / bistable jumps). Used by all shipped configs.
-- `global_scaling = true` → the block is flattened to a single column, giving **one** scalar
-  mean/scale shared across channels; `false` → **per-channel** statistics. All shipped configs use
-  global scaling.
+- **y-pipeline** $= [\,\text{Standardizer}\,]$, or $[\,\text{Standardizer},\ \text{PCAProjection}\,]$
+  when `latent_dim` is set (§3.1). Fit on the raw past-EEG channel vectors of $X_\text{train}$; the
+  PCA step is fit on the *standardized* channels.
+- **u-pipeline** $= [\,\text{Standardizer}\,]$, fit on the raw past-control vectors.
 
-Standardisation (per feature $j$):
+The `Standardizer` subsumes the previous sklearn scalers:
 
-$$
-\tilde{x} = \frac{x - c_j}{s_j},
-$$
+- `scaler = "standard"` → subtract mean, divide by std.
+- `scaler = "robust"` → subtract median, divide by IQR (robust to the large EEG bursts / bistable
+  jumps). Used by all shipped configs.
+- `global_scaling = true` → statistics pooled to **one** scalar shared across channels; `false` →
+  **per-channel**. All shipped configs use global scaling.
 
-with $(c_j, s_j) = (\text{mean}, \text{std})$ for standard, $(\text{median}, \text{IQR})$ for robust.
-[`scale_dataset`](../src/neuro/nn_training.py) applies `scaler_y` to the past-EEG block and to the
-targets $Y$, and `scaler_u` to both the past- and future-control blocks. Targets are scaled with the
-same `scaler_y` fitted on past EEG (past and future EEG share a distribution). The training loss is
-therefore computed in **standardised space**; evaluation is done in raw units after inverse-scaling
-(Section 8).
+Standardisation (per feature $j$): $\tilde{x} = (x - c_j)/s_j$, with $(c_j, s_j) = (\text{mean},
+\text{std})$ for standard, $(\text{median}, \text{IQR})$ for robust.
+[`transform_features`](../src/neuro/nn_training.py) pushes the past-EEG block through the y-pipeline
+(→ **model space**: standardized channels, or latent components under a projection) and the
+past/future control blocks through the u-pipeline. The **targets $Y$ are only standardized** (the
+channel `Standardizer`, not the PCA step), because the losses live in standardized-channel space and
+the model's latent output is decoded into that space before scoring (§6). Evaluation is done in raw
+EEG units after the full inverse pipeline (Section 8).
 
 ---
 
@@ -257,9 +267,18 @@ distinction drives the curriculum loss below.
 
 ## 6. Loss function
 
-Implemented in [`compute_loss`](../src/neuro/nn_training.py). Let a batch have predictions
-$\hat{Y} \in \mathbb{R}^{B \times NC}$ and targets $Y \in \mathbb{R}^{B \times NC}$ (both in
-standardised space). Write $\hat{Y}^{(1)} = \hat{Y}[:, :C]$ for the first predicted step.
+Implemented in [`compute_loss`](../src/neuro/nn_training.py). The model rolls out in **model space**
+(the $k$-dimensional latent components under a projection, else the $C$ channels), producing
+$\hat{Z} \in \mathbb{R}^{B \times Nk}$. Before any loss term this is **decoded into standardized-channel
+space** with the fixed, differentiable inverse PCA,
+
+$$
+\hat{Y} = \hat{Z}E + \mu \in \mathbb{R}^{B \times NC}
+$$
+
+(the identity map when there is no projection, i.e. $k = C$). The targets $Y \in \mathbb{R}^{B \times
+NC}$ are the standardized EEG channels (§4.2), so **all terms below live in EEG channel space**. Write
+$\hat{Y}^{(1)} = \hat{Y}[:, :C]$ for the first predicted step.
 
 ### 6.1 Curriculum MSE (the primary loss)
 
@@ -329,6 +348,25 @@ $\nabla \big(\mathcal{L}_\text{aux}/\operatorname{sg}(\mathcal{L}_\text{aux})\bi
 point accuracy regardless of the absolute magnitudes of the spectral/FC errors; $w_\text{psd}$,
 $w_\text{fc}$ then act as pure relative weights. The raw (unweighted) `mse`, `psd`, `fc` values are
 returned as `aux` for logging.
+
+### 6.4 Why decoding is safe for the MSE (orthonormality)
+
+The PCA basis has orthonormal rows ($EE^\top = I_k$). Split a channel target into its in-subspace
+part and residual, $Y - \mu = ZE + r$ with $rE^\top = 0$. For a latent prediction $\hat{Z}$ decoded
+to $\hat{Y} = \hat{Z}E + \mu$,
+
+$$
+\|\hat{Y} - Y\|^2 = \|(\hat{Z}-Z)E\|^2 + \|r\|^2 = \|\hat{Z} - Z\|^2 + \|r\|^2,
+$$
+
+and $\|r\|^2$ is parameter-independent, so $\nabla_\theta$ of the channel-space (summed) MSE equals
+$\nabla_\theta$ of the latent MSE. Computing the MSE in EEG space therefore does **not** change what
+the model learns for point accuracy — it only makes the reported number honest and, crucially,
+unlocks the PSD/FC terms, which *are* genuinely different in channel space (in latent space FC is
+degenerate: PCA decorrelates the components, so their correlation matrix is $\approx I$). The two
+mean-reductions divide the same summed error by $B\!N\!C$ vs $B\!N\!k$, so the gradients are parallel
+with ratio $k/C$ — pinned by the regression test in
+[`test_nn_losses.py`](../tests/test_nn_losses.py).
 
 ---
 
@@ -515,10 +553,8 @@ converted into `optuna.TrialPruned`.
   still shuffled each epoch.
 - **`depth = 0` is a genuinely linear model** — no activation is applied, so `activation` and
   `hidden_size` are inert for `linear_best.yaml`.
-- **Auxiliary losses need `horizon > 1`** and are mutually exclusive with `latent_dim` (per-channel
-  spectra/FC are undefined in latent space).
+- **Auxiliary losses need `horizon > 1`** and are computed in EEG channel space, so they now work
+  **with** `latent_dim` too (the latent rollout is decoded first; §3.1, §6). Only for `horizon = 1`
+  are PSD/FC skipped.
 - **Non-determinism.** The per-epoch dataloader shuffle uses an unseeded RNG, so runs are not
   bit-reproducible even at fixed `seed` (which only fixes weight initialisation).
-</content>
-
-</invoke>

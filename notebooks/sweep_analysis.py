@@ -113,7 +113,6 @@ def ui_trial_selection(mo, trials_df):
 def load_trial_data(
     MLPArtifact,
     mo,
-    np,
     prepare_datasets,
     sweep_path,
     trial_dropdown,
@@ -155,9 +154,7 @@ def load_trial_data(
     train_split = float(_train_cfg.get("train_split", 0.8))
     _train_cfg.get("global_scaling", True)
 
-    projection = (artifact.latent_basis, artifact.latent_mean) if artifact.latent_basis is not None else None
-
-    X_full, Y_full, n_channels = prepare_datasets(data_files, n_steps_cfg, downsample, n_y, n_u, horizon, projection)
+    X_full, Y_full, n_channels = prepare_datasets(data_files, n_steps_cfg, downsample, n_y, n_u, horizon)
     n_controls = (X_full.shape[1] - n_y * n_channels) // (n_u + horizon)
 
     split_idx = int(train_split * len(X_full))
@@ -171,24 +168,9 @@ def load_trial_data(
     _val_offset = (-split_idx) % n_per_traj  # align to the first complete held-out trajectory
     traj_slice = slice(_val_offset, _val_offset + n_per_traj)
 
-    from neuro.prediction import zscore
+    from neuro.nn_training import transform_features
 
-    y_past = X_val[:, : n_y * n_channels]
-    u_past = X_val[:, n_y * n_channels : n_y * n_channels + n_u * n_controls]
-    u_future = X_val[:, n_y * n_channels + n_u * n_controls :]
-
-    # In global scaling, the mean/scale are 1D arrays of size 1. In per-channel, they are size n_channels/n_controls.
-    # We reshape to (batch, time, channel) to broadcast correctly, then flatten again.
-    def scale_flat(data, mean, scale, channels):
-        shape = data.shape
-        reshaped = data.reshape(shape[0], -1, channels)
-        return zscore(reshaped, mean, scale).reshape(shape)
-
-    y_past_s = scale_flat(y_past, artifact.y_mean, artifact.y_scale, n_channels)
-    u_past_s = scale_flat(u_past, artifact.u_mean, artifact.u_scale, n_controls)
-    u_future_s = scale_flat(u_future, artifact.u_mean, artifact.u_scale, n_controls)
-
-    X_val_s = np.concatenate([y_past_s, u_past_s, u_future_s], axis=1)
+    X_val_s = transform_features(X_val, artifact.y_pipeline, artifact.u_pipeline, n_y, n_channels, n_controls)
     return (
         X_val,
         X_val_s,
@@ -219,19 +201,14 @@ def eval_and_errors(
     import jax.numpy as jnp
 
     from neuro.nn_training import predict_batch
-    from neuro.prediction import unzscore
 
     Y_pred_s = np.asarray(predict_batch(model, jnp.asarray(X_val_s)))
+    _horizon = config.get("model", {}).get("horizon", 5)
 
-    def unscale_flat(data, mean, scale, channels):
-        shape = data.shape
-        reshaped = data.reshape(shape[0], -1, channels)
-        return unzscore(reshaped, mean, scale).reshape(shape)
+    Y_pred_s_traj = Y_pred_s.reshape(Y_pred_s.shape[0], _horizon, artifact.model.n_channels)
+    Y_pred_traj = artifact.decode(Y_pred_s_traj)
 
-    Y_pred_unscaled_flat = unscale_flat(Y_pred_s, artifact.y_mean, artifact.y_scale, n_channels)
-
-    Y_val_traj = reshape_to_trajectory(Y_val, config.get("model", {}).get("horizon", 5), n_channels)
-    Y_pred_traj = reshape_to_trajectory(Y_pred_unscaled_flat, config.get("model", {}).get("horizon", 5), n_channels)
+    Y_val_traj = reshape_to_trajectory(Y_val, _horizon, n_channels)
 
     mse_per_channel = np.mean((Y_val_traj - Y_pred_traj) ** 2, axis=(0, 1))
     mae_per_channel = np.mean(np.abs(Y_val_traj - Y_pred_traj), axis=(0, 1))

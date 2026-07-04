@@ -30,6 +30,8 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
+from neuro.transforms import Pipeline
+
 jax.config.update("jax_enable_x64", val=True)
 
 if TYPE_CHECKING:
@@ -179,7 +181,7 @@ class AutoregressivePredictor(eqx.Module):
 
 @dataclass(frozen=True)
 class MLPArtifact:
-    """Loaded ``run_nn_predictor_jax`` artifact: the live predictor, native dt, and scalers.
+    """Loaded ``run_nn_predictor`` artifact: the live predictor, native dt, and transforms.
 
     The canonical artifact representation, shared by the training script (:meth:`save`),
     :class:`NNPredictor` (:meth:`load`), and the CasADi port in
@@ -195,24 +197,19 @@ class MLPArtifact:
         The model's native time step, seconds.
     downsample : int
         Downsampling factor relative to the simulation's base ``dt``.
-    u_mean, u_scale, y_mean, y_scale : FloatArray
-        Per-channel ``StandardScaler`` statistics used to z-score controls/outputs.
-    latent_basis, latent_mean : FloatArray | None
-        Optional fixed PCA projection (see :func:`neuro.nn_training.fit_latent_projection`).
-        When set, the model runs in the ``k``-dimensional latent space and the EEG is
-        encoded ``z = (y - latent_mean) @ latent_basis.T`` / decoded ``y = z @ latent_basis
-        + latent_mean``; ``None`` means the model operates directly on raw EEG channels.
+    y_pipeline : Pipeline
+        Raw EEG -> model space map: a channel-space :class:`~neuro.transforms.Standardizer`
+        followed by an optional :class:`~neuro.transforms.PCAProjection`. Encodes measured EEG
+        the model consumes and decodes its predictions back to raw EEG channels.
+    u_pipeline : Pipeline
+        Raw control -> model space map (a single standardizer).
     """
 
     model: AutoregressivePredictor
     dt: float
     downsample: int
-    u_mean: FloatArray
-    u_scale: FloatArray
-    y_mean: FloatArray
-    y_scale: FloatArray
-    latent_basis: FloatArray | None = None
-    latent_mean: FloatArray | None = None
+    y_pipeline: Pipeline
+    u_pipeline: Pipeline
 
     @property
     def n_y(self) -> int:
@@ -241,26 +238,53 @@ class MLPArtifact:
 
     @property
     def n_eeg_channels(self) -> int:
-        """Number of raw EEG channels (the latent basis' input dimension, else ``n_channels``)."""
-        return self.latent_basis.shape[1] if self.latent_basis is not None else self.n_channels
+        """Number of raw EEG channels (the PCA basis' input dimension, else ``n_channels``)."""
+        pca = self.y_pipeline.pca
+        return pca.basis.shape[1] if pca is not None else self.n_channels
+
+    @property
+    def latent_basis(self) -> FloatArray | None:
+        """PCA basis ``(k, n_eeg)`` if the y-pipeline projects, else ``None`` (read-only view)."""
+        pca = self.y_pipeline.pca
+        return pca.basis if pca is not None else None
+
+    @property
+    def latent_mean(self) -> FloatArray | None:
+        """PCA per-channel mean ``(n_eeg,)`` if the y-pipeline projects, else ``None``."""
+        pca = self.y_pipeline.pca
+        return pca.mean if pca is not None else None
+
+    @property
+    def y_mean(self) -> FloatArray:
+        """Channel-standardizer center of the y-pipeline (read-only convenience view)."""
+        std = self.y_pipeline.standardizer
+        return std.center if std is not None else np.zeros(1)
+
+    @property
+    def y_scale(self) -> FloatArray:
+        """Channel-standardizer scale of the y-pipeline (read-only convenience view)."""
+        std = self.y_pipeline.standardizer
+        return std.scale if std is not None else np.ones(1)
+
+    @property
+    def u_mean(self) -> FloatArray:
+        """Standardizer center of the u-pipeline (read-only convenience view)."""
+        std = self.u_pipeline.standardizer
+        return std.center if std is not None else np.zeros(1)
+
+    @property
+    def u_scale(self) -> FloatArray:
+        """Standardizer scale of the u-pipeline (read-only convenience view)."""
+        std = self.u_pipeline.standardizer
+        return std.scale if std is not None else np.ones(1)
 
     def encode(self, y: FloatArray) -> FloatArray:
-        """Project raw EEG ``(..., n_eeg_channels)`` onto the latent components.
-
-        Returns the input unchanged when the artifact carries no projection.
-        """
-        if self.latent_basis is None:
-            return np.asarray(y, dtype=np.float64)
-        return (np.asarray(y, dtype=np.float64) - self.latent_mean) @ self.latent_basis.T
+        """Map raw EEG ``(..., n_eeg_channels)`` into model space (standardize, then project)."""
+        return self.y_pipeline.transform(np.asarray(y, dtype=np.float64))
 
     def decode(self, z: FloatArray) -> FloatArray:
-        """Reconstruct raw EEG from latent components ``(..., n_channels)``.
-
-        Returns the input unchanged when the artifact carries no projection.
-        """
-        if self.latent_basis is None:
-            return np.asarray(z, dtype=np.float64)
-        return np.asarray(z, dtype=np.float64) @ self.latent_basis + self.latent_mean
+        """Reconstruct raw EEG ``(..., n_eeg_channels)`` from model-space values."""
+        return self.y_pipeline.inverse_transform(np.asarray(z, dtype=np.float64))
 
     @classmethod
     def load(cls, artifact: str | Path) -> MLPArtifact:
@@ -268,8 +292,18 @@ class MLPArtifact:
         artifact = Path(artifact)
         meta: dict[str, Any] = json.loads(artifact.with_suffix(".json").read_text())
         with np.load(artifact.with_suffix(".scalers.npz")) as sc:
-            scalers = {k: np.asarray(sc[k], dtype=np.float64) for k in ("u_mean", "u_scale", "y_mean", "y_scale")}
-            latent = {k: np.asarray(sc[k], dtype=np.float64) for k in ("latent_basis", "latent_mean") if k in sc.files}
+            arrays = {k: np.asarray(sc[k], dtype=np.float64) for k in sc.files}
+
+        if "y_pipeline" in meta:
+            y_pipeline = Pipeline.from_serialized("y", meta["y_pipeline"], arrays)
+            u_pipeline = Pipeline.from_serialized("u", meta["u_pipeline"], arrays)
+        else:  # TODO: this block exists only for backward compatibility with old saved training artifacts. Can be removed at some point
+            arrays["y.0.center"] = arrays["y_mean"]
+            arrays["y.0.scale"] = arrays["y_scale"]
+            arrays["u.0.center"] = arrays["u_mean"]
+            arrays["u.0.scale"] = arrays["u_scale"]
+            y_pipeline = Pipeline.from_serialized("y", ["standardizer"], arrays)
+            u_pipeline = Pipeline.from_serialized("u", ["standardizer"], arrays)
 
         activation_name = meta.get("activation", "relu")
         mlp = eqx.nn.MLP(
@@ -291,10 +325,16 @@ class MLPArtifact:
         )
         model = eqx.tree_deserialise_leaves(str(artifact), skeleton)
 
-        return cls(model=model, dt=float(meta["dt"]), downsample=int(meta["downsample"]), **scalers, **latent)
+        return cls(
+            model=model,
+            dt=float(meta["dt"]),
+            downsample=int(meta["downsample"]),
+            y_pipeline=y_pipeline,
+            u_pipeline=u_pipeline,
+        )
 
     def save(self, artifact: str | Path) -> None:
-        """Persist the predictor (eqx leaves) plus a JSON sidecar and the scaler arrays."""
+        """Persist the predictor (eqx leaves) plus a JSON sidecar and the transform arrays."""
         artifact = Path(artifact)
         artifact.parent.mkdir(parents=True, exist_ok=True)
         eqx.tree_serialise_leaves(str(artifact), self.model)
@@ -312,34 +352,13 @@ class MLPArtifact:
             "dt": self.dt,
             "n_channels": self.n_channels,
             "n_controls": self.n_controls,
-            "enable_projection": self.latent_basis is not None,
             "n_eeg_channels": self.n_eeg_channels,
+            "y_pipeline": self.y_pipeline.step_tags(),
+            "u_pipeline": self.u_pipeline.step_tags(),
         }
         artifact.with_suffix(".json").write_text(json.dumps(meta, indent=2))
-        scaler_arrays = {
-            "u_mean": self.u_mean,
-            "u_scale": self.u_scale,
-            "y_mean": self.y_mean,
-            "y_scale": self.y_scale,
-        }
-        if self.latent_basis is not None and self.latent_mean is not None:
-            scaler_arrays["latent_basis"] = self.latent_basis
-            scaler_arrays["latent_mean"] = self.latent_mean
-        np.savez(artifact.with_suffix(".scalers.npz"), **scaler_arrays)  # ty: ignore[invalid-argument-type]
-
-
-def zscore(x: Any, mean: Any, scale: Any) -> Any:  # noqa: ANN401
-    """Standardize ``x`` using precomputed per-channel ``mean``/``scale``.
-
-    Works unchanged for NumPy/JAX arrays and CasADi ``SX``/``MX`` symbols, since all three
-    overload elementwise ``-``/``/`` identically.
-    """
-    return (x - mean) / scale
-
-
-def unzscore(x: Any, mean: Any, scale: Any) -> Any:  # noqa: ANN401
-    """Invert :func:`zscore`, mapping standardized values back to raw units."""
-    return x * scale + mean
+        transform_arrays = {**self.y_pipeline.array_dict("y"), **self.u_pipeline.array_dict("u")}
+        np.savez(artifact.with_suffix(".scalers.npz"), **transform_arrays)  # ty: ignore[invalid-argument-type]
 
 
 class NNPredictor:
@@ -347,7 +366,7 @@ class NNPredictor:
 
     Native conditioning: the input is ``[y_past (n_y), u_past (n_u), u_future (horizon)]``
     drawn from the tail of the context window plus the recorded future controls. Outputs
-    are inverse-scaled to raw EEG units.
+    are decoded from model space back to raw EEG units.
     """
 
     name = "nn"
@@ -361,9 +380,8 @@ class NNPredictor:
         horizon: int,
         n_channels: int,
         dt: float,
-        scalers: dict[str, FloatArray],
-        latent_basis: FloatArray | None = None,
-        latent_mean: FloatArray | None = None,
+        y_pipeline: Pipeline,
+        u_pipeline: Pipeline,
     ) -> None:
         self._model = model
         self._n_y = n_y
@@ -371,14 +389,11 @@ class NNPredictor:
         self._horizon = horizon
         self._n_ch = n_channels  # raw EEG channels (output dimension)
         self.dt = dt
-        self._u_mean = scalers["u_mean"]
-        self._u_scale = scalers["u_scale"]
-        self._y_mean = scalers["y_mean"]
-        self._y_scale = scalers["y_scale"]
-        self._latent_basis = latent_basis
-        self._latent_mean = latent_mean
-        # The model and y-scaler operate in latent space when a projection is set.
-        self._k = latent_basis.shape[0] if latent_basis is not None else n_channels
+        self._y_pipeline = y_pipeline
+        self._u_pipeline = u_pipeline
+        # The model rolls out in latent space when the y-pipeline carries a PCA step.
+        pca = y_pipeline.pca
+        self._k = pca.basis.shape[0] if pca is not None else n_channels
 
     @classmethod
     def load(cls, artifact: str | Path, **_kwargs: object) -> NNPredictor:
@@ -391,23 +406,21 @@ class NNPredictor:
             horizon=art.horizon,
             n_channels=art.n_eeg_channels,
             dt=art.dt,
-            scalers={"u_mean": art.u_mean, "u_scale": art.u_scale, "y_mean": art.y_mean, "y_scale": art.y_scale},
-            latent_basis=art.latent_basis,
-            latent_mean=art.latent_mean,
+            y_pipeline=art.y_pipeline,
+            u_pipeline=art.u_pipeline,
         )
 
     def predict(self, window: PredictionWindow, horizon_s: float) -> FloatArray:
-        """Assemble the network input from the context tail, predict, inverse-scale.
+        """Assemble the network input from the context tail, roll out, decode to raw EEG.
 
-        When the artifact carries a latent projection, the measured EEG context is encoded
-        into the ``k``-dimensional latent space before the autoregressive rollout and the
-        predictions are decoded back to raw EEG channels before being returned.
+        The measured EEG context is mapped into model space (standardized, then projected
+        onto the latent components when the y-pipeline carries a PCA step) before the
+        autoregressive rollout; the model-space predictions are decoded back to raw EEG
+        channels before being returned.
         """
         factor = _ds_factor(self.dt, window.dt_data)
         y_raw = np.asarray(window.y_ctx, dtype=np.float64)[:, ::factor].T  # (ctx, n_eeg_ch)
-        y_ctx = (
-            (y_raw - self._latent_mean) @ self._latent_basis.T if self._latent_basis is not None else y_raw
-        )  # (ctx, n_ch)
+        y_ctx = self._y_pipeline.transform(y_raw)  # (ctx, k) model space
         u_ctx = _resample_controls(window.u_ctx, factor, y_ctx.shape[0])  # (ctx, n_controls)
         n_steps = round(horizon_s / self.dt)
 
@@ -418,8 +431,8 @@ class NNPredictor:
         total_pred_steps = num_chunks * self._horizon
         u_future_all = _resample_controls(window.u_future, factor, total_pred_steps)
 
-        y_hist = y_ctx.copy()  # grows with each predicted chunk (model space: latent or raw)
-        u_hist = u_ctx.copy()
+        y_hist = y_ctx.copy()  # grows with each predicted chunk (model space)
+        u_hist = u_ctx.copy()  # raw controls
         y_pred_chunks: list[np.ndarray] = []
 
         for i in range(num_chunks):
@@ -429,25 +442,21 @@ class NNPredictor:
                 msg = f"context too short for NN history (need n_y={self._n_y}, n_u={self._n_u}; got {y_hist.shape[0]})"
                 raise ValueError(msg)
 
-            y_past = y_hist[-self._n_y :]
-            u_past = u_hist[-self._n_u :]
+            y_past = y_hist[-self._n_y :]  # model space (already transformed)
+            u_past_s = self._u_pipeline.transform(u_hist[-self._n_u :])
+            u_chunk_s = self._u_pipeline.transform(u_chunk)
 
-            y_past_s = zscore(y_past, self._y_mean, self._y_scale)
-            u_past_s = zscore(u_past, self._u_mean, self._u_scale)
-            u_chunk_s = zscore(u_chunk, self._u_mean, self._u_scale)
-
-            x_scaled = np.concatenate([y_past_s.flatten(), u_past_s.flatten(), u_chunk_s.flatten()])
-            y_chunk_s = np.asarray(self._model(jnp.asarray(x_scaled, dtype=jnp.float64)))  # type: ignore
-            y_pred_chunk = unzscore(y_chunk_s.reshape(self._horizon, self._k), self._y_mean, self._y_scale)
+            x_model = np.concatenate([y_past.flatten(), u_past_s.flatten(), u_chunk_s.flatten()])
+            y_chunk_model = np.asarray(self._model(jnp.asarray(x_model, dtype=jnp.float64)))  # type: ignore
+            y_pred_chunk = y_chunk_model.reshape(self._horizon, self._k)  # model space
 
             y_pred_chunks.append(y_pred_chunk)
 
             y_hist = np.concatenate([y_hist, y_pred_chunk], axis=0)
             u_hist = np.concatenate([u_hist, u_chunk], axis=0)
 
-        y_pred = np.concatenate(y_pred_chunks, axis=0)  # (total_pred_steps, n_ch)
-        if self._latent_basis is not None:
-            y_pred = y_pred @ self._latent_basis + self._latent_mean  # decode to (steps, n_eeg_ch)
+        y_pred_model = np.concatenate(y_pred_chunks, axis=0)  # (total_pred_steps, k)
+        y_pred = self._y_pipeline.inverse_transform(y_pred_model)  # decode to (steps, n_eeg_ch)
         return y_pred.T[:, :n_steps]
 
 

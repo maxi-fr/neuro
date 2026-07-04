@@ -29,6 +29,7 @@ from neuro.control import (  # noqa: E402
 )
 from neuro.nn_predictor_casadi import NNSymbolicModel  # noqa: E402
 from neuro.prediction import AutoregressivePredictor, MLPArtifact  # noqa: E402
+from neuro.transforms import PCAProjection, Pipeline, Standardizer  # noqa: E402
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -36,6 +37,11 @@ if TYPE_CHECKING:
     from neuro.types import FloatArray
 
 _SEED = 7
+
+
+def _standardizer_pipeline(center: FloatArray, scale: FloatArray) -> Pipeline:
+    """A single-step standardizer pipeline from raw ``center``/``scale`` arrays."""
+    return Pipeline((Standardizer(center=np.asarray(center, np.float64), scale=np.asarray(scale, np.float64)),))
 
 
 def _build_artifact(
@@ -69,7 +75,13 @@ def _build_artifact(
         "y_scale": rng.uniform(0.5, 2.0, n_channels),
     }
     artifact = tmp_path / "art"
-    MLPArtifact(model=wrapped, dt=0.01, downsample=1, **scalers).save(artifact)
+    MLPArtifact(
+        model=wrapped,
+        dt=0.01,
+        downsample=1,
+        y_pipeline=_standardizer_pipeline(scalers["y_mean"], scalers["y_scale"]),
+        u_pipeline=_standardizer_pipeline(scalers["u_mean"], scalers["u_scale"]),
+    ).save(artifact)
     return artifact
 
 
@@ -99,14 +111,15 @@ def _build_projection_artifact(
     wrapped = AutoregressivePredictor(
         model=mlp, n_y=n_y, n_u=n_u, horizon=horizon, n_channels=k, n_controls=n_controls, activation="relu"
     )
-    scalers = {
-        "u_mean": rng.uniform(-1.0, 1.0, n_controls),
-        "u_scale": rng.uniform(0.5, 2.0, n_controls),
-        "y_mean": rng.uniform(-1.0, 1.0, k),
-        "y_scale": rng.uniform(0.5, 2.0, k),
-    }
+    y_pipeline = Pipeline(
+        (
+            Standardizer(center=rng.uniform(-1.0, 1.0, n_eeg), scale=rng.uniform(0.5, 2.0, n_eeg)),
+            PCAProjection(basis=basis, mean=mean),
+        )
+    )
+    u_pipeline = _standardizer_pipeline(rng.uniform(-1.0, 1.0, n_controls), rng.uniform(0.5, 2.0, n_controls))
     artifact = tmp_path / "art_proj"
-    MLPArtifact(model=wrapped, dt=0.01, downsample=1, latent_basis=basis, latent_mean=mean, **scalers).save(artifact)
+    MLPArtifact(model=wrapped, dt=0.01, downsample=1, y_pipeline=y_pipeline, u_pipeline=u_pipeline).save(artifact)
     return artifact
 
 

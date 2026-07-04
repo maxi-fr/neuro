@@ -28,6 +28,13 @@ from neuro.prediction import (  # noqa: E402
     PredictionWindow,
     get_activation,
 )
+from neuro.transforms import PCAProjection, Pipeline, Standardizer  # noqa: E402
+
+
+def _standardizer_pipeline(center: FloatArray, scale: FloatArray) -> Pipeline:
+    """A single-step standardizer pipeline from raw ``center``/``scale`` arrays."""
+    return Pipeline((Standardizer(center=np.asarray(center, np.float64), scale=np.asarray(scale, np.float64)),))
+
 
 _SEED = 42
 
@@ -85,7 +92,13 @@ def _build_artifact(
     }
 
     artifact = tmp_path / "art"
-    MLPArtifact(model=wrapped, dt=0.01, downsample=1, **scalers).save(artifact)
+    MLPArtifact(
+        model=wrapped,
+        dt=0.01,
+        downsample=1,
+        y_pipeline=_standardizer_pipeline(scalers["y_mean"], scalers["y_scale"]),
+        u_pipeline=_standardizer_pipeline(scalers["u_mean"], scalers["u_scale"]),
+    ).save(artifact)
 
     return artifact, mlp, scalers
 
@@ -104,8 +117,9 @@ def _build_projection_artifact(
 ) -> Path:
     """Save a tiny artifact whose model runs in a ``k``-dim PCA latent space; return its path.
 
-    The y-window/scalers live in latent space (size ``k``); a fixed orthonormal basis
-    ``(k, n_eeg)`` plus mean encode/decode between EEG and that latent space.
+    The y-pipeline standardizes the ``n_eeg`` raw EEG channels, then projects onto ``k`` latent
+    components via a fixed orthonormal basis ``(k, n_eeg)`` plus mean (standardize-then-project),
+    so model space is the ``k``-dimensional latent.
     """
     rng = np.random.default_rng(_SEED + 5)
     q, _ = np.linalg.qr(rng.standard_normal((n_eeg, n_eeg)))
@@ -123,14 +137,15 @@ def _build_projection_artifact(
     wrapped = AutoregressivePredictor(
         model=mlp, n_y=n_y, n_u=n_u, horizon=horizon, n_channels=k, n_controls=n_controls, activation=activation
     )
-    scalers = {
-        "u_mean": rng.uniform(-1.0, 1.0, n_controls),
-        "u_scale": rng.uniform(0.5, 2.0, n_controls),
-        "y_mean": rng.uniform(-1.0, 1.0, k),
-        "y_scale": rng.uniform(0.5, 2.0, k),
-    }
+    y_pipeline = Pipeline(
+        (
+            Standardizer(center=rng.uniform(-1.0, 1.0, n_eeg), scale=rng.uniform(0.5, 2.0, n_eeg)),
+            PCAProjection(basis=basis, mean=mean),
+        )
+    )
+    u_pipeline = _standardizer_pipeline(rng.uniform(-1.0, 1.0, n_controls), rng.uniform(0.5, 2.0, n_controls))
     artifact = tmp_path / "art_proj"
-    MLPArtifact(model=wrapped, dt=0.01, downsample=1, latent_basis=basis, latent_mean=mean, **scalers).save(artifact)
+    MLPArtifact(model=wrapped, dt=0.01, downsample=1, y_pipeline=y_pipeline, u_pipeline=u_pipeline).save(artifact)
     return artifact
 
 
@@ -188,22 +203,23 @@ def test_single_step_matches_manual_scan_iteration(
     model = NNSymbolicModel.from_artifact(artifact)
 
     rng = np.random.default_rng(_SEED + 2)
-    y_w_raw = rng.standard_normal((n_y, n_channels))
+    y_w = rng.standard_normal((n_y, n_channels))  # model-space y-window (no projection -> standardized channels)
     u_w_raw = rng.standard_normal((n_u, n_controls))
     u_curr = rng.standard_normal(n_controls)
 
-    x0 = np.concatenate([y_w_raw.flatten(), u_w_raw.flatten()])
+    x0 = np.concatenate([y_w.flatten(), u_w_raw.flatten()])
     x_next = _np2(model.f_step(x0, u_curr)).flatten()
     y_next_ca = _np2(model.f_out(x_next)).flatten()
 
     new_u_w = np.concatenate([u_w_raw[1:], u_curr[None, :]], axis=0)
-    y_w_scaled = (y_w_raw - scalers["y_mean"]) / scalers["y_scale"]
     new_u_w_scaled = (new_u_w - scalers["u_mean"]) / scalers["u_scale"]
-    mlp_in = np.concatenate([y_w_scaled.flatten(), new_u_w_scaled.flatten()])
-    y_next_scaled = np.asarray(mlp(jnp.asarray(mlp_in)))
-    y_next_raw_want = y_next_scaled * scalers["y_scale"] + scalers["y_mean"]
-    new_y_w_want = np.concatenate([y_w_raw[1:], y_next_raw_want[None, :]], axis=0)
+    # The y-window is already model space, so it feeds the MLP unscaled; only controls are standardized.
+    mlp_in = np.concatenate([y_w.flatten(), new_u_w_scaled.flatten()])
+    y_next_model = np.asarray(mlp(jnp.asarray(mlp_in)))
+    new_y_w_want = np.concatenate([y_w[1:], y_next_model[None, :]], axis=0)
     x_next_want = np.concatenate([new_y_w_want.flatten(), new_u_w.flatten()])
+    # f_out decodes model space to raw EEG (no projection -> inverse standardization).
+    y_next_raw_want = y_next_model * scalers["y_scale"] + scalers["y_mean"]
 
     np.testing.assert_allclose(x_next, x_next_want, rtol=1e-10, atol=1e-12)
     np.testing.assert_allclose(y_next_ca, y_next_raw_want, rtol=1e-10, atol=1e-12)
@@ -231,25 +247,27 @@ def test_single_step_matches_jax_with_global_scalar_scalers(tmp_path: Path) -> N
         "y_scale": np.array([2.5]),
     }
     artifact = tmp_path / "art"
-    MLPArtifact(model=wrapped, dt=0.01, downsample=1, **scalers).save(artifact)
+    MLPArtifact(
+        model=wrapped,
+        dt=0.01,
+        downsample=1,
+        y_pipeline=_standardizer_pipeline(scalers["y_mean"], scalers["y_scale"]),
+        u_pipeline=_standardizer_pipeline(scalers["u_mean"], scalers["u_scale"]),
+    ).save(artifact)
     model = NNSymbolicModel.from_artifact(artifact)
 
     rng = np.random.default_rng(_SEED + 9)
-    y_w_raw = rng.standard_normal((n_y, n_channels))
+    y_w = rng.standard_normal((n_y, n_channels))  # model-space y-window
     u_w_raw = rng.standard_normal((n_u, n_controls))
     u_curr = rng.standard_normal(n_controls)
 
-    x0 = np.concatenate([y_w_raw.flatten(), u_w_raw.flatten()])
+    x0 = np.concatenate([y_w.flatten(), u_w_raw.flatten()])
     x_next = _np2(model.f_step(x0, u_curr)).flatten()
     y_next_ca = _np2(model.f_out(x_next)).flatten()
 
     new_u_w = np.concatenate([u_w_raw[1:], u_curr[None, :]], axis=0)
-    mlp_in = np.concatenate(
-        [
-            ((y_w_raw - scalers["y_mean"]) / scalers["y_scale"]).flatten(),
-            ((new_u_w - scalers["u_mean"]) / scalers["u_scale"]).flatten(),
-        ]
-    )
+    # The y-window is already model space; the global scalar broadcasts across all channels for u and the decode.
+    mlp_in = np.concatenate([y_w.flatten(), ((new_u_w - scalers["u_mean"]) / scalers["u_scale"]).flatten()])
     y_next_raw_want = np.asarray(mlp(jnp.asarray(mlp_in))) * scalers["y_scale"] + scalers["y_mean"]
     np.testing.assert_allclose(y_next_ca, y_next_raw_want, rtol=1e-10, atol=1e-12)
 
@@ -263,13 +281,16 @@ def test_output_slices_most_recent_row_not_oldest(tmp_path: Path) -> None:
     n_y, n_u, n_channels, n_controls = 3, 2, 2, 2
     artifact, _mlp, _scalers = _build_artifact(tmp_path, n_y, n_u, 3, 5, 2, n_channels, n_controls)
     model = NNSymbolicModel.from_artifact(artifact)
+    art = MLPArtifact.load(artifact)
 
     y_w = np.arange(n_y * n_channels, dtype=np.float64).reshape(n_y, n_channels)
     u_w = np.zeros((n_u, n_controls))
     x = np.concatenate([y_w.flatten(), u_w.flatten()])
 
+    # f_out decodes the LAST model-space row to raw EEG; distinguishable per-row values catch a
+    # reversed slice (which would decode y_w[0] instead).
     got = _np2(model.f_out(x)).flatten()
-    np.testing.assert_array_equal(got, y_w[-1])
+    np.testing.assert_allclose(got, art.decode(y_w[-1]), rtol=1e-10, atol=1e-12)
 
 
 @pytest.mark.parametrize(
@@ -305,9 +326,9 @@ def test_multistep_rollout_matches_nn_predictor(
     window = PredictionWindow(y_ctx=y_ctx, u_ctx=u_ctx, u_future=u_future, dt_data=dt)
     y_pred_jax = jax_predictor.predict(window, horizon_s=n_steps * dt)
 
-    y_w_raw = y_ctx.T[-n_y:]
-    u_w_raw = u_ctx[-n_u:]
-    x = np.concatenate([y_w_raw.flatten(), u_w_raw.flatten()])
+    # The shooting state is in model space: encode the raw EEG window (standardize) before the roll.
+    art = MLPArtifact.load(artifact)
+    x = np.concatenate([art.encode(y_ctx.T[-n_y:]).flatten(), u_ctx[-n_u:].flatten()])
     y_pred_ca = []
     for k in range(n_steps):
         x = _np2(model.f_step(x, u_future[k])).flatten()

@@ -16,13 +16,12 @@ import matplotlib.pyplot as plt
 import numpy as np
 import optax
 from jax.scipy.signal import welch
-from sklearn.decomposition import PCA
-from sklearn.preprocessing import RobustScaler, StandardScaler
 from tqdm import tqdm
 from tvboptim.observations.observation import compute_fc
 
 from neuro.config import NNPredictorConfig
 from neuro.prediction import AutoregressivePredictor, MLPArtifact, get_activation
+from neuro.transforms import PCAProjection, Pipeline, Standardizer
 from neuro.types import FloatArray
 from utils.plotting import plot_multistep_predictions
 
@@ -79,64 +78,31 @@ def extract_windows_flattened(data: FloatArray, window_size: int) -> FloatArray:
     return view.reshape(-1, window_size * channels)
 
 
-def scale_flat_sequence(
-    data_flat: FloatArray,
-    scaler: StandardScaler | RobustScaler,
-    channels: int,
-    global_scaling: bool,  # noqa: FBT001
-) -> FloatArray:
-    """Scale a flattened sequence per-channel.
+def apply_to_blocks(block_flat: FloatArray, pipeline: Pipeline, in_channels: int) -> FloatArray:
+    """Apply a :class:`~neuro.transforms.Pipeline` to a flattened multi-step block.
+
+    ``block_flat`` is ``(samples, steps * in_channels)`` with the per-timestep channel vectors
+    laid out contiguously (as produced by :func:`extract_windows_flattened`). The pipeline is a
+    per-timestep-vector map, so the block is reshaped to ``(-1, in_channels)``, transformed, and
+    reshaped back -- its width becomes ``steps * out_channels`` (which differs from the input when
+    a PCA step reduces the channel dimension).
 
     Parameters
     ----------
-    data_flat : FloatArray
-        Flattened sequence of shape (samples, time_steps * channels).
-    scaler : StandardScaler | RobustScaler
-        Fitted scaler to apply.
-    channels : int
-        Number of channels per time step.
+    block_flat : FloatArray
+        Flattened block of shape ``(samples, steps * in_channels)``.
+    pipeline : Pipeline
+        The fitted transform to apply along the channel axis.
+    in_channels : int
+        Number of raw channels per timestep in ``block_flat``.
 
     Returns
     -------
     FloatArray
-        Scaled flattened sequence of the same shape.
+        Transformed block of shape ``(samples, steps * out_channels)``.
     """
-    samples = data_flat.shape[0]
-    if global_scaling:
-        data_scaled = scaler.transform(data_flat.reshape(-1, 1))
-    else:
-        data_scaled = scaler.transform(data_flat.reshape(-1, channels))
-    return data_scaled.reshape(samples, -1)
-
-
-def unscale_flat_sequence(
-    data_flat: FloatArray,
-    scaler: StandardScaler | RobustScaler,
-    channels: int,
-    global_scaling: bool,  # noqa: FBT001
-) -> FloatArray:
-    """Inverse-scale a flattened sequence per-channel.
-
-    Parameters
-    ----------
-    data_flat : FloatArray
-        Flattened sequence of shape (samples, time_steps * channels).
-    scaler : StandardScaler | RobustScaler
-        Fitted scaler to apply.
-    channels : int
-        Number of channels per time step.
-
-    Returns
-    -------
-    FloatArray
-        Unscaled flattened sequence of the same shape.
-    """
-    samples = data_flat.shape[0]
-    if global_scaling:
-        data_unscaled = scaler.inverse_transform(data_flat.reshape(-1, 1))
-    else:
-        data_unscaled = scaler.inverse_transform(data_flat.reshape(-1, channels))
-    return data_unscaled.reshape(samples, -1)
+    samples = block_flat.shape[0]
+    return np.asarray(pipeline.transform(block_flat.reshape(-1, in_channels))).reshape(samples, -1)
 
 
 def reshape_to_trajectory(data_flat: jax.Array | FloatArray, horizon: int, channels: int) -> jax.Array | FloatArray:
@@ -157,24 +123,6 @@ def reshape_to_trajectory(data_flat: jax.Array | FloatArray, horizon: int, chann
         Reshaped sequence of shape (batch, horizon, channels).
     """
     return data_flat.reshape(-1, horizon, channels)
-
-
-def reshape_flat_to_channels(data_flat: FloatArray, channels: int) -> FloatArray:
-    """Reshape a flattened sequence to have channels as the last dimension.
-
-    Parameters
-    ----------
-    data_flat : FloatArray
-        Flattened sequence of shape (samples, time_steps * channels).
-    channels : int
-        Number of channels.
-
-    Returns
-    -------
-    FloatArray
-        Reshaped sequence of shape (-1, channels).
-    """
-    return data_flat.reshape(-1, channels)
 
 
 def build_dataset_for_trajectory(
@@ -255,9 +203,12 @@ def prepare_datasets(  # noqa: PLR0913
     n_y: int,
     n_u: int,
     horizon: int,
-    projection: tuple[FloatArray, FloatArray] | None = None,
 ) -> tuple[FloatArray, FloatArray, int]:
-    """Load data and build dataset across multiple trajectories.
+    """Load data and build the raw (unscaled) dataset across multiple trajectories.
+
+    Windows are built in raw EEG/control units; the standardizer and optional PCA projection
+    are fitted on the training split and applied downstream (see
+    :func:`train_and_save_predictor`), so no transform is applied here.
 
     Parameters
     ----------
@@ -273,28 +224,20 @@ def prepare_datasets(  # noqa: PLR0913
         Number of past input steps to include.
     horizon : int
         Prediction horizon.
-    projection : tuple[FloatArray, FloatArray] | None
-        Optional ``(E, mean)`` latent projection from :func:`fit_latent_projection`.
-        When given, each trajectory's EEG is encoded ``y -> (y - mean) @ E.T`` before
-        windowing, so the returned ``n_channels`` is the latent dimension ``k`` instead of the
-        raw EEG channel count.
 
     Returns
     -------
     X_full : FloatArray
-        Input features array, shape ``(total_samples, n_features)``.
+        Raw input features array, shape ``(total_samples, n_features)``.
     Y_full : FloatArray
-        Target labels array, shape ``(total_samples, n_targets)``.
+        Raw target labels array, shape ``(total_samples, horizon * n_channels)``.
     n_channels : int
-        Number of output channels (latent dimension ``k`` when ``projection`` is set).
+        Number of raw EEG output channels.
     """
     all_X, all_Y = [], []
     n_channels = 1
     for df in data_files:
         u, y = load_trajectory(df, n_steps_cfg, downsample)
-        if projection is not None:
-            basis, mean = projection
-            y = (y - mean) @ basis.T
         n_channels = y.shape[1]
         X_traj, Y_traj = build_dataset_for_trajectory(u, y, n_y, n_u, horizon)
         all_X.append(X_traj)
@@ -303,46 +246,6 @@ def prepare_datasets(  # noqa: PLR0913
     X_full = np.concatenate(all_X, axis=0)
     Y_full = np.concatenate(all_Y, axis=0)
     return X_full, Y_full, n_channels
-
-
-def fit_latent_projection(
-    data_files: list[str],
-    n_steps_cfg: int,
-    downsample: int,
-    latent_dim: int,
-) -> tuple[FloatArray, FloatArray] | None:
-    """Fit a fixed orthonormal PCA basis on the concatenated training EEG.
-
-    The basis maps the full EEG channel space onto ``k`` latent components so the
-    predictor can train and run in the reduced space. The projection is
-    ``z = (y - mean) @ E.T`` with inverse ``y = z @ E + mean``; the mean is part of the
-    map (PCA centres the data) and must be applied on both encode and decode.
-
-    Parameters
-    ----------
-    data_files : list[str]
-        Paths to the trajectory ``.npz`` files to fit the basis on.
-    n_steps_cfg : int
-        Number of steps to load per trajectory (matches :func:`prepare_datasets`).
-    downsample : int
-        Downsampling factor (matches :func:`prepare_datasets`).
-    latent_dim : int
-        Number of latent components ``k``. When ``latent_dim`` is >= the EEG channel
-        count the projection would be a no-op, so ``None`` is returned instead.
-
-    Returns
-    -------
-    tuple[FloatArray, FloatArray] | None
-        ``(E, mean)`` -- the orthonormal PCA basis of shape ``(k, n_channels)`` and the
-        per-channel training mean of shape ``(n_channels,)`` -- or ``None`` when
-        ``latent_dim`` >= the EEG channel count (train in the raw channel space).
-    """
-    y_all = np.concatenate([load_trajectory(df, n_steps_cfg, downsample)[1] for df in data_files], axis=0)
-    if latent_dim >= y_all.shape[1]:
-        return None
-    pca = PCA(n_components=latent_dim)
-    pca.fit(np.asarray(y_all, dtype=np.float64))
-    return np.asarray(pca.components_, dtype=np.float64), np.asarray(pca.mean_, dtype=np.float64)
 
 
 def create_model(  # noqa: PLR0913
@@ -407,57 +310,42 @@ def create_model(  # noqa: PLR0913
     )
 
 
-def scale_dataset(  # noqa: PLR0913
+def transform_features(  # noqa: PLR0913
     X: FloatArray,
-    Y: FloatArray,
-    scaler_y: StandardScaler | RobustScaler,
-    scaler_u: StandardScaler | RobustScaler,
+    y_pipeline: Pipeline,
+    u_pipeline: Pipeline,
     n_y: int,
-    n_u: int,
     n_channels: int,
     n_controls: int,
-    global_scaling: bool,  # noqa: FBT001
-) -> tuple[FloatArray, FloatArray]:
-    """Scale datasets per-channel.
+) -> FloatArray:
+    """Map a raw feature matrix into model space.
+
+    The past-EEG block is pushed through ``y_pipeline`` (standardize, then optionally project),
+    and the past/future control blocks through ``u_pipeline`` (standardize). The past-EEG block's
+    width shrinks from ``n_y * n_channels`` to ``n_y * k`` when the y-pipeline projects.
 
     Parameters
     ----------
     X : FloatArray
-        Input features array, shape ``(samples, n_features)``.
-    Y : FloatArray
-        Target labels array, shape ``(samples, n_targets)``.
-    scaler_y : StandardScaler | RobustScaler
-        Fitted scaler for the outputs.
-    scaler_u : StandardScaler | RobustScaler
-        Fitted scaler for the inputs.
+        Raw input features, shape ``(samples, n_y * n_channels + (n_u + horizon) * n_controls)``.
+    y_pipeline, u_pipeline : Pipeline
+        Fitted transforms for the EEG and control blocks.
     n_y : int
-        Number of past output steps.
-    n_u : int
-        Number of past input steps.
-    n_channels : int
-        Number of output channels.
-    n_controls : int
-        Number of input control channels.
+        History length of the EEG block.
+    n_channels, n_controls : int
+        Raw EEG and control channel counts.
 
     Returns
     -------
-    X_s : FloatArray
-        Scaled input features array, shape ``(samples, n_features)``.
-    Y_s : FloatArray
-        Scaled target labels array, shape ``(samples, n_targets)``.
+    FloatArray
+        Model-space features, shape ``(samples, n_y * k + (n_u + horizon) * n_controls)``.
     """
-    y_past_flat = X[:, : n_y * n_channels]
-    u_past_flat = X[:, n_y * n_channels : n_y * n_channels + n_u * n_controls]
-    u_future_flat = X[:, n_y * n_channels + n_u * n_controls :]
+    y_past = X[:, : n_y * n_channels]
+    u_blocks = X[:, n_y * n_channels :]
 
-    y_past_s = scale_flat_sequence(y_past_flat, scaler_y, n_channels, global_scaling)
-    u_past_s = scale_flat_sequence(u_past_flat, scaler_u, n_controls, global_scaling)
-    u_future_s = scale_flat_sequence(u_future_flat, scaler_u, n_controls, global_scaling)
-
-    X_s = np.concatenate([y_past_s, u_past_s, u_future_s], axis=1)
-    Y_s = scale_flat_sequence(Y, scaler_y, n_channels, global_scaling)
-
-    return X_s, Y_s
+    y_past_m = apply_to_blocks(y_past, y_pipeline, n_channels)
+    u_blocks_m = apply_to_blocks(u_blocks, u_pipeline, n_controls)
+    return np.concatenate([y_past_m, u_blocks_m], axis=1)
 
 
 @eqx.filter_jit
@@ -487,8 +375,17 @@ def compute_loss(  # noqa: PLR0913
     n_channels: int,
     w_psd: jax.Array,
     w_fc: jax.Array,
+    decode_basis: jax.Array | None = None,
+    decode_mean: jax.Array | None = None,
 ) -> tuple[jax.Array, dict[str, jax.Array]]:
-    """Compute Mixed MSE loss for a batch along with PSD and FC losses.
+    """Compute the mixed MSE loss for a batch along with PSD and FC losses.
+
+    All terms are evaluated in standardized-channel EEG space. The model rolls out in model
+    space (the ``k``-dimensional latent components when the y-pipeline projects); its output is
+    decoded with the fixed, differentiable inverse PCA (``pred @ decode_basis + decode_mean``)
+    before every loss term, so PSD/FC are computed over real EEG channels rather than the
+    decorrelated latent components. With no projection ``decode_basis`` is ``None`` and the
+    model already predicts channels (identity decode).
 
     alpha: 1.0 = pure 1-step Teacher Forcing loss.
            0.0 = pure N-step unrolled loss.
@@ -500,15 +397,20 @@ def compute_loss(  # noqa: PLR0913
     x : jax.Array
         Batch of input features, shape ``(batch_size, n_features)``.
     y : jax.Array
-        Batch of target labels, shape ``(batch_size, horizon * n_channels)``.
+        Batch of standardized-channel target labels, shape ``(batch_size, horizon * n_channels)``.
     alpha : jax.Array
         Curriculum learning parameter balancing 1-step and N-step loss.
     n_channels : int
-        Number of output channels.
+        Number of EEG channels ``C`` (the target/loss dimension).
     w_psd : jax.Array
         Weight for the PSD loss.
     w_fc : jax.Array
         Weight for the FC loss.
+    decode_basis : jax.Array | None
+        Fixed PCA basis ``(k, C)`` mapping model-space predictions to channel space, or ``None``
+        when the model already predicts channels.
+    decode_mean : jax.Array | None
+        Fixed PCA per-channel mean ``(C,)`` paired with ``decode_basis``.
 
     Returns
     -------
@@ -516,22 +418,27 @@ def compute_loss(  # noqa: PLR0913
         The combined scalar loss and a dict of the raw ``mse``, ``psd`` and ``fc``
         loss components (before weighting) for logging.
     """
-    pred_y = predict_batch(m, x)
+    pred_model = predict_batch(m, x)  # (batch, horizon * k)
+
+    horizon = y.shape[1] // n_channels
+    pred_traj_model = pred_model.reshape(pred_model.shape[0], horizon, -1)  # (batch, horizon, k)
+    pred_traj = (
+        pred_traj_model @ decode_basis + decode_mean if decode_basis is not None else pred_traj_model
+    )  # (batch, horizon, C)
+    pred_flat = pred_traj.reshape(pred_traj.shape[0], -1)
 
     # The first n_channels elements correspond to the first step of the rollout,
     # which relies purely on the ground-truth past context (1-step prediction).
-    loss_1step = jnp.mean((pred_y[:, :n_channels] - y[:, :n_channels]) ** 2)
+    loss_1step = jnp.mean((pred_flat[:, :n_channels] - y[:, :n_channels]) ** 2)
 
     # The full N-step unrolled loss
-    loss_Nstep = jnp.mean((pred_y - y) ** 2)
+    loss_Nstep = jnp.mean((pred_flat - y) ** 2)
 
     mse_loss = alpha * loss_1step + (1.0 - alpha) * loss_Nstep
 
-    horizon = y.shape[1] // n_channels
     eps = 1e-8
 
     if horizon > 1:
-        pred_traj = reshape_to_trajectory(pred_y, horizon, n_channels)
         true_traj = reshape_to_trajectory(y, horizon, n_channels)
 
         pred_pool = jnp.transpose(pred_traj, (2, 0, 1)).reshape(n_channels, -1)
@@ -551,7 +458,11 @@ def compute_loss(  # noqa: PLR0913
     # remains the dominant driver of point accuracy; w_psd / w_fc then set the relative weight.
     total = (
         mse_loss
-        + w_psd * loss_psd / jax.lax.stop_gradient(loss_psd + eps)
+        + w_psd
+        * loss_psd
+        / jax.lax.stop_gradient(
+            loss_psd + eps
+        )  # TODO: i think id prefer not this "normalisation". better to just find good values for the weights
         + w_fc * loss_fc / jax.lax.stop_gradient(loss_fc + eps)
     )
     aux = {"mse": mse_loss, "psd": loss_psd, "fc": loss_fc}
@@ -569,6 +480,8 @@ def step(  # noqa: PLR0913
     optimizer: optax.GradientTransformation,
     w_psd: jax.Array,
     w_fc: jax.Array,
+    decode_basis: jax.Array | None = None,
+    decode_mean: jax.Array | None = None,
 ) -> tuple[eqx.Module, optax.OptState, jax.Array, dict[str, jax.Array]]:
     """Perform one optimizer step.
 
@@ -585,13 +498,16 @@ def step(  # noqa: PLR0913
     alpha : jax.Array
         Curriculum learning parameter.
     n_channels : int
-        Number of output channels.
+        Number of EEG channels ``C``.
     optimizer : optax.GradientTransformation
         The Optax optimizer.
     w_psd : jax.Array
         Weight for the PSD loss.
     w_fc : jax.Array
         Weight for the FC loss.
+    decode_basis, decode_mean : jax.Array | None
+        Fixed PCA decode ``(k, C)`` / ``(C,)`` mapping model space to channel space (see
+        :func:`compute_loss`), or ``None`` without a projection.
 
     Returns
     -------
@@ -605,7 +521,7 @@ def step(  # noqa: PLR0913
         Raw ``mse``, ``psd`` and ``fc`` loss components for logging.
     """
     (loss_val, aux), grads = eqx.filter_value_and_grad(compute_loss, has_aux=True)(
-        m, x, y, alpha, n_channels, w_psd, w_fc
+        m, x, y, alpha, n_channels, w_psd, w_fc, decode_basis, decode_mean
     )
     updates, new_opt_s = optimizer.update(grads, opt_s, m)  # type: ignore
     new_m: eqx.Module = eqx.apply_updates(m, updates)
@@ -627,6 +543,8 @@ def train_model(  # noqa: PLR0913
     w_psd: float = 0.0,
     w_fc: float = 0.0,
     patience: int = 50,
+    decode_basis: FloatArray | None = None,
+    decode_mean: FloatArray | None = None,
 ) -> tuple[eqx.Module, list[float], list[float]]:
     """Train the MLP model using Optax.
 
@@ -660,6 +578,9 @@ def train_model(  # noqa: PLR0913
         Weight for the FC loss.
     patience : int
         Number of epochs with no improvement after which training will be stopped.
+    decode_basis, decode_mean : FloatArray | None
+        Fixed PCA decode ``(k, C)`` / ``(C,)`` passed to :func:`compute_loss` so the losses are
+        scored in channel space; ``None`` without a projection.
 
     Returns
     -------
@@ -688,6 +609,9 @@ def train_model(  # noqa: PLR0913
     w_psd_jax = jnp.array(w_psd, dtype=jnp.float32)
     w_fc_jax = jnp.array(w_fc, dtype=jnp.float32)
 
+    decode_basis_jax = None if decode_basis is None else jnp.asarray(decode_basis)
+    decode_mean_jax = None if decode_mean is None else jnp.asarray(decode_mean)
+
     epochs_without_improvement = 0
 
     for epoch in pbar:
@@ -700,7 +624,17 @@ def train_model(  # noqa: PLR0913
         batches = 0
         for batch_x, batch_y in get_dataloaders(X_train_s, Y_train_s, batch_size):
             model, opt_state, loss, aux = step(
-                model, opt_state, batch_x, batch_y, alpha_jax, n_channels, optimizer, w_psd_jax, w_fc_jax
+                model,
+                opt_state,
+                batch_x,
+                batch_y,
+                alpha_jax,
+                n_channels,
+                optimizer,
+                w_psd_jax,
+                w_fc_jax,
+                decode_basis_jax,
+                decode_mean_jax,
             )
             epoch_loss += loss.item()
             for key in comp_sums:
@@ -712,7 +646,17 @@ def train_model(  # noqa: PLR0913
         avg_comps = {key: val / batches for key, val in comp_sums.items()}
 
         last_val_loss = float(
-            compute_loss(model, X_val_jnp, Y_val_jnp, jnp.array(0.0), n_channels, w_psd_jax, w_fc_jax)[0].item()
+            compute_loss(
+                model,
+                X_val_jnp,
+                Y_val_jnp,
+                jnp.array(0.0),
+                n_channels,
+                w_psd_jax,
+                w_fc_jax,
+                decode_basis_jax,
+                decode_mean_jax,
+            )[0].item()
         )
         val_losses.append(last_val_loss)
 
@@ -756,41 +700,45 @@ def plot_training_curves(train_losses: list[float], val_losses: list[float], plo
     plt.savefig(plot_path, dpi=300)
 
 
-def evaluate_model(  # noqa: PLR0913
+def evaluate_model(
     model: eqx.Module,
-    scaler_y: StandardScaler | RobustScaler,
-    X_val_s: FloatArray,
+    y_pipeline: Pipeline,
+    X_val_m: FloatArray,
     Y_val: FloatArray,
-    n_channels: int,
-    global_scaling: bool,  # noqa: FBT001
+    latent_dim: int,
 ) -> tuple[FloatArray, float]:
-    """Evaluate the trained model.
+    """Evaluate the trained model in raw EEG units.
+
+    The model predicts in model space (``k``-dimensional latent components under a projection);
+    predictions are decoded back to raw EEG channels via ``y_pipeline.inverse_transform`` and
+    scored against the raw EEG targets, so the reported MSE is comparable across ``latent_dim``.
 
     Parameters
     ----------
     model : eqx.Module
         The trained Equinox MLP model.
-    scaler_y : StandardScaler | RobustScaler
-        Fitted scaler for the targets.
-    X_val_s : FloatArray
-        Scaled validation inputs, shape ``(samples_val, n_features)``.
+    y_pipeline : Pipeline
+        The fitted raw-EEG -> model-space transform (used here for its inverse).
+    X_val_m : FloatArray
+        Model-space validation inputs, shape ``(samples_val, n_features)``.
     Y_val : FloatArray
-        Target values for the validation set, shape ``(samples_val, n_targets)``.
-    n_channels : int
-        Number of output channels.
+        Raw EEG targets for the validation set, shape ``(samples_val, horizon * n_eeg)``.
+    latent_dim : int
+        Model output channel count ``k`` (latent dimension, else the raw EEG channel count).
 
     Returns
     -------
-    Y_pred_unscaled : FloatArray
-        Unscaled predictions flattened per step/channel, shape ``(samples_val, n_targets)``.
+    Y_pred_raw : FloatArray
+        Decoded raw-EEG predictions flattened per step/channel, shape ``(samples_val, horizon * n_eeg)``.
     mse : float
-        Mean squared error of the unscaled predictions.
+        Mean squared error of the raw-EEG predictions.
     """
-    Y_pred_s = np.array(predict_batch(model, jnp.array(X_val_s)))
-    Y_pred_unscaled = unscale_flat_sequence(Y_pred_s, scaler_y, n_channels, global_scaling)
-
-    mse = np.mean((Y_val - Y_pred_unscaled) ** 2)
-    return Y_pred_unscaled, float(mse)
+    Y_pred_m = np.array(predict_batch(model, jnp.array(X_val_m)))  # (samples, horizon * k)
+    Y_pred_raw = np.asarray(y_pipeline.inverse_transform(Y_pred_m.reshape(-1, latent_dim))).reshape(
+        Y_pred_m.shape[0], -1
+    )
+    mse = np.mean((Y_val - Y_pred_raw) ** 2)
+    return Y_pred_raw, float(mse)
 
 
 def train_and_save_predictor(  # noqa: PLR0915
@@ -802,9 +750,10 @@ def train_and_save_predictor(  # noqa: PLR0915
 ) -> float:
     """Run the full NN-predictor pipeline for one config and save all artifacts.
 
-    Prepares datasets from ``data_files``, fits the input/output scalers, builds and
-    trains the autoregressive MLP, then writes ``model.eqx``, ``loss_curve.png``,
-    ``training_stats.json`` and ``comparison.png`` into ``artifact_dir``.
+    Prepares datasets from ``data_files``, fits the EEG/control transforms (a channel
+    standardizer plus an optional PCA projection), builds and trains the autoregressive MLP,
+    then writes ``model.eqx``, ``loss_curve.png``, ``training_stats.json`` and ``comparison.png``
+    into ``artifact_dir``.
 
     Parameters
     ----------
@@ -852,57 +801,53 @@ def train_and_save_predictor(  # noqa: PLR0915
     scaler_type = train_cfg.scaler
     global_scaling = train_cfg.global_scaling
 
-    projection: tuple[FloatArray, FloatArray] | None = None
-    if latent_dim is not None:
-        projection = fit_latent_projection(data_files, n_steps_cfg, downsample, latent_dim)
-        if projection is not None and (w_psd > 0 or w_fc > 0):
-            msg = "Latent projection is incompatible with the per-channel PSD/FC losses (set w_psd=w_fc=0)."
-            raise ValueError(msg)
-
-    X_full, Y_full, n_channels = prepare_datasets(data_files, n_steps_cfg, downsample, n_y, n_u, horizon, projection)
+    # Build raw (unscaled) windows, then split chronologically (a random split would leak between
+    # the heavily-overlapping adjacent windows).
+    X_full, Y_full, n_channels = prepare_datasets(data_files, n_steps_cfg, downsample, n_y, n_u, horizon)
     n_controls = (X_full.shape[1] - n_y * n_channels) // (n_u + horizon)
 
     split_idx = int(train_split * len(X_full))
     X_train, X_val = X_full[:split_idx], X_full[split_idx:]
     Y_train, Y_val = Y_full[:split_idx], Y_full[split_idx:]
 
-    y_past_train = reshape_flat_to_channels(X_train[:, : n_y * n_channels], n_channels)
-    u_past_train = reshape_flat_to_channels(
-        X_train[:, n_y * n_channels : n_y * n_channels + n_u * n_controls], n_controls
-    )
+    # Fit the transforms on the training split only. The y-pipeline standardizes the raw EEG
+    # channels, then (optionally) projects the standardized channels onto k PCA components, so
+    # "model space" is standardize-then-project. Controls get their own standardizer.
+    y_past_train = X_train[:, : n_y * n_channels].reshape(-1, n_channels)
+    u_past_train = X_train[:, n_y * n_channels : n_y * n_channels + n_u * n_controls].reshape(-1, n_controls)
 
-    if scaler_type == "robust":
-        scaler_y = RobustScaler()
-        scaler_u = RobustScaler()
-    else:
-        scaler_y = StandardScaler()
-        scaler_u = StandardScaler()
+    y_standardizer = Standardizer.fit(y_past_train, kind=scaler_type, global_scaling=global_scaling)
+    u_standardizer = Standardizer.fit(u_past_train, kind=scaler_type, global_scaling=global_scaling)
 
-    if global_scaling:
-        scaler_y.fit(y_past_train.reshape(-1, 1))
-        scaler_u.fit(u_past_train.reshape(-1, 1))
-    else:
-        scaler_y.fit(y_past_train)
-        scaler_u.fit(u_past_train)
+    pca = None if latent_dim is None else PCAProjection.fit(y_standardizer.transform(y_past_train), latent_dim)
+    y_pipeline = Pipeline((y_standardizer, pca)) if pca is not None else Pipeline((y_standardizer,))
+    u_pipeline = Pipeline((u_standardizer,))
 
-    X_train_s, Y_train_s = scale_dataset(
-        X_train, Y_train, scaler_y, scaler_u, n_y, n_u, n_channels, n_controls, global_scaling
-    )
-    X_val_s, Y_val_s = scale_dataset(X_val, Y_val, scaler_y, scaler_u, n_y, n_u, n_channels, n_controls, global_scaling)
+    # Model output dimension: latent k with a projection, else the raw channel count.
+    latent = pca.basis.shape[0] if pca is not None else n_channels
+
+    # Inputs -> model space; targets stay in standardized-channel (loss) space.
+    X_train_m = transform_features(X_train, y_pipeline, u_pipeline, n_y, n_channels, n_controls)
+    X_val_m = transform_features(X_val, y_pipeline, u_pipeline, n_y, n_channels, n_controls)
+    Y_train_s = apply_to_blocks(Y_train, Pipeline((y_standardizer,)), n_channels)
+    Y_val_s = apply_to_blocks(Y_val, Pipeline((y_standardizer,)), n_channels)
 
     key = jax.random.PRNGKey(seed)
-    in_size = n_y * n_channels + n_u * n_controls
-    out_size = n_channels
+    in_size = n_y * latent + n_u * n_controls
+    out_size = latent
 
     model = create_model(
-        in_size, out_size, hidden_size, depth, key, n_y, n_u, horizon, n_channels, n_controls, activation=activation
+        in_size, out_size, hidden_size, depth, key, n_y, n_u, horizon, latent, n_controls, activation=activation
     )
+
+    decode_basis = pca.basis if pca is not None else None
+    decode_mean = pca.mean if pca is not None else None
 
     model, train_losses, val_losses = train_model(
         model,
-        X_train_s,
+        X_train_m,
         Y_train_s,
-        X_val_s,
+        X_val_m,
         Y_val_s,
         epochs,
         batch_size,
@@ -913,6 +858,8 @@ def train_and_save_predictor(  # noqa: PLR0915
         w_psd=w_psd,
         w_fc=w_fc,
         patience=patience,
+        decode_basis=decode_basis,
+        decode_mean=decode_mean,
     )
 
     plot_training_curves(train_losses, val_losses, str(artifact_dir / "loss_curve.png"))
@@ -920,40 +867,20 @@ def train_and_save_predictor(  # noqa: PLR0915
     if not isinstance(model, AutoregressivePredictor):
         msg = f"expected train_model to return an AutoregressivePredictor, got {type(model)}"
         raise TypeError(msg)
-    u_mean = getattr(scaler_u, "mean_", getattr(scaler_u, "center_", None))
-    u_scale = getattr(scaler_u, "scale_", None)
-    y_mean = getattr(scaler_y, "mean_", getattr(scaler_y, "center_", None))
-    y_scale = getattr(scaler_y, "scale_", None)
-    if u_mean is None or u_scale is None or y_mean is None or y_scale is None:
-        msg = "Scalers must be fitted before saving the artifact."
-        raise ValueError(msg)
     MLPArtifact(
         model=model,
         dt=float(dt_real),
         downsample=int(downsample),
-        u_mean=np.asarray(u_mean, dtype=np.float64),
-        u_scale=np.asarray(u_scale, dtype=np.float64),
-        y_mean=np.asarray(y_mean, dtype=np.float64),
-        y_scale=np.asarray(y_scale, dtype=np.float64),
-        latent_basis=projection[0] if projection is not None else None,
-        latent_mean=projection[1] if projection is not None else None,
+        y_pipeline=y_pipeline,
+        u_pipeline=u_pipeline,
     ).save(artifact_dir / "model.eqx")
 
-    Y_pred_unscaled_flat, mse = evaluate_model(model, scaler_y, X_val_s, Y_val, n_channels, global_scaling)
-
-    if projection is not None:
-        # evaluate_model scores in the latent space; decode both prediction and target back
-        # to raw EEG channels so the reported MSE is comparable across latent_dim (and the
-        # no-projection case), which is what the sweep objective needs.
-        basis, mean = projection
-        pred_channels = reshape_flat_to_channels(Y_pred_unscaled_flat, n_channels) @ basis + mean
-        true_channels = reshape_flat_to_channels(Y_val, n_channels) @ basis + mean
-        mse = float(np.mean((pred_channels - true_channels) ** 2))
+    Y_pred_raw_flat, mse = evaluate_model(model, y_pipeline, X_val_m, Y_val, latent)
 
     stats = {"train_loss": train_losses, "val_loss": val_losses, "mse": float(mse)}
     (artifact_dir / "training_stats.json").write_text(json.dumps(stats, indent=2))
 
-    Y_pred_unflat = np.asarray(reshape_to_trajectory(Y_pred_unscaled_flat, horizon, n_channels))
+    Y_pred_unflat = np.asarray(reshape_to_trajectory(Y_pred_raw_flat, horizon, n_channels))
     n_plot_samples = min(200, len(Y_val))
     y_true_anchors = X_val[:n_plot_samples, (n_y - 1) * n_channels : n_y * n_channels]
     fig, _ = plot_multistep_predictions(
