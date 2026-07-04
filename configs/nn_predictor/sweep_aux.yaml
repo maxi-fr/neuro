@@ -1,0 +1,59 @@
+simulation:
+  dt: 0.0001
+  downsample: 100        # effective dt = 1e-2 s
+  n_steps: 500           # downsampled steps per trajectory (50000 raw / 100 = 5 s)
+  data_path: "data/experiment_excited/train"
+
+model:
+  horizon: 20
+  latent_dim: null       # Disable PCA to test the auxiliary losses in isolation
+
+training:
+  epochs: 250
+  train_split: 0.8
+  seed: 69
+  patience: 50
+  global_scaling: false
+
+sweep:
+  n_trials: 100
+  model:
+    n_y:
+      type: int
+      low: 5
+      high: 15
+    n_u:
+      type: int
+      low: 5
+      high: 15
+    hidden_size:
+      type: categorical
+      choices: [64, 128, 256]
+    depth:
+      type: int
+      low: 0
+      high: 5
+  training:
+    learning_rate:
+      type: loguniform
+      low: 0.0001
+      high: 0.01
+    weight_decay:
+      type: loguniform
+      low: 0.0001
+      high: 0.1
+    batch_size:
+      type: categorical
+      choices: [64, 128, 256, 512]
+    curriculum_decay_fraction:
+      type: float
+      low: 0.5
+      high: 0.9
+    w_psd:                   # Sweep spectral loss
+      type: float
+      low: 0.0
+      high: 1.0
+    w_fc:                    # Sweep connectivity loss
+      type: float
+      low: 0.0
+      high: 1.0
