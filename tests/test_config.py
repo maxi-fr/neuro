@@ -116,6 +116,52 @@ def test_valid_boundaries_accepted() -> None:
     assert cfg.training.curriculum_decay_fraction == 1.0
 
 
+@pytest.mark.parametrize(
+    ("raw", "match"),
+    [
+        (
+            {
+                "model": {"n_y": 10},
+                "sweep": {"model": {"n_y": {"type": "int", "low": 5, "high": 15}}},
+            },
+            r"Overlap: \['n_y'\]",
+        ),
+        (
+            {
+                "training": {"learning_rate": 1e-4, "epochs": 50},
+                "sweep": {"training": {"epochs": {"type": "int", "low": 10, "high": 100}}},
+            },
+            r"Overlap: \['epochs'\]",
+        ),
+    ],
+)
+def test_sweep_overlap_rejected(raw: dict, match: str) -> None:
+    with pytest.raises(ValidationError, match=match):
+        NNPredictorConfig.from_dict(raw)
+
+
+@pytest.mark.parametrize(
+    ("raw", "match"),
+    [
+        (
+            {
+                "sweep": {"model": {"not_a_param": {"type": "int", "low": 1, "high": 5}}},
+            },
+            r"Keys \['not_a_param'\] in 'sweep.model' are not valid",
+        ),
+        (
+            {
+                "sweep": {"training": {"lr": {"type": "loguniform", "low": 1e-5, "high": 1e-3}}},
+            },
+            r"Keys \['lr'\] in 'sweep.training' are not valid",
+        ),
+    ],
+)
+def test_sweep_invalid_keys_rejected(raw: dict, match: str) -> None:
+    with pytest.raises(ValidationError, match=match):
+        NNPredictorConfig.from_dict(raw)
+
+
 def test_resolve_data_files_missing_path() -> None:
     cfg = NNPredictorConfig.from_dict({})
     with pytest.raises(ValueError, match="data_path not specified"):

@@ -5,11 +5,7 @@ simulation:
   data_path: "data/experiment_excited/train"
 
 model:
-  n_y: 5
-  n_u: 5
   horizon: 20
-  hidden_size: 128
-  depth: 2
   latent_dim: 16             # PCA latent components k; null or >= 62 (n EEG channels) disables it
 
 training:

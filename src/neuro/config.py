@@ -195,6 +195,37 @@ class NNPredictorConfig(StrictConfig):
         """
         return cls.model_validate({} if data is None else data)
 
+    @model_validator(mode="after")
+    def _validate_sweep_exclusivity_and_keys(self) -> Self:
+        if self.sweep is None:
+            return self
+
+        # 1. Validate 'model' sweep section
+        sweep_model_keys = set(self.sweep.model.keys())
+        invalid_model_keys = sweep_model_keys - set(self.model.__class__.model_fields.keys())
+        if invalid_model_keys:
+            msg = f"Keys {sorted(invalid_model_keys)} in 'sweep.model' are not valid 'model' parameters."
+            raise ValueError(msg)
+
+        overlap_model = sweep_model_keys & self.model.model_fields_set
+        if overlap_model:
+            msg = f"Parameters cannot be defined in both regular 'model' and 'sweep.model'. Overlap: {sorted(overlap_model)}"
+            raise ValueError(msg)
+
+        # 2. Validate 'training' sweep section
+        sweep_training_keys = set(self.sweep.training.keys())
+        invalid_training_keys = sweep_training_keys - set(self.training.__class__.model_fields.keys())
+        if invalid_training_keys:
+            msg = f"Keys {sorted(invalid_training_keys)} in 'sweep.training' are not valid 'training' parameters."
+            raise ValueError(msg)
+
+        overlap_training = sweep_training_keys & self.training.model_fields_set
+        if overlap_training:
+            msg = f"Parameters cannot be defined in both regular 'training' and 'sweep.training'. Overlap: {sorted(overlap_training)}"
+            raise ValueError(msg)
+
+        return self
+
 
 # --------------------------------------------------------------------------- #
 # Shared script helpers                                                        #
