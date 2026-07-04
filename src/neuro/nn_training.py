@@ -15,6 +15,7 @@ import jax.numpy as jnp
 import matplotlib.pyplot as plt
 import numpy as np
 import optax
+from jax.scipy.signal import welch
 from sklearn.decomposition import PCA
 from sklearn.preprocessing import RobustScaler, StandardScaler
 from tqdm import tqdm
@@ -486,7 +487,7 @@ def compute_loss(  # noqa: PLR0913
     n_channels: int,
     w_psd: jax.Array,
     w_fc: jax.Array,
-) -> jax.Array:
+) -> tuple[jax.Array, dict[str, jax.Array]]:
     """Compute Mixed MSE loss for a batch along with PSD and FC losses.
 
     alpha: 1.0 = pure 1-step Teacher Forcing loss.
@@ -511,8 +512,9 @@ def compute_loss(  # noqa: PLR0913
 
     Returns
     -------
-    jax.Array
-        The computed scalar loss value.
+    tuple[jax.Array, dict[str, jax.Array]]
+        The combined scalar loss and a dict of the raw ``mse``, ``psd`` and ``fc``
+        loss components (before weighting) for logging.
     """
     pred_y = predict_batch(m, x)
 
@@ -526,31 +528,34 @@ def compute_loss(  # noqa: PLR0913
     mse_loss = alpha * loss_1step + (1.0 - alpha) * loss_Nstep
 
     horizon = y.shape[1] // n_channels
+    eps = 1e-8
 
     if horizon > 1:
-        # Reshape to (batch_size, horizon, n_channels) to compute statistics over the trajectory
         pred_traj = reshape_to_trajectory(pred_y, horizon, n_channels)
         true_traj = reshape_to_trajectory(y, horizon, n_channels)
 
-        # Simple FFT-based PSD loss across the horizon dimension (axis=1)
-        pred_psd = jnp.abs(jnp.fft.rfft(pred_traj, axis=1)) ** 2
-        true_psd = jnp.abs(jnp.fft.rfft(true_traj, axis=1)) ** 2
-        eps = 1e-8
+        pred_pool = jnp.transpose(pred_traj, (2, 0, 1)).reshape(n_channels, -1)
+        true_pool = jnp.transpose(true_traj, (2, 0, 1)).reshape(n_channels, -1)
+        _, pred_psd = welch(pred_pool, nperseg=horizon, noverlap=0, axis=-1)
+        _, true_psd = welch(true_pool, nperseg=horizon, noverlap=0, axis=-1)
         loss_psd = jnp.mean((jnp.log(pred_psd + eps) - jnp.log(true_psd + eps)) ** 2)
 
-        # Functional Connectivity loss across the horizon dimension
-        # compute_fc expects 2D (time, regions) or handles batched?
-        # The tvboptim compute_fc uses _as_2d which doesn't automatically batch.
-        # So we use jax.vmap to apply it over the batch dimension!
-        batched_compute_fc = jax.vmap(compute_fc)
-        pred_fc = batched_compute_fc(pred_traj)
-        true_fc = batched_compute_fc(true_traj)
+        pred_fc = compute_fc(pred_traj.reshape(-1, n_channels))
+        true_fc = compute_fc(true_traj.reshape(-1, n_channels))
         loss_fc = jnp.mean((pred_fc - true_fc) ** 2)
     else:
         loss_psd = jnp.array(0.0)
         loss_fc = jnp.array(0.0)
 
-    return mse_loss + w_psd * loss_psd + w_fc * loss_fc
+    # Normalise each auxiliary term by its detached value so it is scale-free and the raw MSE
+    # remains the dominant driver of point accuracy; w_psd / w_fc then set the relative weight.
+    total = (
+        mse_loss
+        + w_psd * loss_psd / jax.lax.stop_gradient(loss_psd + eps)
+        + w_fc * loss_fc / jax.lax.stop_gradient(loss_fc + eps)
+    )
+    aux = {"mse": mse_loss, "psd": loss_psd, "fc": loss_fc}
+    return total, aux
 
 
 @eqx.filter_jit
@@ -564,7 +569,7 @@ def step(  # noqa: PLR0913
     optimizer: optax.GradientTransformation,
     w_psd: jax.Array,
     w_fc: jax.Array,
-) -> tuple[eqx.Module, optax.OptState, jax.Array]:
+) -> tuple[eqx.Module, optax.OptState, jax.Array, dict[str, jax.Array]]:
     """Perform one optimizer step.
 
     Parameters
@@ -596,11 +601,15 @@ def step(  # noqa: PLR0913
         The updated optimizer state.
     loss_val : jax.Array
         The scalar loss value for the batch.
+    aux : dict[str, jax.Array]
+        Raw ``mse``, ``psd`` and ``fc`` loss components for logging.
     """
-    loss_val, grads = eqx.filter_value_and_grad(compute_loss)(m, x, y, alpha, n_channels, w_psd, w_fc)
+    (loss_val, aux), grads = eqx.filter_value_and_grad(compute_loss, has_aux=True)(
+        m, x, y, alpha, n_channels, w_psd, w_fc
+    )
     updates, new_opt_s = optimizer.update(grads, opt_s, m)  # type: ignore
     new_m: eqx.Module = eqx.apply_updates(m, updates)
-    return new_m, new_opt_s, loss_val
+    return new_m, new_opt_s, loss_val, aux
 
 
 def train_model(  # noqa: PLR0913
@@ -687,19 +696,23 @@ def train_model(  # noqa: PLR0913
         alpha_jax = jnp.array(alpha, dtype=jnp.float32)
 
         epoch_loss = 0.0
+        comp_sums = {"mse": 0.0, "psd": 0.0, "fc": 0.0}
         batches = 0
         for batch_x, batch_y in get_dataloaders(X_train_s, Y_train_s, batch_size):
-            model, opt_state, loss = step(
+            model, opt_state, loss, aux = step(
                 model, opt_state, batch_x, batch_y, alpha_jax, n_channels, optimizer, w_psd_jax, w_fc_jax
             )
             epoch_loss += loss.item()
+            for key in comp_sums:
+                comp_sums[key] += float(aux[key])
             batches += 1
 
         avg_train_loss = float(epoch_loss / batches)
         train_losses.append(avg_train_loss)
+        avg_comps = {key: val / batches for key, val in comp_sums.items()}
 
         last_val_loss = float(
-            compute_loss(model, X_val_jnp, Y_val_jnp, jnp.array(0.0), n_channels, w_psd_jax, w_fc_jax).item()
+            compute_loss(model, X_val_jnp, Y_val_jnp, jnp.array(0.0), n_channels, w_psd_jax, w_fc_jax)[0].item()
         )
         val_losses.append(last_val_loss)
 
@@ -714,7 +727,14 @@ def train_model(  # noqa: PLR0913
         else:
             epochs_without_improvement += 1
 
-        pbar.set_postfix(train_loss=f"{avg_train_loss:.4f}", val_loss=f"{last_val_loss:.4f}", alpha=f"{alpha:.2f}")
+        pbar.set_postfix(
+            train_loss=f"{avg_train_loss:.4f}",
+            val_loss=f"{last_val_loss:.4f}",
+            mse=f"{avg_comps['mse']:.4f}",
+            psd=f"{avg_comps['psd']:.4f}",
+            fc=f"{avg_comps['fc']:.4f}",
+            alpha=f"{alpha:.2f}",
+        )
 
         if epochs_without_improvement >= patience:
             break
