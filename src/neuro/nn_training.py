@@ -308,9 +308,8 @@ def fit_latent_projection(
     data_files: list[str],
     n_steps_cfg: int,
     downsample: int,
-    latent_dim: int | None = None,
-    explained_variance: float | None = None,
-) -> tuple[FloatArray, FloatArray]:
+    latent_dim: int,
+) -> tuple[FloatArray, FloatArray] | None:
     """Fit a fixed orthonormal PCA basis on the concatenated training EEG.
 
     The basis maps the full EEG channel space onto ``k`` latent components so the
@@ -326,24 +325,21 @@ def fit_latent_projection(
         Number of steps to load per trajectory (matches :func:`prepare_datasets`).
     downsample : int
         Downsampling factor (matches :func:`prepare_datasets`).
-    latent_dim : int | None
-        Number of latent components ``k``. Takes precedence when set.
-    explained_variance : float | None
-        If ``latent_dim`` is ``None``, the smallest ``k`` reaching this cumulative
-        explained-variance fraction (in ``(0, 1)``) is chosen automatically.
+    latent_dim : int
+        Number of latent components ``k``. When ``latent_dim`` is >= the EEG channel
+        count the projection would be a no-op, so ``None`` is returned instead.
 
     Returns
     -------
-    E : FloatArray
-        Orthonormal PCA basis, shape ``(k, n_channels)``.
-    mean : FloatArray
-        Per-channel training mean, shape ``(n_channels,)``.
+    tuple[FloatArray, FloatArray] | None
+        ``(E, mean)`` -- the orthonormal PCA basis of shape ``(k, n_channels)`` and the
+        per-channel training mean of shape ``(n_channels,)`` -- or ``None`` when
+        ``latent_dim`` >= the EEG channel count (train in the raw channel space).
     """
-    if latent_dim is None and explained_variance is None:
-        msg = "fit_latent_projection requires either latent_dim or explained_variance"
-        raise ValueError(msg)
     y_all = np.concatenate([load_trajectory(df, n_steps_cfg, downsample)[1] for df in data_files], axis=0)
-    pca = PCA(n_components=latent_dim if latent_dim is not None else explained_variance)
+    if latent_dim >= y_all.shape[1]:
+        return None
+    pca = PCA(n_components=latent_dim)
     pca.fit(np.asarray(y_all, dtype=np.float64))
     return np.asarray(pca.components_, dtype=np.float64), np.asarray(pca.mean_, dtype=np.float64)
 
@@ -820,10 +816,7 @@ def train_and_save_predictor(  # noqa: PLR0915
     hidden_size = model_cfg.hidden_size
     depth = model_cfg.depth
     activation = model_cfg.activation
-    projection_cfg = model_cfg.projection
-    enable_projection = projection_cfg.enable
-    latent_dim = projection_cfg.latent_dim
-    explained_variance = projection_cfg.explained_variance
+    latent_dim = model_cfg.latent_dim
 
     train_cfg = config.training
     epochs = train_cfg.epochs
@@ -840,11 +833,11 @@ def train_and_save_predictor(  # noqa: PLR0915
     global_scaling = train_cfg.global_scaling
 
     projection: tuple[FloatArray, FloatArray] | None = None
-    if enable_projection:
-        if w_psd > 0 or w_fc > 0:
+    if latent_dim is not None:
+        projection = fit_latent_projection(data_files, n_steps_cfg, downsample, latent_dim)
+        if projection is not None and (w_psd > 0 or w_fc > 0):
             msg = "Latent projection is incompatible with the per-channel PSD/FC losses (set w_psd=w_fc=0)."
             raise ValueError(msg)
-        projection = fit_latent_projection(data_files, n_steps_cfg, downsample, latent_dim, explained_variance)
 
     X_full, Y_full, n_channels = prepare_datasets(data_files, n_steps_cfg, downsample, n_y, n_u, horizon, projection)
     n_controls = (X_full.shape[1] - n_y * n_channels) // (n_u + horizon)
@@ -927,6 +920,15 @@ def train_and_save_predictor(  # noqa: PLR0915
     ).save(artifact_dir / "model.eqx")
 
     Y_pred_unscaled_flat, mse = evaluate_model(model, scaler_y, X_val_s, Y_val, n_channels, global_scaling)
+
+    if projection is not None:
+        # evaluate_model scores in the latent space; decode both prediction and target back
+        # to raw EEG channels so the reported MSE is comparable across latent_dim (and the
+        # no-projection case), which is what the sweep objective needs.
+        basis, mean = projection
+        pred_channels = reshape_flat_to_channels(Y_pred_unscaled_flat, n_channels) @ basis + mean
+        true_channels = reshape_flat_to_channels(Y_val, n_channels) @ basis + mean
+        mse = float(np.mean((pred_channels - true_channels) ** 2))
 
     stats = {"train_loss": train_losses, "val_loss": val_losses, "mse": float(mse)}
     (artifact_dir / "training_stats.json").write_text(json.dumps(stats, indent=2))

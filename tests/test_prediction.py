@@ -15,7 +15,6 @@ import equinox as eqx
 import jax
 import jax.numpy as jnp
 import numpy as np
-import pytest
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -108,7 +107,9 @@ def test_fit_latent_projection_orthonormal_and_shapes(tmp_path: Path) -> None:
     n_eeg, n_controls, n_steps, k = 6, 2, 300, 3
     files = [_write_trajectory(tmp_path / f"traj_{i}.npz", n_steps, n_eeg, n_controls) for i in range(2)]
 
-    basis, mean = fit_latent_projection(files, n_steps, downsample=1, latent_dim=k)
+    projection = fit_latent_projection(files, n_steps, downsample=1, latent_dim=k)
+    assert projection is not None
+    basis, mean = projection
 
     assert basis.shape == (k, n_eeg)
     assert mean.shape == (n_eeg,)
@@ -117,20 +118,12 @@ def test_fit_latent_projection_orthonormal_and_shapes(tmp_path: Path) -> None:
     np.testing.assert_allclose(mean, y_all.mean(axis=0), atol=1e-10)
 
 
-def test_fit_latent_projection_requires_a_target(tmp_path: Path) -> None:
-    """Neither ``latent_dim`` nor ``explained_variance`` is an error."""
-    files = [_write_trajectory(tmp_path / "traj.npz", 200, 5, 2)]
-    with pytest.raises(ValueError, match="latent_dim or explained_variance"):
-        fit_latent_projection(files, 200, downsample=1)
-
-
-def test_fit_latent_projection_explained_variance_selects_k(tmp_path: Path) -> None:
-    """``explained_variance`` picks a latent dimension within ``[1, n_eeg]``."""
-    n_eeg = 8
-    files = [_write_trajectory(tmp_path / "traj.npz", 400, n_eeg, 2)]
-    basis, _ = fit_latent_projection(files, 400, downsample=1, explained_variance=0.9)
-    assert 1 <= basis.shape[0] <= n_eeg
-    assert basis.shape[1] == n_eeg
+def test_fit_latent_projection_full_dim_returns_none(tmp_path: Path) -> None:
+    """``latent_dim`` >= the EEG channel count disables the projection (returns ``None``)."""
+    n_eeg = 6
+    files = [_write_trajectory(tmp_path / "traj.npz", 200, n_eeg, 2)]
+    assert fit_latent_projection(files, 200, downsample=1, latent_dim=n_eeg) is None
+    assert fit_latent_projection(files, 200, downsample=1, latent_dim=n_eeg + 5) is None
 
 
 def test_prepare_datasets_projection_encodes_and_reduces_channels(tmp_path: Path) -> None:
@@ -139,7 +132,9 @@ def test_prepare_datasets_projection_encodes_and_reduces_channels(tmp_path: Path
     n_y, n_u, horizon = 4, 3, 5
     file = _write_trajectory(tmp_path / "traj.npz", n_steps, n_eeg, n_controls)
 
-    basis, mean = fit_latent_projection([file], n_steps, downsample=1, latent_dim=k)
+    projection = fit_latent_projection([file], n_steps, downsample=1, latent_dim=k)
+    assert projection is not None
+    basis, mean = projection
     x_proj, y_proj, n_channels = prepare_datasets([file], n_steps, 1, n_y, n_u, horizon, projection=(basis, mean))
 
     assert n_channels == k

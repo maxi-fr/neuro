@@ -23,20 +23,20 @@ def test_defaults_applied_for_missing_sections() -> None:
     cfg = NNPredictorConfig.from_dict({})
     assert cfg.model.n_y == 5
     assert cfg.training.epochs == 100
-    assert cfg.model.projection.enable is False
+    assert cfg.model.latent_dim is None
     assert cfg.sweep is None
 
 
 def test_known_keys_parsed() -> None:
     raw = {
         "simulation": {"dt": 1e-4, "downsample": 100, "n_steps": 50000, "data_path": "data/x"},
-        "model": {"n_y": 14, "projection": {"enable": True, "latent_dim": 16}},
+        "model": {"n_y": 14, "latent_dim": 16},
         "training": {"epochs": 5, "scaler": "robust"},
     }
     cfg = NNPredictorConfig.from_dict(raw)
     assert cfg.simulation.downsample == 100
     assert cfg.model.n_y == 14
-    assert cfg.model.projection.latent_dim == 16
+    assert cfg.model.latent_dim == 16
     assert cfg.training.scaler == "robust"
 
 
@@ -45,7 +45,7 @@ def test_known_keys_parsed() -> None:
     [
         {"trainng": {}},  # top-level typo
         {"model": {"n_yy": 3}},  # section typo
-        {"model": {"projection": {"enabel": True}}},  # nested typo
+        {"sweep": {"model": {"depth": {"typ": "int", "low": 0, "high": 5}}}},  # nested typo (param spec)
         {"sweep": {"trials": 5}},  # sweep typo (n_trials)
     ],
 )
@@ -97,7 +97,7 @@ def test_sweep_unknown_param_type_rejected() -> None:
         {"training": {"learning_rate": 0}},  # > 0
         {"training": {"train_split": 1.0}},  # in (0, 1)
         {"training": {"scaler": "standrd"}},  # Literal typo
-        {"model": {"projection": {"explained_variance": 1.0}}},  # in (0, 1)
+        {"model": {"latent_dim": 0}},  # >= 1
         {"sweep": {"training": {"lr": {"type": "loguniform", "low": 0, "high": 1}}}},  # log low > 0
         {"sweep": {"model": {"n_y": {"type": "int", "low": 10, "high": 5}}}},  # high >= low
     ],

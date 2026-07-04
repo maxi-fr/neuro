@@ -53,16 +53,14 @@ class StrictConfig(BaseModel):
 # --------------------------------------------------------------------------- #
 # NN-predictor configuration                                                  #
 # --------------------------------------------------------------------------- #
-class ProjectionConfig(StrictConfig):
-    """PCA latent-projection settings for the EEG channels."""
-
-    enable: bool = False
-    latent_dim: int | None = Field(default=None, ge=1)
-    explained_variance: float | None = Field(default=None, gt=0, lt=1)
-
-
 class ModelConfig(StrictConfig):
-    """MLP predictor architecture settings."""
+    """MLP predictor architecture settings.
+
+    ``latent_dim`` projects the EEG onto that many fixed PCA components before training
+    (the predictor then runs in the reduced space). ``None`` -- or any value >= the EEG
+    channel count -- disables the projection, so it can be swept over as a single integer
+    with the no-projection case at the top of the range.
+    """
 
     n_y: int = Field(default=5, ge=1)
     n_u: int = Field(default=5, ge=1)
@@ -70,7 +68,7 @@ class ModelConfig(StrictConfig):
     hidden_size: int = Field(default=128, ge=1)
     depth: int = Field(default=2, ge=0)
     activation: str = "relu"
-    projection: ProjectionConfig = Field(default_factory=ProjectionConfig)
+    latent_dim: int | None = Field(default=None, ge=1)
 
 
 class SimulationConfig(StrictConfig):

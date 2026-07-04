@@ -10,6 +10,7 @@ model:
   horizon: 20
   hidden_size: 128
   depth: 2
+  latent_dim: 16             # PCA latent components k; null or >= 62 (n EEG channels) disables it
 
 training:
   epochs: 250
@@ -43,6 +44,10 @@ sweep:
       type: int
       low: 0
       high: 5
+    latent_dim:              # k >= 62 (n EEG channels) trains on the raw channels (no projection)
+      type: int
+      low: 4
+      high: 62
   training:
     learning_rate:
       type: loguniform
