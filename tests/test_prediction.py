@@ -83,7 +83,7 @@ def _build_projection_artifact(
     if zero_model:  # a zero model outputs 0 for any input, so each latent prediction == y_mean_latent
         mlp = jax.tree_util.tree_map(lambda leaf: jnp.zeros_like(leaf) if eqx.is_inexact_array(leaf) else leaf, mlp)
     wrapped = AutoregressivePredictor(
-        model=mlp, n_y=n_y, n_u=n_u, horizon=horizon, C_y=k, C_u=n_controls, activation="relu"
+        model=mlp, n_y=n_y, n_u=n_u, horizon=horizon, n_channels=k, n_controls=n_controls, activation="relu"
     )
 
     y_mean_latent = rng.standard_normal(k)
@@ -134,15 +134,15 @@ def test_fit_latent_projection_explained_variance_selects_k(tmp_path: Path) -> N
 
 
 def test_prepare_datasets_projection_encodes_and_reduces_channels(tmp_path: Path) -> None:
-    """With a projection, ``prepare_datasets`` encodes EEG and returns ``C_y == k``."""
+    """With a projection, ``prepare_datasets`` encodes EEG and returns ``n_channels == k``."""
     n_eeg, n_controls, n_steps, k = 6, 2, 250, 3
     n_y, n_u, horizon = 4, 3, 5
     file = _write_trajectory(tmp_path / "traj.npz", n_steps, n_eeg, n_controls)
 
     basis, mean = fit_latent_projection([file], n_steps, downsample=1, latent_dim=k)
-    x_proj, y_proj, c_y = prepare_datasets([file], n_steps, 1, n_y, n_u, horizon, projection=(basis, mean))
+    x_proj, y_proj, n_channels = prepare_datasets([file], n_steps, 1, n_y, n_u, horizon, projection=(basis, mean))
 
-    assert c_y == k
+    assert n_channels == k
     assert x_proj.shape[1] == n_y * k + n_u * n_controls + horizon * n_controls
 
     # The encode must be exactly (y - mean) @ E.T fed through the unchanged windowing.
@@ -153,8 +153,8 @@ def test_prepare_datasets_projection_encodes_and_reduces_channels(tmp_path: Path
     np.testing.assert_allclose(y_proj, y_manual, atol=1e-12)
 
     # Without a projection the channel count is the raw EEG dimension.
-    _, _, c_y_raw = prepare_datasets([file], n_steps, 1, n_y, n_u, horizon)
-    assert c_y_raw == n_eeg
+    _, _, n_channels_raw = prepare_datasets([file], n_steps, 1, n_y, n_u, horizon)
+    assert n_channels_raw == n_eeg
 
 
 def test_artifact_round_trips_latent_projection(tmp_path: Path) -> None:
@@ -183,7 +183,7 @@ def test_artifact_without_projection_is_backward_compatible(tmp_path: Path) -> N
         activation=jax.nn.relu,
         key=jax.random.PRNGKey(0),
     )
-    wrapped = AutoregressivePredictor(model=mlp, n_y=2, n_u=2, horizon=3, C_y=n_channels, C_u=n_controls)
+    wrapped = AutoregressivePredictor(model=mlp, n_y=2, n_u=2, horizon=3, n_channels=n_channels, n_controls=n_controls)
     rng = np.random.default_rng(_SEED)
     artifact = tmp_path / "art"
     MLPArtifact(

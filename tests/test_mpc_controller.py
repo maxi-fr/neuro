@@ -55,7 +55,7 @@ def _build_artifact(
         key=jax.random.PRNGKey(0),
     )
     wrapped = AutoregressivePredictor(
-        model=mlp, n_y=n_y, n_u=n_u, horizon=horizon, C_y=n_channels, C_u=n_controls, activation="relu"
+        model=mlp, n_y=n_y, n_u=n_u, horizon=horizon, n_channels=n_channels, n_controls=n_controls, activation="relu"
     )
     scalers = {
         "u_mean": rng.uniform(-1.0, 1.0, n_controls),
@@ -92,7 +92,7 @@ def _build_projection_artifact(
         key=jax.random.PRNGKey(0),
     )
     wrapped = AutoregressivePredictor(
-        model=mlp, n_y=n_y, n_u=n_u, horizon=horizon, C_y=k, C_u=n_controls, activation="relu"
+        model=mlp, n_y=n_y, n_u=n_u, horizon=horizon, n_channels=k, n_controls=n_controls, activation="relu"
     )
     scalers = {
         "u_mean": rng.uniform(-1.0, 1.0, n_controls),
@@ -166,13 +166,13 @@ def test_warmup_emits_zero_until_window_filled(tmp_path: Path) -> None:
     results = _drive(controller, n_steps=n_y, n_channels=model.n_channels)
     for u, log in results[: n_y - 1]:
         assert log.warmup
-        np.testing.assert_array_equal(u, np.zeros(model.n_elec))
+        np.testing.assert_array_equal(u, np.zeros(model.n_controls))
     # The n_y-th call has a fully real window, so it solves.
     assert not results[-1][1].warmup
 
 
 def test_update_respects_bounds(tmp_path: Path) -> None:
-    """Past warm-up, update returns a finite (n_elec,) control within the box bounds.
+    """Past warm-up, update returns a finite (n_controls,) control within the box bounds.
 
     Does not assert solver convergence: with a random-weight ReLU net the suppression
     landscape is non-smooth, so IPOPT may not certify KKT -- but the applied control is
@@ -183,7 +183,7 @@ def test_update_respects_bounds(tmp_path: Path) -> None:
     controller = MPCController(dt=0.01, model=model, u_max=u_max, horizon=3, w_y=1.0, w_u=0.0)
 
     u, _ = _drive(controller, n_steps=6, n_channels=model.n_channels)[-1]
-    assert u.shape == (model.n_elec,)
+    assert u.shape == (model.n_controls,)
     assert np.isfinite(u).all()
     assert np.all(np.abs(u) <= u_max + 1e-6)
 
@@ -195,13 +195,13 @@ def test_pure_effort_cost_yields_zero_control(tmp_path: Path) -> None:
 
     u, log = _drive(controller, n_steps=6, n_channels=model.n_channels)[-1]
     assert log.success
-    np.testing.assert_allclose(u, np.zeros(model.n_elec), atol=1e-4)
+    np.testing.assert_allclose(u, np.zeros(model.n_controls), atol=1e-4)
 
 
 def test_per_electrode_bounds_rejected_when_mismatched(tmp_path: Path) -> None:
-    """A u_max length that is neither 1 nor n_elec is rejected."""
+    """A u_max length that is neither 1 nor n_controls is rejected."""
     model = NNSymbolicModel.from_artifact(_build_artifact(tmp_path, n_controls=2))
-    with pytest.raises(ValueError, match="u_max has 3 entries but n_elec is 2"):
+    with pytest.raises(ValueError, match="u_max has 3 entries but n_controls is 2"):
         MPCController(dt=0.01, model=model, u_max=[1.0, 2.0, 3.0], horizon=3)
 
 
@@ -211,7 +211,7 @@ def test_from_config_loads_artifact_and_defaults_horizon(tmp_path: Path) -> None
     controller = MPCController.from_config({"dt": 0.01, "artifact": str(artifact), "u_max": 3.0})
     assert controller.dt == 0.01
     assert controller.horizon == 5  # defaulted from the artifact
-    assert controller.n_elec == 2
+    assert controller.n_controls == 2
 
 
 def test_closed_loop_simulation_runs(tmp_path: Path) -> None:
@@ -260,7 +260,7 @@ def test_closed_loop_simulation_runs(tmp_path: Path) -> None:
     sim.run()
 
     us = np.stack([np.atleast_1d(np.asarray(entry["u"], dtype=np.float64)) for entry in sim.logger.core_logs])
-    assert us.shape[1] == 2  # n_elec
+    assert us.shape[1] == 2  # n_controls
     assert np.all(np.abs(us) <= u_max + 1e-6)
 
 
@@ -268,7 +268,7 @@ def test_projection_shrinks_shooting_state_and_respects_bounds(tmp_path: Path) -
     """With a PCA-projection artifact the MPC's shooting state is latent-sized and the loop runs.
 
     The controller is fed raw ``n_eeg``-channel measurements and encodes them to the ``k``
-    latent components internally, so the NLP state is ``n_y*k + n_u*n_elec`` rather than
+    latent components internally, so the NLP state is ``n_y*k + n_u*n_controls`` rather than
     ``n_y*n_eeg + ...`` -- the whole point of the projection for solve time.
     """
     n_y, n_u, k, n_eeg, n_controls = 4, 3, 2, 6, 2

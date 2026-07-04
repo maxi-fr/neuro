@@ -146,11 +146,11 @@ def _(
     target_electrode,
     u_intensity_slider,
 ):
-    # 1. Update connectome and compute gamma steering matrix (n_elec, 76)
+    # 1. Update connectome and compute gamma steering matrix (n_controls, 76)
     conn_scaled = replace(connectome, speed=speed_slider.value, delays=connectome.tract_lengths / speed_slider.value)
 
     selected_electrodes = list(electrode_multiselect.value) or ["CP5"]
-    n_elec = len(selected_electrodes)
+    n_controls = len(selected_electrodes)
     gamma = _compute_gamma(
         connectome.centres,
         target_electrode=selected_electrodes,
@@ -159,7 +159,7 @@ def _(
     conn_scaled = replace(conn_scaled, gamma=gamma)
 
     # Total current split equally across the montage (e.g. CP5+CP6: 1.0 -> 0.5+0.5).
-    u_amp = np.full(n_elec, float(u_intensity_slider.value) / n_elec)
+    u_amp = np.full(n_controls, float(u_intensity_slider.value) / n_controls)
     gamma_field = u_amp @ gamma  # combined per-node U_tES field for visualization
 
     # 2. Configure EZ and PZ gains

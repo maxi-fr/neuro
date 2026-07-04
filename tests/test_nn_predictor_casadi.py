@@ -68,7 +68,13 @@ def _build_artifact(
         key=jax.random.PRNGKey(0),
     )
     wrapped = AutoregressivePredictor(
-        model=mlp, n_y=n_y, n_u=n_u, horizon=horizon, C_y=n_channels, C_u=n_controls, activation=activation
+        model=mlp,
+        n_y=n_y,
+        n_u=n_u,
+        horizon=horizon,
+        n_channels=n_channels,
+        n_controls=n_controls,
+        activation=activation,
     )
 
     scalers = {
@@ -115,7 +121,7 @@ def _build_projection_artifact(
         key=jax.random.PRNGKey(0),
     )
     wrapped = AutoregressivePredictor(
-        model=mlp, n_y=n_y, n_u=n_u, horizon=horizon, C_y=k, C_u=n_controls, activation=activation
+        model=mlp, n_y=n_y, n_u=n_u, horizon=horizon, n_channels=k, n_controls=n_controls, activation=activation
     )
     scalers = {
         "u_mean": rng.uniform(-1.0, 1.0, n_controls),
@@ -216,7 +222,7 @@ def test_single_step_matches_jax_with_global_scalar_scalers(tmp_path: Path) -> N
         in_size=in_size, out_size=n_channels, width_size=5, depth=2, activation=jax.nn.relu, key=jax.random.PRNGKey(0)
     )
     wrapped = AutoregressivePredictor(
-        model=mlp, n_y=n_y, n_u=n_u, horizon=horizon, C_y=n_channels, C_u=n_controls, activation="relu"
+        model=mlp, n_y=n_y, n_u=n_u, horizon=horizon, n_channels=n_channels, n_controls=n_controls, activation="relu"
     )
     scalers = {  # global (scalar) statistics, as produced by global_scaling=True
         "u_mean": np.array([0.3]),

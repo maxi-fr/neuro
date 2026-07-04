@@ -261,15 +261,15 @@ def simulate_network(
 
     # Per-electrode constant-current schedule over the stim window. Built once here so
     # the integration loop stays branch-free; the gamma projection lives in the component.
-    n_elec = dyn.n_elec
+    n_controls = dyn.n_controls
     u_amp = np.atleast_1d(np.asarray(u_hat_tES, dtype=np.float64))
     if u_amp.shape[0] == 1:
-        u_amp = np.broadcast_to(u_amp, (n_elec,))
-    elif u_amp.shape[0] != n_elec:
-        msg = f"u_hat_tES has {u_amp.shape[0]} electrodes but gamma has {n_elec}"
+        u_amp = np.broadcast_to(u_amp, (n_controls,))
+    elif u_amp.shape[0] != n_controls:
+        msg = f"u_hat_tES has {u_amp.shape[0]} electrodes but gamma has {n_controls}"
         raise ValueError(msg)
 
-    u_sched = np.zeros((n_steps, n_elec), dtype=np.float64)
+    u_sched = np.zeros((n_steps, n_controls), dtype=np.float64)
     if stim_window is not None:
         t_grid = np.arange(n_steps) * dt
         u_sched[(t_grid >= stim_window[0]) & (t_grid < stim_window[1])] = u_amp
@@ -289,17 +289,17 @@ def lfp(x_traj: FloatArray) -> FloatArray:
     return x_traj[1] - x_traj[2]
 
 
-def project_control(u: FloatArray, gamma_2d: FloatArray, n_elec: int) -> FloatArray:
+def project_control(u: FloatArray, gamma_2d: FloatArray, n_controls: int) -> FloatArray:
     """Project per-electrode tES current ``u`` onto nodes via ``gamma``.
 
     Parameters
     ----------
     u:
-        Per-electrode control input, shape ``(n_elec,)``.
+        Per-electrode control input, shape ``(n_controls,)``.
     gamma_2d:
-        Steering matrix of shape ``(n_elec, n_nodes)``.
-    n_elec:
-        Number of electrodes (must match ``gamma_2d.shape[0]``).
+        Steering matrix of shape ``(n_controls, n_nodes)``.
+    n_controls:
+        Number of control electrodes (must match ``gamma_2d.shape[0]``).
 
     Returns
     -------
@@ -308,8 +308,8 @@ def project_control(u: FloatArray, gamma_2d: FloatArray, n_elec: int) -> FloatAr
     """
     if not np.any(u):
         return np.zeros(gamma_2d.shape[1], dtype=np.float64)
-    if u.size != n_elec:
-        msg = f"control has {u.size} electrodes but gamma has {n_elec}"
+    if u.size != n_controls:
+        msg = f"control has {u.size} electrodes but gamma has {n_controls}"
         raise ValueError(msg)
     return u @ gamma_2d
 
@@ -374,11 +374,11 @@ class JansenRitDynamics(Dynamics[NoLog]):
         self.net_params = replace(params, A=a_vec)
         self.params_tuple = self.net_params.to_numba_tuple(n_nodes)
 
-        # tES steering matrix gamma_2d of shape (n_elec, n_nodes); single electrode is n_elec=1.
+        # tES steering matrix gamma_2d of shape (n_controls, n_nodes); single electrode is n_controls=1.
         self.gamma_2d = np.atleast_2d(gamma)
-        self.n_elec = self.gamma_2d.shape[0]
+        self.n_controls = self.gamma_2d.shape[0]
         # The control input is the per-electrode tES current; the orchestrator seeds u with this width.
-        self.n_inputs = self.n_elec
+        self.n_inputs = self.n_controls
 
         if initial_state is not None:
             if initial_state.shape != (6, n_nodes):
@@ -436,7 +436,7 @@ class JansenRitDynamics(Dynamics[NoLog]):
             s_y,
         )
 
-        u_node = project_control(u, self.gamma_2d, self.n_elec)
+        u_node = project_control(u, self.gamma_2d, self.n_controls)
         xi = self.rng.standard_normal(n_nodes)
         return _heun_step_jit(x, u_node, self.params_tuple, self.dt, xi, coupling)
 

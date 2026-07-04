@@ -134,7 +134,7 @@ class NNSymbolicModel:
     history_depth: int = 0
 
     @property
-    def n_elec(self) -> int:
+    def n_controls(self) -> int:
         """Number of control input channels."""
         return self.artifact.n_controls
 
@@ -250,7 +250,7 @@ class NNSymbolicModel:
     def f_step(self) -> ca.Function:
         """Reusable compiled single-step function ``(x, u) -> x_next``."""
         x_sym = ca.MX.sym("x", *self.state_shape)
-        u_sym = ca.MX.sym("u", self.n_elec, 1)
+        u_sym = ca.MX.sym("u", self.n_controls, 1)
         return ca.Function("F_step_nn", [x_sym, u_sym], [self.step([x_sym], u_sym)])
 
     @cached_property

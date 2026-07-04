@@ -132,7 +132,7 @@ def benchmark_horizon(  # noqa: PLR0913
     # Output-condensed NLP: lift only the per-step EEG output, not the full state.
     return BenchResult(
         horizon=horizon,
-        n_vars=horizon * (model.n_elec + model.n_channels),
+        n_vars=horizon * (model.n_controls + model.n_channels),
         n_eq=horizon * model.n_channels,
         build_s=build_s,
         cold_update_ms=cold_update_ms,
@@ -183,7 +183,7 @@ def main() -> None:
     a = model.artifact
     print(f"Model: {args.artifact}", flush=True)
     print(
-        f"  state_dim={model.state_shape[0]}  n_channels={model.n_channels}  n_elec={model.n_elec}  "
+        f"  state_dim={model.state_shape[0]}  n_channels={model.n_channels}  n_controls={model.n_controls}  "
         f"n_y={a.n_y}  n_u={a.n_u}  native_horizon={a.horizon}  dt={a.dt:.3f}",
         flush=True,
     )

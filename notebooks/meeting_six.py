@@ -203,8 +203,8 @@ def load_trial_data(
 
     projection = (artifact.latent_basis, artifact.latent_mean) if artifact.latent_basis is not None else None
 
-    X_full, Y_full, C_y = prepare_datasets(data_files, n_steps_cfg, downsample, n_y, n_u, horizon, projection)
-    C_u = (X_full.shape[1] - n_y * C_y) // (n_u + horizon)
+    X_full, Y_full, n_channels = prepare_datasets(data_files, n_steps_cfg, downsample, n_y, n_u, horizon, projection)
+    n_controls = (X_full.shape[1] - n_y * n_channels) // (n_u + horizon)
 
     split_idx = int(train_split * len(X_full))
     _X_train, X_val = X_full[:split_idx], X_full[split_idx:]
@@ -212,32 +212,42 @@ def load_trial_data(
 
     from neuro.prediction import zscore
 
-    y_past = X_val[:, : n_y * C_y]
-    u_past = X_val[:, n_y * C_y : n_y * C_y + n_u * C_u]
-    u_fut = X_val[:, n_y * C_y + n_u * C_u :]
+    y_past = X_val[:, : n_y * n_channels]
+    u_past = X_val[:, n_y * n_channels : n_y * n_channels + n_u * n_controls]
+    u_future = X_val[:, n_y * n_channels + n_u * n_controls :]
 
-    # In global scaling, the mean/scale are 1D arrays of size 1. In per-channel, they are size C_y/C_u.
+    # In global scaling, the mean/scale are 1D arrays of size 1. In per-channel, they are size n_channels/n_controls.
     # We reshape to (batch, time, channel) to broadcast correctly, then flatten again.
     def scale_flat(data, mean, scale, channels):
         shape = data.shape
         reshaped = data.reshape(shape[0], -1, channels)
         return zscore(reshaped, mean, scale).reshape(shape)
 
-    y_past_s = scale_flat(y_past, artifact.y_mean, artifact.y_scale, C_y)
-    u_past_s = scale_flat(u_past, artifact.u_mean, artifact.u_scale, C_u)
-    u_fut_s = scale_flat(u_fut, artifact.u_mean, artifact.u_scale, C_u)
+    y_past_s = scale_flat(y_past, artifact.y_mean, artifact.y_scale, n_channels)
+    u_past_s = scale_flat(u_past, artifact.u_mean, artifact.u_scale, n_controls)
+    u_future_s = scale_flat(u_future, artifact.u_mean, artifact.u_scale, n_controls)
 
-    X_val_s = np.concatenate([y_past_s, u_past_s, u_fut_s], axis=1)
-    return C_y, X_val, X_val_s, artifact, config, dt_real, horizon, model, n_y
+    X_val_s = np.concatenate([y_past_s, u_past_s, u_future_s], axis=1)
+    return (
+        X_val,
+        X_val_s,
+        artifact,
+        config,
+        dt_real,
+        horizon,
+        model,
+        n_channels,
+        n_y,
+    )
 
 
 @app.cell(hide_code=True)
 def eval_predictions(
-    C_y,
     X_val_s,
     artifact,
     config,
     model,
+    n_channels,
     np,
     reshape_to_trajectory,
 ):
@@ -253,18 +263,18 @@ def eval_predictions(
         reshaped = data.reshape(shape[0], -1, channels)
         return unzscore(reshaped, mean, scale).reshape(shape)
 
-    Y_pred_abs_flat = unscale_flat(Y_pred_s, artifact.y_mean, artifact.y_scale, C_y)
+    Y_pred_unscaled_flat = unscale_flat(Y_pred_s, artifact.y_mean, artifact.y_scale, n_channels)
 
-    Y_pred_traj = reshape_to_trajectory(Y_pred_abs_flat, config.get("model", {}).get("horizon", 5), C_y)
+    Y_pred_traj = reshape_to_trajectory(Y_pred_unscaled_flat, config.get("model", {}).get("horizon", 5), n_channels)
     return (Y_pred_traj,)
 
 
 @app.cell(hide_code=True)
-def pred_slider_controls(C_y, Y_pred_traj, dt_real, mo):
+def pred_slider_controls(Y_pred_traj, dt_real, mo, n_channels):
     max_time_s = len(Y_pred_traj) * dt_real
-    channel_options = [str(i) for i in range(C_y)]
+    channel_options = [str(i) for i in range(n_channels)]
     ui_channels = mo.ui.multiselect(
-        options=channel_options, value=[str(i) for i in range(min(4, C_y))], label="Channels"
+        options=channel_options, value=[str(i) for i in range(min(4, n_channels))], label="Channels"
     )
     ui_time = mo.ui.slider(start=0.0, stop=max_time_s, step=dt_real * 10, value=0.0, label="Time (s)")
     ui_time_length = mo.ui.slider(start=1, stop=10, step=1, value=5, label="Window (s)")
@@ -274,12 +284,12 @@ def pred_slider_controls(C_y, Y_pred_traj, dt_real, mo):
 
 @app.cell(hide_code=True)
 def slide_pred(
-    C_y,
     X_val,
     Y_pred_traj,
     dt_real,
     horizon,
     mo,
+    n_channels,
     n_y,
     plot_multistep_predictions,
     plt,
@@ -292,7 +302,7 @@ def slide_pred(
     import io
 
     channels_to_plot = [int(c) for c in ui_channels.value] if ui_channels.value else [0]
-    y_true_anchors = X_val[:, (n_y - 1) * C_y : n_y * C_y]
+    y_true_anchors = X_val[:, (n_y - 1) * n_channels : n_y * n_channels]
     _fig_ts, _ = plot_multistep_predictions(
         y_true=y_true_anchors,
         y_pred=Y_pred_traj,

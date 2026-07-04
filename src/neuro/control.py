@@ -165,12 +165,12 @@ _MULTISINE_F_MAX_HZ = 15
 _EPS = 1e-12
 
 
-def _multisine(n_samples: int, n_elec: int, amp: float, dt: float, rng: np.random.Generator) -> FloatArray:
+def _multisine(n_samples: int, n_controls: int, amp: float, dt: float, rng: np.random.Generator) -> FloatArray:
     """Build a random-phase multisine of peak amplitude ``amp``, one column per electrode."""
     t = np.arange(n_samples) * dt
     freqs = np.arange(_MULTISINE_F_MIN_HZ, _MULTISINE_F_MAX_HZ + 1)
-    out = np.zeros((n_samples, n_elec))
-    for elec in range(n_elec):
+    out = np.zeros((n_samples, n_controls))
+    for elec in range(n_controls):
         phases = rng.uniform(0.0, 2.0 * np.pi, size=freqs.size)
         sig = np.sin(2.0 * np.pi * freqs[:, None] * t[None, :] + phases[:, None]).sum(axis=0)
         out[:, elec] = amp * sig / max(np.abs(sig).max(), _EPS)
@@ -182,19 +182,19 @@ def build_input_schedule(  # noqa: PLR0913
     input_type: str,
     n_steps: int,
     transient_steps: int,
-    n_elec: int,
+    n_controls: int,
     amp: float,
     hold_ms: float,
     dt: float,
     rng: np.random.Generator,
 ) -> FloatArray:
-    """Build the per-step tES schedule ``(n_steps, n_elec)``; zero during the leading transient.
+    """Build the per-step tES schedule ``(n_steps, n_controls)``; zero during the leading transient.
 
     ``ras`` holds a random uniform amplitude per block, ``prbs`` a random binary +/-amp, and
     ``multisine`` a random-phase sum of sinusoids; ``hold_ms`` sets the block length for the
     first two.
     """
-    u = np.zeros((n_steps, n_elec))
+    u = np.zeros((n_steps, n_controls))
     active = n_steps - transient_steps
     if active <= 0:
         return u
@@ -203,12 +203,12 @@ def build_input_schedule(  # noqa: PLR0913
         hold = max(1, round(hold_ms / (dt * 1000.0)))
         n_blocks = (active + hold - 1) // hold
         if input_type == "ras":
-            block_vals = rng.uniform(-amp, amp, size=(n_blocks, n_elec))
+            block_vals = rng.uniform(-amp, amp, size=(n_blocks, n_controls))
         else:
-            block_vals = rng.choice(np.array([-amp, amp]), size=(n_blocks, n_elec))
+            block_vals = rng.choice(np.array([-amp, amp]), size=(n_blocks, n_controls))
         seq = np.repeat(block_vals, hold, axis=0)[:active]
     elif input_type == "multisine":
-        seq = _multisine(active, n_elec, amp, dt, rng)
+        seq = _multisine(active, n_controls, amp, dt, rng)
     else:
         msg = f"unknown input_type {input_type!r}"
         raise ValueError(msg)
@@ -259,7 +259,7 @@ class WaveformController(Controller[WaveformControllerLog]):
             input_type=cfg.input_type,
             n_steps=round(cfg.duration / cfg.dt),
             transient_steps=round(cfg.transient_ms / (cfg.dt * 1000.0)),
-            n_elec=cfg.n_u,
+            n_controls=cfg.n_u,
             amp=cfg.amp,
             hold_ms=cfg.hold_ms,
             dt=cfg.dt,
@@ -353,7 +353,7 @@ class MPCController(Controller[MPCControllerLog]):
             The CasADi NN predictor used as the prediction model.
         u_max
             Per-electrode amplitude bound: a scalar shared by every electrode or a
-            length-``n_elec`` vector. The box constraint is ``-u_max <= u <= u_max``.
+            length-``n_controls`` vector. The box constraint is ``-u_max <= u <= u_max``.
         horizon
             Prediction/control horizon in steps; defaults to the model's native horizon.
         w_y
@@ -382,21 +382,21 @@ class MPCController(Controller[MPCControllerLog]):
         self.ipopt_options = dict(ipopt_options) if ipopt_options is not None else {}
 
         self.n_y = model.artifact.n_y
-        self.n_u_steps = model.artifact.n_u
+        self.n_u = model.artifact.n_u
         self.n_channels = model.n_channels
-        self.n_elec = model.n_elec
+        self.n_controls = model.n_controls
 
         u_max_arr = np.atleast_1d(np.asarray(u_max, dtype=np.float64))
         if u_max_arr.size == 1:
-            u_max_arr = np.broadcast_to(u_max_arr, (self.n_elec,))
-        elif u_max_arr.size != self.n_elec:
-            msg = f"u_max has {u_max_arr.size} entries but n_elec is {self.n_elec}"
+            u_max_arr = np.broadcast_to(u_max_arr, (self.n_controls,))
+        elif u_max_arr.size != self.n_controls:
+            msg = f"u_max has {u_max_arr.size} entries but n_controls is {self.n_controls}"
             raise ValueError(msg)
         self.u_max = np.ascontiguousarray(u_max_arr)
 
         # History windows (oldest first, newest last)
         self._y_buf = np.zeros((self.n_y, self.n_channels), dtype=np.float64)
-        self._u_buf = np.zeros((self.n_u_steps, self.n_elec), dtype=np.float64)
+        self._u_buf = np.zeros((self.n_u, self.n_controls), dtype=np.float64)
         self._n_seen = 0
         self._u_prev: FloatArray | None = None
 
@@ -432,7 +432,7 @@ class MPCController(Controller[MPCControllerLog]):
         via the CasADi f_step block and constraints close the gaps between the segments.
         """
         n_state = self.model.state_shape[0]
-        n_ctrl, h = self.n_elec, self.horizon
+        n_ctrl, h = self.n_controls, self.horizon
         D = self.shooting_depth
 
         x0_p = ca.MX.sym("x0", n_state)
@@ -487,7 +487,7 @@ class MPCController(Controller[MPCControllerLog]):
 
     def _solve(self, x0: FloatArray) -> tuple[FloatArray, float, bool]:
         """Solve the NLP for window-state ``x0``; return ``(u_0*, cost, success)``."""
-        m, h = self.n_elec, self.horizon
+        m, h = self.n_controls, self.horizon
         D = self.shooting_depth
         u_guess = self._u_prev if self._u_prev is not None else np.zeros((h, m))
 
@@ -524,12 +524,12 @@ class MPCController(Controller[MPCControllerLog]):
 
         # While the window is still zero-padded, hold off stimulating.
         if self._n_seen < self.n_y:
-            self._u_buf = np.vstack([self._u_buf[1:], np.zeros((1, self.n_elec))])
-            return np.zeros(self.n_elec, dtype=np.float64), MPCControllerLog(cost=0.0, success=True, warmup=True)
+            self._u_buf = np.vstack([self._u_buf[1:], np.zeros((1, self.n_controls))])
+            return np.zeros(self.n_controls, dtype=np.float64), MPCControllerLog(cost=0.0, success=True, warmup=True)
 
         x0 = np.concatenate([self._y_buf.reshape(-1), self._u_buf.reshape(-1)])
         u0, cost, success = self._solve(x0)
-        self._u_buf = np.vstack([self._u_buf[1:], u0.reshape(1, self.n_elec)])
+        self._u_buf = np.vstack([self._u_buf[1:], u0.reshape(1, self.n_controls)])
         return u0, MPCControllerLog(cost=cost, success=success, warmup=False)
 
 
@@ -577,7 +577,7 @@ class LinearMPCController(Controller[LinearMPCControllerLog]):
       Hessian solved with the active-set **qpOASES** (the ``ca.qpsol`` ``"qpoases"`` plugin).
 
     Both solve the same problem (to solver tolerance); ``"sparse"`` scales better to long
-    horizons, ``"dense"`` to small ``horizon * n_elec``. Projection artifacts are handled
+    horizons, ``"dense"`` to small ``horizon * n_controls``. Projection artifacts are handled
     exactly as in :class:`MPCController` (the window holds latent components; ``f_out``/the
     output map decodes back to EEG). The controller ``dt`` should equal the predictor's native
     step and the reference is ignored -- the objective is suppression, not tracking.
@@ -607,7 +607,7 @@ class LinearMPCController(Controller[LinearMPCControllerLog]):
             would silently use the quadratic Taylor expansion of a nonlinear map.
         u_max
             Per-electrode amplitude bound: a scalar shared by every electrode or a
-            length-``n_elec`` vector. The box constraint is ``-u_max <= u <= u_max``.
+            length-``n_controls`` vector. The box constraint is ``-u_max <= u <= u_max``.
         horizon
             Prediction/control horizon in steps; defaults to the model's native horizon.
         w_y
@@ -641,21 +641,21 @@ class LinearMPCController(Controller[LinearMPCControllerLog]):
         self.osqp_eps = float(osqp_eps)
 
         self.n_y = model.artifact.n_y
-        self.n_u_steps = model.artifact.n_u
+        self.n_u = model.artifact.n_u
         self.n_channels = model.n_channels
-        self.n_elec = model.n_elec
+        self.n_controls = model.n_controls
 
         u_max_arr = np.atleast_1d(np.asarray(u_max, dtype=np.float64))
         if u_max_arr.size == 1:
-            u_max_arr = np.broadcast_to(u_max_arr, (self.n_elec,))
-        elif u_max_arr.size != self.n_elec:
-            msg = f"u_max has {u_max_arr.size} entries but n_elec is {self.n_elec}"
+            u_max_arr = np.broadcast_to(u_max_arr, (self.n_controls,))
+        elif u_max_arr.size != self.n_controls:
+            msg = f"u_max has {u_max_arr.size} entries but n_controls is {self.n_controls}"
             raise ValueError(msg)
         self.u_max = np.ascontiguousarray(u_max_arr)
 
         # History windows (oldest first, newest last)
         self._y_buf = np.zeros((self.n_y, self.n_channels), dtype=np.float64)
-        self._u_buf = np.zeros((self.n_u_steps, self.n_elec), dtype=np.float64)
+        self._u_buf = np.zeros((self.n_u, self.n_controls), dtype=np.float64)
         self._n_seen = 0
         self._u_prev: FloatArray | None = None
 
@@ -689,7 +689,7 @@ class LinearMPCController(Controller[LinearMPCControllerLog]):
         affine expression, so ``ca.qpsol`` extracts an exact constant Hessian.
         """
         n_state = self.model.state_shape[0]
-        n_ctrl, h = self.n_elec, self.horizon
+        n_ctrl, h = self.n_controls, self.horizon
 
         x0_p = ca.MX.sym("x0", n_state)
         u_vars = [ca.MX.sym(f"u_{k}", n_ctrl) for k in range(h)]
@@ -731,7 +731,7 @@ class LinearMPCController(Controller[LinearMPCControllerLog]):
 
     def _solve(self, x0: FloatArray) -> tuple[FloatArray, float, bool]:
         """Solve the QP for window-state ``x0``; return ``(u_0*, cost, success)``."""
-        m, h = self.n_elec, self.horizon
+        m, h = self.n_controls, self.horizon
         u_guess = self._u_prev if self._u_prev is not None else np.zeros((h, m))
 
         if self.formulation == "dense":
@@ -770,10 +770,12 @@ class LinearMPCController(Controller[LinearMPCControllerLog]):
 
         # While the window is still zero-padded, hold off stimulating.
         if self._n_seen < self.n_y:
-            self._u_buf = np.vstack([self._u_buf[1:], np.zeros((1, self.n_elec))])
-            return np.zeros(self.n_elec, dtype=np.float64), LinearMPCControllerLog(cost=0.0, success=True, warmup=True)
+            self._u_buf = np.vstack([self._u_buf[1:], np.zeros((1, self.n_controls))])
+            return np.zeros(self.n_controls, dtype=np.float64), LinearMPCControllerLog(
+                cost=0.0, success=True, warmup=True
+            )
 
         x0 = np.concatenate([self._y_buf.reshape(-1), self._u_buf.reshape(-1)])
         u0, cost, success = self._solve(x0)
-        self._u_buf = np.vstack([self._u_buf[1:], u0.reshape(1, self.n_elec)])
+        self._u_buf = np.vstack([self._u_buf[1:], u0.reshape(1, self.n_controls)])
         return u0, LinearMPCControllerLog(cost=cost, success=success, warmup=False)

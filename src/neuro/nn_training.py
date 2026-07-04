@@ -43,9 +43,9 @@ def load_trajectory(data_file: str, n_steps: int, downsample: int) -> tuple[Floa
     Returns
     -------
     u_data : FloatArray
-        The stimulation input trajectory, shape ``(T, C_u)``.
+        The stimulation input trajectory, shape ``(T, n_controls)``.
     y_data : FloatArray
-        The measured output (EEG) trajectory, shape ``(T, C_y)``.
+        The measured output (EEG) trajectory, shape ``(T, n_channels)``.
     """
     with np.load(data_file) as data:
         max_idx = n_steps * downsample
@@ -184,9 +184,9 @@ def build_dataset_for_trajectory(
     Parameters
     ----------
     u_data : FloatArray
-        The stimulation input trajectory of shape (T, C_u).
+        The stimulation input trajectory of shape (T, n_controls).
     y_data : FloatArray
-        The measured output (EEG) trajectory of shape (T, C_y).
+        The measured output (EEG) trajectory of shape (T, n_channels).
     n_y : int
         Number of past output steps to include in the input feature.
     n_u : int
@@ -197,12 +197,11 @@ def build_dataset_for_trajectory(
     Returns
     -------
     X : FloatArray
-        Input features array of shape (samples, n_y * C_y + n_u * C_u + N * C_u).
+        Input features array of shape (samples, n_y * n_channels + n_u * n_controls + N * n_controls).
     Y : FloatArray
-        Target labels array of shape (samples, N * C_y).
+        Target labels array of shape (samples, N * n_channels).
     """
-    T_src, _C_y = y_data.shape
-    _, _C_u = u_data.shape
+    T_src, _ = y_data.shape
 
     start_idx = max(n_y - 1, n_u)
     end_idx = T_src - N
@@ -210,9 +209,9 @@ def build_dataset_for_trajectory(
 
     y_view = extract_windows_flattened(y_data, n_y)
     u_past_view = extract_windows_flattened(u_data, n_u)
-    u_fut_view = extract_windows_flattened(u_data, N)
+    u_future_view = extract_windows_flattened(u_data, N)
 
-    X = np.concatenate([y_view[k - n_y + 1], u_past_view[k - n_u], u_fut_view[k]], axis=1)
+    X = np.concatenate([y_view[k - n_y + 1], u_past_view[k - n_u], u_future_view[k]], axis=1)
 
     y_fut_view = extract_windows_flattened(y_data, N)
     Y = y_fut_view[k + 1]
@@ -276,7 +275,7 @@ def prepare_datasets(  # noqa: PLR0913
     projection : tuple[FloatArray, FloatArray] | None
         Optional ``(E, mean)`` latent projection from :func:`fit_latent_projection`.
         When given, each trajectory's EEG is encoded ``y -> (y - mean) @ E.T`` before
-        windowing, so the returned ``C_y`` is the latent dimension ``k`` instead of the
+        windowing, so the returned ``n_channels`` is the latent dimension ``k`` instead of the
         raw EEG channel count.
 
     Returns
@@ -285,24 +284,24 @@ def prepare_datasets(  # noqa: PLR0913
         Input features array, shape ``(total_samples, n_features)``.
     Y_full : FloatArray
         Target labels array, shape ``(total_samples, n_targets)``.
-    C_y : int
+    n_channels : int
         Number of output channels (latent dimension ``k`` when ``projection`` is set).
     """
     all_X, all_Y = [], []
-    C_y = 1
+    n_channels = 1
     for df in data_files:
         u, y = load_trajectory(df, n_steps_cfg, downsample)
         if projection is not None:
             basis, mean = projection
             y = (y - mean) @ basis.T
-        C_y = y.shape[1]
+        n_channels = y.shape[1]
         X_traj, Y_traj = build_dataset_for_trajectory(u, y, n_y, n_u, horizon)
         all_X.append(X_traj)
         all_Y.append(Y_traj)
 
     X_full = np.concatenate(all_X, axis=0)
     Y_full = np.concatenate(all_Y, axis=0)
-    return X_full, Y_full, C_y
+    return X_full, Y_full, n_channels
 
 
 def fit_latent_projection(
@@ -336,9 +335,9 @@ def fit_latent_projection(
     Returns
     -------
     E : FloatArray
-        Orthonormal PCA basis, shape ``(k, C_y)``.
+        Orthonormal PCA basis, shape ``(k, n_channels)``.
     mean : FloatArray
-        Per-channel training mean, shape ``(C_y,)``.
+        Per-channel training mean, shape ``(n_channels,)``.
     """
     if latent_dim is None and explained_variance is None:
         msg = "fit_latent_projection requires either latent_dim or explained_variance"
@@ -358,8 +357,8 @@ def create_model(  # noqa: PLR0913
     n_y: int,
     n_u: int,
     horizon: int,
-    C_y: int,
-    C_u: int,
+    n_channels: int,
+    n_controls: int,
     activation: str = "relu",
 ) -> eqx.Module:
     """Create the Autoregressive MLP model.
@@ -382,9 +381,9 @@ def create_model(  # noqa: PLR0913
         Number of past input steps.
     horizon : int
         Prediction horizon.
-    C_y : int
+    n_channels : int
         Number of output channels.
-    C_u : int
+    n_controls : int
         Number of input control channels.
 
     Returns
@@ -401,7 +400,13 @@ def create_model(  # noqa: PLR0913
         key=key,
     )
     return AutoregressivePredictor(
-        model=mlp, n_y=n_y, n_u=n_u, horizon=horizon, C_y=C_y, C_u=C_u, activation=activation
+        model=mlp,
+        n_y=n_y,
+        n_u=n_u,
+        horizon=horizon,
+        n_channels=n_channels,
+        n_controls=n_controls,
+        activation=activation,
     )
 
 
@@ -412,8 +417,8 @@ def scale_dataset(  # noqa: PLR0913
     scaler_u: StandardScaler | RobustScaler,
     n_y: int,
     n_u: int,
-    C_y: int,
-    C_u: int,
+    n_channels: int,
+    n_controls: int,
     global_scaling: bool,  # noqa: FBT001
 ) -> tuple[FloatArray, FloatArray]:
     """Scale datasets per-channel.
@@ -432,9 +437,9 @@ def scale_dataset(  # noqa: PLR0913
         Number of past output steps.
     n_u : int
         Number of past input steps.
-    C_y : int
+    n_channels : int
         Number of output channels.
-    C_u : int
+    n_controls : int
         Number of input control channels.
 
     Returns
@@ -444,16 +449,16 @@ def scale_dataset(  # noqa: PLR0913
     Y_s : FloatArray
         Scaled target labels array, shape ``(samples, n_targets)``.
     """
-    y_past_flat = X[:, : n_y * C_y]
-    u_past_flat = X[:, n_y * C_y : n_y * C_y + n_u * C_u]
-    u_fut_flat = X[:, n_y * C_y + n_u * C_u :]
+    y_past_flat = X[:, : n_y * n_channels]
+    u_past_flat = X[:, n_y * n_channels : n_y * n_channels + n_u * n_controls]
+    u_future_flat = X[:, n_y * n_channels + n_u * n_controls :]
 
-    y_past_s = scale_flat_sequence(y_past_flat, scaler_y, C_y, global_scaling)
-    u_past_s = scale_flat_sequence(u_past_flat, scaler_u, C_u, global_scaling)
-    u_fut_s = scale_flat_sequence(u_fut_flat, scaler_u, C_u, global_scaling)
+    y_past_s = scale_flat_sequence(y_past_flat, scaler_y, n_channels, global_scaling)
+    u_past_s = scale_flat_sequence(u_past_flat, scaler_u, n_controls, global_scaling)
+    u_future_s = scale_flat_sequence(u_future_flat, scaler_u, n_controls, global_scaling)
 
-    X_s = np.concatenate([y_past_s, u_past_s, u_fut_s], axis=1)
-    Y_s = scale_flat_sequence(Y, scaler_y, C_y, global_scaling)
+    X_s = np.concatenate([y_past_s, u_past_s, u_future_s], axis=1)
+    Y_s = scale_flat_sequence(Y, scaler_y, n_channels, global_scaling)
 
     return X_s, Y_s
 
@@ -482,7 +487,7 @@ def compute_loss(  # noqa: PLR0913
     x: jax.Array,
     y: jax.Array,
     alpha: jax.Array,
-    C_y: int,
+    n_channels: int,
     w_psd: jax.Array,
     w_fc: jax.Array,
 ) -> jax.Array:
@@ -498,10 +503,10 @@ def compute_loss(  # noqa: PLR0913
     x : jax.Array
         Batch of input features, shape ``(batch_size, n_features)``.
     y : jax.Array
-        Batch of target labels, shape ``(batch_size, horizon * C_y)``.
+        Batch of target labels, shape ``(batch_size, horizon * n_channels)``.
     alpha : jax.Array
         Curriculum learning parameter balancing 1-step and N-step loss.
-    C_y : int
+    n_channels : int
         Number of output channels.
     w_psd : jax.Array
         Weight for the PSD loss.
@@ -515,21 +520,21 @@ def compute_loss(  # noqa: PLR0913
     """
     pred_y = predict_batch(m, x)
 
-    # The first C_y elements correspond to the first step of the rollout,
+    # The first n_channels elements correspond to the first step of the rollout,
     # which relies purely on the ground-truth past context (1-step prediction).
-    loss_1step = jnp.mean((pred_y[:, :C_y] - y[:, :C_y]) ** 2)
+    loss_1step = jnp.mean((pred_y[:, :n_channels] - y[:, :n_channels]) ** 2)
 
     # The full N-step unrolled loss
     loss_Nstep = jnp.mean((pred_y - y) ** 2)
 
     mse_loss = alpha * loss_1step + (1.0 - alpha) * loss_Nstep
 
-    horizon = y.shape[1] // C_y
+    horizon = y.shape[1] // n_channels
 
     if horizon > 1:
-        # Reshape to (batch_size, horizon, C_y) to compute statistics over the trajectory
-        pred_traj = reshape_to_trajectory(pred_y, horizon, C_y)
-        true_traj = reshape_to_trajectory(y, horizon, C_y)
+        # Reshape to (batch_size, horizon, n_channels) to compute statistics over the trajectory
+        pred_traj = reshape_to_trajectory(pred_y, horizon, n_channels)
+        true_traj = reshape_to_trajectory(y, horizon, n_channels)
 
         # Simple FFT-based PSD loss across the horizon dimension (axis=1)
         pred_psd = jnp.abs(jnp.fft.rfft(pred_traj, axis=1)) ** 2
@@ -559,7 +564,7 @@ def step(  # noqa: PLR0913
     x: jax.Array,
     y: jax.Array,
     alpha: jax.Array,
-    C_y: int,
+    n_channels: int,
     optimizer: optax.GradientTransformation,
     w_psd: jax.Array,
     w_fc: jax.Array,
@@ -578,7 +583,7 @@ def step(  # noqa: PLR0913
         Batch of target labels, shape ``(batch_size, n_targets)``.
     alpha : jax.Array
         Curriculum learning parameter.
-    C_y : int
+    n_channels : int
         Number of output channels.
     optimizer : optax.GradientTransformation
         The Optax optimizer.
@@ -596,7 +601,7 @@ def step(  # noqa: PLR0913
     loss_val : jax.Array
         The scalar loss value for the batch.
     """
-    loss_val, grads = eqx.filter_value_and_grad(compute_loss)(m, x, y, alpha, C_y, w_psd, w_fc)
+    loss_val, grads = eqx.filter_value_and_grad(compute_loss)(m, x, y, alpha, n_channels, w_psd, w_fc)
     updates, new_opt_s = optimizer.update(grads, opt_s, m)  # type: ignore
     new_m: eqx.Module = eqx.apply_updates(m, updates)
     return new_m, new_opt_s, loss_val
@@ -613,7 +618,7 @@ def train_model(  # noqa: PLR0913
     learning_rate: float,
     weight_decay: float,
     curriculum_decay_fraction: float,
-    C_y: int,
+    n_channels: int,
     w_psd: float = 0.0,
     w_fc: float = 0.0,
     patience: int = 50,
@@ -642,7 +647,7 @@ def train_model(  # noqa: PLR0913
         Weight decay.
     curriculum_decay_fraction : float
         Fraction of epochs to decay curriculum alpha.
-    C_y : int
+    n_channels : int
         Number of output channels.
     w_psd : float
         Weight for the PSD loss.
@@ -689,7 +694,7 @@ def train_model(  # noqa: PLR0913
         batches = 0
         for batch_x, batch_y in get_dataloaders(X_train_s, Y_train_s, batch_size):
             model, opt_state, loss = step(
-                model, opt_state, batch_x, batch_y, alpha_jax, C_y, optimizer, w_psd_jax, w_fc_jax
+                model, opt_state, batch_x, batch_y, alpha_jax, n_channels, optimizer, w_psd_jax, w_fc_jax
             )
             epoch_loss += loss.item()
             batches += 1
@@ -698,7 +703,7 @@ def train_model(  # noqa: PLR0913
         train_losses.append(avg_train_loss)
 
         last_val_loss = float(
-            compute_loss(model, X_val_jnp, Y_val_jnp, jnp.array(0.0), C_y, w_psd_jax, w_fc_jax).item()
+            compute_loss(model, X_val_jnp, Y_val_jnp, jnp.array(0.0), n_channels, w_psd_jax, w_fc_jax).item()
         )
         val_losses.append(last_val_loss)
 
@@ -740,7 +745,7 @@ def evaluate_model(  # noqa: PLR0913
     scaler_y: StandardScaler | RobustScaler,
     X_val_s: FloatArray,
     Y_val: FloatArray,
-    C_y: int,
+    n_channels: int,
     global_scaling: bool,  # noqa: FBT001
 ) -> tuple[FloatArray, float]:
     """Evaluate the trained model.
@@ -755,18 +760,18 @@ def evaluate_model(  # noqa: PLR0913
         Scaled validation inputs, shape ``(samples_val, n_features)``.
     Y_val : FloatArray
         Target values for the validation set, shape ``(samples_val, n_targets)``.
-    C_y : int
+    n_channels : int
         Number of output channels.
 
     Returns
     -------
     Y_pred_unscaled : FloatArray
-        Absolute predictions flattened per step/channel, shape ``(samples_val, n_targets)``.
+        Unscaled predictions flattened per step/channel, shape ``(samples_val, n_targets)``.
     mse : float
-        Mean squared error of the absolute predictions.
+        Mean squared error of the unscaled predictions.
     """
     Y_pred_s = np.array(predict_batch(model, jnp.array(X_val_s)))
-    Y_pred_unscaled = unscale_flat_sequence(Y_pred_s, scaler_y, C_y, global_scaling)
+    Y_pred_unscaled = unscale_flat_sequence(Y_pred_s, scaler_y, n_channels, global_scaling)
 
     mse = np.mean((Y_val - Y_pred_unscaled) ** 2)
     return Y_pred_unscaled, float(mse)
@@ -841,15 +846,17 @@ def train_and_save_predictor(  # noqa: PLR0915
             raise ValueError(msg)
         projection = fit_latent_projection(data_files, n_steps_cfg, downsample, latent_dim, explained_variance)
 
-    X_full, Y_full, C_y = prepare_datasets(data_files, n_steps_cfg, downsample, n_y, n_u, horizon, projection)
-    C_u = (X_full.shape[1] - n_y * C_y) // (n_u + horizon)
+    X_full, Y_full, n_channels = prepare_datasets(data_files, n_steps_cfg, downsample, n_y, n_u, horizon, projection)
+    n_controls = (X_full.shape[1] - n_y * n_channels) // (n_u + horizon)
 
     split_idx = int(train_split * len(X_full))
     X_train, X_val = X_full[:split_idx], X_full[split_idx:]
     Y_train, Y_val = Y_full[:split_idx], Y_full[split_idx:]
 
-    y_past_train = reshape_flat_to_channels(X_train[:, : n_y * C_y], C_y)
-    u_past_train = reshape_flat_to_channels(X_train[:, n_y * C_y : n_y * C_y + n_u * C_u], C_u)
+    y_past_train = reshape_flat_to_channels(X_train[:, : n_y * n_channels], n_channels)
+    u_past_train = reshape_flat_to_channels(
+        X_train[:, n_y * n_channels : n_y * n_channels + n_u * n_controls], n_controls
+    )
 
     if scaler_type == "robust":
         scaler_y = RobustScaler()
@@ -865,14 +872,18 @@ def train_and_save_predictor(  # noqa: PLR0915
         scaler_y.fit(y_past_train)
         scaler_u.fit(u_past_train)
 
-    X_train_s, Y_train_s = scale_dataset(X_train, Y_train, scaler_y, scaler_u, n_y, n_u, C_y, C_u, global_scaling)
-    X_val_s, Y_val_s = scale_dataset(X_val, Y_val, scaler_y, scaler_u, n_y, n_u, C_y, C_u, global_scaling)
+    X_train_s, Y_train_s = scale_dataset(
+        X_train, Y_train, scaler_y, scaler_u, n_y, n_u, n_channels, n_controls, global_scaling
+    )
+    X_val_s, Y_val_s = scale_dataset(X_val, Y_val, scaler_y, scaler_u, n_y, n_u, n_channels, n_controls, global_scaling)
 
     key = jax.random.PRNGKey(seed)
-    in_size = n_y * C_y + n_u * C_u
-    out_size = C_y
+    in_size = n_y * n_channels + n_u * n_controls
+    out_size = n_channels
 
-    model = create_model(in_size, out_size, hidden_size, depth, key, n_y, n_u, horizon, C_y, C_u, activation=activation)
+    model = create_model(
+        in_size, out_size, hidden_size, depth, key, n_y, n_u, horizon, n_channels, n_controls, activation=activation
+    )
 
     model, train_losses, val_losses = train_model(
         model,
@@ -885,7 +896,7 @@ def train_and_save_predictor(  # noqa: PLR0915
         learning_rate,
         weight_decay,
         curriculum_decay_fraction,
-        C_y,
+        n_channels,
         w_psd=w_psd,
         w_fc=w_fc,
         patience=patience,
@@ -915,19 +926,19 @@ def train_and_save_predictor(  # noqa: PLR0915
         latent_mean=projection[1] if projection is not None else None,
     ).save(artifact_dir / "model.eqx")
 
-    Y_pred_abs_flat, mse = evaluate_model(model, scaler_y, X_val_s, Y_val, C_y, global_scaling)
+    Y_pred_unscaled_flat, mse = evaluate_model(model, scaler_y, X_val_s, Y_val, n_channels, global_scaling)
 
     stats = {"train_loss": train_losses, "val_loss": val_losses, "mse": float(mse)}
     (artifact_dir / "training_stats.json").write_text(json.dumps(stats, indent=2))
 
-    Y_pred_unflat = np.asarray(reshape_to_trajectory(Y_pred_abs_flat, horizon, C_y))
+    Y_pred_unflat = np.asarray(reshape_to_trajectory(Y_pred_unscaled_flat, horizon, n_channels))
     n_plot_samples = min(200, len(Y_val))
-    y_true_anchors = X_val[:n_plot_samples, (n_y - 1) * C_y : n_y * C_y]
+    y_true_anchors = X_val[:n_plot_samples, (n_y - 1) * n_channels : n_y * n_channels]
     fig, _ = plot_multistep_predictions(
         y_true=y_true_anchors,
         y_pred=Y_pred_unflat[:n_plot_samples],
         dt=dt_real,
-        channels=list(range(min(4, C_y))),
+        channels=list(range(min(4, n_channels))),
         stride=horizon,
         title=f"EEG {horizon}-Step Ahead Prediction",
     )

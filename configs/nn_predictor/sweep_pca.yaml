@@ -5,15 +5,11 @@ simulation:
   data_path: "data/experiment_excited/train"
 
 model:
-  n_y: 5
-  n_u: 5
+  n_y: 15
+  n_u: 10
   horizon: 20
   hidden_size: 128
   depth: 2
-  projection:                # project the 62 EEG channels onto a fixed PCA latent space
-    enable: true
-    latent_dim: 16           # number of latent components k; keep FIXED across a sweep (the
-    explained_variance: null # objective MSE is latent-space, so it is not comparable across k)
 
 training:
   epochs: 250
@@ -42,8 +38,30 @@ sweep:
       high: 15
     hidden_size:
       type: categorical
-      choices: [32, 64, 128, 256]
+      choices: [64, 128, 256]
     depth:
       type: int
       low: 0
-      high: 3
+      high: 5
+  training:
+    learning_rate:
+      type: loguniform
+      low: 0.0001
+      high: 0.01
+    weight_decay:
+      type: loguniform
+      low: 0.0001
+      high: 0.1
+    batch_size:
+      type: categorical
+      choices: [64, 128, 256, 512]
+    curriculum_decay_fraction:
+      type: float
+      low: 0.5
+      high: 0.9
+    scaler:
+      type: categorical
+      choices: ["standard", "robust"]
+    global_scaling:
+      type: categorical
+      choices: [true, false]

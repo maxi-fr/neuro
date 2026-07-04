@@ -16,8 +16,6 @@ artifacts and only build the per-window *state* from the test context.
 Metrics are **scale-invariant** (NRMSE, Pearson correlation, correlation-based FC)
 because the EEG units are arbitrary (see the project's uncalibrated-units note) and the
 methods output different amplitude scales.
-
-64-bit JAX is required; call :func:`neuro.jansen_rit_jax.enable_x64` first.
 """
 
 from __future__ import annotations
@@ -69,9 +67,9 @@ class PredictionWindow:
     y_ctx
         Measured EEG over the context window ending at ``t0``, shape ``(n_ch, ctx)``.
     u_ctx
-        Per-electrode controls over the context, shape ``(ctx, n_elec)``.
+        Per-electrode controls over the context, shape ``(ctx, n_controls)``.
     u_future
-        Recorded/planned controls over the horizon, shape ``(H, n_elec)``.
+        Recorded/planned controls over the horizon, shape ``(H, n_controls)``.
     dt_data
         Sampling step (seconds) of ``y_ctx`` / ``u_ctx`` / ``u_future``.
     """
@@ -100,7 +98,7 @@ def _ds_factor(target_dt: float, data_dt: float) -> int:
 
 
 def _resample_controls(u: FloatArray, factor: int, n_steps: int) -> FloatArray:
-    """Decimate a ``(T, n_elec)`` control series and pad/truncate to ``n_steps`` rows."""
+    """Decimate a ``(T, n_controls)`` control series and pad/truncate to ``n_steps`` rows."""
     u_ds = np.asarray(u, dtype=np.float64)[::factor]
     if u_ds.shape[0] >= n_steps:
         return u_ds[:n_steps]
@@ -141,9 +139,9 @@ class AutoregressivePredictor(eqx.Module):
         The number of past control inputs the model needs as history.
     horizon : int
         The number of future steps to predict.
-    C_y : int
+    n_channels : int
         The number of EEG (output) channels.
-    C_u : int
+    n_controls : int
         The number of control (input) channels.
     """
 
@@ -151,19 +149,19 @@ class AutoregressivePredictor(eqx.Module):
     n_y: int = eqx.field(static=True)
     n_u: int = eqx.field(static=True)
     horizon: int = eqx.field(static=True)
-    C_y: int = eqx.field(static=True)
-    C_u: int = eqx.field(static=True)
+    n_channels: int = eqx.field(static=True)
+    n_controls: int = eqx.field(static=True)
     activation: str = eqx.field(static=True, default="relu")
 
     def __call__(self, x: jax.Array) -> jax.Array:
         """Run the autoregressive rollout."""
-        y_past_flat = x[: self.n_y * self.C_y]
-        u_past_flat = x[self.n_y * self.C_y : self.n_y * self.C_y + self.n_u * self.C_u]
-        u_future_flat = x[self.n_y * self.C_y + self.n_u * self.C_u :]
+        y_past_flat = x[: self.n_y * self.n_channels]
+        u_past_flat = x[self.n_y * self.n_channels : self.n_y * self.n_channels + self.n_u * self.n_controls]
+        u_future_flat = x[self.n_y * self.n_channels + self.n_u * self.n_controls :]
 
-        y_window = y_past_flat.reshape((self.n_y, self.C_y))
-        u_window = u_past_flat.reshape((self.n_u, self.C_u))
-        u_future = u_future_flat.reshape((self.horizon, self.C_u))
+        y_window = y_past_flat.reshape((self.n_y, self.n_channels))
+        u_window = u_past_flat.reshape((self.n_u, self.n_controls))
+        u_future = u_future_flat.reshape((self.horizon, self.n_controls))
 
         def scan_fn(
             carry: tuple[jax.Array, jax.Array], u_curr: jax.Array
@@ -234,12 +232,12 @@ class MLPArtifact:
     @property
     def n_channels(self) -> int:
         """Number of EEG output channels."""
-        return self.model.C_y
+        return self.model.n_channels
 
     @property
     def n_controls(self) -> int:
         """Number of control input channels."""
-        return self.model.C_u
+        return self.model.n_controls
 
     @property
     def n_eeg_channels(self) -> int:
@@ -287,8 +285,8 @@ class MLPArtifact:
             n_y=meta["n_y"],
             n_u=meta["n_u"],
             horizon=meta["horizon"],
-            C_y=meta["n_channels"],
-            C_u=meta["n_controls"],
+            n_channels=meta["n_channels"],
+            n_controls=meta["n_controls"],
             activation=activation_name,
         )
         model = eqx.tree_deserialise_leaves(str(artifact), skeleton)
@@ -406,10 +404,11 @@ class NNPredictor:
         predictions are decoded back to raw EEG channels before being returned.
         """
         factor = _ds_factor(self.dt, window.dt_data)
-        y_abs = np.asarray(window.y_ctx, dtype=np.float64)[:, ::factor].T  # (ctx, n_ch), absolute
-        if self._latent_basis is not None:
-            y_abs = (y_abs - self._latent_mean) @ self._latent_basis.T  # (ctx, k), latent
-        u_abs = _resample_controls(window.u_ctx, factor, y_abs.shape[0])  # (ctx, n_elec)
+        y_raw = np.asarray(window.y_ctx, dtype=np.float64)[:, ::factor].T  # (ctx, n_eeg_ch)
+        y_ctx = (
+            (y_raw - self._latent_mean) @ self._latent_basis.T if self._latent_basis is not None else y_raw
+        )  # (ctx, n_ch)
+        u_ctx = _resample_controls(window.u_ctx, factor, y_ctx.shape[0])  # (ctx, n_controls)
         n_steps = round(horizon_s / self.dt)
 
         num_chunks = int(np.ceil(n_steps / self._horizon)) if n_steps > 0 else 0
@@ -417,42 +416,39 @@ class NNPredictor:
             return np.empty((self._n_ch, 0), dtype=np.float64)
 
         total_pred_steps = num_chunks * self._horizon
-        u_fut_abs_all = _resample_controls(window.u_future, factor, total_pred_steps)
+        u_future_all = _resample_controls(window.u_future, factor, total_pred_steps)
 
-        y_abs_current = y_abs.copy()
-        u_abs_current = u_abs.copy()
-        y_pred_abs_all = []
+        y_hist = y_ctx.copy()  # grows with each predicted chunk (model space: latent or raw)
+        u_hist = u_ctx.copy()
+        y_pred_chunks: list[np.ndarray] = []
 
         for i in range(num_chunks):
-            chunk_u_fut_abs = u_fut_abs_all[i * self._horizon : (i + 1) * self._horizon]
+            u_chunk = u_future_all[i * self._horizon : (i + 1) * self._horizon]
 
-            y_src, u_src, u_fut = y_abs_current, u_abs_current, chunk_u_fut_abs
-
-            if y_src.shape[0] < self._n_y or u_src.shape[0] < self._n_u:
-                msg = f"context too short for NN history (need n_y={self._n_y}, n_u={self._n_u}; got {y_src.shape[0]})"
+            if y_hist.shape[0] < self._n_y or u_hist.shape[0] < self._n_u:
+                msg = f"context too short for NN history (need n_y={self._n_y}, n_u={self._n_u}; got {y_hist.shape[0]})"
                 raise ValueError(msg)
 
-            y_past = y_src[-self._n_y :]
-            u_past = u_src[-self._n_u :]
+            y_past = y_hist[-self._n_y :]
+            u_past = u_hist[-self._n_u :]
 
             y_past_s = zscore(y_past, self._y_mean, self._y_scale)
             u_past_s = zscore(u_past, self._u_mean, self._u_scale)
-            u_fut_s = zscore(u_fut, self._u_mean, self._u_scale)
+            u_chunk_s = zscore(u_chunk, self._u_mean, self._u_scale)
 
-            x_scaled = np.concatenate([y_past_s.flatten(), u_past_s.flatten(), u_fut_s.flatten()])
-            y_scaled = np.asarray(self._model(jnp.asarray(x_scaled, dtype=jnp.float64)))  # type: ignore
-            y_pred_scaled = y_scaled.reshape(self._horizon, self._k)
-            y_pred = unzscore(y_pred_scaled, self._y_mean, self._y_scale)
+            x_scaled = np.concatenate([y_past_s.flatten(), u_past_s.flatten(), u_chunk_s.flatten()])
+            y_chunk_s = np.asarray(self._model(jnp.asarray(x_scaled, dtype=jnp.float64)))  # type: ignore
+            y_pred_chunk = unzscore(y_chunk_s.reshape(self._horizon, self._k), self._y_mean, self._y_scale)
 
-            y_pred_abs_all.append(y_pred)
+            y_pred_chunks.append(y_pred_chunk)
 
-            y_abs_current = np.concatenate([y_abs_current, y_pred], axis=0)
-            u_abs_current = np.concatenate([u_abs_current, chunk_u_fut_abs], axis=0)
+            y_hist = np.concatenate([y_hist, y_pred_chunk], axis=0)
+            u_hist = np.concatenate([u_hist, u_chunk], axis=0)
 
-        y_pred_final = np.concatenate(y_pred_abs_all, axis=0)  # (total_pred_steps, k)
+        y_pred = np.concatenate(y_pred_chunks, axis=0)  # (total_pred_steps, n_ch)
         if self._latent_basis is not None:
-            y_pred_final = y_pred_final @ self._latent_basis + self._latent_mean  # decode to (steps, n_ch)
-        return y_pred_final.T[:, :n_steps]
+            y_pred = y_pred @ self._latent_basis + self._latent_mean  # decode to (steps, n_eeg_ch)
+        return y_pred.T[:, :n_steps]
 
 
 def nrmse(pred: FloatArray, true: FloatArray) -> float:

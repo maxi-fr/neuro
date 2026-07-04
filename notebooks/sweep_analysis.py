@@ -20,12 +20,9 @@ def imports():
     import seaborn as sns
     import yaml
 
-    from neuro.jansen_rit_jax import enable_x64
     from neuro.nn_training import prepare_datasets, reshape_to_trajectory
     from neuro.prediction import MLPArtifact
     from utils.plotting import plot_multistep_predictions
-
-    enable_x64()
 
     artifact_base = Path(__file__).parent.parent / "artifacts"
     sweep_dirs = sorted([d.name for d in artifact_base.iterdir() if d.is_dir() and "sweep_nn_predictor" in d.name])
@@ -160,8 +157,8 @@ def load_trial_data(
 
     projection = (artifact.latent_basis, artifact.latent_mean) if artifact.latent_basis is not None else None
 
-    X_full, Y_full, C_y = prepare_datasets(data_files, n_steps_cfg, downsample, n_y, n_u, horizon, projection)
-    C_u = (X_full.shape[1] - n_y * C_y) // (n_u + horizon)
+    X_full, Y_full, n_channels = prepare_datasets(data_files, n_steps_cfg, downsample, n_y, n_u, horizon, projection)
+    n_controls = (X_full.shape[1] - n_y * n_channels) // (n_u + horizon)
 
     split_idx = int(train_split * len(X_full))
     _X_train, X_val = X_full[:split_idx], X_full[split_idx:]
@@ -176,24 +173,23 @@ def load_trial_data(
 
     from neuro.prediction import zscore
 
-    y_past = X_val[:, : n_y * C_y]
-    u_past = X_val[:, n_y * C_y : n_y * C_y + n_u * C_u]
-    u_fut = X_val[:, n_y * C_y + n_u * C_u :]
+    y_past = X_val[:, : n_y * n_channels]
+    u_past = X_val[:, n_y * n_channels : n_y * n_channels + n_u * n_controls]
+    u_future = X_val[:, n_y * n_channels + n_u * n_controls :]
 
-    # In global scaling, the mean/scale are 1D arrays of size 1. In per-channel, they are size C_y/C_u.
+    # In global scaling, the mean/scale are 1D arrays of size 1. In per-channel, they are size n_channels/n_controls.
     # We reshape to (batch, time, channel) to broadcast correctly, then flatten again.
     def scale_flat(data, mean, scale, channels):
         shape = data.shape
         reshaped = data.reshape(shape[0], -1, channels)
         return zscore(reshaped, mean, scale).reshape(shape)
 
-    y_past_s = scale_flat(y_past, artifact.y_mean, artifact.y_scale, C_y)
-    u_past_s = scale_flat(u_past, artifact.u_mean, artifact.u_scale, C_u)
-    u_fut_s = scale_flat(u_fut, artifact.u_mean, artifact.u_scale, C_u)
+    y_past_s = scale_flat(y_past, artifact.y_mean, artifact.y_scale, n_channels)
+    u_past_s = scale_flat(u_past, artifact.u_mean, artifact.u_scale, n_controls)
+    u_future_s = scale_flat(u_future, artifact.u_mean, artifact.u_scale, n_controls)
 
-    X_val_s = np.concatenate([y_past_s, u_past_s, u_fut_s], axis=1)
+    X_val_s = np.concatenate([y_past_s, u_past_s, u_future_s], axis=1)
     return (
-        C_y,
         X_val,
         X_val_s,
         Y_val,
@@ -202,6 +198,7 @@ def load_trial_data(
         dt_real,
         horizon,
         model,
+        n_channels,
         n_per_traj,
         n_y,
         traj_slice,
@@ -210,12 +207,12 @@ def load_trial_data(
 
 @app.cell
 def eval_and_errors(
-    C_y,
     X_val_s,
     Y_val,
     artifact,
     config,
     model,
+    n_channels,
     np,
     reshape_to_trajectory,
 ):
@@ -231,10 +228,10 @@ def eval_and_errors(
         reshaped = data.reshape(shape[0], -1, channels)
         return unzscore(reshaped, mean, scale).reshape(shape)
 
-    Y_pred_abs_flat = unscale_flat(Y_pred_s, artifact.y_mean, artifact.y_scale, C_y)
+    Y_pred_unscaled_flat = unscale_flat(Y_pred_s, artifact.y_mean, artifact.y_scale, n_channels)
 
-    Y_val_traj = reshape_to_trajectory(Y_val, config.get("model", {}).get("horizon", 5), C_y)
-    Y_pred_traj = reshape_to_trajectory(Y_pred_abs_flat, config.get("model", {}).get("horizon", 5), C_y)
+    Y_val_traj = reshape_to_trajectory(Y_val, config.get("model", {}).get("horizon", 5), n_channels)
+    Y_pred_traj = reshape_to_trajectory(Y_pred_unscaled_flat, config.get("model", {}).get("horizon", 5), n_channels)
 
     mse_per_channel = np.mean((Y_val_traj - Y_pred_traj) ** 2, axis=(0, 1))
     mae_per_channel = np.mean(np.abs(Y_val_traj - Y_pred_traj), axis=(0, 1))
@@ -260,13 +257,13 @@ def plot_channel_errors(mae_per_channel, mse_per_channel, np, pd, plt, sns):
 
 
 @app.cell
-def ui_timeseries_controls(C_y, dt_real, mo, n_per_traj):
+def ui_timeseries_controls(dt_real, mo, n_channels, n_per_traj):
     max_time_s = n_per_traj * dt_real
 
-    channel_options = [str(i) for i in range(C_y)]
+    channel_options = [str(i) for i in range(n_channels)]
     ui_channels = mo.ui.multiselect(
         options=channel_options,
-        value=[str(i) for i in range(min(4, C_y))],
+        value=[str(i) for i in range(min(4, n_channels))],
         label="Channels to Plot",
     )
 
@@ -300,11 +297,11 @@ def ui_timeseries_controls(C_y, dt_real, mo, n_per_traj):
 
 @app.cell
 def plot_timeseries(
-    C_y,
     X_val,
     Y_pred_traj,
     dt_real,
     horizon,
+    n_channels,
     n_y,
     plot_multistep_predictions,
     plt,
@@ -318,7 +315,7 @@ def plot_timeseries(
     t_start = ui_time.value
     stride = ui_stride.value
 
-    y_true_anchors = X_val[traj_slice, (n_y - 1) * C_y : n_y * C_y]
+    y_true_anchors = X_val[traj_slice, (n_y - 1) * n_channels : n_y * n_channels]
 
     _fig_ts, _ = plot_multistep_predictions(
         y_true=y_true_anchors,
