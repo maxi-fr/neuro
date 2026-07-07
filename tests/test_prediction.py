@@ -3,8 +3,8 @@
 The y-pipeline maps raw EEG into model space -- a channel :class:`~neuro.transforms.Standardizer`
 followed by an optional :class:`~neuro.transforms.PCAProjection` -- so the predictor trains and
 rolls out in the reduced latent space and decodes back to raw EEG channels before returning
-predictions. These tests pin the raw dataset build, the artifact round-trip (with and without a
-projection), and the decode wired into ``NNPredictor``.
+predictions. These tests pin the raw dataset build and the artifact round-trip (with and without a
+projection).
 """
 
 from __future__ import annotations
@@ -13,7 +13,6 @@ from typing import TYPE_CHECKING
 
 import equinox as eqx
 import jax
-import jax.numpy as jnp
 import numpy as np
 
 if TYPE_CHECKING:
@@ -32,8 +31,6 @@ from neuro.nn_training import (  # noqa: E402
 from neuro.prediction import (  # noqa: E402
     AutoregressivePredictor,
     MLPArtifact,
-    NNPredictor,
-    PredictionWindow,
 )
 from neuro.transforms import PCAProjection, Pipeline, Standardizer  # noqa: E402
 
@@ -70,7 +67,6 @@ def _build_projection_artifact(
     k: int,
     n_eeg: int,
     n_controls: int,
-    zero_model: bool = False,
 ) -> tuple[Path, FloatArray, FloatArray]:
     """Save a projection artifact (model runs in ``k``-dim latent space).
 
@@ -84,8 +80,6 @@ def _build_projection_artifact(
     mlp = eqx.nn.MLP(
         in_size=in_size, out_size=k, width_size=4, depth=2, activation=jax.nn.relu, key=jax.random.PRNGKey(0)
     )
-    if zero_model:  # a zero model outputs 0 for any input, so each latent prediction is the zero vector
-        mlp = jax.tree_util.tree_map(lambda leaf: jnp.zeros_like(leaf) if eqx.is_inexact_array(leaf) else leaf, mlp)
     wrapped = AutoregressivePredictor(
         model=mlp, n_y=n_y, n_u=n_u, horizon=horizon, n_channels=k, n_controls=n_controls, activation="relu"
     )
@@ -123,9 +117,10 @@ def test_artifact_round_trips_latent_projection(tmp_path: Path) -> None:
     )
 
     loaded = MLPArtifact.load(artifact)
-    assert loaded.latent_basis is not None
-    np.testing.assert_array_equal(loaded.latent_basis, basis)
-    np.testing.assert_array_equal(loaded.latent_mean, pca_mean)
+    pca = loaded.y_pipeline.pca
+    assert pca is not None
+    np.testing.assert_array_equal(pca.basis, basis)
+    np.testing.assert_array_equal(pca.mean, pca_mean)
     assert loaded.n_channels == k  # the model's latent dimension
     assert loaded.n_eeg_channels == n_eeg  # raw EEG channels
 
@@ -153,39 +148,5 @@ def test_artifact_without_projection_is_backward_compatible(tmp_path: Path) -> N
     ).save(artifact)
 
     loaded = MLPArtifact.load(artifact)
-    assert loaded.latent_basis is None
-    assert loaded.latent_mean is None
+    assert loaded.y_pipeline.pca is None
     assert loaded.n_eeg_channels == n_channels
-    assert NNPredictor.load(artifact)._n_ch == n_channels  # noqa: SLF001
-
-
-def test_predict_decodes_latent_predictions_to_eeg(tmp_path: Path) -> None:
-    """``NNPredictor.predict`` decodes latent predictions back to raw EEG (full inverse pipeline).
-
-    With a zero model every latent prediction is the zero vector, so every decoded column must
-    equal ``artifact.decode(0)`` -- the constant the inverse projection + inverse standardization
-    map the origin to. The output also has the raw EEG channel count, not ``k``.
-    """
-    k, n_eeg, n_controls = 3, 6, 2
-    n_y, n_u, horizon = 4, 3, 5
-    artifact, _basis, _pca_mean = _build_projection_artifact(
-        tmp_path, n_y=n_y, n_u=n_u, horizon=horizon, k=k, n_eeg=n_eeg, n_controls=n_controls, zero_model=True
-    )
-    predictor = NNPredictor.load(artifact)
-    art = MLPArtifact.load(artifact)
-
-    rng = np.random.default_rng(_SEED + 4)
-    ctx = max(n_y, n_u) + 2
-    n_steps = 2 * horizon
-    window = PredictionWindow(
-        y_ctx=rng.standard_normal((n_eeg, ctx)),
-        u_ctx=rng.standard_normal((ctx, n_controls)),
-        u_future=rng.standard_normal((n_steps, n_controls)),
-        dt_data=predictor.dt,
-    )
-
-    y_pred = predictor.predict(window, horizon_s=n_steps * predictor.dt)
-
-    assert y_pred.shape == (n_eeg, n_steps)
-    expected_col = art.decode(np.zeros(k))
-    np.testing.assert_allclose(y_pred, np.tile(expected_col[:, None], (1, n_steps)), atol=1e-10)

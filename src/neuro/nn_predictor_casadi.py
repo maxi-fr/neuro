@@ -230,8 +230,8 @@ class NNSymbolicModel:
 
         The state holds model-space values, so the last vector is decoded by inverting the
         y-pipeline: undo the PCA projection (``y = E.T @ z + mean``) when present, then undo
-        the channel standardization. This is the symbolic mirror of :meth:`MLPArtifact.decode`,
-        matching :meth:`neuro.prediction.NNPredictor.predict`.
+        the channel standardization. This is the symbolic mirror of
+        :meth:`neuro.prediction.MLPArtifact.decode`.
         """
         n_y, n_ch = self.artifact.n_y, self.artifact.n_channels
         z_last = x[(n_y - 1) * n_ch : n_y * n_ch]

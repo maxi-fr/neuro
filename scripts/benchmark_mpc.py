@@ -60,8 +60,12 @@ class BenchResult:
 def _eeg_sampler(model: NNSymbolicModel, rng: np.random.Generator) -> Callable[[], FloatArray]:
     """Return a callable drawing one realistic-magnitude EEG vector from the model's scalers."""
     n_ch = model.n_channels
-    mean = np.broadcast_to(model.artifact.y_mean, (n_ch,))
-    scale = np.broadcast_to(model.artifact.y_scale, (n_ch,))
+    std = model.artifact.y_pipeline.standardizer
+    if std is None:
+        msg = "y-pipeline must carry a standardizer"
+        raise ValueError(msg)
+    mean = np.broadcast_to(std.center, (n_ch,))
+    scale = np.broadcast_to(std.scale, (n_ch,))
     return lambda: mean + scale * rng.standard_normal(n_ch)
 
 

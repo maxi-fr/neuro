@@ -1,21 +1,21 @@
-"""Unified short-horizon prediction API for comparing system-identification methods.
+"""Equinox MLP predictor for short-horizon EEG prediction under tES control.
 
-Two identified models live in this project -- the JAX reduced PCA model
-(:mod:`neuro.sysid_jax`) and an Equinox MLP predictor (``scripts/run_nn_predictor_jax.py``).
-They are fit and evaluated in isolation on different data, channels, units, and time
-steps. This module wraps each behind one :class:`Predictor` protocol so a notebook can
-compare them on identical held-out test windows.
+Two objects live here:
 
-Conditioning is **measured-EEG only** (no hidden plant state): at each test start ``t0``
-every predictor rebuilds its state from a window of recent *measured* EEG, then runs
-open-loop to the horizon, applying the recorded future controls through the physical
-tES projection ``gamma`` (the data is a persistently-exciting tES recording). The two
-reduced physics models pre-load their slowly-varying parameters from train-only
-artifacts and only build the per-window *state* from the test context.
+* :class:`AutoregressivePredictor` -- the JAX/Equinox model. It wraps a 1-step
+  :class:`eqx.nn.MLP` and unrolls it over the training ``horizon`` with a
+  :func:`jax.lax.scan`, so it is a single differentiable ``pytree`` that training can
+  ``jax.vmap`` and serialise.
+* :class:`MLPArtifact` -- the on-disk *package*: the trained model, its native time
+  step, and the raw-EEG/raw-control :class:`~neuro.transforms.Pipeline` transforms it was
+  fit with, plus :meth:`~MLPArtifact.save`/:meth:`~MLPArtifact.load` for the 3-file
+  artifact (``.eqx``/``.json``/``.scalers.npz``). It is the shared handoff between the
+  training script (:mod:`neuro.nn_training`) and the CasADi MPC port
+  (:mod:`neuro.nn_predictor_casadi`).
 
-Metrics are **scale-invariant** (NRMSE, Pearson correlation, correlation-based FC)
-because the EEG units are arbitrary (see the project's uncalibrated-units note) and the
-methods output different amplitude scales.
+The model rolls out in *model space* -- standardized channels, or the latent PCA
+components when the y-pipeline carries a projection -- and decodes back to raw EEG via
+the y-pipeline's inverse.
 """
 
 from __future__ import annotations
@@ -23,7 +23,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any
 
 import equinox as eqx
 import jax
@@ -40,10 +40,6 @@ if TYPE_CHECKING:
     from neuro.types import FloatArray
 
 
-_N_STATE_ROWS = 6  # Jansen-Rit state rows x1..x6
-_EPS = 1e-12
-
-
 def get_activation(name: str) -> Callable[[jax.Array], jax.Array]:
     """Return the JAX activation function by name."""
     if name == "relu":
@@ -54,78 +50,6 @@ def get_activation(name: str) -> Callable[[jax.Array], jax.Array]:
         return jax.nn.softplus
     msg = f"Unsupported activation: {name}"
     raise ValueError(msg)
-
-
-@dataclass(frozen=True)
-class PredictionWindow:
-    """Measurements a predictor may use at one test start ``t0``.
-
-    No hidden plant state is exposed -- each predictor reconstructs its own state from
-    ``y_ctx``. All arrays are given at the data sampling step ``dt_data``; predictors
-    downsample to their own native step internally.
-
-    Attributes
-    ----------
-    y_ctx
-        Measured EEG over the context window ending at ``t0``, shape ``(n_ch, ctx)``.
-    u_ctx
-        Per-electrode controls over the context, shape ``(ctx, n_controls)``.
-    u_future
-        Recorded/planned controls over the horizon, shape ``(H, n_controls)``.
-    dt_data
-        Sampling step (seconds) of ``y_ctx`` / ``u_ctx`` / ``u_future``.
-    """
-
-    y_ctx: FloatArray
-    u_ctx: FloatArray
-    u_future: FloatArray
-    dt_data: float
-
-
-@runtime_checkable
-class Predictor(Protocol):
-    """Common interface: build state from a context window, predict open-loop."""
-
-    name: str
-    dt: float
-
-    def predict(self, window: PredictionWindow, horizon_s: float) -> FloatArray:
-        """Return predicted EEG ``(n_ch, n_steps)`` at ``self.dt`` over ``horizon_s``."""
-        ...
-
-
-def _ds_factor(target_dt: float, data_dt: float) -> int:
-    """Integer decimation factor mapping ``data_dt`` up to ``target_dt`` (>= 1)."""
-    return max(1, round(target_dt / data_dt))
-
-
-def _resample_controls(u: FloatArray, factor: int, n_steps: int) -> FloatArray:
-    """Decimate a ``(T, n_controls)`` control series and pad/truncate to ``n_steps`` rows."""
-    u_ds = np.asarray(u, dtype=np.float64)[::factor]
-    if u_ds.shape[0] >= n_steps:
-        return u_ds[:n_steps]
-    pad = np.zeros((n_steps - u_ds.shape[0], u_ds.shape[1]), dtype=np.float64)
-    return np.concatenate([u_ds, pad], axis=0)
-
-
-def decimate_to(signal: FloatArray, native_dt: float, analysis_dt: float) -> FloatArray:
-    """Decimate a ``(n_ch, T)`` signal from ``native_dt`` onto the ``analysis_dt`` grid.
-
-    Parameters
-    ----------
-    signal : FloatArray
-        Input signal array, shape ``(n_channels, n_samples)``.
-    native_dt : float
-        The original sampling interval of the signal.
-    analysis_dt : float
-        The target sampling interval to decimate to.
-
-    Returns
-    -------
-    FloatArray
-        The decimated signal array, shape ``(n_channels, n_samples_decimated)``.
-    """
-    return np.asarray(signal, dtype=np.float64)[:, :: _ds_factor(analysis_dt, native_dt)]
 
 
 class AutoregressivePredictor(eqx.Module):
@@ -183,11 +107,11 @@ class AutoregressivePredictor(eqx.Module):
 class MLPArtifact:
     """Loaded ``run_nn_predictor`` artifact: the live predictor, native dt, and transforms.
 
-    The canonical artifact representation, shared by the training script (:meth:`save`),
-    :class:`NNPredictor` (:meth:`load`), and the CasADi port in
-    :mod:`neuro.nn_predictor_casadi`. Architecture sizes (``n_y``, ``n_u``, ``horizon``,
-    ``n_channels``, ``n_controls``) are not duplicated here -- they are read straight off
-    ``model``, the single source of truth once it is built or deserialised.
+    The canonical artifact representation, shared by the training script (:meth:`save`)
+    and the CasADi port in :mod:`neuro.nn_predictor_casadi`. Architecture sizes (``n_y``,
+    ``n_u``, ``horizon``, ``n_channels``, ``n_controls``) are not duplicated here -- they
+    are read straight off ``model``, the single source of truth once it is built or
+    deserialised.
 
     Attributes
     ----------
@@ -241,42 +165,6 @@ class MLPArtifact:
         """Number of raw EEG channels (the PCA basis' input dimension, else ``n_channels``)."""
         pca = self.y_pipeline.pca
         return pca.basis.shape[1] if pca is not None else self.n_channels
-
-    @property
-    def latent_basis(self) -> FloatArray | None:
-        """PCA basis ``(k, n_eeg)`` if the y-pipeline projects, else ``None`` (read-only view)."""
-        pca = self.y_pipeline.pca
-        return pca.basis if pca is not None else None
-
-    @property
-    def latent_mean(self) -> FloatArray | None:
-        """PCA per-channel mean ``(n_eeg,)`` if the y-pipeline projects, else ``None``."""
-        pca = self.y_pipeline.pca
-        return pca.mean if pca is not None else None
-
-    @property
-    def y_mean(self) -> FloatArray:
-        """Channel-standardizer center of the y-pipeline (read-only convenience view)."""
-        std = self.y_pipeline.standardizer
-        return std.center if std is not None else np.zeros(1)
-
-    @property
-    def y_scale(self) -> FloatArray:
-        """Channel-standardizer scale of the y-pipeline (read-only convenience view)."""
-        std = self.y_pipeline.standardizer
-        return std.scale if std is not None else np.ones(1)
-
-    @property
-    def u_mean(self) -> FloatArray:
-        """Standardizer center of the u-pipeline (read-only convenience view)."""
-        std = self.u_pipeline.standardizer
-        return std.center if std is not None else np.zeros(1)
-
-    @property
-    def u_scale(self) -> FloatArray:
-        """Standardizer scale of the u-pipeline (read-only convenience view)."""
-        std = self.u_pipeline.standardizer
-        return std.scale if std is not None else np.ones(1)
 
     def encode(self, y: FloatArray) -> FloatArray:
         """Map raw EEG ``(..., n_eeg_channels)`` into model space (standardize, then project)."""
@@ -359,245 +247,3 @@ class MLPArtifact:
         artifact.with_suffix(".json").write_text(json.dumps(meta, indent=2))
         transform_arrays = {**self.y_pipeline.array_dict("y"), **self.u_pipeline.array_dict("u")}
         np.savez(artifact.with_suffix(".scalers.npz"), **transform_arrays)  # ty: ignore[invalid-argument-type]
-
-
-class NNPredictor:
-    """Equinox MLP trained for direct ``horizon``-step EEG prediction.
-
-    Native conditioning: the input is ``[y_past (n_y), u_past (n_u), u_future (horizon)]``
-    drawn from the tail of the context window plus the recorded future controls. Outputs
-    are decoded from model space back to raw EEG units.
-    """
-
-    name = "nn"
-
-    def __init__(  # noqa: PLR0913
-        self,
-        model: eqx.Module,
-        *,
-        n_y: int,
-        n_u: int,
-        horizon: int,
-        n_channels: int,
-        dt: float,
-        y_pipeline: Pipeline,
-        u_pipeline: Pipeline,
-    ) -> None:
-        self._model = model
-        self._n_y = n_y
-        self._n_u = n_u
-        self._horizon = horizon
-        self._n_ch = n_channels  # raw EEG channels (output dimension)
-        self.dt = dt
-        self._y_pipeline = y_pipeline
-        self._u_pipeline = u_pipeline
-        # The model rolls out in latent space when the y-pipeline carries a PCA step.
-        pca = y_pipeline.pca
-        self._k = pca.basis.shape[0] if pca is not None else n_channels
-
-    @classmethod
-    def load(cls, artifact: str | Path, **_kwargs: object) -> NNPredictor:
-        """Rebuild the predictor from a saved :class:`MLPArtifact`."""
-        art = MLPArtifact.load(artifact)
-        return cls(
-            art.model,
-            n_y=art.n_y,
-            n_u=art.n_u,
-            horizon=art.horizon,
-            n_channels=art.n_eeg_channels,
-            dt=art.dt,
-            y_pipeline=art.y_pipeline,
-            u_pipeline=art.u_pipeline,
-        )
-
-    def predict(self, window: PredictionWindow, horizon_s: float) -> FloatArray:
-        """Assemble the network input from the context tail, roll out, decode to raw EEG.
-
-        The measured EEG context is mapped into model space (standardized, then projected
-        onto the latent components when the y-pipeline carries a PCA step) before the
-        autoregressive rollout; the model-space predictions are decoded back to raw EEG
-        channels before being returned.
-        """
-        factor = _ds_factor(self.dt, window.dt_data)
-        y_raw = np.asarray(window.y_ctx, dtype=np.float64)[:, ::factor].T  # (ctx, n_eeg_ch)
-        y_ctx = self._y_pipeline.transform(y_raw)  # (ctx, k) model space
-        u_ctx = _resample_controls(window.u_ctx, factor, y_ctx.shape[0])  # (ctx, n_controls)
-        n_steps = round(horizon_s / self.dt)
-
-        num_chunks = int(np.ceil(n_steps / self._horizon)) if n_steps > 0 else 0
-        if num_chunks == 0:
-            return np.empty((self._n_ch, 0), dtype=np.float64)
-
-        total_pred_steps = num_chunks * self._horizon
-        u_future_all = _resample_controls(window.u_future, factor, total_pred_steps)
-
-        y_hist = y_ctx.copy()  # grows with each predicted chunk (model space)
-        u_hist = u_ctx.copy()  # raw controls
-        y_pred_chunks: list[np.ndarray] = []
-
-        for i in range(num_chunks):
-            u_chunk = u_future_all[i * self._horizon : (i + 1) * self._horizon]
-
-            if y_hist.shape[0] < self._n_y or u_hist.shape[0] < self._n_u:
-                msg = f"context too short for NN history (need n_y={self._n_y}, n_u={self._n_u}; got {y_hist.shape[0]})"
-                raise ValueError(msg)
-
-            y_past = y_hist[-self._n_y :]  # model space (already transformed)
-            u_past_s = self._u_pipeline.transform(u_hist[-self._n_u :])
-            u_chunk_s = self._u_pipeline.transform(u_chunk)
-
-            x_model = np.concatenate([y_past.flatten(), u_past_s.flatten(), u_chunk_s.flatten()])
-            y_chunk_model = np.asarray(self._model(jnp.asarray(x_model, dtype=jnp.float64)))  # type: ignore
-            y_pred_chunk = y_chunk_model.reshape(self._horizon, self._k)  # model space
-
-            y_pred_chunks.append(y_pred_chunk)
-
-            y_hist = np.concatenate([y_hist, y_pred_chunk], axis=0)
-            u_hist = np.concatenate([u_hist, u_chunk], axis=0)
-
-        y_pred_model = np.concatenate(y_pred_chunks, axis=0)  # (total_pred_steps, k)
-        y_pred = self._y_pipeline.inverse_transform(y_pred_model)  # decode to (steps, n_eeg_ch)
-        return y_pred.T[:, :n_steps]
-
-
-def nrmse(pred: FloatArray, true: FloatArray) -> float:
-    """Channel-mean RMSE normalised by each channel's true-window std (lower better).
-
-    Parameters
-    ----------
-    pred : FloatArray
-        Predicted EEG window, shape ``(n_channels, n_samples)``.
-    true : FloatArray
-        True EEG window, shape ``(n_channels, n_samples)``.
-
-    Returns
-    -------
-    float
-        The channel-mean normalised RMSE.
-    """
-    pred = np.asarray(pred, dtype=np.float64)
-    true = np.asarray(true, dtype=np.float64)
-    rmse = np.sqrt(np.mean((pred - true) ** 2, axis=1))
-    std = np.std(true, axis=1) + _EPS
-    return float(np.mean(rmse / std))
-
-
-def pearson_corr(pred: FloatArray, true: FloatArray) -> float:
-    """Pooled Pearson correlation over all channels/samples of a window.
-
-    Parameters
-    ----------
-    pred : FloatArray
-        Predicted EEG window, shape ``(n_channels, n_samples)``.
-    true : FloatArray
-        True EEG window, shape ``(n_channels, n_samples)``.
-
-    Returns
-    -------
-    float
-        The Pearson correlation coefficient between the flattened arrays.
-    """
-    pred = np.asarray(pred, dtype=np.float64).ravel()
-    true = np.asarray(true, dtype=np.float64).ravel()
-    if pred.std() < _EPS or true.std() < _EPS:
-        return float("nan")
-    return float(np.corrcoef(pred, true)[0, 1])
-
-
-def error_vs_leadtime(preds: list[FloatArray], trues: list[FloatArray]) -> FloatArray:
-    """Std-normalised RMSE per lead step, averaged over windows and channels.
-
-    Parameters
-    ----------
-    preds : list of FloatArray
-        List of prediction windows, where each array has shape ``(n_channels, H)``.
-    trues : list of FloatArray
-        List of truth windows, where each array has shape ``(n_channels, H)``.
-
-    Returns
-    -------
-    FloatArray
-        NRMSE as a function of lead step, shape ``(H,)``.
-    """
-    errs = []
-    for pred, true in zip(preds, trues, strict=True):
-        std = np.std(true, axis=1, keepdims=True) + _EPS
-        errs.append(np.sqrt(np.mean(((pred - true) / std) ** 2, axis=0)))
-    return np.mean(np.stack(errs, axis=0), axis=0)
-
-
-def fc(eeg: FloatArray) -> FloatArray:
-    """Channel-by-channel functional-connectivity (correlation) matrix.
-
-    Parameters
-    ----------
-    eeg : FloatArray
-        EEG signal window, shape ``(n_channels, n_samples)``.
-
-    Returns
-    -------
-    FloatArray
-        The Pearson correlation matrix, shape ``(n_channels, n_channels)``.
-    """
-    return np.corrcoef(np.asarray(eeg, dtype=np.float64))
-
-
-def fc_error(pred_fc: FloatArray, true_fc: FloatArray) -> float:
-    """Mean-squared error of the off-diagonal FC entries.
-
-    Parameters
-    ----------
-    pred_fc : FloatArray
-        Predicted functional connectivity matrix, shape ``(n_channels, n_channels)``.
-    true_fc : FloatArray
-        True functional connectivity matrix, shape ``(n_channels, n_channels)``.
-
-    Returns
-    -------
-    float
-        The mean squared error of the upper triangular off-diagonal elements.
-    """
-    iu = np.triu_indices(true_fc.shape[0], k=1)
-    return float(np.mean((pred_fc[iu] - true_fc[iu]) ** 2))
-
-
-def fc_pattern_corr(pred_fc: FloatArray, true_fc: FloatArray) -> float:
-    """Correlation between the off-diagonal FC patterns (spatial agreement).
-
-    Parameters
-    ----------
-    pred_fc : FloatArray
-        Predicted functional connectivity matrix, shape ``(n_channels, n_channels)``.
-    true_fc : FloatArray
-        True functional connectivity matrix, shape ``(n_channels, n_channels)``.
-
-    Returns
-    -------
-    float
-        The Pearson correlation between the upper triangular off-diagonal elements.
-    """
-    iu = np.triu_indices(true_fc.shape[0], k=1)
-    return float(np.corrcoef(pred_fc[iu], true_fc[iu])[0, 1])
-
-
-def persistence_baseline(window: PredictionWindow, horizon_s: float, analysis_dt: float) -> FloatArray:
-    """Constant-hold baseline: repeat the last context sample over the horizon grid.
-
-    Parameters
-    ----------
-    window : PredictionWindow
-        The current test context containing the measured EEG.
-    horizon_s : float
-        The prediction horizon in seconds.
-    analysis_dt : float
-        The sampling interval for the predicted signal in seconds.
-
-    Returns
-    -------
-    FloatArray
-        The constant-hold baseline prediction, shape ``(n_channels, n_steps)``,
-        where ``n_steps = round(horizon_s / analysis_dt)``.
-    """
-    n_steps = round(horizon_s / analysis_dt)
-    last = np.asarray(window.y_ctx, dtype=np.float64)[:, -1:]
-    return np.repeat(last, n_steps, axis=1)

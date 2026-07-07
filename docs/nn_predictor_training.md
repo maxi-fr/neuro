@@ -468,8 +468,9 @@ comparable across `latent_dim`. This MSE is the scalar returned by
 | `comparison.png`       | $N$-step-ahead prediction vs. truth on up to 200 validation windows, 4 channels          |
 
 These three model files (`.eqx` / `.json` / `.scalers.npz`) are exactly what
-[`MLPArtifact.load`](../src/neuro/prediction.py) / `NNPredictor.load` read back for inference. The
-run script additionally copies the resolved config YAML into the artifact directory for provenance.
+[`MLPArtifact.load`](../src/neuro/prediction.py) reads back for inference (and for the CasADi MPC
+port). The run script additionally copies the resolved config YAML into the artifact directory for
+provenance.
 
 ---
 

@@ -24,8 +24,6 @@ from neuro.nn_predictor_casadi import NNSymbolicModel, _extract_mlp_layers, _mlp
 from neuro.prediction import (  # noqa: E402
     AutoregressivePredictor,
     MLPArtifact,
-    NNPredictor,
-    PredictionWindow,
     get_activation,
 )
 from neuro.transforms import PCAProjection, Pipeline, Standardizer  # noqa: E402
@@ -49,6 +47,22 @@ _CASES = [
 
 def _np2(result: object) -> FloatArray:
     return np.array(ca.DM(result))
+
+
+def _jax_horizon_rollout(art: MLPArtifact, y_ctx: FloatArray, u_ctx: FloatArray, u_future: FloatArray) -> FloatArray:
+    """Reference EEG rollout over one ``horizon`` via the JAX ``AutoregressivePredictor``.
+
+    Mirrors what the CasADi ``f_step``/``f_out`` chain must reproduce: encode the raw EEG
+    context into model space, run the model's native ``horizon``-step scan on standardized
+    controls, then decode back to raw EEG. Returns shape ``(n_eeg_channels, horizon)``.
+    """
+    n_y, n_u, horizon = art.n_y, art.n_u, art.horizon
+    y_past = art.encode(y_ctx.T[-n_y:])
+    u_past_s = art.u_pipeline.transform(u_ctx[-n_u:])
+    u_fut_s = art.u_pipeline.transform(u_future[:horizon])
+    x_in = np.concatenate([y_past.flatten(), u_past_s.flatten(), u_fut_s.flatten()])
+    y_model = np.asarray(art.model(jnp.asarray(x_in))).reshape(horizon, art.n_channels)
+    return art.decode(y_model).T
 
 
 def _build_artifact(
@@ -296,7 +310,7 @@ def test_output_slices_most_recent_row_not_oldest(tmp_path: Path) -> None:
 @pytest.mark.parametrize(
     ("n_y", "n_u", "horizon", "hidden_size", "depth", "n_channels", "n_controls", "activation"), _CASES
 )
-def test_multistep_rollout_matches_nn_predictor(
+def test_multistep_rollout_matches_jax_model(
     tmp_path: Path,
     n_y: int,
     n_u: int,
@@ -307,30 +321,25 @@ def test_multistep_rollout_matches_nn_predictor(
     n_controls: int,
     activation: str,
 ) -> None:
-    """Chaining f_step/f_out over several steps matches NNPredictor.predict()."""
+    """Chaining f_step/f_out over the horizon matches the JAX AutoregressivePredictor rollout."""
     artifact, _mlp, _scalers = _build_artifact(
         tmp_path, n_y, n_u, horizon, hidden_size, depth, n_channels, n_controls, activation
     )
     model = NNSymbolicModel.from_artifact(artifact)
-    jax_predictor = NNPredictor.load(artifact)
+    art = MLPArtifact.load(artifact)
 
     rng = np.random.default_rng(_SEED + 3)
     ctx = max(n_y, n_u) + 2
-    n_steps = 2 * horizon  # spans >1 chunk, exercising NNPredictor.predict's chunking loop
-    dt = jax_predictor.dt
-
-    y_ctx = rng.standard_normal((n_channels, ctx))
+    y_ctx = rng.standard_normal((n_channels, ctx))  # raw EEG context (no projection -> standardized channels)
     u_ctx = rng.standard_normal((ctx, n_controls))
-    u_future = rng.standard_normal((n_steps, n_controls))
+    u_future = rng.standard_normal((horizon, n_controls))
 
-    window = PredictionWindow(y_ctx=y_ctx, u_ctx=u_ctx, u_future=u_future, dt_data=dt)
-    y_pred_jax = jax_predictor.predict(window, horizon_s=n_steps * dt)
+    y_pred_jax = _jax_horizon_rollout(art, y_ctx, u_ctx, u_future)  # (n_eeg, horizon)
 
     # The shooting state is in model space: encode the raw EEG window (standardize) before the roll.
-    art = MLPArtifact.load(artifact)
     x = np.concatenate([art.encode(y_ctx.T[-n_y:]).flatten(), u_ctx[-n_u:].flatten()])
     y_pred_ca = []
-    for k in range(n_steps):
+    for k in range(horizon):
         x = _np2(model.f_step(x, u_future[k])).flatten()
         y_pred_ca.append(_np2(model.f_out(x)).flatten())
     y_pred_ca_arr = np.stack(y_pred_ca, axis=1)
@@ -361,10 +370,14 @@ def test_mlp_artifact_round_trip_preserves_exact_weights_and_meta(tmp_path: Path
     assert mlp_artifact.n_controls == n_controls
     assert mlp_artifact.dt == pytest.approx(0.01)
     assert mlp_artifact.downsample == 1
-    np.testing.assert_array_equal(mlp_artifact.u_mean, scalers["u_mean"])
-    np.testing.assert_array_equal(mlp_artifact.u_scale, scalers["u_scale"])
-    np.testing.assert_array_equal(mlp_artifact.y_mean, scalers["y_mean"])
-    np.testing.assert_array_equal(mlp_artifact.y_scale, scalers["y_scale"])
+    u_std = mlp_artifact.u_pipeline.standardizer
+    y_std = mlp_artifact.y_pipeline.standardizer
+    assert u_std is not None
+    assert y_std is not None
+    np.testing.assert_array_equal(u_std.center, scalers["u_mean"])
+    np.testing.assert_array_equal(u_std.scale, scalers["u_scale"])
+    np.testing.assert_array_equal(y_std.center, scalers["y_mean"])
+    np.testing.assert_array_equal(y_std.scale, scalers["y_scale"])
 
 
 def test_f_out_decodes_latent_state_to_eeg(tmp_path: Path) -> None:
@@ -389,40 +402,35 @@ def test_f_out_decodes_latent_state_to_eeg(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize("activation", ["relu", "tanh", "softplus"])
-def test_multistep_rollout_matches_nn_predictor_with_projection(tmp_path: Path, activation: str) -> None:
-    """Chaining f_step/f_out over a latent-projection model matches NNPredictor.predict().
+def test_multistep_rollout_matches_jax_model_with_projection(tmp_path: Path, activation: str) -> None:
+    """Chaining f_step/f_out over a latent-projection model matches the JAX rollout.
 
     The CasADi rollout runs entirely in latent space (encoded initial window, latent f_step)
-    and f_out decodes each step to EEG; NNPredictor.predict does the same internally, so the
-    62-channel-equivalent trajectories must agree bit-for-bit.
+    and f_out decodes each step to EEG; the JAX AutoregressivePredictor does the same, so the
+    decoded EEG trajectories must agree bit-for-bit.
     """
     n_y, n_u, horizon = 2, 2, 3
     k, n_eeg, n_controls, hidden, depth = 2, 5, 2, 4, 2
     artifact = _build_projection_artifact(tmp_path, n_y, n_u, horizon, hidden, depth, k, n_eeg, n_controls, activation)
     model = NNSymbolicModel.from_artifact(artifact)
-    jax_predictor = NNPredictor.load(artifact)
     art = MLPArtifact.load(artifact)
 
     rng = np.random.default_rng(_SEED + 7)
     ctx = max(n_y, n_u) + 2
-    n_steps = 2 * horizon  # spans >1 chunk, exercising NNPredictor.predict's chunking loop
-    dt = jax_predictor.dt
-
     y_ctx = rng.standard_normal((n_eeg, ctx))  # raw EEG context
     u_ctx = rng.standard_normal((ctx, n_controls))
-    u_future = rng.standard_normal((n_steps, n_controls))
+    u_future = rng.standard_normal((horizon, n_controls))
 
-    window = PredictionWindow(y_ctx=y_ctx, u_ctx=u_ctx, u_future=u_future, dt_data=dt)
-    y_pred_jax = jax_predictor.predict(window, horizon_s=n_steps * dt)  # (n_eeg, n_steps), decoded
+    y_pred_jax = _jax_horizon_rollout(art, y_ctx, u_ctx, u_future)  # (n_eeg, horizon), decoded
 
     # Encode the raw EEG window to latent for the initial state; controls stay raw.
     z_w = art.encode(y_ctx.T[-n_y:])
     x = np.concatenate([z_w.flatten(), u_ctx[-n_u:].flatten()])
     y_pred_ca = []
-    for step in range(n_steps):
+    for step in range(horizon):
         x = _np2(model.f_step(x, u_future[step])).flatten()
         y_pred_ca.append(_np2(model.f_out(x)).flatten())  # f_out decodes back to EEG
     y_pred_ca_arr = np.stack(y_pred_ca, axis=1)
 
-    assert y_pred_ca_arr.shape == (n_eeg, n_steps)
+    assert y_pred_ca_arr.shape == (n_eeg, horizon)
     np.testing.assert_allclose(y_pred_ca_arr, y_pred_jax, rtol=1e-10, atol=1e-12)
