@@ -24,7 +24,6 @@ from simulate.simulation import Simulation  # noqa: E402
 
 from neuro.control import (  # noqa: E402
     LinearMPCController,
-    LinearMPCControllerLog,
     MPCController,
 )
 from neuro.nn_predictor_casadi import NNSymbolicModel  # noqa: E402

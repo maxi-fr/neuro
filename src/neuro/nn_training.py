@@ -454,17 +454,8 @@ def compute_loss(  # noqa: PLR0913
         loss_psd = jnp.array(0.0)
         loss_fc = jnp.array(0.0)
 
-    # Normalise each auxiliary term by its detached value so it is scale-free and the raw MSE
-    # remains the dominant driver of point accuracy; w_psd / w_fc then set the relative weight.
-    total = (
-        mse_loss
-        + w_psd
-        * loss_psd
-        / jax.lax.stop_gradient(
-            loss_psd + eps
-        )  # TODO: i think id prefer not this "normalisation". better to just find good values for the weights
-        + w_fc * loss_fc / jax.lax.stop_gradient(loss_fc + eps)
-    )
+    total = mse_loss + w_psd * loss_psd + w_fc * loss_fc
+
     aux = {"mse": mse_loss, "psd": loss_psd, "fc": loss_fc}
     return total, aux
 

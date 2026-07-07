@@ -13,7 +13,14 @@ precomputed persistently-exciting tES schedule for plant identification.
 receding-horizon NLP that minimizes predicted EEG power under per-electrode
 amplitude bounds. :class:`LinearMPCController` is the same receding-horizon objective for a
 *linear* (0-hidden-layer) predictor, posed as a convex QP and solved with OSQP (a
-stacked/sparse formulation) or qpOASES (a condensed/dense one).
+stacked/sparse formulation) or qpOASES (a condensed/dense one). :class:`NarxMPCController`
+solves the same nonlinear suppression objective on a *minimal realization*: because the
+predictor is a strict NARX map, its stacked window-state is a non-minimal shift register, so
+this controller lifts only the per-step model-space output ``y_k`` (via
+:func:`_build_output_lifted_nlp`) rather than the full state -- fewer decision variables, a
+banded Jacobian, and mathematically equivalent to :class:`MPCController`.
+:class:`LinearNarxMPCController` is that output-lifted formulation for a linear predictor,
+posed as a convex QP and solved with OSQP.
 """
 
 from __future__ import annotations
@@ -27,11 +34,11 @@ from pydantic import Field
 from simulate.controller import Controller
 
 from neuro.config import StrictConfig
+from neuro.nn_predictor_casadi import NNSymbolicModel
 
 if TYPE_CHECKING:
     from numpy.typing import ArrayLike
 
-    from neuro.nn_predictor_casadi import NNSymbolicModel
     from neuro.types import FloatArray
 
 
@@ -282,7 +289,7 @@ class WaveformController(Controller[WaveformControllerLog]):
 
 @dataclasses.dataclass(frozen=True)
 class MPCControllerLog:
-    """Per-step MPC diagnostics: the optimal cost, solver success, and a warm-up flag."""
+    """Per-step diagnostics for any MPC controller: the optimal cost, solver success, and a warm-up flag."""
 
     cost: float
     success: bool
@@ -533,15 +540,6 @@ class MPCController(Controller[MPCControllerLog]):
         return u0, MPCControllerLog(cost=cost, success=success, warmup=False)
 
 
-@dataclasses.dataclass(frozen=True)
-class LinearMPCControllerLog:
-    """Per-step linear-MPC diagnostics: the optimal cost, solver success, and a warm-up flag."""
-
-    cost: float
-    success: bool
-    warmup: bool
-
-
 class _LinearMPCControllerConfig(StrictConfig):
     """Config schema for :class:`LinearMPCController`."""
 
@@ -555,7 +553,7 @@ class _LinearMPCControllerConfig(StrictConfig):
     osqp_eps: float = Field(default=1e-9, gt=0)
 
 
-class LinearMPCController(Controller[LinearMPCControllerLog]):
+class LinearMPCController(Controller[MPCControllerLog]):
     """Receding-horizon MPC for a *linear* (0-hidden-layer) NN predictor, solved as a QP.
 
     A depth-0 :class:`~neuro.nn_predictor_casadi.NNSymbolicModel` is an exact affine map
@@ -664,8 +662,6 @@ class LinearMPCController(Controller[LinearMPCControllerLog]):
     @classmethod
     def from_config(cls, config: dict[str, Any]) -> Self:
         """Instantiate from a config dict, loading the NN predictor artifact from disk."""
-        from neuro.nn_predictor_casadi import NNSymbolicModel  # noqa: PLC0415
-
         cfg = _LinearMPCControllerConfig.model_validate(config)
         return cls(
             dt=cfg.dt,
@@ -760,7 +756,7 @@ class LinearMPCController(Controller[LinearMPCControllerLog]):
         t: float,  # noqa: ARG002
         ref: FloatArray,  # noqa: ARG002
         x_hat: FloatArray,
-    ) -> tuple[FloatArray, LinearMPCControllerLog]:
+    ) -> tuple[FloatArray, MPCControllerLog]:
         """Ingest the current EEG measurement, solve the QP, and emit the first control."""
         y_eeg = x_hat.reshape(-1)
         # Encode to the model's state space: latent components with a projection, else a no-op.
@@ -771,11 +767,418 @@ class LinearMPCController(Controller[LinearMPCControllerLog]):
         # While the window is still zero-padded, hold off stimulating.
         if self._n_seen < self.n_y:
             self._u_buf = np.vstack([self._u_buf[1:], np.zeros((1, self.n_controls))])
-            return np.zeros(self.n_controls, dtype=np.float64), LinearMPCControllerLog(
-                cost=0.0, success=True, warmup=True
-            )
+            return np.zeros(self.n_controls, dtype=np.float64), MPCControllerLog(cost=0.0, success=True, warmup=True)
 
         x0 = np.concatenate([self._y_buf.reshape(-1), self._u_buf.reshape(-1)])
         u0, cost, success = self._solve(x0)
         self._u_buf = np.vstack([self._u_buf[1:], u0.reshape(1, self.n_controls)])
-        return u0, LinearMPCControllerLog(cost=cost, success=success, warmup=False)
+        return u0, MPCControllerLog(cost=cost, success=success, warmup=False)
+
+
+def _build_output_lifted_nlp(
+    model: NNSymbolicModel, horizon: int, w_y: float, w_u: float, u_max: FloatArray
+) -> dict[str, Any]:
+    """Assemble the output-lifted (minimal-realization NARX) suppression problem.
+
+    The predictor is a strict NARX map, so its stacked window-state is a non-minimal
+    shift-register realization whose copy-rows carry no information. This lifts only the
+    genuinely new quantity at each node -- the model-space output ``y_k`` -- alongside the
+    controls ``u_k``, and closes one defect per node
+    ``y_k - phi(y_{k-n_y..k-1}, u_{k-n_u+1..k}) = 0`` via
+    :meth:`~neuro.nn_predictor_casadi.NNSymbolicModel.predict_output`. Any window index reaching
+    before the horizon reads from the measured-past parameter ``x0`` (the current window-state),
+    never a variable, so the shift registers are never instantiated: the lifted-state part
+    shrinks from ``H*(n_y*n_ch + n_u*n_ctrl)`` to ``H*n_ch`` and the defect Jacobian stays
+    banded. The ``||y_k||^2`` cost is measured in raw EEG units by decoding each lifted output
+    with the (reused, unchanged) :meth:`~neuro.nn_predictor_casadi.NNSymbolicModel.output`, which
+    reads only the last y-slot of the state it is given.
+
+    Parameters
+    ----------
+    model
+        The CasADi NN predictor supplying ``predict_output``/``output`` and the dimensions.
+    horizon
+        Prediction/control horizon in steps (``H``).
+    w_y, w_u
+        Weights on predicted EEG power and (quadratic) control effort.
+    u_max
+        Per-electrode amplitude bound, already broadcast to length ``n_controls``.
+
+    Returns
+    -------
+    dict
+        The symbolic problem pieces ``x``/``f``/``g``/``p`` (decision vector, cost, defects,
+        measured-past parameter) plus the box bounds ``lbx``/``ubx``. The nonlinear (IPOPT) and
+        linear (OSQP) controllers each wrap these with their own solver.
+    """
+    n_y, n_u = model.artifact.n_y, model.artifact.n_u
+    n_ch, n_ctrl = model.n_channels, model.n_controls
+    h = horizon
+
+    x0_p = ca.MX.sym("x0", model.state_shape[0])
+    u_vars = [ca.MX.sym(f"u_{k}", n_ctrl) for k in range(h)]
+    y_vars = [ca.MX.sym(f"y_{k}", n_ch) for k in range(h)]
+    y_base = n_y * n_ch
+
+    def y_at(idx: int) -> ca.MX:
+        """Model-space output at window index ``idx`` (measured past when ``idx < 0``)."""
+        if idx >= 0:
+            return y_vars[idx]
+        pos = n_y + idx  # idx in [-n_y, -1] -> measured slot [0, n_y-1]
+        return x0_p[pos * n_ch : (pos + 1) * n_ch]
+
+    def u_at(idx: int) -> ca.MX:
+        """Control at window index ``idx`` (measured past when ``idx < 0``)."""
+        if idx >= 0:
+            return u_vars[idx]
+        pos = n_u + idx  # idx in [-n_u+1, -1] -> measured slot [1, n_u-1]
+        return x0_p[y_base + pos * n_ctrl : y_base + (pos + 1) * n_ctrl]
+
+    def decode(z: ca.MX) -> ca.SX | ca.MX:
+        """Decode a lifted model-space output to raw EEG via the model's ``output`` map."""
+        pad_before = ca.MX.zeros((n_y - 1) * n_ch, 1)
+        pad_after = ca.MX.zeros(n_u * n_ctrl, 1)
+        return model.output(ca.vertcat(pad_before, z, pad_after))
+
+    defects, cost = [], ca.MX(0)
+    for k in range(h):
+        y_win = ca.vertcat(*[y_at(k - n_y + j) for j in range(n_y)])  # y_{k-n_y..k-1}
+        u_win = ca.vertcat(*[u_at(k - n_u + 1 + j) for j in range(n_u)])  # u_{k-n_u+1..k}
+        defects.append(y_vars[k] - model.predict_output(y_win, u_win))
+        cost = cost + w_y * ca.sumsqr(decode(y_vars[k])) + w_u * ca.sumsqr(u_vars[k])
+
+    lbx = np.concatenate([np.tile(-u_max, h), np.full(h * n_ch, -np.inf)])
+    ubx = np.concatenate([np.tile(u_max, h), np.full(h * n_ch, np.inf)])
+    return {
+        "x": ca.vertcat(*u_vars, *y_vars),
+        "f": cost,
+        "g": ca.vertcat(*defects),
+        "p": x0_p,
+        "lbx": lbx,
+        "ubx": ubx,
+    }
+
+
+def _seed_output_lifted(model: NNSymbolicModel, horizon: int, u_prev: FloatArray | None, x0: FloatArray) -> FloatArray:
+    """Warm-start vector for the output-lifted problem: ``[u_guess, y_guess]``.
+
+    The controls are the previous solve shifted by one (or zeros on the first call); the lifted
+    outputs are seeded by rolling the full window-state ``x0`` forward through the compiled
+    ``f_step`` and reading each next state's newest model-space sample, giving a feasible guess
+    for the defects.
+    """
+    m = model.n_controls
+    n_y, n_ch = model.artifact.n_y, model.n_channels
+    u_guess = u_prev if u_prev is not None else np.zeros((horizon, m))
+    x = x0
+    y_guess = []
+    for step in range(horizon):
+        x = np.asarray(model.f_step(x, u_guess[step])).reshape(-1)
+        y_guess.append(x[(n_y - 1) * n_ch : n_y * n_ch])
+    return np.concatenate([u_guess.reshape(-1), *y_guess])
+
+
+class _NarxMPCControllerConfig(StrictConfig):
+    """Config schema for :class:`NarxMPCController`."""
+
+    dt: float = Field(gt=0)
+    artifact: str
+    u_max: float | list[float]
+    horizon: int | None = Field(default=None, ge=1)
+    w_y: float = Field(default=1.0, ge=0)
+    w_u: float = Field(default=0.0, ge=0)
+    max_iter: int = Field(default=100, ge=1)
+    max_cpu_time: float | None = Field(default=None, gt=0)
+    expand: bool = False
+    ipopt_options: dict[str, Any] | None = None
+
+
+class NarxMPCController(Controller[MPCControllerLog]):
+    """Receding-horizon MPC that suppresses EEG power using the output-lifted NARX formulation.
+
+    Same objective and predictor as :class:`MPCController` -- minimize
+    ``sum_k ( w_y ||y_k||^2 + w_u ||u_k||^2 )`` under per-electrode box bounds ``|u| <= u_max``
+    -- but posed on a *minimal* realization. Because the
+    :class:`~neuro.nn_predictor_casadi.NNSymbolicModel` is a strict NARX map, its stacked
+    window-state is a non-minimal shift register; this controller lifts only the per-step
+    model-space output ``y_k`` (and the controls ``u_k``), closing one defect per node
+    ``y_k = phi(y_{k-n_y..k-1}, u_{k-n_u+1..k})`` whose earlier-than-horizon indices read from
+    the measured window-state (see :func:`_build_output_lifted_nlp`). The lifted-state part is
+    thus ``H*n_channels`` rather than :class:`MPCController`'s ``H*(n_y*n_channels +
+    n_u*n_controls)`` shooting roots, with a banded defect Jacobian handed to IPOPT. The two are
+    mathematically equivalent; this one trades the full-state multiple-shooting structure for far
+    fewer decision variables.
+
+    PCA-projection artifacts are handled exactly as in :class:`MPCController` (the lifted outputs
+    are latent components; the reused ``output`` map decodes back to EEG for the ``||y_k||^2``
+    cost). The controller ``dt`` should equal the predictor's native step and the reference is
+    ignored -- the objective is suppression, not tracking.
+    """
+
+    def __init__(  # noqa: PLR0913
+        self,
+        dt: float,
+        model: NNSymbolicModel,
+        u_max: ArrayLike,
+        horizon: int | None = None,
+        w_y: float = 1.0,
+        w_u: float = 0.0,
+        *,
+        max_iter: int = 100,
+        max_cpu_time: float | None = None,
+        expand: bool = False,
+        ipopt_options: dict[str, Any] | None = None,
+    ) -> None:
+        """Initialize the output-lifted MPC and build its (re-used) IPOPT solver.
+
+        Parameters mirror :class:`MPCController` (minus ``shooting_depth``, which output lifting
+        makes moot -- every node is lifted): ``dt`` the update step (predictor's native dt),
+        ``model`` the CasADi NN predictor, ``u_max`` the per-electrode amplitude bound (scalar or
+        length-``n_controls``), ``horizon`` the control horizon (default the model's native
+        horizon), ``w_y``/``w_u`` the EEG-power/effort weights, ``max_iter`` the per-solve IPOPT
+        iteration cap (a capped iterate is still applied, with ``success`` False), ``max_cpu_time``
+        an optional per-solve wall-time budget in seconds, ``expand`` whether to expand the NLP
+        from MX to SX, and ``ipopt_options`` an extra IPOPT-option pass-through.
+        """
+        super().__init__(dt)
+        self.model = model
+        self.horizon = int(horizon) if horizon is not None else model.artifact.horizon
+        self.w_y = float(w_y)
+        self.w_u = float(w_u)
+        self.max_iter = int(max_iter)
+        self.max_cpu_time = float(max_cpu_time) if max_cpu_time is not None else None
+        self.expand = bool(expand)
+        self.ipopt_options = dict(ipopt_options) if ipopt_options is not None else {}
+
+        self.n_y = model.artifact.n_y
+        self.n_u = model.artifact.n_u
+        self.n_channels = model.n_channels
+        self.n_controls = model.n_controls
+
+        u_max_arr = np.atleast_1d(np.asarray(u_max, dtype=np.float64))
+        if u_max_arr.size == 1:
+            u_max_arr = np.broadcast_to(u_max_arr, (self.n_controls,))
+        elif u_max_arr.size != self.n_controls:
+            msg = f"u_max has {u_max_arr.size} entries but n_controls is {self.n_controls}"
+            raise ValueError(msg)
+        self.u_max = np.ascontiguousarray(u_max_arr)
+
+        # History windows (oldest first, newest last)
+        self._y_buf = np.zeros((self.n_y, self.n_channels), dtype=np.float64)
+        self._u_buf = np.zeros((self.n_u, self.n_controls), dtype=np.float64)
+        self._n_seen = 0
+        self._u_prev: FloatArray | None = None
+
+        self._build_solver()
+
+    @classmethod
+    def from_config(cls, config: dict[str, Any]) -> Self:
+        """Instantiate from a config dict, loading the NN predictor artifact from disk."""
+        cfg = _NarxMPCControllerConfig.model_validate(config)
+        return cls(
+            dt=cfg.dt,
+            model=NNSymbolicModel.from_artifact(cfg.artifact),
+            u_max=cfg.u_max,
+            horizon=cfg.horizon,
+            w_y=cfg.w_y,
+            w_u=cfg.w_u,
+            max_iter=cfg.max_iter,
+            max_cpu_time=cfg.max_cpu_time,
+            expand=cfg.expand,
+            ipopt_options=cfg.ipopt_options,
+        )
+
+    def _build_solver(self) -> None:
+        """Build the output-lifted NLP and its IPOPT solver, once."""
+        prob = _build_output_lifted_nlp(self.model, self.horizon, self.w_y, self.w_u, self.u_max)
+        nlp = {"x": prob["x"], "f": prob["f"], "g": prob["g"], "p": prob["p"]}
+        opts = {
+            "print_time": False,
+            "expand": self.expand,
+            "ipopt.print_level": 0,
+            "ipopt.sb": "yes",
+            "ipopt.max_iter": self.max_iter,
+            "ipopt.hessian_approximation": "limited-memory",
+        }
+        if self.max_cpu_time is not None:
+            opts["ipopt.max_cpu_time"] = self.max_cpu_time
+        for k, v in self.ipopt_options.items():
+            opts[f"ipopt.{k}" if not k.startswith("ipopt.") else k] = v
+
+        self._solver = ca.nlpsol("mpc", "ipopt", nlp, opts)
+        self._lbx, self._ubx = prob["lbx"], prob["ubx"]
+
+    def _solve(self, x0: FloatArray) -> tuple[FloatArray, float, bool]:
+        """Solve the NLP for window-state ``x0``; return ``(u_0*, cost, success)``."""
+        m, h = self.n_controls, self.horizon
+        w0 = _seed_output_lifted(self.model, h, self._u_prev, x0)
+        sol = self._solver(x0=w0, lbx=self._lbx, ubx=self._ubx, lbg=0.0, ubg=0.0, p=x0)
+        u_opt = np.asarray(sol["x"]).reshape(-1)[: h * m].reshape(h, m)
+        self._u_prev = np.vstack([u_opt[1:], u_opt[-1:]])
+        status = self._solver.stats()["return_status"]
+        success = status in {"Solve_Succeeded", "Solved_To_Acceptable_Level"}
+        return u_opt[0], float(sol["f"]), success
+
+    def update(
+        self,
+        t: float,  # noqa: ARG002
+        ref: FloatArray,  # noqa: ARG002
+        x_hat: FloatArray,
+    ) -> tuple[FloatArray, MPCControllerLog]:
+        """Ingest the current EEG measurement, solve the NLP, and emit the first control."""
+        y = self.model.artifact.encode(x_hat.reshape(-1))
+        self._y_buf = np.vstack([self._y_buf[1:], y])
+        self._n_seen += 1
+
+        # While the window is still zero-padded, hold off stimulating.
+        if self._n_seen < self.n_y:
+            self._u_buf = np.vstack([self._u_buf[1:], np.zeros((1, self.n_controls))])
+            return np.zeros(self.n_controls, dtype=np.float64), MPCControllerLog(cost=0.0, success=True, warmup=True)
+
+        x0 = np.concatenate([self._y_buf.reshape(-1), self._u_buf.reshape(-1)])
+        u0, cost, success = self._solve(x0)
+        self._u_buf = np.vstack([self._u_buf[1:], u0.reshape(1, self.n_controls)])
+        return u0, MPCControllerLog(cost=cost, success=success, warmup=False)
+
+
+class _LinearNarxMPCControllerConfig(StrictConfig):
+    """Config schema for :class:`LinearNarxMPCController`."""
+
+    dt: float = Field(gt=0)
+    artifact: str
+    u_max: float | list[float]
+    horizon: int | None = Field(default=None, ge=1)
+    w_y: float = Field(default=1.0, ge=0)
+    w_u: float = Field(default=0.0, ge=0)
+    osqp_eps: float = Field(default=1e-9, gt=0)
+
+
+class LinearNarxMPCController(Controller[MPCControllerLog]):
+    """Output-lifted NARX MPC for a *linear* (0-hidden-layer) predictor, solved as a convex QP.
+
+    The output-lifted counterpart of :class:`LinearMPCController`: the same receding-horizon
+    suppression objective and box bounds, but lifting only the per-step model-space output
+    ``y_k`` (and the controls ``u_k``) instead of the full window-state. For a depth-0 predictor
+    the defects ``y_k = phi(...)`` are affine and the cost quadratic, so the problem is a convex
+    QP solved with OSQP; the banded, output-lifted constraint set has ``H*n_channels`` lifted
+    variables rather than :class:`LinearMPCController`'s ``H*n_state`` stacked states. As there,
+    the predictor must be linear (``depth == 0``); projection artifacts, warm-up, and the ignored
+    reference behave exactly as in :class:`NarxMPCController`.
+    """
+
+    def __init__(  # noqa: PLR0913
+        self,
+        dt: float,
+        model: NNSymbolicModel,
+        u_max: ArrayLike,
+        horizon: int | None = None,
+        w_y: float = 1.0,
+        w_u: float = 0.0,
+        *,
+        osqp_eps: float = 1e-9,
+    ) -> None:
+        """Initialize the linear output-lifted MPC and build its (re-used) OSQP solver.
+
+        Parameters mirror the nonlinear sibling :class:`NarxMPCController` (``dt``, ``model``,
+        ``u_max``, ``horizon``, ``w_y``, ``w_u``) plus ``osqp_eps``, the OSQP absolute/relative
+        convergence tolerance (default ``1e-9``, far tighter than OSQP's loose ``1e-3`` default so
+        the suppression QP is solved accurately). The predictor's inner MLP must have ``depth ==
+        0`` (a single affine layer); a nonlinear model raises ``ValueError``.
+        """
+        super().__init__(dt)
+        depth = model.artifact.model.model.depth
+        if depth != 0:
+            msg = (
+                "LinearNarxMPCController requires a linear predictor (0 hidden layers); got an MLP "
+                f"with depth {depth}. Use NarxMPCController for a nonlinear predictor."
+            )
+            raise ValueError(msg)
+
+        self.model = model
+        self.horizon = int(horizon) if horizon is not None else model.artifact.horizon
+        self.w_y = float(w_y)
+        self.w_u = float(w_u)
+        self.osqp_eps = float(osqp_eps)
+
+        self.n_y = model.artifact.n_y
+        self.n_u = model.artifact.n_u
+        self.n_channels = model.n_channels
+        self.n_controls = model.n_controls
+
+        u_max_arr = np.atleast_1d(np.asarray(u_max, dtype=np.float64))
+        if u_max_arr.size == 1:
+            u_max_arr = np.broadcast_to(u_max_arr, (self.n_controls,))
+        elif u_max_arr.size != self.n_controls:
+            msg = f"u_max has {u_max_arr.size} entries but n_controls is {self.n_controls}"
+            raise ValueError(msg)
+        self.u_max = np.ascontiguousarray(u_max_arr)
+
+        # History windows (oldest first, newest last)
+        self._y_buf = np.zeros((self.n_y, self.n_channels), dtype=np.float64)
+        self._u_buf = np.zeros((self.n_u, self.n_controls), dtype=np.float64)
+        self._n_seen = 0
+        self._u_prev: FloatArray | None = None
+
+        self._build_solver()
+
+    @classmethod
+    def from_config(cls, config: dict[str, Any]) -> Self:
+        """Instantiate from a config dict, loading the NN predictor artifact from disk."""
+        cfg = _LinearNarxMPCControllerConfig.model_validate(config)
+        return cls(
+            dt=cfg.dt,
+            model=NNSymbolicModel.from_artifact(cfg.artifact),
+            u_max=cfg.u_max,
+            horizon=cfg.horizon,
+            w_y=cfg.w_y,
+            w_u=cfg.w_u,
+            osqp_eps=cfg.osqp_eps,
+        )
+
+    def _build_solver(self) -> None:
+        """Build the output-lifted QP and its OSQP solver, once.
+
+        Uses the inline symbolic ``predict_output``/``output`` (via :func:`_build_output_lifted_nlp`)
+        rather than the compiled ``f_step``/``f_out`` so the graph stays a flat affine expression
+        and ``ca.qpsol`` extracts an exact constant Hessian.
+        """
+        prob = _build_output_lifted_nlp(self.model, self.horizon, self.w_y, self.w_u, self.u_max)
+        qp = {"x": prob["x"], "f": prob["f"], "g": prob["g"], "p": prob["p"]}
+        opts = {
+            "print_time": False,
+            "error_on_fail": False,
+            "osqp": {"verbose": False, "eps_abs": self.osqp_eps, "eps_rel": self.osqp_eps},
+        }
+        self._solver = ca.qpsol("mpc", "osqp", qp, opts)
+        self._lbx, self._ubx = prob["lbx"], prob["ubx"]
+
+    def _solve(self, x0: FloatArray) -> tuple[FloatArray, float, bool]:
+        """Solve the QP for window-state ``x0``; return ``(u_0*, cost, success)``."""
+        m, h = self.n_controls, self.horizon
+        w0 = _seed_output_lifted(self.model, h, self._u_prev, x0)
+        sol = self._solver(x0=w0, lbx=self._lbx, ubx=self._ubx, lbg=0.0, ubg=0.0, p=x0)
+        u_opt = np.asarray(sol["x"]).reshape(-1)[: h * m].reshape(h, m)
+        self._u_prev = np.vstack([u_opt[1:], u_opt[-1:]])
+        success = bool(self._solver.stats()["success"])
+        return u_opt[0], float(sol["f"]), success
+
+    def update(
+        self,
+        t: float,  # noqa: ARG002
+        ref: FloatArray,  # noqa: ARG002
+        x_hat: FloatArray,
+    ) -> tuple[FloatArray, MPCControllerLog]:
+        """Ingest the current EEG measurement, solve the QP, and emit the first control."""
+        y = self.model.artifact.encode(x_hat.reshape(-1))
+        self._y_buf = np.vstack([self._y_buf[1:], y])
+        self._n_seen += 1
+
+        # While the window is still zero-padded, hold off stimulating.
+        if self._n_seen < self.n_y:
+            self._u_buf = np.vstack([self._u_buf[1:], np.zeros((1, self.n_controls))])
+            return np.zeros(self.n_controls, dtype=np.float64), MPCControllerLog(cost=0.0, success=True, warmup=True)
+
+        x0 = np.concatenate([self._y_buf.reshape(-1), self._u_buf.reshape(-1)])
+        u0, cost, success = self._solve(x0)
+        self._u_buf = np.vstack([self._u_buf[1:], u0.reshape(1, self.n_controls)])
+        return u0, MPCControllerLog(cost=cost, success=success, warmup=False)
