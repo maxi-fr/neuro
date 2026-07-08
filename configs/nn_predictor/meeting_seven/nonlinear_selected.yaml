@@ -22,7 +22,8 @@ training:
   learning_rate: 0.00001
   weight_decay: 0.0005
   train_split: 0.8
-  curriculum_decay_fraction: 0.6
+  curriculum_start_epoch: 50
+  curriculum_end_epoch: 200    # L ramps 1 -> horizon over [start, end] epochs, then holds at horizon
   seed: 69
   w_psd: 0.0
   w_fc: 0.0

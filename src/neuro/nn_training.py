@@ -17,7 +17,6 @@ import numpy as np
 import optax
 from jax.scipy.signal import welch
 from tqdm import tqdm
-from tvboptim.observations.observation import compute_fc
 
 from neuro.config import NNPredictorConfig
 from neuro.prediction import AutoregressivePredictor, MLPArtifact, get_activation
@@ -367,18 +366,52 @@ def predict_batch(m: eqx.Module, x: jax.Array) -> jax.Array:
     return jax.vmap(m)(x)
 
 
+def _masked_fc(traj: jax.Array, step_mask: jax.Array, eps: float) -> jax.Array:
+    """Weighted channel-by-channel correlation (FC) over the first-``L`` rollout steps.
+
+    ``traj`` is ``(batch, horizon, channels)`` and ``step_mask`` a ``(horizon,)`` prefix of ones
+    selecting the ``L`` supervised steps, so FC grows with the horizon curriculum like the MSE term.
+    The per-timestep weights are broadcast over the pooled ``(batch * horizon, channels)`` samples;
+    with an all-ones mask this reduces to the standard Pearson correlation with a zeroed diagonal.
+
+    Parameters
+    ----------
+    traj : jax.Array
+        Channel-space trajectory, shape ``(batch, horizon, channels)``.
+    step_mask : jax.Array
+        Per-step curriculum mask, shape ``(horizon,)`` (a prefix of ``L`` ones).
+    eps : float
+        Small constant guarding the weight sum and the per-channel standard deviations.
+
+    Returns
+    -------
+    jax.Array
+        The ``(channels, channels)`` functional-connectivity matrix with a zeroed diagonal.
+    """
+    batch, horizon, channels = traj.shape
+    weights = jnp.broadcast_to(step_mask[None, :], (batch, horizon)).reshape(-1)  # (batch * horizon,)
+    pooled = traj.reshape(-1, channels)  # (batch * horizon, channels)
+    weight_sum = jnp.sum(weights) + eps
+    mean = jnp.sum(weights[:, None] * pooled, axis=0) / weight_sum
+    centered = pooled - mean
+    cov = (centered * weights[:, None]).T @ centered / weight_sum
+    std = jnp.sqrt(jnp.diag(cov) + eps)
+    corr = cov / (std[:, None] * std[None, :])
+    return corr - jnp.diag(jnp.diag(corr))
+
+
 def compute_loss(  # noqa: PLR0913
     m: eqx.Module,
     x: jax.Array,
     y: jax.Array,
-    alpha: jax.Array,
+    step_mask: jax.Array,
     n_channels: int,
     w_psd: jax.Array,
     w_fc: jax.Array,
     decode_basis: jax.Array | None = None,
     decode_mean: jax.Array | None = None,
 ) -> tuple[jax.Array, dict[str, jax.Array]]:
-    """Compute the mixed MSE loss for a batch along with PSD and FC losses.
+    """Compute the horizon-curriculum MSE loss for a batch along with PSD and FC losses.
 
     All terms are evaluated in standardized-channel EEG space. The model rolls out in model
     space (the ``k``-dimensional latent components when the y-pipeline projects); its output is
@@ -387,8 +420,11 @@ def compute_loss(  # noqa: PLR0913
     decorrelated latent components. With no projection ``decode_basis`` is ``None`` and the
     model already predicts channels (identity decode).
 
-    alpha: 1.0 = pure 1-step Teacher Forcing loss.
-           0.0 = pure N-step unrolled loss.
+    ``step_mask`` is the horizon-length curriculum: a ``(horizon,)`` prefix of ones selecting the
+    first ``L`` trusted rollout steps (``L=1`` is teacher forcing, ``L=horizon`` is the full
+    free-running rollout). The MSE and FC are scored over the first ``L`` steps (they grow with
+    ``L``); the PSD stays a batch-of-snippets estimate over the full horizon window but is gated on
+    only once ``L == horizon`` (its last mask entry).
 
     Parameters
     ----------
@@ -398,8 +434,8 @@ def compute_loss(  # noqa: PLR0913
         Batch of input features, shape ``(batch_size, n_features)``.
     y : jax.Array
         Batch of standardized-channel target labels, shape ``(batch_size, horizon * n_channels)``.
-    alpha : jax.Array
-        Curriculum learning parameter balancing 1-step and N-step loss.
+    step_mask : jax.Array
+        Horizon-length curriculum mask, shape ``(horizon,)`` (a prefix of ``L`` ones).
     n_channels : int
         Number of EEG channels ``C`` (the target/loss dimension).
     w_psd : jax.Array
@@ -425,31 +461,28 @@ def compute_loss(  # noqa: PLR0913
     pred_traj = (
         pred_traj_model @ decode_basis + decode_mean if decode_basis is not None else pred_traj_model
     )  # (batch, horizon, C)
-    pred_flat = pred_traj.reshape(pred_traj.shape[0], -1)
+    true_traj = y.reshape(y.shape[0], horizon, n_channels)  # (batch, horizon, C)
 
-    # The first n_channels elements correspond to the first step of the rollout,
-    # which relies purely on the ground-truth past context (1-step prediction).
-    loss_1step = jnp.mean((pred_flat[:, :n_channels] - y[:, :n_channels]) ** 2)
-
-    # The full N-step unrolled loss
-    loss_Nstep = jnp.mean((pred_flat - y) ** 2)
-
-    mse_loss = alpha * loss_1step + (1.0 - alpha) * loss_Nstep
+    # Horizon-length curriculum: score the MSE over the first-L rollout steps selected by step_mask.
+    per_step_se = jnp.mean((pred_traj - true_traj) ** 2, axis=(0, 2))  # (horizon,)
+    mse_loss = jnp.sum(step_mask * per_step_se) / jnp.sum(step_mask)
 
     eps = 1e-8
 
     if horizon > 1:
-        true_traj = reshape_to_trajectory(y, horizon, n_channels)
+        # FC grows with L (masked like the MSE): correlation over the first-L steps, batch-pooled.
+        pred_fc = _masked_fc(pred_traj, step_mask, eps)
+        true_fc = _masked_fc(true_traj, step_mask, eps)
+        loss_fc = jnp.mean((pred_fc - true_fc) ** 2)
 
+        # PSD is a batch-of-snippets estimate over the full horizon window, active only once the
+        # rollout is trusted end-to-end (L == horizon), i.e. when the last mask entry is on.
         pred_pool = jnp.transpose(pred_traj, (2, 0, 1)).reshape(n_channels, -1)
         true_pool = jnp.transpose(true_traj, (2, 0, 1)).reshape(n_channels, -1)
         _, pred_psd = welch(pred_pool, nperseg=horizon, noverlap=0, axis=-1)
         _, true_psd = welch(true_pool, nperseg=horizon, noverlap=0, axis=-1)
-        loss_psd = jnp.mean((jnp.log(pred_psd + eps) - jnp.log(true_psd + eps)) ** 2)
-
-        pred_fc = compute_fc(pred_traj.reshape(-1, n_channels))
-        true_fc = compute_fc(true_traj.reshape(-1, n_channels))
-        loss_fc = jnp.mean((pred_fc - true_fc) ** 2)
+        psd_gate = step_mask[-1]  # 1.0 only when L == horizon
+        loss_psd = psd_gate * jnp.mean((jnp.log(pred_psd + eps) - jnp.log(true_psd + eps)) ** 2)
     else:
         loss_psd = jnp.array(0.0)
         loss_fc = jnp.array(0.0)
@@ -466,7 +499,7 @@ def step(  # noqa: PLR0913
     opt_s: optax.OptState,
     x: jax.Array,
     y: jax.Array,
-    alpha: jax.Array,
+    step_mask: jax.Array,
     n_channels: int,
     optimizer: optax.GradientTransformation,
     w_psd: jax.Array,
@@ -486,8 +519,9 @@ def step(  # noqa: PLR0913
         Batch of input features, shape ``(batch_size, n_features)``.
     y : jax.Array
         Batch of target labels, shape ``(batch_size, n_targets)``.
-    alpha : jax.Array
-        Curriculum learning parameter.
+    step_mask : jax.Array
+        Horizon-length curriculum mask, shape ``(horizon,)``. Fixed shape, so this ``filter_jit``
+        does not recompile as the trusted rollout length grows.
     n_channels : int
         Number of EEG channels ``C``.
     optimizer : optax.GradientTransformation
@@ -512,11 +546,51 @@ def step(  # noqa: PLR0913
         Raw ``mse``, ``psd`` and ``fc`` loss components for logging.
     """
     (loss_val, aux), grads = eqx.filter_value_and_grad(compute_loss, has_aux=True)(
-        m, x, y, alpha, n_channels, w_psd, w_fc, decode_basis, decode_mean
+        m, x, y, step_mask, n_channels, w_psd, w_fc, decode_basis, decode_mean
     )
     updates, new_opt_s = optimizer.update(grads, opt_s, m)  # type: ignore
     new_m: eqx.Module = eqx.apply_updates(m, updates)
     return new_m, new_opt_s, loss_val, aux
+
+
+def curriculum_state(
+    epoch: int,
+    horizon: int,
+    *,
+    start_epoch: int,
+    end_epoch: int,
+) -> FloatArray:
+    """Return the horizon-length curriculum per-step loss mask for one epoch.
+
+    The trusted rollout length ``L`` is held at ``1`` (pure teacher forcing) until ``start_epoch``,
+    ramps linearly ``1 -> horizon`` between ``start_epoch`` and ``end_epoch``, and holds at
+    ``horizon`` (the full free-running rollout) afterwards. The ``(horizon,)`` mask is a prefix of
+    ``L`` ones: it weights the MSE/FC over the first-``L`` rollout steps and (via its last entry)
+    gates the PSD loss on only once ``L == horizon``.
+
+    Parameters
+    ----------
+    epoch : int
+        Current 0-based epoch.
+    horizon : int
+        Model prediction horizon (the maximum rollout length ``N``).
+    start_epoch : int
+        Epoch at which the rollout length starts growing (``L = 1`` before it).
+    end_epoch : int
+        Epoch at which the rollout length reaches ``horizon`` (``L = horizon`` after it).
+
+    Returns
+    -------
+    FloatArray
+        The ``(horizon,)`` step mask (a prefix of ``L`` ones).
+    """
+    span = max(end_epoch - start_epoch, 1)
+    frac = min(max((epoch - start_epoch) / span, 0.0), 1.0)
+    length = round(1 + (horizon - 1) * frac)
+    length = max(1, min(length, horizon))
+    mask = np.zeros(horizon, dtype=np.float64)
+    mask[:length] = 1.0
+    return mask
 
 
 def train_model(  # noqa: PLR0913
@@ -529,16 +603,16 @@ def train_model(  # noqa: PLR0913
     batch_size: int,
     learning_rate: float,
     weight_decay: float,
-    curriculum_decay_fraction: float,
     n_channels: int,
-    curriculum_alpha_min: float = 0.0,
+    curriculum_start_epoch: int = 0,
+    curriculum_end_epoch: int = 80,
     w_psd: float = 0.0,
     w_fc: float = 0.0,
     patience: int = 50,
     decode_basis: FloatArray | None = None,
     decode_mean: FloatArray | None = None,
 ) -> tuple[eqx.Module, list[float], list[float]]:
-    """Train the MLP model using Optax.
+    """Train the MLP model using Optax under the horizon-length curriculum.
 
     Parameters
     ----------
@@ -547,11 +621,11 @@ def train_model(  # noqa: PLR0913
     X_train_s : FloatArray
         Scaled training inputs, shape ``(samples_train, n_features)``.
     Y_train_s : FloatArray
-        Scaled training targets, shape ``(samples_train, n_targets)``.
+        Scaled training targets, shape ``(samples_train, horizon * n_channels)``.
     X_val_s : FloatArray
         Scaled validation inputs, shape ``(samples_val, n_features)``.
     Y_val_s : FloatArray
-        Scaled validation targets, shape ``(samples_val, n_targets)``.
+        Scaled validation targets, shape ``(samples_val, horizon * n_channels)``.
     epochs : int
         Number of training epochs.
     batch_size : int
@@ -560,17 +634,16 @@ def train_model(  # noqa: PLR0913
         Learning rate.
     weight_decay : float
         Weight decay.
-    curriculum_decay_fraction : float
-        Fraction of epochs to decay curriculum alpha.
     n_channels : int
         Number of output channels.
-    curriculum_alpha_min : float
-        Floor on the curriculum ``alpha`` (the 1-step teacher-forcing weight). With the default
-        ``0.0`` the curriculum decays to a pure N-step unrolled loss; a positive floor keeps that
-        much 1-step loss for every epoch. The pure N-step loss is non-convex in the weights (the
-        autoregressive feedback makes it degree-N) and under-constrains the tES->EEG response, so a
-        positive floor pins the one-step dynamics -- decisive for controllability on reduced
-        montages, where the loose control response otherwise breaks closed-loop suppression.
+    curriculum_start_epoch : int
+        Epoch at which the trusted rollout length ``L`` starts growing (``L = 1``, pure teacher
+        forcing, before it).
+    curriculum_end_epoch : int
+        Epoch at which ``L`` reaches the model ``horizon`` (the full free-running rollout); it holds
+        there afterwards. Growing the rollout length keeps multi-step structure throughout while
+        ramping gently, instead of annealing a teacher-forcing weight to a pure N-step loss (see
+        :func:`curriculum_state`).
     w_psd : float
         Weight for the PSD loss.
     w_fc : float
@@ -590,6 +663,8 @@ def train_model(  # noqa: PLR0913
     val_losses : list[float]
         Validation loss per epoch.
     """
+    horizon = Y_train_s.shape[1] // n_channels
+
     optimizer = optax.adamw(learning_rate=learning_rate, weight_decay=weight_decay)
     opt_state = optimizer.init(eqx.filter(model, eqx.is_array))
 
@@ -603,10 +678,11 @@ def train_model(  # noqa: PLR0913
     train_losses = []
     val_losses = []
 
-    decay_epochs = int(epochs * curriculum_decay_fraction)
-
     w_psd_jax = jnp.array(w_psd, dtype=jnp.float32)
     w_fc_jax = jnp.array(w_fc, dtype=jnp.float32)
+
+    # Validation always scores the full horizon (L = horizon) so it is comparable across epochs.
+    val_mask_jax = jnp.ones(horizon)
 
     decode_basis_jax = None if decode_basis is None else jnp.asarray(decode_basis)
     decode_mean_jax = None if decode_mean is None else jnp.asarray(decode_mean)
@@ -614,10 +690,13 @@ def train_model(  # noqa: PLR0913
     epochs_without_improvement = 0
 
     for epoch in pbar:
-        alpha = 1.0 - epoch / decay_epochs if epoch < decay_epochs else 0.0
-        alpha = max(alpha, curriculum_alpha_min)
-
-        alpha_jax = jnp.array(alpha, dtype=jnp.float32)
+        step_mask = curriculum_state(
+            epoch,
+            horizon,
+            start_epoch=curriculum_start_epoch,
+            end_epoch=curriculum_end_epoch,
+        )
+        step_mask_jax = jnp.asarray(step_mask)
 
         epoch_loss = 0.0
         comp_sums = {"mse": 0.0, "psd": 0.0, "fc": 0.0}
@@ -628,7 +707,7 @@ def train_model(  # noqa: PLR0913
                 opt_state,
                 batch_x,
                 batch_y,
-                alpha_jax,
+                step_mask_jax,
                 n_channels,
                 optimizer,
                 w_psd_jax,
@@ -650,7 +729,7 @@ def train_model(  # noqa: PLR0913
                 model,
                 X_val_jnp,
                 Y_val_jnp,
-                jnp.array(0.0),
+                val_mask_jax,
                 n_channels,
                 w_psd_jax,
                 w_fc_jax,
@@ -677,7 +756,7 @@ def train_model(  # noqa: PLR0913
             mse=f"{avg_comps['mse']:.4f}",
             psd=f"{avg_comps['psd']:.4f}",
             fc=f"{avg_comps['fc']:.4f}",
-            alpha=f"{alpha:.2f}",
+            L=int(step_mask.sum()),
         )
 
         if epochs_without_improvement >= patience:
@@ -793,8 +872,8 @@ def train_and_save_predictor(  # noqa: PLR0915
     learning_rate = train_cfg.learning_rate
     weight_decay = train_cfg.weight_decay
     train_split = train_cfg.train_split
-    curriculum_decay_fraction = train_cfg.curriculum_decay_fraction
-    curriculum_alpha_min = train_cfg.curriculum_alpha_min
+    curriculum_start_epoch = train_cfg.curriculum_start_epoch
+    curriculum_end_epoch = train_cfg.curriculum_end_epoch
     seed = train_cfg.seed + seed_offset
     w_psd = train_cfg.w_psd
     w_fc = train_cfg.w_fc
@@ -854,9 +933,9 @@ def train_and_save_predictor(  # noqa: PLR0915
         batch_size,
         learning_rate,
         weight_decay,
-        curriculum_decay_fraction,
         n_channels,
-        curriculum_alpha_min=curriculum_alpha_min,
+        curriculum_start_epoch=curriculum_start_epoch,
+        curriculum_end_epoch=curriculum_end_epoch,
         w_psd=w_psd,
         w_fc=w_fc,
         patience=patience,

@@ -47,6 +47,8 @@ def test_known_keys_parsed() -> None:
         {"model": {"n_yy": 3}},  # section typo
         {"sweep": {"model": {"depth": {"typ": "int", "low": 0, "high": 5}}}},  # nested typo (param spec)
         {"sweep": {"trials": 5}},  # sweep typo (n_trials)
+        {"training": {"curriculum_alpha_min": 1.0}},  # removed field (alpha curriculum) is now unknown
+        {"training": {"curriculum_decay_fraction": 0.5}},  # removed field (old ramp param) is now unknown
     ],
 )
 def test_unknown_keys_rejected(raw: dict) -> None:
@@ -98,6 +100,9 @@ def test_sweep_unknown_param_type_rejected() -> None:
         {"training": {"train_split": 1.0}},  # in (0, 1)
         {"training": {"scaler": "standrd"}},  # Literal typo
         {"model": {"latent_dim": 0}},  # >= 1
+        {"training": {"curriculum_start_epoch": -1}},  # >= 0
+        {"training": {"curriculum_end_epoch": -1}},  # >= 0
+        {"training": {"curriculum_start_epoch": 100, "curriculum_end_epoch": 50}},  # end must be >= start
         {"sweep": {"training": {"lr": {"type": "loguniform", "low": 0, "high": 1}}}},  # log low > 0
         {"sweep": {"model": {"n_y": {"type": "int", "low": 10, "high": 5}}}},  # high >= low
     ],
@@ -108,12 +113,17 @@ def test_value_constraints_rejected(raw: dict) -> None:
 
 
 def test_valid_boundaries_accepted() -> None:
-    # depth=0 (linear), zero loss weights, and a full-length curriculum are all valid.
+    # depth=0 (linear), zero loss weights, and a zero-width curriculum window (start == end,
+    # an instant jump to the full horizon) are all valid.
     cfg = NNPredictorConfig.from_dict(
-        {"model": {"depth": 0}, "training": {"w_psd": 0.0, "curriculum_decay_fraction": 1.0}}
+        {
+            "model": {"depth": 0, "horizon": 20},
+            "training": {"w_psd": 0.0, "curriculum_start_epoch": 5, "curriculum_end_epoch": 5},
+        }
     )
     assert cfg.model.depth == 0
-    assert cfg.training.curriculum_decay_fraction == 1.0
+    assert cfg.training.curriculum_start_epoch == 5
+    assert cfg.training.curriculum_end_epoch == 5
 
 
 @pytest.mark.parametrize(

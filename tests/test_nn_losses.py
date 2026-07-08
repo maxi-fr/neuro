@@ -65,9 +65,10 @@ def test_decoded_mse_gradient_is_scalar_multiple_of_latent_gradient() -> None:
     y_channel = jnp.asarray((z.reshape(batch, horizon, k) @ basis + mean).reshape(batch, horizon * c))
     basis_j, mean_j = jnp.asarray(basis), jnp.asarray(mean)
 
+    step_mask = jnp.ones(horizon)
     grad_fn = eqx.filter_value_and_grad(compute_loss, has_aux=True)
-    _, grad_channel = grad_fn(model, x, y_channel, jnp.array(0.0), c, jnp.array(0.0), jnp.array(0.0), basis_j, mean_j)
-    _, grad_latent = grad_fn(model, x, jnp.asarray(z), jnp.array(0.0), k, jnp.array(0.0), jnp.array(0.0), None, None)
+    _, grad_channel = grad_fn(model, x, y_channel, step_mask, c, jnp.array(0.0), jnp.array(0.0), basis_j, mean_j)
+    _, grad_latent = grad_fn(model, x, jnp.asarray(z), step_mask, k, jnp.array(0.0), jnp.array(0.0), None, None)
 
     np.testing.assert_allclose(_flat_grad(grad_channel), (k / c) * _flat_grad(grad_latent), rtol=1e-8, atol=1e-10)
 
@@ -83,8 +84,9 @@ def test_identity_decode_matches_no_decode() -> None:
 
     identity = jnp.eye(c)
     zero = jnp.zeros(c)
-    loss_dec, aux_dec = compute_loss(model, x, y, jnp.array(0.3), c, jnp.array(0.1), jnp.array(0.1), identity, zero)
-    loss_none, aux_none = compute_loss(model, x, y, jnp.array(0.3), c, jnp.array(0.1), jnp.array(0.1), None, None)
+    step_mask = jnp.ones(horizon)
+    loss_dec, aux_dec = compute_loss(model, x, y, step_mask, c, jnp.array(0.1), jnp.array(0.1), identity, zero)
+    loss_none, aux_none = compute_loss(model, x, y, step_mask, c, jnp.array(0.1), jnp.array(0.1), None, None)
 
     np.testing.assert_allclose(float(loss_dec), float(loss_none), rtol=1e-10, atol=1e-12)
     for key in ("mse", "psd", "fc"):
@@ -103,10 +105,30 @@ def test_projection_with_aux_losses_is_finite() -> None:
     y = jnp.asarray(rng.standard_normal((batch, horizon * c)))
     basis_j, mean_j = jnp.asarray(basis), jnp.asarray(mean)
 
+    step_mask = jnp.ones(horizon)
     grad_fn = eqx.filter_value_and_grad(compute_loss, has_aux=True)
-    (loss, aux), grads = grad_fn(model, x, y, jnp.array(0.0), c, jnp.array(0.1), jnp.array(0.1), basis_j, mean_j)
+    (loss, aux), grads = grad_fn(model, x, y, step_mask, c, jnp.array(0.1), jnp.array(0.1), basis_j, mean_j)
 
     assert np.isfinite(float(loss))
     assert float(aux["psd"]) > 0.0  # a genuine channel-space spectrum, not the degenerate latent one
     assert float(aux["fc"]) > 0.0
+    assert np.all(np.isfinite(_flat_grad(grads)))
+
+
+def test_partial_mask_gates_psd_but_not_fc() -> None:
+    """During the curriculum ramp (L < horizon) the PSD is gated off while the FC still grows with L."""
+    rng = np.random.default_rng(_SEED + 3)
+    n_y, n_u, horizon, c, n_controls, batch = 2, 2, 6, 5, 2, 32
+    model = _model(n_y, n_u, horizon, c, n_controls)
+
+    x = jnp.asarray(rng.standard_normal((batch, n_y * c + n_u * n_controls + horizon * n_controls)))
+    y = jnp.asarray(rng.standard_normal((batch, horizon * c)))
+
+    step_mask = jnp.array([1.0, 1.0, 1.0, 0.0, 0.0, 0.0])  # L = 3 < horizon
+    grad_fn = eqx.filter_value_and_grad(compute_loss, has_aux=True)
+    (loss, aux), grads = grad_fn(model, x, y, step_mask, c, jnp.array(0.1), jnp.array(0.1), None, None)
+
+    assert float(aux["psd"]) == 0.0  # gated off until L == horizon
+    assert float(aux["fc"]) > 0.0  # grows with L, scored over the first-L steps
+    assert np.isfinite(float(loss))
     assert np.all(np.isfinite(_flat_grad(grads)))

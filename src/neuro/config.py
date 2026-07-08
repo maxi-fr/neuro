@@ -78,15 +78,21 @@ class SimulationConfig(StrictConfig):
 
 
 class TrainingConfig(StrictConfig):
-    """Optimisation and scaling settings for the NN predictor."""
+    """Optimisation and scaling settings for the NN predictor.
+
+    The horizon-length curriculum grows the rollout length ``L`` the loss is scored over: ``L=1``
+    (teacher forcing) until ``curriculum_start_epoch``, then ramps ``1 -> horizon`` up to
+    ``curriculum_end_epoch``, and holds at the model ``horizon`` (the full free-running rollout)
+    afterwards.
+    """
 
     epochs: int = Field(default=100, ge=1)
     batch_size: int = Field(default=128, ge=1)
     learning_rate: float = Field(default=1e-3, gt=0)
     weight_decay: float = Field(default=1e-4, ge=0)
     train_split: float = Field(default=0.8, gt=0, lt=1)
-    curriculum_decay_fraction: float = Field(default=0.8, gt=0, le=1)
-    curriculum_alpha_min: float = Field(default=0.0, ge=0, le=1)
+    curriculum_start_epoch: int = Field(default=0, ge=0)
+    curriculum_end_epoch: int = Field(default=80, ge=0)
     seed: int = Field(default=69, ge=0)
     w_psd: float = Field(default=0.0, ge=0)
     w_fc: float = Field(default=0.0, ge=0)
@@ -189,6 +195,16 @@ class NNPredictorConfig(StrictConfig):
         instead of silently falling back to a default.
         """
         return cls.model_validate({} if data is None else data)
+
+    @model_validator(mode="after")
+    def _validate_curriculum_epochs(self) -> Self:
+        if self.training.curriculum_end_epoch < self.training.curriculum_start_epoch:
+            msg = (
+                f"curriculum_end_epoch ({self.training.curriculum_end_epoch}) must be "
+                f">= curriculum_start_epoch ({self.training.curriculum_start_epoch})."
+            )
+            raise ValueError(msg)
+        return self
 
     @model_validator(mode="after")
     def _validate_sweep_exclusivity_and_keys(self) -> Self:

@@ -280,57 +280,56 @@ $$
 NC}$ are the standardized EEG channels (§4.2), so **all terms below live in EEG channel space**. Write
 $\hat{Y}^{(1)} = \hat{Y}[:, :C]$ for the first predicted step.
 
-### 6.1 Curriculum MSE (the primary loss)
+### 6.1 Horizon-length curriculum MSE (the primary loss)
 
-Two mean-squared errors are formed:
-
-$$
-\mathcal{L}_\text{1-step} = \frac{1}{BC}\sum_{b,c}\big(\hat{Y}^{(1)}_{b,c} - Y^{(1)}_{b,c}\big)^2,
-\qquad
-\mathcal{L}_\text{N-step} = \frac{1}{B\,NC}\sum_{b,i}\big(\hat{Y}_{b,i} - Y_{b,i}\big)^2.
-$$
-
-$\mathcal{L}_\text{1-step}$ only scores the first rollout step (ground-truth context, no feedback);
-$\mathcal{L}_\text{N-step}$ scores the whole unrolled horizon. They are blended by a **curriculum
-weight** $\alpha \in [0,1]$:
+The MSE is scored over the first $L$ rollout steps selected by a **step mask** $s \in \{0,1\}^N$ (a
+prefix of $L$ ones, $s_i = \mathbb{1}[i < L]$). With per-step errors
 
 $$
-\boxed{\;\mathcal{L}_\text{MSE} = \alpha\,\mathcal{L}_\text{1-step} + (1-\alpha)\,\mathcal{L}_\text{N-step}\;}
+e_i = \frac{1}{BC}\sum_{b,c}\big(\hat{Y}_{b,i,c} - Y_{b,i,c}\big)^2,
 $$
 
-- $\alpha = 1$ → pure one-step (teacher forcing) — easy objective, stable early training.
-- $\alpha = 0$ → pure $N$-step rollout — the objective we actually care about, but harder (exposes
-  the model to its own compounding errors).
+the curriculum MSE is their masked mean:
 
-$\alpha$ is annealed from 1 to 0 over training (Section 7.3), so the model first learns the local
-dynamics and is then gradually exposed to full closed-loop rollout — a **scheduled-sampling /
-curriculum** strategy.
+$$
+\boxed{\;\mathcal{L}_\text{MSE} = \frac{\sum_{i} s_i\, e_i}{\sum_i s_i}\;}
+$$
+
+- $L = 1$ → pure one-step (teacher forcing): only the first step (ground-truth context, no feedback).
+- $L = N$ → pure $N$-step rollout: the objective we ultimately care about, but harder (exposes the
+  model to its own compounding errors).
+
+$L$ is grown from 1 to $N$ over training (Section 7.3), so the model is trained on progressively
+longer free-running rollouts — a curriculum that keeps multi-step structure throughout and never
+anneals a teacher-forcing weight down to a pure $N$-step loss.
 
 ### 6.2 Auxiliary spectral & connectivity losses (optional, horizon > 1)
 
 Two optional terms push the *statistics* of the rollout toward the data, not just point accuracy.
-Both are computed by **pooling the batch** into long series so the estimates are low-variance. Only
-active when their weight is > 0; both are 0 when `horizon = 1`.
+Only active when their weight is > 0; both are 0 when `horizon = 1`. Reshape $\hat{Y}, Y$ to
+trajectories $(B, N, C)$.
 
-Reshape $\hat{Y}, Y$ to trajectories $(B, N, C)$.
-
-**PSD loss (log-spectral distance, Welch).** Per channel $c$, all $B$ windows are concatenated into
-one length-$BN$ series and Welch's method is applied with `nperseg = N`, `noverlap = 0` (each
-horizon-length window becomes one Hann-windowed segment; averaging $B$ periodograms gives a stable
-spectrum with $\lfloor N/2\rfloor + 1$ frequency bins):
-
-$$
-\mathcal{L}_\text{PSD} = \frac{1}{C\,F}\sum_{c,f}\Big(\log\big(\hat{P}_{c,f} + \varepsilon\big)
-- \log\big(P_{c,f} + \varepsilon\big)\Big)^2, \qquad \varepsilon = 10^{-8}.
-$$
-
-**FC loss (functional connectivity).** All $B\!\cdot\!N$ timepoints are pooled into one
-$(BN, C)$ series and a single channel×channel Pearson-correlation matrix is formed
-([`compute_fc`](../src/neuro/prediction.py), diagonal zeroed):
+**FC loss (functional connectivity) — grows with the curriculum.** Like the MSE, the FC is scored over
+the first-$L$ trusted steps: the step mask $s$ weights the pooled $(BN, C)$ timepoints and a single
+weighted channel×channel Pearson-correlation matrix is formed (diagonal zeroed). A channel
+correlation is well-estimated from the pooled samples and needs no long window, so it can grow with
+$L$. With an all-ones mask this reduces to the plain pooled correlation:
 
 $$
 \mathcal{L}_\text{FC} = \frac{1}{C^2}\sum_{i,j}\big(\widehat{\text{FC}}_{ij} - \text{FC}_{ij}\big)^2,
-\qquad \text{FC} = \operatorname{corr}(Y),\ \ \operatorname{diag}=0.
+\qquad \text{FC} = \operatorname{corr}_s(Y),\ \ \operatorname{diag}=0.
+$$
+
+**PSD loss (log-spectral distance, Welch) — active only at full rollout.** The PSD stays a
+batch-of-snippets estimate over the **full** horizon window: per channel $c$, all $B$ windows are
+concatenated into one length-$BN$ series and Welch's method is applied with `nperseg = N`,
+`noverlap = 0` (each horizon-length window becomes one segment; averaging $B$ periodograms gives a
+stable spectrum with $\lfloor N/2\rfloor + 1$ frequency bins). A meaningful spectrum needs the whole
+window, so the term is **gated on only once $L = N$** (via the last mask entry $s_{N-1}$):
+
+$$
+\mathcal{L}_\text{PSD} = s_{N-1}\cdot\frac{1}{C\,F}\sum_{c,f}\Big(\log\big(\hat{P}_{c,f} + \varepsilon\big)
+- \log\big(P_{c,f} + \varepsilon\big)\Big)^2, \qquad \varepsilon = 10^{-8}.
 $$
 
 ### 6.3 Total loss with scale-free normalisation
@@ -410,28 +409,28 @@ single call (not batched).
 
 ### 7.3 Curriculum schedule
 
-With $E = \texttt{epochs}$ and $E_\text{decay} = \lfloor E \cdot \texttt{curriculum\_decay\_fraction}
-\rfloor$, the curriculum weight is a linear ramp from 1 to 0, held at 0 afterwards:
+Let $e_0 = \texttt{curriculum\_start\_epoch}$ and $e_1 = \texttt{curriculum\_end\_epoch}$. The trusted
+rollout length $L$ holds at 1 (teacher forcing) until $e_0$, ramps linearly $1 \to N$ between $e_0$
+and $e_1$, and holds at the horizon $N$ afterwards:
 
 $$
-\alpha(e) =
-\begin{cases}
-1 - \dfrac{e}{E_\text{decay}}, & e < E_\text{decay}\\[2mm]
-0, & e \ge E_\text{decay}.
-\end{cases}
+L(e) = \operatorname{clip}\!\Big(\operatorname{round}\big(1 + (N - 1)\cdot\operatorname{clip}(\tfrac{e - e_0}{\max(e_1 - e_0,\,1)},\,0,\,1)\big),\ 1,\ N\Big).
 $$
 
-So the first `curriculum_decay_fraction` of epochs transition from one-step to full-rollout training;
-the remainder trains purely on the $N$-step objective.
+The per-epoch step mask is the prefix of $L(e)$ ones
+([`curriculum_state`](../src/neuro/nn_training.py)). So epochs before $e_0$ train on pure teacher
+forcing, epochs in $[e_0, e_1]$ grow the rollout $1 \to N$, and the remainder trains on the full
+$N$-step objective (with the PSD term active).
 
 ### 7.4 Training loop, validation, early stopping
 
 [`train_model`](../src/neuro/nn_training.py) runs the loop:
 
-1. For each epoch $e$: compute $\alpha(e)$; iterate shuffled batches, take an optimizer `step` on each,
-   accumulate the batch losses; the epoch train loss is the mean over batches.
-2. **Validation loss** = `compute_loss` on the full validation set with $\alpha = 0$ — i.e. always the
-   pure $N$-step rollout error (plus any active PSD/FC terms), the quantity we ultimately minimise.
+1. For each epoch $e$: compute the step mask $L(e)$; iterate shuffled batches, take an optimizer `step`
+   on each, accumulate the batch losses; the epoch train loss is the mean over batches.
+2. **Validation loss** = `compute_loss` on the full validation set with the full-horizon mask ($L = N$)
+   — i.e. always the pure $N$-step rollout error (plus the active PSD/FC terms), the quantity we
+   ultimately minimise, comparable across epochs and rollout lengths.
 3. **NaN guard**: if either the train or val loss is NaN, raise `ValueError("Loss is NaN…")`
    (the Optuna sweep catches this and prunes the trial).
 4. **Best-model tracking**: keep the model with the lowest validation loss so far.
@@ -509,7 +508,8 @@ out-of-range values raise `ValidationError` rather than silently defaulting.
 | `learning_rate` $\eta$       | AdamW constant LR                                             |
 | `weight_decay` $\lambda$     | AdamW decoupled decay                                         |
 | `train_split`                | fraction used for training (tail held out for val)           |
-| `curriculum_decay_fraction`  | fraction of epochs over which $\alpha: 1 \to 0$              |
+| `curriculum_start_epoch`     | epoch the rollout length starts growing ($L = 1$ before it)   |
+| `curriculum_end_epoch`       | epoch the rollout length reaches the horizon $N$ (held after) |
 | `seed`                       | PRNG seed for weight init ( `+ seed_offset` in sweeps)        |
 | `w_psd`, `w_fc`              | relative weights of the auxiliary losses                     |
 | `patience`                   | early-stopping patience (epochs)                             |

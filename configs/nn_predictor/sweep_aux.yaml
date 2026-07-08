@@ -45,10 +45,10 @@ sweep:
     batch_size:
       type: categorical
       choices: [64, 128, 256, 512]
-    curriculum_decay_fraction:
-      type: float
-      low: 0.5
-      high: 0.9
+    curriculum_end_epoch:      # epoch at which L reaches horizon (start epoch stays 0)
+      type: int
+      low: 150
+      high: 250
     w_psd:                   # Sweep spectral loss
       type: float
       low: 0.0
