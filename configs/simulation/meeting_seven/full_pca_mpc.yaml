@@ -1,0 +1,50 @@
+# Closed-loop seizure suppression, setup 4/6: FULL 62-channel EEG + PCA-reduced Nonlinear MPC.
+# MPCController solves a multiple-shooting NLP (IPOPT) using a depth-1 (nonlinear) NN predictor
+# that runs in a 20-dim PCA latent space (the projection is baked into the artifact; the
+# controller encodes measurements and decodes back to EEG for its cost). Consumes the
+# nonlinear_full_pca artifact (mpc_nonlinear_full_pca.yaml). Controller runs at the predictor
+# native step dt: 0.01 = plant dt 1e-4 x downsample 100.
+t_end: 5.0
+
+dynamics:
+  class_path: neuro.jansen_rit.JansenRitDynamics
+  dt: 0.0001
+  seed: 69
+  connectome:
+    speed: 50.0
+    target_electrode: [CP5, T7]
+    gamma_spread: 20.0
+    K: 0.5357
+  params:
+    A: [3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25,
+      3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25,
+      3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25,
+      3.25, 3.6, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.6, 3.25, 3.25, 3.25, 3.25,
+      3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.6, 3.25, 3.25,
+      3.25, 3.25, 3.25, 3.25, 3.4, 3.25, 3.25, 3.4, 3.25, 3.25, 3.25]
+
+reference: {class_path: simulate.reference.StepReference, dt: 0.0001, step_value: 0.0}
+
+sensors:
+  class_path: simulate.sensor.GaussianSensor
+  dt: 0.0001
+  std_dev: 0.0
+  measurement:
+    class_path: neuro.measurement.EEGMeasurement
+    speed: 50.0
+    # Full EEG: no selected_channels -> all 62 channels (matches the nonlinear_full_pca predictor).
+
+estimator: {class_path: simulate.estimator.IdentityEstimator, dt: 0.0001}
+
+controller:
+  class_path: neuro.control.MPCController
+  dt: 0.01
+  artifact: artifacts/meeting_seven_experiment/nonlinear_full_pca/model   # depth-1 + PCA(20) artifact basename
+  horizon: 20
+  shooting_depth: 20   # >= horizon -> single shooting (states condensed out; controls-only NLP)
+  u_max: 3.0
+  w_y: 1.0
+  w_u: 10.0
+  max_iter: 100        # IPOPT iteration cap per solve (capped iterate is still applied)
+  max_cpu_time: null   # per-solve wall-time budget (s); null = unbounded
+  expand: false        # MX->SX expansion; off -- the unrolled MLP graph is faster as MX

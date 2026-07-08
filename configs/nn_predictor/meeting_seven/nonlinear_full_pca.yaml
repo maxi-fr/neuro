@@ -1,0 +1,34 @@
+# Nonlinear (depth 1) NARX predictor on the full 62-channel EEG, projected onto a
+# 20-dim PCA latent space. Serves the full-EEG PCA-reduced Nonlinear MPC setup
+# (MPCController); the MPC runs in the latent space and decodes back to EEG for its cost.
+
+simulation:
+  dt: 0.0001
+  downsample: 100        # effective dt = 1e-2 s
+  n_steps: 500           # downsampled steps per trajectory (50000 raw / 100 = 5 s)
+  data_path: "data/experiment_excited/train"   # full 62-channel EEG
+
+model:
+  n_y: 15
+  n_u: 10
+  horizon: 20
+  hidden_size: 128
+  depth: 1               # nonlinear
+  latent_dim: 25         # PCA project 62 -> 25 latent dims
+  activation: softplus
+
+training:
+  epochs: 250
+  batch_size: 128
+  learning_rate: 0.00001
+  weight_decay: 0.0005
+  train_split: 0.8
+  curriculum_decay_fraction: 0.6
+  seed: 69
+  w_psd: 0.0
+  w_fc: 0.0
+  patience: 100
+  scaler: "robust"
+  global_scaling: true
+
+artifact: "artifacts/meeting_seven_experiment/nonlinear_full_pca"

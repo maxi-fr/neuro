@@ -1,0 +1,151 @@
+"""Visualize an NN predictor's open-loop forecasts against the plant, outside the MPC loop.
+
+Runs the Jansen-Rit plant open-loop (zero tES) from a simulation config, downsamples the
+EEG to the predictor's native step, then at several anchor times free-runs the CasADi
+predictor ``horizon`` steps under zero control -- exactly the model the MPC optimizes
+against -- and overlays those forecasts on the realized EEG. This isolates *prediction*
+quality from the closed-loop controller: if these forecasts track the plant, a sluggish or
+wandering MPC is a solver/formulation problem, not a broken model.
+
+The predictor artifact and EEG montage are both taken from the config's ``controller`` and
+``sensors`` blocks, so it stays consistent with whatever the closed-loop run would use.
+
+Usage
+-----
+    uv run python scripts/plot_mpc_predictions.py --config configs/simulation/meeting_seven/full_narx_mpc.yaml
+    uv run python scripts/plot_mpc_predictions.py --config configs/simulation/meeting_seven/selected_mpc.yaml \
+        --anchors 6 --out artifacts/selected_predictions.png
+"""
+
+from __future__ import annotations
+
+import argparse
+from pathlib import Path
+
+import matplotlib as mpl
+
+mpl.use("Agg")  # non-interactive backend so the script works headless
+
+from typing import TYPE_CHECKING
+
+import matplotlib.pyplot as plt
+import numpy as np
+from simulate.config import build_component, load_config
+
+from neuro.nn_predictor_casadi import NNSymbolicModel
+
+if TYPE_CHECKING:
+    from neuro.types import FloatArray
+
+N_CHANNELS_TO_PLOT = 3
+
+
+def parse_args() -> argparse.Namespace:
+    """Parse command-line arguments for the prediction-quality plot."""
+    parser = argparse.ArgumentParser(description="Plot open-loop NN-predictor forecasts against the plant.")
+    parser.add_argument(
+        "--config",
+        type=Path,
+        required=True,
+        help="Simulation config; supplies the plant, the EEG montage, and controller.artifact.",
+    )
+    parser.add_argument(
+        "--artifact",
+        type=str,
+        default=None,
+        help="Predictor artifact basename; defaults to the config's controller.artifact.",
+    )
+    parser.add_argument("--t-end", type=float, default=None, help="Open-loop duration (s); defaults to config t_end.")
+    parser.add_argument("--anchors", type=int, default=4, help="Number of forecast anchor times.")
+    parser.add_argument(
+        "--out", type=Path, default=None, help="Output PNG path (default: <config-stem>_predictions.png)."
+    )
+    return parser.parse_args()
+
+
+def run_open_loop(config: dict, t_end: float) -> tuple[FloatArray, float]:
+    """Run the plant open-loop (zero control); return EEG at the controller step and that step."""
+    dt = float(config["dynamics"]["dt"])
+    ctrl_dt = float(config["controller"]["dt"])
+    downsample = round(ctrl_dt / dt)
+
+    dynamics = build_component(config["dynamics"])
+    sensor = build_component(config["sensors"])
+    u = np.zeros(dynamics.n_inputs)
+
+    eeg = []
+    t = 0.0
+    for k in range(round(t_end / dt)):
+        if k % downsample == 0:
+            eeg.append(sensor.evaluate(t, dynamics.x, u)[0])
+        dynamics.evaluate(t, u)
+        t += dt
+    return np.asarray(eeg), ctrl_dt
+
+
+def free_run(model: NNSymbolicModel, eeg: FloatArray, anchor: int) -> tuple[FloatArray, FloatArray]:
+    """Free-run (zero control) ``horizon`` steps from ``anchor``; return (predicted, true) EEG."""
+    n_y, horizon = model.artifact.n_y, model.artifact.horizon
+    n_u, n_controls = model.artifact.n_u, model.n_controls
+
+    y_window = model.artifact.encode(eeg[anchor - n_y : anchor])  # measured past -> model space
+    x = np.concatenate([y_window.reshape(-1), np.zeros(n_u * n_controls)])
+    preds = []
+    for _ in range(horizon):
+        x = np.asarray(model.f_step(x, np.zeros(n_controls))).reshape(-1)
+        preds.append(np.asarray(model.f_out(x)).reshape(-1))  # decode model space -> raw EEG
+    return np.asarray(preds), eeg[anchor : anchor + horizon]
+
+
+def main() -> None:
+    """Run the plant open-loop, overlay predictor forecasts on the realized EEG, and save a figure."""
+    args = parse_args()
+    config = load_config(args.config)
+    t_end = args.t_end if args.t_end is not None else float(config["t_end"])
+    artifact = args.artifact if args.artifact is not None else config["controller"]["artifact"]
+
+    print(f"Running plant open-loop for {t_end}s from {args.config} ...", flush=True)
+    eeg, dt_model = run_open_loop(config, t_end)
+    model = NNSymbolicModel.from_artifact(artifact)
+
+    n_y, horizon = model.artifact.n_y, model.artifact.horizon
+    anchors = np.linspace(n_y + 1, len(eeg) - horizon - 1, args.anchors).astype(int)
+    time = np.arange(len(eeg)) * dt_model
+
+    fig, (ax_power, ax_chan) = plt.subplots(1, 2, figsize=(13, 4.2))
+
+    power = (eeg**2).mean(axis=1)
+    ax_power.plot(time, power, color="k", lw=0.8, label="plant EEG power")
+    rmses = []
+    for anchor in anchors:
+        pred, true = free_run(model, eeg, anchor)
+        horizon_t = (np.arange(horizon) + anchor) * dt_model
+        ax_power.plot(horizon_t, (pred**2).mean(axis=1), color="C3", lw=1.5)
+        rmses.append(float(np.sqrt(((pred - true) ** 2).mean())))
+    ax_power.plot([], [], color="C3", lw=1.5, label=f"{horizon}-step free-run forecast")
+    ax_power.set(xlabel="t (s)", ylabel="mean-square EEG", title=f"{args.config.stem}: forecasts vs plant")
+    ax_power.legend(loc="upper left", fontsize=8)
+
+    pred, true = free_run(model, eeg, anchors[len(anchors) // 2])
+    horizon_t = np.arange(horizon) * dt_model
+    for channel in range(min(N_CHANNELS_TO_PLOT, pred.shape[1])):
+        ax_chan.plot(horizon_t, true[:, channel], color=f"C{channel}", lw=1.3)
+        ax_chan.plot(horizon_t, pred[:, channel], color=f"C{channel}", lw=1.3, ls="--")
+    ax_chan.plot([], [], color="k", lw=1.3, label="true")
+    ax_chan.plot([], [], color="k", lw=1.3, ls="--", label="predicted")
+    ax_chan.set(
+        xlabel="horizon step (s)", ylabel="EEG (raw)", title=f"ch 0-{N_CHANNELS_TO_PLOT - 1}: true vs predicted"
+    )
+    ax_chan.legend(loc="upper right", fontsize=8)
+
+    fig.tight_layout()
+    out = args.out if args.out is not None else Path(f"{args.config.stem}_predictions.png")
+    out.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out, dpi=110)
+    plt.close(fig)
+    print(f"Mean {horizon}-step free-run RMSE over {len(anchors)} anchors: {np.mean(rmses):.4g}", flush=True)
+    print(f"Saved {out}", flush=True)
+
+
+if __name__ == "__main__":
+    main()
