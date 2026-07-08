@@ -50,9 +50,6 @@ class StrictConfig(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, protected_namespaces=())
 
 
-# --------------------------------------------------------------------------- #
-# NN-predictor configuration                                                  #
-# --------------------------------------------------------------------------- #
 class ModelConfig(StrictConfig):
     """MLP predictor architecture settings.
 
@@ -89,6 +86,7 @@ class TrainingConfig(StrictConfig):
     weight_decay: float = Field(default=1e-4, ge=0)
     train_split: float = Field(default=0.8, gt=0, lt=1)
     curriculum_decay_fraction: float = Field(default=0.8, gt=0, le=1)
+    curriculum_alpha_min: float = Field(default=0.0, ge=0, le=1)
     seed: int = Field(default=69, ge=0)
     w_psd: float = Field(default=0.0, ge=0)
     w_fc: float = Field(default=0.0, ge=0)
@@ -97,9 +95,6 @@ class TrainingConfig(StrictConfig):
     global_scaling: bool = False
 
 
-# --------------------------------------------------------------------------- #
-# Optuna sweep search space (discriminated on ``type``)                       #
-# --------------------------------------------------------------------------- #
 class CategoricalParam(StrictConfig):
     """Categorical Optuna search dimension."""
 
@@ -227,9 +222,6 @@ class NNPredictorConfig(StrictConfig):
         return self
 
 
-# --------------------------------------------------------------------------- #
-# Shared script helpers                                                        #
-# --------------------------------------------------------------------------- #
 def load_config(path: Path) -> NNPredictorConfig:
     """Load and strictly validate an NN-predictor YAML config from ``path``.
 

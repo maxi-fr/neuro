@@ -1,8 +1,9 @@
 # Closed-loop seizure suppression, setup 5/6: SELECTED 25-channel EEG + Nonlinear MPC.
 # MPCController solves a multiple-shooting NLP (IPOPT) using a depth-1 (nonlinear) NN predictor
-# trained on the manually-selected 25-channel montage. Consumes the nonlinear_selected artifact
-# (mpc_nonlinear_selected.yaml). Controller runs at the predictor native step dt: 0.01 = plant
-# dt 1e-4 x downsample 100.
+# trained on the manually-selected 25-channel montage, PCA-decorrelated to 20 latents (raw channels
+# leave the tES->EEG response under-identified for the MLP -- see knowledge-base note, sec. 9).
+# Consumes the nonlinear_selected artifact. Controller runs at the predictor native step
+# dt: 0.01 = plant dt 1e-4 x downsample 100.
 t_end: 5.0
 
 dynamics:

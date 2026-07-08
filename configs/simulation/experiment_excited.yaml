@@ -111,7 +111,7 @@ experiments:
     n_u: 2
     input_type: ras
     amp: 3.0
-    hold_ms: 50.0
+    hold_ms: 10.0   # one predictor step (10 ms); match the closed-loop MPC control rate -- see base config & note sec. 9
     transient_ms: 1000.0
     duration: 10.0
     input_seed: 101023

@@ -13,7 +13,7 @@ model:
   horizon: 20
   hidden_size: 128
   depth: 1               # nonlinear
-  latent_dim: null       # no PCA
+  latent_dim: 20         # PCA-decorrelate the 25-channel montage (raw channels leave the tES->EEG response under-identified for the MLP)
   activation: softplus
 
 training:

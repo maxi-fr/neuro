@@ -531,6 +531,7 @@ def train_model(  # noqa: PLR0913
     weight_decay: float,
     curriculum_decay_fraction: float,
     n_channels: int,
+    curriculum_alpha_min: float = 0.0,
     w_psd: float = 0.0,
     w_fc: float = 0.0,
     patience: int = 50,
@@ -563,6 +564,13 @@ def train_model(  # noqa: PLR0913
         Fraction of epochs to decay curriculum alpha.
     n_channels : int
         Number of output channels.
+    curriculum_alpha_min : float
+        Floor on the curriculum ``alpha`` (the 1-step teacher-forcing weight). With the default
+        ``0.0`` the curriculum decays to a pure N-step unrolled loss; a positive floor keeps that
+        much 1-step loss for every epoch. The pure N-step loss is non-convex in the weights (the
+        autoregressive feedback makes it degree-N) and under-constrains the tES->EEG response, so a
+        positive floor pins the one-step dynamics -- decisive for controllability on reduced
+        montages, where the loose control response otherwise breaks closed-loop suppression.
     w_psd : float
         Weight for the PSD loss.
     w_fc : float
@@ -607,6 +615,7 @@ def train_model(  # noqa: PLR0913
 
     for epoch in pbar:
         alpha = 1.0 - epoch / decay_epochs if epoch < decay_epochs else 0.0
+        alpha = max(alpha, curriculum_alpha_min)
 
         alpha_jax = jnp.array(alpha, dtype=jnp.float32)
 
@@ -785,6 +794,7 @@ def train_and_save_predictor(  # noqa: PLR0915
     weight_decay = train_cfg.weight_decay
     train_split = train_cfg.train_split
     curriculum_decay_fraction = train_cfg.curriculum_decay_fraction
+    curriculum_alpha_min = train_cfg.curriculum_alpha_min
     seed = train_cfg.seed + seed_offset
     w_psd = train_cfg.w_psd
     w_fc = train_cfg.w_fc
@@ -846,6 +856,7 @@ def train_and_save_predictor(  # noqa: PLR0915
         weight_decay,
         curriculum_decay_fraction,
         n_channels,
+        curriculum_alpha_min=curriculum_alpha_min,
         w_psd=w_psd,
         w_fc=w_fc,
         patience=patience,

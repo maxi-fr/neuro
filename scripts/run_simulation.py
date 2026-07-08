@@ -1,4 +1,5 @@
 import argparse
+import shutil
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
@@ -46,12 +47,15 @@ def main() -> None:
 
     if args.output_dir is None:
         local_now = datetime.now(UTC).astimezone()
-        output_dir_str = f"artifacts/simulation_{local_now.strftime('%Y-%m-%d_%H-%M-%S')}"
+        output_dir = Path(f"artifacts/simulation_{local_now.strftime('%Y-%m-%d_%H-%M-%S')}")
     else:
-        output_dir_str = args.output_dir
+        output_dir = Path(args.output_dir)
+
+    output_dir.mkdir(parents=True, exist_ok=False)
+    shutil.copy2(config_path, output_dir / config_path.name)
 
     if "experiments" in config:
-        manager = ExperimentManager(output_dir=output_dir_str)
+        manager = ExperimentManager(output_dir)
 
         raw_configs = config["experiments"]
         if not raw_configs:
@@ -63,9 +67,8 @@ def main() -> None:
 
         manager.run_batch(configs, chunk_size=chunk_size, compress=args.compress)
     else:
-        output_dir = Path(output_dir_str)
         sim = Simulation.from_config(config)
-        sim.run(output_dir=output_dir, prefix="log", chunk_size=chunk_size, compress=args.compress)
+        sim.run(output_dir, prefix="log", chunk_size=chunk_size, compress=args.compress)
         sim.export_results(output_dir, prefix="log", compress=args.compress)
 
 
