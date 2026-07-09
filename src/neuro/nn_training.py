@@ -259,7 +259,7 @@ def create_model(  # noqa: PLR0913
     n_channels: int,
     n_controls: int,
     activation: str = "relu",
-) -> eqx.Module:
+) -> AutoregressivePredictor:
     """Create the Autoregressive MLP model.
 
     Parameters
@@ -556,33 +556,29 @@ def step(  # noqa: PLR0913
 def curriculum_state(
     epoch: int,
     horizon: int,
-    *,
-    start_epoch: int,
-    end_epoch: int,
+    start_epoch: int = 0,
+    end_epoch: int = 80,
 ) -> FloatArray:
     """Return the horizon-length curriculum per-step loss mask for one epoch.
 
-    The trusted rollout length ``L`` is held at ``1`` (pure teacher forcing) until ``start_epoch``,
-    ramps linearly ``1 -> horizon`` between ``start_epoch`` and ``end_epoch``, and holds at
-    ``horizon`` (the full free-running rollout) afterwards. The ``(horizon,)`` mask is a prefix of
-    ``L`` ones: it weights the MSE/FC over the first-``L`` rollout steps and (via its last entry)
-    gates the PSD loss on only once ``L == horizon``.
+    Returns a prefix of ones of length ``L(epoch)``, where ``L`` grows linearly from 1 to
+    ``horizon`` between ``start_epoch`` and ``end_epoch``.
 
     Parameters
     ----------
     epoch : int
-        Current 0-based epoch.
+        Current training epoch.
     horizon : int
-        Model prediction horizon (the maximum rollout length ``N``).
-    start_epoch : int
-        Epoch at which the rollout length starts growing (``L = 1`` before it).
-    end_epoch : int
-        Epoch at which the rollout length reaches ``horizon`` (``L = horizon`` after it).
+        Full model rollout horizon.
+    start_epoch : int, optional
+        Epoch to start growing the horizon, by default 0.
+    end_epoch : int, optional
+        Epoch to reach the full horizon, by default 80.
 
     Returns
     -------
     FloatArray
-        The ``(horizon,)`` step mask (a prefix of ``L`` ones).
+        Binary mask of shape ``(horizon,)``.
     """
     span = max(end_epoch - start_epoch, 1)
     frac = min(max((epoch - start_epoch) / span, 0.0), 1.0)
@@ -591,6 +587,44 @@ def curriculum_state(
     mask = np.zeros(horizon, dtype=np.float64)
     mask[:length] = 1.0
     return mask
+
+
+def _warm_start_linear_model(  # noqa: PLR0913
+    model: AutoregressivePredictor,
+    X_train_s: FloatArray,
+    Y_train_s: FloatArray,
+    n_channels: int,
+    decode_basis: FloatArray | None,
+    decode_mean: FloatArray | None,
+) -> eqx.Module:
+    """Warm-start a depth-0 linear model using the exact 1-step least squares solution."""
+    n_y = model.n_y
+    n_u = model.n_u
+    n_controls = model.n_controls
+
+    Y_step1 = Y_train_s[:, :n_channels]
+    if decode_basis is not None:
+        assert decode_mean is not None  # noqa: S101
+        Y_latent = (Y_step1 - decode_mean) @ decode_basis.T
+    else:
+        Y_latent = Y_step1
+
+    latent = Y_latent.shape[1]
+    y_len = n_y * latent
+    y_past = X_train_s[:, :y_len]
+    u_window = X_train_s[:, y_len + n_controls : y_len + n_controls + n_u * n_controls]
+    X_1step = np.hstack([y_past, u_window])
+
+    features_aug = np.hstack([X_1step, np.ones((X_1step.shape[0], 1))])
+    weight_bias, *_ = np.linalg.lstsq(features_aug, Y_latent, rcond=None)
+    weight, bias = weight_bias[:-1].T, weight_bias[-1]
+
+    mlp = eqx.tree_at(
+        lambda m: (m.layers[0].weight, m.layers[0].bias),
+        model.model,
+        (jnp.asarray(weight), jnp.asarray(bias)),
+    )
+    return eqx.tree_at(lambda m: m.model, model, mlp)
 
 
 def train_model(  # noqa: PLR0913
@@ -665,6 +699,11 @@ def train_model(  # noqa: PLR0913
     """
     horizon = Y_train_s.shape[1] // n_channels
 
+    do_lstsq = isinstance(model, AutoregressivePredictor) and model.model.depth == 0
+
+    if do_lstsq:
+        model = _warm_start_linear_model(model, X_train_s, Y_train_s, n_channels, decode_basis, decode_mean)
+
     optimizer = optax.adamw(learning_rate=learning_rate, weight_decay=weight_decay)
     opt_state = optimizer.init(eqx.filter(model, eqx.is_array))
 
@@ -674,7 +713,8 @@ def train_model(  # noqa: PLR0913
     X_val_jnp = jnp.array(X_val_s)
     Y_val_jnp = jnp.array(Y_val_s)
 
-    pbar = tqdm(range(epochs), desc="Training MLP")
+    start_epoch = curriculum_start_epoch if do_lstsq else 0
+    pbar = tqdm(range(start_epoch, epochs), desc="Training MLP")
     train_losses = []
     val_losses = []
 
