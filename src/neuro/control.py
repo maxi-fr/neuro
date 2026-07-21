@@ -296,6 +296,24 @@ class MPCControllerLog:
     warmup: bool
 
 
+def _l1_epigraph(u_vars: list[ca.MX], w_l1: float) -> tuple[list[ca.MX], ca.MX, ca.MX]:
+    """Epigraph pieces encoding ``w_l1 * sum_k ||u_k||_1`` without breaking quadraticity.
+
+    A slack ``t_k`` is added per control node so the non-smooth L1 penalty becomes a *linear*
+    cost ``w_l1 * sum(t_k)`` plus the linear inequalities ``t_k >= |u_k|`` (i.e. ``t_k - u_k >= 0``
+    and ``t_k + u_k >= 0``). Keeping the objective quadratic lets ``ca.qpsol`` extract a constant
+    Hessian (OSQP/qpOASES) and keeps the IPOPT graph smooth; the active-set QP can then drive
+    controls to exact zero. Returns the slack variables, the (linear) cost term, and the stacked
+    ``>= 0`` inequalities ``[t_k - u_k, t_k + u_k]``.
+    """
+    slacks = [ca.MX.sym(f"t_{k}", u.numel()) for k, u in enumerate(u_vars)]
+    cost = w_l1 * ca.sum1(ca.vertcat(*slacks))
+    g = []
+    for t, u in zip(slacks, u_vars, strict=True):
+        g += [t - u, t + u]  # both >= 0  ->  t >= |u|
+    return slacks, cost, ca.vertcat(*g)
+
+
 class _MPCControllerConfig(StrictConfig):
     """Config schema for :class:`MPCController`."""
 
@@ -305,6 +323,7 @@ class _MPCControllerConfig(StrictConfig):
     horizon: int | None = Field(default=None, ge=1)
     w_y: float = Field(default=1.0, ge=0)
     w_u: float = Field(default=0.0, ge=0)
+    w_u_l1: float = Field(default=0.0, ge=0)
     shooting_depth: int = Field(default=1, ge=1)
     max_iter: int = Field(default=100, ge=1)
     max_cpu_time: float | None = Field(default=None, gt=0)
@@ -343,6 +362,7 @@ class MPCController(Controller[MPCControllerLog]):
         horizon: int | None = None,
         w_y: float = 1.0,
         w_u: float = 0.0,
+        w_u_l1: float = 0.0,
         *,
         shooting_depth: int = 1,
         max_iter: int = 100,
@@ -367,6 +387,9 @@ class MPCController(Controller[MPCControllerLog]):
             Weight on predicted EEG power in the cost.
         w_u
             Weight on control effort (quadratic) in the cost.
+        w_u_l1
+            Weight on the L1 norm of the control effort (a sparse-stimulation penalty); ``0``
+            disables it (default), leaving the pure-quadratic problem unchanged.
         max_iter
             Hard cap on IPOPT iterations per solve. When the cap is hit the best warm-started iterate is applied
             and ``success`` is ``False`` (capped, not failed).
@@ -382,6 +405,7 @@ class MPCController(Controller[MPCControllerLog]):
         self.horizon = int(horizon) if horizon is not None else model.artifact.horizon
         self.w_y = float(w_y)
         self.w_u = float(w_u)
+        self.w_u_l1 = float(w_u_l1)
         self.shooting_depth = int(shooting_depth)
         self.max_iter = int(max_iter)
         self.max_cpu_time = float(max_cpu_time) if max_cpu_time is not None else None
@@ -422,6 +446,7 @@ class MPCController(Controller[MPCControllerLog]):
             horizon=cfg.horizon,
             w_y=cfg.w_y,
             w_u=cfg.w_u,
+            w_u_l1=cfg.w_u_l1,
             shooting_depth=cfg.shooting_depth,
             max_iter=cfg.max_iter,
             max_cpu_time=cfg.max_cpu_time,
@@ -468,9 +493,28 @@ class MPCController(Controller[MPCControllerLog]):
             if k < n_segments:
                 defects.append(x_curr - get_phi(k + 1))
 
-        x_nlp = ca.vertcat(*u_vars, *phi_vars) if phi_vars else ca.vertcat(*u_vars)
+        x_parts = [*u_vars, *phi_vars]
+        g_parts = list(defects)
+        n_phi_vars = len(phi_vars) * n_state
+        self._lbx = np.concatenate([np.tile(-self.u_max, h), np.full(n_phi_vars, -np.inf)])
+        self._ubx = np.concatenate([np.tile(self.u_max, h), np.full(n_phi_vars, np.inf)])
 
-        g_nlp = ca.vertcat(*defects) if defects else ca.MX(0)
+        # Optional L1 control-effort penalty: add slacks + inequalities, keeping the graph smooth.
+        if self.w_u_l1 > 0:
+            slacks, l1_cost, l1_g = _l1_epigraph(u_vars, self.w_u_l1)
+            cost = cost + l1_cost
+            x_parts += slacks
+            g_parts.append(l1_g)
+            n_l1 = l1_g.numel()
+            self._lbg = np.concatenate([np.zeros(len(defects) * n_state), np.zeros(n_l1)])
+            self._ubg = np.concatenate([np.zeros(len(defects) * n_state), np.full(n_l1, np.inf)])
+            self._lbx = np.concatenate([self._lbx, np.zeros(h * n_ctrl)])
+            self._ubx = np.concatenate([self._ubx, np.full(h * n_ctrl, np.inf)])
+        else:
+            self._lbg = self._ubg = 0.0
+
+        x_nlp = ca.vertcat(*x_parts)
+        g_nlp = ca.vertcat(*g_parts) if g_parts else ca.MX(0)
         nlp = {"x": x_nlp, "f": cost, "g": g_nlp, "p": x0_p}
         opts = {
             "print_time": False,
@@ -488,10 +532,6 @@ class MPCController(Controller[MPCControllerLog]):
 
         self._solver = ca.nlpsol("mpc", "ipopt", nlp, opts)
 
-        n_phi_vars = len(phi_vars) * n_state
-        self._lbx = np.concatenate([np.tile(-self.u_max, h), np.full(n_phi_vars, -np.inf)])
-        self._ubx = np.concatenate([np.tile(self.u_max, h), np.full(n_phi_vars, np.inf)])
-
     def _solve(self, x0: FloatArray) -> tuple[FloatArray, float, bool]:
         """Solve the NLP for window-state ``x0``; return ``(u_0*, cost, success)``."""
         m, h = self.n_controls, self.horizon
@@ -506,9 +546,12 @@ class MPCController(Controller[MPCControllerLog]):
             if (step + 1) % D == 0 and (step + 1) < h:
                 phi_guess.append(x)
 
-        w0 = np.concatenate([u_guess.reshape(-1), *phi_guess]) if phi_guess else u_guess.reshape(-1)
+        seed = [u_guess.reshape(-1), *phi_guess]
+        if self.w_u_l1 > 0:
+            seed.append(np.abs(u_guess).reshape(-1))  # slacks t = |u|
+        w0 = np.concatenate(seed)
 
-        sol = self._solver(x0=w0, lbx=self._lbx, ubx=self._ubx, lbg=0.0, ubg=0.0, p=x0)
+        sol = self._solver(x0=w0, lbx=self._lbx, ubx=self._ubx, lbg=self._lbg, ubg=self._ubg, p=x0)
         u_opt = np.asarray(sol["x"]).reshape(-1)[: h * m].reshape(h, m)
         self._u_prev = np.vstack([u_opt[1:], u_opt[-1:]])
 
@@ -549,6 +592,7 @@ class _LinearMPCControllerConfig(StrictConfig):
     horizon: int | None = Field(default=None, ge=1)
     w_y: float = Field(default=1.0, ge=0)
     w_u: float = Field(default=0.0, ge=0)
+    w_u_l1: float = Field(default=0.0, ge=0)
     formulation: Literal["sparse", "dense"] = "sparse"
     osqp_eps: float = Field(default=1e-9, gt=0)
 
@@ -589,6 +633,7 @@ class LinearMPCController(Controller[MPCControllerLog]):
         horizon: int | None = None,
         w_y: float = 1.0,
         w_u: float = 0.0,
+        w_u_l1: float = 0.0,
         *,
         formulation: str = "sparse",
         osqp_eps: float = 1e-9,
@@ -612,6 +657,10 @@ class LinearMPCController(Controller[MPCControllerLog]):
             Weight on predicted EEG power in the cost.
         w_u
             Weight on control effort (quadratic) in the cost.
+        w_u_l1
+            Weight on the L1 norm of the control effort (a sparse-stimulation penalty); ``0``
+            disables it (default). When positive the QP gains slack variables and the
+            inequalities ``t >= |u|`` so it stays a convex QP.
         formulation
             ``"sparse"`` (stacked states, OSQP) or ``"dense"`` (condensed, qpOASES).
         osqp_eps
@@ -635,6 +684,7 @@ class LinearMPCController(Controller[MPCControllerLog]):
         self.horizon = int(horizon) if horizon is not None else model.artifact.horizon
         self.w_y = float(w_y)
         self.w_u = float(w_u)
+        self.w_u_l1 = float(w_u_l1)
         self.formulation = formulation
         self.osqp_eps = float(osqp_eps)
 
@@ -670,11 +720,12 @@ class LinearMPCController(Controller[MPCControllerLog]):
             horizon=cfg.horizon,
             w_y=cfg.w_y,
             w_u=cfg.w_u,
+            w_u_l1=cfg.w_u_l1,
             formulation=cfg.formulation,
             osqp_eps=cfg.osqp_eps,
         )
 
-    def _build_solver(self) -> None:
+    def _build_solver(self) -> None:  # noqa: PLR0915
         """Build the QP and its OSQP (``"sparse"``) or qpOASES (``"dense"``) solver, once.
 
         ``"sparse"`` stacks the controls and every intermediate state as decision variables and
@@ -697,10 +748,12 @@ class LinearMPCController(Controller[MPCControllerLog]):
                 x_curr = self.model.step([x_curr], u_vars[k])
                 y_next = self.model.output(x_curr)
                 cost = cost + self.w_y * ca.sumsqr(y_next) + self.w_u * ca.sumsqr(u_vars[k])
-            qp = {"x": ca.vertcat(*u_vars), "f": cost, "p": x0_p}
-            self._lbx = np.tile(-self.u_max, h)
-            self._ubx = np.tile(self.u_max, h)
-            self._has_g = False
+            x_parts = [*u_vars]
+            g_parts: list[ca.MX] = []
+            lbx = np.tile(-self.u_max, h)
+            ubx = np.tile(self.u_max, h)
+            lbg = np.zeros(0)
+            ubg = np.zeros(0)
         else:  # sparse
             x_vars = [ca.MX.sym(f"x_{k}", n_state) for k in range(1, h + 1)]
             defects, x_prev = [], x0_p
@@ -710,11 +763,32 @@ class LinearMPCController(Controller[MPCControllerLog]):
                 y_next = self.model.output(x_lift)
                 cost = cost + self.w_y * ca.sumsqr(y_next) + self.w_u * ca.sumsqr(u_vars[k])
                 x_prev = x_lift
-            qp = {"x": ca.vertcat(*u_vars, *x_vars), "f": cost, "g": ca.vertcat(*defects), "p": x0_p}
+            x_parts = [*u_vars, *x_vars]
+            g_parts = list(defects)
             n_x_vars = h * n_state
-            self._lbx = np.concatenate([np.tile(-self.u_max, h), np.full(n_x_vars, -np.inf)])
-            self._ubx = np.concatenate([np.tile(self.u_max, h), np.full(n_x_vars, np.inf)])
-            self._has_g = True
+            lbx = np.concatenate([np.tile(-self.u_max, h), np.full(n_x_vars, -np.inf)])
+            ubx = np.concatenate([np.tile(self.u_max, h), np.full(n_x_vars, np.inf)])
+            lbg = np.zeros(h * n_state)  # affine continuity defects (equalities)
+            ubg = np.zeros(h * n_state)
+
+        # Optional L1 control-effort penalty: slacks + inequalities keep it a convex QP.
+        if self.w_u_l1 > 0:
+            slacks, l1_cost, l1_g = _l1_epigraph(u_vars, self.w_u_l1)
+            cost = cost + l1_cost
+            x_parts += slacks
+            g_parts.append(l1_g)
+            n_l1 = l1_g.numel()
+            lbg = np.concatenate([lbg, np.zeros(n_l1)])
+            ubg = np.concatenate([ubg, np.full(n_l1, np.inf)])
+            lbx = np.concatenate([lbx, np.zeros(h * n_ctrl)])
+            ubx = np.concatenate([ubx, np.full(h * n_ctrl, np.inf)])
+
+        qp: dict[str, Any] = {"x": ca.vertcat(*x_parts), "f": cost, "p": x0_p}
+        if g_parts:
+            qp["g"] = ca.vertcat(*g_parts)
+        self._lbx, self._ubx = lbx, ubx
+        self._lbg, self._ubg = lbg, ubg
+        self._has_g = bool(g_parts)
 
         opts: dict[str, Any] = {"print_time": False, "error_on_fail": False}
         if self.formulation == "sparse":
@@ -731,7 +805,7 @@ class LinearMPCController(Controller[MPCControllerLog]):
         u_guess = self._u_prev if self._u_prev is not None else np.zeros((h, m))
 
         if self.formulation == "dense":
-            w0 = u_guess.reshape(-1)
+            seed = [u_guess.reshape(-1)]
         else:
             # Forward-simulate from x0 to seed the lifted states with a feasible guess.
             x = x0
@@ -739,11 +813,14 @@ class LinearMPCController(Controller[MPCControllerLog]):
             for step in range(h):
                 x = np.asarray(self.model.f_step(x, u_guess[step])).reshape(-1)
                 x_guess.append(x)
-            w0 = np.concatenate([u_guess.reshape(-1), *x_guess])
+            seed = [u_guess.reshape(-1), *x_guess]
+        if self.w_u_l1 > 0:
+            seed.append(np.abs(u_guess).reshape(-1))  # slacks t = |u|
+        w0 = np.concatenate(seed)
 
         call: dict[str, Any] = {"x0": w0, "lbx": self._lbx, "ubx": self._ubx, "p": x0}
         if self._has_g:
-            call["lbg"], call["ubg"] = 0.0, 0.0
+            call["lbg"], call["ubg"] = self._lbg, self._ubg
         sol = self._solver(**call)
 
         u_opt = np.asarray(sol["x"]).reshape(-1)[: h * m].reshape(h, m)
@@ -775,8 +852,8 @@ class LinearMPCController(Controller[MPCControllerLog]):
         return u0, MPCControllerLog(cost=cost, success=success, warmup=False)
 
 
-def _build_output_lifted_nlp(
-    model: NNSymbolicModel, horizon: int, w_y: float, w_u: float, u_max: FloatArray
+def _build_output_lifted_nlp(  # noqa: PLR0913
+    model: NNSymbolicModel, horizon: int, w_y: float, w_u: float, u_max: FloatArray, w_u_l1: float = 0.0
 ) -> dict[str, Any]:
     """Assemble the output-lifted (minimal-realization NARX) suppression problem.
 
@@ -803,13 +880,18 @@ def _build_output_lifted_nlp(
         Weights on predicted EEG power and (quadratic) control effort.
     u_max
         Per-electrode amplitude bound, already broadcast to length ``n_controls``.
+    w_u_l1
+        Weight on the L1 norm of the control effort (a sparse-stimulation penalty); ``0`` (default)
+        adds nothing. When positive, per-node slack variables and the inequalities ``t >= |u|`` are
+        appended, keeping the cost quadratic (a convex QP / smooth NLP).
 
     Returns
     -------
     dict
-        The symbolic problem pieces ``x``/``f``/``g``/``p`` (decision vector, cost, defects,
-        measured-past parameter) plus the box bounds ``lbx``/``ubx``. The nonlinear (IPOPT) and
-        linear (OSQP) controllers each wrap these with their own solver.
+        The symbolic problem pieces ``x``/``f``/``g``/``p`` (decision vector, cost, constraints,
+        measured-past parameter) plus the box bounds ``lbx``/``ubx`` and the constraint bounds
+        ``lbg``/``ubg`` (defects are equalities ``= 0``; any L1 inequalities are ``>= 0``). The
+        nonlinear (IPOPT) and linear (OSQP) controllers each wrap these with their own solver.
     """
     n_y, n_u = model.artifact.n_y, model.artifact.n_u
     n_ch, n_ctrl = model.n_channels, model.n_controls
@@ -847,25 +929,47 @@ def _build_output_lifted_nlp(
         defects.append(y_vars[k] - model.predict_output(y_win, u_win))
         cost = cost + w_y * ca.sumsqr(decode(y_vars[k])) + w_u * ca.sumsqr(u_vars[k])
 
+    x_parts = [*u_vars, *y_vars]
+    g_parts = list(defects)
     lbx = np.concatenate([np.tile(-u_max, h), np.full(h * n_ch, -np.inf)])
     ubx = np.concatenate([np.tile(u_max, h), np.full(h * n_ch, np.inf)])
+    lbg = np.zeros(h * n_ch)  # defects (equalities)
+    ubg = np.zeros(h * n_ch)
+
+    # Optional L1 control-effort penalty: slacks + inequalities keep the problem a convex QP/NLP.
+    if w_u_l1 > 0:
+        slacks, l1_cost, l1_g = _l1_epigraph(u_vars, w_u_l1)
+        cost = cost + l1_cost
+        x_parts += slacks
+        g_parts.append(l1_g)
+        n_l1 = l1_g.numel()
+        lbg = np.concatenate([lbg, np.zeros(n_l1)])
+        ubg = np.concatenate([ubg, np.full(n_l1, np.inf)])
+        lbx = np.concatenate([lbx, np.zeros(h * n_ctrl)])
+        ubx = np.concatenate([ubx, np.full(h * n_ctrl, np.inf)])
+
     return {
-        "x": ca.vertcat(*u_vars, *y_vars),
+        "x": ca.vertcat(*x_parts),
         "f": cost,
-        "g": ca.vertcat(*defects),
+        "g": ca.vertcat(*g_parts),
         "p": x0_p,
         "lbx": lbx,
         "ubx": ubx,
+        "lbg": lbg,
+        "ubg": ubg,
     }
 
 
-def _seed_output_lifted(model: NNSymbolicModel, horizon: int, u_prev: FloatArray | None, x0: FloatArray) -> FloatArray:
-    """Warm-start vector for the output-lifted problem: ``[u_guess, y_guess]``.
+def _seed_output_lifted(
+    model: NNSymbolicModel, horizon: int, u_prev: FloatArray | None, x0: FloatArray, w_u_l1: float = 0.0
+) -> FloatArray:
+    """Warm-start vector for the output-lifted problem: ``[u_guess, y_guess]`` (plus L1 slacks).
 
     The controls are the previous solve shifted by one (or zeros on the first call); the lifted
     outputs are seeded by rolling the full window-state ``x0`` forward through the compiled
     ``f_step`` and reading each next state's newest model-space sample, giving a feasible guess
-    for the defects.
+    for the defects. When ``w_u_l1 > 0`` the L1 slacks are seeded with ``|u_guess|`` to match the
+    appended epigraph variables.
     """
     m = model.n_controls
     n_y, n_ch = model.artifact.n_y, model.n_channels
@@ -875,7 +979,10 @@ def _seed_output_lifted(model: NNSymbolicModel, horizon: int, u_prev: FloatArray
     for step in range(horizon):
         x = np.asarray(model.f_step(x, u_guess[step])).reshape(-1)
         y_guess.append(x[(n_y - 1) * n_ch : n_y * n_ch])
-    return np.concatenate([u_guess.reshape(-1), *y_guess])
+    seed = [u_guess.reshape(-1), *y_guess]
+    if w_u_l1 > 0:
+        seed.append(np.abs(u_guess).reshape(-1))  # slacks t = |u|
+    return np.concatenate(seed)
 
 
 class _NarxMPCControllerConfig(StrictConfig):
@@ -887,6 +994,7 @@ class _NarxMPCControllerConfig(StrictConfig):
     horizon: int | None = Field(default=None, ge=1)
     w_y: float = Field(default=1.0, ge=0)
     w_u: float = Field(default=0.0, ge=0)
+    w_u_l1: float = Field(default=0.0, ge=0)
     max_iter: int = Field(default=100, ge=1)
     max_cpu_time: float | None = Field(default=None, gt=0)
     expand: bool = False
@@ -923,6 +1031,7 @@ class NarxMPCController(Controller[MPCControllerLog]):
         horizon: int | None = None,
         w_y: float = 1.0,
         w_u: float = 0.0,
+        w_u_l1: float = 0.0,
         *,
         max_iter: int = 100,
         max_cpu_time: float | None = None,
@@ -935,16 +1044,19 @@ class NarxMPCController(Controller[MPCControllerLog]):
         makes moot -- every node is lifted): ``dt`` the update step (predictor's native dt),
         ``model`` the CasADi NN predictor, ``u_max`` the per-electrode amplitude bound (scalar or
         length-``n_controls``), ``horizon`` the control horizon (default the model's native
-        horizon), ``w_y``/``w_u`` the EEG-power/effort weights, ``max_iter`` the per-solve IPOPT
-        iteration cap (a capped iterate is still applied, with ``success`` False), ``max_cpu_time``
-        an optional per-solve wall-time budget in seconds, ``expand`` whether to expand the NLP
-        from MX to SX, and ``ipopt_options`` an extra IPOPT-option pass-through.
+        horizon), ``w_y``/``w_u`` the EEG-power/effort weights, ``w_u_l1`` the optional L1
+        control-effort (sparse-stimulation) weight (``0`` disables it, the default), ``max_iter``
+        the per-solve IPOPT iteration cap (a capped iterate is still applied, with ``success``
+        False), ``max_cpu_time`` an optional per-solve wall-time budget in seconds, ``expand``
+        whether to expand the NLP from MX to SX, and ``ipopt_options`` an extra IPOPT-option
+        pass-through.
         """
         super().__init__(dt)
         self.model = model
         self.horizon = int(horizon) if horizon is not None else model.artifact.horizon
         self.w_y = float(w_y)
         self.w_u = float(w_u)
+        self.w_u_l1 = float(w_u_l1)
         self.max_iter = int(max_iter)
         self.max_cpu_time = float(max_cpu_time) if max_cpu_time is not None else None
         self.expand = bool(expand)
@@ -982,6 +1094,7 @@ class NarxMPCController(Controller[MPCControllerLog]):
             horizon=cfg.horizon,
             w_y=cfg.w_y,
             w_u=cfg.w_u,
+            w_u_l1=cfg.w_u_l1,
             max_iter=cfg.max_iter,
             max_cpu_time=cfg.max_cpu_time,
             expand=cfg.expand,
@@ -990,7 +1103,7 @@ class NarxMPCController(Controller[MPCControllerLog]):
 
     def _build_solver(self) -> None:
         """Build the output-lifted NLP and its IPOPT solver, once."""
-        prob = _build_output_lifted_nlp(self.model, self.horizon, self.w_y, self.w_u, self.u_max)
+        prob = _build_output_lifted_nlp(self.model, self.horizon, self.w_y, self.w_u, self.u_max, self.w_u_l1)
         nlp = {"x": prob["x"], "f": prob["f"], "g": prob["g"], "p": prob["p"]}
         opts = {
             "print_time": False,
@@ -1007,12 +1120,13 @@ class NarxMPCController(Controller[MPCControllerLog]):
 
         self._solver = ca.nlpsol("mpc", "ipopt", nlp, opts)
         self._lbx, self._ubx = prob["lbx"], prob["ubx"]
+        self._lbg, self._ubg = prob["lbg"], prob["ubg"]
 
     def _solve(self, x0: FloatArray) -> tuple[FloatArray, float, bool]:
         """Solve the NLP for window-state ``x0``; return ``(u_0*, cost, success)``."""
         m, h = self.n_controls, self.horizon
-        w0 = _seed_output_lifted(self.model, h, self._u_prev, x0)
-        sol = self._solver(x0=w0, lbx=self._lbx, ubx=self._ubx, lbg=0.0, ubg=0.0, p=x0)
+        w0 = _seed_output_lifted(self.model, h, self._u_prev, x0, self.w_u_l1)
+        sol = self._solver(x0=w0, lbx=self._lbx, ubx=self._ubx, lbg=self._lbg, ubg=self._ubg, p=x0)
         u_opt = np.asarray(sol["x"]).reshape(-1)[: h * m].reshape(h, m)
         self._u_prev = np.vstack([u_opt[1:], u_opt[-1:]])
         status = self._solver.stats()["return_status"]
@@ -1050,6 +1164,7 @@ class _LinearNarxMPCControllerConfig(StrictConfig):
     horizon: int | None = Field(default=None, ge=1)
     w_y: float = Field(default=1.0, ge=0)
     w_u: float = Field(default=0.0, ge=0)
+    w_u_l1: float = Field(default=0.0, ge=0)
     osqp_eps: float = Field(default=1e-9, gt=0)
 
 
@@ -1074,16 +1189,18 @@ class LinearNarxMPCController(Controller[MPCControllerLog]):
         horizon: int | None = None,
         w_y: float = 1.0,
         w_u: float = 0.0,
+        w_u_l1: float = 0.0,
         *,
         osqp_eps: float = 1e-9,
     ) -> None:
         """Initialize the linear output-lifted MPC and build its (re-used) OSQP solver.
 
         Parameters mirror the nonlinear sibling :class:`NarxMPCController` (``dt``, ``model``,
-        ``u_max``, ``horizon``, ``w_y``, ``w_u``) plus ``osqp_eps``, the OSQP absolute/relative
-        convergence tolerance (default ``1e-9``, far tighter than OSQP's loose ``1e-3`` default so
-        the suppression QP is solved accurately). The predictor's inner MLP must have ``depth ==
-        0`` (a single affine layer); a nonlinear model raises ``ValueError``.
+        ``u_max``, ``horizon``, ``w_y``, ``w_u``, ``w_u_l1`` the optional L1 control-effort
+        (sparse-stimulation) weight defaulting to ``0``) plus ``osqp_eps``, the OSQP
+        absolute/relative convergence tolerance (default ``1e-9``, far tighter than OSQP's loose
+        ``1e-3`` default so the suppression QP is solved accurately). The predictor's inner MLP
+        must have ``depth == 0`` (a single affine layer); a nonlinear model raises ``ValueError``.
         """
         super().__init__(dt)
         depth = model.artifact.model.model.depth
@@ -1098,6 +1215,7 @@ class LinearNarxMPCController(Controller[MPCControllerLog]):
         self.horizon = int(horizon) if horizon is not None else model.artifact.horizon
         self.w_y = float(w_y)
         self.w_u = float(w_u)
+        self.w_u_l1 = float(w_u_l1)
         self.osqp_eps = float(osqp_eps)
 
         self.n_y = model.artifact.n_y
@@ -1132,6 +1250,7 @@ class LinearNarxMPCController(Controller[MPCControllerLog]):
             horizon=cfg.horizon,
             w_y=cfg.w_y,
             w_u=cfg.w_u,
+            w_u_l1=cfg.w_u_l1,
             osqp_eps=cfg.osqp_eps,
         )
 
@@ -1142,7 +1261,7 @@ class LinearNarxMPCController(Controller[MPCControllerLog]):
         rather than the compiled ``f_step``/``f_out`` so the graph stays a flat affine expression
         and ``ca.qpsol`` extracts an exact constant Hessian.
         """
-        prob = _build_output_lifted_nlp(self.model, self.horizon, self.w_y, self.w_u, self.u_max)
+        prob = _build_output_lifted_nlp(self.model, self.horizon, self.w_y, self.w_u, self.u_max, self.w_u_l1)
         qp = {"x": prob["x"], "f": prob["f"], "g": prob["g"], "p": prob["p"]}
         opts = {
             "print_time": False,
@@ -1151,12 +1270,13 @@ class LinearNarxMPCController(Controller[MPCControllerLog]):
         }
         self._solver = ca.qpsol("mpc", "osqp", qp, opts)
         self._lbx, self._ubx = prob["lbx"], prob["ubx"]
+        self._lbg, self._ubg = prob["lbg"], prob["ubg"]
 
     def _solve(self, x0: FloatArray) -> tuple[FloatArray, float, bool]:
         """Solve the QP for window-state ``x0``; return ``(u_0*, cost, success)``."""
         m, h = self.n_controls, self.horizon
-        w0 = _seed_output_lifted(self.model, h, self._u_prev, x0)
-        sol = self._solver(x0=w0, lbx=self._lbx, ubx=self._ubx, lbg=0.0, ubg=0.0, p=x0)
+        w0 = _seed_output_lifted(self.model, h, self._u_prev, x0, self.w_u_l1)
+        sol = self._solver(x0=w0, lbx=self._lbx, ubx=self._ubx, lbg=self._lbg, ubg=self._ubg, p=x0)
         u_opt = np.asarray(sol["x"]).reshape(-1)[: h * m].reshape(h, m)
         self._u_prev = np.vstack([u_opt[1:], u_opt[-1:]])
         success = bool(self._solver.stats()["success"])

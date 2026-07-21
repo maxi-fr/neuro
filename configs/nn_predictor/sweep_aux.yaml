@@ -6,54 +6,34 @@ simulation:
 
 model:
   horizon: 20
-  latent_dim: null       # Disable PCA to test the auxiliary losses in isolation
+  n_y: 15
+  n_u: 10
+  depth: 0
 
 training:
   epochs: 250
   train_split: 0.8
   seed: 69
   patience: 50
-  global_scaling: false
+  scaler: robust
+  global_scaling: true
+  batch_size: 256
+  w_psd: 0.0
+  w_fc: 0.0
+  curriculum_end_epoch: 200
 
 sweep:
-  n_trials: 100
-  model:
-    n_y:
-      type: int
-      low: 5
-      high: 15
-    n_u:
-      type: int
-      low: 5
-      high: 15
-    hidden_size:
-      type: categorical
-      choices: [64, 128, 256]
-    depth:
-      type: int
-      low: 0
-      high: 5
+  n_trials: 50
   training:
     learning_rate:
       type: loguniform
-      low: 0.0001
-      high: 0.01
+      low: 0.00001
+      high: 0.001
     weight_decay:
       type: loguniform
-      low: 0.0001
-      high: 0.1
-    batch_size:
-      type: categorical
-      choices: [64, 128, 256, 512]
-    curriculum_end_epoch:      # epoch at which L reaches horizon (start epoch stays 0)
+      low: 0.00001
+      high: 0.001
+    curriculum_start_epoch:
       type: int
-      low: 150
-      high: 250
-    w_psd:                   # Sweep spectral loss
-      type: float
-      low: 0.0
-      high: 1.0
-    w_fc:                    # Sweep connectivity loss
-      type: float
-      low: 0.0
-      high: 1.0
+      low: 10
+      high: 150

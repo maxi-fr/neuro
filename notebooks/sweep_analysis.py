@@ -1,6 +1,6 @@
 import marimo
 
-__generated_with = "0.23.10"
+__generated_with = "0.23.13"
 app = marimo.App(
     width="full",
     layout_file="layouts/sweep_analysis.slides.json",
@@ -68,6 +68,7 @@ def load_study(artifact_base, mo, optuna, sweep_dropdown):
         columns=["number", "datetime_start", "datetime_complete", "state"]
     )
 
+    trials_df = trials_df[trials_df["value"] < 150]
     trials_df
     return study, sweep_path, trials_df
 
