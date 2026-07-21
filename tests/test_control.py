@@ -1,13 +1,13 @@
 """Tests for the project control components.
 
-Covers :class:`~neuro.control.ZeroController` and
-:class:`~neuro.control.StimWindowController`.
+Covers :class:`~neuro.control.ZeroController`,
+:class:`~neuro.control.StimWindowController`, and :func:`~neuro.control.build_input_schedule`.
 """
 
 import numpy as np
 import pytest
 
-from neuro.control import StimWindowController, ZeroController
+from neuro.control import StimWindowController, ZeroController, build_input_schedule
 
 _DT = 0.1
 
@@ -57,6 +57,36 @@ def test_stim_window_controller_rejects_mismatched_amplitude() -> None:
     """An amplitude length that is neither 1 nor n_u is rejected."""
     with pytest.raises(ValueError, match="amplitude has 3 entries but n_u is 2"):
         StimWindowController(dt=_DT, onset=0.0, offset=1.0, amplitude=[1.0, 2.0, 3.0], n_u=2)
+
+
+@pytest.mark.parametrize("input_type", ["ras", "prbs", "multisine"])
+@pytest.mark.parametrize("n_controls", [2, 3])
+def test_input_schedule_obeys_kirchhoff_current_law(input_type: str, n_controls: int) -> None:
+    """Every active row of the excitation schedule sums to zero across electrodes (Kirchhoff).
+
+    The leading transient stays exactly zero; the persistently-exciting body must inject no net
+    current, so each per-step current vector balances to ~0 regardless of ``input_type``. The
+    per-row rescale must also keep every current within ``|u| <= amp`` -- for ``n_controls > 2``
+    (e.g. a cathode pair plus a shared return anode) the raw zero-sum projection can overshoot.
+    """
+    amp = 3.0
+    n_steps, transient_steps = 1100, 100  # >= 10 blocks so prbs reliably excites after the zero-sum projection
+    schedule = build_input_schedule(
+        input_type=input_type,
+        n_steps=n_steps,
+        transient_steps=transient_steps,
+        n_controls=n_controls,
+        amp=amp,
+        hold_ms=10.0,
+        dt=1e-4,
+        rng=np.random.default_rng(0),
+    )
+
+    assert schedule.shape == (n_steps, n_controls)
+    np.testing.assert_array_equal(schedule[:transient_steps], 0.0)  # transient is zeroed
+    np.testing.assert_allclose(schedule[transient_steps:].sum(axis=1), 0.0, atol=1e-12)  # KCL
+    assert np.all(np.abs(schedule) <= amp + 1e-9)  # amplitude bound respected after rescale
+    assert np.any(np.abs(schedule[transient_steps:]) > 1e-6)  # ... and it actually excites
 
 
 def test_stim_window_controller_from_config() -> None:

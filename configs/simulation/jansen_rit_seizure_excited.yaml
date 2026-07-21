@@ -11,7 +11,7 @@ dynamics:
   seed: 69
   connectome:
     speed: 50.0
-    target_electrode: [CP5, T7]
+    target_electrode: [CP5, T7, F9]
     gamma_spread: 20.0
     K: 0.5357
   params:
@@ -39,7 +39,7 @@ estimator: {class_path: simulate.estimator.IdentityEstimator, dt: 0.0001}
 controller:
   class_path: neuro.control.WaveformController
   dt: 0.0001
-  n_u: 2              # one entry per target_electrode (CP5, T7)
+  n_u: 3              # one per target_electrode (CP5, T7 cathodes + F9 return anode)
   input_type: ras   # ras | prbs | multisine
   amp: 3.0
   # 10 ms = one predictor step (plant dt 1e-4 x downsample 100). Must match the closed-loop MPC's

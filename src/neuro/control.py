@@ -200,6 +200,13 @@ def build_input_schedule(  # noqa: PLR0913
     ``ras`` holds a random uniform amplitude per block, ``prbs`` a random binary +/-amp, and
     ``multisine`` a random-phase sum of sinusoids; ``hold_ms`` sets the block length for the
     first two.
+
+    Each active row is projected onto the zero-sum subspace (its across-electrode mean is
+    removed) so the montage obeys Kirchhoff's current law ``sum(u) = 0`` -- matching the
+    constraint the MPC controllers enforce. A per-row scalar rescale then caps any overshoot at
+    ``|u| <= amp`` while preserving the zero row sum; for a 2-electrode montage this is a no-op
+    and the result is the antisymmetric ``[a, -a]`` (the overshoot only arises for
+    ``n_controls > 2``, e.g. a cathode pair plus a shared return anode).
     """
     u = np.zeros((n_steps, n_controls))
     active = n_steps - transient_steps
@@ -220,7 +227,11 @@ def build_input_schedule(  # noqa: PLR0913
         msg = f"unknown input_type {input_type!r}"
         raise ValueError(msg)
 
-    u[transient_steps:] = seq
+    zero_sum = seq - seq.mean(axis=1, keepdims=True)  # Kirchhoff: each row sums to zero
+    # Cap any per-row overshoot at |u| <= amp; a per-row scalar factor preserves the zero sum.
+    peak = np.abs(zero_sum).max(axis=1, keepdims=True)
+    zero_sum *= np.minimum(1.0, amp / np.where(peak > 0.0, peak, 1.0))
+    u[transient_steps:] = zero_sum
     return u
 
 
@@ -249,7 +260,8 @@ class WaveformController(Controller[WaveformControllerLog]):
     step ``k = round(t / dt)`` (clamped to the last sample). Used to inject persistently-exciting
     tES inputs (random-amplitude steps ``ras``, a random binary signal ``prbs``, or a
     ``multisine``) for plant identification -- configured by
-    ``configs/simulation/jansen_rit_seizure_excited.yaml``.
+    ``configs/simulation/jansen_rit_seizure_excited.yaml``. The schedule obeys Kirchhoff's
+    current law: every emitted current vector sums to zero across electrodes.
     """
 
     def __init__(self, dt: float, schedule: ArrayLike) -> None:
@@ -314,6 +326,17 @@ def _l1_epigraph(u_vars: list[ca.MX], w_l1: float) -> tuple[list[ca.MX], ca.MX, 
     return slacks, cost, ca.vertcat(*g)
 
 
+def _sum_to_zero(u_vars: list[ca.MX]) -> ca.MX:
+    """Kirchhoff current-law equality: the per-electrode currents sum to zero at each step.
+
+    tES injects no net current, so the montage's currents must balance
+    (``sum(u_k) == 0``). Returns the stacked expression ``[sum(u_0), ..., sum(u_{H-1})]``
+    (one row per horizon step) to be constrained ``== 0`` (``lbg = ubg = 0``). Written with
+    ``ca.sum1`` so it holds for any number of electrodes ``n_controls`` (>= 2).
+    """
+    return ca.vertcat(*[ca.sum1(u) for u in u_vars])
+
+
 class _MPCControllerConfig(StrictConfig):
     """Config schema for :class:`MPCController`."""
 
@@ -340,8 +363,9 @@ class MPCController(Controller[MPCControllerLog]):
     F(x_k, u_k)`` map and its EEG output. Each call builds the current window-state from
     the measurement/control history, solves a **multiple-shooting** NLP over ``horizon``
     steps -- minimizing ``sum_k ( w_y ||y_k||^2 + w_u ||u_k||^2 )`` subject to the
-    continuity defects ``x_{k+1} = F(x_k, u_k)`` and per-electrode box bounds ``|u| <=
-    u_max`` -- and applies the first control (receding horizon).
+    continuity defects ``x_{k+1} = F(x_k, u_k)``, per-electrode box bounds ``|u| <=
+    u_max``, and the Kirchhoff current law ``sum(u_k) = 0`` (the montage injects no net
+    current) -- and applies the first control (receding horizon).
 
     When the artifact carries a fixed PCA projection, each measurement is encoded to the
     ``k`` latent components before entering the window, so the shooting state (and hence the
@@ -494,7 +518,9 @@ class MPCController(Controller[MPCControllerLog]):
                 defects.append(x_curr - get_phi(k + 1))
 
         x_parts = [*u_vars, *phi_vars]
-        g_parts = list(defects)
+        # Kirchhoff current law: the montage currents sum to zero at every step (h equalities).
+        g_parts = [*defects, _sum_to_zero(u_vars)]
+        n_eq = len(defects) * n_state + h  # defects + sum-to-zero rows, all equalities at 0
         n_phi_vars = len(phi_vars) * n_state
         self._lbx = np.concatenate([np.tile(-self.u_max, h), np.full(n_phi_vars, -np.inf)])
         self._ubx = np.concatenate([np.tile(self.u_max, h), np.full(n_phi_vars, np.inf)])
@@ -506,8 +532,8 @@ class MPCController(Controller[MPCControllerLog]):
             x_parts += slacks
             g_parts.append(l1_g)
             n_l1 = l1_g.numel()
-            self._lbg = np.concatenate([np.zeros(len(defects) * n_state), np.zeros(n_l1)])
-            self._ubg = np.concatenate([np.zeros(len(defects) * n_state), np.full(n_l1, np.inf)])
+            self._lbg = np.concatenate([np.zeros(n_eq), np.zeros(n_l1)])
+            self._ubg = np.concatenate([np.zeros(n_eq), np.full(n_l1, np.inf)])
             self._lbx = np.concatenate([self._lbx, np.zeros(h * n_ctrl)])
             self._ubx = np.concatenate([self._ubx, np.full(h * n_ctrl, np.inf)])
         else:
@@ -606,7 +632,8 @@ class LinearMPCController(Controller[MPCControllerLog]):
     :class:`MPCController` builds. As there, the "state" is the rolling window of the last
     ``n_y`` EEG measurements and ``n_u`` applied controls; each call builds the window-state,
     solves the QP over ``horizon`` steps -- minimizing ``sum_k ( w_y ||y_k||^2 + w_u ||u_k||^2
-    )`` subject to per-electrode box bounds ``|u| <= u_max`` -- and applies the first control.
+    )`` subject to per-electrode box bounds ``|u| <= u_max`` and the Kirchhoff current law
+    ``sum(u_k) = 0`` -- and applies the first control.
 
     Two equivalent QP formulations are selectable via ``formulation``:
 
@@ -730,8 +757,9 @@ class LinearMPCController(Controller[MPCControllerLog]):
 
         ``"sparse"`` stacks the controls and every intermediate state as decision variables and
         ties them with the affine continuity constraints; ``"dense"`` keeps only the controls
-        and unrolls the affine state map from the ``x0`` parameter (no equality constraints).
-        Both accumulate the same quadratic cost. The inline symbolic ``model.step``/
+        and unrolls the affine state map from the ``x0`` parameter. Both accumulate the same
+        quadratic cost and both enforce the Kirchhoff sum-to-zero equality on the controls (so
+        ``"dense"`` also carries equality constraints). The inline symbolic ``model.step``/
         ``model.output`` (rather than the compiled ``f_step``/``f_out``) keep the graph a flat
         affine expression, so ``ca.qpsol`` extracts an exact constant Hessian.
         """
@@ -742,6 +770,8 @@ class LinearMPCController(Controller[MPCControllerLog]):
         u_vars = [ca.MX.sym(f"u_{k}", n_ctrl) for k in range(h)]
 
         cost = ca.MX(0)
+        # Kirchhoff current law: the montage currents sum to zero at every step (h equalities).
+        kcl = _sum_to_zero(u_vars)
         if self.formulation == "dense":
             x_curr = x0_p
             for k in range(h):
@@ -749,11 +779,11 @@ class LinearMPCController(Controller[MPCControllerLog]):
                 y_next = self.model.output(x_curr)
                 cost = cost + self.w_y * ca.sumsqr(y_next) + self.w_u * ca.sumsqr(u_vars[k])
             x_parts = [*u_vars]
-            g_parts: list[ca.MX] = []
+            g_parts: list[ca.MX] = [kcl]
             lbx = np.tile(-self.u_max, h)
             ubx = np.tile(self.u_max, h)
-            lbg = np.zeros(0)
-            ubg = np.zeros(0)
+            lbg = np.zeros(h)
+            ubg = np.zeros(h)
         else:  # sparse
             x_vars = [ca.MX.sym(f"x_{k}", n_state) for k in range(1, h + 1)]
             defects, x_prev = [], x0_p
@@ -764,12 +794,12 @@ class LinearMPCController(Controller[MPCControllerLog]):
                 cost = cost + self.w_y * ca.sumsqr(y_next) + self.w_u * ca.sumsqr(u_vars[k])
                 x_prev = x_lift
             x_parts = [*u_vars, *x_vars]
-            g_parts = list(defects)
+            g_parts = [*defects, kcl]
             n_x_vars = h * n_state
             lbx = np.concatenate([np.tile(-self.u_max, h), np.full(n_x_vars, -np.inf)])
             ubx = np.concatenate([np.tile(self.u_max, h), np.full(n_x_vars, np.inf)])
-            lbg = np.zeros(h * n_state)  # affine continuity defects (equalities)
-            ubg = np.zeros(h * n_state)
+            lbg = np.zeros(h * n_state + h)  # continuity defects + sum-to-zero (equalities)
+            ubg = np.zeros(h * n_state + h)
 
         # Optional L1 control-effort penalty: slacks + inequalities keep it a convex QP.
         if self.w_u_l1 > 0:
@@ -890,8 +920,9 @@ def _build_output_lifted_nlp(  # noqa: PLR0913
     dict
         The symbolic problem pieces ``x``/``f``/``g``/``p`` (decision vector, cost, constraints,
         measured-past parameter) plus the box bounds ``lbx``/``ubx`` and the constraint bounds
-        ``lbg``/``ubg`` (defects are equalities ``= 0``; any L1 inequalities are ``>= 0``). The
-        nonlinear (IPOPT) and linear (OSQP) controllers each wrap these with their own solver.
+        ``lbg``/``ubg`` (output defects and the Kirchhoff sum-to-zero rows are equalities ``= 0``;
+        any L1 inequalities are ``>= 0``). The nonlinear (IPOPT) and linear (OSQP) controllers
+        each wrap these with their own solver.
     """
     n_y, n_u = model.artifact.n_y, model.artifact.n_u
     n_ch, n_ctrl = model.n_channels, model.n_controls
@@ -930,11 +961,12 @@ def _build_output_lifted_nlp(  # noqa: PLR0913
         cost = cost + w_y * ca.sumsqr(decode(y_vars[k])) + w_u * ca.sumsqr(u_vars[k])
 
     x_parts = [*u_vars, *y_vars]
-    g_parts = list(defects)
+    # Kirchhoff current law: the montage currents sum to zero at every step (h equalities).
+    g_parts = [*defects, _sum_to_zero(u_vars)]
     lbx = np.concatenate([np.tile(-u_max, h), np.full(h * n_ch, -np.inf)])
     ubx = np.concatenate([np.tile(u_max, h), np.full(h * n_ch, np.inf)])
-    lbg = np.zeros(h * n_ch)  # defects (equalities)
-    ubg = np.zeros(h * n_ch)
+    lbg = np.zeros(h * n_ch + h)  # output defects + sum-to-zero (equalities)
+    ubg = np.zeros(h * n_ch + h)
 
     # Optional L1 control-effort penalty: slacks + inequalities keep the problem a convex QP/NLP.
     if w_u_l1 > 0:
@@ -1006,7 +1038,8 @@ class NarxMPCController(Controller[MPCControllerLog]):
 
     Same objective and predictor as :class:`MPCController` -- minimize
     ``sum_k ( w_y ||y_k||^2 + w_u ||u_k||^2 )`` under per-electrode box bounds ``|u| <= u_max``
-    -- but posed on a *minimal* realization. Because the
+    and the Kirchhoff current law ``sum(u_k) = 0`` -- but posed on a *minimal* realization.
+    Because the
     :class:`~neuro.nn_predictor_casadi.NNSymbolicModel` is a strict NARX map, its stacked
     window-state is a non-minimal shift register; this controller lifts only the per-step
     model-space output ``y_k`` (and the controls ``u_k``), closing one defect per node
@@ -1172,8 +1205,9 @@ class LinearNarxMPCController(Controller[MPCControllerLog]):
     """Output-lifted NARX MPC for a *linear* (0-hidden-layer) predictor, solved as a convex QP.
 
     The output-lifted counterpart of :class:`LinearMPCController`: the same receding-horizon
-    suppression objective and box bounds, but lifting only the per-step model-space output
-    ``y_k`` (and the controls ``u_k``) instead of the full window-state. For a depth-0 predictor
+    suppression objective, box bounds, and Kirchhoff sum-to-zero constraint, but lifting only
+    the per-step model-space output ``y_k`` (and the controls ``u_k``) instead of the full
+    window-state. For a depth-0 predictor
     the defects ``y_k = phi(...)`` are affine and the cost quadratic, so the problem is a convex
     QP solved with OSQP; the banded, output-lifted constraint set has ``H*n_channels`` lifted
     variables rather than :class:`LinearMPCController`'s ``H*n_state`` stacked states. As there,

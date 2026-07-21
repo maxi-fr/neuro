@@ -9,7 +9,7 @@ trained artifact).
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import casadi as ca
 import equinox as eqx
@@ -202,6 +202,21 @@ def test_update_respects_bounds(tmp_path: Path) -> None:
     assert np.all(np.abs(u) <= u_max + 1e-6)
 
 
+def test_control_obeys_kirchhoff_current_law(tmp_path: Path) -> None:
+    """The emitted control sums to zero across electrodes (Kirchhoff's current law).
+
+    With ``w_y=1, w_u=0`` the MPC actively stimulates to cut predicted EEG power, yet the
+    montage's per-electrode currents must still balance so no net current is injected.
+    """
+    model = NNSymbolicModel.from_artifact(_build_artifact(tmp_path, n_y=4))
+    controller = MPCController(dt=0.01, model=model, u_max=5.0, horizon=3, w_y=1.0, w_u=0.0)
+
+    u, log = _drive(controller, n_steps=6, n_channels=model.n_channels)[-1]
+    assert not log.warmup
+    assert np.linalg.norm(u, ord=1) > 1e-3  # it actually stimulates
+    assert abs(float(np.sum(u))) < 1e-6  # ... yet the currents sum to zero
+
+
 def test_pure_effort_cost_yields_zero_control(tmp_path: Path) -> None:
     """With w_y=0 the cost is sum||u||^2, whose unconstrained minimizer is u=0."""
     model = NNSymbolicModel.from_artifact(_build_artifact(tmp_path, n_y=4))
@@ -210,6 +225,23 @@ def test_pure_effort_cost_yields_zero_control(tmp_path: Path) -> None:
     u, log = _drive(controller, n_steps=6, n_channels=model.n_channels)[-1]
     assert log.success
     np.testing.assert_allclose(u, np.zeros(model.n_controls), atol=1e-4)
+
+
+def test_l1_penalty_drives_control_toward_zero(tmp_path: Path) -> None:
+    """A large L1 control-effort penalty suppresses stimulation, driving the applied control to 0.
+
+    With ``w_y>0`` and ``w_u=0`` the baseline MPC stimulates to cut predicted EEG power; adding a
+    dominant L1 effort penalty (epigraph-reformulated into the NLP) makes stimulating uneconomical,
+    so the control collapses to (near-)zero.
+    """
+    model = NNSymbolicModel.from_artifact(_build_artifact(tmp_path, n_y=4))
+    base: dict[str, Any] = {"dt": 0.01, "model": model, "u_max": 5.0, "horizon": 3, "w_y": 1.0, "w_u": 0.0}
+
+    u_l2 = _drive(MPCController(w_u_l1=0.0, **base), n_steps=6, n_channels=model.n_channels)[-1][0]
+    u_l1 = _drive(MPCController(w_u_l1=1000.0, **base), n_steps=6, n_channels=model.n_channels)[-1][0]
+
+    assert np.linalg.norm(u_l2, ord=1) > 1e-3  # baseline stimulates
+    np.testing.assert_allclose(u_l1, np.zeros(model.n_controls), atol=1e-4)
 
 
 def test_per_electrode_bounds_rejected_when_mismatched(tmp_path: Path) -> None:
@@ -222,10 +254,11 @@ def test_per_electrode_bounds_rejected_when_mismatched(tmp_path: Path) -> None:
 def test_from_config_loads_artifact_and_defaults_horizon(tmp_path: Path) -> None:
     """from_config loads the artifact path and defaults the horizon to the model's."""
     artifact = _build_artifact(tmp_path, horizon=5)
-    controller = MPCController.from_config({"dt": 0.01, "artifact": str(artifact), "u_max": 3.0})
+    controller = MPCController.from_config({"dt": 0.01, "artifact": str(artifact), "u_max": 3.0, "w_u_l1": 0.25})
     assert controller.dt == 0.01
     assert controller.horizon == 5  # defaulted from the artifact
     assert controller.n_controls == 2
+    assert controller.w_u_l1 == 0.25
 
 
 def test_closed_loop_simulation_runs(tmp_path: Path) -> None:

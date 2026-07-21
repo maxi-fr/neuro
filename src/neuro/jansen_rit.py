@@ -314,6 +314,29 @@ def project_control(u: FloatArray, gamma_2d: FloatArray, n_controls: int) -> Flo
     return u @ gamma_2d
 
 
+_ZERO_SUM_CURRENT_ATOL = 1e-6
+
+
+def _assert_zero_sum_current(u: FloatArray) -> None:
+    """Raise if the per-electrode currents violate Kirchhoff's current law.
+
+    A physical tES montage injects no net current, so ``u`` must sum to zero across electrodes.
+    The tolerance scales with the current magnitude to absorb solver/float noise (the MPC only
+    satisfies its ``sum(u)=0`` equality to solver precision) while still catching the order-one
+    violations an unbalanced montage produces. A single electrode can never satisfy this unless
+    it is off -- monopolar stimulation is physically ill-posed here.
+    """
+    total = float(np.sum(u))
+    if abs(total) > _ZERO_SUM_CURRENT_ATOL * (1.0 + float(np.abs(u).max())):
+        msg = (
+            f"stimulation currents violate Kirchhoff's current law: they sum to {total:.3e} "
+            f"(u={np.asarray(u, dtype=np.float64).tolist()}), but a tES montage injects no net "
+            "current. Balance the montage so the currents sum to zero, or construct the plant "
+            "with enforce_zero_sum_current=False."
+        )
+        raise ValueError(msg)
+
+
 class _JansenRitDynamicsConfig(StrictConfig):
     """Config schema for :meth:`JansenRitDynamics.from_config`.
 
@@ -323,6 +346,7 @@ class _JansenRitDynamicsConfig(StrictConfig):
 
     dt: float = Field(gt=0)
     seed: int | None = None
+    enforce_zero_sum_current: bool = True
     connectome: _ConnectomeConfig = Field(default_factory=_ConnectomeConfig)
     params: _JansenRitParamsConfig = Field(default_factory=_JansenRitParamsConfig)
 
@@ -340,28 +364,36 @@ class JansenRitDynamics(Dynamics[NoLog]):
     The state ``self.x`` is the ``(6, N)`` network array; the orchestrator logs it as
     the flattened ``(6 N,)`` vector that :meth:`~simulate.component.Component.from_col_vec`
     produces. The control input ``u`` is the per-electrode tES current, projected to
-    nodes through ``conn.gamma`` (no-op when ``gamma`` is zero, i.e. open loop).
+    nodes through ``conn.gamma`` (no-op when ``gamma`` is zero, i.e. open loop). Unless
+    ``enforce_zero_sum_current=False``, each ``u`` must obey Kirchhoff's current law
+    (currents sum to zero) or :meth:`dynamics` raises before projecting it.
 
     A single-node ``conn`` (``N = 1``, zero weights/delays) is the degenerate isolated
     node. Everything is in SI seconds: ``dt`` is the integration step and ``conn.delays``
     (ms) convert to steps via ``round(delays / (dt * 1000))``.
     """
 
-    def __init__(
+    def __init__(  # noqa: PLR0913
         self,
         dt: float,
         params: JansenRitParams,
         conn: Connectome,
         seed: int | None = None,
         initial_state: FloatArray | None = None,
+        *,
+        enforce_zero_sum_current: bool = True,
     ) -> None:
         """Initialize the network plant from ``params`` and the structural ``conn``.
 
         ``initial_state`` is the ``(6, N)`` starting state; when ``None`` the network
-        starts from rest (all zeros). ``seed`` seeds the noise RNG.
+        starts from rest (all zeros). ``seed`` seeds the noise RNG. When
+        ``enforce_zero_sum_current`` (the default), every applied control is checked to obey
+        Kirchhoff's current law (currents sum to zero) before it is projected onto nodes;
+        set it ``False`` only for (physically ill-posed) monopolar experiments.
         """
         super().__init__(dt, integrator=None)
         self.K = conn.K
+        self.enforce_zero_sum_current = enforce_zero_sum_current
 
         n_nodes = conn.weights.shape[0]
         weights = conn.weights
@@ -412,7 +444,13 @@ class JansenRitDynamics(Dynamics[NoLog]):
         conn = Connectome.from_config(cfg.connectome.model_dump())
         params = JansenRitParams.from_config(cfg.params.model_dump())
 
-        return cls(dt=cfg.dt, params=params, conn=conn, seed=cfg.seed)
+        return cls(
+            dt=cfg.dt,
+            params=params,
+            conn=conn,
+            seed=cfg.seed,
+            enforce_zero_sum_current=cfg.enforce_zero_sum_current,
+        )
 
     def dynamics(self, t: float, x: FloatArray, u: FloatArray) -> FloatArray:
         """Advance the network one stochastic-Heun step (``sigma = 0`` is noiseless).
@@ -436,6 +474,8 @@ class JansenRitDynamics(Dynamics[NoLog]):
             s_y,
         )
 
+        if self.enforce_zero_sum_current:
+            _assert_zero_sum_current(u)
         u_node = project_control(u, self.gamma_2d, self.n_controls)
         xi = self.rng.standard_normal(n_nodes)
         return _heun_step_jit(x, u_node, self.params_tuple, self.dt, xi, coupling)

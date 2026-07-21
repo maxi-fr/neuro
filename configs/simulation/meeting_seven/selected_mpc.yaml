@@ -12,7 +12,7 @@ dynamics:
   seed: 69
   connectome:
     speed: 50.0
-    target_electrode: [CP5, T7]
+    target_electrode: [CP5, T7, F9]
     gamma_spread: 20.0
     K: 0.5357
   params:

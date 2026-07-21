@@ -67,7 +67,11 @@ trajectory. Each file provides two arrays:
 
 The recordings are **persistently exciting** tES sequences (broadband stimulation), so the control
 $u$ visits enough of the input space for the network to learn the input→output response rather than
-just the autonomous dynamics.
+just the autonomous dynamics. The stimulation obeys **Kirchhoff's current law** — each row of $u$
+sums to zero across the $m$ electrodes (no net injected current), matching the constraint the MPC
+controllers enforce. Data generated before this fix is physically invalid; if `data/experiment_excited/`
+is empty, regenerate it with `uv run scripts/run_simulation.py configs/simulation/experiment_excited.yaml`
+before training (older wrong-stimulation datasets are archived under `data/pre_kirchhoff_wrong_stim/`).
 
 ### 2.2 Loading and downsampling
 

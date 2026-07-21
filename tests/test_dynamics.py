@@ -13,6 +13,7 @@ from __future__ import annotations
 from dataclasses import replace
 
 import numpy as np
+import pytest
 from simulate.estimator import IdentityEstimator
 from simulate.reference import StepReference
 from simulate.sensor import GaussianSensor, full_state_measurement
@@ -105,11 +106,54 @@ def test_dynamics_from_config_builds_network() -> None:
         {"dt": _DT, "connectome": {"speed": 50.0, "K": 0.5357}, "params": {"A": 3.25}, "seed": 69}
     )
     assert dyn.x.shape == (_STATE_DIM, _N_REGIONS_TVB)
+    assert dyn.enforce_zero_sum_current is True  # Kirchhoff check on by default
 
     out, _ = dyn.evaluate(0.0, np.array([0.0]))
     out = np.asarray(out)
     assert out.shape == (_STATE_DIM, _N_REGIONS_TVB)
     assert np.isfinite(out).all()
+
+
+def _two_electrode_dyn(*, enforce_zero_sum_current: bool = True) -> JansenRitDynamics:
+    """Fast synthetic plant with a 2-electrode montage (zero gamma; only the KCL check matters)."""
+    conn = replace(_toy_connectome(3), gamma=np.zeros((2, 3)))
+    return JansenRitDynamics(
+        dt=_DT,
+        params=JansenRitParams(),
+        conn=conn,
+        seed=7,
+        enforce_zero_sum_current=enforce_zero_sum_current,
+    )
+
+
+def test_dynamics_rejects_nonzero_sum_current() -> None:
+    """By default the plant refuses a control that violates Kirchhoff's current law (sum != 0)."""
+    dyn = _two_electrode_dyn()
+    with pytest.raises(ValueError, match="Kirchhoff"):
+        dyn.dynamics(0.0, dyn.x, np.array([2.0, 1.0]))  # sums to 3.0, not 0
+
+
+def test_dynamics_accepts_zero_sum_current() -> None:
+    """A balanced (zero-sum) montage current is projected and stepped normally."""
+    dyn = _two_electrode_dyn()
+    out = dyn.dynamics(0.0, dyn.x, np.array([2.0, -2.0]))
+    assert out.shape == dyn.x.shape
+    assert np.isfinite(out).all()
+
+
+def test_dynamics_flag_false_allows_monopolar_current() -> None:
+    """With enforce_zero_sum_current=False an unbalanced (monopolar) current is permitted."""
+    dyn = _two_electrode_dyn(enforce_zero_sum_current=False)
+    out = dyn.dynamics(0.0, dyn.x, np.array([2.0, 1.0]))
+    assert np.isfinite(out).all()
+
+
+def test_from_config_can_disable_zero_sum_check() -> None:
+    """The Kirchhoff check is config-toggleable via ``enforce_zero_sum_current``."""
+    dyn = JansenRitDynamics.from_config(
+        {"dt": _DT, "connectome": {"speed": 50.0, "K": 0.5357}, "enforce_zero_sum_current": False}
+    )
+    assert dyn.enforce_zero_sum_current is False
 
 
 def test_eeg_measurement_applies_gain() -> None:

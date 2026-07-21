@@ -134,16 +134,19 @@ def _drive(
     return out
 
 
-def test_sparse_dense_ipopt_equivalence(tmp_path: Path) -> None:
+@pytest.mark.parametrize("w_u_l1", [0.0, 0.5])
+def test_sparse_dense_ipopt_equivalence(tmp_path: Path, w_u_l1: float) -> None:
     """sparse (OSQP), dense (qpOASES), and the IPOPT MPC solve the same QP on a linear model.
 
     Driving exactly ``n_y`` steps lets the window fill with identical measurements and all-zero
     controls, so every controller's first real solve sees the *same* ``x0``. With ``w_u>0`` the
     QP is strictly convex (unique optimum), so the applied control must agree across the two QP
-    formulations (tightly) and the nonlinear IPOPT MPC on the same affine model (loosely).
+    formulations (tightly) and the nonlinear IPOPT MPC on the same affine model (loosely). The
+    optional L1 penalty ``w_u_l1`` (epigraph-reformulated) must be applied identically by all
+    three, so equivalence holds with or without it.
     """
     n_y, n_channels = 4, 2
-    kw: dict[str, Any] = {"dt": 0.01, "u_max": 5.0, "horizon": 4, "w_y": 1.0, "w_u": 0.1}
+    kw: dict[str, Any] = {"dt": 0.01, "u_max": 5.0, "horizon": 4, "w_y": 1.0, "w_u": 0.1, "w_u_l1": w_u_l1}
     model = NNSymbolicModel.from_artifact(_build_artifact(tmp_path, n_y=n_y, n_channels=n_channels))
 
     u_sparse = _drive(LinearMPCController(model=model, formulation="sparse", **kw), n_y, n_channels)[-1][0]
@@ -171,6 +174,24 @@ def test_update_respects_bounds(tmp_path: Path, formulation: str) -> None:
 
 
 @pytest.mark.parametrize("formulation", ["sparse", "dense"])
+def test_control_obeys_kirchhoff_current_law(tmp_path: Path, formulation: str) -> None:
+    """The emitted control sums to zero across electrodes (Kirchhoff's current law).
+
+    Both QP formulations carry the sum-to-zero equality, so even while stimulating
+    (``w_y=1, w_u=0``) the montage's currents balance exactly.
+    """
+    model = NNSymbolicModel.from_artifact(_build_artifact(tmp_path, n_y=4))
+    controller = LinearMPCController(
+        dt=0.01, model=model, u_max=5.0, horizon=4, w_y=1.0, w_u=0.0, formulation=formulation
+    )
+
+    u, log = _drive(controller, n_steps=6, n_channels=model.n_channels)[-1]
+    assert log.success
+    assert np.linalg.norm(u, ord=1) > 1e-3  # it actually stimulates
+    assert abs(float(np.sum(u))) < 1e-8  # ... yet the currents sum to zero (exact for a QP)
+
+
+@pytest.mark.parametrize("formulation", ["sparse", "dense"])
 def test_pure_effort_cost_yields_zero_control(tmp_path: Path, formulation: str) -> None:
     """With w_y=0 the cost is sum||u||^2, whose unique constrained minimizer is u=0."""
     model = NNSymbolicModel.from_artifact(_build_artifact(tmp_path, n_y=4))
@@ -181,6 +202,43 @@ def test_pure_effort_cost_yields_zero_control(tmp_path: Path, formulation: str) 
     u, log = _drive(controller, n_steps=6, n_channels=model.n_channels)[-1]
     assert log.success
     np.testing.assert_allclose(u, np.zeros(model.n_controls), atol=1e-4)
+
+
+@pytest.mark.parametrize("formulation", ["sparse", "dense"])
+def test_l1_penalty_yields_sparse_control(tmp_path: Path, formulation: str) -> None:
+    """The L1 control-effort penalty produces *exact* zeros (sparsity) that the L2 term never does.
+
+    The active-set/OSQP QP soft-thresholds the controls: a moderate ``w_u_l1`` snaps at least one
+    component to exactly zero (unlike the pure-quadratic ``w_u``, which only shrinks), and a large
+    weight drives the whole control to zero. A 3-electrode montage is used so that per-channel
+    sparsity is compatible with the Kirchhoff sum-to-zero constraint: with only 2 electrodes
+    ``sum(u)=0`` forces ``[a, -a]``, allowing all-or-nothing sparsity but never a single zero.
+    """
+    n_y, n_ch, n_controls = 4, 2, 3
+    model = NNSymbolicModel.from_artifact(_build_artifact(tmp_path, n_y=n_y, n_channels=n_ch, n_controls=n_controls))
+    base: dict[str, Any] = {"dt": 0.01, "u_max": 5.0, "horizon": 4, "w_y": 1.0, "w_u": 0.0, "formulation": formulation}
+
+    u_l2 = _drive(LinearMPCController(model=model, w_u_l1=0.0, **base), n_y, n_ch)[-1][0]
+    u_l1 = _drive(LinearMPCController(model=model, w_u_l1=1.0, **base), n_y, n_ch)[-1][0]
+    u_big = _drive(LinearMPCController(model=model, w_u_l1=1000.0, **base), n_y, n_ch)[-1][0]
+
+    n_zero_l2 = int(np.count_nonzero(np.abs(u_l2) < 1e-6))
+    n_zero_l1 = int(np.count_nonzero(np.abs(u_l1) < 1e-6))
+    assert n_zero_l2 == 0  # pure L2 leaves every control nonzero
+    assert n_zero_l1 > n_zero_l2  # L1 zeroes out at least one control
+    np.testing.assert_allclose(u_big, np.zeros(n_controls), atol=1e-6)  # large L1 -> all zero
+
+
+@pytest.mark.parametrize("formulation", ["sparse", "dense"])
+def test_l1_zero_weight_leaves_solver_structure_unchanged(tmp_path: Path, formulation: str) -> None:
+    """``w_u_l1=0`` adds no slacks/inequalities; a positive weight enlarges the decision vector."""
+    model = NNSymbolicModel.from_artifact(_build_artifact(tmp_path, n_y=4))
+    off = LinearMPCController(dt=0.01, model=model, u_max=1.0, horizon=4, formulation=formulation)
+    on = LinearMPCController(dt=0.01, model=model, u_max=1.0, horizon=4, w_u_l1=1.0, formulation=formulation)
+
+    assert off._has_g  # both formulations carry the sum-to-zero equality even with L1 off  # noqa: SLF001
+    assert on._has_g  # a positive L1 weight additionally introduces the epigraph inequalities  # noqa: SLF001
+    assert on._lbx.size > off._lbx.size  # the slack variables were appended  # noqa: SLF001
 
 
 @pytest.mark.parametrize("formulation", ["sparse", "dense"])
@@ -201,12 +259,13 @@ def test_from_config_loads_artifact_and_honours_formulation(tmp_path: Path) -> N
     """from_config loads the artifact, defaults the horizon, and honours the formulation."""
     artifact = _build_artifact(tmp_path, horizon=5)
     controller = LinearMPCController.from_config(
-        {"dt": 0.01, "artifact": str(artifact), "u_max": 3.0, "formulation": "dense"}
+        {"dt": 0.01, "artifact": str(artifact), "u_max": 3.0, "formulation": "dense", "w_u_l1": 0.25}
     )
     assert controller.dt == 0.01
     assert controller.horizon == 5  # defaulted from the artifact
     assert controller.n_controls == 2
     assert controller.formulation == "dense"
+    assert controller.w_u_l1 == 0.25
 
 
 def test_nonlinear_model_rejected(tmp_path: Path) -> None:

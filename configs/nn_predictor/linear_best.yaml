@@ -8,13 +8,10 @@ model:
   n_y: 15
   n_u: 7
   horizon: 20
-  hidden_size: 128       # Inherited from previous/default
   depth: 0
-  latent_dim: null       # PCA latent components k; null or >= 62 (n EEG channels) disables it
-  activation: softplus
 
 training:
-  epochs: 250
+  epochs: 1
   batch_size: 512
   learning_rate: 0.0001
   weight_decay: 0.001

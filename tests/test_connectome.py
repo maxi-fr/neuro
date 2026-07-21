@@ -119,11 +119,15 @@ def test_npz_round_trip(connectome: Connectome, tmp_path: Path) -> None:
 
 
 def test_from_config_target_electrode_builds_gamma() -> None:
-    """A ``target_electrode`` yields a normalized, cathodic (negative-peak) gamma."""
+    """A ``target_electrode`` yields a normalized, positive unit-peak gamma kernel.
+
+    The kernel is polarity-agnostic (the applied current's sign sets cathode vs anode), so it
+    is strictly positive with a peak of 1.0 -- not signed.
+    """
     conn = Connectome.from_config({"target_electrode": "CP5", "gamma_spread": 20.0})
     assert conn.gamma.shape == (_N_REGIONS,)
-    assert np.isclose(np.abs(conn.gamma).max(), 1.0)
-    assert conn.gamma.min() < 0.0
+    assert np.isclose(conn.gamma.max(), 1.0)
+    assert conn.gamma.min() >= 0.0
 
 
 def test_from_config_default_gamma_is_zero() -> None:

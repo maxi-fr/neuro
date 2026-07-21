@@ -328,10 +328,12 @@ def _compute_gamma(
     Returns
     -------
     FloatArray
-        Normalized spatial projection; negative for cathodic stimulation (peak
-        magnitude of 1.0 at the closest region centroid). Shape ``(N_regions,)``
-        for a single electrode, or ``(n_electrodes, N_regions)`` for a montage,
-        with each row independently normalized.
+        Normalized spatial projection: a positive unit-peak Gaussian kernel (peak
+        magnitude 1.0 at the closest region centroid). The kernel is polarity-agnostic
+        -- the *sign of the applied current* ``u`` sets whether an electrode acts as a
+        cathode (``u < 0``, hyperpolarizing) or an anode (``u > 0``), so the same kernel
+        serves both. Shape ``(N_regions,)`` for a single electrode, or
+        ``(n_electrodes, N_regions)`` for a montage, with each row independently normalized.
     """
     sensors = SensorsEEG.from_file(sensors_file)
     labels = [label.upper() for label in sensors.labels]
@@ -343,10 +345,10 @@ def _compute_gamma(
             raise ValueError(msg)
         electrode_loc = np.asarray(sensors.locations[labels.index(target)], dtype=np.float64)
         dists = np.linalg.norm(centres - electrode_loc, axis=1)
-        # Gaussian falloff (negative for cathodic stimulation)
-        gamma = -np.exp(-(dists**2) / (2.0 * spread**2))
+        # Positive unit-peak Gaussian kernel; the applied current's sign sets the polarity.
+        gamma = np.exp(-(dists**2) / (2.0 * spread**2))
 
-        return gamma / np.abs(gamma).max()
+        return gamma / gamma.max()
 
     if isinstance(target_electrode, str):
         if not isinstance(spread, (int, float)):

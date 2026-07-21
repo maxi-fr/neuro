@@ -179,6 +179,43 @@ def test_pure_effort_cost_yields_zero_control(tmp_path: Path) -> None:
     np.testing.assert_allclose(u, np.zeros(model.n_controls), atol=1e-4)
 
 
+def test_control_obeys_kirchhoff_current_law(tmp_path: Path) -> None:
+    """The emitted control sums to zero across electrodes (Kirchhoff's current law).
+
+    While stimulating (``w_y=1, w_u=0``) the output-lifted NLP still balances the montage's
+    per-electrode currents so no net current is injected.
+    """
+    model = NNSymbolicModel.from_artifact(_build_artifact(tmp_path, n_y=4))
+    controller = NarxMPCController(dt=0.01, model=model, u_max=5.0, horizon=3, w_y=1.0, w_u=0.0)
+
+    u, _ = _drive(controller, n_steps=6, n_channels=model.n_channels)[-1]
+    assert np.linalg.norm(u, ord=1) > 1e-3  # it actually stimulates
+    assert abs(float(np.sum(u))) < 1e-6  # ... yet the currents sum to zero
+
+
+def test_linear_control_obeys_kirchhoff_current_law(tmp_path: Path) -> None:
+    """The output-lifted QP's emitted control sums to zero across electrodes (Kirchhoff)."""
+    model = NNSymbolicModel.from_artifact(_build_artifact(tmp_path, depth=0, n_y=4, horizon=4))
+    controller = LinearNarxMPCController(dt=0.01, model=model, u_max=5.0, horizon=4, w_y=1.0, w_u=0.0)
+
+    u, log = _drive(controller, n_steps=6, n_channels=model.n_channels)[-1]
+    assert log.success
+    assert np.linalg.norm(u, ord=1) > 1e-3  # it actually stimulates
+    assert abs(float(np.sum(u))) < 1e-8  # ... yet the currents sum to zero (exact for a QP)
+
+
+def test_l1_penalty_drives_control_toward_zero(tmp_path: Path) -> None:
+    """A large L1 control-effort penalty suppresses stimulation in the output-lifted NLP: u -> 0."""
+    model = NNSymbolicModel.from_artifact(_build_artifact(tmp_path, n_y=4))
+    base: dict[str, Any] = {"dt": 0.01, "model": model, "u_max": 5.0, "horizon": 3, "w_y": 1.0, "w_u": 0.0}
+
+    u_l2 = _drive(NarxMPCController(w_u_l1=0.0, **base), n_steps=6, n_channels=model.n_channels)[-1][0]
+    u_l1 = _drive(NarxMPCController(w_u_l1=1000.0, **base), n_steps=6, n_channels=model.n_channels)[-1][0]
+
+    assert np.linalg.norm(u_l2, ord=1) > 1e-3  # baseline stimulates
+    np.testing.assert_allclose(u_l1, np.zeros(model.n_controls), atol=1e-4)
+
+
 def test_per_electrode_bounds_rejected_when_mismatched(tmp_path: Path) -> None:
     """A u_max length that is neither 1 nor n_controls is rejected."""
     model = NNSymbolicModel.from_artifact(_build_artifact(tmp_path, n_controls=2))
@@ -317,14 +354,47 @@ def test_linear_pure_effort_yields_zero_control(tmp_path: Path) -> None:
     np.testing.assert_allclose(u, np.zeros(model.n_controls), atol=1e-4)
 
 
-def test_linear_matches_sparse_linear_mpc(tmp_path: Path) -> None:
-    """The output-lifted QP agrees with LinearMPCController's full-state sparse QP on a linear model."""
+def test_linear_l1_penalty_yields_sparse_control(tmp_path: Path) -> None:
+    """The L1 control-effort penalty soft-thresholds the output-lifted QP's controls to exact zeros.
+
+    A 3-electrode montage is used so that per-channel sparsity is compatible with the Kirchhoff
+    sum-to-zero constraint: with only 2 electrodes ``sum(u)=0`` forces ``[a, -a]``, which permits
+    all-or-nothing sparsity but never a single zero.
+    """
+    n_y, n_ch, n_controls = 4, 2, 3
+    model = NNSymbolicModel.from_artifact(
+        _build_artifact(tmp_path, depth=0, n_y=n_y, horizon=4, n_channels=n_ch, n_controls=n_controls)
+    )
+    base: dict[str, Any] = {"dt": 0.01, "model": model, "u_max": 5.0, "horizon": 4, "w_y": 1.0, "w_u": 0.0}
+
+    u_l2 = _drive(LinearNarxMPCController(w_u_l1=0.0, **base), n_y, n_ch)[-1][0]
+    u_l1 = _drive(LinearNarxMPCController(w_u_l1=1.0, **base), n_y, n_ch)[-1][0]
+    u_big = _drive(LinearNarxMPCController(w_u_l1=1000.0, **base), n_y, n_ch)[-1][0]
+
+    assert int(np.count_nonzero(np.abs(u_l2) < 1e-6)) == 0  # pure L2 leaves every control nonzero
+    assert int(np.count_nonzero(np.abs(u_l1) < 1e-6)) >= 1  # L1 zeroes out at least one control
+    np.testing.assert_allclose(u_big, np.zeros(n_controls), atol=1e-6)  # large L1 -> all zero
+
+
+@pytest.mark.parametrize("w_u_l1", [0.0, 0.5])
+def test_linear_matches_sparse_linear_mpc(tmp_path: Path, w_u_l1: float) -> None:
+    """The output-lifted QP agrees with LinearMPCController's full-state sparse QP on a linear model.
+
+    The optional L1 control-effort penalty is epigraph-reformulated identically in both, so the
+    equivalence holds with or without it.
+    """
     artifact = _build_artifact(tmp_path, depth=0, n_y=4, n_u=3, horizon=4, n_channels=2, n_controls=2)
     lifted = LinearNarxMPCController(
-        dt=0.01, model=NNSymbolicModel.from_artifact(artifact), u_max=0.3, w_y=1.0, w_u=0.05
+        dt=0.01, model=NNSymbolicModel.from_artifact(artifact), u_max=0.3, w_y=1.0, w_u=0.05, w_u_l1=w_u_l1
     )
     full = LinearMPCController(
-        dt=0.01, model=NNSymbolicModel.from_artifact(artifact), u_max=0.3, w_y=1.0, w_u=0.05, formulation="sparse"
+        dt=0.01,
+        model=NNSymbolicModel.from_artifact(artifact),
+        u_max=0.3,
+        w_y=1.0,
+        w_u=0.05,
+        w_u_l1=w_u_l1,
+        formulation="sparse",
     )
 
     us_lifted = [u for u, _ in _drive(lifted, n_steps=8, n_channels=2)]
@@ -346,9 +416,12 @@ def test_linear_matches_nonlinear_narx_on_linear_model(tmp_path: Path) -> None:
 def test_linear_from_config_loads_artifact(tmp_path: Path) -> None:
     """from_config loads a linear artifact and defaults the horizon to the model's."""
     artifact = _build_artifact(tmp_path, depth=0, horizon=5)
-    controller = LinearNarxMPCController.from_config({"dt": 0.01, "artifact": str(artifact), "u_max": 3.0})
+    controller = LinearNarxMPCController.from_config(
+        {"dt": 0.01, "artifact": str(artifact), "u_max": 3.0, "w_u_l1": 0.25}
+    )
     assert controller.horizon == 5
     assert controller.n_controls == 2
+    assert controller.w_u_l1 == 0.25
 
 
 def test_linear_projection_respects_bounds(tmp_path: Path) -> None:

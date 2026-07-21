@@ -47,8 +47,8 @@ def _(mo):
     $$U_{\text{tES}, i}(t) = u(t) \cdot \gamma_i$$
 
     where:
-    * $u(t)$ is the time-varying stimulation intensity (equal to $\hat{u}_{\text{tES}}$ during the stimulation window, else $0$).
-    * $\gamma_i \le 0$ is the spatial projection factor of the cathodic stimulation on region $i$, computed using a Gaussian falloff from the stimulating electrode (e.g., **CP5**) to the region centroids.
+    * $u(t)$ is the time-varying stimulation current (equal to $\hat{u}_{\text{tES}}$ during the stimulation window, else $0$). Its **sign sets the polarity**: $u < 0$ is a cathode (inhibitory), $u > 0$ an anode (excitatory).
+    * $\gamma_i \ge 0$ is the positive, unit-peak spatial projection factor from the stimulating electrode (e.g., **CP5**) to region $i$, a Gaussian falloff to the region centroids. The same kernel serves cathodes and anodes; the current's sign decides which.
 
     In this stage, **we assume no synaptic plasticity ($Z$ dynamics are off)**, so the stimulation only exerts an immediate, transient effect. Once the stimulation turns off, the seizure is expected to re-expand across the network.
     """)
@@ -86,7 +86,7 @@ def _(electrode_options, mo):
                 [
                     mo.md("#### 🎛️ Stimulation Settings"),
                     mo.md(
-                        "_Selecting e.g. CP5+CP6 reproduces the Patient-6 dual-cathode montage; the total current is split equally across electrodes._"
+                        "_Selecting e.g. CP5+CP6 reproduces the Patient-6 dual-cathode montage. Per Kirchhoff's current law the per-electrode currents sum to zero across the montage (equal and opposite for a pair), so no net current is injected._"
                     ),
                     electrode_multiselect,
                     spread_slider,

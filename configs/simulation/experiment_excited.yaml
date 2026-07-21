@@ -9,6 +9,7 @@ experiments:
       target_electrode:
       - CP5
       - T7
+      - F9
       gamma_spread: 20.0
       K: 0.5357
     params:
@@ -108,7 +109,7 @@ experiments:
   controller:
     class_path: neuro.control.WaveformController
     dt: 0.0001
-    n_u: 2
+    n_u: 3
     input_type: ras
     amp: 3.0
     hold_ms: 10.0   # one predictor step (10 ms); match the closed-loop MPC control rate -- see base config & note sec. 9
