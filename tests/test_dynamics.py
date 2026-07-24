@@ -93,6 +93,7 @@ def test_simulation_matches_simulate_network() -> None:
     )
     sim.run()
 
+    assert sim.logger is not None
     logs = sim.logger.core_logs
     orch_x = np.stack([np.asarray(entry["x"], dtype=np.float64) for entry in logs], axis=-1)
     n = x_ref.shape[2]

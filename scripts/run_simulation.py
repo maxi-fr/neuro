@@ -17,11 +17,11 @@ def main() -> None:
         type=str,
         help="Path to the YAML configuration file.",
     )
+
     parser.add_argument(
-        "--chunk-size",
-        type=int,
-        default=10_000,
-        help="Steps per output chunk file (default: 10000). Use 0 to disable chunking.",
+        "--mmap",
+        action="store_true",
+        help="Enable memory-mapped logging to bound RAM usage for long runs.",
     )
     parser.add_argument(
         "--output-dir",
@@ -43,8 +43,6 @@ def main() -> None:
 
     config = load_config(config_path)
 
-    chunk_size = args.chunk_size if args.chunk_size > 0 else None
-
     if args.output_dir is None:
         local_now = datetime.now(UTC).astimezone()
         output_dir = Path(f"artifacts/simulation_{local_now.strftime('%Y-%m-%d_%H-%M-%S')}")
@@ -65,10 +63,10 @@ def main() -> None:
         for override in raw_configs[1:]:
             configs.append(deep_merge(configs[-1], override))
 
-        manager.run_batch(configs, chunk_size=chunk_size, compress=args.compress)
+        manager.run_batch(configs, use_mmap=args.mmap, compress=args.compress)
     else:
         sim = Simulation.from_config(config)
-        sim.run(output_dir, prefix="log", chunk_size=chunk_size, compress=args.compress)
+        sim.run(output_dir, prefix="log", use_mmap=args.mmap)
         sim.export_results(output_dir, prefix="log", compress=args.compress)
 
 

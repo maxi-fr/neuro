@@ -1347,7 +1347,7 @@ seaborn==0.13.2 \
     --hash=sha256:636f8336facf092165e27924f223d3c62ca560b1f2bb5dff7ab7fad265361987 \
     --hash=sha256:93e60a40988f4d65e9f4885df477e2fdaff6b73a9ded434c1ab356dd57eefff7
     # via neuro
-simulate @ git+https://github.com/maxi-fr/simulate.git@ba0e5096a0ad947d2de67be7919675faeb29ff6c
+simulate @ git+https://github.com/maxi-fr/simulate.git@5b404fe70baa6c487c12a0c0247fb02eb48cd69d
     # via neuro
 six==1.17.0 \
     --hash=sha256:4721f391ed90541fddacab5acf947aa0d3dc7d27b2e1e8eda2be8970586c3274 \

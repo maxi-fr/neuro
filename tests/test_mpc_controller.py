@@ -306,6 +306,7 @@ def test_closed_loop_simulation_runs(tmp_path: Path) -> None:
     sim = Simulation.from_config(config)
     sim.run()
 
+    assert sim.logger is not None
     us = np.stack([np.atleast_1d(np.asarray(entry["u"], dtype=np.float64)) for entry in sim.logger.core_logs])
     assert us.shape[1] == 2  # n_controls
     assert np.all(np.abs(us) <= u_max + 1e-6)

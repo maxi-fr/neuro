@@ -16,11 +16,14 @@ def _():
     from matplotlib import pyplot as plt
 
     from neuro.connectome import Connectome
-    from neuro.jansen_rit import JansenRitParams, lfp, simulate_network
+    from neuro.connectome import _compute_gamma as compute_gamma
+    from neuro.jansen_rit import JansenRitDynamics, JansenRitParams, lfp, simulate_network
 
     return (
         Connectome,
+        JansenRitDynamics,
         JansenRitParams,
+        compute_gamma,
         lfp,
         mo,
         np,
@@ -66,10 +69,12 @@ def _(Connectome):
 def _(electrode_options, mo):
     # Interactive UI controls
     electrode_multiselect = mo.ui.multiselect(
-        options=electrode_options, value=["CP5"], label="Cathode montage (select ≥1)"
+        options=electrode_options, value=["CP5"], label="Stimulation montage (select ≥1; current sign sets polarity)"
     )
     spread_slider = mo.ui.slider(5.0, 100.0, 5.0, value=20.0, label="Spatial Spread σ_stim (mm)")
-    u_intensity_slider = mo.ui.slider(-3.0, 3.0, 0.25, value=1.5, label="Total tES Intensity u_hat_tES")
+    u_intensity_slider = mo.ui.slider(
+        -3.0, 3.0, 0.25, value=-1.5, label="Total tES Intensity u_hat_tES (negative = cathodic/inhibitory)"
+    )
 
     onset_slider = mo.ui.slider(0.0, 10.0, 0.5, value=0.0, label="Stimulation Onset (s)")
     offset_slider = mo.ui.slider(0.0, 10.0, 0.5, value=2.5, label="Stimulation Offset (s)")
@@ -86,7 +91,7 @@ def _(electrode_options, mo):
                 [
                     mo.md("#### 🎛️ Stimulation Settings"),
                     mo.md(
-                        "_Selecting e.g. CP5+CP6 reproduces the Patient-6 dual-cathode montage. Per Kirchhoff's current law the per-electrode currents sum to zero across the montage (equal and opposite for a pair), so no net current is injected._"
+                        "_The spatial kernel γ is positive; the **sign of each electrode's current sets its polarity** (cathode < 0, anode > 0). Per Kirchhoff's current law the montage currents must sum to zero, so cathodes need a return anode — Yu (2024) uses Ex8 (left) / Ex7 (right), whose in-set equivalent here is F9 / F10. E.g. CP5+T7 cathodes with an F9 return anode._"
                     ),
                     electrode_multiselect,
                     spread_slider,
@@ -127,12 +132,11 @@ def _(electrode_options, mo):
 def _(
     JansenRitDynamics,
     JansenRitParams,
-    conn,
+    compute_gamma,
     connectome,
     deterministic_toggle,
     duration_slider,
     electrode_multiselect,
-    gamma_spread_slider,
     k_slider,
     lfp,
     np,
@@ -143,22 +147,23 @@ def _(
     simulate_network,
     speed_slider,
     spread_slider,
-    target_electrode,
     u_intensity_slider,
 ):
-    # 1. Update connectome and compute gamma steering matrix (n_controls, 76)
-    conn_scaled = replace(connectome, speed=speed_slider.value, delays=connectome.tract_lengths / speed_slider.value)
-
+    # 1. Compute the gamma steering matrix (n_controls, 76) for the selected montage.
     selected_electrodes = list(electrode_multiselect.value) or ["CP5"]
     n_controls = len(selected_electrodes)
-    gamma = _compute_gamma(
-        connectome.centres,
-        target_electrode=selected_electrodes,
-        spread=spread_slider.value,
+    gamma = compute_gamma(connectome.centres, target_electrode=selected_electrodes, spread=spread_slider.value)
+    conn_scaled = replace(
+        connectome,
+        speed=speed_slider.value,
+        delays=connectome.tract_lengths / speed_slider.value,
+        K=k_slider.value,
+        gamma=gamma,
     )
-    conn_scaled = replace(conn_scaled, gamma=gamma)
 
-    # Total current split equally across the montage (e.g. CP5+CP6: 1.0 -> 0.5+0.5).
+    # Same-sign monopolar current across the montage (a single-polarity cathode illustration);
+    # this does NOT satisfy Kirchhoff's law, so the plant below runs with the KCL guard disabled.
+    # A physical montage would add a return anode (e.g. F9) so the currents sum to zero.
     u_amp = np.full(n_controls, float(u_intensity_slider.value) / n_controls)
     gamma_field = u_amp @ gamma  # combined per-node U_tES field for visualization
 
@@ -176,21 +181,21 @@ def _(
     # 3. Stimulation window
     stim_window = (float(onset_slider.value), float(offset_slider.value))
 
-    # 4. Run network simulation
+    # 4. Run the network with the tES current applied over the stim window.
     params = JansenRitParams.from_config({"A": a_gains, "sigma": noise_sigma})
     dyn = JansenRitDynamics(
         dt=0.0001,
         params=params,
-        conn=replace(
-            conn,
-            K=k_slider.value,
-            gamma=_compute_gamma(
-                conn.centres, target_electrode=target_electrode, spread=float(gamma_spread_slider.value)
-            ),
-        ),
+        conn=conn_scaled,
         seed=int(seed_slider.value),
+        enforce_zero_sum_current=False,  # monopolar pedagogical demo (no return anode)
     )
-    (t, x_traj) = simulate_network(dyn=dyn, duration=float(duration_slider.value))
+    (t, x_traj) = simulate_network(
+        dyn=dyn,
+        duration=float(duration_slider.value),
+        u_hat_tES=u_amp,
+        stim_window=stim_window,
+    )
     y = lfp(x_traj)
     return conn_scaled, ez_idxs, gamma_field, pz_idxs, stim_window, t, y
 
