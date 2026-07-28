@@ -1,0 +1,48 @@
+# L1-loss test, AFTER (w_u_l1 = 50.0): sparse-stimulation run.
+# Identical to l1_before.yaml except for the L1 weight. With n_controls=3 + Kirchhoff sum-to-zero,
+# the L1 penalty soft-thresholds electrode currents toward exact zero (a bipolar pair, or all-off)
+# while the quadratic w_u stays 0. 50 is the partially-sparse sweet spot for this model: an offline
+# probe over the baseline trajectory showed mean|u| 1.94->1.62 and mean active electrodes
+# 1.95->1.64 at w_u_l1=50, collapsing to no stimulation by w_u_l1>=300.
+t_end: 5.0
+
+dynamics:
+  class_path: neuro.jansen_rit.JansenRitDynamics
+  dt: 0.0001
+  seed: 69
+  connectome:
+    speed: 50.0
+    target_electrode: [CP5, T7, F9]
+    gamma_spread: 20.0
+    K: 0.5357
+  params:
+    A: [3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25,
+      3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25,
+      3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25,
+      3.25, 3.6, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.6, 3.25, 3.25, 3.25, 3.25,
+      3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.6, 3.25, 3.25,
+      3.25, 3.25, 3.25, 3.25, 3.4, 3.25, 3.25, 3.4, 3.25, 3.25, 3.25]
+
+reference: {class_path: simulate.reference.StepReference, dt: 0.0001, step_value: 0.0}
+
+sensors:
+  class_path: simulate.sensor.GaussianSensor
+  dt: 0.0001
+  std_dev: 0.0
+  measurement:
+    class_path: neuro.measurement.EEGMeasurement
+    speed: 50.0
+
+estimator: {class_path: simulate.estimator.IdentityEstimator, dt: 0.0001}
+
+controller:
+  class_path: neuro.control.LinearMPCController
+  dt: 0.01
+  artifact: artifacts/nn_predictor_2026-07-27_18-19-15/model   # depth-0 (linear) artifact basename
+  horizon: 20
+  u_max: 3.0
+  w_y: 1.0
+  w_u: 0.0
+  w_u_l1: 50.0          # AFTER: L1 sparsity penalty on the stimulation current
+  formulation: dense    # `sparse` -> OSQP (stacked) ; `dense` -> qpOASES (condensed)
+  osqp_eps: 1.0e-9      # OSQP abs/rel tolerance (sparse formulation only; ignored for dense)

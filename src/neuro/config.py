@@ -73,7 +73,7 @@ class SimulationConfig(StrictConfig):
 
     dt: float = Field(default=1e-4, gt=0)
     downsample: int = Field(default=1, ge=1)
-    n_steps: int = Field(default=2000, ge=1)
+    n_steps: int | None = Field(default=None, ge=1)
     data_path: str | None = None
 
 

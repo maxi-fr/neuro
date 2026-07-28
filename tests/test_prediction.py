@@ -109,6 +109,21 @@ def test_prepare_datasets_builds_raw_windows(tmp_path: Path) -> None:
     np.testing.assert_allclose(y_full, y_manual, atol=1e-12)
 
 
+def test_prepare_datasets_supports_optional_n_steps(tmp_path: Path) -> None:
+    """``load_trajectory`` and ``prepare_datasets`` read the complete trajectory when ``n_steps`` is None."""
+    n_eeg, n_controls, n_steps = 6, 2, 250
+    n_y, n_u, horizon = 4, 3, 5
+    file = _write_trajectory(tmp_path / "traj.npz", n_steps, n_eeg, n_controls)
+
+    u, y = load_trajectory(file, None, 1)
+    assert u.shape == (n_steps, n_controls)
+    assert y.shape == (n_steps, n_eeg)
+
+    x_full, _y_full, n_channels = prepare_datasets([file], None, 1, n_y, n_u, horizon)
+    assert n_channels == n_eeg
+    assert x_full.shape[0] == n_steps - horizon - max(n_y - 1, n_u)
+
+
 def test_artifact_round_trips_latent_projection(tmp_path: Path) -> None:
     """``MLPArtifact`` persists and restores the PCA basis/mean and reports both dimensions."""
     k, n_eeg, n_controls = 3, 6, 2

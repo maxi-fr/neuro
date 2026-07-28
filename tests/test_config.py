@@ -21,6 +21,7 @@ from neuro.measurement import EEGMeasurement
 
 def test_defaults_applied_for_missing_sections() -> None:
     cfg = NNPredictorConfig.from_dict({})
+    assert cfg.simulation.n_steps is None
     assert cfg.model.n_y == 5
     assert cfg.training.epochs == 100
     assert cfg.model.latent_dim is None
@@ -35,6 +36,7 @@ def test_known_keys_parsed() -> None:
     }
     cfg = NNPredictorConfig.from_dict(raw)
     assert cfg.simulation.downsample == 100
+    assert cfg.simulation.n_steps == 50000
     assert cfg.model.n_y == 14
     assert cfg.model.latent_dim == 16
     assert cfg.training.scaler == "robust"

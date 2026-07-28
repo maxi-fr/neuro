@@ -27,15 +27,15 @@ from utils.plotting import plot_multistep_predictions
 jax.config.update("jax_enable_x64", val=True)
 
 
-def load_trajectory(data_file: str, n_steps: int, downsample: int) -> tuple[FloatArray, FloatArray]:
+def load_trajectory(data_file: str, n_steps: int | None, downsample: int) -> tuple[FloatArray, FloatArray]:
     """Load a single simulation trajectory.
 
     Parameters
     ----------
     data_file : str
         Path to the `.npz` data file containing the trajectory.
-    n_steps : int
-        The total number of time steps to load.
+    n_steps : int | None
+        The total number of time steps to load, or ``None`` to load the entire trajectory.
     downsample : int
         The downsampling factor to apply.
 
@@ -47,7 +47,7 @@ def load_trajectory(data_file: str, n_steps: int, downsample: int) -> tuple[Floa
         The measured output (EEG) trajectory, shape ``(T, n_channels)``.
     """
     with np.load(data_file) as data:
-        max_idx = n_steps * downsample
+        max_idx = None if n_steps is None else n_steps * downsample
         try:
             y_data = data["y_mea"][:max_idx:downsample]
             u_data = data["u"][:max_idx:downsample]
@@ -197,7 +197,7 @@ def get_dataloaders(X: FloatArray, Y: FloatArray, batch_size: int = 128) -> Iter
 
 def prepare_datasets(  # noqa: PLR0913
     data_files: list[str],
-    n_steps_cfg: int,
+    n_steps_cfg: int | None,
     downsample: int,
     n_y: int,
     n_u: int,
@@ -213,8 +213,8 @@ def prepare_datasets(  # noqa: PLR0913
     ----------
     data_files : list[str]
         List of paths to data files.
-    n_steps_cfg : int
-        Number of steps to load per trajectory.
+    n_steps_cfg : int | None
+        Number of steps to load per trajectory, or ``None`` to load the entire trajectory.
     downsample : int
         Downsampling factor.
     n_y : int

@@ -75,7 +75,7 @@ before training (older wrong-stimulation datasets are archived under `data/pre_k
 
 ### 2.2 Loading and downsampling
 
-[`load_trajectory`](../src/neuro/nn_training.py) reads at most `n_steps · downsample` raw samples and
+[`load_trajectory`](../src/neuro/nn_training.py) reads at most `n_steps · downsample` raw samples (or the entire trajectory if `n_steps` is omitted / `null`) and
 decimates by taking every `downsample`-th sample:
 
 $$
@@ -488,7 +488,7 @@ out-of-range values raise `ValidationError` rather than silently defaulting.
 | ------------- | ----------------------------------------- |
 | `dt`          | raw simulation step (s)                   |
 | `downsample`  | decimation factor $d$                     |
-| `n_steps`     | downsampled steps loaded per trajectory   |
+| `n_steps`     | downsampled steps loaded per trajectory (`null` ⇒ all) |
 | `data_path`   | directory of `.npz` trajectories          |
 
 ### `model`
