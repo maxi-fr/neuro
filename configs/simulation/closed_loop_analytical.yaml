@@ -1,0 +1,44 @@
+# Closed-loop Linear MPC control benchmark using analytical gamma model (Option B).
+t_end: 5.0
+
+dynamics:
+  class_path: neuro.jansen_rit.JansenRitDynamics
+  dt: 0.0001
+  seed: 69
+  connectome:
+    speed: 50.0
+    target_electrode: [CP5, T7, F9]
+    gamma_spread: 15.0
+    K: 0.5357
+    gamma_model: "analytical"
+  params:
+    A: [3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25,
+      3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25,
+      3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25,
+      3.25, 3.6, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.6, 3.25, 3.25, 3.25, 3.25,
+      3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.6, 3.25, 3.25,
+      3.25, 3.25, 3.25, 3.25, 3.4, 3.25, 3.25, 3.4, 3.25, 3.25, 3.25]
+
+reference: {class_path: simulate.reference.StepReference, dt: 0.0001, step_value: 0.0}
+
+sensors:
+  class_path: simulate.sensor.GaussianSensor
+  dt: 0.0001
+  std_dev: 0.0
+  measurement:
+    class_path: neuro.measurement.EEGMeasurement
+    speed: 50.0
+
+estimator: {class_path: simulate.estimator.IdentityEstimator, dt: 0.0001}
+
+controller:
+  class_path: neuro.control.LinearMPCController
+  dt: 0.01
+  artifact: artifacts/nn_predictor_2026-07-28_13-58-30/model
+  horizon: 20
+  u_max: 3.0
+  w_y: 1.0
+  w_u: 0.0
+  w_u_l1: 0.0
+  formulation: dense
+  osqp_eps: 1.0e-9

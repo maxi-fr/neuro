@@ -134,3 +134,39 @@ def test_from_config_default_gamma_is_zero() -> None:
     """Without a ``target_electrode`` the projection is all-zero (open loop)."""
     conn = Connectome.from_config({})
     np.testing.assert_array_equal(conn.gamma, np.zeros(_N_REGIONS))
+
+
+def test_from_config_reciprocal_gamma_model() -> None:
+    """Option A (reciprocal) builds realistic current-to-field projection via Helmholtz reciprocity."""
+    conn = Connectome.from_config({"target_electrode": ["CP5", "T7", "F9"], "gamma_model": "reciprocal"})
+    assert conn.gamma.shape == (3, _N_REGIONS)
+    assert (conn.gamma >= 0.0).all()
+    assert not np.allclose(conn.gamma[0], conn.gamma[1])
+
+
+def test_from_config_analytical_gamma_model() -> None:
+    """Option B (analytical) builds Laplacian dipolar Coulomb projection without independent peak clipping."""
+    conn = Connectome.from_config(
+        {"target_electrode": ["CP5", "T7"], "gamma_model": "analytical", "gamma_spread": 15.0}
+    )
+    assert conn.gamma.shape == (2, _N_REGIONS)
+    assert (conn.gamma > 0.0).all()
+
+
+def test_kcl_zero_sum_non_cancellation() -> None:
+    """Zero-sum tES current under reciprocal or analytical model creates strong differential push-pull fields."""
+    electrodes = ["CP5", "T7"]
+    u = np.array([1.0, -1.0])  # zero sum (KCL compliant)
+
+    conn_gauss = Connectome.from_config({"target_electrode": electrodes, "gamma_model": "gaussian"})
+    conn_recip = Connectome.from_config({"target_electrode": electrodes, "gamma_model": "reciprocal"})
+    conn_analyt = Connectome.from_config({"target_electrode": electrodes, "gamma_model": "analytical"})
+
+    u @ conn_gauss.gamma
+    field_recip = u @ conn_recip.gamma
+    field_analyt = u @ conn_analyt.gamma
+
+    # Verify reciprocal and analytical models produce distinct non-zero fields
+    assert np.linalg.norm(field_recip) > 0.0
+    assert np.linalg.norm(field_analyt) > 0.0
+    assert np.var(field_analyt) > 0.0

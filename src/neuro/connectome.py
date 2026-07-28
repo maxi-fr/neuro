@@ -21,7 +21,7 @@ from __future__ import annotations
 import warnings
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 import numpy as np
 import numpy.typing as npt
@@ -56,6 +56,8 @@ class _ConnectomeConfig(StrictConfig):
     K: float = 1.0
     target_electrode: str | int | list[str | int] | None = None
     gamma_spread: float | list[float] = 20.0
+    gamma_model: Literal["gaussian", "reciprocal", "analytical"] = "gaussian"
+    leadfield_path: str | Path | None = None
 
 
 @dataclass(frozen=True)
@@ -225,6 +227,10 @@ class Connectome:
                 centres,
                 target_electrode=resolved if len(resolved) > 1 else resolved[0],
                 spread=cfg.gamma_spread,
+                model=cfg.gamma_model,
+                leadfield_path=cfg.leadfield_path,
+                gain=gain,
+                channel_index=channel_index,
             )
 
         return cls(
@@ -304,11 +310,15 @@ def _build_eeg_gain() -> tuple[FloatArray, StrArray]:
     return gain, channel_labels
 
 
-def _compute_gamma(
+def _compute_gamma(  # noqa: C901, PLR0913
     centres: FloatArray,
     target_electrode: str | Sequence[str] = "CP5",
     spread: float | Sequence[float] = 20.0,
     sensors_file: str = _SENSORS_FILE,
+    model: Literal["gaussian", "reciprocal", "analytical"] = "gaussian",
+    leadfield_path: str | Path | None = None,
+    gain: FloatArray | None = None,
+    channel_index: dict[str, int] | None = None,
 ) -> FloatArray:
     """Compute the normalized spatial projection gamma for tES stimulation.
 
@@ -324,30 +334,56 @@ def _compute_gamma(
         electrodes, or one value per electrode.
     sensors_file
         Filename of the EEG sensors dataset.
+    model
+        Current-to-field simulation model: 'gaussian' (legacy all-positive kernel),
+        'reciprocal' (Option A: Helmholtz reciprocity on leadfield), or 'analytical'
+        (Option B: Laplacian Coulomb volume potential without independent normalization).
+    leadfield_path
+        Optional path to an external NPZ/NPY leadfield matrix file for Option A.
+    gain
+        Precomputed EEG gain matrix (if loaded from connectome).
+    channel_index
+        Map of EEG channel names to row index in gain.
 
     Returns
     -------
     FloatArray
-        Normalized spatial projection: a positive unit-peak Gaussian kernel (peak
-        magnitude 1.0 at the closest region centroid). The kernel is polarity-agnostic
-        -- the *sign of the applied current* ``u`` sets whether an electrode acts as a
-        cathode (``u < 0``, hyperpolarizing) or an anode (``u > 0``), so the same kernel
-        serves both. Shape ``(N_regions,)`` for a single electrode, or
-        ``(n_electrodes, N_regions)`` for a montage, with each row independently normalized.
+        Spatial projection matrix of shape ``(N_regions,)`` for a single electrode, or
+        ``(n_electrodes, N_regions)`` for a montage.
     """
     sensors = SensorsEEG.from_file(sensors_file)
     labels = [label.upper() for label in sensors.labels]
+
+    if model == "reciprocal":
+        if gain is None or channel_index is None:
+            gain_matrix, ch_labels = _build_eeg_gain()
+            ch_idx_map = {str(label).upper(): idx for idx, label in enumerate(ch_labels)}
+        else:
+            gain_matrix = gain
+            ch_idx_map = {k.upper(): v for k, v in channel_index.items()}
+        max_gain = np.max(np.abs(gain_matrix))
 
     def _gamma_one(electrode: str, spread: float) -> FloatArray:
         target = electrode.upper()
         if target not in labels:
             msg = f"Electrode {electrode} not found in sensors."
             raise ValueError(msg)
+
+        if model == "reciprocal":
+            if leadfield_path is not None:
+                ld = np.load(leadfield_path)
+                matrix = ld["gain"] if isinstance(ld, np.lib.npyio.NpzFile) and "gain" in ld else np.asarray(ld)
+                return np.abs(matrix[ch_idx_map[target], :])
+            row = np.abs(gain_matrix[ch_idx_map[target], :])
+            return row / (max_gain if max_gain > 0 else 1.0)
+
         electrode_loc = np.asarray(sensors.locations[labels.index(target)], dtype=np.float64)
         dists = np.linalg.norm(centres - electrode_loc, axis=1)
-        # Positive unit-peak Gaussian kernel; the applied current's sign sets the polarity.
-        gamma = np.exp(-(dists**2) / (2.0 * spread**2))
+        if model == "analytical":
+            return 100.0 / np.sqrt((dists**2) + (spread**2))
 
+        # Legacy gaussian model
+        gamma = np.exp(-(dists**2) / (2.0 * spread**2))
         return gamma / gamma.max()
 
     if isinstance(target_electrode, str):
