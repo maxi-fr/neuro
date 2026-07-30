@@ -2,18 +2,20 @@
 # NarxMPCController solves an output-lifted NLP (IPOPT) using a depth-1 (nonlinear) NN
 # predictor. Consumes the nonlinear_full artifact (mpc_nonlinear_full.yaml). Controller runs
 # at the predictor native step dt: 0.01 = plant dt 1e-4 x downsample 100.
-t_end: 5.0
+t_end: 20.0
 
 dynamics:
   class_path: neuro.jansen_rit.JansenRitDynamics
   dt: 0.0001
   seed: 69
+  initial_state: rest
   connectome:
     speed: 50.0
     target_electrode: [CP5, T7, F9]
     gamma_spread: 20.0
-    K: 0.5357
+    K: 0.60
   params:
+    sigma: 280.0
     A: [3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25,
       3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25,
       3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25,

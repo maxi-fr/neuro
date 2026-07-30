@@ -29,7 +29,7 @@ Everything is in SI seconds: ``a = 100``, ``b = 50`` per second, ``dt = 1e-4`` s
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
-from typing import TYPE_CHECKING, Any, Self
+from typing import TYPE_CHECKING, Any, Literal, Self
 
 import numba
 import numpy as np
@@ -230,6 +230,7 @@ def simulate_network(
     duration: float,
     u_hat_tES: float | FloatArray = 0.0,
     stim_window: tuple[float, float] | None = None,
+    t0: float = 0.0,
 ) -> tuple[FloatArray, FloatArray]:
     """Step a prebuilt plant from its current state and return the full trajectory.
 
@@ -246,12 +247,18 @@ def simulate_network(
         Constant tES current applied during ``stim_window``. A scalar (shared by
         every electrode) or shape ``(n_electrodes,)`` for per-electrode currents.
     stim_window
-        Time window (start_s, end_s) during which tES stimulation is active.
+        Time window (start_s, end_s) during which tES stimulation is active, on the
+        same absolute clock as ``t0``.
+    t0
+        Absolute start time of this segment in seconds. Components hold their own
+        monotonic clock, so continuing a plant with a second call requires handing it
+        the time it left off at; leaving ``t0`` at 0 would make the plant treat the
+        whole segment as already elapsed and silently hold its state.
 
     Returns
     -------
     t
-        Time vector in seconds, shape ``(n_samples,)``.
+        Time vector in seconds, shape ``(n_samples,)``, starting at ``t0``.
     x_traj
         State trajectory, shape ``(6, N, n_samples)`` (``N = 1`` for a single node).
     """
@@ -271,22 +278,39 @@ def simulate_network(
 
     u_sched = np.zeros((n_steps, n_controls), dtype=np.float64)
     if stim_window is not None:
-        t_grid = np.arange(n_steps) * dt
+        t_grid = t0 + np.arange(n_steps) * dt
         u_sched[(t_grid >= stim_window[0]) & (t_grid < stim_window[1])] = u_amp
 
     x_traj = np.zeros((6, n_nodes, n_steps + 1), dtype=np.float64)
     x_traj[:, :, 0] = dyn.x
     for k in range(n_steps):
-        dyn.evaluate(k * dt, u_sched[k])
+        dyn.evaluate(t0 + k * dt, u_sched[k])
         x_traj[:, :, k + 1] = dyn.x
 
-    t = np.arange(n_steps + 1, dtype=np.float64) * dt
+    t = t0 + np.arange(n_steps + 1, dtype=np.float64) * dt
     return t, x_traj
 
 
 def lfp(x_traj: FloatArray) -> FloatArray:
     """Observed output ``y = x2 - x3`` from a state trajectory or state."""
     return x_traj[1] - x_traj[2]
+
+
+def resting_state(conn: Connectome, dt: float, settle_s: float = 2.0) -> FloatArray:
+    """Find the healthy network's fixed point, shape ``(6, N)``, to start a run from.
+
+    A plant left at the default all-zero state is far from equilibrium: relaxing to the
+    background ``y ~ 1.5 mV`` costs a synchronous, network-wide voltage excursion of ictal
+    amplitude in the first tens of ms. For a run that asks *when* something happens -- a
+    seizure's propagation, a stimulation response -- that startup kick is indistinguishable
+    from the event, so such a run should start here instead.
+
+    The fixed point is found by relaxing the network noiselessly at the healthy default gain
+    for ``settle_s``, which is ample: the slowest synaptic time constant is ``1 / b = 20 ms``.
+    """
+    dyn = JansenRitDynamics(dt=dt, params=JansenRitParams(sigma=0.0), conn=conn)
+    _, x_traj = simulate_network(dyn=dyn, duration=settle_s)
+    return x_traj[:, :, -1].copy()
 
 
 def project_control(u: FloatArray, gamma_2d: FloatArray, n_controls: int) -> FloatArray:
@@ -347,6 +371,7 @@ class _JansenRitDynamicsConfig(StrictConfig):
     dt: float = Field(gt=0)
     seed: int | None = None
     enforce_zero_sum_current: bool = True
+    initial_state: Literal["zeros", "rest"] = "zeros"
     connectome: _ConnectomeConfig = Field(default_factory=_ConnectomeConfig)
     params: _JansenRitParamsConfig = Field(default_factory=_JansenRitParamsConfig)
 
@@ -439,6 +464,9 @@ class JansenRitDynamics(Dynamics[NoLog]):
         ``seed`` are flat, the structural settings nest under ``connectome`` and the
         biophysical scalars under ``params``. Any unknown key (at any level) raises
         ``pydantic.ValidationError``.
+
+        ``initial_state: rest`` starts the plant at :func:`resting_state` instead of the
+        default all-zeros, which a run that measures *when* something happens needs.
         """
         cfg = _JansenRitDynamicsConfig.model_validate(config)
         conn = Connectome.from_config(cfg.connectome.model_dump())
@@ -449,6 +477,7 @@ class JansenRitDynamics(Dynamics[NoLog]):
             params=params,
             conn=conn,
             seed=cfg.seed,
+            initial_state=resting_state(conn, cfg.dt) if cfg.initial_state == "rest" else None,
             enforce_zero_sum_current=cfg.enforce_zero_sum_current,
         )
 

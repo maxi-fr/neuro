@@ -9,16 +9,13 @@ htmlcov/
 dist/
 build/
 *.egg-info/
-knowledge-base/Literature
-knowledge-base/Notes
-knowledge-base/Presentations
 *.jpeg
 *.jpg
 *.png
 *.pdf
 *.docx
 *.pptx
-knowledge-base/.obsidian/
+knowledge-base/
 random_stuff.*
 CLAUDE.md
 __marimo__/

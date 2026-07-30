@@ -70,8 +70,17 @@ $u$ visits enough of the input space for the network to learn the input→output
 just the autonomous dynamics. The stimulation obeys **Kirchhoff's current law** — each row of $u$
 sums to zero across the $m$ electrodes (no net injected current), matching the constraint the MPC
 controllers enforce. Data generated before this fix is physically invalid; if `data/experiment_excited/`
-is empty, regenerate it with `uv run scripts/run_simulation.py configs/simulation/experiment_excited.yaml`
-before training (older wrong-stimulation datasets are archived under `data/pre_kirchhoff_wrong_stim/`).
+is empty, regenerate it with `uv run scripts/run_simulation.py configs/simulation/experiment_excited.yaml
+--output-dir data/experiment_excited` and split the resulting `sim_*.npz` into `train/` (sim_000–021)
+and `test/` (sim_022–024) before training (older wrong-stimulation datasets are archived under
+`data/pre_kirchhoff_wrong_stim/`).
+
+The datasets were regenerated on 2026-07-30 for the retuned plant (`K = 0.60`, `sigma = 280`,
+`initial_state: rest` — see [seizure_spread_tuning.md](seizure_spread_tuning.md)). The trial layout
+changed with it: **25 trials × 20 s** instead of 100 × 5 s, which is the same 500 s of simulated
+data per dataset but long enough for each trial to cover the whole EZ → PZ → hemisphere
+propagation rather than only its onset. Predictors fitted before that date were trained on a
+different plant and must be refitted.
 
 ### 2.2 Loading and downsampling
 

@@ -3,18 +3,20 @@
 # per-electrode current (ras/prbs/multisine). Expand this base into a multi-trial ensemble
 # with scripts/generate_experiment.py (varies dynamics.seed and controller.input_seed), then
 # run the generated `experiments:` file through scripts/run_simulation.py.
-t_end: 5.0
+t_end: 20.0
 
 dynamics:
   class_path: neuro.jansen_rit.JansenRitDynamics
   dt: 0.0001
   seed: 69
+  initial_state: rest
   connectome:
     speed: 50.0
     target_electrode: [CP5, T7, F9]
     gamma_spread: 20.0
-    K: 0.5357
+    K: 0.60
   params:
+    sigma: 280.0
     A: [3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25,
       3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25,
       3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25,
@@ -47,5 +49,5 @@ controller:
   # the per-step tES->EEG response the MPC relies on was never excited (see knowledge-base note sec. 9).
   hold_ms: 10.0
   transient_ms: 1000.0  # zero stimulation during the leading transient
-  duration: 10.0         # schedule length in seconds; keep equal to t_end
+  duration: 20.0         # schedule length in seconds; keep equal to t_end
   input_seed: 10069

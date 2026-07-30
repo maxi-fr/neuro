@@ -1,17 +1,19 @@
 # Closed-loop Linear MPC control benchmark using analytical gamma model (Option B).
-t_end: 5.0
+t_end: 20.0
 
 dynamics:
   class_path: neuro.jansen_rit.JansenRitDynamics
   dt: 0.0001
   seed: 69
+  initial_state: rest
   connectome:
     speed: 50.0
     target_electrode: [CP5, T7, F9]
     gamma_spread: 15.0
-    K: 0.5357
+    K: 0.60
     gamma_model: "analytical"
   params:
+    sigma: 280.0
     A: [3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25,
       3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25,
       3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25,
@@ -32,13 +34,12 @@ sensors:
 estimator: {class_path: simulate.estimator.IdentityEstimator, dt: 0.0001}
 
 controller:
-  class_path: neuro.control.LinearMPCController
+  class_path: neuro.control.MPCController
   dt: 0.01
-  artifact: artifacts/nn_predictor_2026-07-28_13-58-30/model
+  artifact: artifacts/nn_predictor_2026-07-28_21-07-53/model
   horizon: 20
+  shooting_depth: 20
   u_max: 3.0
   w_y: 1.0
   w_u: 0.0
   w_u_l1: 0.0
-  formulation: dense
-  osqp_eps: 1.0e-9

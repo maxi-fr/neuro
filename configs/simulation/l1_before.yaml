@@ -2,18 +2,20 @@
 # Copy of meeting_seven/selected_linear_mpc.yaml, repointed at the existing post-Kirchhoff linear
 # predictor (25-channel montage, 3 controls). w_u is set to 0 so the ONLY effort penalty in the
 # `after` run is the L1 term -- this run is the no-L1, no-quadratic-effort reference.
-t_end: 5.0
+t_end: 20.0
 
 dynamics:
   class_path: neuro.jansen_rit.JansenRitDynamics
   dt: 0.0001
   seed: 69
+  initial_state: rest
   connectome:
     speed: 50.0
     target_electrode: [CP5, T7, F9]
     gamma_spread: 20.0
-    K: 0.5357
+    K: 0.60
   params:
+    sigma: 280.0
     A: [3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25,
       3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25,
       3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25,

@@ -4,18 +4,20 @@
 # while the quadratic w_u stays 0. 50 is the partially-sparse sweet spot for this model: an offline
 # probe over the baseline trajectory showed mean|u| 1.94->1.62 and mean active electrodes
 # 1.95->1.64 at w_u_l1=50, collapsing to no stimulation by w_u_l1>=300.
-t_end: 5.0
+t_end: 20.0
 
 dynamics:
   class_path: neuro.jansen_rit.JansenRitDynamics
   dt: 0.0001
   seed: 69
+  initial_state: rest
   connectome:
     speed: 50.0
     target_electrode: [CP5, T7, F9]
     gamma_spread: 20.0
-    K: 0.5357
+    K: 0.60
   params:
+    sigma: 280.0
     A: [3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25,
       3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25,
       3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25,
