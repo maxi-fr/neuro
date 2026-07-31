@@ -8,10 +8,11 @@ experiments:
     connectome:
       speed: 50.0
       target_electrode:
+      - TP9
       - CP5
-      - T7
-      - F9
-      gamma_spread: 20.0
+      - EX_NECK
+      gamma_spread: 15.0
+      gamma_model: "analytical"
       K: 0.60
     params:
       sigma: 280.0

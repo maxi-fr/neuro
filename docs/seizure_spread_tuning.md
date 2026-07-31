@@ -214,6 +214,11 @@ The other configs keep the seeds their experiments already used.
   / 3 test, preserving the old 90/10 ratio.
 - **The old MPC benchmark numbers are not comparable.** The controller now faces a different
   problem: suppress a focus and block propagation, rather than damp an already-saturated network.
+- **Superseded again on 2026-07-31.** The tES geometry bug ([`tes_field_geometry.md`](tes_field_geometry.md))
+  means these datasets were also identified against a collapsed `gamma` and the old
+  `CP5/T7/F9` montage. `data/experiment_excited` has been regenerated on the corrected plant
+  (montage `[TP9, CP5, EX_NECK]`); the old set is archived as `data/experiment_excited_pre_tes_fix`
+  and `data/experiment_excited_{analytical,reciprocal}` are still stale.
 - **`data/experiment_excited_reduced_channels` was deleted and not regenerated**, so the
   `configs/nn_predictor/meeting_seven/{linear,nonlinear}_selected.yaml` predictors have no
   training data until a 25-channel set is rebuilt (the montage lives in

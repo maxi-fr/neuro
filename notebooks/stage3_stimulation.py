@@ -1,6 +1,6 @@
 import marimo
 
-__generated_with = "0.23.10"
+__generated_with = "0.23.13"
 app = marimo.App(
     width="medium",
     app_title="Stage 3 Stimulation: Immediate tES",
@@ -15,12 +15,13 @@ def _():
     import numpy as np
     from matplotlib import pyplot as plt
 
-    from neuro.connectome import Connectome
+    from neuro.connectome import EXTRACEPHALIC_ELECTRODES_MM, Connectome
     from neuro.connectome import _compute_gamma as compute_gamma
     from neuro.jansen_rit import JansenRitDynamics, JansenRitParams, lfp, simulate_network
 
     return (
         Connectome,
+        EXTRACEPHALIC_ELECTRODES_MM,
         JansenRitDynamics,
         JansenRitParams,
         compute_gamma,
@@ -51,7 +52,8 @@ def _(mo):
 
     where:
     * $u(t)$ is the time-varying stimulation current (equal to $\hat{u}_{\text{tES}}$ during the stimulation window, else $0$). Its **sign sets the polarity**: $u < 0$ is a cathode (inhibitory), $u > 0$ an anode (excitatory).
-    * $\gamma_i \ge 0$ is the positive, unit-peak spatial projection factor from the stimulating electrode (e.g., **CP5**) to region $i$, a Gaussian falloff to the region centroids. The same kernel serves cathodes and anodes; the current's sign decides which.
+    * $\gamma_i \ge 0$ is the spatial projection factor from the stimulating electrode (e.g., **TP9**) to region $i$: the Coulomb potential $100/\sqrt{r_i^2 + \sigma_\text{stim}^2}$ of a point source in a homogeneous head, so a montage's fields simply superpose. The same kernel serves cathodes and anodes; the current's sign decides which.
+    * **EX_NECK** is a virtual extracephalic return, 145+ mm from every region. Kirchhoff's law forces the injected current back out somewhere, and wherever it leaves the drive is anodal; an off-head return makes that contribution small and near-uniform, so no region is driven anodally.
 
     In this stage, **we assume no synaptic plasticity ($Z$ dynamics are off)**, so the stimulation only exerts an immediate, transient effect. Once the stimulation turns off, the seizure is expected to re-expand across the network.
     """)
@@ -59,9 +61,9 @@ def _(mo):
 
 
 @app.cell
-def _(Connectome):
+def _(Connectome, EXTRACEPHALIC_ELECTRODES_MM):
     connectome = Connectome.from_config({})
-    electrode_options = sorted(connectome.channel_labels)
+    electrode_options = sorted(connectome.channel_labels) + sorted(EXTRACEPHALIC_ELECTRODES_MM)
     return connectome, electrode_options
 
 
@@ -69,9 +71,11 @@ def _(Connectome):
 def _(electrode_options, mo):
     # Interactive UI controls
     electrode_multiselect = mo.ui.multiselect(
-        options=electrode_options, value=["CP5"], label="Stimulation montage (select ≥1; current sign sets polarity)"
+        options=electrode_options,
+        value=["TP9", "EX_NECK"],
+        label="Stimulation montage (select ≥1; current sign sets polarity)",
     )
-    spread_slider = mo.ui.slider(5.0, 100.0, 5.0, value=20.0, label="Spatial Spread σ_stim (mm)")
+    spread_slider = mo.ui.slider(5.0, 100.0, 5.0, value=15.0, label="Coulomb softening radius σ_stim (mm)")
     u_intensity_slider = mo.ui.slider(
         -3.0, 3.0, 0.25, value=-1.5, label="Total tES Intensity u_hat_tES (negative = cathodic/inhibitory)"
     )
@@ -91,7 +95,7 @@ def _(electrode_options, mo):
                 [
                     mo.md("#### 🎛️ Stimulation Settings"),
                     mo.md(
-                        "_The spatial kernel γ is positive; the **sign of each electrode's current sets its polarity** (cathode < 0, anode > 0). Per Kirchhoff's current law the montage currents must sum to zero, so cathodes need a return anode — Yu (2024) uses Ex8 (left) / Ex7 (right), whose in-set equivalent here is F9 / F10. E.g. CP5+T7 cathodes with an F9 return anode._"
+                        "_The spatial kernel γ is positive; the **sign of each electrode's current sets its polarity** (cathode < 0, anode > 0). Per Kirchhoff's current law the montage currents must sum to zero, so cathodes need a return anode. Yu (2024) returns through the extracephalic Ex7/Ex8; the equivalent here is **EX_NECK**, which — unlike a scalp return — drives no region anodally. E.g. TP9 cathode with an EX_NECK return._"
                     ),
                     electrode_multiselect,
                     spread_slider,
@@ -161,10 +165,11 @@ def _(
         gamma=gamma,
     )
 
-    # Same-sign monopolar current across the montage (a single-polarity cathode illustration);
-    # this does NOT satisfy Kirchhoff's law, so the plant below runs with the KCL guard disabled.
-    # A physical montage would add a return anode (e.g. F9) so the currents sum to zero.
-    u_amp = np.full(n_controls, float(u_intensity_slider.value) / n_controls)
+    # Kirchhoff: the intensity is split over the leading electrodes and returns through the
+    # last one, so the montage sums to zero. Put EX_NECK last to keep every region cathodal.
+    u_amp = np.full(n_controls, float(u_intensity_slider.value) / max(n_controls - 1, 1))
+    if n_controls > 1:
+        u_amp[-1] = -u_amp[:-1].sum()
     gamma_field = u_amp @ gamma  # combined per-node U_tES field for visualization
 
     # 2. Configure EZ and PZ gains
@@ -188,7 +193,7 @@ def _(
         params=params,
         conn=conn_scaled,
         seed=int(seed_slider.value),
-        enforce_zero_sum_current=False,  # monopolar pedagogical demo (no return anode)
+        enforce_zero_sum_current=False,  # a one-electrode selection stays monopolar (pedagogical)
     )
     (t, x_traj) = simulate_network(
         dyn=dyn,

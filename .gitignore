@@ -16,6 +16,8 @@ build/
 *.docx
 *.pptx
 knowledge-base/
+Notes
+Presentations
 random_stuff.*
 CLAUDE.md
 __marimo__/

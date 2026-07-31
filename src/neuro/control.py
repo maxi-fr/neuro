@@ -6,9 +6,11 @@ vector -- the controller to use for *open-loop* runs through the
 controller). :class:`StimWindowController` is an open-loop tES schedule: it holds
 a fixed stimulation amplitude over a ``[onset, offset)`` time window and emits zero
 otherwise, the orchestrated counterpart to the ``stim_window`` argument of
-:func:`~neuro.jansen_rit.simulate_network`. :class:`WaveformController` plays back a
-precomputed persistently-exciting tES schedule for plant identification.
-:class:`MPCController` closes the loop: it embeds the CasADi NN predictor
+:func:`~neuro.jansen_rit.simulate_network`. :class:`AmplitudeThresholdController` is the
+simplest *closed-loop* rung -- Yu et al.'s sec. 3.2 protocol, a fixed-length constant burst
+triggered whenever the measured EEG peak-to-peak crosses a threshold, with no predictor
+involved. :class:`WaveformController` plays back a precomputed persistently-exciting tES
+schedule for plant identification. :class:`MPCController` closes the loop: it embeds the CasADi NN predictor
 (:class:`~neuro.nn_predictor_casadi.NNSymbolicModel`) as the dynamics model of a
 receding-horizon NLP that minimizes predicted EEG power under per-electrode
 amplitude bounds. :class:`LinearMPCController` is the same receding-horizon objective for a
@@ -165,6 +167,135 @@ class StimWindowController(Controller[StimWindowControllerLog]):
         active = self.onset <= t < self.offset
         u = self.amplitude.reshape(-1) if active else np.zeros(self.n_u, dtype=np.float64)
         return u, StimWindowControllerLog(active=active)
+
+
+@dataclasses.dataclass(frozen=True)
+class AmplitudeThresholdControllerLog:
+    """Dataclass for AmplitudeThresholdController logging."""
+
+    amplitude: float
+    triggered: bool
+    active: bool
+
+
+class _AmplitudeThresholdControllerConfig(StrictConfig):
+    """Config schema for :class:`AmplitudeThresholdController`."""
+
+    dt: float = Field(gt=0)
+    amplitude: float | list[float]
+    threshold: float = Field(gt=0)
+    burst_duration: float = Field(gt=0)
+    window: float = Field(default=1.0, gt=0)
+    channel: int | None = Field(default=None, ge=0)
+    n_u: int = Field(default=1, ge=1)
+
+
+class AmplitudeThresholdController(Controller[AmplitudeThresholdControllerLog]):
+    """Trigger a fixed-length constant stimulus whenever EEG amplitude crosses a threshold.
+
+    The closed-loop protocol of Yu et al. 2024 (sec. 3.2), and the cheap rung between the
+    open-loop :class:`StimWindowController` and the MPC controllers: it needs no predictor, so
+    it is unaffected by how well the tES->EEG response is identified. Amplitude is the
+    peak-to-peak of the monitored EEG over the trailing ``window`` seconds -- the same
+    criterion :mod:`neuro.seizure` uses to call a region seizing. Crossing it starts a
+    ``burst_duration`` burst; the burst runs to completion and the threshold is only re-checked
+    once it ends, so the stimulus is a train of fixed-length pulses rather than a bang-bang
+    signal chattering at the controller rate.
+
+    ``amplitude`` is the per-electrode current held during a burst. Make it sum to zero: the
+    plant enforces Kirchhoff's law and will reject a montage that injects net current.
+    """
+
+    def __init__(  # noqa: PLR0913
+        self,
+        dt: float,
+        amplitude: ArrayLike,
+        threshold: float,
+        burst_duration: float,
+        window: float = 1.0,
+        channel: int | None = None,
+        n_u: int = 1,
+    ) -> None:
+        """Initialize the trigger.
+
+        Parameters
+        ----------
+        dt
+            Controller update step in seconds.
+        amplitude
+            tES current held during a burst: a scalar shared by every electrode or a
+            length-``n_u`` per-electrode vector. Should sum to zero (Kirchhoff).
+        threshold
+            Peak-to-peak amplitude that starts a burst, in the measurement's units.
+        burst_duration
+            Length of one stimulation burst in seconds (the paper's tau).
+        window
+            Length of the trailing window the peak-to-peak is measured over, in seconds.
+        channel
+            Index of the monitored measurement channel; ``None`` (default) monitors every
+            channel and triggers on the largest peak-to-peak among them.
+        n_u
+            Number of stimulation electrodes (control dimension).
+        """
+        super().__init__(dt)
+        self.threshold = float(threshold)
+        self.burst_duration = float(burst_duration)
+        self.window = float(window)
+        self.channel = channel
+        self.n_u = n_u
+
+        amp = np.atleast_1d(np.asarray(amplitude, dtype=np.float64))
+        if amp.size == 1:
+            amp = np.broadcast_to(amp, (n_u,))
+        elif amp.size != n_u:
+            msg = f"amplitude has {amp.size} entries but n_u is {n_u}"
+            raise ValueError(msg)
+        self.amplitude = np.ascontiguousarray(amp)
+
+        self._n_window = max(1, round(self.window / dt))
+        self._buf: FloatArray | None = None  # (n_window, n_channels), allocated on first update
+        self._n_seen = 0
+        self._until = -np.inf  # time the running burst ends
+
+    @classmethod
+    def from_config(cls, config: dict[str, Any]) -> Self:
+        """Instantiate the component from a raw configuration dictionary."""
+        cfg = _AmplitudeThresholdControllerConfig.model_validate(config)
+        return cls(
+            dt=cfg.dt,
+            amplitude=cfg.amplitude,
+            threshold=cfg.threshold,
+            burst_duration=cfg.burst_duration,
+            window=cfg.window,
+            channel=cfg.channel,
+            n_u=cfg.n_u,
+        )
+
+    def update(
+        self,
+        t: float,
+        ref: FloatArray,  # noqa: ARG002
+        x_hat: FloatArray,
+    ) -> tuple[FloatArray, AmplitudeThresholdControllerLog]:
+        """Ingest the EEG measurement and emit the burst amplitude while a burst is running."""
+        y = np.atleast_1d(np.asarray(x_hat, dtype=np.float64).reshape(-1))
+        if self._buf is None:
+            self._buf = np.zeros((self._n_window, y.size), dtype=np.float64)
+        self._buf = np.vstack([self._buf[1:], y])
+        self._n_seen += 1
+
+        # Only measure once the window is full; a partly zero-padded buffer reads as a large
+        # peak-to-peak and would trigger on start-up.
+        filled = self._n_seen >= self._n_window
+        ptp = np.ptp(self._buf, axis=0)
+        amplitude = float(ptp[self.channel] if self.channel is not None else ptp.max()) if filled else 0.0
+
+        triggered = t >= self._until and amplitude > self.threshold
+        if triggered:
+            self._until = t + self.burst_duration
+        active = t < self._until
+        u = self.amplitude if active else np.zeros(self.n_u, dtype=np.float64)
+        return u, AmplitudeThresholdControllerLog(amplitude=amplitude, triggered=triggered, active=active)
 
 
 _MULTISINE_F_MIN_HZ = 1

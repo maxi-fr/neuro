@@ -1,5 +1,12 @@
 # KCL & the collapse of seizure suppression — investigation note
 
+> **Superseded (2026-07-31).** The root cause identified below — "`gamma` is not a physical
+> current→field conversion" — was a *symptom*. `_compute_gamma` was differencing TVB's
+> unit-vector sensor rows against millimetre region centroids in a permuted axis frame, which
+> placed every electrode at the centre of the head and made all `gamma` rows collinear. The
+> measurements in this note are correct; their interpretation is not, and no `gamma` rebuild
+> was needed. See [`tes_field_geometry.md`](tes_field_geometry.md).
+
 **Status:** diagnosis only, nothing fixed. Handoff for a future agent.
 **Date:** 2026-07-27
 **Question that started it:** "The commit that added the KCL check (`f540bd3`, *stimulation needs to follow KCL*) may have made control harder — can the controller still inhibit seizures?"

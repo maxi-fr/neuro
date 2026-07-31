@@ -1,4 +1,8 @@
-# Closed-loop Linear MPC control benchmark using reciprocal gamma model (Option A).
+# Closed-loop seizure suppression with the paper's amplitude-threshold protocol (Yu 2024, sec. 3.2):
+# a fixed 1 s cathodal burst is triggered whenever the peak-to-peak EEG on the feedback channel
+# over the trailing second exceeds a threshold. No predictor is involved, so unlike the MPC
+# configs this run does not depend on how well the tES->EEG response was identified -- it is the
+# reference point the MPC has to beat.
 t_end: 20.0
 
 dynamics:
@@ -8,10 +12,10 @@ dynamics:
   initial_state: rest
   connectome:
     speed: 50.0
-    target_electrode: [CP5, T7, F9]
-    gamma_spread: 20.0
+    target_electrode: [TP9, CP5, EX_NECK]
+    gamma_spread: 15.0
     K: 0.60
-    gamma_model: "reciprocal"
+    gamma_model: "analytical"
   params:
     sigma: 280.0
     A: [3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25,
@@ -34,12 +38,13 @@ sensors:
 estimator: {class_path: simulate.estimator.IdentityEstimator, dt: 0.0001}
 
 controller:
-  class_path: neuro.control.MPCController
+  class_path: neuro.control.AmplitudeThresholdController
   dt: 0.01
-  artifact: artifacts/nn_predictor_2026-07-28_21-07-32/model
-  horizon: 20
-  shooting_depth: 20
-  u_max: 3.0
-  w_y: 1.0
-  w_u: 0.0
-  w_u_l1: 0.0
+  # TP9 (channel 27) sits over the focus: ~12 mV ptp before spread, ~45 mV once established.
+  channel: 27
+  threshold: 20.0
+  window: 1.0
+  burst_duration: 1.0
+  # 0.5 mA at each left-temporal cathode, returning through the extracephalic electrode.
+  amplitude: [-0.5, -0.5, 1.0]
+  n_u: 3

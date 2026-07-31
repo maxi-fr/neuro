@@ -11,7 +11,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from neuro.connectome import Connectome
+from neuro.connectome import Connectome, sensor_positions_mm
 
 _N_REGIONS = 76
 _N_CHANNELS = 62
@@ -119,15 +119,18 @@ def test_npz_round_trip(connectome: Connectome, tmp_path: Path) -> None:
 
 
 def test_from_config_target_electrode_builds_gamma() -> None:
-    """A ``target_electrode`` yields a normalized, positive unit-peak gamma kernel.
+    """A ``target_electrode`` yields a Coulomb kernel that decays with distance from it.
 
-    The kernel is polarity-agnostic (the applied current's sign sets cathode vs anode), so it
-    is strictly positive with a peak of 1.0 -- not signed.
+    The kernel is a potential per unit current, so it is positive and largest at the region
+    nearest the electrode; the applied current's sign is what sets cathode versus anode.
     """
-    conn = Connectome.from_config({"target_electrode": "CP5", "gamma_spread": 20.0})
+    conn = Connectome.from_config({"target_electrode": "CP5", "gamma_spread": 15.0})
     assert conn.gamma.shape == (_N_REGIONS,)
-    assert np.isclose(conn.gamma.max(), 1.0)
-    assert conn.gamma.min() >= 0.0
+    assert (conn.gamma > 0.0).all()
+
+    _, positions = sensor_positions_mm()
+    dist = np.linalg.norm(conn.centres - positions[conn.channel_index["CP5"]], axis=1)
+    assert conn.gamma.argmax() == dist.argmin()
 
 
 def test_from_config_default_gamma_is_zero() -> None:
@@ -137,10 +140,16 @@ def test_from_config_default_gamma_is_zero() -> None:
 
 
 def test_from_config_reciprocal_gamma_model() -> None:
-    """Option A (reciprocal) builds realistic current-to-field projection via Helmholtz reciprocity."""
+    """Option A (reciprocal) builds a *signed* current-to-field projection via Helmholtz reciprocity.
+
+    Reciprocity equates the field a montage injects with the leadfield's recording sensitivity,
+    which is signed: a region's contribution to a channel flips with the orientation of its
+    source. Rectifying the row would throw that away, and with it the cathodal/anodal
+    asymmetry that is the entire suppression mechanism.
+    """
     conn = Connectome.from_config({"target_electrode": ["CP5", "T7", "F9"], "gamma_model": "reciprocal"})
     assert conn.gamma.shape == (3, _N_REGIONS)
-    assert (conn.gamma >= 0.0).all()
+    assert (conn.gamma < 0.0).any()
     assert not np.allclose(conn.gamma[0], conn.gamma[1])
 
 
@@ -153,16 +162,86 @@ def test_from_config_analytical_gamma_model() -> None:
     assert (conn.gamma > 0.0).all()
 
 
+def test_sensor_positions_land_on_their_own_lead_field() -> None:
+    """Placed electrodes sit near the regions their EEG lead field is strongest on.
+
+    The EEG gain is an independent witness of where a channel is: a scalp electrode's largest
+    lead-field entry must belong to a region physically close to it. This pins down the frame
+    change and the scalp scaling in :func:`sensor_positions_mm` -- the raw TVB sensor file is
+    unit vectors in a permuted frame, and differencing those against ``centres`` directly puts
+    every electrode at the head's centre (all gamma rows then collapse onto each other, leaving
+    a KCL-legal montage with no control authority at all).
+    """
+    conn = Connectome.from_config({})
+    labels, positions = sensor_positions_mm()
+    np.testing.assert_array_equal(labels, conn.channel_labels)
+
+    dist = np.linalg.norm(conn.centres[None, :, :] - positions[:, None, :], axis=2)
+    peak_region = np.abs(conn.gain).argmax(axis=1)
+    to_peak = dist[np.arange(len(positions)), peak_region]
+    assert to_peak.mean() < 50.0, f"electrodes are {to_peak.mean():.0f} mm from their own lead-field peak"
+
+    # Laterality: a left-hemisphere channel must be closest to a left-hemisphere region.
+    left_region = np.array([str(label).startswith("l") for label in conn.region_labels])
+    for channel in ("CP5", "T7", "TP9", "O1"):
+        assert left_region[dist[conn.channel_index[channel]].argmin()], f"{channel} is not on the left"
+
+
+def test_gamma_rows_are_distinguishable_per_electrode() -> None:
+    """Nearby electrodes still steer distinct fields, so a zero-sum montage keeps authority.
+
+    ``sum(u) = 0`` (Kirchhoff) means only *differences* between gamma rows can drive the
+    network, so near-collinear rows leave the controller powerless. Their pairwise cosine is
+    the direct measure of that.
+    """
+    conn = Connectome.from_config(
+        {"target_electrode": ["TP9", "CP6"], "gamma_model": "analytical", "gamma_spread": 15.0}
+    )
+    rows = conn.gamma / np.linalg.norm(conn.gamma, axis=1, keepdims=True)
+    assert float(rows[0] @ rows[1]) < 0.95
+
+    u = np.array([-1.0, 1.0])  # KCL-legal: cathode at TP9, return at CP6
+    drive = u @ conn.gamma
+    ez = [conn.region_index[name] for name in ("lHC", "lPHC", "lAMYG")]
+    assert drive[ez].mean() < -0.1, "cathodal current must hyperpolarize the epileptogenic zone"
+
+
+def test_extracephalic_return_drives_no_region_anodally() -> None:
+    """An extracephalic return keeps a cathodal montage cathodal *everywhere*.
+
+    Kirchhoff forces the injected current back out somewhere, and wherever it leaves the drive
+    is anodal -- seizure-promoting. That is the real cost of ``sum(u) = 0`` with a scalp
+    return, and it is what an off-head return buys out: ``EX_NECK`` is 145+ mm from every
+    region, so its Coulomb potential there is small and near-uniform and no region ever
+    crosses into positive drive.
+    """
+    conn = Connectome.from_config({"target_electrode": ["TP9", "EX_NECK"], "gamma_model": "analytical"})
+    assert conn.gamma.shape == (2, _N_REGIONS)
+
+    ex = conn.gamma[1]
+    assert np.ptp(ex) / ex.mean() < 0.75, "extracephalic kernel is not near-uniform across regions"
+
+    drive = np.array([-1.0, 1.0]) @ conn.gamma  # KCL-legal: cathode at TP9, return off-head
+    assert (drive < 0.0).all(), "an extracephalic return must leave no region anodally driven"
+
+    ez = [conn.region_index[name] for name in ("lHC", "lPHC", "lAMYG")]
+    assert drive[ez].mean() < drive.mean(), "the focus must be driven harder than the network mean"
+
+
+def test_extracephalic_electrode_rejected_by_reciprocal() -> None:
+    """``reciprocal`` reads leadfield rows, so it has nothing to say about an off-head electrode."""
+    with pytest.raises(ValueError, match="analytical"):
+        Connectome.from_config({"target_electrode": ["TP9", "EX_NECK"], "gamma_model": "reciprocal"})
+
+
 def test_kcl_zero_sum_non_cancellation() -> None:
     """Zero-sum tES current under reciprocal or analytical model creates strong differential push-pull fields."""
     electrodes = ["CP5", "T7"]
     u = np.array([1.0, -1.0])  # zero sum (KCL compliant)
 
-    conn_gauss = Connectome.from_config({"target_electrode": electrodes, "gamma_model": "gaussian"})
     conn_recip = Connectome.from_config({"target_electrode": electrodes, "gamma_model": "reciprocal"})
     conn_analyt = Connectome.from_config({"target_electrode": electrodes, "gamma_model": "analytical"})
 
-    u @ conn_gauss.gamma
     field_recip = u @ conn_recip.gamma
     field_analyt = u @ conn_analyt.gamma
 

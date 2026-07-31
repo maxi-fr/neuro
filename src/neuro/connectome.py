@@ -30,7 +30,7 @@ from pydantic import Field
 from neuro.config import StrictConfig
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Callable, Sequence
     from pathlib import Path
 
     from neuro.types import FloatArray
@@ -48,6 +48,24 @@ _SENSORS_FILE = "eeg_unitvector_62.txt.bz2"
 _PROJECTION_FILE = "projection_eeg_62_surface_16k.mat"
 _REGION_MAPPING_FILE = "regionMapping_16k_76.txt"
 
+# TVB's `eeg_unitvector_62` sensor file stores *directions*, not positions: every row is a
+# unit vector, and its axes are ordered (left, posterior, superior) whereas the connectivity's
+# region centres are millimetres ordered (anterior, left, superior). Placing electrodes for the
+# tES field therefore needs both a frame change and a scale -- see `docs/tes_field_geometry.md`.
+_SENSOR_TO_CONNECTOME = np.array([[0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]])
+# Scalp radius in mm. The outermost region centroid sits at 82.8 mm, so this keeps every
+# electrode outside the cortex while staying in the range of an adult head.
+SCALP_RADIUS_MM = 90.0
+
+# Virtual electrodes off the head, in the connectome frame (anterior, left, superior) in mm.
+# Yu et al. place the tES return at ROAST's `Ex7`/`Ex8` -- extracephalic positions with no
+# counterpart in TVB's 62-channel scalp set. `EX_NECK` sits low and posterior on the midline
+# (base of the neck), 145-243 mm from every region. Under the `analytical` (Coulomb) model its
+# potential there is small, same-signed and near-uniform, so a montage returning through it
+# drives no region anodally -- which is the whole point of an extracephalic return. It is
+# rejected by `reciprocal`, which can only read lead-field rows of real EEG channels.
+EXTRACEPHALIC_ELECTRODES_MM = {"EX_NECK": (-60.0, 0.0, -180.0)}
+
 
 class _ConnectomeConfig(StrictConfig):
     """Config schema for :meth:`Connectome.from_config`."""
@@ -55,8 +73,8 @@ class _ConnectomeConfig(StrictConfig):
     speed: float = Field(default=50.0, gt=0)
     K: float = 1.0
     target_electrode: str | int | list[str | int] | None = None
-    gamma_spread: float | list[float] = 20.0
-    gamma_model: Literal["gaussian", "reciprocal", "analytical"] = "gaussian"
+    gamma_spread: float | list[float] = 15.0
+    gamma_model: Literal["reciprocal", "analytical"] = "analytical"
     leadfield_path: str | Path | None = None
 
 
@@ -193,7 +211,10 @@ class Connectome:
         The dict is validated strictly against :class:`_ConnectomeConfig` (unknown keys are
         rejected before any TVB data is touched). ``speed`` sets the conduction speed
         (mm/ms; the paper uses 50), ``K`` the global coupling, and an optional
-        ``target_electrode`` / ``gamma_spread`` build the tES projection ``gamma``.
+        ``target_electrode`` / ``gamma_spread`` build the tES projection ``gamma``. Electrodes
+        are EEG channel labels (or indices into ``channel_labels``), plus -- for
+        ``gamma_model='analytical'`` -- the virtual off-head labels in
+        :data:`EXTRACEPHALIC_ELECTRODES_MM`.
 
         Returns
         -------
@@ -310,17 +331,112 @@ def _build_eeg_gain() -> tuple[FloatArray, StrArray]:
     return gain, channel_labels
 
 
-def _compute_gamma(  # noqa: C901, PLR0913
+def sensor_positions_mm(
+    sensors_file: str = _SENSORS_FILE, radius: float = SCALP_RADIUS_MM
+) -> tuple[StrArray, FloatArray]:
+    """Scalp electrode positions in the connectome's coordinate frame, in millimetres.
+
+    TVB's sensor file gives unit vectors in a (left, posterior, superior) frame; the region
+    centres are millimetres in an (anterior, left, superior) frame. Distances between the two
+    are only meaningful once the sensors are rotated into the connectome frame and scaled out
+    to the scalp, which is what this does.
+
+    Returns
+    -------
+    labels
+        Channel names, shape ``(n_sensors,)``.
+    positions
+        Electrode positions, shape ``(n_sensors, 3)``, on the sphere of radius ``radius``.
+    """
+    sensors = SensorsEEG.from_file(sensors_file)
+    labels = np.asarray(sensors.labels, dtype=np.str_)
+    unit = np.asarray(sensors.locations, dtype=np.float64)
+    return labels, (unit @ _SENSOR_TO_CONNECTOME.T) * radius
+
+
+def _reciprocal_row_fn(
+    leadfield_path: str | Path | None,
+    gain: FloatArray | None,
+    channel_index: dict[str, int] | None,
+) -> Callable[[str, float], FloatArray]:
+    """Build the per-electrode gamma of the ``reciprocal`` model: a signed EEG leadfield row.
+
+    Helmholtz reciprocity equates the field a montage injects with the recording sensitivity of
+    the same electrode pair, so the row is used *signed*; rectifying it would erase the
+    cathodal/anodal asymmetry. Rows exist only for real EEG channels, which is why this model
+    cannot serve an extracephalic electrode.
+    """
+    if gain is None or channel_index is None:
+        gain_matrix, ch_labels = _build_eeg_gain()
+        ch_idx_map = {str(label).upper(): idx for idx, label in enumerate(ch_labels)}
+    else:
+        gain_matrix = gain
+        ch_idx_map = {k.upper(): v for k, v in channel_index.items()}
+    max_gain = np.max(np.abs(gain_matrix))
+
+    def _row(electrode: str, spread: float) -> FloatArray:  # noqa: ARG001
+        target = electrode.upper()
+        if target in EXTRACEPHALIC_ELECTRODES_MM:
+            msg = (
+                f"Extracephalic electrode {electrode} needs gamma_model='analytical'; "
+                "'reciprocal' can only read leadfield rows of real EEG channels."
+            )
+            raise ValueError(msg)
+        if target not in ch_idx_map:
+            msg = f"Electrode {electrode} not found in sensors."
+            raise ValueError(msg)
+        if leadfield_path is not None:
+            ld = np.load(leadfield_path)
+            matrix = ld["gain"] if isinstance(ld, np.lib.npyio.NpzFile) and "gain" in ld else np.asarray(ld)
+            return np.asarray(matrix[ch_idx_map[target], :], dtype=np.float64)
+        return gain_matrix[ch_idx_map[target], :] / (max_gain if max_gain > 0 else 1.0)
+
+    return _row
+
+
+def _coulomb_potential_fn(centres: FloatArray, sensors_file: str) -> Callable[[str, float], FloatArray]:
+    """Build the per-electrode gamma of the ``analytical`` model: a Coulomb volume potential.
+
+    ``100 / sqrt(r^2 + spread^2)`` is the potential of a point source in a homogeneous medium,
+    softened at the electrode by ``spread``. Being a solution of Laplace's equation it
+    superposes, so a montage's rows may simply be summed -- and it is defined at any position,
+    including the off-head entries of :data:`EXTRACEPHALIC_ELECTRODES_MM`.
+    """
+    sensor_labels, sensor_positions = sensor_positions_mm(sensors_file)
+    positions = {str(label).upper(): pos for label, pos in zip(sensor_labels, sensor_positions, strict=True)}
+    positions |= {label: np.asarray(pos, dtype=np.float64) for label, pos in EXTRACEPHALIC_ELECTRODES_MM.items()}
+
+    def _potential(electrode: str, spread: float) -> FloatArray:
+        target = electrode.upper()
+        if target not in positions:
+            msg = f"Electrode {electrode} not found in sensors."
+            raise ValueError(msg)
+        dists = np.linalg.norm(centres - positions[target], axis=1)
+        return 100.0 / np.sqrt((dists**2) + (spread**2))
+
+    return _potential
+
+
+def _compute_gamma(  # noqa: PLR0913
     centres: FloatArray,
     target_electrode: str | Sequence[str] = "CP5",
-    spread: float | Sequence[float] = 20.0,
+    spread: float | Sequence[float] = 15.0,
     sensors_file: str = _SENSORS_FILE,
-    model: Literal["gaussian", "reciprocal", "analytical"] = "gaussian",
+    model: Literal["reciprocal", "analytical"] = "analytical",
     leadfield_path: str | Path | None = None,
     gain: FloatArray | None = None,
     channel_index: dict[str, int] | None = None,
 ) -> FloatArray:
-    """Compute the normalized spatial projection gamma for tES stimulation.
+    """Compute the spatial projection gamma for tES stimulation.
+
+    ``analytical`` measures electrode-to-region distances through :func:`sensor_positions_mm`,
+    which puts the TVB sensors in the connectome's frame and on the scalp; the raw sensor file
+    is unit vectors in a permuted frame and must not be differenced against ``centres``
+    directly. It also accepts the virtual off-head electrodes in
+    :data:`EXTRACEPHALIC_ELECTRODES_MM`, which ``reciprocal`` cannot represent.
+
+    Both models are **signed**: gamma is a field per unit current, and the applied current's
+    sign then sets cathodal (hyperpolarizing) versus anodal (depolarizing) drive.
 
     Parameters
     ----------
@@ -328,16 +444,16 @@ def _compute_gamma(  # noqa: C901, PLR0913
         Region centroids coordinates in mm, shape (N_regions, 3).
     target_electrode
         Label of the stimulating electrode (e.g. 'CP5'), or a sequence of labels
-        for a multi-electrode montage (e.g. ('CP5', 'CP6')).
+        for a montage (e.g. ('TP9', 'EX_NECK')).
     spread
-        Spatial standard deviation (spread) in mm; a scalar shared across
-        electrodes, or one value per electrode.
+        Coulomb softening radius in mm, keeping the ``analytical`` kernel finite at the
+        electrode; a scalar shared across electrodes, or one value per electrode.
     sensors_file
         Filename of the EEG sensors dataset.
     model
-        Current-to-field simulation model: 'gaussian' (legacy all-positive kernel),
-        'reciprocal' (Option A: Helmholtz reciprocity on leadfield), or 'analytical'
-        (Option B: Laplacian Coulomb volume potential without independent normalization).
+        Current-to-field model: 'reciprocal' (Option A: Helmholtz reciprocity on the EEG
+        leadfield) or 'analytical' (Option B: Coulomb volume potential of a point source in
+        a homogeneous medium, which superposes and so stays valid for a montage).
     leadfield_path
         Optional path to an external NPZ/NPY leadfield matrix file for Option A.
     gain
@@ -351,40 +467,10 @@ def _compute_gamma(  # noqa: C901, PLR0913
         Spatial projection matrix of shape ``(N_regions,)`` for a single electrode, or
         ``(n_electrodes, N_regions)`` for a montage.
     """
-    sensors = SensorsEEG.from_file(sensors_file)
-    labels = [label.upper() for label in sensors.labels]
-
     if model == "reciprocal":
-        if gain is None or channel_index is None:
-            gain_matrix, ch_labels = _build_eeg_gain()
-            ch_idx_map = {str(label).upper(): idx for idx, label in enumerate(ch_labels)}
-        else:
-            gain_matrix = gain
-            ch_idx_map = {k.upper(): v for k, v in channel_index.items()}
-        max_gain = np.max(np.abs(gain_matrix))
-
-    def _gamma_one(electrode: str, spread: float) -> FloatArray:
-        target = electrode.upper()
-        if target not in labels:
-            msg = f"Electrode {electrode} not found in sensors."
-            raise ValueError(msg)
-
-        if model == "reciprocal":
-            if leadfield_path is not None:
-                ld = np.load(leadfield_path)
-                matrix = ld["gain"] if isinstance(ld, np.lib.npyio.NpzFile) and "gain" in ld else np.asarray(ld)
-                return np.abs(matrix[ch_idx_map[target], :])
-            row = np.abs(gain_matrix[ch_idx_map[target], :])
-            return row / (max_gain if max_gain > 0 else 1.0)
-
-        electrode_loc = np.asarray(sensors.locations[labels.index(target)], dtype=np.float64)
-        dists = np.linalg.norm(centres - electrode_loc, axis=1)
-        if model == "analytical":
-            return 100.0 / np.sqrt((dists**2) + (spread**2))
-
-        # Legacy gaussian model
-        gamma = np.exp(-(dists**2) / (2.0 * spread**2))
-        return gamma / gamma.max()
+        _gamma_one = _reciprocal_row_fn(leadfield_path, gain, channel_index)
+    else:
+        _gamma_one = _coulomb_potential_fn(centres, sensors_file)
 
     if isinstance(target_electrode, str):
         if not isinstance(spread, (int, float)):

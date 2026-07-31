@@ -1,13 +1,19 @@
 """Tests for the project control components.
 
-Covers :class:`~neuro.control.ZeroController`,
-:class:`~neuro.control.StimWindowController`, and :func:`~neuro.control.build_input_schedule`.
+Covers :class:`~neuro.control.ZeroController`, :class:`~neuro.control.StimWindowController`,
+:class:`~neuro.control.AmplitudeThresholdController`, and
+:func:`~neuro.control.build_input_schedule`.
 """
 
 import numpy as np
 import pytest
 
-from neuro.control import StimWindowController, ZeroController, build_input_schedule
+from neuro.control import (
+    AmplitudeThresholdController,
+    StimWindowController,
+    ZeroController,
+    build_input_schedule,
+)
 
 _DT = 0.1
 
@@ -87,6 +93,84 @@ def test_input_schedule_obeys_kirchhoff_current_law(input_type: str, n_controls:
     np.testing.assert_allclose(schedule[transient_steps:].sum(axis=1), 0.0, atol=1e-12)  # KCL
     assert np.all(np.abs(schedule) <= amp + 1e-9)  # amplitude bound respected after rescale
     assert np.any(np.abs(schedule[transient_steps:]) > 1e-6)  # ... and it actually excites
+
+
+def _run_threshold_controller(
+    controller: AmplitudeThresholdController, signal: np.ndarray, dt: float = _DT
+) -> tuple[np.ndarray, list[bool]]:
+    """Feed a scalar measurement trace through the controller; return controls and burst flags."""
+    controls, active = [], []
+    for step, value in enumerate(signal):
+        u, log = controller.update(step * dt, ref=np.array([0.0]), x_hat=np.array([value]))
+        controls.append(np.atleast_1d(u))
+        active.append(log.active)
+    return np.array(controls), active
+
+
+def test_amplitude_threshold_controller_triggers_on_crossing() -> None:
+    """Stimulation stays off on a quiet trace and switches on once peak-to-peak clears threshold.
+
+    The measured amplitude is the peak-to-peak over the trailing window, so a burst starts on
+    the first step where the window as a whole is large -- not on the first large sample.
+    """
+    controller = AmplitudeThresholdController(
+        dt=_DT, amplitude=[-1.0, 1.0], threshold=5.0, burst_duration=1.0, window=0.5, n_u=2
+    )
+    quiet = np.tile([0.4, -0.4], 20)  # ptp 0.8, below threshold
+    loud = np.tile([4.0, -4.0], 20)  # ptp 8.0, above threshold
+
+    controls, active = _run_threshold_controller(controller, np.concatenate([quiet, loud]))
+
+    assert not any(active[: len(quiet)]), "a sub-threshold trace must not trigger"
+    np.testing.assert_array_equal(controls[: len(quiet)], 0.0)
+    assert any(active[len(quiet) :]), "a supra-threshold trace must trigger"
+    np.testing.assert_array_equal(controls[active], np.tile([-1.0, 1.0], (sum(active), 1)))
+
+
+def test_amplitude_threshold_controller_holds_burst_to_completion() -> None:
+    """A burst runs its full duration even after the signal falls back below threshold.
+
+    Re-checking the threshold every step would turn the controller into a bang-bang signal at
+    the update rate; the paper's protocol is one fixed tau-second stimulus per trigger.
+    """
+    burst, window = 1.0, 0.5
+    controller = AmplitudeThresholdController(dt=_DT, amplitude=1.0, threshold=5.0, burst_duration=burst, window=window)
+    # Loud long enough to fill the window and trigger, then silent for longer than the burst.
+    signal = np.concatenate([np.tile([4.0, -4.0], 5), np.zeros(30)])
+    _, active = _run_threshold_controller(controller, signal)
+
+    on = [step for step, is_on in enumerate(active) if is_on]
+    assert on == list(range(on[0], on[-1] + 1)), "the burst must be one contiguous block"
+    assert abs(len(on) - round(burst / _DT)) <= 1, "the burst must last burst_duration"
+    assert on[-1] < len(signal) - 1, "and must stop once it is over"
+
+
+def test_amplitude_threshold_controller_ignores_partial_window() -> None:
+    """A zero-padded start-up buffer must not read as a threshold crossing."""
+    controller = AmplitudeThresholdController(dt=_DT, amplitude=1.0, threshold=5.0, burst_duration=1.0, window=1.0)
+    _, log = controller.update(0.0, ref=np.array([0.0]), x_hat=np.array([50.0]))
+    assert log.amplitude == 0.0
+    assert not log.active
+
+
+def test_amplitude_threshold_controller_from_config() -> None:
+    """from_config honours the trigger settings and the per-electrode amplitude."""
+    controller = AmplitudeThresholdController.from_config(
+        {
+            "dt": 0.01,
+            "amplitude": [-0.5, -0.5, 1.0],
+            "threshold": 2.0,
+            "burst_duration": 0.5,
+            "window": 1.0,
+            "channel": 3,
+            "n_u": 3,
+        },
+    )
+    assert controller.dt == 0.01
+    assert controller.threshold == 2.0
+    assert controller.burst_duration == 0.5
+    assert controller.channel == 3
+    np.testing.assert_array_equal(controller.amplitude, np.array([-0.5, -0.5, 1.0]))
 
 
 def test_stim_window_controller_from_config() -> None:
