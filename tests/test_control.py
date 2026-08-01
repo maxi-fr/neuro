@@ -95,6 +95,33 @@ def test_input_schedule_obeys_kirchhoff_current_law(input_type: str, n_controls:
     assert np.any(np.abs(schedule[transient_steps:]) > 1e-6)  # ... and it actually excites
 
 
+def test_mixed_hold_schedule_spans_the_requested_block_lengths() -> None:
+    """A sequence ``hold_ms`` draws each block's length from it, so the excitation is broadband.
+
+    Run-length encode the schedule and check both that no run is shorter than the shortest
+    requested hold and that the longest hold is actually used -- a single short hold leaves the
+    low-frequency band the MPC commands in unexcited (see the ``build_input_schedule`` docstring).
+    """
+    dt, holds = 1e-4, [10.0, 50.0, 200.0]
+    schedule = build_input_schedule(
+        input_type="ras",
+        n_steps=200_000,
+        transient_steps=0,
+        n_controls=3,
+        amp=3.0,
+        hold_ms=holds,
+        dt=dt,
+        rng=np.random.default_rng(0),
+    )
+
+    changes = np.flatnonzero(np.any(np.diff(schedule, axis=0) != 0.0, axis=1)) + 1
+    runs = np.diff(np.concatenate([[0], changes, [len(schedule)]]))
+    expected = [round(h / (dt * 1000.0)) for h in holds]
+    assert runs[:-1].min() >= min(expected)  # last run is truncated by n_steps
+    assert set(runs[:-1].tolist()) <= set(expected)
+    assert max(expected) in runs.tolist()  # the low-frequency blocks are present
+
+
 def _run_threshold_controller(
     controller: AmplitudeThresholdController, signal: np.ndarray, dt: float = _DT
 ) -> tuple[np.ndarray, list[bool]]:

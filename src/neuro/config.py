@@ -81,9 +81,15 @@ class TrainingConfig(StrictConfig):
     """Optimisation and scaling settings for the NN predictor.
 
     The horizon-length curriculum grows the rollout length ``L`` the loss is scored over: ``L=1``
-    (teacher forcing) until ``curriculum_start_epoch``, then ramps ``1 -> horizon`` up to
-    ``curriculum_end_epoch``, and holds at the model ``horizon`` (the full free-running rollout)
-    afterwards.
+    (teacher forcing) until ``curriculum_start_epoch``, then ramps up to ``curriculum_end_epoch``,
+    and holds there afterwards.
+
+    ``curriculum_max_steps`` caps the length the ramp approaches (default: the model ``horizon``,
+    i.e. the full free-running rollout).
+    Capping it below the horizon keeps multi-step training while avoiding the long-unroll regime
+    that destabilises this fit; ``1`` degenerates to one-step training, since a ramp from 1 to 1
+    never grows. Validation is always scored at the full horizon regardless, so model selection
+    still targets the horizon the MPC rolls out over.
     """
 
     epochs: int = Field(default=100, ge=1)
@@ -93,6 +99,7 @@ class TrainingConfig(StrictConfig):
     train_split: float = Field(default=0.8, gt=0, lt=1)
     curriculum_start_epoch: int = Field(default=0, ge=0)
     curriculum_end_epoch: int = Field(default=80, ge=0)
+    curriculum_max_steps: int | None = Field(default=None, ge=1)
     seed: int = Field(default=69, ge=0)
     w_psd: float = Field(default=0.0, ge=0)
     w_fc: float = Field(default=0.0, ge=0)

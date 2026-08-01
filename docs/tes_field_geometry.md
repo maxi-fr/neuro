@@ -2,10 +2,12 @@
 
 **Status:** root cause found and fixed in `src/neuro/connectome.py`; open-loop suppression
 verified end-to-end. The modelling decisions the note left open are now made and shipped
-(§9). Identification and the linear MPC were re-run on the corrected plant: the plant is
-controllable and the threshold controller suppresses, but the linear MPC now *fails harmfully*
-and needs its own investigation (§9.6).
-**Date:** 2026-07-31
+(§9). The linear MPC's harmful failure (§9.6) is **resolved**: it was an under-identified input
+map, not the cost function. With the identification fixed the linear MPC suppresses the seizure
+network-wide (31 → 1 seizing regions, focus silenced) and beats the threshold-controller
+baseline — see §9.8. Open: the 99 % stimulation duty cycle, and a hyperparameter sweep on the
+corrected data.
+**Date:** 2026-07-31, updated 2026-08-01
 **Supersedes the root-cause section of** [`kcl_control_authority_investigation.md`](kcl_control_authority_investigation.md).
 
 ## TL;DR
@@ -457,3 +459,178 @@ Two knock-ons: the reproduction snippets in
 `l1_before.yaml` and the archived artifacts, so that (already superseded) note is now a
 historical record only; and rebuilding the L1-sparsity experiment means re-deriving its configs
 from `meeting_seven/full_linear_mpc.yaml`.
+
+### 9.8 Why the MPC failed: what forecast MSE cannot see
+
+§9.6 left the linear MPC driving a bilateral seizure and guessed at three fixes. Measuring first
+settles it: the QP is not malfunctioning, it is correctly minimising a cost built on a model whose
+input map is wrong. Method — fork the plant into two copies sharing state *and* noise stream, drive
+one with a command and one with zero, and compare the difference against the same CasADi unroll the
+MPC uses (`NNSymbolicModel`). Three findings, in causal order.
+
+**1. `B` is under-identified by construction.** In `data/experiment_excited`, the control explains
+**5.9e-4** of the one-step EEG variance (one-step R²: 0.9766 AR-only → 0.9772 with `u`; over 20
+steps, 0.256 → 0.272). More than 99.9 % of the training loss is autoregression, so any `B`
+consistent with that residual is equally optimal to the optimiser. The excitation is not at fault:
+RAS covers the 2-D Kirchhoff plane isotropically (in-plane covariance condition number 1.003).
+
+**2. The identified `B` is uncorrelated with the truth in the direction that suppresses.** At k=1
+(pure `B`, no compounding):
+
+| command | cos(model, plant) | gain ratio |
+| --- | --- | --- |
+| `[+3,-3,0]` | 0.75 | 0.35 |
+| `[-0.5,-0.5,+1.0]` (the suppressing one) | −0.05 … +0.12 | 1.1–1.6 |
+
+By k=10 the TP9 sign is inverted: plant −4.6, model +5.7.
+
+**3. The model rewards chatter.** Under a 50 Hz alternating `[+3,-3,0]/[-3,+3,0]` command the model
+predicts `|Δy|` = 3.4–13 (gain **0.05** — it believes the currents cancel), while the plant produces
+`|Δy|` = 70–140, the largest deviation of any command tested, TP9 +41 against a baseline RMS of 2.5.
+That is §6's rectification. The QP prefers chatter because its model tells it chatter is free.
+
+**A linear predictor cannot be fixed here.** Cancellation of alternating input is a property of
+*any* linear model; rectification by the firing-rate sigmoid is an even-order nonlinear effect. No
+hyperparameter setting closes that gap — only bandwidth-limiting the controller keeps it inside the
+regime where the linear model is valid.
+
+#### What changed
+
+- **A slew-rate penalty.** `w_du` on every MPC controller adds
+  `w_du * Σ ||u_k − u_{k−1}||²`, with `u_{−1}` read off the window-state parameter so the penalty is
+  continuous across solves rather than only within a horizon.
+- **Broadband excitation.** `hold_ms` now accepts a list; the identification configs use
+  `[10, 50, 200]` ms. A single 10 ms hold excites only around the control rate, while the MPC
+  commands near-constant currents over a whole horizon — so the low-frequency gain it relies on was
+  identified from almost no data.
+- **A paired baseline dataset.** `configs/simulation/experiment_baseline.yaml` is the same plant and
+  seeds with `amp: 0.0`. The plant's noise draw does not depend on `u`, so trial *k* of each set
+  shares a noise realisation (verified: pre-stimulus EEG differs by exactly 0.0).
+- **A response metric, since removed.** A forked-probe score (fork the plant sharing state *and*
+  noise, drive one copy and not the other, compare the model's incremental prediction against the
+  difference) was built to measure the input map directly, on a scale where `0` is exact and `1` is
+  what predicting no response scores. It did its diagnostic job — the pre-fix `linear_full` scored
+  **1.155**, worse than silence, corroborating findings 2 and 3 at 880 operating points. It was
+  then **deleted**, because it proved non-monotone against closed-loop outcome (below) and so could
+  not be trusted to rank anything. The numbers it produced are retained here as evidence.
+- **`train_and_save_predictor` returns the *normalized* MSE** (raw MSE still recorded in
+  `training_stats.json`), which is comparable across trials whose window offsets differ.
+  `configs/nn_predictor/sweep_corrected.yaml` is the sweep on the corrected data.
+- **A truncation bug, found on the way.** Every predictor config carried
+  `n_steps: 500` — 5 s — with a comment dating from the old 100 × 5 s dataset. Since the
+  2026-07-30 switch to 25 × 20 s trials this silently discarded 75 % of every trajectory, including
+  nearly all of the seizure the MPC has to suppress. All predictor configs now use `n_steps: null`.
+  Every model trained between 2026-07-30 and this note saw only the first 5 s.
+
+#### Results
+
+Identification was re-run on the corrected data (`linear_full`'s architecture unchanged, so this
+isolates the *data* fixes from any architecture search). The response score below is the
+forked-probe metric described above, on 880 train / 120 test probes; `1.0` is what predicting no
+response scores.
+
+| model | train | test |
+| --- | --- | --- |
+| `linear_full`, pre-fix data | 1.155 | 1.207 |
+| `linear_full`, corrected data | **0.968** | **0.968** |
+
+Closed loop, 20 s, seed 69, seizing regions from the trailing 1 s peak-to-peak at `t_end`:
+
+| run | seizing L/R | focus | mean \|u\| | duty |
+| --- | --- | --- | --- | --- |
+| no stimulation | 31 / 0 | 5/5 | 0 | 0 % |
+| threshold controller (§9.5) | 5 / 0 | 4/5 | ≤ 1 | 20 % |
+| linear MPC, pre-fix (§9.6) | 38 / 35 | 5/5 | 1.93 | 99 % |
+| **linear MPC, refit, `w_du = 0`** | **1 / 0** | **0/5** | 1.57 | 99 % |
+| linear MPC, refit, `w_du = 10` | 4 / 0 | 2/5 | 1.22 | 99 % |
+| linear MPC, refit, `w_du = 100` | 36 / 35 | 5/5 | 1.68 | 99 % |
+| linear MPC, refit, `w_du = 1000` | 26 / 30 | 5/5 | 1.88 | 99 % |
+
+**The identification fixes repaired the MPC on their own**, from worse-than-untreated to better
+than the threshold baseline, with the focus silenced. No change to the cost function was required.
+A 2x2 ablation (below) separates which fix did what.
+
+**The slew-rate penalty is not the fix, and at scale it is harmful.** §9.6 proposed it first;
+that was wrong. Raising `w_du` monotonically degrades suppression and past ~100 the run goes
+bilateral again — a heavy rate penalty pins the controller to a near-constant command, and a
+sustained command in the anodal direction is precisely §6's seizure-promoting case. The chatter
+was a *symptom* of the wrong input map, not an independent defect. `w_du` stays in the API and
+defaults to `0`; `w_du = 10` is a real trade (22 % less mean amplitude for 3 more seizing regions)
+but nothing above that is usable.
+
+The open weakness is the **99 % duty cycle**: the MPC suppresses harder than the threshold
+controller but stimulates continuously, where the threshold controller uses 20 %. That is what
+`w_u` / `w_u_l1` are for and wants its own sweep.
+
+#### The curriculum
+
+The horizon-length curriculum destabilises this fit. On the corrected (longer, seizure-heavy)
+data the linear refit's training MSE went 0.38 → 3e7 the moment `L` reached the full 20-step
+unroll; only early stopping rescued it, so the shipped artifact is the epoch-161 model selected
+mid-ramp. Validation is always scored at the full horizon (`val_mask_jax = jnp.ones(horizon)`),
+so that selection is sound.
+
+Turning the curriculum off entirely was tested head-to-head anyway
+(`TrainingConfig.curriculum_max_steps` caps the rollout length the ramp approaches; `1` is plain
+one-step training, since a ramp from 1 to 1 never grows). It is decisively worse:
+
+| training | forecast nmse | response score | closed loop |
+| --- | --- | --- | --- |
+| curriculum | **0.64** | **0.968** | **1 / 0, focus 0/5** |
+| one-step (`curriculum_max_steps: 1`) | 1.08 | 0.994 | 37 / 33, focus 5/5 |
+
+One-step training reproduces the original harmful failure exactly. With no multi-step term in the
+loss nothing penalises rollout drift, so the 20-step forecast the MPC actually consumes ends up
+worse than predicting the mean (`nmse > 1`) and the response score returns to ~1.0. The earlier
+impression that the curriculum was not helping closed-loop performance dates from the pre-fix data,
+where every model was broken for the independent reason above; once the input map is identified the
+curriculum is load-bearing. `sweep_corrected.yaml` therefore keeps it on.
+
+The instability at `L = horizon` is still unresolved and is worth revisiting. Since the curriculum
+is what helps and only its *tail* diverges, the natural test is a lower cap —
+`curriculum_max_steps: 10` ramps `1 -> 10` and never enters the regime that blows up, which is a
+different (and more promising) experiment than either one-step training or an earlier ramp to the
+full horizon.
+
+#### Which data fix did it — the 2x2
+
+The refit changed two things at once (the dataset's excitation and `n_steps`), so they were
+separated by training the two missing cells with byte-identical architecture and hyperparameters
+and judging them by closed loop:
+
+| cell | excitation | `n_steps` | nmse | response score | seizing L/R | focus |
+| --- | --- | --- | --- | --- | --- | --- |
+| A | uniform 10 ms | 500 | (val 3.05) | 1.155 | 38 / 35 | 5/5 |
+| B | uniform 10 ms | `null` | 0.81 | 1.013 | **0 / 26** | **0/5** |
+| C | mixed 10/50/200 | 500 | 3.98 | 1.177 | 33 / 1 | 5/5 |
+| D | mixed 10/50/200 | `null` | **0.64** | **0.968** | **1 / 0** | **0/5** |
+
+**Both were necessary; neither alone sufficient.**
+
+- **`n_steps` decides whether the focus can be silenced at all.** Both truncated cells leave it
+  seizing 5/5; both untruncated cells silence it 0/5. A model trained on the first 5 s has never
+  seen a seizing network, so its 20-step forecast at t = 10–20 s is pure extrapolation — and
+  better excitation cannot compensate (cell C, mixed excitation on truncated data, is the worst
+  nmse of the four).
+- **Excitation bandwidth decides whether the effect stays lateralised.** Cell B silences the whole
+  left hemisphere *and* the focus, then ignites 26 regions on the right — exactly §5's anode
+  trade-one-hemisphere-for-the-other signature. Mixed holds are what turn that into cell D's 1/0.
+
+#### The response metric does not survive this
+
+Ranked by response score the order is D (0.968) < one-step (0.994) < B (1.013) < A (1.155) <
+C (1.177). By closed-loop total seizing it is D (1) < B (26) < C (34) < one-step (70) < A (73).
+The metric places one-step **second best** when it is fourth of five and drives a bilateral
+seizure — it is non-monotone against ground truth, not merely narrow-margined. Plain forecast
+nmse orders the same five better (only C and one-step swap).
+
+The metric was therefore **removed from the repo** (`neuro.response_probe`,
+`scripts/generate_response_probes.py`, its test and its dataset). It had real diagnostic value —
+a score above 1.0 flagged every model that failed, and it is what exposed the original input-map
+defect — but a measurement that cannot be trusted to rank is a liability sitting in a sweep
+objective, and keeping it invited exactly that. The findings it produced are recorded above; the
+apparatus is not worth maintaining for them.
+
+What remains: forecast NMSE as the cheap proxy, and **closed-loop suppression as the only
+criterion shown to be reliable** — ~7-10 min per run against ~50 min to train, i.e. a ~20 %
+surcharge. Verify sweep winners in closed loop rather than trusting the proxy.

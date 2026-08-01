@@ -56,15 +56,15 @@ def objective(
 
     # Vary the seed across trials to avoid correlation if params are identical.
     try:
-        mse = train_and_save_predictor(config, data_files, trial_dir, seed_offset=trial.number)
+        nmse = train_and_save_predictor(config, data_files, trial_dir, seed_offset=trial.number)
     except ValueError as e:
         if "NaN" in str(e):
             print(f"Trial {trial.number} pruned: {e}")
             raise optuna.TrialPruned from e
         raise
 
-    print(f"\nTrial {trial.number} completed with MSE: {mse}")
-    return mse
+    print(f"\nTrial {trial.number} completed with NMSE: {nmse}")
+    return nmse
 
 
 def main() -> None:
@@ -103,7 +103,7 @@ def main() -> None:
     print("\n================== SWEEP COMPLETED ==================")
     print("Best trial:")
     best_trial = study.best_trial
-    print(f"  Value (MSE): {best_trial.value}")
+    print(f"  Value (NMSE): {best_trial.value}")
     print("  Params: ")
     for key, value in best_trial.params.items():
         print(f"    {key}: {value}")

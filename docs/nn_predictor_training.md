@@ -82,6 +82,22 @@ data per dataset but long enough for each trial to cover the whole EZ → PZ →
 propagation rather than only its onset. Predictors fitted before that date were trained on a
 different plant and must be refitted.
 
+That intent was defeated in practice until 2026-08-01: every config still carried the old
+`n_steps: 500`, which caps a trajectory at 5 s, so the extra 15 s of propagation was loaded and
+then discarded. Every predictor fitted between 2026-07-30 and that date saw only each trial's
+first 5 s — mostly pre-seizure. All configs now use `n_steps: null`
+(see [tes_field_geometry.md](tes_field_geometry.md) §9.8).
+
+The excitation was widened at the same time: `hold_ms` is now `[10, 50, 200]` ms rather than a
+flat 10 ms, so the identification input covers the low-frequency band the MPC commands in and not
+just the control rate. A noise-matched **zero-stimulation twin** of each dataset is generated
+alongside it (`configs/simulation/experiment_baseline.yaml`), which makes the noise-free tES
+response directly observable for diagnostics.
+
+Which of these mattered was settled by ablation: the truncation is what decides whether the
+controller can silence the focus at all, and the excitation bandwidth is what keeps the effect
+lateralised. Both were needed — see [tes_field_geometry.md](tes_field_geometry.md) §9.8.
+
 ### 2.2 Loading and downsampling
 
 [`load_trajectory`](../src/neuro/nn_training.py) reads at most `n_steps · downsample` raw samples (or the entire trajectory if `n_steps` is omitted / `null`) and
@@ -99,7 +115,8 @@ $$
 $$
 
 Example (all shipped configs): $\Delta t = 10^{-4}\,\text{s}$, $d = 100 \Rightarrow \Delta t_\text{real}
-= 10^{-2}\,\text{s}$ (100 Hz), and $n_\text{steps} = 500$ ⇒ **5 s per trajectory**. This
+= 10^{-2}\,\text{s}$ (100 Hz), and $n_\text{steps} = \texttt{null}$ ⇒ the whole **20 s per
+trajectory** (2000 downsampled steps). This
 $\Delta t_\text{real}$ is stored in the artifact and becomes the model's native step at inference.
 
 ---
@@ -539,7 +556,7 @@ out-of-range values raise `ValidationError` rather than silently defaulting.
 
 Common to all three: `n_y=15`, `horizon=20`, `hidden_size=128`, `activation=softplus`,
 `latent_dim=null`, `epochs=250`, `train_split=0.8`, `seed=69`, `patience=100`, `scaler=robust`,
-`global_scaling=true`, and the 100 Hz / 5 s data described in Section 2.2. `stats_experiment.yaml`
+`global_scaling=true`, and the 100 Hz / 20 s data described in Section 2.2. `stats_experiment.yaml`
 differs from `nonlinear_best.yaml` only by turning on the PSD and FC auxiliary losses.
 
 ---

@@ -5,7 +5,8 @@
 simulation:
   dt: 0.0001
   downsample: 100        # effective dt = 1e-2 s
-  n_steps: 500           # downsampled steps per trajectory (50000 raw / 100 = 5 s)
+  n_steps: null          # whole trajectory (20 s = 2000 downsampled steps). The old 500 kept only
+                         # the first 5 s, i.e. almost none of the seizure the MPC has to suppress.
   data_path: "data/experiment_excited_reduced_channels/train"   # 25-channel selected montage
 
 model:

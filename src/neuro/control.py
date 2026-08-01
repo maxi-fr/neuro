@@ -32,13 +32,15 @@ from typing import TYPE_CHECKING, Any, Literal, Self
 
 import casadi as ca
 import numpy as np
-from pydantic import Field
+from pydantic import Field, PositiveFloat
 from simulate.controller import Controller
 
 from neuro.config import StrictConfig
 from neuro.nn_predictor_casadi import NNSymbolicModel
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     from numpy.typing import ArrayLike
 
     from neuro.types import FloatArray
@@ -322,7 +324,7 @@ def build_input_schedule(  # noqa: PLR0913
     transient_steps: int,
     n_controls: int,
     amp: float,
-    hold_ms: float,
+    hold_ms: float | Sequence[float],
     dt: float,
     rng: np.random.Generator,
 ) -> FloatArray:
@@ -331,6 +333,12 @@ def build_input_schedule(  # noqa: PLR0913
     ``ras`` holds a random uniform amplitude per block, ``prbs`` a random binary +/-amp, and
     ``multisine`` a random-phase sum of sinusoids; ``hold_ms`` sets the block length for the
     first two.
+
+    ``hold_ms`` may be a sequence, in which case each block draws its length uniformly from it.
+    A single short hold excites only around the control rate, leaving the low-frequency band the
+    MPC actually commands in (near-constant currents over a horizon) barely visited -- so the
+    identified control response is accurate where the controller does not operate and wrong where
+    it does. Mixing holds spreads the excitation across that band.
 
     Each active row is projected onto the zero-sum subspace (its across-electrode mean is
     removed) so the montage obeys Kirchhoff's current law ``sum(u) = 0`` -- matching the
@@ -345,13 +353,18 @@ def build_input_schedule(  # noqa: PLR0913
         return u
 
     if input_type in ("ras", "prbs"):
-        hold = max(1, round(hold_ms / (dt * 1000.0)))
-        n_blocks = (active + hold - 1) // hold
+        holds = np.atleast_1d(np.asarray(hold_ms, dtype=np.float64))
+        hold_steps = np.maximum(1, np.round(holds / (dt * 1000.0)).astype(int))
+        # Draw block lengths until they cover the active span, then one value per block.
+        n_blocks = int(np.ceil(active / hold_steps.min()))
+        lengths = rng.choice(hold_steps, size=n_blocks) if hold_steps.size > 1 else np.repeat(hold_steps, n_blocks)
+        n_blocks = int(np.searchsorted(np.cumsum(lengths), active) + 1)
+        lengths = lengths[:n_blocks]
         if input_type == "ras":
             block_vals = rng.uniform(-amp, amp, size=(n_blocks, n_controls))
         else:
             block_vals = rng.choice(np.array([-amp, amp]), size=(n_blocks, n_controls))
-        seq = np.repeat(block_vals, hold, axis=0)[:active]
+        seq = np.repeat(block_vals, lengths, axis=0)[:active]
     elif input_type == "multisine":
         seq = _multisine(active, n_controls, amp, dt, rng)
     else:
@@ -381,7 +394,7 @@ class _WaveformControllerConfig(StrictConfig):
     amp: float = Field(ge=0)
     input_seed: int = Field(ge=0)
     transient_ms: float = Field(default=0.0, ge=0)
-    hold_ms: float = Field(default=50.0, gt=0)
+    hold_ms: PositiveFloat | list[PositiveFloat] = 50.0
 
 
 class WaveformController(Controller[WaveformControllerLog]):
@@ -457,14 +470,14 @@ def _l1_epigraph(u_vars: list[ca.MX], w_l1: float) -> tuple[list[ca.MX], ca.MX, 
     return slacks, cost, ca.vertcat(*g)
 
 
-def _sum_to_zero(u_vars: list[ca.MX]) -> ca.MX:
-    """Kirchhoff current-law equality: the per-electrode currents sum to zero at each step.
+def _rate_penalty(u_vars: list[ca.MX], u_last: ca.MX, w_du: float) -> ca.MX:
+    """Quadratic slew cost ``w_du * sum_k ||u_k - u_{k-1}||^2``, with ``u_{-1} = u_last``."""
+    diffs = [u_vars[0] - u_last] + [u_vars[k] - u_vars[k - 1] for k in range(1, len(u_vars))]
+    return w_du * sum(ca.sumsqr(d) for d in diffs)
 
-    tES injects no net current, so the montage's currents must balance
-    (``sum(u_k) == 0``). Returns the stacked expression ``[sum(u_0), ..., sum(u_{H-1})]``
-    (one row per horizon step) to be constrained ``== 0`` (``lbg = ubg = 0``). Written with
-    ``ca.sum1`` so it holds for any number of electrodes ``n_controls`` (>= 2).
-    """
+
+def _sum_to_zero(u_vars: list[ca.MX]) -> ca.MX:
+    """Kirchhoff current-law equality: the per-electrode currents sum to zero at each step."""
     return ca.vertcat(*[ca.sum1(u) for u in u_vars])
 
 
@@ -478,6 +491,7 @@ class _MPCControllerConfig(StrictConfig):
     w_y: float = Field(default=1.0, ge=0)
     w_u: float = Field(default=0.0, ge=0)
     w_u_l1: float = Field(default=0.0, ge=0)
+    w_du: float = Field(default=0.0, ge=0)
     shooting_depth: int = Field(default=1, ge=1)
     max_iter: int = Field(default=100, ge=1)
     max_cpu_time: float | None = Field(default=None, gt=0)
@@ -518,6 +532,7 @@ class MPCController(Controller[MPCControllerLog]):
         w_y: float = 1.0,
         w_u: float = 0.0,
         w_u_l1: float = 0.0,
+        w_du: float = 0.0,
         *,
         shooting_depth: int = 1,
         max_iter: int = 100,
@@ -545,6 +560,11 @@ class MPCController(Controller[MPCControllerLog]):
         w_u_l1
             Weight on the L1 norm of the control effort (a sparse-stimulation penalty); ``0``
             disables it (default), leaving the pure-quadratic problem unchanged.
+        w_du
+            Weight on the step-to-step control change ``||u_k - u_{k-1}||^2`` (a slew-rate
+            penalty); ``0`` disables it (default). Needed whenever the identified model
+            under-estimates the plant's response to fast-alternating currents, which otherwise
+            makes bang-bang chattering look free to the optimizer.
         max_iter
             Hard cap on IPOPT iterations per solve. When the cap is hit the best warm-started iterate is applied
             and ``success`` is ``False`` (capped, not failed).
@@ -561,6 +581,7 @@ class MPCController(Controller[MPCControllerLog]):
         self.w_y = float(w_y)
         self.w_u = float(w_u)
         self.w_u_l1 = float(w_u_l1)
+        self.w_du = float(w_du)
         self.shooting_depth = int(shooting_depth)
         self.max_iter = int(max_iter)
         self.max_cpu_time = float(max_cpu_time) if max_cpu_time is not None else None
@@ -602,6 +623,7 @@ class MPCController(Controller[MPCControllerLog]):
             w_y=cfg.w_y,
             w_u=cfg.w_u,
             w_u_l1=cfg.w_u_l1,
+            w_du=cfg.w_du,
             shooting_depth=cfg.shooting_depth,
             max_iter=cfg.max_iter,
             max_cpu_time=cfg.max_cpu_time,
@@ -647,6 +669,9 @@ class MPCController(Controller[MPCControllerLog]):
 
             if k < n_segments:
                 defects.append(x_curr - get_phi(k + 1))
+
+        if self.w_du > 0:
+            cost = cost + _rate_penalty(u_vars, x0_p[-n_ctrl:], self.w_du)
 
         x_parts = [*u_vars, *phi_vars]
         # Kirchhoff current law: the montage currents sum to zero at every step (h equalities).
@@ -750,6 +775,7 @@ class _LinearMPCControllerConfig(StrictConfig):
     w_y: float = Field(default=1.0, ge=0)
     w_u: float = Field(default=0.0, ge=0)
     w_u_l1: float = Field(default=0.0, ge=0)
+    w_du: float = Field(default=0.0, ge=0)
     formulation: Literal["sparse", "dense"] = "sparse"
     osqp_eps: float = Field(default=1e-9, gt=0)
 
@@ -792,6 +818,7 @@ class LinearMPCController(Controller[MPCControllerLog]):
         w_y: float = 1.0,
         w_u: float = 0.0,
         w_u_l1: float = 0.0,
+        w_du: float = 0.0,
         *,
         formulation: str = "sparse",
         osqp_eps: float = 1e-9,
@@ -819,6 +846,11 @@ class LinearMPCController(Controller[MPCControllerLog]):
             Weight on the L1 norm of the control effort (a sparse-stimulation penalty); ``0``
             disables it (default). When positive the QP gains slack variables and the
             inequalities ``t >= |u|`` so it stays a convex QP.
+        w_du
+            Weight on the step-to-step control change ``||u_k - u_{k-1}||^2`` (a slew-rate
+            penalty); ``0`` disables it (default). Needed whenever the identified model
+            under-estimates the plant's response to fast-alternating currents, which otherwise
+            makes bang-bang chattering look free to the optimizer.
         formulation
             ``"sparse"`` (stacked states, OSQP) or ``"dense"`` (condensed, qpOASES).
         osqp_eps
@@ -843,6 +875,7 @@ class LinearMPCController(Controller[MPCControllerLog]):
         self.w_y = float(w_y)
         self.w_u = float(w_u)
         self.w_u_l1 = float(w_u_l1)
+        self.w_du = float(w_du)
         self.formulation = formulation
         self.osqp_eps = float(osqp_eps)
 
@@ -879,6 +912,7 @@ class LinearMPCController(Controller[MPCControllerLog]):
             w_y=cfg.w_y,
             w_u=cfg.w_u,
             w_u_l1=cfg.w_u_l1,
+            w_du=cfg.w_du,
             formulation=cfg.formulation,
             osqp_eps=cfg.osqp_eps,
         )
@@ -931,6 +965,9 @@ class LinearMPCController(Controller[MPCControllerLog]):
             ubx = np.concatenate([np.tile(self.u_max, h), np.full(n_x_vars, np.inf)])
             lbg = np.zeros(h * n_state + h)  # continuity defects + sum-to-zero (equalities)
             ubg = np.zeros(h * n_state + h)
+
+        if self.w_du > 0:
+            cost = cost + _rate_penalty(u_vars, x0_p[-n_ctrl:], self.w_du)
 
         # Optional L1 control-effort penalty: slacks + inequalities keep it a convex QP.
         if self.w_u_l1 > 0:
@@ -1014,7 +1051,13 @@ class LinearMPCController(Controller[MPCControllerLog]):
 
 
 def _build_output_lifted_nlp(  # noqa: PLR0913
-    model: NNSymbolicModel, horizon: int, w_y: float, w_u: float, u_max: FloatArray, w_u_l1: float = 0.0
+    model: NNSymbolicModel,
+    horizon: int,
+    w_y: float,
+    w_u: float,
+    u_max: FloatArray,
+    w_u_l1: float = 0.0,
+    w_du: float = 0.0,
 ) -> dict[str, Any]:
     """Assemble the output-lifted (minimal-realization NARX) suppression problem.
 
@@ -1045,6 +1088,10 @@ def _build_output_lifted_nlp(  # noqa: PLR0913
         Weight on the L1 norm of the control effort (a sparse-stimulation penalty); ``0`` (default)
         adds nothing. When positive, per-node slack variables and the inequalities ``t >= |u|`` are
         appended, keeping the cost quadratic (a convex QP / smooth NLP).
+    w_du
+        Weight on the step-to-step control change ``||u_k - u_{k-1}||^2``; ``0`` (default) adds
+        nothing. ``u_{-1}`` is read from the measured-past parameter, so the penalty is
+        continuous across solves.
 
     Returns
     -------
@@ -1090,6 +1137,9 @@ def _build_output_lifted_nlp(  # noqa: PLR0913
         u_win = ca.vertcat(*[u_at(k - n_u + 1 + j) for j in range(n_u)])  # u_{k-n_u+1..k}
         defects.append(y_vars[k] - model.predict_output(y_win, u_win))
         cost = cost + w_y * ca.sumsqr(decode(y_vars[k])) + w_u * ca.sumsqr(u_vars[k])
+
+    if w_du > 0:
+        cost = cost + _rate_penalty(u_vars, u_at(-1), w_du)
 
     x_parts = [*u_vars, *y_vars]
     # Kirchhoff current law: the montage currents sum to zero at every step (h equalities).
@@ -1158,6 +1208,7 @@ class _NarxMPCControllerConfig(StrictConfig):
     w_y: float = Field(default=1.0, ge=0)
     w_u: float = Field(default=0.0, ge=0)
     w_u_l1: float = Field(default=0.0, ge=0)
+    w_du: float = Field(default=0.0, ge=0)
     max_iter: int = Field(default=100, ge=1)
     max_cpu_time: float | None = Field(default=None, gt=0)
     expand: bool = False
@@ -1196,6 +1247,7 @@ class NarxMPCController(Controller[MPCControllerLog]):
         w_y: float = 1.0,
         w_u: float = 0.0,
         w_u_l1: float = 0.0,
+        w_du: float = 0.0,
         *,
         max_iter: int = 100,
         max_cpu_time: float | None = None,
@@ -1209,7 +1261,8 @@ class NarxMPCController(Controller[MPCControllerLog]):
         ``model`` the CasADi NN predictor, ``u_max`` the per-electrode amplitude bound (scalar or
         length-``n_controls``), ``horizon`` the control horizon (default the model's native
         horizon), ``w_y``/``w_u`` the EEG-power/effort weights, ``w_u_l1`` the optional L1
-        control-effort (sparse-stimulation) weight (``0`` disables it, the default), ``max_iter``
+        control-effort (sparse-stimulation) weight (``0`` disables it, the default), ``w_du`` the
+        optional slew-rate weight on ``||u_k - u_{k-1}||^2`` (also ``0`` by default), ``max_iter``
         the per-solve IPOPT iteration cap (a capped iterate is still applied, with ``success``
         False), ``max_cpu_time`` an optional per-solve wall-time budget in seconds, ``expand``
         whether to expand the NLP from MX to SX, and ``ipopt_options`` an extra IPOPT-option
@@ -1221,6 +1274,7 @@ class NarxMPCController(Controller[MPCControllerLog]):
         self.w_y = float(w_y)
         self.w_u = float(w_u)
         self.w_u_l1 = float(w_u_l1)
+        self.w_du = float(w_du)
         self.max_iter = int(max_iter)
         self.max_cpu_time = float(max_cpu_time) if max_cpu_time is not None else None
         self.expand = bool(expand)
@@ -1259,6 +1313,7 @@ class NarxMPCController(Controller[MPCControllerLog]):
             w_y=cfg.w_y,
             w_u=cfg.w_u,
             w_u_l1=cfg.w_u_l1,
+            w_du=cfg.w_du,
             max_iter=cfg.max_iter,
             max_cpu_time=cfg.max_cpu_time,
             expand=cfg.expand,
@@ -1267,7 +1322,9 @@ class NarxMPCController(Controller[MPCControllerLog]):
 
     def _build_solver(self) -> None:
         """Build the output-lifted NLP and its IPOPT solver, once."""
-        prob = _build_output_lifted_nlp(self.model, self.horizon, self.w_y, self.w_u, self.u_max, self.w_u_l1)
+        prob = _build_output_lifted_nlp(
+            self.model, self.horizon, self.w_y, self.w_u, self.u_max, self.w_u_l1, self.w_du
+        )
         nlp = {"x": prob["x"], "f": prob["f"], "g": prob["g"], "p": prob["p"]}
         opts = {
             "print_time": False,
@@ -1329,6 +1386,7 @@ class _LinearNarxMPCControllerConfig(StrictConfig):
     w_y: float = Field(default=1.0, ge=0)
     w_u: float = Field(default=0.0, ge=0)
     w_u_l1: float = Field(default=0.0, ge=0)
+    w_du: float = Field(default=0.0, ge=0)
     osqp_eps: float = Field(default=1e-9, gt=0)
 
 
@@ -1355,6 +1413,7 @@ class LinearNarxMPCController(Controller[MPCControllerLog]):
         w_y: float = 1.0,
         w_u: float = 0.0,
         w_u_l1: float = 0.0,
+        w_du: float = 0.0,
         *,
         osqp_eps: float = 1e-9,
     ) -> None:
@@ -1362,7 +1421,8 @@ class LinearNarxMPCController(Controller[MPCControllerLog]):
 
         Parameters mirror the nonlinear sibling :class:`NarxMPCController` (``dt``, ``model``,
         ``u_max``, ``horizon``, ``w_y``, ``w_u``, ``w_u_l1`` the optional L1 control-effort
-        (sparse-stimulation) weight defaulting to ``0``) plus ``osqp_eps``, the OSQP
+        (sparse-stimulation) weight defaulting to ``0``, ``w_du`` the optional slew-rate weight)
+        plus ``osqp_eps``, the OSQP
         absolute/relative convergence tolerance (default ``1e-9``, far tighter than OSQP's loose
         ``1e-3`` default so the suppression QP is solved accurately). The predictor's inner MLP
         must have ``depth == 0`` (a single affine layer); a nonlinear model raises ``ValueError``.
@@ -1381,6 +1441,7 @@ class LinearNarxMPCController(Controller[MPCControllerLog]):
         self.w_y = float(w_y)
         self.w_u = float(w_u)
         self.w_u_l1 = float(w_u_l1)
+        self.w_du = float(w_du)
         self.osqp_eps = float(osqp_eps)
 
         self.n_y = model.artifact.n_y
@@ -1416,6 +1477,7 @@ class LinearNarxMPCController(Controller[MPCControllerLog]):
             w_y=cfg.w_y,
             w_u=cfg.w_u,
             w_u_l1=cfg.w_u_l1,
+            w_du=cfg.w_du,
             osqp_eps=cfg.osqp_eps,
         )
 
@@ -1426,7 +1488,9 @@ class LinearNarxMPCController(Controller[MPCControllerLog]):
         rather than the compiled ``f_step``/``f_out`` so the graph stays a flat affine expression
         and ``ca.qpsol`` extracts an exact constant Hessian.
         """
-        prob = _build_output_lifted_nlp(self.model, self.horizon, self.w_y, self.w_u, self.u_max, self.w_u_l1)
+        prob = _build_output_lifted_nlp(
+            self.model, self.horizon, self.w_y, self.w_u, self.u_max, self.w_u_l1, self.w_du
+        )
         qp = {"x": prob["x"], "f": prob["f"], "g": prob["g"], "p": prob["p"]}
         opts = {
             "print_time": False,

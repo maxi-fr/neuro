@@ -377,6 +377,29 @@ def test_linear_l1_penalty_yields_sparse_control(tmp_path: Path) -> None:
     np.testing.assert_allclose(u_big, np.zeros(n_controls), atol=1e-6)  # large L1 -> all zero
 
 
+def test_linear_rate_penalty_suppresses_chattering(tmp_path: Path) -> None:
+    """``w_du`` damps the step-to-step control change in the output-lifted QP too.
+
+    The lifted formulation reads ``u_{-1}`` from the measured-past parameter (``u_at(-1)``), so
+    the penalty couples consecutive solves; total variation of the applied sequence must fall as
+    the weight rises, and a large weight must hold the control constant.
+    """
+    n_y, n_ch, n_controls = 4, 2, 3
+    model = NNSymbolicModel.from_artifact(
+        _build_artifact(tmp_path, depth=0, n_y=n_y, horizon=4, n_channels=n_ch, n_controls=n_controls)
+    )
+    base: dict[str, Any] = {"dt": 0.01, "model": model, "u_max": 5.0, "horizon": 4, "w_y": 1.0, "w_u": 0.0}
+
+    def applied(w_du: float) -> FloatArray:
+        """Controls applied after the window has filled, shape ``(n_solves, n_controls)``."""
+        driven = _drive(LinearNarxMPCController(w_du=w_du, **base), n_steps=n_y + 12, n_channels=n_ch)
+        return np.array([u for u, log in driven if not log.warmup])
+
+    tv = {w: np.abs(np.diff(applied(w), axis=0)).sum() for w in (0.0, 1.0, 1000.0)}
+    assert tv[0.0] > tv[1.0] > tv[1000.0]
+    assert tv[1000.0] < 1e-3 * tv[0.0]
+
+
 @pytest.mark.parametrize("w_u_l1", [0.0, 0.5])
 def test_linear_matches_sparse_linear_mpc(tmp_path: Path, w_u_l1: float) -> None:
     """The output-lifted QP agrees with LinearMPCController's full-state sparse QP on a linear model.

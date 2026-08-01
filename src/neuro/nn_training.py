@@ -6,7 +6,7 @@ multiple trajectories.
 """
 
 import json
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from pathlib import Path
 
 import equinox as eqx
@@ -589,6 +589,28 @@ def curriculum_state(
     return mask
 
 
+def _step_mask_selector(
+    horizon: int, curriculum_max_steps: int | None, start_epoch: int, end_epoch: int
+) -> Callable[[int], FloatArray]:
+    """Return the ``epoch -> loss mask`` map for a curriculum ramping ``1 -> curriculum_max_steps``.
+
+    ``curriculum_max_steps`` is the rollout length the ramp *approaches*, defaulting to the full
+    model ``horizon``. Capping it below the horizon keeps the multi-step structure that the
+    rollout needs while never entering the long-unroll regime that destabilises this fit; setting
+    it to ``1`` degenerates to plain one-step training (a ramp from 1 to 1 never grows). Steps
+    beyond the cap stay masked out, so the returned mask is always ``horizon``-wide.
+    """
+    target = min(curriculum_max_steps or horizon, horizon)
+
+    def select(epoch: int) -> FloatArray:
+        """Loss mask for ``epoch``: a prefix of ones, zero-padded out to the full horizon."""
+        mask = np.zeros(horizon, dtype=np.float64)
+        mask[:target] = curriculum_state(epoch, target, start_epoch=start_epoch, end_epoch=end_epoch)
+        return mask
+
+    return select
+
+
 def _warm_start_linear_model(  # noqa: PLR0913
     model: AutoregressivePredictor,
     X_train_s: FloatArray,
@@ -627,7 +649,7 @@ def _warm_start_linear_model(  # noqa: PLR0913
     return eqx.tree_at(lambda m: m.model, model, mlp)
 
 
-def train_model(  # noqa: PLR0913
+def train_model(  # noqa: PLR0913, PLR0915
     model: eqx.Module,
     X_train_s: FloatArray,
     Y_train_s: FloatArray,
@@ -640,6 +662,7 @@ def train_model(  # noqa: PLR0913
     n_channels: int,
     curriculum_start_epoch: int = 0,
     curriculum_end_epoch: int = 80,
+    curriculum_max_steps: int | None = None,
     w_psd: float = 0.0,
     w_fc: float = 0.0,
     patience: int = 50,
@@ -673,6 +696,12 @@ def train_model(  # noqa: PLR0913
     curriculum_start_epoch : int
         Epoch at which the trusted rollout length ``L`` starts growing (``L = 1``, pure teacher
         forcing, before it).
+    curriculum_max_steps : int | None
+        Rollout length the curriculum ramps *toward*; defaults to the full model ``horizon``.
+        Capping it below the horizon keeps multi-step training while avoiding the long-unroll
+        regime that destabilises this fit, and ``1`` degenerates to plain one-step training.
+        Validation stays at the full horizon regardless, so model selection still targets the
+        horizon the MPC rolls out over.
     curriculum_end_epoch : int
         Epoch at which ``L`` reaches the model ``horizon`` (the full free-running rollout); it holds
         there afterwards. Growing the rollout length keeps multi-step structure throughout while
@@ -704,7 +733,13 @@ def train_model(  # noqa: PLR0913
     if do_lstsq:
         model = _warm_start_linear_model(model, X_train_s, Y_train_s, n_channels, decode_basis, decode_mean)
 
-    optimizer = optax.adamw(learning_rate=learning_rate, weight_decay=weight_decay)
+    start_epoch = curriculum_start_epoch if do_lstsq else 0
+    steps_per_epoch = (X_train_s.shape[0] + batch_size - 1) // batch_size
+    total_steps = steps_per_epoch * (epochs - start_epoch)
+
+    lr_schedule = optax.cosine_decay_schedule(init_value=learning_rate, decay_steps=total_steps, alpha=0.0)
+
+    optimizer = optax.adamw(learning_rate=lr_schedule, weight_decay=weight_decay)
     opt_state = optimizer.init(eqx.filter(model, eqx.is_array))
 
     best_val_loss = float("inf")
@@ -713,7 +748,6 @@ def train_model(  # noqa: PLR0913
     X_val_jnp = jnp.array(X_val_s)
     Y_val_jnp = jnp.array(Y_val_s)
 
-    start_epoch = curriculum_start_epoch if do_lstsq else 0
     pbar = tqdm(range(start_epoch, epochs), desc="Training MLP")
     train_losses = []
     val_losses = []
@@ -721,7 +755,6 @@ def train_model(  # noqa: PLR0913
     w_psd_jax = jnp.array(w_psd, dtype=jnp.float32)
     w_fc_jax = jnp.array(w_fc, dtype=jnp.float32)
 
-    # Validation always scores the full horizon (L = horizon) so it is comparable across epochs.
     val_mask_jax = jnp.ones(horizon)
 
     decode_basis_jax = None if decode_basis is None else jnp.asarray(decode_basis)
@@ -729,13 +762,10 @@ def train_model(  # noqa: PLR0913
 
     epochs_without_improvement = 0
 
+    step_mask_for = _step_mask_selector(horizon, curriculum_max_steps, curriculum_start_epoch, curriculum_end_epoch)
+
     for epoch in pbar:
-        step_mask = curriculum_state(
-            epoch,
-            horizon,
-            start_epoch=curriculum_start_epoch,
-            end_epoch=curriculum_end_epoch,
-        )
+        step_mask = step_mask_for(epoch)
         step_mask_jax = jnp.asarray(step_mask)
 
         epoch_loss = 0.0
@@ -890,7 +920,11 @@ def train_and_save_predictor(  # noqa: PLR0915
     Returns
     -------
     float
-        Mean squared error of the absolute predictions on the validation set.
+        *Normalized* mean squared error on the validation set: the raw-EEG MSE divided by the
+        variance of the validation targets, i.e. the fraction of target variance the forecast
+        leaves unexplained (``0`` perfect, ``1`` no better than predicting the mean). Normalizing
+        makes it comparable across trials whose window offsets -- and therefore target variance --
+        differ; the un-normalized MSE is still recorded in ``training_stats.json``.
     """
     sim_cfg = config.simulation
     downsample = sim_cfg.downsample
@@ -914,6 +948,7 @@ def train_and_save_predictor(  # noqa: PLR0915
     train_split = train_cfg.train_split
     curriculum_start_epoch = train_cfg.curriculum_start_epoch
     curriculum_end_epoch = train_cfg.curriculum_end_epoch
+    curriculum_max_steps = train_cfg.curriculum_max_steps
     seed = train_cfg.seed + seed_offset
     w_psd = train_cfg.w_psd
     w_fc = train_cfg.w_fc
@@ -976,6 +1011,7 @@ def train_and_save_predictor(  # noqa: PLR0915
         n_channels,
         curriculum_start_epoch=curriculum_start_epoch,
         curriculum_end_epoch=curriculum_end_epoch,
+        curriculum_max_steps=curriculum_max_steps,
         w_psd=w_psd,
         w_fc=w_fc,
         patience=patience,
@@ -997,8 +1033,9 @@ def train_and_save_predictor(  # noqa: PLR0915
     ).save(artifact_dir / "model.eqx")
 
     Y_pred_raw_flat, mse = evaluate_model(model, y_pipeline, X_val_m, Y_val, latent)
+    nmse = float(mse) / float(np.var(Y_val))
 
-    stats = {"train_loss": train_losses, "val_loss": val_losses, "mse": float(mse)}
+    stats = {"train_loss": train_losses, "val_loss": val_losses, "mse": float(mse), "nmse": nmse}
     (artifact_dir / "training_stats.json").write_text(json.dumps(stats, indent=2))
 
     Y_pred_unflat = np.asarray(reshape_to_trajectory(Y_pred_raw_flat, horizon, n_channels))
@@ -1015,4 +1052,4 @@ def train_and_save_predictor(  # noqa: PLR0915
     fig.savefig(str(artifact_dir / "comparison.png"), dpi=300)
     plt.close(fig)
 
-    return mse
+    return nmse
