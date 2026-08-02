@@ -25,6 +25,7 @@ training:
   curriculum_end_epoch: 200
 
 sweep:
+  artifact: "artifacts/sweep_nn_predictor_2026-08-01_21-21-08"
   n_trials: 30
   model:
     n_y:

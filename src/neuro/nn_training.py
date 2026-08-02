@@ -167,23 +167,25 @@ def build_dataset_for_trajectory(
     return X, Y
 
 
-def get_dataloaders(X: FloatArray, Y: FloatArray, batch_size: int = 128) -> Iterator[tuple[jax.Array, jax.Array]]:
+def get_dataloaders(
+    X: FloatArray | jax.Array, Y: FloatArray | jax.Array, batch_size: int = 128
+) -> Iterator[tuple[FloatArray | jax.Array, FloatArray | jax.Array]]:
     """Generate batches of data.
 
     Parameters
     ----------
-    X : FloatArray
+    X : FloatArray | jax.Array
         Input features array, shape ``(samples, n_features)``.
-    Y : FloatArray
+    Y : FloatArray | jax.Array
         Target labels array, shape ``(samples, n_targets)``.
     batch_size : int, optional
         Number of samples per batch. Defaults to 128.
 
     Yields
     ------
-    batch_x : jax.Array
+    batch_x : FloatArray | jax.Array
         A batch of input features, shape ``(batch_size, n_features)``.
-    batch_y : jax.Array
+    batch_y : FloatArray | jax.Array
         A batch of target labels, shape ``(batch_size, n_targets)``.
     """
     n_samples = X.shape[0]
@@ -192,7 +194,7 @@ def get_dataloaders(X: FloatArray, Y: FloatArray, batch_size: int = 128) -> Iter
     rng.shuffle(indices)
     for start_idx in range(0, n_samples, batch_size):
         batch_idx = indices[start_idx : start_idx + batch_size]
-        yield jnp.array(X[batch_idx]), jnp.array(Y[batch_idx])
+        yield X[batch_idx], Y[batch_idx]
 
 
 def prepare_datasets(  # noqa: PLR0913
@@ -347,7 +349,6 @@ def transform_features(  # noqa: PLR0913
     return np.concatenate([y_past_m, u_blocks_m], axis=1)
 
 
-@eqx.filter_jit
 def predict_batch(m: eqx.Module, x: jax.Array) -> jax.Array:
     """Run model prediction on a batch.
 
@@ -458,9 +459,13 @@ def compute_loss(  # noqa: PLR0913
 
     horizon = y.shape[1] // n_channels
     pred_traj_model = pred_model.reshape(pred_model.shape[0], horizon, -1)  # (batch, horizon, k)
-    pred_traj = (
-        pred_traj_model @ decode_basis + decode_mean if decode_basis is not None else pred_traj_model
-    )  # (batch, horizon, C)
+    if decode_basis is not None:
+        if decode_mean is None:
+            msg = "decode_mean must be provided if decode_basis is"
+            raise ValueError(msg)
+        pred_traj = pred_traj_model @ decode_basis + decode_mean
+    else:
+        pred_traj = pred_traj_model
     true_traj = y.reshape(y.shape[0], horizon, n_channels)  # (batch, horizon, C)
 
     # Horizon-length curriculum: score the MSE over the first-L rollout steps selected by step_mask.
@@ -493,7 +498,6 @@ def compute_loss(  # noqa: PLR0913
     return total, aux
 
 
-@eqx.filter_jit
 def step(  # noqa: PLR0913
     m: eqx.Module,
     opt_s: optax.OptState,
@@ -745,6 +749,8 @@ def train_model(  # noqa: PLR0913, PLR0915
     best_val_loss = float("inf")
     best_model = model
 
+    X_train_jnp = jnp.array(X_train_s)
+    Y_train_jnp = jnp.array(Y_train_s)
     X_val_jnp = jnp.array(X_val_s)
     Y_val_jnp = jnp.array(Y_val_s)
 
@@ -764,6 +770,9 @@ def train_model(  # noqa: PLR0913, PLR0915
 
     step_mask_for = _step_mask_selector(horizon, curriculum_max_steps, curriculum_start_epoch, curriculum_end_epoch)
 
+    step_jit = eqx.filter_jit(step)
+    compute_loss_jit = eqx.filter_jit(compute_loss)
+
     for epoch in pbar:
         step_mask = step_mask_for(epoch)
         step_mask_jax = jnp.asarray(step_mask)
@@ -771,8 +780,8 @@ def train_model(  # noqa: PLR0913, PLR0915
         epoch_loss = 0.0
         comp_sums = {"mse": 0.0, "psd": 0.0, "fc": 0.0}
         batches = 0
-        for batch_x, batch_y in get_dataloaders(X_train_s, Y_train_s, batch_size):
-            model, opt_state, loss, aux = step(
+        for batch_x, batch_y in get_dataloaders(X_train_jnp, Y_train_jnp, batch_size):
+            model, opt_state, loss, aux = step_jit(
                 model,
                 opt_state,
                 batch_x,
@@ -795,7 +804,7 @@ def train_model(  # noqa: PLR0913, PLR0915
         avg_comps = {key: val / batches for key, val in comp_sums.items()}
 
         last_val_loss = float(
-            compute_loss(
+            compute_loss_jit(
                 model,
                 X_val_jnp,
                 Y_val_jnp,
@@ -847,6 +856,7 @@ def plot_training_curves(train_losses: list[float], val_losses: list[float], plo
     plt.grid(visible=True, linestyle="--", alpha=0.6)
     plt.tight_layout()
     plt.savefig(plot_path, dpi=300)
+    plt.close()
 
 
 def evaluate_model(
@@ -882,7 +892,8 @@ def evaluate_model(
     mse : float
         Mean squared error of the raw-EEG predictions.
     """
-    Y_pred_m = np.array(predict_batch(model, jnp.array(X_val_m)))  # (samples, horizon * k)
+    predict_batch_jit = eqx.filter_jit(predict_batch)
+    Y_pred_m = np.array(predict_batch_jit(model, jnp.array(X_val_m)))  # (samples, horizon * k)
     Y_pred_raw = np.asarray(y_pipeline.inverse_transform(Y_pred_m.reshape(-1, latent_dim))).reshape(
         Y_pred_m.shape[0], -1
     )

@@ -45,16 +45,13 @@ def objective(
         print(f"  {k}: {v}")
     print("-" * 40)
 
-    # We save artifacts for EVERY trial
     trial_dir = base_artifact_dir / f"trial_{trial.number}"
     trial_dir.mkdir(parents=True, exist_ok=True)
 
-    # Save the resolved config used for this trial (without the sweep search space).
     trial_config = config.model_dump(exclude={"sweep"})
     with (trial_dir / "trial_config.yaml").open("w") as f:
         yaml.dump(trial_config, f)
 
-    # Vary the seed across trials to avoid correlation if params are identical.
     try:
         nmse = train_and_save_predictor(config, data_files, trial_dir, seed_offset=trial.number)
     except ValueError as e:
