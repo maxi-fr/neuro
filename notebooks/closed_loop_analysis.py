@@ -6,7 +6,6 @@ app = marimo.App(width="medium", app_title="Stage 8 Closed Loop MPC Analysis")
 
 @app.cell
 def _():
-    """Marimo cell."""
     from pathlib import Path
 
     import marimo as mo
@@ -22,7 +21,6 @@ def _():
 
 @app.cell
 def _(mo):
-    """Marimo cell."""
     mo.md(r"""
     # 🧠 Closed Loop MPC Analysis
 
@@ -41,7 +39,6 @@ def _(mo):
 
 @app.cell
 def _(mo):
-    """Marimo cell."""
     run_dir_input = mo.ui.text(
         value="artifacts/l1_before_after/after", label="Simulation Run Directory", full_width=True
     )
@@ -51,7 +48,6 @@ def _(mo):
 
 @app.cell
 def _(Path, mo, np, run_dir_input, yaml):
-    """Marimo cell."""
 
     def _find(directory, names, patterns):
         """Files in *directory* matching an exact name, then any glob pattern (a possibly-empty list)."""
@@ -109,7 +105,6 @@ def _(Path, mo, np, run_dir_input, yaml):
 
 @app.cell
 def _(mo):
-    """Marimo cell."""
     mo.md("""
     ## 📊 Run Summary
     """)
@@ -118,7 +113,6 @@ def _(mo):
 
 @app.cell
 def _(mo, np, run):
-    """Marimo cell."""
     _ctrl = run["controller"]
     _mean_cost = float(np.nanmean(run["cost"])) if not np.isnan(run["cost"]).all() else None
     _rows = [
@@ -142,7 +136,6 @@ def _(mo, np, run):
 
 @app.cell
 def _(mo):
-    """Marimo cell."""
     mo.md("""
     ## 📉 EEG Output & Control Inputs
     """)
@@ -151,7 +144,6 @@ def _(mo):
 
 @app.cell
 def _(np, plt, run):
-    """Marimo cell."""
     _y = run["y_mea"]
     _u = run["u"]
     _dt = run["dt"]
@@ -180,7 +172,6 @@ def _(np, plt, run):
 
 @app.cell
 def _(mo, run):
-    """Marimo cell."""
     mo.md(rf"""
     ## 🔌 L1 Sparsity & Stimulation
 
@@ -193,7 +184,6 @@ def _(mo, run):
 
 @app.cell
 def _(plot_signals, plt, run):
-    """Marimo cell."""
     _colors = ["#d62728", "#1f77b4", "#2ca02c", "#ff7f0e", "#9467bd"]
     _n_ctrl = run["u"].shape[1]
     _fig_tr, _ax_tr = plt.subplots(figsize=(11, 4.2), layout="constrained")
@@ -214,7 +204,6 @@ def _(plot_signals, plt, run):
 
 @app.cell
 def _(np, plt, run):
-    """Marimo cell."""
     _elec = run["electrodes"]
     _frac = run["frac_off"]
     _x = np.arange(len(_elec))
@@ -235,7 +224,6 @@ def _(np, plt, run):
 
 @app.cell
 def _(np, plt, run):
-    """Marimo cell."""
     _elec = run["electrodes"]
     _x = np.arange(len(_elec))
     _fig_mag, _ax_mag = plt.subplots(figsize=(8, 4.2), layout="constrained")
@@ -253,7 +241,6 @@ def _(np, plt, run):
 
 @app.cell
 def _(np, plt, run):
-    """Marimo cell."""
     _kcl = run["kcl"]
     _t = np.arange(_kcl.shape[0]) * run["dt"]
     _fig_k, _ax_k = plt.subplots(figsize=(11, 3.6), layout="constrained")
@@ -269,7 +256,6 @@ def _(np, plt, run):
 
 @app.cell
 def _(mo):
-    """Marimo cell."""
     transient_ms = mo.ui.number(value=1000.0, start=0.0, stop=100000.0, step=100.0, label="Transient to drop (ms)")
     transient_ms
     return (transient_ms,)
@@ -277,7 +263,6 @@ def _(mo):
 
 @app.cell
 def _(np, plt, run, steady_window, transient_ms):
-    """Marimo cell."""
     _y = run["y_mea"]
     _dt_ms = run["dt"] * 1000.0
     _t = np.arange(_y.shape[0]) * run["dt"]

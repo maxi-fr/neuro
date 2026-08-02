@@ -6,7 +6,6 @@ app = marimo.App()
 
 @app.cell
 def _():
-    """Marimo cell."""
     import json
     import pickle
     from pathlib import Path
@@ -22,7 +21,6 @@ def _():
 
 @app.cell(hide_code=True)
 def _(Path, mo):
-    """Marimo cell."""
     mo.md("# 📊 Thesis Plot Inspector & Resizer")
 
     plots_dir: Path = Path(__file__).parent.parent / "artifacts"
@@ -47,7 +45,6 @@ def _(Path, mo):
 
 @app.cell
 def _(Any, Path, json, mo, plot_selector: "mo.ui.dropdown"):
-    """Marimo cell."""
     mo.stop(not plot_selector.value, mo.md("💡 *Select a plot above to view assets and metadata.*"))
 
     selected_folder: Path = Path(__file__).parent.parent / "artifacts" / plot_selector.value
@@ -80,7 +77,6 @@ def _(
     saver: "ThesisPlotSaver",
     width_slider: "mo.ui.slider",
 ):
-    """Marimo cell."""
     mo.stop(not rebuild_btn.value)
 
     import shutil

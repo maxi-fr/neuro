@@ -6,7 +6,6 @@ app = marimo.App(width="medium", app_title="Stage 0 Connectome Explorer")
 
 @app.cell
 def _():
-    """Marimo cell."""
     import marimo as mo
     import numpy as np
     from matplotlib import pyplot as plt
@@ -18,7 +17,6 @@ def _():
 
 @app.cell
 def _(mo):
-    """Marimo cell."""
     mo.md("""
     # 🧠 Stage 0 — Connectome & EEG Forward Operator
 
@@ -35,14 +33,12 @@ def _(mo):
 
 @app.cell
 def _(Connectome):
-    """Marimo cell."""
     connectome = Connectome.from_config({})
     return (connectome,)
 
 
 @app.cell
 def _(connectome, mo, np):
-    """Marimo cell."""
     _ez_pz = ("lHC", "lPHC", "lAMYG", "lTCI", "lTCV")
     _named_channels = ("CP5", "CP6", "PO3", "P1", "P3", "F3", "F5", "AF3", "O1")
     _off_diag = connectome.delays[~np.eye(connectome.delays.shape[0], dtype=bool)]
@@ -85,7 +81,6 @@ def _(connectome, mo, np):
 
 @app.cell
 def _(connectome, plt):
-    """Marimo cell."""
     _fig, _ax = plt.subplots(figsize=(6, 5))
     _im = _ax.imshow(connectome.weights, cmap="viridis", aspect="auto")
     _ax.set_title("Connection weights (hemispheric blocks)")
@@ -99,7 +94,6 @@ def _(connectome, plt):
 
 @app.cell
 def _(connectome, plt):
-    """Marimo cell."""
     _fig, _ax = plt.subplots(figsize=(6, 5))
     _im = _ax.imshow(connectome.delays, cmap="viridis", aspect="auto")
     _ax.set_title(f"Conduction delays (ms), speed = {connectome.speed:g} mm/ms")
@@ -113,7 +107,6 @@ def _(connectome, plt):
 
 @app.cell
 def _(connectome, np, plt):
-    """Marimo cell."""
     _fig, _ax = plt.subplots(figsize=(9, 4))
     _vmax = float(np.abs(connectome.gain).max())
     _im = _ax.imshow(connectome.gain, cmap="RdBu_r", aspect="auto", vmin=-_vmax, vmax=_vmax)
@@ -128,7 +121,6 @@ def _(connectome, np, plt):
 
 @app.cell
 def _(connectome, mo):
-    """Marimo cell."""
     _region_rows = [
         {"index": idx, "region": label, "hemisphere": "R" if hemi else "L"}
         for idx, (label, hemi) in enumerate(zip(connectome.region_labels, connectome.hemispheres, strict=True))

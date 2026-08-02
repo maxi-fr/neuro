@@ -9,7 +9,6 @@ app = marimo.App(
 
 @app.cell
 def _():
-    """Marimo cell."""
     from dataclasses import replace
 
     import marimo as mo
@@ -17,12 +16,13 @@ def _():
     from matplotlib import pyplot as plt
 
     from neuro.connectome import Connectome
-    from neuro.jansen_rit import JansenRitParams, lfp, simulate_network
+    from neuro.jansen_rit import JansenRitDynamics, JansenRitParams, lfp, simulate_network
     from utils.plotting import plot_psd
     from utils.processing import band_energy, steady_window
 
     return (
         Connectome,
+        JansenRitDynamics,
         JansenRitParams,
         band_energy,
         lfp,
@@ -38,7 +38,6 @@ def _():
 
 @app.cell
 def _(mo):
-    """Marimo cell."""
     mo.md(r"""
     # 🧠 Healthy vs. Epileptic Seizure EEG Signal Comparison
 
@@ -62,14 +61,12 @@ def _(mo):
 
 @app.cell
 def _(Connectome):
-    """Marimo cell."""
     connectome = Connectome.from_config({})
     return (connectome,)
 
 
 @app.cell
 def _(connectome, mo):
-    """Marimo cell."""
     channel_options = sorted(map(str, connectome.channel_labels))
 
     k_slider = mo.ui.slider(0.0, 2.0, 0.05, value=0.54, label="Global Coupling Strength K")
@@ -125,7 +122,6 @@ def _(
     steady_window,
     transient_slider,
 ):
-    """Marimo cell."""
     conn = replace(connectome, speed=speed_slider.value, delays=connectome.tract_lengths / speed_slider.value)
     n_nodes = len(connectome.region_labels)
 
@@ -170,7 +166,6 @@ def _(
 
 @app.cell
 def _(mo):
-    """Marimo cell."""
     mo.md(r"""
     ## 📈 Time-Domain Analysis: Scalp EEG Traces
     """)
@@ -179,7 +174,6 @@ def _(mo):
 
 @app.cell
 def _(connectome, dt_ms, eeg_healthy, eeg_seizure, np, plt, trace_channels):
-    """Marimo cell."""
     _channels = list(trace_channels.value) or ["F3", "P3", "CP5", "F4", "P4", "CP6"]
     _channel_indices = [connectome.channel_index[_ch] for _ch in _channels]
 
@@ -239,7 +233,6 @@ def _(connectome, dt_ms, eeg_healthy, eeg_seizure, np, plt, trace_channels):
 
 @app.cell
 def _(mo):
-    """Marimo cell."""
     mo.md(r"""
     ## 📊 Frequency-Domain Analysis: Power Spectral Density
     """)
@@ -256,7 +249,6 @@ def _(
     plt,
     trace_channels,
 ):
-    """Marimo cell."""
     _channels = list(trace_channels.value) or ["F3", "P3", "CP5", "F4", "P4", "CP6"]
     _channel_indices = [connectome.channel_index[_ch] for _ch in _channels]
 
@@ -296,7 +288,6 @@ def _(
 
 @app.cell
 def _(mo):
-    """Marimo cell."""
     mo.md(r"""
     ## 🗺️ Spatial & Energy Analysis: Channel Energy Ranking
 
@@ -311,7 +302,6 @@ def _(mo):
 
 @app.cell
 def _(band_energy, connectome, dt_ms, eeg_healthy, eeg_seizure, np, plt):
-    """Marimo cell."""
     _energy_healthy = band_energy(eeg_healthy, dt_ms, band=(0.0, 50.0), normalize=True)
     _energy_seizure = band_energy(eeg_seizure, dt_ms, band=(0.0, 50.0), normalize=True)
 
@@ -348,7 +338,6 @@ def _(band_energy, connectome, dt_ms, eeg_healthy, eeg_seizure, np, plt):
 
 @app.cell
 def _(mo):
-    """Marimo cell."""
     mo.md(r"""
     ## 🧠 Findings and Summary
 

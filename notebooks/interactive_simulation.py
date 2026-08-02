@@ -1,6 +1,6 @@
 import marimo
 
-__generated_with = "0.23.10"
+__generated_with = "0.23.13"
 app = marimo.App(
     width="medium",
     app_title="Interactive Simulation & EEG Plotter",
@@ -9,7 +9,6 @@ app = marimo.App(
 
 @app.cell
 def _():
-    """Marimo cell."""
     from dataclasses import replace
 
     import marimo as mo
@@ -17,30 +16,33 @@ def _():
     from matplotlib import pyplot as plt
 
     from neuro.connectome import Connectome
-    from neuro.jansen_rit import JansenRitParams, lfp, simulate_network
+    from neuro.jansen_rit import JansenRitDynamics, JansenRitParams, lfp, simulate_network
+    from utils.processing import band_energy, compute_psd, steady_window
 
     return (
         Connectome,
+        JansenRitDynamics,
         JansenRitParams,
+        band_energy,
+        compute_psd,
         lfp,
         mo,
         np,
         plt,
         replace,
         simulate_network,
+        steady_window,
     )
 
 
 @app.cell
 def _(Connectome):
-    """Marimo cell."""
     connectome = Connectome.from_config({})
     return (connectome,)
 
 
 @app.cell
 def _(connectome):
-    """Marimo cell."""
     ez_names = ("lHC", "lPHC", "lAMYG")
     pz_names = ("lTCI", "lTCV")
 
@@ -74,7 +76,6 @@ def _(connectome):
 
 @app.cell
 def _(mo):
-    """Marimo cell."""
     mo.md(r"""
     # 🧠 Interactive Whole-Brain Jansen-Rit Simulator & Plotter
 
@@ -85,7 +86,6 @@ def _(mo):
 
 @app.cell
 def _(mo):
-    """Marimo cell."""
     k_slider = mo.ui.slider(0.0, 2.0, 0.05, value=0.54, label="Global Coupling Strength K")
     speed_slider = mo.ui.slider(5.0, 100.0, 5.0, value=50.0, label="Conduction speed (mm/ms)")
     duration_slider = mo.ui.slider(1.0, 10.0, 0.5, value=4.0, label="Simulation duration (s)")
@@ -127,7 +127,6 @@ def _(
     simulate_network,
     speed_slider,
 ):
-    """Marimo cell."""
     _conn = replace(connectome, speed=speed_slider.value, delays=connectome.tract_lengths / speed_slider.value)
 
     _n_nodes = len(connectome.region_labels)
@@ -153,7 +152,6 @@ def _(
 
 @app.cell
 def _(mo):
-    """Marimo cell."""
     mo.md("""
     ## 📊 Plot Configuration
     """)
@@ -162,7 +160,6 @@ def _(mo):
 
 @app.cell
 def _(channel_options, default_channels, default_regions, mo, region_options):
-    """Marimo cell."""
     regions_multiselect = mo.ui.multiselect(
         options=region_options,
         value=default_regions,
@@ -204,7 +201,6 @@ def _(
     t,
     y,
 ):
-    """Marimo cell."""
     if not regions_multiselect.value:
         fig_node_out = mo.md("⚠️ *Select at least one brain region to plot.*")
     else:
@@ -282,7 +278,6 @@ def _(
     stacked_toggle,
     t,
 ):
-    """Marimo cell."""
     if not eeg_multiselect.value:
         fig_eeg_out = mo.md("⚠️ *Select at least one EEG channel to plot.*")
     else:
@@ -338,7 +333,6 @@ def _(
 
 @app.cell
 def _(mo):
-    """Marimo cell."""
     mo.md("""
     ## 💾 Export Options
     """)
@@ -347,7 +341,6 @@ def _(mo):
 
 @app.cell
 def _(mo):
-    """Marimo cell."""
     save_dir_input = mo.ui.text(value="artifacts", label="Save Directory:")
     save_button = mo.ui.button(label="💾 Save Plots to Disk", tooltip="Saves both plots as PNG files")
 
@@ -357,7 +350,6 @@ def _(mo):
 
 @app.cell
 def _(fig_eeg_out, fig_node_out, mo, save_button, save_dir_input):
-    """Marimo cell."""
     mo.stop(not save_button.value)
 
     from pathlib import Path
@@ -385,6 +377,64 @@ def _(fig_eeg_out, fig_node_out, mo, save_button, save_dir_input):
             _ = mo.md("⚠️ *No valid plots selected to save.*")
     except Exception as e:  # noqa: BLE001
         _ = mo.md(f"❌ **Error saving plots:** {e!s}")
+    return
+
+
+@app.cell
+def _(plt, t, y):
+    _fig, _ax = plt.subplots(figsize=(8, 5), layout="constrained")
+    _im = _ax.imshow(
+        y,
+        cmap="RdBu_r",
+        aspect="auto",
+        extent=[t[0], t[-1], 0, y.shape[0]],
+        vmin=-10,
+        vmax=10,
+    )
+    _ax.set_title("Simulation Raster")
+    _ax.set_xlabel("time (s)")
+    _ax.set_ylabel("brain region index")
+    _fig.colorbar(_im, ax=_ax, label="y = x2 - x3 (a.u.)")
+    _fig
+    return
+
+
+@app.cell
+def _(compute_psd, connectome, plt, t, y):
+    _lhc = connectome.region_index["lHC"]
+
+    _fig, _axes = plt.subplots(1, 2, figsize=(13, 4), layout="constrained")
+    _axes[0].plot(t, y[_lhc], color="#1f77b4", lw=0.7)
+    _axes[0].set_title("lHC (EZ) trace")
+    _axes[0].set_xlabel("time (s)")
+    _axes[0].set_ylabel("y (a.u.)")
+
+    _mask = t >= 1.0
+    _f, _p = compute_psd(y[_lhc][_mask][None, :], 0.1)
+    _band = _f <= 40.0
+    _axes[1].semilogy(_f[_band], _p[0][_band], color="#1f77b4")
+    _axes[1].set_title("lHC PSD")
+    _axes[1].set_xlabel("frequency (Hz)")
+    _axes[1].set_ylabel("PSD (a.u.²/Hz)")
+    _fig
+    return
+
+
+@app.cell
+def _(band_energy, connectome, eeg, np, plt, steady_window):
+    _hr_e = band_energy(steady_window(eeg, 0.1, 1000.0), 0.1, band=(0.0, 50.0))
+
+    _order = np.argsort(_hr_e)[::-1][:12]
+    _labels = [str(c) for c in connectome.channel_labels[_order]]
+    _x = np.arange(len(_order))
+
+    _fig, _ax = plt.subplots(figsize=(12, 4), layout="constrained")
+    _ax.bar(_x, _hr_e[_order], 0.6, color="#1f77b4")
+    _ax.set_xticks(_x)
+    _ax.set_xticklabels(_labels, rotation=45)
+    _ax.set_title("EEG 0–50 Hz energy (top channels)")
+    _ax.set_ylabel("normalized energy")
+    _fig
     return
 
 
