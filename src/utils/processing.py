@@ -1,5 +1,3 @@
-"""Signal processing functions for brain activity and EEG signals."""
-
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
@@ -50,10 +48,6 @@ def compute_psd(
 
     fs = 1000.0 / dt_ms
     if nperseg is None:
-        # Size the default segment by a target frequency resolution (1 Hz) rather than a
-        # fixed sample count: at the sim's high fs (dt=0.1 ms -> fs=10 kHz) a fixed small
-        # nperseg makes the bin width fs/nperseg wider than the EEG rhythm, collapsing it
-        # into the DC bin (the psd-nperseg-resolution-gotcha note).
         freq_res_hz = 1.0
         nperseg = min(n_samples, round(fs / freq_res_hz))
 

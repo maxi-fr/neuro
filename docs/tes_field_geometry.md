@@ -448,7 +448,7 @@ so its dataset was no more usable than the distance-based ones.
 | `configs/simulation/experiment_excited_{analytical,reciprocal}.yaml` | the gamma-model comparison track |
 | `configs/simulation/closed_loop_{analytical,reciprocal}.yaml` | pointed at timestamped artifacts that no longer exist |
 | `configs/simulation/l1_{before,after}.yaml` | same dangling artifact, and the old montage |
-| `configs/nn_predictor/{linear,mlp3}_{analytical,reciprocal}.yaml` | their datasets are gone; `linear_best`/`nonlinear_best` already cover the canonical set |
+| `configs/nn_predictor/{linear,mlp3}_{analytical,reciprocal}.yaml` | their datasets are gone; `meeting_seven/{linear,nonlinear}_full.yaml` already cover the canonical set |
 
 What survives: `data/experiment_excited` (regenerated), `configs/simulation/experiment_excited.yaml`
 as the single identification config, `threshold_control.yaml`, the `meeting_seven/` MPC set, and
@@ -515,7 +515,7 @@ regime where the linear model is valid.
   not be trusted to rank anything. The numbers it produced are retained here as evidence.
 - **`train_and_save_predictor` returns the *normalized* MSE** (raw MSE still recorded in
   `training_stats.json`), which is comparable across trials whose window offsets differ.
-  `configs/nn_predictor/sweep_corrected.yaml` is the sweep on the corrected data.
+  `configs/nn_predictor/sweep_nn_predictor.yaml` is the sweep on the corrected data.
 - **A truncation bug, found on the way.** Every predictor config carried
   `n_steps: 500` — 5 s — with a comment dating from the old 100 × 5 s dataset. Since the
   2026-07-30 switch to 25 × 20 s trials this silently discarded 75 % of every trajectory, including
@@ -584,7 +584,7 @@ loss nothing penalises rollout drift, so the 20-step forecast the MPC actually c
 worse than predicting the mean (`nmse > 1`) and the response score returns to ~1.0. The earlier
 impression that the curriculum was not helping closed-loop performance dates from the pre-fix data,
 where every model was broken for the independent reason above; once the input map is identified the
-curriculum is load-bearing. `sweep_corrected.yaml` therefore keeps it on.
+curriculum is load-bearing. `sweep_nn_predictor.yaml` therefore keeps it on.
 
 The instability at `L = horizon` is still unresolved and is worth revisiting. Since the curriculum
 is what helps and only its *tail* diverges, the natural test is a lower cap —

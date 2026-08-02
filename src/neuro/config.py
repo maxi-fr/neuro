@@ -1,13 +1,3 @@
-"""Configuration utilities.
-
-All configuration -- the NN-predictor pipeline (:class:`NNPredictorConfig` and its sections),
-the ``simulate`` components (controllers, :class:`~neuro.measurement.EEGMeasurement`) and the
-Jansen-Rit stack (``Connectome`` / ``JansenRitParams`` / ``JansenRitDynamics``) -- is parsed
-with pydantic models built on :class:`StrictConfig`, which forbids unknown keys and validates
-types/ranges, so a typo or out-of-range value raises ``pydantic.ValidationError`` instead of
-silently defaulting.
-"""
-
 from __future__ import annotations
 
 import datetime
@@ -25,17 +15,12 @@ if TYPE_CHECKING:
 
 
 def parse_array(val: Any) -> Any:  # noqa: ANN401
-    """Parse a configuration value that might be an array or a path to an array.
-
-    If the value is a string ending in .npy, .npz, or .npv, it is loaded via
-    np.load. For .npz files, the first array is returned. Otherwise, the original
-    value is returned (to be parsed by np.asarray later).
-    """
+    """Parse a configuration value that might be an array or a path to an array."""
     if isinstance(val, str) and (val.endswith((".npy", ".npz", ".npv"))):
         loaded = np.load(val)
         if isinstance(loaded, np.ndarray):
             return loaded
-        # npz file
+
         keys = list(loaded.keys())
         if keys:
             return loaded[keys[0]]
@@ -51,13 +36,7 @@ class StrictConfig(BaseModel):
 
 
 class ModelConfig(StrictConfig):
-    """MLP predictor architecture settings.
-
-    ``latent_dim`` projects the EEG onto that many fixed PCA components before training
-    (the predictor then runs in the reduced space). ``None`` -- or any value >= the EEG
-    channel count -- disables the projection, so it can be swept over as a single integer
-    with the no-projection case at the top of the range.
-    """
+    """MLP predictor architecture settings."""
 
     n_y: int = Field(default=5, ge=1)
     n_u: int = Field(default=5, ge=1)
@@ -78,19 +57,7 @@ class SimulationConfig(StrictConfig):
 
 
 class TrainingConfig(StrictConfig):
-    """Optimisation and scaling settings for the NN predictor.
-
-    The horizon-length curriculum grows the rollout length ``L`` the loss is scored over: ``L=1``
-    (teacher forcing) until ``curriculum_start_epoch``, then ramps up to ``curriculum_end_epoch``,
-    and holds there afterwards.
-
-    ``curriculum_max_steps`` caps the length the ramp approaches (default: the model ``horizon``,
-    i.e. the full free-running rollout).
-    Capping it below the horizon keeps multi-step training while avoiding the long-unroll regime
-    that destabilises this fit; ``1`` degenerates to one-step training, since a ramp from 1 to 1
-    never grows. Validation is always scored at the full horizon regardless, so model selection
-    still targets the horizon the MPC rolls out over.
-    """
+    """Optimisation and scaling settings for the NN predictor."""
 
     epochs: int = Field(default=100, ge=1)
     batch_size: int = Field(default=128, ge=1)
@@ -158,7 +125,7 @@ class FloatParam(_RangeParam):
 
 
 class LogUniformParam(_RangeParam):
-    """Log-uniform Optuna search dimension (sampled in log space, so ``low`` must be > 0)."""
+    """Log-uniform Optuna search dimension."""
 
     type: Literal["loguniform"]
     low: float = Field(gt=0)
@@ -195,12 +162,7 @@ class NNPredictorConfig(StrictConfig):
 
     @classmethod
     def from_dict(cls, data: dict[str, Any] | None) -> NNPredictorConfig:
-        """Build a typed config from a raw YAML mapping, rejecting unknown keys everywhere.
-
-        Every section is validated strictly: any key not defined on the corresponding
-        model raises ``pydantic.ValidationError``, so YAML typos surface immediately
-        instead of silently falling back to a default.
-        """
+        """Build a typed config from a raw YAML mapping, rejecting unknown keys everywhere."""
         return cls.model_validate({} if data is None else data)
 
     @model_validator(mode="after")
@@ -218,7 +180,6 @@ class NNPredictorConfig(StrictConfig):
         if self.sweep is None:
             return self
 
-        # 1. Validate 'model' sweep section
         sweep_model_keys = set(self.sweep.model.keys())
         invalid_model_keys = sweep_model_keys - set(self.model.__class__.model_fields.keys())
         if invalid_model_keys:
@@ -230,7 +191,6 @@ class NNPredictorConfig(StrictConfig):
             msg = f"Parameters cannot be defined in both regular 'model' and 'sweep.model'. Overlap: {sorted(overlap_model)}"
             raise ValueError(msg)
 
-        # 2. Validate 'training' sweep section
         sweep_training_keys = set(self.sweep.training.keys())
         invalid_training_keys = sweep_training_keys - set(self.training.__class__.model_fields.keys())
         if invalid_training_keys:
@@ -246,11 +206,7 @@ class NNPredictorConfig(StrictConfig):
 
 
 def load_config(path: Path) -> NNPredictorConfig:
-    """Load and strictly validate an NN-predictor YAML config from ``path``.
-
-    Raises :class:`FileNotFoundError` if the file is missing and ``pydantic.ValidationError``
-    if the YAML contains unknown or malformed keys.
-    """
+    """Load and strictly validate an NN-predictor YAML config from ``path``."""
     if not path.exists():
         msg = f"Config file not found: {path}"
         raise FileNotFoundError(msg)
@@ -260,12 +216,7 @@ def load_config(path: Path) -> NNPredictorConfig:
 
 
 def resolve_data_files(config: NNPredictorConfig, data_path_override: str | None = None) -> list[str]:
-    """Resolve and validate the ``.npz`` training files from the config or an override.
-
-    ``data_path_override`` (e.g. a ``--data-path`` CLI argument) takes precedence over
-    ``config.simulation.data_path``. Raises :class:`ValueError` if no path is given, the
-    path is not a directory, or it contains no ``.npz`` files.
-    """
+    """Resolve and validate the ``.npz`` training files from the config or an override."""
     data_path_str = data_path_override or config.simulation.data_path
     if not data_path_str:
         msg = "data_path not specified in config or arguments."
@@ -282,11 +233,7 @@ def resolve_data_files(config: NNPredictorConfig, data_path_override: str | None
 
 
 def resolve_artifact_dir(artifact: str | None, default_prefix: str) -> Path:
-    """Resolve (and create) the artifact output directory.
-
-    When ``artifact`` is ``None`` a timestamped ``artifacts/{default_prefix}_...``
-    directory is used. The directory (with parents) is created before returning.
-    """
+    """Resolve (and create) the artifact output directory."""
     if artifact is None:
         local_now = datetime.datetime.now(datetime.UTC).astimezone()
         artifact = f"artifacts/{default_prefix}_{local_now.strftime('%Y-%m-%d_%H-%M-%S')}"

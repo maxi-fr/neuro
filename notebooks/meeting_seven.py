@@ -6,6 +6,7 @@ app = marimo.App(width="full", app_title="Supervisor Update — Seventh meeting"
 
 @app.cell(hide_code=True)
 def imports():
+    """imports definition."""
     from pathlib import Path
 
     import marimo as mo
@@ -17,6 +18,7 @@ def imports():
 
 @app.cell(hide_code=True)
 def slide_title(mo):
+    """slide_title definition."""
     mo.md(r"""
     # Closed-loop Neurostimulation
     ## Seventh meeting
@@ -28,6 +30,7 @@ def slide_title(mo):
 
 @app.cell(hide_code=True)
 def slide_losses(mo):
+    """slide_losses definition."""
     _header = mo.md("## Training losses: spectral (PSD) & connectivity (FC)")
 
     _col_math = mo.md(
@@ -71,6 +74,7 @@ def slide_losses(mo):
 
 @app.cell(hide_code=True)
 def slide_eeg(mo):
+    """slide_eeg definition."""
     _header = mo.md(
         r"""
     ## Reducing the EEG output dimension
@@ -117,6 +121,7 @@ def slide_eeg(mo):
 
 @app.cell(hide_code=True)
 def slide_mpc(mo):
+    """slide_mpc definition."""
     _header = mo.md(
         r"""
     ## MPC formulations for (N)ARX models
@@ -148,6 +153,7 @@ def slide_mpc(mo):
 
 @app.cell(hide_code=True)
 def slide_solver(mo):
+    """slide_solver definition."""
     _header = mo.md(
         r"""
     ## Solver comparison
@@ -199,6 +205,7 @@ def slide_solver(mo):
 
 @app.cell(hide_code=True)
 def slide_suppression(fig_dir, mo):
+    """slide_suppression definition."""
     _fig_path = fig_dir / "suppression_check.png"
     _fig = (
         mo.image(_fig_path.read_bytes(), width=760)

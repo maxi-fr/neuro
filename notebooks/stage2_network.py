@@ -9,6 +9,7 @@ app = marimo.App(
 
 @app.cell
 def _():
+    """Marimo cell."""
     from dataclasses import replace
 
     import marimo as mo
@@ -32,6 +33,7 @@ def _():
 
 @app.cell
 def _(mo):
+    """Marimo cell."""
     mo.md("""
     # 🧠 Stage 2 — Network: Instantaneous Coupling, then Delays
 
@@ -48,6 +50,7 @@ def _(mo):
 
 @app.cell
 def _(Connectome):
+    """Marimo cell."""
     connectome = Connectome.from_config({})
     region_options = ["None", *list(connectome.region_labels)]
     return connectome, region_options
@@ -55,7 +58,7 @@ def _(Connectome):
 
 @app.cell
 def _(mo, region_options):
-    # Interactive UI controls
+    """Marimo cell."""
     k_slider = mo.ui.slider(0.0, 2.0, 0.05, value=0.54, label="Global Coupling Strength K")
     speed_slider = mo.ui.slider(5.0, 100.0, 5.0, value=50.0, label="Conduction speed (mm/ms)")
     duration_slider = mo.ui.slider(1.0, 10.0, 0.5, value=4.0, label="Simulation duration (s)")
@@ -115,20 +118,17 @@ def _(
     speed_slider,
     use_delays_toggle,
 ):
-    # Prepare parameters and scaled connectome
+    """Marimo cell."""
     n_nodes = len(connectome.region_labels)
 
-    # 1. Update speed and compute delays
     conn_scaled = replace(connectome, speed=speed_slider.value, delays=connectome.tract_lengths / speed_slider.value)
 
-    # 3. Handle region isolation (zeroing incoming weights)
     if isolated_node_dropdown.value != "None":
         isolated_idx = connectome.region_index[isolated_node_dropdown.value]
         custom_weights = conn_scaled.weights.copy()
         custom_weights[isolated_idx, :] = 0.0
         conn_scaled = replace(conn_scaled, weights=custom_weights)
 
-    # 4. Set EZ and PZ gains
     ez_names = ("lHC", "lPHC", "lAMYG")
     pz_names = ("lTCI", "lTCV")
     ez_idxs = [connectome.region_index[name] for name in ez_names]
@@ -138,7 +138,7 @@ def _(
     a_gains[ez_idxs] = 3.6
     a_gains[pz_idxs] = 3.4
     sigma = 0.0 if deterministic_toggle.value else JansenRitParams().sigma
-    # 5. Run simulation. Instantaneous coupling = a connectome with zeroed delays.
+
     if not use_delays_toggle.value:
         conn_scaled = replace(conn_scaled, delays=np.zeros_like(conn_scaled.delays))
 
@@ -151,7 +151,7 @@ def _(
 
 @app.cell
 def _(connectome, ez_idxs, mo, np, pz_idxs, t, y):
-    # Calculate metrics and display them
+    """Marimo cell."""
     y_steady = y[:, int(1.0 / (t[1] - t[0])) :]
     ptps = np.ptp(y_steady, axis=1)
 
@@ -160,6 +160,7 @@ def _(connectome, ez_idxs, mo, np, pz_idxs, t, y):
     n_recruited = len(recruited_idxs)
 
     def _onset_time(signal, times, threshold=seizure_threshold):
+        """_onset_time definition."""
         idx = np.where(np.abs(signal) > threshold)[0]
         if len(idx) == 0:
             return "quiescent"
@@ -185,11 +186,10 @@ def _(connectome, ez_idxs, mo, np, pz_idxs, t, y):
 
 @app.cell
 def _(connectome, plt, t, y):
-    # Plot spatiotemporal raster and traces
+    """Marimo cell."""
     fig = plt.figure(figsize=(12, 8), layout="constrained")
     gs = fig.add_gridspec(2, 2, width_ratios=[2, 1])
 
-    # 1. Spatiotemporal raster (Heatmap)
     ax_heat = fig.add_subplot(gs[:, 0])
     im = ax_heat.imshow(
         y,
@@ -204,7 +204,6 @@ def _(connectome, plt, t, y):
     ax_heat.set_ylabel("brain region index")
     fig.colorbar(im, ax=ax_heat, label="y = x2 - x3 (mV)")
 
-    # 2. Representative traces
     ax_trace_ez = fig.add_subplot(gs[0, 1])
     lhc_idx = connectome.region_index["lHC"]
     ax_trace_ez.plot(t, y[lhc_idx], color="#d62728", label="lHC (EZ)", linewidth=0.8)

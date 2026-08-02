@@ -9,6 +9,7 @@ app = marimo.App(
 
 @app.cell
 def _():
+    """Marimo cell."""
     from dataclasses import replace
 
     import marimo as mo
@@ -37,6 +38,7 @@ def _():
 
 @app.cell
 def _(mo):
+    """Marimo cell."""
     mo.md(r"""
     # 🧠 Healthy vs. Epileptic Seizure EEG Signal Comparison
 
@@ -60,15 +62,16 @@ def _(mo):
 
 @app.cell
 def _(Connectome):
+    """Marimo cell."""
     connectome = Connectome.from_config({})
     return (connectome,)
 
 
 @app.cell
 def _(connectome, mo):
+    """Marimo cell."""
     channel_options = sorted(map(str, connectome.channel_labels))
 
-    # Controls
     k_slider = mo.ui.slider(0.0, 2.0, 0.05, value=0.54, label="Global Coupling Strength K")
     speed_slider = mo.ui.slider(5.0, 100.0, 5.0, value=50.0, label="Conduction Speed (mm/ms)")
     duration_slider = mo.ui.slider(2.0, 20.0, 1.0, value=10.0, label="Simulation Duration (s)")
@@ -76,7 +79,6 @@ def _(connectome, mo):
     seed_slider = mo.ui.slider(0, 100, 1, value=69, label="RNG Seed")
     deterministic_toggle = mo.ui.checkbox(value=False, label="Deterministic (no noise)")
 
-    # We select some channels from the left hemisphere (EZ side) and right hemisphere (healthy side)
     default_channels = ["F3", "P3", "CP5", "F4", "P4", "CP6"]
     trace_channels = mo.ui.multiselect(
         options=channel_options,
@@ -123,14 +125,12 @@ def _(
     steady_window,
     transient_slider,
 ):
-    # Setup network connectivity
+    """Marimo cell."""
     conn = replace(connectome, speed=speed_slider.value, delays=connectome.tract_lengths / speed_slider.value)
     n_nodes = len(connectome.region_labels)
 
-    # 1. Healthy Brain gains (A = 3.25 everywhere)
     a_gains_healthy = np.full(n_nodes, 3.25)
 
-    # 2. Epileptic Brain gains (EZ/PZ increased)
     ez_names = ("lHC", "lPHC", "lAMYG")
     pz_names = ("lTCI", "lTCV")
     ez_idxs = [connectome.region_index[name] for name in ez_names]
@@ -141,7 +141,6 @@ def _(
 
     noise_sigma = 0.0 if deterministic_toggle.value else JansenRitParams().sigma
 
-    # --- Run Healthy Brain Simulation ---
     params_healthy = JansenRitParams.from_config({"A": a_gains_healthy, "sigma": noise_sigma})
     dyn_healthy = JansenRitDynamics(
         dt=0.0001, params=params_healthy, conn=replace(conn, K=k_slider.value), seed=int(seed_slider.value)
@@ -149,7 +148,6 @@ def _(
     (t, x_traj_healthy) = simulate_network(dyn=dyn_healthy, duration=float(duration_slider.value))
     y_healthy = lfp(x_traj_healthy)
 
-    # --- Run Epileptic Brain Simulation ---
     params_seizure = JansenRitParams.from_config({"A": a_gains_seizure, "sigma": noise_sigma})
     dyn_seizure = JansenRitDynamics(
         dt=0.0001, params=params_seizure, conn=replace(conn, K=k_slider.value), seed=int(seed_slider.value)
@@ -157,7 +155,6 @@ def _(
     (_, x_traj_seizure) = simulate_network(dyn=dyn_seizure, duration=float(duration_slider.value))
     y_seizure = lfp(x_traj_seizure)
 
-    # Clean transients and project to EEG
     dt_ms = (t[1] - t[0]) * 1000.0
     transient_ms = float(transient_slider.value) * 1000.0
 
@@ -173,6 +170,7 @@ def _(
 
 @app.cell
 def _(mo):
+    """Marimo cell."""
     mo.md(r"""
     ## 📈 Time-Domain Analysis: Scalp EEG Traces
     """)
@@ -181,32 +179,26 @@ def _(mo):
 
 @app.cell
 def _(connectome, dt_ms, eeg_healthy, eeg_seizure, np, plt, trace_channels):
-    # Plot EEG traces for the selected channels in healthy vs seizure states
+    """Marimo cell."""
     _channels = list(trace_channels.value) or ["F3", "P3", "CP5", "F4", "P4", "CP6"]
     _channel_indices = [connectome.channel_index[_ch] for _ch in _channels]
 
-    # Detrend for visualization
     from scipy.signal import detrend
 
     _eeg_h_plot = detrend(eeg_healthy[_channel_indices, :], axis=1)
     _eeg_s_plot = detrend(eeg_seizure[_channel_indices, :], axis=1)
 
-    # Calculate offsets dynamically based on the signal range
     _p2p_h = np.ptp(_eeg_h_plot, axis=1)
     _p2p_s = np.ptp(_eeg_s_plot, axis=1)
 
-    # Let's plot healthy in one subplot and seizure in another
     _fig, _axes = plt.subplots(2, 1, figsize=(10, 8), sharex=True, layout="constrained")
 
-    # We will use plot_signals from utils.plotting but custom layout for side-by-side comparison
     _time_s = np.arange(eeg_healthy.shape[1]) * dt_ms / 1000.0
 
-    # Stacked offsets
     _offset_h = max(float(np.mean(_p2p_h)) * 1.5, 0.5)
     _offset_s = max(float(np.mean(_p2p_s)) * 1.5, 2.0)
 
     for _i, (_idx, _ch) in enumerate(zip(_channel_indices, _channels, strict=False)):
-        # Color code: left hemisphere channels in warm colors, right in cool colors
         _has_number = False
         _is_odd = False
         for _char in _ch:
@@ -217,9 +209,8 @@ def _(connectome, dt_ms, eeg_healthy, eeg_seizure, np, plt, trace_channels):
 
         _color_ch = "#e91e63" if (_is_odd or not _has_number) else "#3f51b5"
 
-        # Healthy
         _axes[0].plot(_time_s, _eeg_h_plot[_i] + _i * _offset_h, color=_color_ch, linewidth=0.9, alpha=0.85)
-        # Seizure
+
         _axes[1].plot(_time_s, _eeg_s_plot[_i] + _i * _offset_s, color=_color_ch, linewidth=0.9, alpha=0.85)
 
     _axes[0].set_yticks([_i * _offset_h for _i in range(len(_channels))])
@@ -248,6 +239,7 @@ def _(connectome, dt_ms, eeg_healthy, eeg_seizure, np, plt, trace_channels):
 
 @app.cell
 def _(mo):
+    """Marimo cell."""
     mo.md(r"""
     ## 📊 Frequency-Domain Analysis: Power Spectral Density
     """)
@@ -264,13 +256,12 @@ def _(
     plt,
     trace_channels,
 ):
-    # Plot power spectral density to show the frequency peaks during healthy vs seizure states
+    """Marimo cell."""
     _channels = list(trace_channels.value) or ["F3", "P3", "CP5", "F4", "P4", "CP6"]
     _channel_indices = [connectome.channel_index[_ch] for _ch in _channels]
 
     _fig, _axes = plt.subplots(1, 2, figsize=(11, 4.5), sharey=True, layout="constrained")
 
-    # Healthy PSD
     plot_psd(
         eeg_healthy,
         dt_ms,
@@ -283,7 +274,6 @@ def _(
     _axes[0].set_title("Healthy Brain - EEG PSD", fontsize=12, fontweight="bold")
     _axes[0].set_ylabel("Power (V²/Hz)", fontweight="bold")
 
-    # Seizure PSD
     plot_psd(
         eeg_seizure,
         dt_ms,
@@ -294,9 +284,8 @@ def _(
         ax=_axes[1],
     )
     _axes[1].set_title("Epileptic Brain (Seizure) - EEG PSD", fontsize=12, fontweight="bold")
-    _axes[1].set_ylabel("")  # Hide y-label for the second subplot
+    _axes[1].set_ylabel("")
 
-    # Fix legends and formatting
     for _ax in _axes:
         _ax.grid(visible=True, linestyle="--", alpha=0.3)
         _ax.set_ylim(bottom=1e-5)
@@ -307,6 +296,7 @@ def _(
 
 @app.cell
 def _(mo):
+    """Marimo cell."""
     mo.md(r"""
     ## 🗺️ Spatial & Energy Analysis: Channel Energy Ranking
 
@@ -321,11 +311,10 @@ def _(mo):
 
 @app.cell
 def _(band_energy, connectome, dt_ms, eeg_healthy, eeg_seizure, np, plt):
-    # Compute energy for healthy and seizure
+    """Marimo cell."""
     _energy_healthy = band_energy(eeg_healthy, dt_ms, band=(0.0, 50.0), normalize=True)
     _energy_seizure = band_energy(eeg_seizure, dt_ms, band=(0.0, 50.0), normalize=True)
 
-    # Sort channels by energy in the seizure state to show which channels are strongest
     _order_seizure = np.argsort(_energy_seizure)[::-1]
     _top_n = 15
     _top_indices = _order_seizure[:_top_n]
@@ -336,7 +325,6 @@ def _(band_energy, connectome, dt_ms, eeg_healthy, eeg_seizure, np, plt):
 
     _fig, _ax = plt.subplots(figsize=(8, 5.5), layout="constrained")
 
-    # Plot grouped horizontal bar chart
     _y_pos = np.arange(_top_n)
     _height = 0.35
 
@@ -360,6 +348,7 @@ def _(band_energy, connectome, dt_ms, eeg_healthy, eeg_seizure, np, plt):
 
 @app.cell
 def _(mo):
+    """Marimo cell."""
     mo.md(r"""
     ## 🧠 Findings and Summary
 

@@ -1,34 +1,3 @@
-"""Stage 7 -- TVB reference implementation for validating the hand-rolled backbone.
-
-Rebuilds the *uncontrolled* Yu et al. 2024 network inside The Virtual Brain and uses
-it as an independent oracle for Stages 1, 2, and 5 (single-node dynamics, the
-coupled+delayed network, and the EEG forward operator ``L``). It does **not** model
-tES or the slow ``Z`` dynamics -- those live only in the hand-rolled engine.
-
-Parameter reconciliation (TVB works in **milliseconds**, the hand-rolled engine in
-**seconds**), verified against ``models.JansenRit`` defaults:
-
-* ``a = 0.1``, ``b = 0.05`` (1/ms)  == paper ``a = 100``, ``b = 50`` (1/s) -- TVB default
-* ``nu_max = 0.0025`` (1/ms)         == paper ``e0 = 2.5`` (1/s) -- TVB default
-* ``v0 = 6``, ``r = 0.56``, ``J = 135``, ``B = 22`` -- paper values
-* ``mu = 0.09``                      == paper ``mean_input = 90`` (1/s)
-* coupling ``K sum_j w_ij S(y_j)``   == ``SigmoidalJansenRit(cmin=0, cmax=2 nu_max,
-  midpoint=v0, r=0.56, a=K)``: with those constants TVB's ``pre()`` is exactly the
-  paper sigmoid ``S(y_j)`` and ``a`` is the global coupling ``K``.
-* noise on the paper's ``x5'`` (= TVB state index 4) via ``HeunStochastic`` with
-  ``Additive`` noise; ``nsig`` is an ``(6,)`` array nonzero only at index 4. The
-  intensity is calibrated empirically (``nsig`` defaults to ``1e-4``) to reproduce
-  the hand-rolled recruitment (EZ + PZ seize, left-hemisphere dominant); the
-  std-to-nsig algebra overshoots the bifurcation, so it is tuned, not derived.
-
-Structural data is taken from the same :class:`~neuro.connectome.Connectome` the
-hand-rolled engine uses (weights, tract lengths, speed), so the two engines run on
-bit-identical connectivity. The EEG monitor is built from the same projection,
-sensor, and region-mapping files; TVB collapses its surface lead field to regions by
-**sum**, matching :func:`neuro.connectome._build_eeg_gain`, so the monitor's region
-gain equals ``connectome.gain`` up to the sagittal-mirror row permutation.
-"""
-
 from __future__ import annotations
 
 import warnings
@@ -60,11 +29,10 @@ if TYPE_CHECKING:
     from neuro.types import FloatArray
 
 
-# Yu et al. 2024 parameters in TVB's millisecond units (see the module docstring).
 _A_BG, _A_PZ, _A_EZ = 3.25, 3.4, 3.6
 _B, _A_RATE, _B_RATE = 22.0, 0.1, 0.05
 _NU_MAX, _V0, _R, _J, _MU = 0.0025, 6.0, 0.56, 135.0, 0.09
-_X5_INDEX = 4  # paper's x5' equation == TVB state-variable index 4 (y4)
+_X5_INDEX = 4
 _DEFAULT_EZ = ("lHC", "lPHC", "lAMYG")
 _DEFAULT_PZ = ("lTCI", "lTCV")
 
@@ -214,18 +182,7 @@ def _eeg_monitor(sim: simulator.Simulator) -> monitors.EEG | None:
 
 
 def reference_eeg_gain(sim: simulator.Simulator) -> FloatArray:
-    """Return the EEG monitor's region-level gain ``(62, n_regions)``.
-
-    This is TVB's own forward operator (surface lead field collapsed to regions by
-    sum). It equals :attr:`neuro.connectome.Connectome.gain` up to the sagittal-mirror
-    row permutation -- the direct ``L`` validation. The gain is populated by
-    :meth:`Simulator.configure`, so this needs no simulation run.
-
-    Raises
-    ------
-    ValueError
-        If the simulator was built with ``with_eeg=False``.
-    """
+    """Return the EEG monitor's region-level gain ``(62, n_regions)``."""
     mon = _eeg_monitor(sim)
     if mon is None:
         msg = "Simulator has no EEG monitor; build it with with_eeg=True."
@@ -250,7 +207,7 @@ def run_reference(sim: simulator.Simulator, duration_s: float) -> ReferenceResul
         channel order) when an EEG monitor is present.
     """
     outputs = sim.run(simulation_length=duration_s * 1000.0)
-    t_ms, region_data = outputs[0]  # TemporalAverage: (time, n_voi, n_nodes, modes)
+    t_ms, region_data = outputs[0]
     region_y = np.ascontiguousarray((region_data[:, 1, :, 0] - region_data[:, 2, :, 0]).T)
     t = np.asarray(t_ms, dtype=np.float64) / 1000.0
 

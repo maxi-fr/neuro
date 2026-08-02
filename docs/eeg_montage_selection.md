@@ -10,8 +10,8 @@ Source of truth:
 - Measurement / channel subsetting: [`src/neuro/measurement.py`](../src/neuro/measurement.py)
 - Forward operator (EEG gain `L`): [`src/neuro/connectome.py`](../src/neuro/connectome.py)
 - Wired into: [`configs/simulation/jansen_rit_seizure_excited.yaml`](../configs/simulation/jansen_rit_seizure_excited.yaml)
-  (data generation) and [`configs/simulation/jansen_rit_seizure_mpc.yaml`](../configs/simulation/jansen_rit_seizure_mpc.yaml)
-  (closed-loop plant).
+  (data generation) and closed-loop configs under [`configs/simulation/meeting_seven/`](../configs/simulation/meeting_seven/)
+  (e.g., `selected_mpc.yaml`).
 
 ---
 

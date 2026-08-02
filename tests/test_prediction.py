@@ -1,12 +1,3 @@
-"""Tests for the NN predictor's transform pipeline (standardize-then-project) and artifact.
-
-The y-pipeline maps raw EEG into model space -- a channel :class:`~neuro.transforms.Standardizer`
-followed by an optional :class:`~neuro.transforms.PCAProjection` -- so the predictor trains and
-rolls out in the reduced latent space and decodes back to raw EEG channels before returning
-predictions. These tests pin the raw dataset build and the artifact round-trip (with and without a
-projection).
-"""
-
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
@@ -20,7 +11,7 @@ if TYPE_CHECKING:
 
     from neuro.types import FloatArray
 
-# float64 parity is mandatory; enable before any array is created.
+
 jax.config.update("jax_enable_x64", True)  # noqa: FBT003
 
 from neuro.nn_training import (  # noqa: E402
@@ -40,7 +31,7 @@ _SEED = 7
 def _write_trajectory(path: Path, n_steps: int, n_eeg: int, n_controls: int) -> str:
     """Write a synthetic ``.npz`` trajectory (``y_mea``/``u``) and return its path."""
     rng = np.random.default_rng(_SEED + hash(str(path)) % 1000)
-    # Give the EEG a non-zero mean so the standardizer/projection means are exercised.
+
     y = rng.standard_normal((n_steps, n_eeg)) + np.arange(1.0, n_eeg + 1.0)
     u = rng.standard_normal((n_steps, n_controls))
     np.savez(path, y_mea=y, u=u)
@@ -102,7 +93,6 @@ def test_prepare_datasets_builds_raw_windows(tmp_path: Path) -> None:
     assert n_channels == n_eeg
     assert x_full.shape[1] == n_y * n_eeg + n_u * n_controls + horizon * n_controls
 
-    # The build must be the raw windowing, untouched by any scaler/projection.
     u, y = load_trajectory(file, n_steps, 1)
     x_manual, y_manual = build_dataset_for_trajectory(u, y, n_y, n_u, horizon)
     np.testing.assert_allclose(x_full, x_manual, atol=1e-12)
@@ -136,8 +126,8 @@ def test_artifact_round_trips_latent_projection(tmp_path: Path) -> None:
     assert pca is not None
     np.testing.assert_array_equal(pca.basis, basis)
     np.testing.assert_array_equal(pca.mean, pca_mean)
-    assert loaded.n_channels == k  # the model's latent dimension
-    assert loaded.n_eeg_channels == n_eeg  # raw EEG channels
+    assert loaded.n_channels == k
+    assert loaded.n_eeg_channels == n_eeg
 
 
 def test_artifact_without_projection_is_backward_compatible(tmp_path: Path) -> None:

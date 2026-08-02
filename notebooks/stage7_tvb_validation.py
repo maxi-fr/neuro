@@ -6,7 +6,7 @@ app = marimo.App(width="medium", app_title="Stage 7: TVB Reference Validation")
 
 @app.cell
 def _():
-
+    """Marimo cell."""
     import marimo as mo
     import numpy as np
     from matplotlib import pyplot as plt
@@ -35,6 +35,7 @@ def _():
 
 @app.cell
 def _(mo):
+    """Marimo cell."""
     mo.md(r"""
     # 🧠 Stage 7 — TVB Reference Validation
 
@@ -64,12 +65,14 @@ def _(mo):
 
 @app.cell
 def _(Connectome):
+    """Marimo cell."""
     conn = Connectome.from_config({})
     return (conn,)
 
 
 @app.cell
 def _(mo):
+    """Marimo cell."""
     k_slider = mo.ui.slider(0.0, 2.0, 0.02, value=0.60, label="Global Coupling K")
     duration_slider = mo.ui.slider(2.0, 10.0, 1.0, value=5.0, label="Duration (s)")
     seed_slider = mo.ui.slider(0, 100, 1, value=23, label="RNG Seed")
@@ -98,6 +101,7 @@ def _(mo):
 
 @app.cell
 def _(conn, np):
+    """Marimo cell."""
     ez = ("lHC", "lPHC", "lAMYG")
     pz = ("lTCI", "lTCV")
     a_gains = np.full(len(conn.region_labels), 3.25)
@@ -127,15 +131,14 @@ def _(
     sigma_slider,
     simulate_network,
 ):
+    """Marimo cell."""
     _det = deterministic_toggle.value
     _nsig = 0.0 if _det else nsig_slider.value
     _sigma = 0.0 if _det else sigma_slider.value
 
-    # TVB reference run.
     _sim = build_reference_simulator(conn, K=k_slider.value, nsig=_nsig, seed=int(seed_slider.value))
     tvb = run_reference(_sim, float(duration_slider.value))
 
-    # Hand-rolled run, same network and gains.
     _bounds = np.array([[-1.0, 1.0], [-500.0, 500.0], [-50.0, 50.0], [-6.0, 6.0], [-20.0, 20.0], [-500.0, 500.0]])
     _initial_state = np.random.default_rng(int(seed_slider.value)).uniform(
         _bounds[:, 0:1], _bounds[:, 1:2], size=(6, len(conn.region_labels))
@@ -156,9 +159,11 @@ def _(
 
 @app.cell
 def _(conn, hr_t, hr_y, mo, np, tvb):
+    """Marimo cell."""
     _thr = 5.0
 
     def _seizing(y, t):
+        """_seizing definition."""
         ptp = np.ptp(y[:, t >= 1.0], axis=1)
         return {str(conn.region_labels[i]) for i in np.where(ptp > _thr)[0]}
 
@@ -166,6 +171,7 @@ def _(conn, hr_t, hr_y, mo, np, tvb):
     hr_seiz = _seizing(hr_y, hr_t)
 
     def _lat(seiz):
+        """_lat definition."""
         idxs = [conn.region_index[s] for s in seiz]
         left = int(np.sum(~conn.hemispheres[idxs]))
         return f"{left} L / {len(idxs) - left} R"
@@ -182,7 +188,7 @@ def _(conn, hr_t, hr_y, mo, np, tvb):
 
 @app.cell
 def _(hr_t, hr_y, plt, tvb):
-    # Side-by-side spatiotemporal rasters.
+    """Marimo cell."""
     _fig, _axes = plt.subplots(1, 2, figsize=(13, 5), layout="constrained", sharey=True)
     for _ax, _t, _y, _title in (
         (_axes[0], tvb.t, tvb.region_y, "TVB reference"),
@@ -206,7 +212,7 @@ def _(hr_t, hr_y, plt, tvb):
 
 @app.cell
 def _(compute_psd, conn, hr_t, hr_y, plt, tvb):
-    # EZ trace + PSD overlay (lHC), comparing the spike-wave rhythm.
+    """Marimo cell."""
     _lhc = conn.region_index["lHC"]
     _dt_ms_tvb = float((tvb.t[1] - tvb.t[0]) * 1000.0)
 
@@ -236,7 +242,7 @@ def _(compute_psd, conn, hr_t, hr_y, plt, tvb):
 
 @app.cell
 def _(band_energy, conn, hr_eeg, np, plt, steady_window, tvb):
-    # EEG band energy (0-50 Hz), both engines, top channels.
+    """Marimo cell."""
     _dt_ms_tvb = float((tvb.t[1] - tvb.t[0]) * 1000.0)
     _tvb_e = band_energy(tvb.eeg[:, tvb.t >= 1.0], _dt_ms_tvb, band=(0.0, 50.0))
     _hr_e = band_energy(steady_window(hr_eeg, 0.1, 1000.0), 0.1, band=(0.0, 50.0))
@@ -259,7 +265,7 @@ def _(band_energy, conn, hr_eeg, np, plt, steady_window, tvb):
 
 @app.cell
 def _(build_reference_simulator, conn, mo, np, plt, reference_eeg_gain):
-    # L validation: TVB's region gain == connectome.gain up to the mirror row permutation.
+    """Marimo cell."""
     from tvb.datatypes.sensors import SensorsEEG
 
     from neuro.connectome import _mirror_partner_permutation

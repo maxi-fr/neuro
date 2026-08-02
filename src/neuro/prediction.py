@@ -1,23 +1,3 @@
-"""Equinox MLP predictor for short-horizon EEG prediction under tES control.
-
-Two objects live here:
-
-* :class:`AutoregressivePredictor` -- the JAX/Equinox model. It wraps a 1-step
-  :class:`eqx.nn.MLP` and unrolls it over the training ``horizon`` with a
-  :func:`jax.lax.scan`, so it is a single differentiable ``pytree`` that training can
-  ``jax.vmap`` and serialise.
-* :class:`MLPArtifact` -- the on-disk *package*: the trained model, its native time
-  step, and the raw-EEG/raw-control :class:`~neuro.transforms.Pipeline` transforms it was
-  fit with, plus :meth:`~MLPArtifact.save`/:meth:`~MLPArtifact.load` for the 3-file
-  artifact (``.eqx``/``.json``/``.scalers.npz``). It is the shared handoff between the
-  training script (:mod:`neuro.nn_training`) and the CasADi MPC port
-  (:mod:`neuro.nn_predictor_casadi`).
-
-The model rolls out in *model space* -- standardized channels, or the latent PCA
-components when the y-pipeline carries a projection -- and decodes back to raw EEG via
-the y-pipeline's inverse.
-"""
-
 from __future__ import annotations
 
 import json
@@ -107,12 +87,6 @@ class AutoregressivePredictor(eqx.Module):
 class MLPArtifact:
     """Loaded ``run_nn_predictor`` artifact: the live predictor, native dt, and transforms.
 
-    The canonical artifact representation, shared by the training script (:meth:`save`)
-    and the CasADi port in :mod:`neuro.nn_predictor_casadi`. Architecture sizes (``n_y``,
-    ``n_u``, ``horizon``, ``n_channels``, ``n_controls``) are not duplicated here -- they
-    are read straight off ``model``, the single source of truth once it is built or
-    deserialised.
-
     Attributes
     ----------
     model : AutoregressivePredictor
@@ -182,16 +156,8 @@ class MLPArtifact:
         with np.load(artifact.with_suffix(".scalers.npz")) as sc:
             arrays = {k: np.asarray(sc[k], dtype=np.float64) for k in sc.files}
 
-        if "y_pipeline" in meta:
-            y_pipeline = Pipeline.from_serialized("y", meta["y_pipeline"], arrays)
-            u_pipeline = Pipeline.from_serialized("u", meta["u_pipeline"], arrays)
-        else:  # TODO: this block exists only for backward compatibility with old saved training artifacts. Can be removed at some point
-            arrays["y.0.center"] = arrays["y_mean"]
-            arrays["y.0.scale"] = arrays["y_scale"]
-            arrays["u.0.center"] = arrays["u_mean"]
-            arrays["u.0.scale"] = arrays["u_scale"]
-            y_pipeline = Pipeline.from_serialized("y", ["standardizer"], arrays)
-            u_pipeline = Pipeline.from_serialized("u", ["standardizer"], arrays)
+        y_pipeline = Pipeline.from_serialized("y", meta["y_pipeline"], arrays)
+        u_pipeline = Pipeline.from_serialized("u", meta["u_pipeline"], arrays)
 
         activation_name = meta.get("activation", "relu")
         mlp = eqx.nn.MLP(

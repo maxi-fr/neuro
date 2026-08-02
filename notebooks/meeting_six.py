@@ -10,6 +10,7 @@ app = marimo.App(
 
 @app.cell(hide_code=True)
 def imports():
+    """imports definition."""
     from pathlib import Path
 
     import marimo as mo
@@ -44,6 +45,7 @@ def imports():
 
 @app.cell(hide_code=True)
 def slide_title(mo):
+    """slide_title definition."""
     mo.md(r"""
     # Closed-loop Neurostimulation
     ## Sixth meeting
@@ -55,6 +57,7 @@ def slide_title(mo):
 
 @app.cell(hide_code=True)
 def slide_model(mo, notebook_dir):
+    """slide_model definition."""
     _img_path = notebook_dir / "assets" / "mlp_diagram.png"
     _diagram = (
         mo.image(str(_img_path), width=320)
@@ -109,6 +112,7 @@ def slide_model(mo, notebook_dir):
 
 @app.cell(hide_code=True)
 def hpo_controls(mo, sweep_dirs):
+    """hpo_controls definition."""
     sweep_dropdown = mo.ui.dropdown(
         options=sweep_dirs, value=sweep_dirs[-1] if sweep_dirs else None, label="Sweep directory"
     )
@@ -117,6 +121,7 @@ def hpo_controls(mo, sweep_dirs):
 
 @app.cell(hide_code=True)
 def slide_hpo(artifact_base, mo, optuna, ov, sweep_dropdown):
+    """slide_hpo definition."""
     mo.stop(sweep_dropdown.value is None, "Please select a sweep directory.")
     sweep_path = artifact_base / sweep_dropdown.value
     db_path = sweep_path / "nn_predictor_sweep.db"
@@ -149,6 +154,7 @@ def slide_hpo(artifact_base, mo, optuna, ov, sweep_dropdown):
 
 @app.cell(hide_code=True)
 def pred_trial_controls(mo, trials_df):
+    """pred_trial_controls definition."""
     trials_list = trials_df.sort_values("value").index.astype(str).tolist()
     trial_dropdown = mo.ui.dropdown(options=trials_list, value=trials_list[0] if trials_list else None, label="Trial")
     return (trial_dropdown,)
@@ -163,6 +169,7 @@ def load_trial_data(
     trial_dropdown,
     yaml,
 ):
+    """load_trial_data definition."""
     mo.stop(trial_dropdown.value is None, "Please select a trial.")
     trial_num = trial_dropdown.value
     trial_dir = sweep_path / f"trial_{trial_num}"
@@ -224,6 +231,7 @@ def load_trial_data(
 
 @app.cell(hide_code=True)
 def eval_predictions(X_val_s, artifact, config, model, np):
+    """eval_predictions definition."""
     import jax.numpy as jnp
 
     from neuro.nn_training import predict_batch
@@ -238,6 +246,7 @@ def eval_predictions(X_val_s, artifact, config, model, np):
 
 @app.cell(hide_code=True)
 def pred_slider_controls(Y_pred_traj, dt_real, mo, n_channels):
+    """pred_slider_controls definition."""
     max_time_s = len(Y_pred_traj) * dt_real
     channel_options = [str(i) for i in range(n_channels)]
     ui_channels = mo.ui.multiselect(
@@ -266,6 +275,7 @@ def slide_pred(
     ui_time,
     ui_time_length,
 ):
+    """slide_pred definition."""
     import io
 
     channels_to_plot = [int(c) for c in ui_channels.value] if ui_channels.value else [0]
@@ -299,6 +309,7 @@ def slide_pred(
 
 @app.cell(hide_code=True)
 def slide_wrap(mo):
+    """slide_wrap definition."""
     mo.md(r"""
     ## Problems
     - **Activation:** ReLU fits well, but MPC needs differentiable dynamics: (**tanh** / **softplus**).

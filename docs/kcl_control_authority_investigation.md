@@ -31,7 +31,7 @@ Kirchhoff's current law (`sum(u) = 0`, a montage injects no net current) was enf
 
 ### 1. Matched closed-loop suppression, post-KCL (linear controller)
 
-Same plant (seed 69, `configs/simulation/l1_before.yaml`: excited Jansen–Rit, selected 25-ch montage, 3 electrodes `CP5/T7/F9`, `LinearMPCController`, `w_u=0`, `w_u_l1=0`, `u_max=3`, `horizon=20`, `dense`). Three variants share the identical noise realization. Metric = mean-square EEG over the steady window `t > 1 s` (seizure power). Suppression is relative to the uncontrolled baseline.
+Same plant (seed 69, historically `configs/simulation/l1_before.yaml`: excited Jansen–Rit, selected 25-ch montage, 3 electrodes `CP5/T7/F9`, `LinearMPCController`, `w_u=0`, `w_u_l1=0`, `u_max=3`, `horizon=20`, `dense`). Three variants share the identical noise realization. Metric = mean-square EEG over the steady window `t > 1 s` (seizure power). Suppression is relative to the uncontrolled baseline.
 
 | variant | steady EEG ms | suppression | mean\|u\| | max\|u\| | net current |
 | --- | --- | --- | --- | --- | --- |
@@ -114,7 +114,7 @@ import neuro.control as ctrl
 from simulate.config import load_config
 from simulate.simulation import Simulation
 
-BASE = load_config("configs/simulation/l1_before.yaml")
+BASE = load_config("configs/simulation/l1_before.yaml")  # Note: historical config, no longer present
 orig = ctrl._sum_to_zero
 
 def run(cfg, disable_kcl=False):

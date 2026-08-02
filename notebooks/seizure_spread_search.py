@@ -6,6 +6,7 @@ app = marimo.App(width="medium", app_title="Seizure Spread: K / sigma Search")
 
 @app.cell
 def imports():
+    """imports definition."""
     from dataclasses import asdict, replace
     from pathlib import Path
 
@@ -31,10 +32,10 @@ def imports():
     sweep_dirs = sorted(d.name for d in artifact_base.iterdir() if d.is_dir() and (d / "sweep.npz").exists())
 
     def _grid_size(name: str) -> int:
+        """_grid_size definition."""
         with np.load(artifact_base / name / "sweep.npz") as data:
             return int(data["k_vals"].size * data["sigma_vals"].size)
 
-    # Open on the widest grid available: single-cell verification runs make a useless landscape.
     default_sweep = max(sweep_dirs, key=_grid_size) if sweep_dirs else None
     return (
         Connectome,
@@ -63,6 +64,7 @@ def imports():
 
 @app.cell(hide_code=True)
 def intro(mo):
+    """intro definition."""
     mo.md(r"""
     # 🌊 Seizure spread — searching $K$ and $\sigma$
 
@@ -91,6 +93,7 @@ def intro(mo):
 
 @app.cell
 def ui_sweep(default_sweep, mo, sweep_dirs):
+    """ui_sweep definition."""
     sweep_dropdown = mo.ui.dropdown(options=sweep_dirs, value=default_sweep, label="Sweep directory")
     sweep_dropdown
     return (sweep_dropdown,)
@@ -98,6 +101,7 @@ def ui_sweep(default_sweep, mo, sweep_dirs):
 
 @app.cell
 def load_sweep(artifact_base, mo, np, sweep_dropdown):
+    """load_sweep definition."""
     mo.stop(sweep_dropdown.value is None, "No sweep found — run `scripts/sweep_seizure_spread.py` first.")
     with np.load(artifact_base / sweep_dropdown.value / "sweep.npz") as _data:
         k_vals = _data["k_vals"]
@@ -105,7 +109,7 @@ def load_sweep(artifact_base, mo, np, sweep_dropdown):
         seeds = _data["seeds"]
         duration = float(_data["duration"])
         times = _data["times"]
-        ptp = _data["ptp"]  # (n_K, n_sigma, n_seed, n_nodes, n_windows)
+        ptp = _data["ptp"]
         from_rest = bool(_data["from_rest"])
         region_labels = _data["region_labels"]
         hemispheres = _data["hemispheres"]
@@ -130,16 +134,18 @@ def load_sweep(artifact_base, mo, np, sweep_dropdown):
 
 @app.cell
 def connectome_cell(Connectome, hemispheres, np, region_labels):
+    """connectome_cell definition."""
     conn = Connectome.from_config({"speed": 50.0})
     if not np.array_equal(conn.region_labels, region_labels):
         msg = "the sweep ran on a different parcellation than the connectome loaded here"
         raise ValueError(msg)
-    left_mask = ~hemispheres  # TVB marks the right hemisphere True
+    left_mask = ~hemispheres
     return conn, left_mask
 
 
 @app.cell
 def ui_threshold(mo):
+    """ui_threshold definition."""
     thr_slider = mo.ui.slider(2.0, 10.0, 0.5, value=5.0, label="Seizing threshold (mV peak-to-peak)")
     thr_slider
     return (thr_slider,)
@@ -159,6 +165,7 @@ def summaries(
     thr_slider,
     times,
 ):
+    """summaries definition."""
     _rows = []
     for _i, _k in enumerate(k_vals):
         for _j, _s in enumerate(sigma_vals):
@@ -170,8 +177,7 @@ def summaries(
                 )
 
     trials = pd.DataFrame(_rows)
-    # A region that never seizes has a NaN onset; reading it as "recruited at the end of the
-    # run" keeps the seed average finite and ranks a non-spreading cell as maximally late.
+
     cells = (
         trials.fillna(duration).groupby(["K", "sigma"], as_index=False).mean(numeric_only=True).drop(columns="seed_idx")
     )
@@ -184,6 +190,7 @@ def summaries(
 
 @app.cell(hide_code=True)
 def heatmaps(k_vals, mo, path_effects, plt, sigma_vals, spread_maps):
+    """heatmaps definition."""
     _panels = [
         ("score", "Score (lower = closer to target)", "viridis_r", None),
         ("t_pz", "PZ recruited (s)", "magma", None),
@@ -212,8 +219,6 @@ def heatmaps(k_vals, mo, path_effects, plt, sigma_vals, spread_maps):
         _fig.colorbar(_im, ax=_ax)
         for _r in range(_m.shape[0]):
             for _c in range(_m.shape[1]):
-                # White text with a dark halo stays readable on every colormap, which a
-                # threshold on the value does not (both ends of `magma` are dark).
                 _ax.text(
                     _c,
                     _r,
@@ -240,6 +245,7 @@ def heatmaps(k_vals, mo, path_effects, plt, sigma_vals, spread_maps):
 
 @app.cell(hide_code=True)
 def ranked(cells, mo):
+    """ranked definition."""
     mo.md(f"""
     ## Ranked grid cells
 
@@ -250,7 +256,8 @@ def ranked(cells, mo):
 
 @app.cell
 def ui_cell(cells, k_vals, mo, sigma_vals):
-    _best = cells.loc[cells.score.idxmin()]  # open on the winning cell, not the first one
+    """ui_cell definition."""
+    _best = cells.loc[cells.score.idxmin()]
     k_dropdown = mo.ui.dropdown(
         options={f"{_v:.4f}": _i for _i, _v in enumerate(k_vals)}, value=f"{_best.K:.4f}", label="K"
     )
@@ -280,6 +287,7 @@ def cell_detail(
     thr_slider,
     times,
 ):
+    """cell_detail definition."""
     _i, _j = k_dropdown.value, sigma_dropdown.value
     _profiles = [SpreadProfile.from_ptp(times, ptp[_i, _j, _n], threshold=thr_slider.value) for _n in range(len(seeds))]
 
@@ -289,14 +297,12 @@ def cell_detail(
 
     _fig, (_ax0, _ax1) = plt.subplots(2, 1, figsize=(13, 13), height_ratios=[1, 2.2], layout="constrained")
 
-    # Top: recruitment curves, seed-averaged, split by node group.
     for _grp, _nodes, _col in (
         ("EZ", _ez, "#d62728"),
         ("PZ", _pz, "#ff7f0e"),
         ("left, other", _other_left, "#1f77b4"),
         ("right", np.flatnonzero(~left_mask), "#7f7f7f"),
     ):
-        # NaN (never recruited) compares False, so it never counts towards the fraction.
         _curves = np.asarray([np.mean(_p.onsets[_nodes, None] <= times, axis=0) for _p in _profiles])
         _ax0.plot(times, _curves.mean(0), color=_col, lw=2, label=_grp)
         _ax0.fill_between(times, _curves.min(0), _curves.max(0), color=_col, alpha=0.18)
@@ -307,8 +313,6 @@ def cell_detail(
     _ax0.grid(visible=True, ls="--", alpha=0.3)
     _ax0.spines[["top", "right"]].set_visible(False)
 
-    # Bottom: onset raster of the first seed, regions ordered by onset. Only recruited
-    # regions get a bar -- drawing the unrecruited ones full-width buries the schedule.
     _onsets = _profiles[0].onsets
     _order = np.argsort(np.nan_to_num(_onsets, nan=np.inf))
     for _row, _n in enumerate(_order):
@@ -335,6 +339,7 @@ def cell_detail(
 
 @app.cell(hide_code=True)
 def seed_spread(duration, k_dropdown, mo, np, plt, sigma_dropdown, trials):
+    """seed_spread definition."""
     _sel = trials[
         (trials.K.unique()[k_dropdown.value] == trials.K)
         & (trials.sigma == trials.sigma.unique()[sigma_dropdown.value])
@@ -346,8 +351,6 @@ def seed_spread(duration, k_dropdown, mo, np, plt, sigma_dropdown, trials):
         ("t_pz", "#ff7f0e", "PZ"),
         ("t_left_half", "#1f77b4", "half the left hemisphere"),
     ):
-        # Pin the never-recruited runs to the top of the axis instead of dropping them,
-        # so a cell that only spreads on some seeds is visibly different from a fast one.
         _never = _sel[_key].isna()
         _ax.plot(_sel.seed_idx, _sel[_key].fillna(duration), "o-", color=_col, label=_label)
         _ax.plot(_sel.seed_idx[_never], np.full(_never.sum(), duration), "o", mfc="w", mec=_col, mew=1.8)
@@ -375,6 +378,7 @@ def seed_spread(duration, k_dropdown, mo, np, plt, sigma_dropdown, trials):
 
 @app.cell(hide_code=True)
 def ui_verify(mo):
+    """ui_verify definition."""
     verify_button = mo.ui.run_button(label="Re-simulate the selected cell (~40 s)")
     verify_duration = mo.ui.slider(10.0, 40.0, 5.0, value=20.0, label="Duration (s)")
     verify_seed = mo.ui.number(0, 10_000, 1, value=69, label="Seed")
@@ -411,6 +415,7 @@ def verify(
     verify_duration,
     verify_seed,
 ):
+    """verify definition."""
     mo.stop(not verify_button.value, mo.md("*Press the button to run the plant at the selected $(K, \\sigma)$.*"))
 
     _conn = replace(conn, K=float(k_vals[k_dropdown.value]))

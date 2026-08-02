@@ -1,10 +1,3 @@
-"""Script to train a JAX-based Neural Network to predict EEG signals (Multi-step predictor).
-
-This script implements an MLP using Equinox and Optax to predict a horizon of N steps
-of EEG data from past EEG and past/future stimulation inputs. It supports training on
-multiple trajectories.
-"""
-
 import argparse
 import shutil
 from pathlib import Path

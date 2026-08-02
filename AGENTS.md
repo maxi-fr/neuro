@@ -32,10 +32,8 @@ Do not guess my intent. Before implementing:
 
 * No features beyond what was asked.
 * No abstractions for single-use code.
-* No "flexibility" or "abstraction" that wasn't requested.
+* No "flexibility" or "configurability" that wasn't requested.
 * No error handling for impossible scenarios.
-
-Ask yourself: "Would a senior engineer say this is overcomplicated?" If yes, simplify.
 
 ### 3. Surgical Changes
 
@@ -47,6 +45,8 @@ When editing existing code:
 * Don't refactor things that aren't broken.
 * Match existing style, even if you'd do it differently.
 * Always update doc-strings of functions you change
+* Avoid long function doc-strings with explanations or big comments
+* Do not add module level doc-strings
 
 However, integrate cleanly. Don't force square pegs into round holes. Do not contort new code to fit outdated, poorly written, or convoluted structures just to minimize the lines changed. Leave the immediate code better than you found it.
 

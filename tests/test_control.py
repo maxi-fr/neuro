@@ -1,16 +1,10 @@
-"""Tests for the project control components.
-
-Covers :class:`~neuro.control.ZeroController`, :class:`~neuro.control.StimWindowController`,
-:class:`~neuro.control.AmplitudeThresholdController`, and
-:func:`~neuro.control.build_input_schedule`.
-"""
+from typing import Literal
 
 import numpy as np
 import pytest
 
 from neuro.control import (
     AmplitudeThresholdController,
-    StimWindowController,
     ZeroController,
     build_input_schedule,
 )
@@ -32,42 +26,11 @@ def test_zero_controller_from_config() -> None:
     assert controller.n_u == 2
 
 
-def test_stim_window_controller_holds_amplitude_inside_window() -> None:
-    """The fixed amplitude is emitted for onset <= t < offset, zero elsewhere."""
-    controller = StimWindowController(dt=_DT, onset=1.0, offset=2.0, amplitude=1.5)
-
-    u_before, log_before = controller.update(0.5, ref=np.array([0.0]), x_hat=np.array([0.0]))
-    u_onset, log_onset = controller.update(1.0, ref=np.array([0.0]), x_hat=np.array([0.0]))
-    u_inside, _ = controller.update(1.5, ref=np.array([0.0]), x_hat=np.array([0.0]))
-    u_offset, log_offset = controller.update(2.0, ref=np.array([0.0]), x_hat=np.array([0.0]))
-
-    assert u_before == 0.0
-    assert not log_before.active
-    assert u_onset == 1.5  # window is closed on the left
-    assert log_onset.active
-    assert u_inside == 1.5
-    assert u_offset == 0.0  # window is open on the right
-    assert not log_offset.active
-
-
-def test_stim_window_controller_per_electrode_amplitude() -> None:
-    """A per-electrode amplitude vector is emitted as an (n_u,) control inside the window."""
-    controller = StimWindowController(dt=_DT, onset=0.0, offset=1.0, amplitude=[0.5, -0.5], n_u=2)
-    u_inside, _ = controller.update(0.5, ref=np.array([0.0]), x_hat=np.array([0.0]))
-    np.testing.assert_array_equal(u_inside, np.array([0.5, -0.5]))
-    u_outside, _ = controller.update(1.5, ref=np.array([0.0]), x_hat=np.array([0.0]))
-    np.testing.assert_array_equal(u_outside, np.zeros(2))
-
-
-def test_stim_window_controller_rejects_mismatched_amplitude() -> None:
-    """An amplitude length that is neither 1 nor n_u is rejected."""
-    with pytest.raises(ValueError, match="amplitude has 3 entries but n_u is 2"):
-        StimWindowController(dt=_DT, onset=0.0, offset=1.0, amplitude=[1.0, 2.0, 3.0], n_u=2)
-
-
 @pytest.mark.parametrize("input_type", ["ras", "prbs", "multisine"])
 @pytest.mark.parametrize("n_controls", [2, 3])
-def test_input_schedule_obeys_kirchhoff_current_law(input_type: str, n_controls: int) -> None:
+def test_input_schedule_obeys_kirchhoff_current_law(
+    input_type: Literal["ras", "prbs", "multisine"], n_controls: int
+) -> None:
     """Every active row of the excitation schedule sums to zero across electrodes (Kirchhoff).
 
     The leading transient stays exactly zero; the persistently-exciting body must inject no net
@@ -76,7 +39,7 @@ def test_input_schedule_obeys_kirchhoff_current_law(input_type: str, n_controls:
     (e.g. a cathode pair plus a shared return anode) the raw zero-sum projection can overshoot.
     """
     amp = 3.0
-    n_steps, transient_steps = 1100, 100  # >= 10 blocks so prbs reliably excites after the zero-sum projection
+    n_steps, transient_steps = 1100, 100
     schedule = build_input_schedule(
         input_type=input_type,
         n_steps=n_steps,
@@ -89,10 +52,10 @@ def test_input_schedule_obeys_kirchhoff_current_law(input_type: str, n_controls:
     )
 
     assert schedule.shape == (n_steps, n_controls)
-    np.testing.assert_array_equal(schedule[:transient_steps], 0.0)  # transient is zeroed
-    np.testing.assert_allclose(schedule[transient_steps:].sum(axis=1), 0.0, atol=1e-12)  # KCL
-    assert np.all(np.abs(schedule) <= amp + 1e-9)  # amplitude bound respected after rescale
-    assert np.any(np.abs(schedule[transient_steps:]) > 1e-6)  # ... and it actually excites
+    np.testing.assert_array_equal(schedule[:transient_steps], 0.0)
+    np.testing.assert_allclose(schedule[transient_steps:].sum(axis=1), 0.0, atol=1e-12)
+    assert np.all(np.abs(schedule) <= amp + 1e-9)
+    assert np.any(np.abs(schedule[transient_steps:]) > 1e-6)
 
 
 def test_mixed_hold_schedule_spans_the_requested_block_lengths() -> None:
@@ -117,9 +80,9 @@ def test_mixed_hold_schedule_spans_the_requested_block_lengths() -> None:
     changes = np.flatnonzero(np.any(np.diff(schedule, axis=0) != 0.0, axis=1)) + 1
     runs = np.diff(np.concatenate([[0], changes, [len(schedule)]]))
     expected = [round(h / (dt * 1000.0)) for h in holds]
-    assert runs[:-1].min() >= min(expected)  # last run is truncated by n_steps
+    assert runs[:-1].min() >= min(expected)
     assert set(runs[:-1].tolist()) <= set(expected)
-    assert max(expected) in runs.tolist()  # the low-frequency blocks are present
+    assert max(expected) in runs.tolist()
 
 
 def _run_threshold_controller(
@@ -143,8 +106,8 @@ def test_amplitude_threshold_controller_triggers_on_crossing() -> None:
     controller = AmplitudeThresholdController(
         dt=_DT, amplitude=[-1.0, 1.0], threshold=5.0, burst_duration=1.0, window=0.5, n_u=2
     )
-    quiet = np.tile([0.4, -0.4], 20)  # ptp 0.8, below threshold
-    loud = np.tile([4.0, -4.0], 20)  # ptp 8.0, above threshold
+    quiet = np.tile([0.4, -0.4], 20)
+    loud = np.tile([4.0, -4.0], 20)
 
     controls, active = _run_threshold_controller(controller, np.concatenate([quiet, loud]))
 
@@ -162,7 +125,7 @@ def test_amplitude_threshold_controller_holds_burst_to_completion() -> None:
     """
     burst, window = 1.0, 0.5
     controller = AmplitudeThresholdController(dt=_DT, amplitude=1.0, threshold=5.0, burst_duration=burst, window=window)
-    # Loud long enough to fill the window and trigger, then silent for longer than the burst.
+
     signal = np.concatenate([np.tile([4.0, -4.0], 5), np.zeros(30)])
     _, active = _run_threshold_controller(controller, signal)
 
@@ -198,15 +161,3 @@ def test_amplitude_threshold_controller_from_config() -> None:
     assert controller.burst_duration == 0.5
     assert controller.channel == 3
     np.testing.assert_array_equal(controller.amplitude, np.array([-0.5, -0.5, 1.0]))
-
-
-def test_stim_window_controller_from_config() -> None:
-    """from_config honours dt, window bounds, amplitude and n_u."""
-    controller = StimWindowController.from_config(
-        {"dt": _DT, "onset": 10.0, "offset": 30.0, "amplitude": 1.5, "n_u": 1},
-    )
-    assert controller.dt == _DT
-    assert controller.onset == 10.0
-    assert controller.offset == 30.0
-    assert controller.n_u == 1
-    np.testing.assert_array_equal(controller.amplitude, np.array([[1.5]]))

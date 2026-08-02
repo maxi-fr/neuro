@@ -1,5 +1,3 @@
-"""Unit tests for the horizon-length curriculum schedule and the fixed-rollout override."""
-
 from __future__ import annotations
 
 import itertools
@@ -10,6 +8,7 @@ from neuro.nn_training import _step_mask_selector, curriculum_state
 
 
 def _length(mask: np.ndarray) -> int:
+    """length."""
     return int(mask.sum())
 
 
@@ -28,13 +27,14 @@ def test_holds_at_one_before_start_then_grows_to_horizon() -> None:
     horizon, start_epoch, end_epoch = 20, 10, 90
 
     def length_at(epoch: int) -> int:
+        """length at."""
         return _length(curriculum_state(epoch, horizon, start_epoch=start_epoch, end_epoch=end_epoch))
 
-    assert all(length_at(e) == 1 for e in range(start_epoch + 1))  # L = 1 up to and incl. start_epoch
-    assert length_at(end_epoch) == horizon  # full horizon reached at end_epoch
-    assert length_at(end_epoch + 50) == horizon  # and held afterwards
+    assert all(length_at(e) == 1 for e in range(start_epoch + 1))
+    assert length_at(end_epoch) == horizon
+    assert length_at(end_epoch + 50) == horizon
     lengths = [length_at(e) for e in range(end_epoch + 1)]
-    assert all(b >= a for a, b in itertools.pairwise(lengths))  # non-decreasing over the ramp
+    assert all(b >= a for a, b in itertools.pairwise(lengths))
 
 
 def test_psd_gate_only_at_full_length() -> None:
@@ -63,9 +63,9 @@ def test_curriculum_max_steps_caps_the_ramp() -> None:
     selector = _step_mask_selector(horizon, cap, 0, 80)
 
     lengths = [_length(selector(epoch)) for epoch in (0, 20, 40, 80, 1000)]
-    assert lengths[0] == 1  # starts at one-step
-    assert lengths == sorted(lengths)  # grows monotonically
-    assert max(lengths) == cap  # and stops at the cap, not the horizon
+    assert lengths[0] == 1
+    assert lengths == sorted(lengths)
+    assert max(lengths) == cap
     for epoch in (0, 40, 1000):
         mask = selector(epoch)
         assert mask.shape == (horizon,)

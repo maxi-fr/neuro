@@ -1,18 +1,3 @@
-"""Generate a multi-trial ``experiments:`` YAML from a single base Simulation config.
-
-Reads a base config (one Simulation: dynamics/reference/sensors/estimator/controller) and writes
-a new YAML whose ``experiments:`` list expands it into ``--n-trials`` independent trials. Trial 0
-is the full base; each later entry is a minimal override that bumps ``dynamics.seed`` (and, when
-the controller is a :class:`~neuro.control.WaveformController`, ``controller.input_seed``) so that
-``scripts/run_simulation.py`` deep-merges them into distinct runs executed by the ExperimentManager.
-
-Usage
------
-    uv run python scripts/generate_experiment.py configs/simulation/jansen_rit_seizure_excited.yaml \
-        --n-trials 20 --output configs/simulation/plant_excited_experiment.yaml
-    uv run python scripts/run_simulation.py configs/simulation/plant_excited_experiment.yaml
-"""
-
 from __future__ import annotations
 
 import argparse
@@ -32,12 +17,7 @@ def build_experiments(
     seed_base: int,
     input_seed_offset: int,
 ) -> dict[str, Any]:
-    """Expand a base config into an ``experiments`` list with a per-trial seed sweep.
-
-    The tES-input RNG seed is offset from the plant-noise seed so trials can share a noise
-    realisation while drawing distinct inputs; it is only emitted when the controller is a
-    :class:`~neuro.control.WaveformController`.
-    """
+    """Expand a base config into an experiments list with a per-trial seed sweep."""
     controller = base.get("controller", {})
     is_waveform = str(controller.get("class_path", "")).endswith("WaveformController")
 

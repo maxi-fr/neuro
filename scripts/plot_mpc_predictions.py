@@ -1,22 +1,3 @@
-"""Visualize an NN predictor's open-loop forecasts against the plant, outside the MPC loop.
-
-Runs the Jansen-Rit plant open-loop (zero tES) from a simulation config, downsamples the
-EEG to the predictor's native step, then at several anchor times free-runs the CasADi
-predictor ``horizon`` steps under zero control -- exactly the model the MPC optimizes
-against -- and overlays those forecasts on the realized EEG. This isolates *prediction*
-quality from the closed-loop controller: if these forecasts track the plant, a sluggish or
-wandering MPC is a solver/formulation problem, not a broken model.
-
-The predictor artifact and EEG montage are both taken from the config's ``controller`` and
-``sensors`` blocks, so it stays consistent with whatever the closed-loop run would use.
-
-Usage
------
-    uv run python scripts/plot_mpc_predictions.py --config configs/simulation/meeting_seven/full_narx_mpc.yaml
-    uv run python scripts/plot_mpc_predictions.py --config configs/simulation/meeting_seven/selected_mpc.yaml \
-        --anchors 6 --out artifacts/selected_predictions.png
-"""
-
 from __future__ import annotations
 
 import argparse
@@ -24,7 +5,7 @@ from pathlib import Path
 
 import matplotlib as mpl
 
-mpl.use("Agg")  # non-interactive backend so the script works headless
+mpl.use("Agg")
 
 from typing import TYPE_CHECKING
 
@@ -88,12 +69,12 @@ def free_run(model: NNSymbolicModel, eeg: FloatArray, anchor: int) -> tuple[Floa
     n_y, horizon = model.artifact.n_y, model.artifact.horizon
     n_u, n_controls = model.artifact.n_u, model.n_controls
 
-    y_window = model.artifact.encode(eeg[anchor - n_y : anchor])  # measured past -> model space
+    y_window = model.artifact.encode(eeg[anchor - n_y : anchor])
     x = np.concatenate([y_window.reshape(-1), np.zeros(n_u * n_controls)])
     preds = []
     for _ in range(horizon):
         x = np.asarray(model.f_step(x, np.zeros(n_controls))).reshape(-1)
-        preds.append(np.asarray(model.f_out(x)).reshape(-1))  # decode model space -> raw EEG
+        preds.append(np.asarray(model.f_out(x)).reshape(-1))
     return np.asarray(preds), eeg[anchor : anchor + horizon]
 
 

@@ -1,11 +1,3 @@
-"""Measurement models for the simulate framework.
-
-Currently only :class:`EEGMeasurement`, a :data:`~simulate.sensor.MeasurementModel`
-that collapses the Jansen-Rit network state to scalp EEG through the connectome's
-forward operator. Compose it with :class:`simulate.sensor.GaussianSensor` (which owns
-the sample rate and additive noise) instead of a bespoke sensor.
-"""
-
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, Self
@@ -14,6 +6,7 @@ import numpy as np
 from pydantic import Field
 
 from neuro.config import StrictConfig
+from neuro.connectome import Connectome
 from neuro.jansen_rit import lfp as regional_lfp
 
 if TYPE_CHECKING:
@@ -29,18 +22,7 @@ class _EEGMeasurementConfig(StrictConfig):
 
 
 class EEGMeasurement:
-    """Map the Jansen-Rit network state to scalp EEG via the forward operator.
-
-    The orchestrator passes the plant state (the ``(6, N)`` network array, or its
-    flattened ``(6 N,)`` form); this reshapes it to ``(6, N)``, takes the regional
-    output ``y = x2 - x3`` (reusing :func:`neuro.jansen_rit.output`), and applies the
-    ``(n_channels, N)`` EEG gain ``L`` so the measurement is ``eeg = L @ y`` of shape
-    ``(n_channels,)``.
-
-    Instantiated directly with config kwargs by
-    :func:`simulate.config.build_measurement`, so it loads the TVB connectome by
-    ``speed`` itself (there is no ``from_config``).
-    """
+    """Map the Jansen-Rit network state to scalp EEG via the forward operator."""
 
     def __init__(
         self,
@@ -49,8 +31,6 @@ class EEGMeasurement:
         selected_channels: list[int | str] | None = None,
     ) -> None:
         """Load the ``(n_channels, n_nodes)`` EEG forward operator for ``speed``."""
-        from neuro.connectome import Connectome  # noqa: PLC0415
-
         connectome = Connectome.from_config({"speed": speed})
         gain = connectome.gain
         if n_nodes is not None:

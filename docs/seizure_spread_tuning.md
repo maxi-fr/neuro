@@ -9,10 +9,10 @@ Source of truth:
 - Knobs: [`src/neuro/connectome.py`](../src/neuro/connectome.py) (`K`),
   [`src/neuro/jansen_rit.py`](../src/neuro/jansen_rit.py) (`sigma`, `resting_state`)
 - Measurement: [`src/neuro/seizure.py`](../src/neuro/seizure.py) (`spread_profile`, `spread_summary`)
-- Search: [`scripts/sweep_seizure_spread.py`](../scripts/sweep_seizure_spread.py)
+- Search: (historically) `scripts/sweep_seizure_spread.py`
 - Verification: [`notebooks/seizure_spread_search.py`](../notebooks/seizure_spread_search.py)
-- Result: every config in [`configs/simulation/`](../configs/simulation/), documented in
-  [`jansen_rit_seizure.yaml`](../configs/simulation/jansen_rit_seizure.yaml)
+- Result: every config in `configs/simulation/`, documented in
+  [`jansen_rit_seizure.yaml`](../configs/simulation/jansen_rit_seizure.yaml).
 
 ---
 
@@ -118,7 +118,7 @@ response timing, not just seizure onset.
 
 ## 5. The search
 
-`scripts/sweep_seizure_spread.py` runs a `K × sigma` grid with several noise seeds per cell,
+Historically, `scripts/sweep_seizure_spread.py` ran a `K × sigma` grid with several noise seeds per cell,
 stores the full amplitude envelope, and ranks the cells. Four grids were run from rest, after
 the zeros-start grid of §4:
 

@@ -1,13 +1,3 @@
-"""Tests for the simulate-framework Jansen-Rit plant and EEG measurement model.
-
-Covers :class:`~neuro.jansen_rit.JansenRitDynamics` and
-:class:`~neuro.measurement.EEGMeasurement`. The equivalence tests pin the stepped
-component, and a full orchestrated :class:`~simulate.simulation.Simulation` run, to
-the standalone :func:`~neuro.jansen_rit.simulate_network` loop on a small synthetic
-connectome (no TVB load); other tests exercise ``from_config`` and the EEG
-measurement against the real TVB connectome.
-"""
-
 from __future__ import annotations
 
 from dataclasses import replace
@@ -107,7 +97,7 @@ def test_dynamics_from_config_builds_network() -> None:
         {"dt": _DT, "connectome": {"speed": 50.0, "K": 0.5357}, "params": {"A": 3.25}, "seed": 69}
     )
     assert dyn.x.shape == (_STATE_DIM, _N_REGIONS_TVB)
-    assert dyn.enforce_zero_sum_current is True  # Kirchhoff check on by default
+    assert dyn.enforce_zero_sum_current is True
 
     out, _ = dyn.evaluate(0.0, np.array([0.0]))
     out = np.asarray(out)
@@ -131,7 +121,7 @@ def test_dynamics_rejects_nonzero_sum_current() -> None:
     """By default the plant refuses a control that violates Kirchhoff's current law (sum != 0)."""
     dyn = _two_electrode_dyn()
     with pytest.raises(ValueError, match="Kirchhoff"):
-        dyn.dynamics(0.0, dyn.x, np.array([2.0, 1.0]))  # sums to 3.0, not 0
+        dyn.dynamics(0.0, dyn.x, np.array([2.0, 1.0]))
 
 
 def test_dynamics_accepts_zero_sum_current() -> None:

@@ -6,6 +6,7 @@ app = marimo.App()
 
 @app.cell
 def _():
+    """Marimo cell."""
     import json
     import pickle
     from pathlib import Path
@@ -21,6 +22,7 @@ def _():
 
 @app.cell(hide_code=True)
 def _(Path, mo):
+    """Marimo cell."""
     mo.md("# 📊 Thesis Plot Inspector & Resizer")
 
     plots_dir: Path = Path(__file__).parent.parent / "artifacts"
@@ -45,18 +47,17 @@ def _(Path, mo):
 
 @app.cell
 def _(Any, Path, json, mo, plot_selector: "mo.ui.dropdown"):
+    """Marimo cell."""
     mo.stop(not plot_selector.value, mo.md("💡 *Select a plot above to view assets and metadata.*"))
 
     selected_folder: Path = Path(__file__).parent.parent / "artifacts" / plot_selector.value
     base_file: Path = selected_folder / plot_selector.value
 
-    # Load metadata safely with Path objects
     meta_data: dict[str, Any] = {}
     json_path: Path = base_file.with_suffix(".json")
     with json_path.open(encoding="utf-8") as f_json:
         meta_data = json.load(f_json)
 
-    # Find all PNG files in the folder for preview
     png_files = sorted(selected_folder.glob("*.png"))
     if png_files:
         previews = [mo.image(src=str(p), width=450) for p in png_files]
@@ -79,9 +80,9 @@ def _(
     saver: "ThesisPlotSaver",
     width_slider: "mo.ui.slider",
 ):
+    """Marimo cell."""
     mo.stop(not rebuild_btn.value)
 
-    # Unpickle using structural path typing for all pickle files in the folder
     import shutil
     import warnings
 
@@ -90,11 +91,9 @@ def _(
         with p_path.open("rb") as f:
             fig = pickle.load(f)
 
-        # Recalculate dimensions dynamically
         new_size = saver.calculate_dimensions(fraction=width_slider.value)
         fig.set_size_inches(new_size[0], new_size[1])
 
-        # Overwrite the targeted vector layouts cleanly
         if shutil.which("pdflatex") is not None:
             try:
                 fig.savefig(p_path.with_suffix(".pgf"), bbox_inches="tight")

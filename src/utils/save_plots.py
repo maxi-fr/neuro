@@ -150,12 +150,9 @@ class ThesisPlotSaver:
         json_path: Path = base_filepath.with_suffix(".json")
         with json_path.open("w", encoding="utf-8") as f:
             json.dump(metadata, f, indent=4, ensure_ascii=False)
-
-        # Save data if provided
         if data is not None:
             np.savez_compressed(base_filepath.with_suffix(".npz"), **data)  # ty: ignore[invalid-argument-type]
 
-        # Save figures
         if isinstance(fig, dict):
             for key, f in fig.items():
                 if isinstance(f, plt.Figure):

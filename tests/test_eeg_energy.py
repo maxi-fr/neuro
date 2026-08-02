@@ -1,21 +1,3 @@
-"""Stage 5 validation: EEG projection + band-limited spectral energy.
-
-Projects the canonical uncontrolled EZ/PZ seizure network to the 62 EEG sensors
-through the forward operator ``L`` (``connectome.gain``), integrates the 0-50 Hz
-Welch PSD per channel, and checks the energy ranking against Fig 3c of Yu et al.
-(2024): high-energy channels are left-hemisphere temporo-parietal (F3/P3/CP5),
-ipsilateral to the EZ.
-
-We assert the *statistical* signature (ipsilateral lateralization, the Fig-3c
-trio dominating their contralateral homologs) rather than a single literal max
-channel: under the mandated SUM forward model, broad frontal lead fields (F1/FC1)
-carry the largest absolute energy, so the literal argmax is frontal even though
-the temporo-parietal cluster is the salient, EZ-driven feature. EEG magnitudes
-are in arbitrary units (see the ``jansen-rit-eeg-uncalibrated-units`` note), so
-every assertion here is relative. Strict L validation is deferred to Stage 7's
-TVB EEG monitor cross-check.
-"""
-
 import re
 from dataclasses import replace
 
@@ -27,7 +9,7 @@ from neuro.jansen_rit import JansenRitDynamics, JansenRitParams, lfp, simulate_n
 from neuro.types import FloatArray
 from utils.processing import band_energy, steady_window
 
-_FIG3C_TRIO = (("CP5", "CP6"), ("P3", "P4"), ("F3", "F4"))  # (left, right homolog)
+_FIG3C_TRIO = (("CP5", "CP6"), ("P3", "P4"), ("F3", "F4"))
 _DT = 1e-4
 
 

@@ -1,15 +1,3 @@
-"""Stage 1 regression harness for the single-node Jansen-Rit core.
-
-Snapshots the bifurcation behaviour every later stage relies on: a quiescent
-fixed point at the healthy/PZ gains, a sustained spike-wave limit cycle at the EZ
-gain, a noise-driven background near amplitude 2, and numerical stability. Values
-follow Yu et al. 2024, Table 1 (``I = 90``); the seizure is a ~3 Hz spike-wave,
-which is this epilepsy model's actual rhythm (not 8-12 Hz alpha).
-
-A "deterministic" run is just ``sigma = 0`` (the integrator is always stochastic
-Heun); the single node is the degenerate one-node connectome (no coupling).
-"""
-
 import dataclasses
 from dataclasses import replace
 
@@ -68,7 +56,7 @@ def _post_transient_output(a_gain: float, *, deterministic: bool) -> FloatArray:
     sigma = 0.0 if deterministic else JansenRitParams().sigma
     params = JansenRitParams(A=a_gain, sigma=sigma)
     _, x = _simulate_single_node(params)
-    y = lfp(x)  # shape (1, n_samples) for the single node
+    y = lfp(x)
     return steady_window(y, _DT * 1000.0, _TRANSIENT_MS)[0]
 
 

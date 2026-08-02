@@ -1,5 +1,3 @@
-"""Script to run hyperparameter search for the JAX-based NN predictor using Optuna."""
-
 import argparse
 import shutil
 from pathlib import Path
@@ -29,7 +27,6 @@ def objective(
 
     model_overrides = {name: spec.suggest(trial, name) for name, spec in sweep.model.items()}
     training_overrides = {name: spec.suggest(trial, name) for name, spec in sweep.training.items()}
-    # Re-validate the merged sections so an override that is not a real hyperparameter raises.
     config = base_config.model_copy(
         update={
             "model": ModelConfig.model_validate({**base_config.model.model_dump(), **model_overrides}),

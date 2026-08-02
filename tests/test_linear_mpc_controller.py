@@ -1,13 +1,3 @@
-"""Tests for :class:`neuro.control.LinearMPCController`.
-
-The linear MPC embeds a *linear* (0-hidden-layer) CasADi NN predictor and solves the
-receding-horizon suppression problem as a convex QP -- either the stacked ``"sparse"``
-formulation (OSQP) or the condensed ``"dense"`` one (qpOASES). With a *synthetic*
-(random-weight) depth-0 artifact these tests verify the machinery: both formulations solve
-the same QP, agree with the nonlinear IPOPT MPC on the (linear) model, respect the box
-bounds, and the loop closes through the ``simulate`` orchestrator.
-"""
-
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
@@ -17,7 +7,6 @@ import jax
 import numpy as np
 import pytest
 
-# float64 parity with the NN predictor; enable before any array is created.
 jax.config.update("jax_enable_x64", True)  # noqa: FBT003
 
 from simulate.simulation import Simulation  # noqa: E402
@@ -196,8 +185,8 @@ def test_control_obeys_kirchhoff_current_law(tmp_path: Path, formulation: str) -
 
     u, log = _drive(controller, n_steps=6, n_channels=model.n_channels)[-1]
     assert log.success
-    assert np.linalg.norm(u, ord=1) > 1e-3  # it actually stimulates
-    assert abs(float(np.sum(u))) < 1e-8  # ... yet the currents sum to zero (exact for a QP)
+    assert np.linalg.norm(u, ord=1) > 1e-3
+    assert abs(float(np.sum(u))) < 1e-8
 
 
 @pytest.mark.parametrize("formulation", ["sparse", "dense"])
@@ -233,9 +222,9 @@ def test_l1_penalty_yields_sparse_control(tmp_path: Path, formulation: str) -> N
 
     n_zero_l2 = int(np.count_nonzero(np.abs(u_l2) < 1e-6))
     n_zero_l1 = int(np.count_nonzero(np.abs(u_l1) < 1e-6))
-    assert n_zero_l2 == 0  # pure L2 leaves every control nonzero
-    assert n_zero_l1 > n_zero_l2  # L1 zeroes out at least one control
-    np.testing.assert_allclose(u_big, np.zeros(n_controls), atol=1e-6)  # large L1 -> all zero
+    assert n_zero_l2 == 0
+    assert n_zero_l1 > n_zero_l2
+    np.testing.assert_allclose(u_big, np.zeros(n_controls), atol=1e-6)
 
 
 @pytest.mark.parametrize("formulation", ["sparse", "dense"])
@@ -259,7 +248,7 @@ def test_rate_penalty_suppresses_chattering(tmp_path: Path, formulation: str) ->
 
     tv = {w: np.abs(np.diff(applied(w), axis=0)).sum() for w in (0.0, 1.0, 1000.0)}
     assert tv[0.0] > tv[1.0] > tv[1000.0]
-    assert tv[1000.0] < 1e-3 * tv[0.0]  # a large weight holds the control constant across solves
+    assert tv[1000.0] < 1e-3 * tv[0.0]
 
 
 @pytest.mark.parametrize("formulation", ["sparse", "dense"])
@@ -295,7 +284,7 @@ def test_from_config_loads_artifact_and_honours_formulation(tmp_path: Path) -> N
         {"dt": 0.01, "artifact": str(artifact), "u_max": 3.0, "formulation": "dense", "w_u_l1": 0.25}
     )
     assert controller.dt == 0.01
-    assert controller.horizon == 5  # defaulted from the artifact
+    assert controller.horizon == 5
     assert controller.n_controls == 2
     assert controller.formulation == "dense"
     assert controller.w_u_l1 == 0.25
@@ -328,9 +317,8 @@ def test_projection_runs_and_respects_bounds(tmp_path: Path, formulation: str) -
     )
 
     assert model.n_channels == k
-    assert model.state_shape[0] == n_y * k + n_u * n_controls  # latent-sized, not n_y*n_eeg
+    assert model.state_shape[0] == n_y * k + n_u * n_controls
 
-    # Feed raw EEG measurements (dim n_eeg); the controller encodes them internally.
     u, log = _drive(controller, n_steps=n_y + 2, n_channels=n_eeg)[-1]
     assert not log.warmup
     assert u.shape == (n_controls,)
@@ -387,5 +375,5 @@ def test_closed_loop_simulation_runs(tmp_path: Path, formulation: str) -> None:
 
     assert sim.logger is not None
     us = np.stack([np.atleast_1d(np.asarray(entry["u"], dtype=np.float64)) for entry in sim.logger.core_logs])
-    assert us.shape[1] == 2  # n_controls
+    assert us.shape[1] == 2
     assert np.all(np.abs(us) <= u_max + 1e-6)

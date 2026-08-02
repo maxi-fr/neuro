@@ -9,6 +9,7 @@ app = marimo.App(
 
 @app.cell
 def _():
+    """Marimo cell."""
     from dataclasses import replace
 
     import marimo as mo
@@ -36,6 +37,7 @@ def _():
 
 @app.cell
 def _(mo):
+    """Marimo cell."""
     mo.md(r"""
     # 🧠 Stage 3 — Immediate tES via the $\gamma$ Vector
     Explore the immediate suppressive effects of Transcranial Electrical Stimulation (tES) on epileptic seizure propagation in a whole-brain Jansen-Rit model.
@@ -62,6 +64,7 @@ def _(mo):
 
 @app.cell
 def _(Connectome, EXTRACEPHALIC_ELECTRODES_MM):
+    """Marimo cell."""
     connectome = Connectome.from_config({})
     electrode_options = sorted(connectome.channel_labels) + sorted(EXTRACEPHALIC_ELECTRODES_MM)
     return connectome, electrode_options
@@ -69,7 +72,7 @@ def _(Connectome, EXTRACEPHALIC_ELECTRODES_MM):
 
 @app.cell
 def _(electrode_options, mo):
-    # Interactive UI controls
+    """Marimo cell."""
     electrode_multiselect = mo.ui.multiselect(
         options=electrode_options,
         value=["TP9", "EX_NECK"],
@@ -153,7 +156,7 @@ def _(
     spread_slider,
     u_intensity_slider,
 ):
-    # 1. Compute the gamma steering matrix (n_controls, 76) for the selected montage.
+    """Marimo cell."""
     selected_electrodes = list(electrode_multiselect.value) or ["CP5"]
     n_controls = len(selected_electrodes)
     gamma = compute_gamma(connectome.centres, target_electrode=selected_electrodes, spread=spread_slider.value)
@@ -165,14 +168,11 @@ def _(
         gamma=gamma,
     )
 
-    # Kirchhoff: the intensity is split over the leading electrodes and returns through the
-    # last one, so the montage sums to zero. Put EX_NECK last to keep every region cathodal.
     u_amp = np.full(n_controls, float(u_intensity_slider.value) / max(n_controls - 1, 1))
     if n_controls > 1:
         u_amp[-1] = -u_amp[:-1].sum()
-    gamma_field = u_amp @ gamma  # combined per-node U_tES field for visualization
+    gamma_field = u_amp @ gamma
 
-    # 2. Configure EZ and PZ gains
     n_nodes = len(connectome.region_labels)
     ez_names = ("lHC", "lPHC", "lAMYG")
     pz_names = ("lTCI", "lTCV")
@@ -183,17 +183,16 @@ def _(
     a_gains[ez_idxs] = 3.6
     a_gains[pz_idxs] = 3.4
     noise_sigma = 0.0 if deterministic_toggle.value else JansenRitParams().sigma
-    # 3. Stimulation window
+
     stim_window = (float(onset_slider.value), float(offset_slider.value))
 
-    # 4. Run the network with the tES current applied over the stim window.
     params = JansenRitParams.from_config({"A": a_gains, "sigma": noise_sigma})
     dyn = JansenRitDynamics(
         dt=0.0001,
         params=params,
         conn=conn_scaled,
         seed=int(seed_slider.value),
-        enforce_zero_sum_current=False,  # a one-electrode selection stays monopolar (pedagogical)
+        enforce_zero_sum_current=False,
     )
     (t, x_traj) = simulate_network(
         dyn=dyn,
@@ -207,7 +206,7 @@ def _(
 
 @app.cell
 def _(conn_scaled, gamma_field, np, plt):
-    # Visualizing the top 15 regions by combined montage field |U_tES|
+    """Marimo cell."""
     sorted_idxs = np.argsort(np.abs(gamma_field))[::-1]
     top_idxs = sorted_idxs[:15]
     top_labels = conn_scaled.region_labels[top_idxs]
@@ -222,7 +221,6 @@ def _(conn_scaled, gamma_field, np, plt):
     ax_g.spines[["top", "right"]].set_visible(False)
     ax_g.grid(visible=True, axis="x", linestyle="--", alpha=0.3)
 
-    # Add labels to bars
     for bar in bars:
         width = bar.get_width()
         ax_g.text(
@@ -242,12 +240,11 @@ def _(conn_scaled, gamma_field, np, plt):
 
 @app.cell
 def _(conn_scaled, ez_idxs, np, pz_idxs, stim_window, t, y):
-    # Seizure suppression metrics
+    """Marimo cell."""
     seizure_threshold = 5.0
     dt = t[1] - t[0]
-    win_len = int(0.2 / dt)  # 200 ms rolling window
+    win_len = int(0.2 / dt)
 
-    # Count how many regions are active (oscillating) over time
     n_samples = y.shape[1]
     active_regions = np.zeros(n_samples)
     for k in range(n_samples):
@@ -256,21 +253,17 @@ def _(conn_scaled, ez_idxs, np, pz_idxs, stim_window, t, y):
         ptp_window = np.ptp(y[:, start:end], axis=1)
         active_regions[k] = np.sum(ptp_window > seizure_threshold)
 
-    # Let's count how many healthy regions are recruited before, during, and after stimulation
     _t_onset, _t_offset = stim_window
     _healthy_idxs = [i for i in range(len(conn_scaled.region_labels)) if i not in ez_idxs and i not in pz_idxs]
 
-    # Calculate PTP in different epochs
     during_ptps = np.zeros(len(_healthy_idxs))
     after_ptps = np.zeros(len(_healthy_idxs))
 
-    # During: look at [_t_onset + 0.5, _t_offset - 0.1]
     if _t_offset - _t_onset > 1.0:
         idx_during = np.where((t >= _t_onset + 0.5) & (t < _t_offset - 0.1))[0]
         if len(idx_during) > 0:
             during_ptps = np.ptp(y[_healthy_idxs, :][:, idx_during], axis=1)
 
-    # After: look at [_t_offset + 1.0, t[-1]]
     if t[-1] - _t_offset >= 1.5:
         idx_after = np.where(t >= _t_offset + 1.0)[0]
         if len(idx_after) > 0:
@@ -291,6 +284,7 @@ def _(
     pz_idxs,
     stim_window,
 ):
+    """Marimo cell."""
     _t_onset, _t_offset = stim_window
 
     metric_md = f"""
@@ -301,7 +295,6 @@ def _(
       * **After Stimulation:** **{n_recruited_after}** of {len(conn_scaled.region_labels) - len(ez_idxs) - len(pz_idxs)} regions
     """
 
-    # Verify success criteria
     suppressed = n_recruited_during == 0
     reexpanded = n_recruited_after > 0
 
@@ -330,11 +323,10 @@ def _(
 
 @app.cell
 def _(active_regions, conn_scaled, plt, stim_window, t, y):
-    # Plotting raster, traces, and count
+    """Marimo cell."""
     fig = plt.figure(figsize=(12, 9), layout="constrained")
     gs = fig.add_gridspec(3, 2, width_ratios=[1.8, 1], height_ratios=[1.5, 1, 0.8])
 
-    # 1. Spatiotemporal raster (Heatmap)
     ax_raster = fig.add_subplot(gs[0:2, 0])
     im = ax_raster.imshow(
         y,
@@ -348,12 +340,10 @@ def _(active_regions, conn_scaled, plt, stim_window, t, y):
     ax_raster.set_ylabel("Brain Region Index")
     fig.colorbar(im, ax=ax_raster, label="y = x2 - x3 (mV)")
 
-    # Highlight stimulation window
     _t_onset, _t_offset = stim_window
     ax_raster.axvspan(_t_onset, _t_offset, color="magenta", alpha=0.1, label="tES Active")
     ax_raster.legend(loc="upper right")
 
-    # 2. Representative traces
     ax_trace_ez = fig.add_subplot(gs[0, 1])
     lhc_idx = conn_scaled.region_index["lHC"]
     ax_trace_ez.plot(t, y[lhc_idx], color="#d62728", label="lHC (EZ)", linewidth=0.8)
@@ -375,7 +365,6 @@ def _(active_regions, conn_scaled, plt, stim_window, t, y):
     ax_trace_pz.spines[["top", "right"]].set_visible(False)
     ax_trace_pz.grid(visible=True, linestyle="--", alpha=0.3)
 
-    # 3. Seizure Count over time
     ax_count = fig.add_subplot(gs[2, 0])
     ax_count.plot(t, active_regions, color="#8e24aa", linewidth=1.5, label="Oscillating Regions (PTP > 5.0)")
     ax_count.axvspan(_t_onset, _t_offset, color="magenta", alpha=0.1)
@@ -386,7 +375,6 @@ def _(active_regions, conn_scaled, plt, stim_window, t, y):
     ax_count.spines[["top", "right"]].set_visible(False)
     ax_count.grid(visible=True, linestyle="--", alpha=0.3)
 
-    # Empty right grid for balance
     ax_empty = fig.add_subplot(gs[2, 1])
     ax_empty.axis("off")
 
@@ -396,13 +384,14 @@ def _(active_regions, conn_scaled, plt, stim_window, t, y):
 
 @app.cell
 def _(dashboard):
+    """Marimo cell."""
     dashboard
     return
 
 
 @app.cell
 def _(fig, fig_gamma, mo):
-    # Construct layout
+    """Marimo cell."""
     dashboard = mo.vstack(
         [
             mo.hstack(

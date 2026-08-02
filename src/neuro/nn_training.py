@@ -1,10 +1,3 @@
-"""Core training and evaluation functions for the JAX-based Neural Network predictor.
-
-This module implements an MLP using Equinox and Optax to predict a horizon of N steps
-of EEG data from past EEG and past/future stimulation inputs. It supports training on
-multiple trajectories.
-"""
-
 import json
 from collections.abc import Callable, Iterator
 from pathlib import Path
@@ -48,12 +41,9 @@ def load_trajectory(data_file: str, n_steps: int | None, downsample: int) -> tup
     """
     with np.load(data_file) as data:
         max_idx = None if n_steps is None else n_steps * downsample
-        try:
-            y_data = data["y_mea"][:max_idx:downsample]
-            u_data = data["u"][:max_idx:downsample]
-        except:  # noqa: E722 # only because old experiment data used old keys
-            y_data = data["universal_y_mea"][:max_idx:downsample]
-            u_data = data["universal_u"][:max_idx:downsample]
+        y_data = data["y_mea"][:max_idx:downsample]
+        u_data = data["u"][:max_idx:downsample]
+
     return u_data, y_data
 
 
@@ -78,13 +68,7 @@ def extract_windows_flattened(data: FloatArray, window_size: int) -> FloatArray:
 
 
 def apply_to_blocks(block_flat: FloatArray, pipeline: Pipeline, in_channels: int) -> FloatArray:
-    """Apply a :class:`~neuro.transforms.Pipeline` to a flattened multi-step block.
-
-    ``block_flat`` is ``(samples, steps * in_channels)`` with the per-timestep channel vectors
-    laid out contiguously (as produced by :func:`extract_windows_flattened`). The pipeline is a
-    per-timestep-vector map, so the block is reshaped to ``(-1, in_channels)``, transformed, and
-    reshaped back -- its width becomes ``steps * out_channels`` (which differs from the input when
-    a PCA step reduces the channel dimension).
+    """Apply a Pipeline to a flattened multi-step block.
 
     Parameters
     ----------
@@ -370,11 +354,6 @@ def predict_batch(m: eqx.Module, x: jax.Array) -> jax.Array:
 def _masked_fc(traj: jax.Array, step_mask: jax.Array, eps: float) -> jax.Array:
     """Weighted channel-by-channel correlation (FC) over the first-``L`` rollout steps.
 
-    ``traj`` is ``(batch, horizon, channels)`` and ``step_mask`` a ``(horizon,)`` prefix of ones
-    selecting the ``L`` supervised steps, so FC grows with the horizon curriculum like the MSE term.
-    The per-timestep weights are broadcast over the pooled ``(batch * horizon, channels)`` samples;
-    with an all-ones mask this reduces to the standard Pearson correlation with a zeroed diagonal.
-
     Parameters
     ----------
     traj : jax.Array
@@ -412,20 +391,7 @@ def compute_loss(  # noqa: PLR0913
     decode_basis: jax.Array | None = None,
     decode_mean: jax.Array | None = None,
 ) -> tuple[jax.Array, dict[str, jax.Array]]:
-    """Compute the horizon-curriculum MSE loss for a batch along with PSD and FC losses.
-
-    All terms are evaluated in standardized-channel EEG space. The model rolls out in model
-    space (the ``k``-dimensional latent components when the y-pipeline projects); its output is
-    decoded with the fixed, differentiable inverse PCA (``pred @ decode_basis + decode_mean``)
-    before every loss term, so PSD/FC are computed over real EEG channels rather than the
-    decorrelated latent components. With no projection ``decode_basis`` is ``None`` and the
-    model already predicts channels (identity decode).
-
-    ``step_mask`` is the horizon-length curriculum: a ``(horizon,)`` prefix of ones selecting the
-    first ``L`` trusted rollout steps (``L=1`` is teacher forcing, ``L=horizon`` is the full
-    free-running rollout). The MSE and FC are scored over the first ``L`` steps (they grow with
-    ``L``); the PSD stays a batch-of-snippets estimate over the full horizon window but is gated on
-    only once ``L == horizon`` (its last mask entry).
+    """Compute the model prediction loss over a batch of unroll sequences.
 
     Parameters
     ----------
@@ -468,25 +434,21 @@ def compute_loss(  # noqa: PLR0913
         pred_traj = pred_traj_model
     true_traj = y.reshape(y.shape[0], horizon, n_channels)  # (batch, horizon, C)
 
-    # Horizon-length curriculum: score the MSE over the first-L rollout steps selected by step_mask.
-    per_step_se = jnp.mean((pred_traj - true_traj) ** 2, axis=(0, 2))  # (horizon,)
+    per_step_se = jnp.mean((pred_traj - true_traj) ** 2, axis=(0, 2))
     mse_loss = jnp.sum(step_mask * per_step_se) / jnp.sum(step_mask)
 
     eps = 1e-8
 
     if horizon > 1:
-        # FC grows with L (masked like the MSE): correlation over the first-L steps, batch-pooled.
         pred_fc = _masked_fc(pred_traj, step_mask, eps)
         true_fc = _masked_fc(true_traj, step_mask, eps)
         loss_fc = jnp.mean((pred_fc - true_fc) ** 2)
 
-        # PSD is a batch-of-snippets estimate over the full horizon window, active only once the
-        # rollout is trusted end-to-end (L == horizon), i.e. when the last mask entry is on.
         pred_pool = jnp.transpose(pred_traj, (2, 0, 1)).reshape(n_channels, -1)
         true_pool = jnp.transpose(true_traj, (2, 0, 1)).reshape(n_channels, -1)
         _, pred_psd = welch(pred_pool, nperseg=horizon, noverlap=0, axis=-1)
         _, true_psd = welch(true_pool, nperseg=horizon, noverlap=0, axis=-1)
-        psd_gate = step_mask[-1]  # 1.0 only when L == horizon
+        psd_gate = step_mask[-1]
         loss_psd = psd_gate * jnp.mean((jnp.log(pred_psd + eps) - jnp.log(true_psd + eps)) ** 2)
     else:
         loss_psd = jnp.array(0.0)
@@ -552,7 +514,7 @@ def step(  # noqa: PLR0913
     (loss_val, aux), grads = eqx.filter_value_and_grad(compute_loss, has_aux=True)(
         m, x, y, step_mask, n_channels, w_psd, w_fc, decode_basis, decode_mean
     )
-    updates, new_opt_s = optimizer.update(grads, opt_s, m)  # type: ignore
+    updates, new_opt_s = optimizer.update(grads, opt_s, m)  # ty:ignore[invalid-argument-type]
     new_m: eqx.Module = eqx.apply_updates(m, updates)
     return new_m, new_opt_s, loss_val, aux
 
@@ -564,9 +526,6 @@ def curriculum_state(
     end_epoch: int = 80,
 ) -> FloatArray:
     """Return the horizon-length curriculum per-step loss mask for one epoch.
-
-    Returns a prefix of ones of length ``L(epoch)``, where ``L`` grows linearly from 1 to
-    ``horizon`` between ``start_epoch`` and ``end_epoch``.
 
     Parameters
     ----------
@@ -596,18 +555,10 @@ def curriculum_state(
 def _step_mask_selector(
     horizon: int, curriculum_max_steps: int | None, start_epoch: int, end_epoch: int
 ) -> Callable[[int], FloatArray]:
-    """Return the ``epoch -> loss mask`` map for a curriculum ramping ``1 -> curriculum_max_steps``.
-
-    ``curriculum_max_steps`` is the rollout length the ramp *approaches*, defaulting to the full
-    model ``horizon``. Capping it below the horizon keeps the multi-step structure that the
-    rollout needs while never entering the long-unroll regime that destabilises this fit; setting
-    it to ``1`` degenerates to plain one-step training (a ramp from 1 to 1 never grows). Steps
-    beyond the cap stay masked out, so the returned mask is always ``horizon``-wide.
-    """
+    """Return the ``epoch -> loss mask`` map for a curriculum ramping ``1 -> curriculum_max_steps``."""
     target = min(curriculum_max_steps or horizon, horizon)
 
     def select(epoch: int) -> FloatArray:
-        """Loss mask for ``epoch``: a prefix of ones, zero-padded out to the full horizon."""
         mask = np.zeros(horizon, dtype=np.float64)
         mask[:target] = curriculum_state(epoch, target, start_epoch=start_epoch, end_epoch=end_epoch)
         return mask
@@ -698,19 +649,13 @@ def train_model(  # noqa: PLR0913, PLR0915
     n_channels : int
         Number of output channels.
     curriculum_start_epoch : int
-        Epoch at which the trusted rollout length ``L`` starts growing (``L = 1``, pure teacher
-        forcing, before it).
+        Epoch at which the trusted rollout length ``L`` starts growing.
+        I.e. the number of rolloutsteps over which the training loss is calculated.
     curriculum_max_steps : int | None
         Rollout length the curriculum ramps *toward*; defaults to the full model ``horizon``.
-        Capping it below the horizon keeps multi-step training while avoiding the long-unroll
-        regime that destabilises this fit, and ``1`` degenerates to plain one-step training.
-        Validation stays at the full horizon regardless, so model selection still targets the
-        horizon the MPC rolls out over.
     curriculum_end_epoch : int
         Epoch at which ``L`` reaches the model ``horizon`` (the full free-running rollout); it holds
-        there afterwards. Growing the rollout length keeps multi-step structure throughout while
-        ramping gently, instead of annealing a teacher-forcing weight to a pure N-step loss (see
-        :func:`curriculum_state`).
+        there afterwards.
     w_psd : float
         Weight for the PSD loss.
     w_fc : float
@@ -868,10 +813,6 @@ def evaluate_model(
 ) -> tuple[FloatArray, float]:
     """Evaluate the trained model in raw EEG units.
 
-    The model predicts in model space (``k``-dimensional latent components under a projection);
-    predictions are decoded back to raw EEG channels via ``y_pipeline.inverse_transform`` and
-    scored against the raw EEG targets, so the reported MSE is comparable across ``latent_dim``.
-
     Parameters
     ----------
     model : eqx.Module
@@ -893,7 +834,7 @@ def evaluate_model(
         Mean squared error of the raw-EEG predictions.
     """
     predict_batch_jit = eqx.filter_jit(predict_batch)
-    Y_pred_m = np.array(predict_batch_jit(model, jnp.array(X_val_m)))  # (samples, horizon * k)
+    Y_pred_m = np.array(predict_batch_jit(model, jnp.array(X_val_m)))
     Y_pred_raw = np.asarray(y_pipeline.inverse_transform(Y_pred_m.reshape(-1, latent_dim))).reshape(
         Y_pred_m.shape[0], -1
     )
@@ -967,8 +908,6 @@ def train_and_save_predictor(  # noqa: PLR0915
     scaler_type = train_cfg.scaler
     global_scaling = train_cfg.global_scaling
 
-    # Build raw (unscaled) windows, then split chronologically (a random split would leak between
-    # the heavily-overlapping adjacent windows).
     X_full, Y_full, n_channels = prepare_datasets(data_files, n_steps_cfg, downsample, n_y, n_u, horizon)
     n_controls = (X_full.shape[1] - n_y * n_channels) // (n_u + horizon)
 
@@ -976,9 +915,6 @@ def train_and_save_predictor(  # noqa: PLR0915
     X_train, X_val = X_full[:split_idx], X_full[split_idx:]
     Y_train, Y_val = Y_full[:split_idx], Y_full[split_idx:]
 
-    # Fit the transforms on the training split only. The y-pipeline standardizes the raw EEG
-    # channels, then (optionally) projects the standardized channels onto k PCA components, so
-    # "model space" is standardize-then-project. Controls get their own standardizer.
     y_past_train = X_train[:, : n_y * n_channels].reshape(-1, n_channels)
     u_past_train = X_train[:, n_y * n_channels : n_y * n_channels + n_u * n_controls].reshape(-1, n_controls)
 

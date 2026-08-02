@@ -1,15 +1,3 @@
-"""Analyze and plot simulation results from saved output.
-
-Loads a simulation's logs.npz and config.yaml from a specified directory,
-computes metrics (eeg mean, std, network synchronization R, control max),
-and plots/saves EEG traces and power spectral density.
-
-Usage
------
-    uv run python scripts/plot_simulation.py --dir artifacts/jansen_rit_baseline
-    uv run python scripts/plot_simulation.py --dir artifacts/jansen_rit_baseline --transient-ms 1000
-"""
-
 from __future__ import annotations
 
 import argparse
@@ -17,7 +5,7 @@ from pathlib import Path
 
 import matplotlib as mpl
 
-mpl.use("Agg")  # non-interactive backend so the script works headless
+mpl.use("Agg")
 
 from typing import TYPE_CHECKING
 
@@ -34,7 +22,7 @@ if TYPE_CHECKING:
     from neuro.types import FloatArray
 
 N_CHANNELS_TO_PLOT = 8
-PSD_NPERSEG = 8192  # High resolution spectral segment length for EEG bands
+PSD_NPERSEG = 8192
 
 
 def parse_args() -> argparse.Namespace:
@@ -72,14 +60,13 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
 
     config = load_config(config_path)
     dt_s = float(config["dynamics"]["dt"])
-    dt_ms = dt_s * 1000.0  # plotting/PSD utilities expect milliseconds
+    dt_ms = dt_s * 1000.0
 
     activity = None
     with np.load(npz_path) as data:
-        eeg: FloatArray = data["y_mea"].T  # (n_sensors, n_samples)
+        eeg: FloatArray = data["y_mea"].T
         u: FloatArray = data["u"]
 
-        # Calculate network synchronization from logs if Jansen-Rit dynamics are used
         r_sync = None
         is_jansen_rit = "JansenRit" in config["dynamics"]["class_path"]
         if is_jansen_rit and "x" in data:
@@ -89,9 +76,8 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
                     x_flat = x_flat[np.newaxis, :]
                 n_samples_logged = x_flat.shape[0]
                 x_grid = x_flat.reshape((n_samples_logged, 6, -1))
-                activity = (x_grid[:, 1, :] - x_grid[:, 2, :]).T  # (n_nodes, n_samples)
+                activity = (x_grid[:, 1, :] - x_grid[:, 2, :]).T
 
-                # Discard transient for synchronization metric if requested
                 activity_steady = activity
                 if args.transient_ms > 0.0:
                     activity_steady = steady_window(activity, dt_ms, args.transient_ms)
@@ -100,7 +86,6 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
             except Exception as e:  # noqa: BLE001
                 print(f"Could not calculate network synchronization: {e}")
 
-    # Drop transient window if requested
     if args.transient_ms > 0.0:
         print(f"Discarding leading {args.transient_ms} ms transient for metrics and plotting...")
         eeg = steady_window(eeg, dt_ms, args.transient_ms)
@@ -131,7 +116,6 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
     n_shown = min(N_CHANNELS_TO_PLOT, n_sensors)
     channels = list(range(n_shown))
 
-    # 1. Plot signals (traces)
     fig_signals, _ = plot_signals(
         eeg,
         dt_ms=dt_ms,
@@ -141,7 +125,6 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
         color="#ff7f0e",
     )
 
-    # 2. Plot Fourier power spectrum
     nperseg = min(PSD_NPERSEG, eeg.shape[1])
     fig_freq, _ = plot_psd(
         eeg,
@@ -152,7 +135,6 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
         nperseg=nperseg,
     )
 
-    # 3. Plot select nodes (one EZ, one PZ, and one healthy) if regional activity is available
     fig_nodes = None
     if activity is not None:
         try:
@@ -180,7 +162,6 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
         except Exception as e:  # noqa: BLE001
             print(f"Could not plot select nodes: {e}")
 
-    # Save both figures and time-series data in a single subdirectory
     figs = {
         "signals": fig_signals,
         "spectrum": fig_freq,

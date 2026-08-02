@@ -1,27 +1,3 @@
-"""CasADi port of the Equinox MLP predictor in :mod:`neuro.prediction`.
-
-Provides a symbolic, single-step equivalent of
-:class:`neuro.prediction.AutoregressivePredictor` for embedding as a dynamics model in a
-CasADi-based MPC. Reuses :class:`neuro.prediction.MLPArtifact` to load the artifact, so
-the extracted weights are bit-identical to what JAX uses -- no retraining or
-reimplementation of the network.
-
-The state carries the y/u windows in model space -- standardized channels, or the latent
-PCA components under a projection -- matching what :meth:`MLPArtifact.encode` produces, so
-the MPC shooting state stays in the reduced latent space. :func:`NNSymbolicModel.step`
-consumes the raw control, standardizing it into the graph as numeric constants, and
-:func:`NNSymbolicModel.output` decodes the model-space state back to raw EEG (inverse PCA,
-then inverse standardization).
-
-The model has no free/symbolic parameters (:attr:`NNSymbolicModel.free_syms` is always
-empty) -- it is purely a fitted numeric map, unlike a physics model with physically
-meaningful coefficients to expose as system-identification decision variables.
-
-Note that the ReLU activation has a non-smooth kink at zero; composing it across
-``depth`` layers and many MPC horizon steps may warrant a smooth substitute (e.g.
-softplus) if it causes convergence trouble in an IPOPT-based MPC. Not addressed here.
-"""
-
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -106,13 +82,6 @@ def _mlp_forward_ca(
 class NNSymbolicModel:
     """CasADi-symbolic, single-step equivalent of the Equinox NN predictor.
 
-    The "state" is the concatenation of the y-window (``n_y x n_channels``) and u-window
-    (``n_u x n_controls``), flattened row-major. All recurrence memory lives in this state
-    vector, so :attr:`history_depth` is ``0`` and :meth:`step` reduces to a pure
-    ``x_next = F(x, u)`` map. When the artifact carries a fixed PCA projection the y-window
-    holds the ``k``-dimensional latent components rather than raw EEG (so ``n_channels`` is
-    ``k``); :meth:`output` decodes them back to the ``n_eeg_channels`` raw EEG channels.
-
     Attributes
     ----------
     artifact : MLPArtifact
@@ -165,18 +134,7 @@ class NNSymbolicModel:
         return tuple(_extract_mlp_layers(mlp))
 
     def predict_output(self, y_flat: ca.SX | ca.MX, new_u_flat: ca.SX | ca.MX) -> ca.SX | ca.MX:
-        """Predict the next model-space EEG sample from a flat y-window and (shifted) u-window.
-
-        This is the network-evaluation core shared by :meth:`step` (which packs the result
-        back into a full state) and the output-condensed MPC (which lifts only this output).
-        The windows are row-major flattens (matching ``jnp.ndarray.flatten()``); ``new_u_flat``
-        must already include the newest control as its last ``n_controls`` block, exactly as
-        :meth:`step` builds it. The y-window already carries model-space values (standardized
-        channels, or latent components under a projection), so it feeds the network directly;
-        only the raw control window is standardized here. The u standardizer's mean/scale are
-        broadcast to per-control length (handling both per-channel arrays and a single global
-        scalar) then tiled across the window, since CasADi -- unlike numpy -- does not broadcast
-        a ``(1, n)`` constant against an ``(m, n)`` symbolic matrix.
+        """Predict the next model-space EEG sample.
 
         Parameters
         ----------
@@ -200,18 +158,12 @@ class NNSymbolicModel:
         u_mean_tiled = np.tile(np.broadcast_to(u_std.center, (n_ctrl,)), n_u).reshape(-1, 1)
         u_scale_tiled = np.tile(np.broadcast_to(u_std.scale, (n_ctrl,)), n_u).reshape(-1, 1)
 
-        new_u_scaled_flat = zscore(new_u_flat, u_mean_tiled, u_scale_tiled)  # ty: ignore[invalid-argument-type]
+        new_u_scaled_flat = zscore(new_u_flat, u_mean_tiled, u_scale_tiled)  # ty:ignore[invalid-argument-type]
         mlp_in = ca.vertcat(y_flat, new_u_scaled_flat)
         return _mlp_forward_ca(mlp_in, self._layers, self.artifact.model.activation)
 
     def step(self, history: Sequence[ca.SX | ca.MX], u: ca.SX | ca.MX) -> ca.SX | ca.MX:
-        """Advance one step: ``history == [x]`` (model space), ``u`` raw control -> ``x_next``.
-
-        The state packs the model-space y-window/u-window as row-major flattens, so "drop the
-        oldest step, append the newest" is just slicing off/on a contiguous block of
-        ``n_channels``/``n_controls`` entries -- no reshape into a 2-D window is needed. The
-        network evaluation itself is delegated to :meth:`predict_output`.
-        """
+        """Advance one step: ``history == [x]`` (model space), ``u`` raw control -> ``x_next``."""
         (x,) = history
         n_y, n_ch = self.artifact.n_y, self.artifact.n_channels
         n_ctrl = self.artifact.n_controls
@@ -226,13 +178,7 @@ class NNSymbolicModel:
         return ca.vertcat(new_y_flat, new_u_flat)
 
     def output(self, x: ca.SX | ca.MX) -> ca.SX | ca.MX:
-        """Slice the most-recent model-space sample from the state and decode to raw EEG.
-
-        The state holds model-space values, so the last vector is decoded by inverting the
-        y-pipeline: undo the PCA projection (``y = E.T @ z + mean``) when present, then undo
-        the channel standardization. This is the symbolic mirror of
-        :meth:`neuro.prediction.MLPArtifact.decode`.
-        """
+        """Slice the most-recent model-space sample from the state and decode to raw EEG."""
         n_y, n_ch = self.artifact.n_y, self.artifact.n_channels
         z_last = x[(n_y - 1) * n_ch : n_y * n_ch]
 
@@ -246,7 +192,7 @@ class NNSymbolicModel:
         n_eeg = self.n_eeg_channels
         center = np.broadcast_to(std.center, (n_eeg,)).reshape(-1, 1)
         scale = np.broadcast_to(std.scale, (n_eeg,)).reshape(-1, 1)
-        return unzscore(y_std, center, scale)  # ty: ignore[invalid-return-type]
+        return unzscore(y_std, center, scale)  # ty:ignore[invalid-return-type]
 
     @cached_property
     def f_step(self) -> ca.Function:

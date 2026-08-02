@@ -9,6 +9,7 @@ app = marimo.App(
 
 @app.cell(hide_code=True)
 def imports():
+    """imports definition."""
     from pathlib import Path
 
     import marimo as mo
@@ -46,6 +47,7 @@ def imports():
 
 @app.cell
 def ui_sweep_selection(mo, sweep_dirs):
+    """ui_sweep_selection definition."""
     sweep_dropdown = mo.ui.dropdown(
         options=sweep_dirs, value=sweep_dirs[-1] if sweep_dirs else None, label="Select Sweep Directory"
     )
@@ -55,6 +57,7 @@ def ui_sweep_selection(mo, sweep_dirs):
 
 @app.cell(hide_code=True)
 def load_study(artifact_base, mo, optuna, sweep_dropdown):
+    """load_study definition."""
     mo.stop(sweep_dropdown.value is None, "Please select a sweep directory.")
     sweep_path = artifact_base / sweep_dropdown.value
     db_path = sweep_path / "nn_predictor_sweep.db"
@@ -75,12 +78,14 @@ def load_study(artifact_base, mo, optuna, sweep_dropdown):
 
 @app.cell
 def plot_parallel_coord(ov, study):
+    """plot_parallel_coord definition."""
     ov.plot_parallel_coordinate(study)
     return
 
 
 @app.cell
 def plot_slice(mo, ov, study):
+    """plot_slice definition."""
     fig_slice = ov.plot_slice(study)
     mo.md(f"### Individual Hyperparameter Effects (Slice Plot)\n{mo.as_html(fig_slice)}")
     return
@@ -88,6 +93,7 @@ def plot_slice(mo, ov, study):
 
 @app.cell
 def plot_contour(mo, ov, study):
+    """plot_contour definition."""
     fig_contour = ov.plot_contour(study)
     mo.md(f"### Pairwise Hyperparameter Effects (Contour/Heatmap Plot)\n{mo.as_html(fig_contour)}")
     return
@@ -95,6 +101,7 @@ def plot_contour(mo, ov, study):
 
 @app.cell
 def plot_param_importances(mo, ov, study):
+    """plot_param_importances definition."""
     fig_imp = ov.plot_param_importances(study)
     mo.md(f"### Hyperparameter Importances\n{mo.as_html(fig_imp)}")
     return
@@ -102,6 +109,7 @@ def plot_param_importances(mo, ov, study):
 
 @app.cell
 def ui_trial_selection(mo, trials_df):
+    """ui_trial_selection definition."""
     trials_list = trials_df.sort_values("value").index.astype(str).tolist()
     trial_dropdown = mo.ui.dropdown(
         options=trials_list, value=trials_list[0] if trials_list else None, label="Select Trial to Analyze"
@@ -119,6 +127,7 @@ def load_trial_data(
     trial_dropdown,
     yaml,
 ):
+    """load_trial_data definition."""
     mo.stop(trial_dropdown.value is None, "Please select a trial.")
     trial_num = trial_dropdown.value
     trial_dir = sweep_path / f"trial_{trial_num}"
@@ -162,11 +171,8 @@ def load_trial_data(
     _X_train, X_val = X_full[:split_idx], X_full[split_idx:]
     _Y_train, Y_val = Y_full[:split_idx], Y_full[split_idx:]
 
-    # Each .npz is one short recording; prepare_datasets concatenates equal-length window
-    # blocks per file. The time-series plot must span a single trajectory, else the x-axis
-    # (anchor index * dt) runs across all stitched recordings instead of real wall-clock time.
     n_per_traj = X_full.shape[0] // len(data_files)
-    _val_offset = (-split_idx) % n_per_traj  # align to the first complete held-out trajectory
+    _val_offset = (-split_idx) % n_per_traj
     traj_slice = slice(_val_offset, _val_offset + n_per_traj)
 
     from neuro.nn_training import transform_features
@@ -199,6 +205,7 @@ def eval_and_errors(
     np,
     reshape_to_trajectory,
 ):
+    """eval_and_errors definition."""
     import jax.numpy as jnp
 
     from neuro.nn_training import predict_batch
@@ -218,6 +225,7 @@ def eval_and_errors(
 
 @app.cell
 def plot_channel_errors(mae_per_channel, mse_per_channel, np, pd, plt, sns):
+    """plot_channel_errors definition."""
     df_errors = pd.DataFrame(
         {"Channel": np.arange(len(mse_per_channel)), "MSE": mse_per_channel, "MAE": mae_per_channel}
     )
@@ -236,6 +244,7 @@ def plot_channel_errors(mae_per_channel, mse_per_channel, np, pd, plt, sns):
 
 @app.cell
 def ui_timeseries_controls(dt_real, mo, n_channels, n_per_traj):
+    """ui_timeseries_controls definition."""
     max_time_s = n_per_traj * dt_real
 
     channel_options = [str(i) for i in range(n_channels)]
@@ -289,6 +298,7 @@ def plot_timeseries(
     ui_time,
     ui_time_length,
 ):
+    """plot_timeseries definition."""
     channels_to_plot = [int(c) for c in ui_channels.value] if ui_channels.value else [0]
     t_start = ui_time.value
     stride = ui_stride.value

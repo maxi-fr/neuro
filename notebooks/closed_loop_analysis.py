@@ -6,6 +6,7 @@ app = marimo.App(width="medium", app_title="Stage 8 Closed Loop MPC Analysis")
 
 @app.cell
 def _():
+    """Marimo cell."""
     from pathlib import Path
 
     import marimo as mo
@@ -21,6 +22,7 @@ def _():
 
 @app.cell
 def _(mo):
+    """Marimo cell."""
     mo.md(r"""
     # 🧠 Closed Loop MPC Analysis
 
@@ -39,6 +41,7 @@ def _(mo):
 
 @app.cell
 def _(mo):
+    """Marimo cell."""
     run_dir_input = mo.ui.text(
         value="artifacts/l1_before_after/after", label="Simulation Run Directory", full_width=True
     )
@@ -48,6 +51,8 @@ def _(mo):
 
 @app.cell
 def _(Path, mo, np, run_dir_input, yaml):
+    """Marimo cell."""
+
     def _find(directory, names, patterns):
         """Files in *directory* matching an exact name, then any glob pattern (a possibly-empty list)."""
         _hits = [directory / _n for _n in names if (directory / _n).exists()]
@@ -55,8 +60,6 @@ def _(Path, mo, np, run_dir_input, yaml):
             _hits += sorted(directory.glob(_pat))
         return _hits
 
-    # Load a single run. Accept the `run_simulation.py` layout (`log.npz` + the config under its
-    # original filename) as well as the older `logs.npz` + `config.yaml` convention.
     _dir = Path(run_dir_input.value)
     _npz_hits = _find(_dir, ["log.npz", "logs.npz"], ["*.npz"])
     _config_hits = _find(_dir, ["config.yaml"], ["*.yaml", "*.yml"])
@@ -70,8 +73,8 @@ def _(Path, mo, np, run_dir_input, yaml):
         _config = yaml.safe_load(f)
 
     with np.load(_npz_path) as data:
-        _y_mea = data["y_mea"]  # (n_samples, n_sensors)
-        _u = data["u"]  # (n_samples, n_controls)
+        _y_mea = data["y_mea"]
+        _u = data["u"]
         _u = _u.reshape(_u.shape[0], -1)
         _nan = np.full(_u.shape[0], np.nan)
         _cost = data.get("controller_cost", _nan)
@@ -81,7 +84,7 @@ def _(Path, mo, np, run_dir_input, yaml):
     if not (isinstance(_electrodes, list) and len(_electrodes) == _u.shape[1]):
         _electrodes = [f"E{_i}" for _i in range(_u.shape[1])]
 
-    _near_zero = np.abs(_u) < 1e-6  # |current| below this counts as an "off" electrode
+    _near_zero = np.abs(_u) < 1e-6
     run = {
         "dir": _dir,
         "label": f"w_u_l1={float(_ctrl.get('w_u_l1', 0.0)):g}",
@@ -97,15 +100,16 @@ def _(Path, mo, np, run_dir_input, yaml):
         "control_l1": float(np.sum(np.abs(_u))),
         "control_l1_per_electrode": np.abs(_u).sum(axis=0),
         "max_u": float(np.max(np.abs(_u))),
-        "frac_off": _near_zero.mean(axis=0),  # per electrode
-        "mean_active": float((~_near_zero).sum(axis=1).mean()),  # active electrodes / step
-        "kcl": _u.sum(axis=1),  # per-step current sum (should be ~0)
+        "frac_off": _near_zero.mean(axis=0),
+        "mean_active": float((~_near_zero).sum(axis=1).mean()),
+        "kcl": _u.sum(axis=1),
     }
     return (run,)
 
 
 @app.cell
 def _(mo):
+    """Marimo cell."""
     mo.md("""
     ## 📊 Run Summary
     """)
@@ -114,6 +118,7 @@ def _(mo):
 
 @app.cell
 def _(mo, np, run):
+    """Marimo cell."""
     _ctrl = run["controller"]
     _mean_cost = float(np.nanmean(run["cost"])) if not np.isnan(run["cost"]).all() else None
     _rows = [
@@ -137,6 +142,7 @@ def _(mo, np, run):
 
 @app.cell
 def _(mo):
+    """Marimo cell."""
     mo.md("""
     ## 📉 EEG Output & Control Inputs
     """)
@@ -145,6 +151,7 @@ def _(mo):
 
 @app.cell
 def _(np, plt, run):
+    """Marimo cell."""
     _y = run["y_mea"]
     _u = run["u"]
     _dt = run["dt"]
@@ -173,6 +180,7 @@ def _(np, plt, run):
 
 @app.cell
 def _(mo, run):
+    """Marimo cell."""
     mo.md(rf"""
     ## 🔌 L1 Sparsity & Stimulation
 
@@ -185,8 +193,7 @@ def _(mo, run):
 
 @app.cell
 def _(plot_signals, plt, run):
-    # Per-electrode stimulation traces: watch electrodes flatten to zero under the L1 penalty.
-    # Reuses utils.plotting.plot_signals (overlaid, one colour per electrode).
+    """Marimo cell."""
     _colors = ["#d62728", "#1f77b4", "#2ca02c", "#ff7f0e", "#9467bd"]
     _n_ctrl = run["u"].shape[1]
     _fig_tr, _ax_tr = plt.subplots(figsize=(11, 4.2), layout="constrained")
@@ -207,7 +214,7 @@ def _(plot_signals, plt, run):
 
 @app.cell
 def _(np, plt, run):
-    # Sparsity: fraction of time each electrode is switched off (|current| < 1e-6).
+    """Marimo cell."""
     _elec = run["electrodes"]
     _frac = run["frac_off"]
     _x = np.arange(len(_elec))
@@ -228,7 +235,7 @@ def _(np, plt, run):
 
 @app.cell
 def _(np, plt, run):
-    # Per-electrode control L1 (Σ|u|): where the stimulation current is being spent.
+    """Marimo cell."""
     _elec = run["electrodes"]
     _x = np.arange(len(_elec))
     _fig_mag, _ax_mag = plt.subplots(figsize=(8, 4.2), layout="constrained")
@@ -246,7 +253,7 @@ def _(np, plt, run):
 
 @app.cell
 def _(np, plt, run):
-    # Kirchhoff check: the per-step sum over electrodes must stay ~0 even with the L1 slacks.
+    """Marimo cell."""
     _kcl = run["kcl"]
     _t = np.arange(_kcl.shape[0]) * run["dt"]
     _fig_k, _ax_k = plt.subplots(figsize=(11, 3.6), layout="constrained")
@@ -262,6 +269,7 @@ def _(np, plt, run):
 
 @app.cell
 def _(mo):
+    """Marimo cell."""
     transient_ms = mo.ui.number(value=1000.0, start=0.0, stop=100000.0, step=100.0, label="Transient to drop (ms)")
     transient_ms
     return (transient_ms,)
@@ -269,12 +277,11 @@ def _(mo):
 
 @app.cell
 def _(np, plt, run, steady_window, transient_ms):
-    # Seizure suppression: instantaneous EEG power (mean over channels) with the dropped transient
-    # shaded, plus the steady-window mean-square EEG (lower = better suppression).
+    """Marimo cell."""
     _y = run["y_mea"]
     _dt_ms = run["dt"] * 1000.0
     _t = np.arange(_y.shape[0]) * run["dt"]
-    _power = np.mean(_y**2, axis=1)  # per-sample EEG power across channels
+    _power = np.mean(_y**2, axis=1)
 
     _steady = steady_window(_y.T, _dt_ms, float(transient_ms.value))
     _steady_ms = float(np.mean(_steady**2))

@@ -1,6 +1,6 @@
-"""Tests for the composable fit/transform/inverse-transform maps in :mod:`neuro.transforms`."""
-
 from __future__ import annotations
+
+from typing import Literal
 
 import numpy as np
 import pytest
@@ -12,12 +12,12 @@ _SEED = 11
 
 @pytest.mark.parametrize("kind", ["standard", "robust"])
 @pytest.mark.parametrize("global_scaling", [False, True])
-def test_standardizer_round_trip(kind: str, global_scaling: bool) -> None:  # noqa: FBT001
+def test_standardizer_round_trip(kind: Literal["standard", "robust"], global_scaling: bool) -> None:  # noqa: FBT001
     """``inverse_transform`` undoes ``transform`` for both scaler kinds and scopes."""
     rng = np.random.default_rng(_SEED)
     x = rng.standard_normal((200, 4)) * np.array([1.0, 5.0, 0.2, 3.0]) + 2.0
 
-    std = Standardizer.fit(x, kind=kind, global_scaling=global_scaling)  # ty: ignore[invalid-argument-type]
+    std = Standardizer.fit(x, kind=kind, global_scaling=global_scaling)
     z = std.transform(x)
     np.testing.assert_allclose(std.inverse_transform(z), x, atol=1e-10)
 
@@ -61,7 +61,7 @@ def test_pca_projection_orthonormal_and_none_when_full() -> None:
 def test_pipeline_standardize_then_pca_round_trips_in_subspace() -> None:
     """A standardize-then-PCA pipeline reconstructs data that already lies in the subspace."""
     rng = np.random.default_rng(_SEED + 3)
-    # Rank-2 data embedded in 5 channels -> a 2-component pipeline is lossless.
+
     latent = rng.standard_normal((400, 2))
     embed = rng.standard_normal((2, 5))
     x = latent @ embed + np.array([1.0, 2.0, 3.0, 4.0, 5.0])

@@ -1,12 +1,3 @@
-"""Stage 2 validation test suite for coupled whole-brain networks.
-
-Covers:
-- All-healthy control (background behavior, quiescent or low amplitude)
-- EZ/PZ recruitment (oscillations spreading from EZ to other regions)
-- Coupling correctness (network isolation tests)
-- Delayed vs. instantaneous comparison (delay impacts propagation onset)
-"""
-
 from dataclasses import replace
 
 import numpy as np

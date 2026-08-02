@@ -191,8 +191,7 @@ model-space prediction $\hat{z}$ is decoded through the fixed, differentiable in
 $\hat{z}E + \mu$ before the loss (§6). Because $E$ is orthonormal this leaves the MSE gradient
 unchanged up to a constant (§6.4), while making the PSD/FC terms meaningful — they operate on real
 EEG channels rather than the decorrelated latent components. Consequently PSD/FC are **no longer
-incompatible** with a projection (`w_psd`, `w_fc` may be > 0 with `latent_dim` set; see
-[`latent_stats.yaml`](../configs/nn_predictor/latent_stats.yaml)). At evaluation predictions are
+incompatible** with a projection (`w_psd`, `w_fc` may be > 0 with `latent_dim` set; e.g. historically in `latent_stats.yaml`). At evaluation predictions are
 decoded fully back to raw EEG so the reported MSE is comparable across `latent_dim`. Most shipped
 configs use `latent_dim = null` (projection disabled).
 
@@ -262,7 +261,7 @@ $$
 - **`out_size`** $= C$ — a single next-EEG vector.
 - **`width_size`** $= \texttt{hidden\_size}$, **`depth`** $= \texttt{depth}$ hidden layers.
   - `depth = 0` ⇒ a single affine layer $f_\theta(v) = Wv + b$ with **no** hidden layer and no
-    activation — i.e. a **linear** predictor (this is what `linear_best.yaml` trains).
+    activation — i.e. a **linear** predictor (this is what `meeting_seven/linear_full.yaml` trains).
   - `depth = 1` ⇒ one hidden layer: $f_\theta(v) = W_2\,\sigma(W_1 v + b_1) + b_2$.
 - **`activation`** $\sigma$ ∈ {`relu`, `tanh`, `softplus`} between hidden layers (see
   [`get_activation`](../src/neuro/prediction.py)); the shipped configs use `softplus`,
@@ -550,14 +549,12 @@ out-of-range values raise `ValidationError` rather than silently defaulting.
 
 | preset                                                              | `depth` | `n_u` | `lr`      | `wd`     | `batch` | `curr.` | `w_psd` | `w_fc` |
 | ------------------------------------------------------------------- | :-----: | :---: | --------- | -------- | :-----: | :-----: | :-----: | :----: |
-| [`linear_best.yaml`](../configs/nn_predictor/linear_best.yaml)      | 0 (linear) | 7  | $10^{-3}$ | $10^{-3}$ | 256   | 0.7     | 0       | 0      |
-| [`nonlinear_best.yaml`](../configs/nn_predictor/nonlinear_best.yaml)| 1       | 10    | $10^{-5}$ | $5\!\cdot\!10^{-4}$ | 128 | 0.6 | 0     | 0      |
-| [`stats_experiment.yaml`](../configs/nn_predictor/stats_experiment.yaml)| 1   | 10    | $10^{-5}$ | $5\!\cdot\!10^{-4}$ | 128 | 0.6 | 0.1   | 0.1    |
+| [`meeting_seven/linear_full.yaml`](../configs/nn_predictor/meeting_seven/linear_full.yaml)      | 0 (linear) | 7  | $10^{-4}$ | $10^{-3}$ | 512   | 0.9     | 0       | 0      |
+| [`meeting_seven/nonlinear_full.yaml`](../configs/nn_predictor/meeting_seven/nonlinear_full.yaml)| 1       | 10    | $10^{-5}$ | $5\!\cdot\!10^{-4}$ | 128 | 0.8 | 0     | 0      |
 
 Common to all three: `n_y=15`, `horizon=20`, `hidden_size=128`, `activation=softplus`,
 `latent_dim=null`, `epochs=250`, `train_split=0.8`, `seed=69`, `patience=100`, `scaler=robust`,
-`global_scaling=true`, and the 100 Hz / 20 s data described in Section 2.2. `stats_experiment.yaml`
-differs from `nonlinear_best.yaml` only by turning on the PSD and FC auxiliary losses.
+`global_scaling=true`, and the 100 Hz / 20 s data described in Section 2.2. Historically, additional configs tested PSD and FC auxiliary losses.
 
 ---
 
@@ -583,7 +580,7 @@ converted into `optuna.TrialPruned`.
   *before* splitting) is what prevents near-duplicate leakage. Batches *within* the training set are
   still shuffled each epoch.
 - **`depth = 0` is a genuinely linear model** — no activation is applied, so `activation` and
-  `hidden_size` are inert for `linear_best.yaml`.
+  `hidden_size` are inert for `linear_full.yaml`.
 - **Auxiliary losses need `horizon > 1`** and are computed in EEG channel space, so they now work
   **with** `latent_dim` too (the latent rollout is decoded first; §3.1, §6). Only for `horizon = 1`
   are PSD/FC skipped.

@@ -1,10 +1,3 @@
-"""Stage 0 regression harness for :meth:`neuro.connectome.Connectome.from_config`.
-
-Snapshots the structural-data invariants every later stage relies on: array
-shapes, the EEG gain ``L``, delay sanity, and the presence of the paper's EZ/PZ
-regions and named EEG channels.
-"""
-
 import re
 from pathlib import Path
 
@@ -79,7 +72,7 @@ def test_delays_in_millisecond_range(connectome: Connectome) -> None:
     delays = connectome.delays
     np.testing.assert_array_equal(np.diag(delays), np.zeros(_N_REGIONS))
     off_diagonal = delays[~np.eye(_N_REGIONS, dtype=bool)]
-    assert off_diagonal.max() < 200.0  # ms, not seconds
+    assert off_diagonal.max() < 200.0
     assert off_diagonal[off_diagonal > 0].size > 0
 
 
@@ -181,7 +174,6 @@ def test_sensor_positions_land_on_their_own_lead_field() -> None:
     to_peak = dist[np.arange(len(positions)), peak_region]
     assert to_peak.mean() < 50.0, f"electrodes are {to_peak.mean():.0f} mm from their own lead-field peak"
 
-    # Laterality: a left-hemisphere channel must be closest to a left-hemisphere region.
     left_region = np.array([str(label).startswith("l") for label in conn.region_labels])
     for channel in ("CP5", "T7", "TP9", "O1"):
         assert left_region[dist[conn.channel_index[channel]].argmin()], f"{channel} is not on the left"
@@ -200,7 +192,7 @@ def test_gamma_rows_are_distinguishable_per_electrode() -> None:
     rows = conn.gamma / np.linalg.norm(conn.gamma, axis=1, keepdims=True)
     assert float(rows[0] @ rows[1]) < 0.95
 
-    u = np.array([-1.0, 1.0])  # KCL-legal: cathode at TP9, return at CP6
+    u = np.array([-1.0, 1.0])
     drive = u @ conn.gamma
     ez = [conn.region_index[name] for name in ("lHC", "lPHC", "lAMYG")]
     assert drive[ez].mean() < -0.1, "cathodal current must hyperpolarize the epileptogenic zone"
@@ -221,7 +213,7 @@ def test_extracephalic_return_drives_no_region_anodally() -> None:
     ex = conn.gamma[1]
     assert np.ptp(ex) / ex.mean() < 0.75, "extracephalic kernel is not near-uniform across regions"
 
-    drive = np.array([-1.0, 1.0]) @ conn.gamma  # KCL-legal: cathode at TP9, return off-head
+    drive = np.array([-1.0, 1.0]) @ conn.gamma
     assert (drive < 0.0).all(), "an extracephalic return must leave no region anodally driven"
 
     ez = [conn.region_index[name] for name in ("lHC", "lPHC", "lAMYG")]
@@ -237,7 +229,7 @@ def test_extracephalic_electrode_rejected_by_reciprocal() -> None:
 def test_kcl_zero_sum_non_cancellation() -> None:
     """Zero-sum tES current under reciprocal or analytical model creates strong differential push-pull fields."""
     electrodes = ["CP5", "T7"]
-    u = np.array([1.0, -1.0])  # zero sum (KCL compliant)
+    u = np.array([1.0, -1.0])
 
     conn_recip = Connectome.from_config({"target_electrode": electrodes, "gamma_model": "reciprocal"})
     conn_analyt = Connectome.from_config({"target_electrode": electrodes, "gamma_model": "analytical"})
@@ -245,7 +237,6 @@ def test_kcl_zero_sum_non_cancellation() -> None:
     field_recip = u @ conn_recip.gamma
     field_analyt = u @ conn_analyt.gamma
 
-    # Verify reciprocal and analytical models produce distinct non-zero fields
     assert np.linalg.norm(field_recip) > 0.0
     assert np.linalg.norm(field_analyt) > 0.0
     assert np.var(field_analyt) > 0.0

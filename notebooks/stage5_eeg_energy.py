@@ -9,6 +9,7 @@ app = marimo.App(
 
 @app.cell
 def _():
+    """Marimo cell."""
     from dataclasses import replace
 
     import marimo as mo
@@ -35,6 +36,7 @@ def _():
 
 @app.cell
 def _(mo):
+    """Marimo cell."""
     mo.md(r"""
     # 🧠 Stage 5 — EEG Projection & Spectral Energy
 
@@ -57,12 +59,14 @@ def _(mo):
 
 @app.cell
 def _(Connectome):
+    """Marimo cell."""
     connectome = Connectome.from_config({})
     return (connectome,)
 
 
 @app.cell
 def _(connectome, mo):
+    """Marimo cell."""
     channel_options = sorted(map(str, connectome.channel_labels))
 
     k_slider = mo.ui.slider(0.0, 2.0, 0.05, value=0.54, label="Global Coupling K")
@@ -115,10 +119,9 @@ def _(
     steady_window,
     transient_slider,
 ):
-    # Calibrated connectome (weight density + conduction speed).
+    """Marimo cell."""
     conn = replace(connectome, speed=speed_slider.value, delays=connectome.tract_lengths / speed_slider.value)
 
-    # Canonical EZ/PZ configuration.
     n_nodes = len(connectome.region_labels)
     ez_idxs = [connectome.region_index[name] for name in ("lHC", "lPHC", "lAMYG")]
     pz_idxs = [connectome.region_index[name] for name in ("lTCI", "lTCV")]
@@ -135,7 +138,6 @@ def _(
     dt_ms = (t[1] - t[0]) * 1000.0
     y_steady = steady_window(y, dt_ms, transient_ms=float(transient_slider.value) * 1000.0)
 
-    # EEG projection + 0-50 Hz energy.
     eeg = conn.gain @ y_steady
     energy = band_energy(eeg, dt_ms, band=(0.0, 50.0))
     order = np.argsort(energy)[::-1]
@@ -144,7 +146,7 @@ def _(
 
 @app.cell
 def _(connectome, dt_ms, np, plt, trace_channels, y_steady):
-    # Fig 3c: EEG traces for the selected left temporo-parietal channels.
+    """Marimo cell."""
     eeg_full = connectome.gain @ y_steady
     time_s = np.arange(eeg_full.shape[1]) * dt_ms / 1000.0
 
@@ -166,7 +168,7 @@ def _(connectome, dt_ms, np, plt, trace_channels, y_steady):
 
 @app.cell
 def _(connectome, energy, np, order, plt):
-    # Fig 5a: energy ranking, CP5 highlighted.
+    """Marimo cell."""
     top = order[:15]
     labels = [str(connectome.channel_labels[i]) for i in top]
     vals = energy[top]
@@ -196,9 +198,11 @@ def _(connectome, energy, np, order, plt):
 
 @app.cell
 def _(connectome, energy, mo, order):
+    """Marimo cell."""
     import re as _re
 
     def _side(lbl: str) -> str:
+        """_side definition."""
         m = _re.search(r"(\d+)", lbl)
         return "z" if m is None else ("L" if int(m.group(1)) % 2 else "R")
 
@@ -233,6 +237,7 @@ def _(connectome, energy, mo, order):
 
 @app.cell
 def _(cp5_rank, fig_rank, fig_traces, mo):
+    """Marimo cell."""
     mo.vstack(
         [
             mo.md(

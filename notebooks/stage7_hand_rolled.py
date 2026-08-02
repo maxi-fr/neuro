@@ -6,7 +6,7 @@ app = marimo.App(width="medium", app_title="Stage 7: Hand-Rolled Network")
 
 @app.cell
 def _():
-
+    """Marimo cell."""
     import marimo as mo
     import numpy as np
     from matplotlib import pyplot as plt
@@ -31,6 +31,7 @@ def _():
 
 @app.cell
 def _(mo):
+    """Marimo cell."""
     mo.md(r"""
     # 🧠 Stage 7 — Hand-Rolled Network Simulation
 
@@ -42,12 +43,14 @@ def _(mo):
 
 @app.cell
 def _(Connectome):
+    """Marimo cell."""
     conn = Connectome.from_config({})
     return (conn,)
 
 
 @app.cell
 def _(mo):
+    """Marimo cell."""
     k_slider = mo.ui.slider(0.0, 2.0, 0.01, value=0.61, label="Global Coupling K")
     duration_slider = mo.ui.slider(2.0, 10.0, 1.0, value=5.0, label="Duration (s)")
     seed_slider = mo.ui.slider(0, 100, 1, value=23, label="RNG Seed")
@@ -74,6 +77,7 @@ def _(mo):
 
 @app.cell
 def _(conn, np):
+    """Marimo cell."""
     ez = ("lHC", "lPHC", "lAMYG")
     pz = ("lTCI", "lTCV")
     a_gains = np.full(len(conn.region_labels), 3.25)
@@ -100,10 +104,10 @@ def _(
     sigma_slider,
     simulate_network,
 ):
+    """Marimo cell."""
     _det = deterministic_toggle.value
     _sigma = 0.0 if _det else sigma_slider.value
 
-    # Hand-rolled run, same network and gains.
     _bounds = np.array([[-1.0, 1.0], [-500.0, 500.0], [-50.0, 50.0], [-6.0, 6.0], [-20.0, 20.0], [-500.0, 500.0]])
     _initial_state = np.random.default_rng(int(seed_slider.value)).uniform(
         _bounds[:, 0:1], _bounds[:, 1:2], size=(6, len(conn.region_labels))
@@ -124,15 +128,18 @@ def _(
 
 @app.cell
 def _(conn, hr_t, hr_y, mo, np):
+    """Marimo cell."""
     _thr = 5.0
 
     def _seizing(y, t):
+        """_seizing definition."""
         ptp = np.ptp(y[:, t >= 1.0], axis=1)
         return {str(conn.region_labels[i]) for i in np.where(ptp > _thr)[0]}
 
     hr_seiz = _seizing(hr_y, hr_t)
 
     def _lat(seiz):
+        """_lat definition."""
         if not seiz:
             return "0 L / 0 R"
         idxs = [conn.region_index[s] for s in seiz]
@@ -149,7 +156,7 @@ def _(conn, hr_t, hr_y, mo, np):
 
 @app.cell
 def _(hr_t, hr_y, plt):
-    # Spatiotemporal raster.
+    """Marimo cell."""
     _fig, _ax = plt.subplots(figsize=(8, 5), layout="constrained")
     _im = _ax.imshow(
         hr_y,
@@ -169,7 +176,7 @@ def _(hr_t, hr_y, plt):
 
 @app.cell
 def _(compute_psd, conn, hr_t, hr_y, plt):
-    # EZ trace + PSD overlay (lHC).
+    """Marimo cell."""
     _lhc = conn.region_index["lHC"]
 
     _fig, _axes = plt.subplots(1, 2, figsize=(13, 4), layout="constrained")
@@ -193,7 +200,7 @@ def _(compute_psd, conn, hr_t, hr_y, plt):
 
 @app.cell
 def _(band_energy, conn, hr_eeg, np, plt, steady_window):
-    # EEG band energy (0-50 Hz), top channels.
+    """Marimo cell."""
     _hr_e = band_energy(steady_window(hr_eeg, 0.1, 1000.0), 0.1, band=(0.0, 50.0))
 
     _order = np.argsort(_hr_e)[::-1][:12]

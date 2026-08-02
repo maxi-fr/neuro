@@ -1,12 +1,3 @@
-"""Tests for :class:`neuro.control.MPCController`.
-
-The MPC embeds the CasADi NN predictor as its prediction model. With a *synthetic*
-(random-weight) artifact these tests verify the machinery -- the solver runs, box bounds
-are respected, the history windows roll correctly, and the loop closes through the
-``simulate`` orchestrator -- rather than genuine seizure suppression (which needs a
-trained artifact).
-"""
-
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
@@ -17,7 +8,6 @@ import jax
 import numpy as np
 import pytest
 
-# float64 parity with the NN predictor; enable before any array is created.
 jax.config.update("jax_enable_x64", True)  # noqa: FBT003
 
 from simulate.simulation import Simulation  # noqa: E402
@@ -145,15 +135,12 @@ def test_output_condensation_matches_full_state_rollout(tmp_path: Path) -> None:
     x0 = rng.standard_normal(model.state_shape[0])
     controls = rng.standard_normal((horizon, n_controls))
 
-    # Ground truth: carry the full state forward via f_step, read the output via f_out.
     x = x0
     y_full = []
     for u in controls:
         x = np.asarray(model.f_step(x, u)).reshape(-1)
         y_full.append(np.asarray(model.f_out(x)).reshape(-1))
 
-    # Condensed: lift only model-space outputs, rebuild windows from x0 + earlier outputs (mirrors
-    # the NLP). ``predict_output`` returns model space; decode it to raw EEG to match ``f_out``.
     y_sym = ca.MX.sym("y_win", n_y * n_channels)
     u_sym = ca.MX.sym("u_win", n_u * n_controls)
     predict = ca.Function("predict", [y_sym, u_sym], [model.predict_output(y_sym, u_sym)])
@@ -181,7 +168,7 @@ def test_warmup_emits_zero_until_window_filled(tmp_path: Path) -> None:
     for u, log in results[: n_y - 1]:
         assert log.warmup
         np.testing.assert_array_equal(u, np.zeros(model.n_controls))
-    # The n_y-th call has a fully real window, so it solves.
+
     assert not results[-1][1].warmup
 
 
@@ -213,8 +200,8 @@ def test_control_obeys_kirchhoff_current_law(tmp_path: Path) -> None:
 
     u, log = _drive(controller, n_steps=6, n_channels=model.n_channels)[-1]
     assert not log.warmup
-    assert np.linalg.norm(u, ord=1) > 1e-3  # it actually stimulates
-    assert abs(float(np.sum(u))) < 1e-6  # ... yet the currents sum to zero
+    assert np.linalg.norm(u, ord=1) > 1e-3
+    assert abs(float(np.sum(u))) < 1e-6
 
 
 def test_pure_effort_cost_yields_zero_control(tmp_path: Path) -> None:
@@ -240,7 +227,7 @@ def test_l1_penalty_drives_control_toward_zero(tmp_path: Path) -> None:
     u_l2 = _drive(MPCController(w_u_l1=0.0, **base), n_steps=6, n_channels=model.n_channels)[-1][0]
     u_l1 = _drive(MPCController(w_u_l1=1000.0, **base), n_steps=6, n_channels=model.n_channels)[-1][0]
 
-    assert np.linalg.norm(u_l2, ord=1) > 1e-3  # baseline stimulates
+    assert np.linalg.norm(u_l2, ord=1) > 1e-3
     np.testing.assert_allclose(u_l1, np.zeros(model.n_controls), atol=1e-4)
 
 
@@ -256,7 +243,7 @@ def test_from_config_loads_artifact_and_defaults_horizon(tmp_path: Path) -> None
     artifact = _build_artifact(tmp_path, horizon=5)
     controller = MPCController.from_config({"dt": 0.01, "artifact": str(artifact), "u_max": 3.0, "w_u_l1": 0.25})
     assert controller.dt == 0.01
-    assert controller.horizon == 5  # defaulted from the artifact
+    assert controller.horizon == 5
     assert controller.n_controls == 2
     assert controller.w_u_l1 == 0.25
 
@@ -308,7 +295,7 @@ def test_closed_loop_simulation_runs(tmp_path: Path) -> None:
 
     assert sim.logger is not None
     us = np.stack([np.atleast_1d(np.asarray(entry["u"], dtype=np.float64)) for entry in sim.logger.core_logs])
-    assert us.shape[1] == 2  # n_controls
+    assert us.shape[1] == 2
     assert np.all(np.abs(us) <= u_max + 1e-6)
 
 
@@ -328,9 +315,8 @@ def test_projection_shrinks_shooting_state_and_respects_bounds(tmp_path: Path) -
 
     assert model.n_channels == k
     assert model.n_eeg_channels == n_eeg
-    assert model.state_shape[0] == n_y * k + n_u * n_controls  # latent-sized, not n_y*n_eeg
+    assert model.state_shape[0] == n_y * k + n_u * n_controls
 
-    # Feed raw EEG measurements (dim n_eeg); the controller encodes them internally.
     u, log = _drive(controller, n_steps=n_y + 2, n_channels=n_eeg)[-1]
     assert not log.warmup
     assert u.shape == (n_controls,)

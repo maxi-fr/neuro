@@ -6,7 +6,7 @@ app = marimo.App(width="medium", app_title="Stage 1 Single-node Jansen-Rit")
 
 @app.cell
 def _():
-
+    """Marimo cell."""
     import marimo as mo
     import numpy as np
     from matplotlib import pyplot as plt
@@ -29,6 +29,7 @@ def _():
 
 @app.cell
 def _(mo):
+    """Marimo cell."""
     mo.md("""
     # 🧠 Stage 1 — Single-node Jansen-Rit
 
@@ -59,6 +60,8 @@ def _(
     lfp,
     simulate_network,
 ):
+    """Marimo cell."""
+
     def run(a_gain, *, sigma=None, duration=20.0, seed=7, deterministic=False):
         """Simulate one node and return ``(t, y, x)`` for gain ``a_gain``."""
         base = JansenRitParams()
@@ -66,7 +69,7 @@ def _(
         params = JansenRitParams(A=a_gain, sigma=noise)
         dyn = JansenRitDynamics(dt=DT_DEFAULT, params=params, conn=Connectome.from_config({}), seed=seed)
         (t, x_traj) = simulate_network(dyn=dyn, duration=duration)
-        x = x_traj[:, 0, :]  # drop the singleton node dim -> (6, n_samples)
+        x = x_traj[:, 0, :]
         return t, lfp(x), x
 
     return (run,)
@@ -74,7 +77,7 @@ def _(
 
 @app.cell
 def _(DT_DEFAULT, np, plt, run):
-    # Checkpoint: noisy background (A=3.25) vs seizure limit cycle (A=3.6).
+    """Marimo cell."""
     _fig, _axes = plt.subplots(2, 1, figsize=(10, 5), sharex=True, layout="constrained")
     for _ax, _a, _color, _name in (
         (_axes[0], 3.25, "#1f77b4", "A = 3.25  (healthy background)"),
@@ -93,7 +96,7 @@ def _(DT_DEFAULT, np, plt, run):
 
 @app.cell
 def _(DT_DEFAULT, plt, run):
-    # Phase plane: lfp y = x2 - x3 against its derivative x5 - x6.
+    """Marimo cell."""
     _fig, _axes = plt.subplots(1, 2, figsize=(10, 4.5), layout="constrained")
     _n_drop = int(8.0 / DT_DEFAULT)
     for _ax, _a, _color, _kind in (
@@ -113,7 +116,7 @@ def _(DT_DEFAULT, plt, run):
 
 @app.cell
 def _(DT_DEFAULT, np, plt, run):
-    # Bifurcation: steady-state peak-to-peak amplitude of y as A is swept.
+    """Marimo cell."""
     _a_values = np.arange(3.0, 4.0001, 0.05)
     _n_drop = int(5.0 / DT_DEFAULT)
     _amps = []
@@ -136,6 +139,7 @@ def _(DT_DEFAULT, np, plt, run):
 
 @app.cell
 def _(mo):
+    """Marimo cell."""
     mo.md("""
     ## 🎛️ Interactive single node
     """)
@@ -144,6 +148,7 @@ def _(mo):
 
 @app.cell
 def _(mo):
+    """Marimo cell."""
     a_slider = mo.ui.slider(3.0, 4.0, 0.01, value=3.6, label="A (excitatory gain)")
     sigma_slider = mo.ui.slider(0.0, 1000.0, 50.0, value=500.0, label="noise sigma")
     duration_slider = mo.ui.slider(5, 60, 5, value=20, label="duration (s)")
@@ -172,6 +177,7 @@ def _(
     seed_slider,
     sigma_slider,
 ):
+    """Marimo cell."""
     _t, _y, _ = run(
         a_slider.value,
         sigma=sigma_slider.value,

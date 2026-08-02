@@ -1,17 +1,3 @@
-"""Composable fit/transform/inverse-transform maps for the NN predictor.
-
-Both the per-channel scalers and the PCA projection are per-timestep-vector affine maps:
-they are fitted on training data and applied (and inverted) identically at train and
-inference time. The only reason they used to live in different places is incidental -- PCA
-changes the channel dimension and was fitted at a different stage. This module unifies them
-behind one small :class:`Pipeline` of transform steps.
-
-``transform`` / ``inverse_transform`` are pure arithmetic, so they run unchanged on NumPy
-arrays (dataset prep, inference) and JAX arrays (the differentiable decode inside the
-training loss). CasADi symbols are handled by the caller (:mod:`neuro.nn_predictor_casadi`),
-which reads the fitted parameters off these objects and applies them with ``ca.mtimes``.
-"""
-
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -40,18 +26,13 @@ def zscore(x: TMath, center: FloatArray, scale: FloatArray) -> TMath:
 
 
 def unzscore(z: TMath, center: FloatArray, scale: FloatArray) -> TMath:
-    """Invert :func:`zscore`, mapping standardized values back to raw units."""
-    return z * scale + center  # ty: ignore[invalid-return-type]
+    """Invert :func:`zscore`."""
+    return z * scale + center  # ty:ignore[invalid-return-type]
 
 
 @dataclass(frozen=True)
 class Standardizer:
-    """Affine per-channel (or global) standardization ``z = (x - center) / scale``.
-
-    ``center``/``scale`` are shaped ``(C,)`` for per-channel scaling or ``(1,)`` for a single
-    global scalar, so both broadcast against a ``(rows, C)`` batch. Subsumes the previous
-    ``StandardScaler``/``RobustScaler`` usage via the ``kind`` chosen at :meth:`fit`.
-    """
+    """Channel-wise affine standardizer: ``(x - center) / scale``."""
 
     type_tag: ClassVar[str] = "standardizer"
 
@@ -66,13 +47,7 @@ class Standardizer:
         kind: Literal["standard", "robust"] = "standard",
         global_scaling: bool = False,
     ) -> Standardizer:
-        """Fit ``center``/``scale`` from ``(rows, C)`` data.
-
-        ``kind="standard"`` uses mean/population-std (matching ``StandardScaler``);
-        ``kind="robust"`` uses median/IQR (matching ``RobustScaler``). With ``global_scaling``
-        the statistics are pooled over all elements into a single scalar. Zero scales are set
-        to 1 (as sklearn does) so constant channels pass through unchanged.
-        """
+        """Fit ``center``/``scale`` from ``(rows, C)`` data."""
         data = np.asarray(x, dtype=np.float64)
         flat = data.reshape(-1, 1) if global_scaling else data
         if kind == "robust":
@@ -86,7 +61,7 @@ class Standardizer:
         return cls(center=np.asarray(center, dtype=np.float64), scale=np.asarray(scale, dtype=np.float64))
 
     def transform(self, x: TMath) -> TMath:
-        """Standardize ``x`` (last axis is channels)."""
+        """Standardize ``x``."""
         return zscore(x, self.center, self.scale)
 
     def inverse_transform(self, z: TMath) -> TMath:
@@ -94,7 +69,7 @@ class Standardizer:
         return unzscore(z, self.center, self.scale)
 
     def arrays(self) -> dict[str, FloatArray]:
-        """Fitted parameter arrays, for serialization."""
+        """Fitted parameter arrays."""
         return {"center": self.center, "scale": self.scale}
 
     @classmethod
@@ -105,12 +80,7 @@ class Standardizer:
 
 @dataclass(frozen=True)
 class PCAProjection:
-    """Linear projection onto ``k`` PCA components: ``z = (x - mean) @ basis.T``.
-
-    ``basis`` has orthonormal rows, shape ``(k, C)``; ``mean`` is the per-channel training mean,
-    shape ``(C,)``. The inverse ``x = z @ basis + mean`` reconstructs the in-subspace part of
-    the signal (the orthogonal residual is unrepresentable, by construction).
-    """
+    """Principal Component Analysis: ``z = (x - mean) @ basis.T``."""
 
     type_tag: ClassVar[str] = "pca"
 
@@ -119,11 +89,7 @@ class PCAProjection:
 
     @classmethod
     def fit(cls, x: FloatArray, latent_dim: int) -> PCAProjection | None:
-        """Fit a ``latent_dim``-component PCA on ``(rows, C)`` data.
-
-        Returns ``None`` when ``latent_dim >= C`` (the projection would be a no-op), so callers
-        can treat "no reduction" and "no PCA step" identically.
-        """
+        """Fit a ``latent_dim``-component PCA on ``(rows, C)`` data."""
         data = np.asarray(x, dtype=np.float64)
         if latent_dim >= data.shape[1]:
             return None
@@ -136,11 +102,11 @@ class PCAProjection:
         return (x - self.mean) @ self.basis.T  # ty: ignore[invalid-return-type]
 
     def inverse_transform(self, z: TMath) -> TMath:
-        """Decode ``(..., k)`` latent components back to ``(..., C)`` channels."""
+        """Decode latent components back to channels."""
         return z @ self.basis + self.mean  # ty: ignore[invalid-return-type]
 
     def arrays(self) -> dict[str, FloatArray]:
-        """Fitted parameter arrays, for serialization."""
+        """Fitted parameter arrays."""
         return {"basis": self.basis, "mean": self.mean}
 
     @classmethod
@@ -158,24 +124,18 @@ _REGISTRY: dict[str, type[Standardizer | PCAProjection]] = {
 
 @dataclass(frozen=True)
 class Pipeline:
-    """Ordered composition of :class:`Transform` steps applied along the channel axis.
-
-    ``transform`` folds the steps forward (raw -> model space); ``inverse_transform`` folds
-    them in reverse (model space -> raw). Serialization is split between a list of step tags
-    (structure) and a flat ``{f"{prefix}.{i}.{param}": array}`` dict (parameters), so the whole
-    pipeline round-trips through the artifact's JSON sidecar plus its ``.npz`` array bundle.
-    """
+    """Ordered composition of :class:`Transform` steps."""
 
     steps: tuple[Transform, ...]
 
     def transform(self, x: TMath) -> TMath:
-        """Apply every step in order (raw channels -> model space)."""
+        """Apply steps in order."""
         for step in self.steps:
             x = step.transform(x)  # ty: ignore[invalid-argument-type]
         return x
 
     def inverse_transform(self, z: TMath) -> TMath:
-        """Apply every step's inverse in reverse order (model space -> raw channels)."""
+        """Apply steps' inverse in reverse order."""
         for step in reversed(self.steps):
             z = step.inverse_transform(z)  # ty: ignore[invalid-argument-type]
         return z
@@ -191,11 +151,11 @@ class Pipeline:
         return next((s for s in self.steps if isinstance(s, PCAProjection)), None)
 
     def step_tags(self) -> list[str]:
-        """Ordered ``type_tag`` of each step (the serialized structure)."""
+        """Ordered ``type_tag`` of each step."""
         return [s.type_tag for s in self.steps]
 
     def array_dict(self, prefix: str) -> dict[str, FloatArray]:
-        """Flatten every step's parameter arrays under ``f"{prefix}.{i}.{param}"`` keys."""
+        """Flatten step parameters."""
         out: dict[str, FloatArray] = {}
         for i, step in enumerate(self.steps):
             for name, value in step.arrays().items():
@@ -204,7 +164,7 @@ class Pipeline:
 
     @classmethod
     def from_serialized(cls, prefix: str, tags: list[str], arrays: Mapping[str, FloatArray]) -> Pipeline:
-        """Rebuild a pipeline from :meth:`step_tags` and :meth:`array_dict` outputs."""
+        """Load a pipeline from an npz/dict of arrays by name prefix."""
         steps: list[Transform] = []
         for i, tag in enumerate(tags):
             sub = {key.rsplit(".", 1)[-1]: arrays[key] for key in arrays if key.startswith(f"{prefix}.{i}.")}

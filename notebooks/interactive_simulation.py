@@ -9,6 +9,7 @@ app = marimo.App(
 
 @app.cell
 def _():
+    """Marimo cell."""
     from dataclasses import replace
 
     import marimo as mo
@@ -32,16 +33,19 @@ def _():
 
 @app.cell
 def _(Connectome):
+    """Marimo cell."""
     connectome = Connectome.from_config({})
     return (connectome,)
 
 
 @app.cell
 def _(connectome):
+    """Marimo cell."""
     ez_names = ("lHC", "lPHC", "lAMYG")
     pz_names = ("lTCI", "lTCV")
 
     def get_region_display_name(name: str) -> str:
+        """get_region_display_name definition."""
         if name in ez_names:
             return f"{name} (EZ)"
         if name in pz_names:
@@ -70,6 +74,7 @@ def _(connectome):
 
 @app.cell
 def _(mo):
+    """Marimo cell."""
     mo.md(r"""
     # 🧠 Interactive Whole-Brain Jansen-Rit Simulator & Plotter
 
@@ -80,6 +85,7 @@ def _(mo):
 
 @app.cell
 def _(mo):
+    """Marimo cell."""
     k_slider = mo.ui.slider(0.0, 2.0, 0.05, value=0.54, label="Global Coupling Strength K")
     speed_slider = mo.ui.slider(5.0, 100.0, 5.0, value=50.0, label="Conduction speed (mm/ms)")
     duration_slider = mo.ui.slider(1.0, 10.0, 0.5, value=4.0, label="Simulation duration (s)")
@@ -121,10 +127,9 @@ def _(
     simulate_network,
     speed_slider,
 ):
-    # Scale connectome connectivity and delays
+    """Marimo cell."""
     _conn = replace(connectome, speed=speed_slider.value, delays=connectome.tract_lengths / speed_slider.value)
 
-    # Set up EZ, PZ and Healthy gains
     _n_nodes = len(connectome.region_labels)
     _a_gains = np.full(_n_nodes, 3.25)
 
@@ -141,13 +146,14 @@ def _(
     )
     (t, _x_traj) = simulate_network(dyn=dyn__params, duration=float(duration_slider.value))
     y = lfp(_x_traj)
-    # Project node activity to EEG
+
     eeg = _conn.gain @ y
     return eeg, t, y
 
 
 @app.cell
 def _(mo):
+    """Marimo cell."""
     mo.md("""
     ## 📊 Plot Configuration
     """)
@@ -156,6 +162,7 @@ def _(mo):
 
 @app.cell
 def _(channel_options, default_channels, default_regions, mo, region_options):
+    """Marimo cell."""
     regions_multiselect = mo.ui.multiselect(
         options=region_options,
         value=default_regions,
@@ -197,6 +204,7 @@ def _(
     t,
     y,
 ):
+    """Marimo cell."""
     if not regions_multiselect.value:
         fig_node_out = mo.md("⚠️ *Select at least one brain region to plot.*")
     else:
@@ -274,6 +282,7 @@ def _(
     stacked_toggle,
     t,
 ):
+    """Marimo cell."""
     if not eeg_multiselect.value:
         fig_eeg_out = mo.md("⚠️ *Select at least one EEG channel to plot.*")
     else:
@@ -329,6 +338,7 @@ def _(
 
 @app.cell
 def _(mo):
+    """Marimo cell."""
     mo.md("""
     ## 💾 Export Options
     """)
@@ -337,6 +347,7 @@ def _(mo):
 
 @app.cell
 def _(mo):
+    """Marimo cell."""
     save_dir_input = mo.ui.text(value="artifacts", label="Save Directory:")
     save_button = mo.ui.button(label="💾 Save Plots to Disk", tooltip="Saves both plots as PNG files")
 
@@ -346,6 +357,7 @@ def _(mo):
 
 @app.cell
 def _(fig_eeg_out, fig_node_out, mo, save_button, save_dir_input):
+    """Marimo cell."""
     mo.stop(not save_button.value)
 
     from pathlib import Path

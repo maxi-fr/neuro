@@ -1,21 +1,3 @@
-"""Stage 0 -- structural data loader for the Yu et al. 2024 tES model.
-
-Loads the network's connectivity, delays, and EEG forward operator from
-The Virtual Brain (TVB) and bundles them into a :class:`Connectome`.
-
-Two conventions are fixed here and relied on by later stages:
-
-* **All 76 TVB regions are kept.** The paper works with 74 regions; that count is
-  TVB's 76 minus ``{lCC, rCC}`` (corpus callosum, indices 37 and 75). Keeping the
-  full set keeps the Stage 7 TVB cross-check apples-to-apples; any drop is deferred
-  to the network stage.
-* **The EEG gain ``L`` collapses surface vertices to regions by SUM.** TVB's
-  region-level EEG monitor replicates each region's activity to all of its
-  vertices, so the forward model is ``EEG_s = sum_r x_r * sum_{v in r} proj[s, v]``
-  -- a per-region sum, not a mean. Summing makes the Stage 7 ``L``-vs-monitor check
-  agree without per-region rescaling.
-"""
-
 from __future__ import annotations
 
 import warnings
@@ -48,22 +30,8 @@ _SENSORS_FILE = "eeg_unitvector_62.txt.bz2"
 _PROJECTION_FILE = "projection_eeg_62_surface_16k.mat"
 _REGION_MAPPING_FILE = "regionMapping_16k_76.txt"
 
-# TVB's `eeg_unitvector_62` sensor file stores *directions*, not positions: every row is a
-# unit vector, and its axes are ordered (left, posterior, superior) whereas the connectivity's
-# region centres are millimetres ordered (anterior, left, superior). Placing electrodes for the
-# tES field therefore needs both a frame change and a scale -- see `docs/tes_field_geometry.md`.
 _SENSOR_TO_CONNECTOME = np.array([[0.0, -1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0]])
-# Scalp radius in mm. The outermost region centroid sits at 82.8 mm, so this keeps every
-# electrode outside the cortex while staying in the range of an adult head.
 SCALP_RADIUS_MM = 90.0
-
-# Virtual electrodes off the head, in the connectome frame (anterior, left, superior) in mm.
-# Yu et al. place the tES return at ROAST's `Ex7`/`Ex8` -- extracephalic positions with no
-# counterpart in TVB's 62-channel scalp set. `EX_NECK` sits low and posterior on the midline
-# (base of the neck), 145-243 mm from every region. Under the `analytical` (Coulomb) model its
-# potential there is small, same-signed and near-uniform, so a montage returning through it
-# drives no region anodally -- which is the whole point of an extracephalic return. It is
-# rejected by `reciprocal`, which can only read lead-field rows of real EEG channels.
 EXTRACEPHALIC_ELECTRODES_MM = {"EX_NECK": (-60.0, 0.0, -180.0)}
 
 
@@ -84,6 +52,8 @@ class Connectome:
 
     Attributes
     ----------
+    K
+        Global coupling constant, float
     weights
         Region-by-region connection strengths, shape ``(76, 76)``, nonnegative.
     tract_lengths
@@ -113,7 +83,7 @@ class Connectome:
         single electrode or ``(n_electrodes, 76)`` for a multi-electrode montage.
     """
 
-    K: float  # global coupling constant
+    K: float
     weights: FloatArray
     tract_lengths: FloatArray
     centres: FloatArray
@@ -158,11 +128,7 @@ class Connectome:
             raise ValueError(msg)
 
     def delay_steps(self, dt: float) -> npt.NDArray[np.int64]:
-        """Conduction delays as integer step lags for integration step ``dt`` (s).
-
-        ``self.delays`` is in ms, so ``round(delays / (dt * 1000))`` gives the lag in
-        steps; a connectome with zero delays is instantaneous (all-zero lags).
-        """
+        """Conduction delays as integer step lags for integration step ``dt`` (s)."""
         return np.round(self.delays / (dt * 1000.0)).astype(np.int64)
 
     def to_npz(self, path: str | Path) -> None:
@@ -206,27 +172,12 @@ class Connectome:
 
     @classmethod
     def from_config(cls, config: dict[str, Any]) -> Connectome:
-        """Load the TVB structural backbone and EEG forward operator from a config dict.
-
-        The dict is validated strictly against :class:`_ConnectomeConfig` (unknown keys are
-        rejected before any TVB data is touched). ``speed`` sets the conduction speed
-        (mm/ms; the paper uses 50), ``K`` the global coupling, and an optional
-        ``target_electrode`` / ``gamma_spread`` build the tES projection ``gamma``. Electrodes
-        are EEG channel labels (or indices into ``channel_labels``), plus -- for
-        ``gamma_model='analytical'`` -- the virtual off-head labels in
-        :data:`EXTRACEPHALIC_ELECTRODES_MM`.
-
-        Returns
-        -------
-        Connectome
-            All 76 TVB regions with weights, delays, centres, labels, hemispheres, the
-            ``(62, 76)`` EEG gain ``L``, and ``gamma`` (zeros unless an electrode is given).
-        """
+        """Load the TVB structural backbone and EEG forward operator from a config dict."""
         cfg = _ConnectomeConfig.model_validate(config)
 
         conn = Connectivity.from_file()
         conn.speed = np.array([cfg.speed])
-        conn.configure()  # derives the hemisphere mask absent from the default zip
+        conn.configure()
 
         weights = np.asarray(conn.weights, dtype=np.float64)
         tract_lengths = np.asarray(conn.tract_lengths, dtype=np.float64)
@@ -283,8 +234,6 @@ def _mirror_partner_permutation(locations: FloatArray) -> npt.NDArray[np.int64]:
     (midline sensors map to themselves).
     """
 
-    # The left-right axis is the one whose reflection best maps the symmetric
-    # montage onto itself (smallest total nearest-neighbour distance).
     def _reflect(axis: int) -> FloatArray:
         reflected = locations.copy()
         reflected[:, axis] *= -1.0
@@ -307,10 +256,7 @@ def _build_eeg_gain() -> tuple[FloatArray, StrArray]:
     """Build the region-level EEG gain ``L`` and its channel labels.
 
     Collapses TVB's ``(62, 16384)`` surface projection to ``(62, 76)`` by summing
-    the projection columns of the vertices mapped to each region. The projection
-    rows are first reordered through :func:`_mirror_partner_permutation` so each
-    channel label carries its own-hemisphere lead field (TVB's sensor and
-    projection files disagree on left-right convention).
+    the projection columns of the vertices mapped to each region.
     """
     sensors = SensorsEEG.from_file(_SENSORS_FILE)
     channel_labels = np.asarray(sensors.labels, dtype=np.str_)
@@ -318,7 +264,6 @@ def _build_eeg_gain() -> tuple[FloatArray, StrArray]:
     partner = _mirror_partner_permutation(locations)
 
     proj = ProjectionSurfaceEEG.from_file(_PROJECTION_FILE, matlab_data_name="ProjectionMatrix")
-    # Row k now carries labels[k]'s own-side lead field, not its contralateral one.
     surface_gain = np.asarray(proj.projection_data, dtype=np.float64)[partner]
     rmap = np.asarray(RegionMapping.from_file(_REGION_MAPPING_FILE).array_data, dtype=np.int64)
 
@@ -362,9 +307,7 @@ def _reciprocal_row_fn(
     """Build the per-electrode gamma of the ``reciprocal`` model: a signed EEG leadfield row.
 
     Helmholtz reciprocity equates the field a montage injects with the recording sensitivity of
-    the same electrode pair, so the row is used *signed*; rectifying it would erase the
-    cathodal/anodal asymmetry. Rows exist only for real EEG channels, which is why this model
-    cannot serve an extracephalic electrode.
+    the same electrode pair, so the row is used.
     """
     if gain is None or channel_index is None:
         gain_matrix, ch_labels = _build_eeg_gain()
@@ -398,9 +341,7 @@ def _coulomb_potential_fn(centres: FloatArray, sensors_file: str) -> Callable[[s
     """Build the per-electrode gamma of the ``analytical`` model: a Coulomb volume potential.
 
     ``100 / sqrt(r^2 + spread^2)`` is the potential of a point source in a homogeneous medium,
-    softened at the electrode by ``spread``. Being a solution of Laplace's equation it
-    superposes, so a montage's rows may simply be summed -- and it is defined at any position,
-    including the off-head entries of :data:`EXTRACEPHALIC_ELECTRODES_MM`.
+    softened at the electrode by ``spread``.
     """
     sensor_labels, sensor_positions = sensor_positions_mm(sensors_file)
     positions = {str(label).upper(): pos for label, pos in zip(sensor_labels, sensor_positions, strict=True)}
@@ -428,15 +369,6 @@ def _compute_gamma(  # noqa: PLR0913
     channel_index: dict[str, int] | None = None,
 ) -> FloatArray:
     """Compute the spatial projection gamma for tES stimulation.
-
-    ``analytical`` measures electrode-to-region distances through :func:`sensor_positions_mm`,
-    which puts the TVB sensors in the connectome's frame and on the scalp; the raw sensor file
-    is unit vectors in a permuted frame and must not be differenced against ``centres``
-    directly. It also accepts the virtual off-head electrodes in
-    :data:`EXTRACEPHALIC_ELECTRODES_MM`, which ``reciprocal`` cannot represent.
-
-    Both models are **signed**: gamma is a field per unit current, and the applied current's
-    sign then sets cathodal (hyperpolarizing) versus anodal (depolarizing) drive.
 
     Parameters
     ----------

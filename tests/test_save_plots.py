@@ -16,7 +16,7 @@ def test_thesis_plot_saver_dimensions() -> None:
     width, height = saver.calculate_dimensions(fraction=1.0)
     assert width > 0
     assert height > 0
-    assert width > height  # due to golden ratio scaling
+    assert width > height
 
 
 def test_thesis_plot_saver_save(tmp_path: Path) -> None:
@@ -34,7 +34,6 @@ def test_thesis_plot_saver_save(tmp_path: Path) -> None:
     assert target_dir.exists()
     assert target_dir.is_dir()
 
-    # JSON metadata assertion
     json_path = target_dir / "test_plot.json"
     assert json_path.exists()
     with json_path.open("r", encoding="utf-8") as f:
@@ -43,7 +42,6 @@ def test_thesis_plot_saver_save(tmp_path: Path) -> None:
     assert "git_commit" in saved_meta
     assert "generated_at" in saved_meta
 
-    # Pickle assertion
     pkl_path = target_dir / "test_plot.pkl"
     assert pkl_path.exists()
     with pkl_path.open("rb") as f:
@@ -51,7 +49,6 @@ def test_thesis_plot_saver_save(tmp_path: Path) -> None:
     assert loaded_fig is not None
     plt.close(loaded_fig)
 
-    # PNG assertion
     png_path = target_dir / "test_plot.png"
     assert png_path.exists()
 
@@ -60,7 +57,6 @@ def test_thesis_plot_saver_increment_vs_overwrite(tmp_path: Path) -> None:
     """Test that overwrite=False increments the folder name and overwrite=True does not."""
     saver = ThesisPlotSaver(base_dir=str(tmp_path))
 
-    # First save
     fig1, ax1 = plt.subplots()
     ax1.plot([0, 1], [0, 1])
     saver.save(fig1, "my_plot", overwrite=False)
@@ -69,7 +65,6 @@ def test_thesis_plot_saver_increment_vs_overwrite(tmp_path: Path) -> None:
     dir1 = tmp_path / "my_plot"
     assert dir1.exists()
 
-    # Second save with overwrite=False (should increment)
     fig2, ax2 = plt.subplots()
     ax2.plot([0, 1], [0, 2])
     saver.save(fig2, "my_plot", overwrite=False)
@@ -78,13 +73,11 @@ def test_thesis_plot_saver_increment_vs_overwrite(tmp_path: Path) -> None:
     dir2 = tmp_path / "my_plot_01"
     assert dir2.exists()
 
-    # Third save with overwrite=True (should write into 'my_plot' without incrementing)
     fig3, ax3 = plt.subplots()
     ax3.plot([0, 1], [0, 3])
     saver.save(fig3, "my_plot", overwrite=True)
     plt.close(fig3)
 
-    # 'my_plot_02' should NOT exist
     dir3 = tmp_path / "my_plot_02"
     assert not dir3.exists()
 

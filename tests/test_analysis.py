@@ -12,6 +12,7 @@ from utils.processing import band_energy, compute_psd, steady_window, synchroniz
 
 
 def test_compute_psd_sine() -> None:
+    """Test Compute psd sine."""
     fs = 1000.0
     dt_ms = 1000.0 / fs
     t = np.arange(0, 1.0, 1.0 / fs)
@@ -26,19 +27,20 @@ def test_compute_psd_sine() -> None:
 
 
 def test_invalid_signals_shape() -> None:
-
+    """Test Invalid signals shape."""
     with pytest.raises(ValueError, match="2-D array"):
         compute_psd(np.zeros(10), 1.0)
 
 
 def test_empty_signals() -> None:
-
+    """Test Empty signals."""
     freqs, psd_val = compute_psd(np.empty((2, 0)), 1.0)
     assert freqs.size == 0
     assert psd_val.shape == (2, 0)
 
 
 def test_synchronization_identical_vs_random() -> None:
+    """Test Synchronization identical vs random."""
     rng = np.random.default_rng(0)
     base = rng.standard_normal((1, 500))
     identical = np.repeat(base, 4, axis=0)
@@ -49,10 +51,12 @@ def test_synchronization_identical_vs_random() -> None:
 
 
 def test_synchronization_single_channel_is_nan() -> None:
+    """Test Synchronization single channel is nan."""
     assert np.isnan(synchronization(np.ones((1, 10))))
 
 
 def test_steady_window_drops_transient() -> None:
+    """Test Steady window drops transient."""
     arr = np.arange(20.0).reshape(2, 10)
     trimmed = steady_window(arr, dt_ms=1.0, transient_ms=3.0)
     assert trimmed.shape == (2, 7)
@@ -60,6 +64,7 @@ def test_steady_window_drops_transient() -> None:
 
 
 def test_band_energy_ranks_and_normalizes() -> None:
+    """Test Band energy ranks and normalizes."""
     fs = 1000.0
     dt_ms = 1000.0 / fs
     t = np.arange(0, 2.0, 1.0 / fs)
@@ -75,6 +80,7 @@ def test_band_energy_ranks_and_normalizes() -> None:
 
 
 def test_band_energy_excludes_out_of_band() -> None:
+    """Test Band energy excludes out of band."""
     fs = 1000.0
     dt_ms = 1000.0 / fs
     t = np.arange(0, 2.0, 1.0 / fs)
@@ -83,16 +89,18 @@ def test_band_energy_excludes_out_of_band() -> None:
     signals = np.stack([in_band, out_band])
 
     energy = band_energy(signals, dt_ms, band=(0.0, 50.0), nperseg=512)
-    # The 60 Hz channel lies outside the band and must lose to the 10 Hz channel.
+
     assert int(np.argmax(energy)) == 0
 
 
 def test_band_energy_invalid_shape() -> None:
+    """Test Band energy invalid shape."""
     with pytest.raises(ValueError, match="2-D array"):
         band_energy(np.zeros(10), 1.0)
 
 
 def test_band_energy_empty_signals() -> None:
+    """Test Band energy empty signals."""
     energy = band_energy(np.empty((3, 0)), 1.0)
     assert energy.shape == (3,)
     assert np.all(energy == 0.0)

@@ -1,5 +1,3 @@
-"""Plotting functions for brain activity and EEG signals."""
-
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, cast
@@ -89,19 +87,17 @@ def plot_signals(  # noqa: PLR0913
 
     n_samples = signals.shape[1]
     time_ms = np.arange(n_samples) * dt_ms
-    time_sec = time_ms / 1000.0  # Convert to seconds for plotting
+    time_sec = time_ms / 1000.0
 
     selected_signals, selected_names = _filter_channels(signals, channel_names, channels_to_plot)
     num_to_plot = len(selected_names)
 
     if ax is None:
-        # Determine figure height based on the number of plotted channels
         fig_height = max(4.0, num_to_plot * 0.5 if stacked else 5.0)
         fig, ax = plt.subplots(figsize=(10, fig_height), layout="constrained")
     else:
         fig = cast("Figure", ax.figure)
 
-    # Handle colors
     if isinstance(color, str):
         colors = [color] * num_to_plot
     else:
@@ -110,7 +106,6 @@ def plot_signals(  # noqa: PLR0913
             colors.append("#1f77b4")
 
     if stacked:
-        # Stacked / waterfall plot
         p2p = np.ptp(selected_signals, axis=1)
         mean_p2p = np.mean(p2p) if np.mean(p2p) > 0 else 1.0
         offset = mean_p2p * offset_scale
@@ -125,7 +120,6 @@ def plot_signals(  # noqa: PLR0913
         ax.set_yticklabels(selected_names)
         ax.set_ylim(-offset, num_to_plot * offset)
     else:
-        # Overlaid plot
         for sig, name, col in zip(selected_signals, selected_names, colors, strict=False):
             ax.plot(time_sec, sig, label=name, color=col, alpha=0.54, linewidth=1.2)
         ax.legend(loc="upper right", framealpha=0.9)
@@ -134,7 +128,6 @@ def plot_signals(  # noqa: PLR0913
     ax.set_ylabel("Amplitude", fontsize=11, fontweight="bold")
     ax.set_title(title, fontsize=13, fontweight="bold", pad=12)
 
-    # Styling cleanups
     ax.spines["top"].set_visible(False)
     ax.spines["right"].set_visible(False)
     ax.grid(visible=True, linestyle="--", alpha=0.3)
@@ -152,12 +145,7 @@ def _resolve_anchors(  # noqa: PLR0913
     t_start: float,
     t_end: float,
 ) -> IntArray:
-    """Resolve the sample indices at which a prediction fan is drawn.
-
-    Explicit ``anchors`` take precedence over ``stride``. Anchors are clipped to
-    the valid sample range and to the visible window ``[t_start, t_end]`` (compared
-    against each anchor's own time ``i * dt``).
-    """
+    """Resolve the sample indices at which a prediction fan is drawn."""
     if anchors is not None:
         arr = np.asarray(anchors, dtype=np.float64)
         idx = np.rint(arr / dt).astype(np.intp) if anchors_in_seconds else arr.astype(np.intp)
@@ -183,11 +171,7 @@ def _draw_fans(  # noqa: PLR0913
     marker_style: dict[str, object] | None,
     add_labels: bool,
 ) -> None:
-    """Draw every prediction fan for a single channel onto ``ax``.
-
-    ``y_pred_c`` has shape ``(n_samples, horizon)``. Fan ``i`` spans times
-    ``(i + 1) * dt ... (i + horizon) * dt`` (predictions start one step ahead).
-    """
+    """Draw every prediction fan for a single channel onto ``ax``."""
     horizon = y_pred_c.shape[1]
     cmap = plt.get_cmap(cmap_name) if cmap_name is not None else None
     denom = max(len(anchor_idx) - 1, 1)
@@ -470,7 +454,6 @@ def plot_psd(  # noqa: PLR0913
         fig = cast("Figure", ax.figure)
 
     if plot_mean:
-        # Plot mean and std shading
         mean_val = np.mean(selected_vals, axis=0)
         std_val = np.std(selected_vals, axis=0)
         ax.plot(freqs, mean_val, color="#2ca02c", label="Mean", linewidth=2.0)
@@ -484,7 +467,6 @@ def plot_psd(  # noqa: PLR0913
         )
         ax.legend(loc="upper right")
     else:
-        # Plot individual channels
         for val, name in zip(selected_vals, selected_names, strict=False):
             ax.plot(freqs, val, label=name, alpha=0.6, linewidth=1.0)
         if len(selected_names) <= 10:  # noqa: PLR2004
