@@ -4,7 +4,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from neuro.connectome import Connectome, sensor_positions_mm
+from neuro.connectome import Connectome, centres_to_mni_ras, sensor_positions_mm
 
 _N_REGIONS = 76
 _N_CHANNELS = 62
@@ -132,20 +132,6 @@ def test_from_config_default_gamma_is_zero() -> None:
     np.testing.assert_array_equal(conn.gamma, np.zeros(_N_REGIONS))
 
 
-def test_from_config_reciprocal_gamma_model() -> None:
-    """Option A (reciprocal) builds a *signed* current-to-field projection via Helmholtz reciprocity.
-
-    Reciprocity equates the field a montage injects with the leadfield's recording sensitivity,
-    which is signed: a region's contribution to a channel flips with the orientation of its
-    source. Rectifying the row would throw that away, and with it the cathodal/anodal
-    asymmetry that is the entire suppression mechanism.
-    """
-    conn = Connectome.from_config({"target_electrode": ["CP5", "T7", "F9"], "gamma_model": "reciprocal"})
-    assert conn.gamma.shape == (3, _N_REGIONS)
-    assert (conn.gamma < 0.0).any()
-    assert not np.allclose(conn.gamma[0], conn.gamma[1])
-
-
 def test_from_config_analytical_gamma_model() -> None:
     """Option B (analytical) builds Laplacian dipolar Coulomb projection without independent peak clipping."""
     conn = Connectome.from_config(
@@ -220,23 +206,161 @@ def test_extracephalic_return_drives_no_region_anodally() -> None:
     assert drive[ez].mean() < drive.mean(), "the focus must be driven harder than the network mean"
 
 
-def test_extracephalic_electrode_rejected_by_reciprocal() -> None:
-    """``reciprocal`` reads leadfield rows, so it has nothing to say about an off-head electrode."""
-    with pytest.raises(ValueError, match="analytical"):
-        Connectome.from_config({"target_electrode": ["TP9", "EX_NECK"], "gamma_model": "reciprocal"})
+_SIMNIBS_MONTAGE = ("TP9", "CP5", "EX_NECK")
+
+
+def _write_simnibs_npz(path: Path, region_labels: np.ndarray, labels: tuple[str, ...] = _SIMNIBS_MONTAGE) -> Path:
+    """Write a synthetic SimNIBS leadfield NPZ, so the tests need no SimNIBS install.
+
+    The last row is the return electrode, zero by the leadfield's reference convention.
+    """
+    rng = np.random.default_rng(0)
+    phi = rng.normal(size=(len(labels), len(region_labels)))
+    phi[-1] = 0.0
+    np.savez(
+        path,
+        gamma_phi=phi,
+        gamma_e_normal=2.0 * phi,
+        electrode_labels=np.array(labels, dtype=np.str_),
+        region_labels=region_labels,
+    )
+    return path
+
+
+def test_simnibs_gamma_reads_precomputed_rows(connectome: Connectome, tmp_path: Path) -> None:
+    """The ``simnibs`` model returns the file's rows in the montage's electrode order."""
+    path = _write_simnibs_npz(tmp_path / "gamma.npz", connectome.region_labels)
+    with np.load(path) as data:
+        rows = data["gamma_phi"]
+
+    conn = Connectome.from_config(
+        {"target_electrode": list(_SIMNIBS_MONTAGE), "gamma_model": "simnibs", "leadfield_path": str(path)}
+    )
+    assert conn.gamma.shape == (3, _N_REGIONS)
+    np.testing.assert_allclose(conn.gamma, rows)
+
+    reordered = Connectome.from_config(
+        {"target_electrode": ["CP5", "TP9"], "gamma_model": "simnibs", "leadfield_path": str(path)}
+    )
+    np.testing.assert_allclose(reordered.gamma, rows[[1, 0]])
+
+
+def test_simnibs_return_row_is_zero(connectome: Connectome, tmp_path: Path) -> None:
+    """The return electrode's row is zero, so a zero-sum montage sums only the stimulating rows.
+
+    SimNIBS references every leadfield row against the return electrode, whose own current is
+    implicit under ``sum(u) = 0``. Encoding that here pins the convention the generator writes.
+    """
+    path = _write_simnibs_npz(tmp_path / "gamma.npz", connectome.region_labels)
+    conn = Connectome.from_config(
+        {"target_electrode": list(_SIMNIBS_MONTAGE), "gamma_model": "simnibs", "leadfield_path": str(path)}
+    )
+
+    np.testing.assert_array_equal(conn.gamma[2], np.zeros(_N_REGIONS))
+    drive = np.array([-0.5, -0.5, 1.0]) @ conn.gamma
+    np.testing.assert_allclose(drive, -0.5 * (conn.gamma[0] + conn.gamma[1]))
+
+
+def test_simnibs_quantity_selects_array(connectome: Connectome, tmp_path: Path) -> None:
+    """``simnibs_quantity`` picks between the FEM potential and the cortical-normal E-field."""
+    path = _write_simnibs_npz(tmp_path / "gamma.npz", connectome.region_labels)
+    base = {"target_electrode": ["TP9", "EX_NECK"], "gamma_model": "simnibs", "leadfield_path": str(path)}
+
+    phi = Connectome.from_config(base).gamma
+    e_normal = Connectome.from_config({**base, "simnibs_quantity": "e_normal"}).gamma
+    np.testing.assert_allclose(e_normal, 2.0 * phi)
+
+
+def test_simnibs_scale_is_linear(connectome: Connectome, tmp_path: Path) -> None:
+    """``simnibs_scale`` multiplies the leadfield, carrying its physical units into mV."""
+    path = _write_simnibs_npz(tmp_path / "gamma.npz", connectome.region_labels)
+    base = {"target_electrode": ["TP9", "EX_NECK"], "gamma_model": "simnibs", "leadfield_path": str(path)}
+
+    unscaled = Connectome.from_config(base).gamma
+    scaled = Connectome.from_config({**base, "simnibs_scale": 2.0}).gamma
+    np.testing.assert_allclose(scaled, 2.0 * unscaled)
+
+
+def test_simnibs_requires_leadfield_path() -> None:
+    """``simnibs`` has no analytical fallback: without a precomputed file it must refuse."""
+    with pytest.raises(ValueError, match="leadfield_path"):
+        Connectome.from_config({"target_electrode": ["TP9"], "gamma_model": "simnibs"})
+
+
+def test_simnibs_unknown_electrode_rejected(connectome: Connectome, tmp_path: Path) -> None:
+    """An electrode the FEM was never run for cannot be synthesised from the file."""
+    path = _write_simnibs_npz(tmp_path / "gamma.npz", connectome.region_labels)
+    with pytest.raises(ValueError, match="not found"):
+        Connectome.from_config(
+            {"target_electrode": ["CP6", "EX_NECK"], "gamma_model": "simnibs", "leadfield_path": str(path)}
+        )
+
+
+def test_simnibs_region_labels_must_match(connectome: Connectome, tmp_path: Path) -> None:
+    """A leadfield built against a different parcellation is rejected, not silently broadcast."""
+    path = _write_simnibs_npz(tmp_path / "gamma.npz", connectome.region_labels[:-1])
+    with pytest.raises(ValueError, match="do not match"):
+        Connectome.from_config(
+            {"target_electrode": ["TP9", "EX_NECK"], "gamma_model": "simnibs", "leadfield_path": str(path)}
+        )
+
+
+def test_centres_to_mni_ras(connectome: Connectome) -> None:
+    """The connectome (anterior, left, superior) frame maps to MNI RAS.
+
+    Every external head model is reached through this one conversion, and a left-right flip
+    here is invisible downstream -- the regions still exist, the fields still look plausible,
+    and every number is wrong. The hemisphere check is what catches it.
+    """
+    ras = centres_to_mni_ras(connectome.centres)
+    assert ras.shape == connectome.centres.shape
+
+    np.testing.assert_allclose(ras[:, 0], -connectome.centres[:, 1])
+    np.testing.assert_allclose(ras[:, 1], connectome.centres[:, 0])
+    np.testing.assert_allclose(ras[:, 2], connectome.centres[:, 2])
+
+    left = np.array([str(label).startswith("l") for label in connectome.region_labels])
+    assert ras[left, 0].mean() < 0.0, "left-hemisphere regions must land at negative RAS x"
+    assert ras[~left, 0].mean() > 0.0, "right-hemisphere regions must land at positive RAS x"
 
 
 def test_kcl_zero_sum_non_cancellation() -> None:
-    """Zero-sum tES current under reciprocal or analytical model creates strong differential push-pull fields."""
+    """Zero-sum tES current under analytical model creates strong differential push-pull fields."""
     electrodes = ["CP5", "T7"]
     u = np.array([1.0, -1.0])
 
-    conn_recip = Connectome.from_config({"target_electrode": electrodes, "gamma_model": "reciprocal"})
     conn_analyt = Connectome.from_config({"target_electrode": electrodes, "gamma_model": "analytical"})
 
-    field_recip = u @ conn_recip.gamma
     field_analyt = u @ conn_analyt.gamma
 
-    assert np.linalg.norm(field_recip) > 0.0
     assert np.linalg.norm(field_analyt) > 0.0
     assert np.var(field_analyt) > 0.0
+
+
+def test_field_gamma_peaks_near_electrodes() -> None:
+    """For each of the 62 scalp electrodes, the region with the largest `|gamma|` must lie near that electrode under the field model."""
+    conn = Connectome.from_config({})
+    labels, positions = sensor_positions_mm()
+
+    conn_field = Connectome.from_config(
+        {"target_electrode": list(labels), "gamma_model": "field", "gamma_spread": 15.0}
+    )
+
+    peak_region = np.abs(conn_field.gamma).argmax(axis=1)
+    dist = np.linalg.norm(conn.centres[None, :, :] - positions[:, None, :], axis=2)
+    to_peak = dist[np.arange(len(positions)), peak_region]
+
+    assert to_peak.mean() < 50.0, f"electrodes are {to_peak.mean():.0f} mm from their own field model peak"
+
+
+def test_field_cathodal_montage_negative_drive() -> None:
+    """A KCL-legal cathodal montage producing negative mean drive over the EZ under the field model."""
+    conn = Connectome.from_config(
+        {"target_electrode": ["TP9", "EX_NECK"], "gamma_model": "field", "gamma_spread": 15.0}
+    )
+
+    # The test injects cathodal current at TP9 and anodal at EX_NECK.
+    u = np.array([-1.0, 1.0])
+    drive = u @ conn.gamma
+    ez = [conn.region_index[name] for name in ("lHC", "lPHC", "lAMYG")]
+    assert drive[ez].mean() < 0.0, "cathodal current must produce negative drive over the EZ"

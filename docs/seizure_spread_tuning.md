@@ -209,7 +209,7 @@ The other configs keep the seeds their experiments already used.
 - **Trained artefacts do not transfer.** `sigma` and `K` change the plant, so every NN predictor
   under `artifacts/` and every MPC benchmark predates the retune and was fitted to a different
   system; they must be refitted. The identification datasets were regenerated on 2026-07-30 as
-  **25 trials × 20 s** (`data/experiment_excited{,_analytical,_reciprocal}`) — the same 500 s of
+  **25 trials × 20 s** (`data/experiment_excited` and `data/experiment_excited_analytical`) — the same 500 s of
   data per set as the old 100 × 5 s, but with each trial spanning the full spread. Split 22 train
   / 3 test, preserving the old 90/10 ratio.
 - **The old MPC benchmark numbers are not comparable.** The controller now faces a different
@@ -218,7 +218,7 @@ The other configs keep the seeds their experiments already used.
   means these datasets were also identified against a collapsed `gamma` and the old
   `CP5/T7/F9` montage. `data/experiment_excited` has been regenerated on the corrected plant
   (montage `[TP9, CP5, EX_NECK]`); the old set is archived as `data/experiment_excited_pre_tes_fix`
-  and `data/experiment_excited_{analytical,reciprocal}` are still stale.
+  and `data/experiment_excited_analytical` is still stale.
 - **`data/experiment_excited_reduced_channels` was deleted and not regenerated**, so the
   `configs/nn_predictor/meeting_seven/{linear,nonlinear}_selected.yaml` predictors have no
   training data until a 25-channel set is rebuilt (the montage lives in

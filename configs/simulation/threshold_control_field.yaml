@@ -1,0 +1,121 @@
+controller:
+  amplitude:
+  - -0.5
+  - -0.5
+  - 1.0
+  burst_duration: 1.0
+  channel: 27
+  class_path: neuro.control.AmplitudeThresholdController
+  dt: 0.01
+  n_u: 3
+  threshold: 20.0
+  window: 1.0
+dynamics:
+  class_path: neuro.jansen_rit.JansenRitDynamics
+  connectome:
+    K: 0.6
+    gamma_model: field
+    gamma_spread: 15.0
+    polarization_length_mm: 534.0
+    speed: 50.0
+    target_electrode:
+    - TP9
+    - CP5
+    - EX_NECK
+  dt: 0.0001
+  initial_state: rest
+  params:
+    A:
+    - 3.25
+    - 3.25
+    - 3.25
+    - 3.25
+    - 3.25
+    - 3.25
+    - 3.25
+    - 3.25
+    - 3.25
+    - 3.25
+    - 3.25
+    - 3.25
+    - 3.25
+    - 3.25
+    - 3.25
+    - 3.25
+    - 3.25
+    - 3.25
+    - 3.25
+    - 3.25
+    - 3.25
+    - 3.25
+    - 3.25
+    - 3.25
+    - 3.25
+    - 3.25
+    - 3.25
+    - 3.25
+    - 3.25
+    - 3.25
+    - 3.25
+    - 3.25
+    - 3.25
+    - 3.25
+    - 3.25
+    - 3.25
+    - 3.25
+    - 3.25
+    - 3.25
+    - 3.25
+    - 3.6
+    - 3.25
+    - 3.25
+    - 3.25
+    - 3.25
+    - 3.25
+    - 3.25
+    - 3.6
+    - 3.25
+    - 3.25
+    - 3.25
+    - 3.25
+    - 3.25
+    - 3.25
+    - 3.25
+    - 3.25
+    - 3.25
+    - 3.25
+    - 3.25
+    - 3.25
+    - 3.25
+    - 3.25
+    - 3.6
+    - 3.25
+    - 3.25
+    - 3.25
+    - 3.25
+    - 3.25
+    - 3.25
+    - 3.4
+    - 3.25
+    - 3.25
+    - 3.4
+    - 3.25
+    - 3.25
+    - 3.25
+    sigma: 280.0
+  seed: 69
+estimator:
+  class_path: simulate.estimator.IdentityEstimator
+  dt: 0.0001
+reference:
+  class_path: simulate.reference.StepReference
+  dt: 0.0001
+  step_value: 0.0
+sensors:
+  class_path: simulate.sensor.GaussianSensor
+  dt: 0.0001
+  measurement:
+    class_path: neuro.measurement.EEGMeasurement
+    speed: 50.0
+  std_dev: 0.0
+t_end: 20.0

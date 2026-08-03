@@ -109,10 +109,6 @@ KCL-legal current subspace. This is the fraction of the current→brain map that
 | `CP5/T8/Fp2` (fixed) | gaussian, s=20 | 0.996 |
 | `TP9/CP6` (fixed) | analytical, s=15 | 0.94 |
 
-The `reciprocal` model was never affected by these bugs (it reads lead-field rows, not
-distances) — which is why it alone showed 0.57 authority in the earlier note. That was a hint
-that the distance-based models, not KCL, were the anomaly.
-
 (The `gaussian` rows are a historical record; that model has since been removed — see §9.2.)
 
 ## 3. Electrode choice — the prompt's second hypothesis: **confirmed**
@@ -219,7 +215,7 @@ seizure-promoting direction, which is what made the old results so hard to read.
 
 - `src/neuro/connectome.py`: new public `sensor_positions_mm()` returning electrode positions
   in the connectome frame, in millimetres, on a `SCALP_RADIUS_MM = 90` sphere. `_compute_gamma`
-  now uses it for the distance-based models. `reciprocal` is unaffected.
+  now uses it for the distance-based models.
 - `tests/test_connectome.py`: two regression tests — electrodes must land near their own
   lead-field peak and on the correct side of the head; and a KCL-legal two-electrode montage
   must keep distinguishable rows (pairwise cosine < 0.95) and deliver *negative* drive to the
@@ -235,9 +231,6 @@ seizure-promoting direction, which is what made the old results so hard to read.
    §1b marginally prefers 80 mm, but 80 mm puts electrodes only ~0 mm outside the outermost
    region centroid (82.8 mm). 90 mm keeps every electrode outside the cortex and is in the adult
    range. It scales absolute currents but not any conclusion here.
-3. **The `reciprocal` track has no config or data.** `gamma_model: reciprocal` still works, but
-   its configs and dataset were deleted with the rest of the stale set (§9.7); anything using it
-   needs a fresh identification run.
 
 ## 8. Reproduction
 
@@ -333,28 +326,19 @@ deltoid reference, tsDCS — precisely to avoid a second *active* cortical elect
 of a more diffuse path, a higher current for the same cortical field, and brainstem current flow
 (a raised safety question that empirical HR/BP studies have not borne out).
 
-### 9.2 `gaussian` removed, `reciprocal` made signed
+### 9.2 `gaussian` removed
 
 `gaussian` is gone. It is not a potential: it does not superpose, so a montage's fields cannot
 be added; it has no far field, so it cannot represent a distant return; and at the spreads the
 configs used (15–20 mm) it delivered `exp(−75²/2·20²) ≈ 9e-4` to a focus 75 mm away, i.e.
 nothing. The default `gamma_model` is now `analytical` and the default `gamma_spread` 15.0.
 
-`reciprocal` no longer rectifies the leadfield row (`np.abs` removed). Helmholtz reciprocity
-equates the field a montage injects with a recording pair's sensitivity, which is *signed*;
-rectifying it destroyed the cathodal/anodal asymmetry that is the entire suppression mechanism.
-Note the montage sum `Σ uᵢ Lᵢ` with `Σu = 0` is a superposition of bipolar sensitivities, which
-is what reciprocity actually gives — so the signed form is the principled one. It cannot take
-`EX_NECK` (there is no leadfield row for an electrode that is not an EEG channel) and raises if
-asked to.
-
 ### 9.3 Montage in the configs
 
 `[CP5, T7, F9]` → **`[TP9, CP5, EX_NECK]`**, `gamma_spread: 15.0`, `gamma_model: analytical`.
 Two left-temporal cathodes plus the off-head return: 3 controls (kept, so the L1-sparsity work
 still has `n_controls ≥ 3`), zero-sum authority 0.334, zero-sum condition number 1.7, and every
-cathodal command tested drives no region anodally. The `*_reciprocal` configs use
-`[TP9, CP5, CP6]` instead, since `reciprocal` cannot take an off-head electrode.
+cathodal command tested drives no region anodally.
 
 Verified end-to-end through the shipped API (16 s, seed 69, stim from t = 2 s, seizing regions
 at t = 15 s):
@@ -389,6 +373,13 @@ It is deferred, not rejected, because:
 
 So: do the closed-loop work on `analytical`, and treat SimNIBS as the validity check for the
 write-up. (Yu 2024 used ROAST, the same class of tool.)
+
+**Update.** That validity check has since been built, as the third `gamma_model`, `simnibs` — see
+[`simnibs_field_model.md`](simnibs_field_model.md). It landed as this section predicted: a
+precomputed matrix, `analytical` still the default, nothing downstream touched. Two of the four
+objections above resolved rather than held — a head-and-shoulders mesh (Ernie Extended) exists for
+the extracephalic pad, and the registration witness of §1b is reused as a hard gate before the FEM
+runs.
 
 ### 9.5 The amplitude-threshold controller
 
@@ -436,19 +427,17 @@ isolates whether a given failure is the plant or the model.
 ### 9.7 Stale data and configs deleted
 
 Everything identified against the collapsed `gamma` or the old `CP5/T7/F9` montage was removed
-(≈83 GB). `reciprocal` was affected too: its rows were rectified (§9.2) and its montage changed,
-so its dataset was no more usable than the distance-based ones.
+(≈83 GB).
 
 | deleted | why |
 | --- | --- |
 | `data/experiment_excited_pre_tes_fix` | the pre-fix identification set |
 | `data/experiment_excited_analytical` | duplicate of `experiment_excited` once `analytical` became the default |
-| `data/experiment_excited_reciprocal` | old montage + rectified rows |
 | `artifacts/pre_kirchhoff_wrong_stim` | archived pre-Kirchhoff runs |
-| `configs/simulation/experiment_excited_{analytical,reciprocal}.yaml` | the gamma-model comparison track |
-| `configs/simulation/closed_loop_{analytical,reciprocal}.yaml` | pointed at timestamped artifacts that no longer exist |
+| `configs/simulation/experiment_excited_analytical.yaml` | the gamma-model comparison track |
+| `configs/simulation/closed_loop_analytical.yaml` | pointed at timestamped artifacts that no longer exist |
 | `configs/simulation/l1_{before,after}.yaml` | same dangling artifact, and the old montage |
-| `configs/nn_predictor/{linear,mlp3}_{analytical,reciprocal}.yaml` | their datasets are gone; `meeting_seven/{linear,nonlinear}_full.yaml` already cover the canonical set |
+| `configs/nn_predictor/{linear,mlp3}_analytical.yaml` | their datasets are gone; `meeting_seven/{linear,nonlinear}_full.yaml` already cover the canonical set |
 
 What survives: `data/experiment_excited` (regenerated), `configs/simulation/experiment_excited.yaml`
 as the single identification config, `threshold_control.yaml`, the `meeting_seven/` MPC set, and

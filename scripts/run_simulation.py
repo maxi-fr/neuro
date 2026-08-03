@@ -4,6 +4,7 @@ import sys
 from datetime import UTC, datetime
 from pathlib import Path
 
+import numpy as np
 from simulate.config import deep_merge, load_config
 from simulate.experiment import ExperimentManager
 from simulate.simulation import Simulation
@@ -68,6 +69,16 @@ def main() -> None:
         sim = Simulation.from_config(config)
         sim.run(output_dir, prefix="log", use_mmap=args.mmap)
         sim.export_results(output_dir, prefix="log", compress=args.compress)
+
+    # Post-process logs to delete state 'x' from them
+    for npz_path in output_dir.rglob("*.npz"):
+        data = dict(np.load(npz_path))
+        if "x" in data:
+            del data["x"]
+            if args.compress:
+                np.savez_compressed(npz_path, **data)
+            else:
+                np.savez(npz_path, **data)
 
 
 if __name__ == "__main__":

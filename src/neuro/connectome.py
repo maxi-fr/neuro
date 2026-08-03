@@ -23,6 +23,7 @@ with warnings.catch_warnings():
     from tvb.datatypes.projections import ProjectionSurfaceEEG
     from tvb.datatypes.region_mapping import RegionMapping
     from tvb.datatypes.sensors import SensorsEEG
+    from tvb.datatypes.surfaces import CorticalSurface
 
 StrArray = npt.NDArray[np.str_]
 
@@ -42,8 +43,11 @@ class _ConnectomeConfig(StrictConfig):
     K: float = 1.0
     target_electrode: str | int | list[str | int] | None = None
     gamma_spread: float | list[float] = 15.0
-    gamma_model: Literal["reciprocal", "analytical"] = "analytical"
+    gamma_model: Literal["analytical", "simnibs", "field"] = "analytical"
     leadfield_path: str | Path | None = None
+    simnibs_quantity: Literal["phi", "e_normal"] = "phi"
+    simnibs_scale: float = 1.0
+    polarization_length_mm: float = 534.0
 
 
 @dataclass(frozen=True)
@@ -79,7 +83,7 @@ class Connectome:
     channel_index
         Map from channel label to its row index in ``gain``.
     gamma
-        tES spatial projection, ``None`` until configured. Shape ``(76,)`` for a
+        tES spatial projection, all zeros until configured. Shape ``(76,)`` for a
         single electrode or ``(n_electrodes, 76)`` for a multi-electrode montage.
     """
 
@@ -201,8 +205,10 @@ class Connectome:
                 spread=cfg.gamma_spread,
                 model=cfg.gamma_model,
                 leadfield_path=cfg.leadfield_path,
-                gain=gain,
-                channel_index=channel_index,
+                region_labels=region_labels,
+                simnibs_quantity=cfg.simnibs_quantity,
+                simnibs_scale=cfg.simnibs_scale,
+                polarization_length_mm=cfg.polarization_length_mm,
             )
 
         return cls(
@@ -299,42 +305,97 @@ def sensor_positions_mm(
     return labels, (unit @ _SENSOR_TO_CONNECTOME.T) * radius
 
 
-def _reciprocal_row_fn(
-    leadfield_path: str | Path | None,
-    gain: FloatArray | None,
-    channel_index: dict[str, int] | None,
-) -> Callable[[str, float], FloatArray]:
-    """Build the per-electrode gamma of the ``reciprocal`` model: a signed EEG leadfield row.
+def centres_to_mni_ras(coords: FloatArray) -> FloatArray:
+    """Convert connectome-frame coordinates to MNI RAS, in millimetres.
 
-    Helmholtz reciprocity equates the field a montage injects with the recording sensitivity of
-    the same electrode pair, so the row is used.
+    The connectome frame is (anterior, left, superior); MNI RAS is (right, anterior, superior).
+    This is the registration seam every external head model is reached through.
     """
-    if gain is None or channel_index is None:
-        gain_matrix, ch_labels = _build_eeg_gain()
-        ch_idx_map = {str(label).upper(): idx for idx, label in enumerate(ch_labels)}
-    else:
-        gain_matrix = gain
-        ch_idx_map = {k.upper(): v for k, v in channel_index.items()}
-    max_gain = np.max(np.abs(gain_matrix))
+    coords = np.asarray(coords, dtype=np.float64)
+    return np.column_stack([-coords[:, 1], coords[:, 0], coords[:, 2]])
+
+
+def _simnibs_gamma_fn(
+    leadfield_path: str | Path | None,
+    quantity: Literal["phi", "e_normal"],
+    scale: float,
+    region_labels: StrArray,
+) -> Callable[[str, float], FloatArray]:
+    """Build the per-electrode gamma of the ``simnibs`` model: a precomputed FEM row.
+
+    Row ``k`` is the field of +1 mA at electrode ``k`` referenced against the montage's return
+    electrode, so the return row is zero and the montage sum is exact under ``sum(u) = 0``.
+    ``scale`` converts the file's physical units (mV/mA for ``phi``, V/m per mA for
+    ``e_normal``) into the membrane-potential offset the Jansen-Rit sigmoid expects.
+    """
+    if leadfield_path is None:
+        msg = "gamma_model='simnibs' needs leadfield_path; generate it with scripts/generate_simnibs_leadfield.py."
+        raise ValueError(msg)
+
+    with np.load(leadfield_path) as data:
+        rows = np.asarray(data[f"gamma_{quantity}"], dtype=np.float64)
+        electrode_labels = data["electrode_labels"].astype(np.str_)
+        file_regions = data["region_labels"].astype(np.str_)
+
+    if not np.array_equal(file_regions, region_labels):
+        msg = f"SimNIBS regions in {leadfield_path} do not match the connectome's {len(region_labels)} regions."
+        raise ValueError(msg)
+
+    electrode_idx = {str(label).upper(): idx for idx, label in enumerate(electrode_labels)}
 
     def _row(electrode: str, spread: float) -> FloatArray:  # noqa: ARG001
         target = electrode.upper()
-        if target in EXTRACEPHALIC_ELECTRODES_MM:
-            msg = (
-                f"Extracephalic electrode {electrode} needs gamma_model='analytical'; "
-                "'reciprocal' can only read leadfield rows of real EEG channels."
-            )
+        if target not in electrode_idx:
+            msg = f"Electrode {electrode} not found in {leadfield_path}."
             raise ValueError(msg)
-        if target not in ch_idx_map:
-            msg = f"Electrode {electrode} not found in sensors."
-            raise ValueError(msg)
-        if leadfield_path is not None:
-            ld = np.load(leadfield_path)
-            matrix = ld["gain"] if isinstance(ld, np.lib.npyio.NpzFile) and "gain" in ld else np.asarray(ld)
-            return np.asarray(matrix[ch_idx_map[target], :], dtype=np.float64)
-        return gain_matrix[ch_idx_map[target], :] / (max_gain if max_gain > 0 else 1.0)
+        return rows[electrode_idx[target]] * scale
 
     return _row
+
+
+def _field_gamma_fn(
+    sensors_file: str,
+    polarization_length_mm: float,
+) -> Callable[[str, float], FloatArray]:
+    """Build the per-electrode gamma of the ``field`` model: a Coulomb electric field.
+
+    Computes the mean cortical-normal component of the applied E-field over each region,
+    scaled by polarization length to give a membrane-potential offset.
+    """
+    sensor_labels, sensor_positions = sensor_positions_mm(sensors_file)
+    positions = {str(label).upper(): pos for label, pos in zip(sensor_labels, sensor_positions, strict=True)}
+    positions |= {label: np.asarray(pos, dtype=np.float64) for label, pos in EXTRACEPHALIC_ELECTRODES_MM.items()}
+
+    surf = CorticalSurface.from_file()
+    vertices = np.asarray(surf.vertices, dtype=np.float64)
+    normals = np.asarray(surf.vertex_normals, dtype=np.float64)
+    rmap = np.asarray(RegionMapping.from_file(_REGION_MAPPING_FILE).array_data, dtype=np.int64)
+
+    n_regions = int(rmap.max()) + 1
+
+    def _field(electrode: str, spread: float) -> FloatArray:
+        target = electrode.upper()
+        if target not in positions:
+            msg = f"Electrode {electrode} not found in sensors."
+            raise ValueError(msg)
+
+        r_minus_p = vertices - positions[target]
+        dists_sq = np.sum(r_minus_p**2, axis=1)
+
+        # E_e(r) = 100 * (r - p_e) / (|r - p_e|^2 + s^2)^(3/2)
+        factor = 100.0 / np.power(dists_sq + spread**2, 1.5)
+        # Compute cortical-normal component
+        e_dot_n = np.sum(r_minus_p * normals, axis=1) * factor
+
+        gamma = np.zeros(n_regions, dtype=np.float64)
+        for r in range(n_regions):
+            mask = rmap == r
+            if np.any(mask):
+                gamma[r] = np.mean(e_dot_n[mask])
+
+        return gamma * polarization_length_mm
+
+    return _field
 
 
 def _coulomb_potential_fn(centres: FloatArray, sensors_file: str) -> Callable[[str, float], FloatArray]:
@@ -363,10 +424,12 @@ def _compute_gamma(  # noqa: PLR0913
     target_electrode: str | Sequence[str] = "CP5",
     spread: float | Sequence[float] = 15.0,
     sensors_file: str = _SENSORS_FILE,
-    model: Literal["reciprocal", "analytical"] = "analytical",
+    model: Literal["analytical", "simnibs", "field"] = "analytical",
     leadfield_path: str | Path | None = None,
-    gain: FloatArray | None = None,
-    channel_index: dict[str, int] | None = None,
+    region_labels: StrArray | None = None,
+    simnibs_quantity: Literal["phi", "e_normal"] = "phi",
+    simnibs_scale: float = 1.0,
+    polarization_length_mm: float = 0.2,
 ) -> FloatArray:
     """Compute the spatial projection gamma for tES stimulation.
 
@@ -383,15 +446,20 @@ def _compute_gamma(  # noqa: PLR0913
     sensors_file
         Filename of the EEG sensors dataset.
     model
-        Current-to-field model: 'reciprocal' (Option A: Helmholtz reciprocity on the EEG
-        leadfield) or 'analytical' (Option B: Coulomb volume potential of a point source in
-        a homogeneous medium, which superposes and so stays valid for a montage).
+        Current-to-field model: 'analytical' (Option B: Coulomb volume potential of a point source in
+        a homogeneous medium, which superposes and so stays valid for a montage),
+        'simnibs' (Option C: a precomputed SimNIBS FEM leadfield read from ``leadfield_path``), or
+        'field' (Option D: cortical-normal component of the applied electric field).
     leadfield_path
-        Optional path to an external NPZ/NPY leadfield matrix file for Option A.
-    gain
-        Precomputed EEG gain matrix (if loaded from connectome).
-    channel_index
-        Map of EEG channel names to row index in gain.
+        Path to an external NPZ/NPY leadfield matrix file; required for 'simnibs'.
+    region_labels
+        Region names, used by 'simnibs' to check the leadfield file's region order.
+    simnibs_quantity
+        Which field quantity the 'simnibs' model drives on: the FEM potential at the region
+        centres ('phi') or the mean cortical-normal E-field over the region ('e_normal').
+    simnibs_scale
+        Multiplier turning the 'simnibs' leadfield's physical units into a membrane-potential
+        offset in mV.
 
     Returns
     -------
@@ -399,8 +467,13 @@ def _compute_gamma(  # noqa: PLR0913
         Spatial projection matrix of shape ``(N_regions,)`` for a single electrode, or
         ``(n_electrodes, N_regions)`` for a montage.
     """
-    if model == "reciprocal":
-        _gamma_one = _reciprocal_row_fn(leadfield_path, gain, channel_index)
+    if model == "simnibs":
+        if region_labels is None:
+            msg = "gamma_model='simnibs' needs region_labels."
+            raise ValueError(msg)
+        _gamma_one = _simnibs_gamma_fn(leadfield_path, simnibs_quantity, simnibs_scale, region_labels)
+    elif model == "field":
+        _gamma_one = _field_gamma_fn(sensors_file, polarization_length_mm)
     else:
         _gamma_one = _coulomb_potential_fn(centres, sensors_file)
 

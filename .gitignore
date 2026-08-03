@@ -25,6 +25,7 @@ __marimo__/
 artifacts/
 artifacts
 data/
+external/
 *.npy
 *.npz
 notebooks/layouts/
