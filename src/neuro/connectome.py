@@ -43,7 +43,7 @@ class _ConnectomeConfig(StrictConfig):
     K: float = 1.0
     target_electrode: str | int | list[str | int] | None = None
     gamma_spread: float | list[float] = 15.0
-    gamma_model: Literal["analytical", "simnibs", "field"] = "analytical"
+    gamma_model: Literal["analytical", "simnibs", "field", "signed_field"] = "analytical"
     leadfield_path: str | Path | None = None
     simnibs_quantity: Literal["phi", "e_normal"] = "phi"
     simnibs_scale: float = 1.0
@@ -398,6 +398,44 @@ def _field_gamma_fn(
     return _field
 
 
+def _signed_field_gamma_fn(
+    centres: FloatArray,
+    sensors_file: str,
+    polarization_length_mm: float,
+) -> Callable[[str, float], FloatArray]:
+    """Build the per-electrode gamma of the ``signed_field`` model (Yu 2024).
+
+    Computes the electric field magnitude ||E|| over each region, signed by whether the
+    electrode's potential is above or below its median across region centres.
+    """
+    sensor_labels, sensor_positions = sensor_positions_mm(sensors_file)
+    positions = {str(label).upper(): pos for label, pos in zip(sensor_labels, sensor_positions, strict=True)}
+    positions |= {label: np.asarray(pos, dtype=np.float64) for label, pos in EXTRACEPHALIC_ELECTRODES_MM.items()}
+
+    def _signed_field(electrode: str, spread: float) -> FloatArray:
+        target = electrode.upper()
+        if target not in positions:
+            msg = f"Electrode {electrode} not found in sensors."
+            raise ValueError(msg)
+
+        r_minus_p = centres - positions[target]
+        dists = np.linalg.norm(r_minus_p, axis=1)
+
+        # Compute electric field magnitude across regions
+        e_mag = 100.0 * dists / np.power(dists**2 + spread**2, 1.5)
+
+        # Compute volume potential and median value across regions
+        v = 100.0 / np.sqrt(dists**2 + spread**2)
+        v_med = 0.5 * (v.max() + v.min())
+
+        sign_v = np.sign(v - v_med)
+        sign_v[sign_v == 0] = 1.0
+
+        return e_mag * sign_v * polarization_length_mm
+
+    return _signed_field
+
+
 def _coulomb_potential_fn(centres: FloatArray, sensors_file: str) -> Callable[[str, float], FloatArray]:
     """Build the per-electrode gamma of the ``analytical`` model: a Coulomb volume potential.
 
@@ -424,7 +462,7 @@ def _compute_gamma(  # noqa: PLR0913
     target_electrode: str | Sequence[str] = "CP5",
     spread: float | Sequence[float] = 15.0,
     sensors_file: str = _SENSORS_FILE,
-    model: Literal["analytical", "simnibs", "field"] = "analytical",
+    model: Literal["analytical", "simnibs", "field", "signed_field"] = "analytical",
     leadfield_path: str | Path | None = None,
     region_labels: StrArray | None = None,
     simnibs_quantity: Literal["phi", "e_normal"] = "phi",
@@ -474,6 +512,8 @@ def _compute_gamma(  # noqa: PLR0913
         _gamma_one = _simnibs_gamma_fn(leadfield_path, simnibs_quantity, simnibs_scale, region_labels)
     elif model == "field":
         _gamma_one = _field_gamma_fn(sensors_file, polarization_length_mm)
+    elif model == "signed_field":
+        _gamma_one = _signed_field_gamma_fn(centres, sensors_file, polarization_length_mm)
     else:
         _gamma_one = _coulomb_potential_fn(centres, sensors_file)
 

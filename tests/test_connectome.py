@@ -364,3 +364,27 @@ def test_field_cathodal_montage_negative_drive() -> None:
     drive = u @ conn.gamma
     ez = [conn.region_index[name] for name in ("lHC", "lPHC", "lAMYG")]
     assert drive[ez].mean() < 0.0, "cathodal current must produce negative drive over the EZ"
+
+
+def test_signed_field_gamma_model() -> None:
+    """The signed_field model (Yu 2024) computes non-zero drive and hyperpolarizes the region under a cathodal electrode."""
+    conn = Connectome.from_config(
+        {
+            "target_electrode": ["TP9", "CP5", "EX_NECK"],
+            "gamma_model": "signed_field",
+            "gamma_spread": 15.0,
+        }
+    )
+    assert conn.gamma.shape == (3, 76)
+    assert np.any(conn.gamma != 0.0)
+
+    conn_tp9 = Connectome.from_config(
+        {
+            "target_electrode": "TP9",
+            "gamma_model": "signed_field",
+            "gamma_spread": 15.0,
+        }
+    )
+    drive = -1.0 * conn_tp9.gamma
+    l_tci_idx = conn_tp9.region_index["lTCI"]
+    assert drive[l_tci_idx] < 0.0, "cathodal current at TP9 must hyperpolarize region lTCI directly under electrode"

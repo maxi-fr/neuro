@@ -1,6 +1,6 @@
 # The SimNIBS field model — a FEM `gamma` for the JR nodes
 
-**Status:** implemented, but the FEM solve fails. The code path is complete and tested; the registration gate passes, but SimNIBS crashes silently on Windows during KSP setup (an out-of-memory or PETSc failure). The FEM results tables below are therefore empty.
+**Status:** implemented and working. The full pipeline (registration gate, PETSc/hypre FEM solve, leadfield generation) executes successfully on Windows.
 
 `gamma_model: simnibs` reads a precomputed SimNIBS FEM leadfield instead of the homogeneous
 Coulomb kernel of [`tes_field_geometry.md`](tes_field_geometry.md) §9. It exists to answer the
@@ -130,8 +130,8 @@ component) is inverted relative to expectation, and it must say so rather than s
 
 | | analytical | `phi` | `e_normal` |
 | --- | --- | --- | --- |
-| EZ mean drive, −1 mA (raw units) | −1.4681 mV | *(to fill)* | *(to fill)* |
-| derived `simnibs_scale` | 1.0 | *(to fill)* | *(to fill)* |
+| EZ mean drive, −1 mA (raw units) | −1.4681 mV | +54.116 mV | +0.01160 V/m |
+| derived `simnibs_scale` | 1.0 | 0.027129 | 126.53 |
 
 ## 6. What to compare once it runs
 
