@@ -7,13 +7,13 @@ MATLAB_EXE = Path(r"C:\Program Files\MATLAB\R2023b\bin\matlab.exe")
 MATLAB_SCRIPT_DIR = Path(__file__).parent.parent / "matlab"
 
 
-def run_roast_gamma() -> None:
-    """Execute the MATLAB ROAST gamma matrix generator script."""
+def run_roast_leadfield_3d() -> None:
+    """Execute the MATLAB ROAST 3D leadfield generator script."""
     if not MATLAB_EXE.exists():
         msg = f"MATLAB executable not found at: {MATLAB_EXE}"
         raise FileNotFoundError(msg)
 
-    matlab_cmd = f"addpath('{MATLAB_SCRIPT_DIR.as_posix()}'); run_current_montage_gamma;"
+    matlab_cmd = f"addpath('{MATLAB_SCRIPT_DIR.as_posix()}'); generate_roast_leadfield_3d;"
     cmd = [
         str(MATLAB_EXE),
         "-batch",
@@ -25,4 +25,4 @@ def run_roast_gamma() -> None:
 
 
 if __name__ == "__main__":
-    run_roast_gamma()
+    run_roast_leadfield_3d()

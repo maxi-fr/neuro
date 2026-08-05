@@ -10,7 +10,7 @@ experiments:
       target_electrode:
       - TP9
       - CP5
-      - EX_NECK
+      - EX8
       gamma_spread: 15.0
       gamma_model: "analytical"
       K: 0.60

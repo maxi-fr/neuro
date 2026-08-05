@@ -268,29 +268,67 @@ def resting_state(conn: Connectome, dt: float, settle_s: float = 2.0) -> FloatAr
     return x_traj[:, :, -1].copy()
 
 
-def project_control(u: FloatArray, gamma_2d: FloatArray, n_controls: int) -> FloatArray:
-    """Project per-electrode tES current ``u`` onto nodes via ``gamma``.
+def project_control(  # noqa: C901, PLR0911
+    u: FloatArray,
+    gamma_2d: FloatArray,
+    n_controls: int,
+    *,
+    reduction_method: str = "cortical_normal",
+    region_normals: FloatArray | None = None,
+) -> FloatArray:
+    """Project per-electrode tES current ``u`` onto nodes via ``gamma`` or 3D leadfield.
 
     Parameters
     ----------
     u:
         Per-electrode control input, shape ``(n_controls,)``.
     gamma_2d:
-        Steering matrix of shape ``(n_controls, n_nodes)``.
+        Steering matrix of shape ``(n_controls, n_nodes)`` or 3D leadfield of shape
+        ``(n_controls, n_nodes, 3)``.
     n_controls:
         Number of control electrodes (must match ``gamma_2d.shape[0]``).
+    reduction_method:
+        Scalar reduction method when 3D leadfield is used: 'cortical_normal', 'magnitude',
+        'x', 'y', or 'z'.
+    region_normals:
+        Region surface unit normal vectors of shape ``(n_nodes, 3)``, required if
+        ``reduction_method='cortical_normal'`` with a 3D leadfield.
 
     Returns
     -------
     FloatArray
-        Node-level stimulation ``u @ gamma_2d`` of shape ``(n_nodes,)``.
+        Node-level stimulation ``u_node`` of shape ``(n_nodes,)``.
     """
+    n_nodes = gamma_2d.shape[1]
     if not np.any(u):
-        return np.zeros(gamma_2d.shape[1], dtype=np.float64)
+        return np.zeros(n_nodes, dtype=np.float64)
     if u.size != n_controls:
         msg = f"control has {u.size} electrodes but gamma has {n_controls}"
         raise ValueError(msg)
-    return u @ gamma_2d
+
+    if gamma_2d.ndim == 2:  # noqa: PLR2004
+        return u @ gamma_2d
+
+    if gamma_2d.ndim == 3:  # noqa: PLR2004
+        e_node = np.tensordot(u, gamma_2d, axes=(0, 0))
+        if reduction_method == "cortical_normal":
+            if region_normals is None or region_normals.shape != (n_nodes, 3):
+                msg = f"region_normals of shape ({n_nodes}, 3) required for 'cortical_normal' reduction."
+                raise ValueError(msg)
+            return (e_node * region_normals).sum(axis=1)
+        if reduction_method == "magnitude":
+            return np.linalg.norm(e_node, axis=1)
+        if reduction_method == "x":
+            return e_node[:, 0]
+        if reduction_method == "y":
+            return e_node[:, 1]
+        if reduction_method == "z":
+            return e_node[:, 2]
+        msg = f"Unknown reduction_method: {reduction_method}"
+        raise ValueError(msg)
+
+    msg = f"Unsupported leadfield dimensions: {gamma_2d.ndim}"
+    raise ValueError(msg)
 
 
 _ZERO_SUM_CURRENT_ATOL = 1e-6
@@ -349,7 +387,10 @@ class JansenRitDynamics(Dynamics[NoLog]):
         self.net_params = replace(params, A=a_vec)
         self.params_tuple = self.net_params.to_numba_tuple(n_nodes)
 
-        self.gamma_2d = np.atleast_2d(gamma)
+        self.gamma_2d = conn.leadfield_3d if conn.leadfield_3d is not None else np.atleast_2d(gamma)
+        self.region_normals = conn.region_normals
+        self.reduction_method = conn.reduction_method
+
         self.n_controls = self.gamma_2d.shape[0]
         self.n_inputs = self.n_controls
 
@@ -404,7 +445,13 @@ class JansenRitDynamics(Dynamics[NoLog]):
 
         if self.enforce_zero_sum_current:
             _assert_zero_sum_current(u)
-        u_node = project_control(u, self.gamma_2d, self.n_controls)
+        u_node = project_control(
+            u,
+            self.gamma_2d,
+            self.n_controls,
+            reduction_method=self.reduction_method,
+            region_normals=self.region_normals,
+        )
         xi = self.rng.standard_normal(n_nodes)
         return _heun_step_jit(x, u_node, self.params_tuple, self.dt, xi, coupling)
 

@@ -287,8 +287,19 @@ The extracephalic-return rows in §5 and §6 are reachable from the shipped conf
 
 ### 9.1 A virtual extracephalic return, and why it is not a KCL loophole
 
-`EXTRACEPHALIC_ELECTRODES_MM` adds one off-head electrode, `EX_NECK` at connectome coordinate
-`[−60, 0, −180]` mm, usable only with `gamma_model: analytical`. With a montage
+`EXTRACEPHALIC_ELECTRODES_MM` adds two return electrodes, usable only with
+`gamma_model: analytical`:
+
+- `EX_NECK` at connectome coordinate `[−60, 0, −180]` mm — the original off-head return every
+  calibrated config in `configs/simulation/` was tuned against. It has no ROAST counterpart.
+- `EX8` at `[−58.75, −41.54, −54.07]` mm — the ROAST 10-05 site of the same name, the return the
+  `roast_3d` leadfield is referenced to. Taken from ROAST's `capInfo.xlsx` and mapped
+  unit-vector → connectome frame → `SCALP_RADIUS_MM`, exactly as the 62 scalp sensors are. It sits
+  on the lower right head (below the inion), contralateral to a left-hemisphere CP5/TP9 cathode,
+  following Yu et al. (2024). Note it is *not* extracephalic despite living in this map.
+
+Switching a config from `EX_NECK` to `EX8` moves the return ~140 mm and changes the node drive, so
+it invalidates that config's calibration. With a montage
 `u = [u₁ … uₙ, u_E]` and `u_E = −Σuᵢ`, the node drive is
 
 ```text

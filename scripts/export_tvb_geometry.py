@@ -7,7 +7,7 @@ from pathlib import Path
 import numpy as np
 from scipy.io import savemat
 
-from neuro.connectome import Connectome, centres_to_mni_ras
+from neuro.connectome import Connectome, centres_to_mni_ras, sensor_positions_mm
 
 with warnings.catch_warnings():
     warnings.simplefilter("ignore", UserWarning)
@@ -49,13 +49,34 @@ def main() -> None:
     centres_ras = centres_to_mni_ras(conn.centres)
     surface_ras = centres_to_mni_ras(vertices)
 
+    v_normals = np.asarray(surface.vertex_normals, dtype=np.float64)
+    n_regions = len(conn.region_labels)
+    region_normals_conn = np.zeros((n_regions, 3), dtype=np.float64)
+    for r in range(n_regions):
+        v_mask = region_of_vertex == r
+        if np.any(v_mask):
+            mean_n = v_normals[v_mask].sum(axis=0)
+            norm = np.linalg.norm(mean_n)
+            if norm > 0:
+                region_normals_conn[r] = mean_n / norm
+    region_normals_ras = centres_to_mni_ras(region_normals_conn)
+
+    sensor_labels, sensor_conn = sensor_positions_mm()
+    if not np.array_equal(sensor_labels, conn.channel_labels):
+        msg = "sensor file labels do not match the connectome's channel labels"
+        raise ValueError(msg)
+    channel_positions_ras = centres_to_mni_ras(sensor_conn)
+
     np.savez(
         args.out,
         centres_mni_ras=centres_ras,
         region_labels=conn.region_labels,
         surface_mni_ras=surface_ras,
         surface_region=region_of_vertex,
+        region_normals_mni_ras=region_normals_ras,
+        region_normals_conn=region_normals_conn,
         channel_labels=conn.channel_labels,
+        channel_positions_mni_ras=channel_positions_ras,
         gain=conn.gain,
     )
     mat_out = args.out.with_suffix(".mat")
@@ -66,7 +87,10 @@ def main() -> None:
             "region_labels": np.asarray(conn.region_labels, dtype=object),
             "surface_mni_ras": surface_ras,
             "surface_region": region_of_vertex,
+            "region_normals_mni_ras": region_normals_ras,
+            "region_normals_conn": region_normals_conn,
             "channel_labels": np.asarray(conn.channel_labels, dtype=object),
+            "channel_positions_mni_ras": channel_positions_ras,
             "gain": conn.gain,
         },
     )

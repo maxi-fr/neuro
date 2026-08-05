@@ -132,25 +132,20 @@ montages = { ...
 ```python
 from neuro.connectome import Connectome
 
-# 1. Load precomputed FEM leadfield (Yu et al. ROAST)
-conn_fem = Connectome.from_config({
-    "speed": 50.0,
-    "K": 0.60,
-    "target_electrode": ["TP9", "CP5"],
-    "gamma_model": "field",
-    "leadfield_path": "data/roast_gamma.npz",
-})
-
-```python
-# 2. Use biophysical field model with cortical-normal projection
+# Load the precomputed ROAST 3D leadfield (63 channels x 76 nodes x 3).
+# reduction_method picks the E_i -> U_tes_i equation; 'cortical_normal' is E dot n.
 conn_field = Connectome.from_config({
     "speed": 50.0,
     "K": 0.60,
-    "target_electrode": ["TP9", "EX_NECK"],
-    "gamma_model": "field",  # Computes E dot n over TVB surface mesh
-    "polarization_length_mm": 534.0,
+    "gamma_model": "roast_3d",
+    "leadfield_path": "data/roast_leadfield_3d.npz",
+    "reduction_method": "cortical_normal",
 })
 ```
+
+The control vector is per-channel current over `conn_field.control_channel_labels` (the 62 scalp
+electrodes followed by the `Ex8` return), and must sum to zero. `target_electrode` does not apply
+to `roast_3d`; it selects electrodes for the `analytical` Coulomb model only.
 
 ---
 

@@ -12,7 +12,7 @@ dynamics:
   initial_state: rest
   connectome:
     speed: 50.0
-    target_electrode: [TP9, CP5, EX_NECK]
+    target_electrode: [TP9, CP5, EX8]
     gamma_spread: 15.0
     K: 0.60
   params:
@@ -41,7 +41,7 @@ estimator: {class_path: simulate.estimator.IdentityEstimator, dt: 0.0001}
 controller:
   class_path: neuro.control.WaveformController
   dt: 0.0001
-  n_u: 3              # one per target_electrode (TP9, CP5 cathodes + EX_NECK extracephalic return)
+  n_u: 3              # one per target_electrode (TP9, CP5 cathodes + EX8 return)
   input_type: ras   # ras | prbs | multisine
   amp: 3.0
   # Mixed block lengths, drawn per block. 10 ms is one predictor step (plant dt 1e-4 x downsample

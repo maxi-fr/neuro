@@ -12,7 +12,7 @@ dynamics:
   initial_state: rest
   connectome:
     speed: 50.0
-    target_electrode: [TP9, CP5, EX_NECK]
+    target_electrode: [TP9, CP5, EX8]
     gamma_spread: 15.0
     K: 0.60
     gamma_model: "analytical"
