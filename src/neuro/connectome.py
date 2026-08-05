@@ -23,7 +23,6 @@ with warnings.catch_warnings():
     from tvb.datatypes.projections import ProjectionSurfaceEEG
     from tvb.datatypes.region_mapping import RegionMapping
     from tvb.datatypes.sensors import SensorsEEG
-    from tvb.datatypes.surfaces import CorticalSurface
 
 StrArray = npt.NDArray[np.str_]
 
@@ -43,11 +42,7 @@ class _ConnectomeConfig(StrictConfig):
     K: float = 1.0
     target_electrode: str | int | list[str | int] | None = None
     gamma_spread: float | list[float] = 15.0
-    gamma_model: Literal["analytical", "simnibs", "field"] = "analytical"
-    leadfield_path: str | Path | None = None
-    simnibs_quantity: Literal["phi", "e_normal"] = "phi"
-    simnibs_scale: float = 1.0
-    polarization_length_mm: float = 534.0
+    gamma_model: Literal["analytical"] = "analytical"
 
 
 @dataclass(frozen=True)
@@ -204,11 +199,6 @@ class Connectome:
                 target_electrode=resolved if len(resolved) > 1 else resolved[0],
                 spread=cfg.gamma_spread,
                 model=cfg.gamma_model,
-                leadfield_path=cfg.leadfield_path,
-                region_labels=region_labels,
-                simnibs_quantity=cfg.simnibs_quantity,
-                simnibs_scale=cfg.simnibs_scale,
-                polarization_length_mm=cfg.polarization_length_mm,
             )
 
         return cls(
@@ -315,89 +305,6 @@ def centres_to_mni_ras(coords: FloatArray) -> FloatArray:
     return np.column_stack([-coords[:, 1], coords[:, 0], coords[:, 2]])
 
 
-def _simnibs_gamma_fn(
-    leadfield_path: str | Path | None,
-    quantity: Literal["phi", "e_normal"],
-    scale: float,
-    region_labels: StrArray,
-) -> Callable[[str, float], FloatArray]:
-    """Build the per-electrode gamma of the ``simnibs`` model: a precomputed FEM row.
-
-    Row ``k`` is the field of +1 mA at electrode ``k`` referenced against the montage's return
-    electrode, so the return row is zero and the montage sum is exact under ``sum(u) = 0``.
-    ``scale`` converts the file's physical units (mV/mA for ``phi``, V/m per mA for
-    ``e_normal``) into the membrane-potential offset the Jansen-Rit sigmoid expects.
-    """
-    if leadfield_path is None:
-        msg = "gamma_model='simnibs' needs leadfield_path; generate it with scripts/generate_simnibs_leadfield.py."
-        raise ValueError(msg)
-
-    with np.load(leadfield_path) as data:
-        rows = np.asarray(data[f"gamma_{quantity}"], dtype=np.float64)
-        electrode_labels = data["electrode_labels"].astype(np.str_)
-        file_regions = data["region_labels"].astype(np.str_)
-
-    if not np.array_equal(file_regions, region_labels):
-        msg = f"SimNIBS regions in {leadfield_path} do not match the connectome's {len(region_labels)} regions."
-        raise ValueError(msg)
-
-    electrode_idx = {str(label).upper(): idx for idx, label in enumerate(electrode_labels)}
-
-    def _row(electrode: str, spread: float) -> FloatArray:  # noqa: ARG001
-        target = electrode.upper()
-        if target not in electrode_idx:
-            msg = f"Electrode {electrode} not found in {leadfield_path}."
-            raise ValueError(msg)
-        return rows[electrode_idx[target]] * scale
-
-    return _row
-
-
-def _field_gamma_fn(
-    sensors_file: str,
-    polarization_length_mm: float,
-) -> Callable[[str, float], FloatArray]:
-    """Build the per-electrode gamma of the ``field`` model: a Coulomb electric field.
-
-    Computes the mean cortical-normal component of the applied E-field over each region,
-    scaled by polarization length to give a membrane-potential offset.
-    """
-    sensor_labels, sensor_positions = sensor_positions_mm(sensors_file)
-    positions = {str(label).upper(): pos for label, pos in zip(sensor_labels, sensor_positions, strict=True)}
-    positions |= {label: np.asarray(pos, dtype=np.float64) for label, pos in EXTRACEPHALIC_ELECTRODES_MM.items()}
-
-    surf = CorticalSurface.from_file()
-    vertices = np.asarray(surf.vertices, dtype=np.float64)
-    normals = np.asarray(surf.vertex_normals, dtype=np.float64)
-    rmap = np.asarray(RegionMapping.from_file(_REGION_MAPPING_FILE).array_data, dtype=np.int64)
-
-    n_regions = int(rmap.max()) + 1
-
-    def _field(electrode: str, spread: float) -> FloatArray:
-        target = electrode.upper()
-        if target not in positions:
-            msg = f"Electrode {electrode} not found in sensors."
-            raise ValueError(msg)
-
-        r_minus_p = vertices - positions[target]
-        dists_sq = np.sum(r_minus_p**2, axis=1)
-
-        # E_e(r) = 100 * (r - p_e) / (|r - p_e|^2 + s^2)^(3/2)
-        factor = 100.0 / np.power(dists_sq + spread**2, 1.5)
-        # Compute cortical-normal component
-        e_dot_n = np.sum(r_minus_p * normals, axis=1) * factor
-
-        gamma = np.zeros(n_regions, dtype=np.float64)
-        for r in range(n_regions):
-            mask = rmap == r
-            if np.any(mask):
-                gamma[r] = np.mean(e_dot_n[mask])
-
-        return gamma * polarization_length_mm
-
-    return _field
-
-
 def _coulomb_potential_fn(centres: FloatArray, sensors_file: str) -> Callable[[str, float], FloatArray]:
     """Build the per-electrode gamma of the ``analytical`` model: a Coulomb volume potential.
 
@@ -419,17 +326,12 @@ def _coulomb_potential_fn(centres: FloatArray, sensors_file: str) -> Callable[[s
     return _potential
 
 
-def _compute_gamma(  # noqa: PLR0913
+def _compute_gamma(
     centres: FloatArray,
     target_electrode: str | Sequence[str] = "CP5",
     spread: float | Sequence[float] = 15.0,
     sensors_file: str = _SENSORS_FILE,
-    model: Literal["analytical", "simnibs", "field"] = "analytical",
-    leadfield_path: str | Path | None = None,
-    region_labels: StrArray | None = None,
-    simnibs_quantity: Literal["phi", "e_normal"] = "phi",
-    simnibs_scale: float = 1.0,
-    polarization_length_mm: float = 0.2,
+    model: Literal["analytical"] = "analytical",  # noqa: ARG001
 ) -> FloatArray:
     """Compute the spatial projection gamma for tES stimulation.
 
@@ -446,20 +348,8 @@ def _compute_gamma(  # noqa: PLR0913
     sensors_file
         Filename of the EEG sensors dataset.
     model
-        Current-to-field model: 'analytical' (Option B: Coulomb volume potential of a point source in
-        a homogeneous medium, which superposes and so stays valid for a montage),
-        'simnibs' (Option C: a precomputed SimNIBS FEM leadfield read from ``leadfield_path``), or
-        'field' (Option D: cortical-normal component of the applied electric field).
-    leadfield_path
-        Path to an external NPZ/NPY leadfield matrix file; required for 'simnibs'.
-    region_labels
-        Region names, used by 'simnibs' to check the leadfield file's region order.
-    simnibs_quantity
-        Which field quantity the 'simnibs' model drives on: the FEM potential at the region
-        centres ('phi') or the mean cortical-normal E-field over the region ('e_normal').
-    simnibs_scale
-        Multiplier turning the 'simnibs' leadfield's physical units into a membrane-potential
-        offset in mV.
+        Current-to-field model: 'analytical' (Coulomb volume potential of a point source in
+        a homogeneous medium).
 
     Returns
     -------
@@ -467,15 +357,7 @@ def _compute_gamma(  # noqa: PLR0913
         Spatial projection matrix of shape ``(N_regions,)`` for a single electrode, or
         ``(n_electrodes, N_regions)`` for a montage.
     """
-    if model == "simnibs":
-        if region_labels is None:
-            msg = "gamma_model='simnibs' needs region_labels."
-            raise ValueError(msg)
-        _gamma_one = _simnibs_gamma_fn(leadfield_path, simnibs_quantity, simnibs_scale, region_labels)
-    elif model == "field":
-        _gamma_one = _field_gamma_fn(sensors_file, polarization_length_mm)
-    else:
-        _gamma_one = _coulomb_potential_fn(centres, sensors_file)
+    _gamma_one = _coulomb_potential_fn(centres, sensors_file)
 
     if isinstance(target_electrode, str):
         if not isinstance(spread, (int, float)):

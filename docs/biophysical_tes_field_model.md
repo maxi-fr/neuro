@@ -132,12 +132,12 @@ montages = { ...
 ```python
 from neuro.connectome import Connectome
 
-# 1. Load precomputed FEM leadfield (Yu et al. or SimNIBS e_normal)
+# 1. Load precomputed FEM leadfield (Yu et al. ROAST)
 conn_fem = Connectome.from_config({
     "speed": 50.0,
     "K": 0.60,
     "target_electrode": ["TP9", "CP5"],
-    "gamma_model": "simnibs",
+    "gamma_model": "field",
     "leadfield_path": "data/roast_gamma.npz",
 })
 

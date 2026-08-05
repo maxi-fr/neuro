@@ -45,7 +45,7 @@ def convert_roast_mat_to_npz(
 
     if len(region_labels) == 0:
         # Fallback to loading standard TVB geometry region labels
-        geom_path = Path("data/simnibs/geometry.npz")
+        geom_path = Path("data/tvb_geometry.npz")
         if geom_path.exists():
             with np.load(geom_path) as geom:
                 region_labels = list(geom["region_labels"].astype(str))

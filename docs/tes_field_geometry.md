@@ -374,12 +374,7 @@ It is deferred, not rejected, because:
 So: do the closed-loop work on `analytical`, and treat SimNIBS as the validity check for the
 write-up. (Yu 2024 used ROAST, the same class of tool.)
 
-**Update.** That validity check has since been built, as the third `gamma_model`, `simnibs` — see
-[`simnibs_field_model.md`](simnibs_field_model.md). It landed as this section predicted: a
-precomputed matrix, `analytical` still the default, nothing downstream touched. Two of the four
-objections above resolved rather than held — a head-and-shoulders mesh (Ernie Extended) exists for
-the extracephalic pad, and the registration witness of §1b is reused as a hard gate before the FEM
-runs.
+**Update.** FEM leadfield generation is performed via ROAST in MATLAB (`matlab/generate_roast_gamma.m`), outputting `roast_gamma.npz` for the precomputed matrix model.
 
 ### 9.5 The amplitude-threshold controller
 

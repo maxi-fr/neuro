@@ -155,9 +155,3 @@ not-subscriptable = "error"          # Trying to index an object that doesn't su
 [[tool.ty.overrides]]
 include = ["notebooks/**"]
 rules = { unresolved-reference = "ignore" }
-
-# SimNIBS ships cp311 wheels only, so it cannot be installed alongside this project (py3.13).
-# This script runs under SimNIBS's own interpreter; here its imports are unresolvable by design.
-[[tool.ty.overrides]]
-include = ["scripts/generate_simnibs_leadfield.py"]
-rules = { unresolved-import = "ignore", unresolved-attribute = "ignore", invalid-argument-type = "ignore" }

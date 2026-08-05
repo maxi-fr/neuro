@@ -18,19 +18,14 @@ _REGION_MAPPING_FILE = "regionMapping_16k_76.txt"
 
 
 def parse_args() -> argparse.Namespace:
-    """Parse command-line arguments for the geometry export."""
+    """Parse command-line arguments for the TVB geometry export."""
     parser = argparse.ArgumentParser(
-        description="Export the TVB connectome's geometry in MNI RAS for SimNIBS.",
-        epilog=(
-            "Stage 1 of the SimNIBS field model: runs in this project's venv (TVB, no SimNIBS) "
-            "and writes the interchange file that scripts/generate_simnibs_leadfield.py reads "
-            "under simnibs_python. See docs/simnibs_field_model.md."
-        ),
+        description="Export the TVB connectome's geometry in MNI RAS for ROAST and field models.",
     )
     parser.add_argument(
         "--out",
         type=Path,
-        default=Path("data/simnibs/geometry.npz"),
+        default=Path("data/tvb_geometry.npz"),
         help="Path for the geometry NPZ.",
     )
     return parser.parse_args()
