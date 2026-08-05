@@ -23,6 +23,7 @@ dependencies = [
     "plotly>=6.8.0",
     "pandas>=3.0.3",
     "seaborn>=0.13.2",
+    "h5py>=3.16.0",
 ]
 
 [dependency-groups]

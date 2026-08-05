@@ -5,6 +5,7 @@ import warnings
 from pathlib import Path
 
 import numpy as np
+from scipy.io import savemat
 
 from neuro.connectome import Connectome, centres_to_mni_ras
 
@@ -49,16 +50,34 @@ def main() -> None:
         raise ValueError(msg)
 
     args.out.parent.mkdir(parents=True, exist_ok=True)
+
+    centres_ras = centres_to_mni_ras(conn.centres)
+    surface_ras = centres_to_mni_ras(vertices)
+
     np.savez(
         args.out,
-        centres_mni_ras=centres_to_mni_ras(conn.centres),
+        centres_mni_ras=centres_ras,
         region_labels=conn.region_labels,
-        surface_mni_ras=centres_to_mni_ras(vertices),
+        surface_mni_ras=surface_ras,
         surface_region=region_of_vertex,
         channel_labels=conn.channel_labels,
         gain=conn.gain,
     )
-    print(f"Wrote {args.out}: {len(conn.region_labels)} regions, {len(vertices)} vertices, {conn.gain.shape} gain")
+    mat_out = args.out.with_suffix(".mat")
+    savemat(
+        mat_out,
+        {
+            "centres_mni_ras": centres_ras,
+            "region_labels": np.asarray(conn.region_labels, dtype=object),
+            "surface_mni_ras": surface_ras,
+            "surface_region": region_of_vertex,
+            "channel_labels": np.asarray(conn.channel_labels, dtype=object),
+            "gain": conn.gain,
+        },
+    )
+    print(
+        f"Wrote {args.out} and {mat_out}: {len(conn.region_labels)} regions, {len(vertices)} vertices, {conn.gain.shape} gain"
+    )
 
 
 if __name__ == "__main__":

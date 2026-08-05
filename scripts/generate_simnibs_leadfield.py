@@ -168,14 +168,10 @@ def run_basis_simulation(args: argparse.Namespace, return_centre: np.ndarray, ac
     electrode2.dimensions = list(args.pad_mm)
     electrode2.thickness = 5
 
-    subid = simnibs.SubjectFiles(subpath=str(args.m2m)).subid
-    msh_path = Path(session.pathfem) / f"{subid}_TDCS_1_scalar.msh"
-    if msh_path.exists():
-        print(f"Reusing precomputed FEM result: {msh_path}")
-        return msh_path
-
     simnibs.run_simnibs(session)
-    return msh_path
+
+    subid = simnibs.SubjectFiles(subpath=str(args.m2m)).subid
+    return Path(session.pathfem) / f"{subid}_TDCS_1_scalar.msh"
 
 
 def reduce_phi(mesh_path: Path, centres_sub: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -238,16 +234,21 @@ def reduce_e_normal(
 
 
 def recommended_scale(rows: np.ndarray, region_labels: np.ndarray) -> float:
-    """Derive the config's ``simnibs_scale`` from the analytical model's EZ dose anchor."""
+    """Derive the config's ``simnibs_scale`` from the analytical model's EZ dose anchor.
+
+    Calibrating -1 mA at the first stimulating electrode to the analytical model's mean EZ drive
+    makes the dose-response tables directly comparable, so what SimNIBS contributes is the
+    spatial pattern rather than an arbitrary overall gain.
+    """
     ez = [int(np.flatnonzero(region_labels == name)[0]) for name in _EZ_REGIONS]
-    ez_mean = float(rows[0][ez].mean())
-    if ez_mean == 0.0:
-        msg = "mean EZ field is zero; cannot derive calibration scale"
-        raise ValueError(msg)
     drive = float((-rows[0])[ez].mean())
     if drive >= 0.0:
-        print(f"WARNING: cathodal current drives the EZ by {drive:+.4g} (expected negative)")
-    return _ANALYTICAL_EZ_ANCHOR_MV / abs(ez_mean)
+        msg = (
+            f"cathodal current drives the EZ by {drive:+.4g} (expected negative): "
+            "the field's sign convention is inverted relative to the analytical model"
+        )
+        raise ValueError(msg)
+    return _ANALYTICAL_EZ_ANCHOR_MV / abs(drive)
 
 
 def main() -> None:

@@ -1,6 +1,15 @@
 # The SimNIBS field model — a FEM `gamma` for the JR nodes
 
-**Status:** implemented and working. The full pipeline (registration gate, PETSc/hypre FEM solve, leadfield generation) executes successfully on Windows.
+**Status:** blocked — the FEM solve still does not complete. The registration gate passes, but the
+only run on disk (`data/simnibs/fem/basis_TP9/`) dies during the linear solve: the log ends at
+`Time to set up KSP`, `fields_summary.txt` is empty, and **no `.msh` was written**. No leadfield
+NPZ has ever been produced and `gamma_model: simnibs` has never been runnable.
+
+The drive figures in §5 are **unverified** — no artifact on disk can reproduce them, and they are
+retained only as a claim to re-check once a solve finishes. Treat them as provisional.
+
+Superseded in practice: the ROAST route (`matlab/generate_roast_gamma.m`) reached a working
+montage-level field first, and it is the tool Yu 2024 actually used.
 
 `gamma_model: simnibs` reads a precomputed SimNIBS FEM leadfield instead of the homogeneous
 Coulomb kernel of [`tes_field_geometry.md`](tes_field_geometry.md) §9. It exists to answer the
@@ -130,8 +139,18 @@ component) is inverted relative to expectation, and it must say so rather than s
 
 | | analytical | `phi` | `e_normal` |
 | --- | --- | --- | --- |
-| EZ mean drive, −1 mA (raw units) | −1.4681 mV | +54.116 mV | +0.01160 V/m |
-| derived `simnibs_scale` | 1.0 | 0.027129 | 126.53 |
+| EZ mean drive, −1 mA (raw units) | −1.4681 mV | *(unverified)* +54.116 mV | *(unverified)* +0.01160 V/m |
+| derived `simnibs_scale` | 1.0 | *(not reached)* | *(not reached)* |
+
+Both FEM figures were reported **positive**, i.e. cathodal current depolarising the EZ. If that
+survives a completed solve, note that it means different things for the two quantities:
+
+- For `e_normal` the sign is physical, and SimNIBS's middle-GM interpolation negating the normal
+  component is the obvious suspect.
+- For `phi` the sign of a row's EZ *mean* is **gauge-dependent** — a potential is fixed only up to
+  an additive constant, so `recommended_scale`'s `drive >= 0` test is ill-posed for `phi` and may
+  trip on a perfectly good solve. Only differences within a row are meaningful. This is an
+  independent reason to prefer a field quantity over `phi`.
 
 ## 6. What to compare once it runs
 
