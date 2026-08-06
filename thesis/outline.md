@@ -6,6 +6,24 @@
 
 ## Brain Network Modeling
 
+### JR model
+
+#### pyramidal structure
+
+#### state space formulation
+
+### connectome
+
+### electrical interpretation
+
+#### each node is a dipole
+
+#### primary scondary currents
+
+#### EEG
+
+#### stimulation model
+
 ## Prediction Model
 
 ### ARX

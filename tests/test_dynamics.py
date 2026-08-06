@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from dataclasses import replace
-
 import numpy as np
 import pytest
 from simulate.estimator import IdentityEstimator
@@ -13,6 +11,7 @@ from neuro.connectome import Connectome
 from neuro.control import ZeroController
 from neuro.jansen_rit import JansenRitDynamics, JansenRitParams, simulate_network
 from neuro.measurement import EEGMeasurement
+from neuro.stimulation import StimulationModel
 
 _DT = 1e-4
 _N_REGIONS_TVB = 76
@@ -42,7 +41,6 @@ def _toy_connectome(n_nodes: int = 3) -> Connectome:
         channel_labels=channels,
         region_index={label: idx for idx, label in enumerate(labels)},
         channel_index={label: idx for idx, label in enumerate(channels)},
-        gamma=np.zeros((1, n_nodes)),
     )
 
 
@@ -105,13 +103,28 @@ def test_dynamics_from_config_builds_network() -> None:
     assert np.isfinite(out).all()
 
 
+class _ZeroStim(StimulationModel):
+    """Two-electrode montage that drives nothing, so only the KCL check is under test."""
+
+    def __init__(self, n_nodes: int) -> None:
+        """Build a zero projection for a 2-electrode montage over ``n_nodes`` regions."""
+        self.n_controls = 2
+        self.control_labels = np.array(["a", "b"], dtype=np.str_)
+        self.n_nodes = n_nodes
+
+    def project(self, u: np.ndarray) -> np.ndarray:
+        """Zero drive, whatever the current."""
+        del u
+        return np.zeros(self.n_nodes)
+
+
 def _two_electrode_dyn(*, enforce_zero_sum_current: bool = True) -> JansenRitDynamics:
-    """Fast synthetic plant with a 2-electrode montage (zero gamma; only the KCL check matters)."""
-    conn = replace(_toy_connectome(3), gamma=np.zeros((2, 3)))
+    """Fast synthetic plant with a 2-electrode montage."""
     return JansenRitDynamics(
         dt=_DT,
         params=JansenRitParams(),
-        conn=conn,
+        conn=_toy_connectome(3),
+        stim=_ZeroStim(3),
         seed=7,
         enforce_zero_sum_current=enforce_zero_sum_current,
     )

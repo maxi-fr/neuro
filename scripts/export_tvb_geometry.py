@@ -7,7 +7,8 @@ from pathlib import Path
 import numpy as np
 from scipy.io import savemat
 
-from neuro.connectome import Connectome, centres_to_mni_ras, sensor_positions_mm
+from neuro.connectome import Connectome
+from neuro.geometry import centres_to_mni_ras, sensor_positions_mm
 
 with warnings.catch_warnings():
     warnings.simplefilter("ignore", UserWarning)

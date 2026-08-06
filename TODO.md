@@ -1,10 +1,12 @@
 # TODO list
 
+* write chapter on Jansen-Rit model
 * Optuna sweep with closed-loop MPC performance as metric - this should show if the other losses are helpful
 * Investigate average reciprocal leadfield (was not so insightful)
 * Why can I not create a Leadfield matrix for stimulation?
 
-* refactor out stimulation model, own config stuff etc.
+* split the EEG forward operator out of connectome.py into eeg.py, so EEGMeasurement stops
+  constructing a whole Connectome to read one matrix
 * generally seperate stuff more: into own folders even
 
 * For simulate package

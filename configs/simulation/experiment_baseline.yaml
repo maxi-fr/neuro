@@ -14,13 +14,11 @@ experiments:
     initial_state: rest
     connectome:
       speed: 50.0
-      target_electrode:
-      - TP9
-      - CP5
-      - EX8
-      gamma_spread: 15.0
-      gamma_model: "analytical"
       K: 0.60
+    stimulation:
+      model: analytical
+      electrodes: [TP9, CP5, EX8]
+      spread: 15.0
     params:
       sigma: 280.0
       A:

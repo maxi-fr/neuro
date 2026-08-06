@@ -127,25 +127,52 @@ montages = { ...
     'outputFile', 'data/roast_gamma.mat');
 ```
 
-### B. Python Integration (`Connectome`)
+### B. Python Integration (`neuro.stimulation`)
 
-```python
-from neuro.connectome import Connectome
+Each model is a `StimulationModel` built from its own strictly-validated config block, which sits
+under `dynamics:` next to `connectome:` and is discriminated on `model:`:
 
-# Load the precomputed ROAST 3D leadfield (63 channels x 76 nodes x 3).
-# reduction_method picks the E_i -> U_tes_i equation; 'cortical_normal' is E dot n.
-conn_field = Connectome.from_config({
-    "speed": 50.0,
-    "K": 0.60,
-    "gamma_model": "roast_3d",
-    "leadfield_path": "data/roast_leadfield_3d.npz",
-    "reduction_method": "cortical_normal",
-})
+```yaml
+dynamics:
+  connectome: {speed: 50.0, K: 0.60}
+  stimulation:
+    model: roast_3d
+    leadfield_path: data/roast_leadfield_3d.npz
+    electrodes: [TP9, CP5, EX8]   # omit for all 63 rows in the file
 ```
 
-The control vector is per-channel current over `conn_field.control_channel_labels` (the 62 scalp
-electrodes followed by the `Ex8` return), and must sum to zero. `target_electrode` does not apply
-to `roast_3d`; it selects electrodes for the `analytical` Coulomb model only.
+The four models are `none`, `analytical` (Coulomb point source, `electrodes` + `spread`),
+`roast_3d` (above) and `yu_signed` (`path` + `electrodes`); each rejects the others' keys rather
+than ignoring them. `electrodes` selects and orders the montage on every model, so swapping
+`model:` swaps the physics while holding the control problem fixed.
+
+The control vector is the per-electrode current over `stim.control_labels`, and must sum to zero.
+For `roast_3d` the last row is the `Ex8` return the leadfield is referenced to; for `yu_signed`
+the stored `-1 mA` pair rows are flipped at load to a `+1 mA` convention and an all-zero `EX8`
+row is appended, so both models present the same electrode-level basis.
+
+The leadfield holds the field in V/m per +1 mA at each channel, so $\mathbf{E} \cdot \hat{\mathbf{n}}$
+comes out in V/m -- that is mV/mm, and `Roast3DStim.polarization_length_mm` ($\lambda$ = 0.35 mm, the
+midpoint of section 3's range) converts it to the mV the plant adds to its membrane potential.
+$\lambda$ is a tissue property rather than a per-run choice, so it is a class attribute and not a
+config key.
+
+The cortical normal is the only reduction `roast_3d` offers, so there is no `reduction:` key. An
+unsigned $\|\mathbf{E}\|$ reduction was dropped: it is even in the current, $\|-\mathbf{E}\| =
+\|\mathbf{E}\|$, so it cannot tell an anode from a cathode, it is non-negative everywhere and so
+can only ever excite, and it does not superpose. Because the dot product *does* commute with the
+superposition over electrodes,
+
+$$\Bigl(\sum_k u_k \mathbf{E}_k\Bigr) \cdot \hat{\mathbf{n}} = \sum_k u_k igl(\mathbf{E}_k \cdot \hat{\mathbf{n}}igr),$$
+
+`Roast3DStim` contracts $\lambda\,(\mathbf{E}_k \cdot \hat{\mathbf{n}})$ into a constant
+`(n_controls, n_nodes)` matrix at build time -- the same object as the analytical model's
+$\gamma$ -- and `project` is a single `u @ gamma`. The 3-vectors never reach the hot loop.
+
+File-backed models (`roast_3d`, `yu_signed`) assert their stored `region_labels` match the
+connectome's node order element-by-element, and `roast_3d` requires the region normals to come
+from its own leadfield file -- the leadfield and the normals it is reduced against are one
+artefact from one MATLAB run sharing one MNI RAS frame.
 
 ---
 

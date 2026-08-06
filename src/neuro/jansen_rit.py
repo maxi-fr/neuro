@@ -12,8 +12,11 @@ from simulate.dynamics import Dynamics
 
 from neuro.config import StrictConfig, parse_array
 from neuro.connectome import Connectome, _ConnectomeConfig
+from neuro.stimulation import NullStim, StimulationConfig, build_stimulation
+from neuro.stimulation.base import _NullConfig
 
 if TYPE_CHECKING:
+    from neuro.stimulation import StimulationModel
     from neuro.types import FloatArray
 
 
@@ -66,8 +69,9 @@ class JansenRitParams:
         Standard deviation of the additive Gaussian white noise ``zeta`` on the
         ``x5'`` equation; ``sigma = 0`` gives a noiseless (deterministic) run.
 
-    The network structure (weights, delays, EEG gain, ``gamma``, global coupling ``K``)
-    lives on :class:`~neuro.connectome.Connectome`, not here.
+    The network structure (weights, delays, EEG gain, global coupling ``K``) lives on
+    :class:`~neuro.connectome.Connectome`, and the tES projection on a
+    :class:`~neuro.stimulation.base.StimulationModel`, not here.
     """
 
     A: float | FloatArray = field(default=3.25)
@@ -238,7 +242,7 @@ def simulate_network(
     if u_amp.shape[0] == 1:
         u_amp = np.broadcast_to(u_amp, (n_controls,))
     elif u_amp.shape[0] != n_controls:
-        msg = f"u_hat_tES has {u_amp.shape[0]} electrodes but gamma has {n_controls}"
+        msg = f"u_hat_tES has {u_amp.shape[0]} electrodes but the plant has {n_controls}"
         raise ValueError(msg)
 
     u_sched = np.zeros((n_steps, n_controls), dtype=np.float64)
@@ -268,69 +272,6 @@ def resting_state(conn: Connectome, dt: float, settle_s: float = 2.0) -> FloatAr
     return x_traj[:, :, -1].copy()
 
 
-def project_control(  # noqa: C901, PLR0911
-    u: FloatArray,
-    gamma_2d: FloatArray,
-    n_controls: int,
-    *,
-    reduction_method: str = "cortical_normal",
-    region_normals: FloatArray | None = None,
-) -> FloatArray:
-    """Project per-electrode tES current ``u`` onto nodes via ``gamma`` or 3D leadfield.
-
-    Parameters
-    ----------
-    u:
-        Per-electrode control input, shape ``(n_controls,)``.
-    gamma_2d:
-        Steering matrix of shape ``(n_controls, n_nodes)`` or 3D leadfield of shape
-        ``(n_controls, n_nodes, 3)``.
-    n_controls:
-        Number of control electrodes (must match ``gamma_2d.shape[0]``).
-    reduction_method:
-        Scalar reduction method when 3D leadfield is used: 'cortical_normal', 'magnitude',
-        'x', 'y', or 'z'.
-    region_normals:
-        Region surface unit normal vectors of shape ``(n_nodes, 3)``, required if
-        ``reduction_method='cortical_normal'`` with a 3D leadfield.
-
-    Returns
-    -------
-    FloatArray
-        Node-level stimulation ``u_node`` of shape ``(n_nodes,)``.
-    """
-    n_nodes = gamma_2d.shape[1]
-    if not np.any(u):
-        return np.zeros(n_nodes, dtype=np.float64)
-    if u.size != n_controls:
-        msg = f"control has {u.size} electrodes but gamma has {n_controls}"
-        raise ValueError(msg)
-
-    if gamma_2d.ndim == 2:  # noqa: PLR2004
-        return u @ gamma_2d
-
-    if gamma_2d.ndim == 3:  # noqa: PLR2004
-        e_node = np.tensordot(u, gamma_2d, axes=(0, 0))
-        if reduction_method == "cortical_normal":
-            if region_normals is None or region_normals.shape != (n_nodes, 3):
-                msg = f"region_normals of shape ({n_nodes}, 3) required for 'cortical_normal' reduction."
-                raise ValueError(msg)
-            return (e_node * region_normals).sum(axis=1)
-        if reduction_method == "magnitude":
-            return np.linalg.norm(e_node, axis=1)
-        if reduction_method == "x":
-            return e_node[:, 0]
-        if reduction_method == "y":
-            return e_node[:, 1]
-        if reduction_method == "z":
-            return e_node[:, 2]
-        msg = f"Unknown reduction_method: {reduction_method}"
-        raise ValueError(msg)
-
-    msg = f"Unsupported leadfield dimensions: {gamma_2d.ndim}"
-    raise ValueError(msg)
-
-
 _ZERO_SUM_CURRENT_ATOL = 1e-6
 
 
@@ -355,6 +296,7 @@ class _JansenRitDynamicsConfig(StrictConfig):
     enforce_zero_sum_current: bool = True
     initial_state: Literal["zeros", "rest"] = "zeros"
     connectome: _ConnectomeConfig = Field(default_factory=_ConnectomeConfig)
+    stimulation: StimulationConfig = Field(default_factory=_NullConfig)
     params: _JansenRitParamsConfig = Field(default_factory=_JansenRitParamsConfig)
 
 
@@ -366,12 +308,16 @@ class JansenRitDynamics(Dynamics[NoLog]):
         dt: float,
         params: JansenRitParams,
         conn: Connectome,
+        stim: StimulationModel | None = None,
         seed: int | None = None,
         initial_state: FloatArray | None = None,
         *,
         enforce_zero_sum_current: bool = True,
     ) -> None:
-        """Initialize the network plant from ``params`` and the structural ``conn``."""
+        """Initialize the network plant from ``params``, the structural ``conn`` and ``stim``.
+
+        ``stim=None`` means unstimulated: a single control electrode that drives nothing.
+        """
         super().__init__(dt, integrator=None)
         self.K = conn.K
         self.enforce_zero_sum_current = enforce_zero_sum_current
@@ -379,7 +325,6 @@ class JansenRitDynamics(Dynamics[NoLog]):
         n_nodes = conn.weights.shape[0]
         weights = conn.weights
         delays = conn.delay_steps(dt)
-        gamma = conn.gamma
 
         a_vec = params.A
         if np.isscalar(a_vec):
@@ -387,12 +332,8 @@ class JansenRitDynamics(Dynamics[NoLog]):
         self.net_params = replace(params, A=a_vec)
         self.params_tuple = self.net_params.to_numba_tuple(n_nodes)
 
-        self.gamma_2d = conn.leadfield_3d if conn.leadfield_3d is not None else np.atleast_2d(gamma)
-        self.region_normals = conn.region_normals
-        self.reduction_method = conn.reduction_method
-
-        self.n_controls = self.gamma_2d.shape[0]
-        self.n_inputs = self.n_controls
+        self.stim = NullStim(n_nodes) if stim is None else stim
+        self.n_controls = self.n_inputs = self.stim.n_controls
 
         if initial_state is not None:
             if initial_state.shape != (6, n_nodes):
@@ -422,6 +363,7 @@ class JansenRitDynamics(Dynamics[NoLog]):
             dt=cfg.dt,
             params=params,
             conn=conn,
+            stim=build_stimulation(cfg.stimulation, conn),
             seed=cfg.seed,
             initial_state=resting_state(conn, cfg.dt) if cfg.initial_state == "rest" else None,
             enforce_zero_sum_current=cfg.enforce_zero_sum_current,
@@ -445,13 +387,7 @@ class JansenRitDynamics(Dynamics[NoLog]):
 
         if self.enforce_zero_sum_current:
             _assert_zero_sum_current(u)
-        u_node = project_control(
-            u,
-            self.gamma_2d,
-            self.n_controls,
-            reduction_method=self.reduction_method,
-            region_normals=self.region_normals,
-        )
+        u_node = self.stim.project(u)
         xi = self.rng.standard_normal(n_nodes)
         return _heun_step_jit(x, u_node, self.params_tuple, self.dt, xi, coupling)
 

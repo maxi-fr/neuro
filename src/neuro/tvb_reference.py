@@ -6,12 +6,8 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
-from neuro.connectome import (
-    _PROJECTION_FILE,
-    _REGION_MAPPING_FILE,
-    _SENSORS_FILE,
-    _mirror_partner_permutation,
-)
+from neuro.connectome import _PROJECTION_FILE, _REGION_MAPPING_FILE, _mirror_partner_permutation
+from neuro.geometry import SENSORS_FILE
 
 with warnings.catch_warnings():
     warnings.simplefilter("ignore", UserWarning)
@@ -156,7 +152,7 @@ def build_reference_simulator(  # noqa: PLR0913
         mons.append(
             monitors.EEG(
                 projection=ProjectionSurfaceEEG.from_file(_PROJECTION_FILE, matlab_data_name="ProjectionMatrix"),
-                sensors=SensorsEEG.from_file(_SENSORS_FILE),
+                sensors=SensorsEEG.from_file(SENSORS_FILE),
                 region_mapping=RegionMapping.from_file(_REGION_MAPPING_FILE),
                 period=1.0,
             )
@@ -216,7 +212,7 @@ def run_reference(sim: simulator.Simulator, duration_s: float) -> ReferenceResul
         # Mirror-correct the monitor's gain to own-hemisphere channels (same fix as
         # the hand-rolled L), then project: EEG = L @ Y, comparable to EEGMeasurement.
         raw_gain = reference_eeg_gain(sim)
-        sensors = SensorsEEG.from_file(_SENSORS_FILE)
+        sensors = SensorsEEG.from_file(SENSORS_FILE)
         partner = _mirror_partner_permutation(np.asarray(sensors.locations, dtype=np.float64))
         eeg = raw_gain[partner] @ region_y
 

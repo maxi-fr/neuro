@@ -202,7 +202,7 @@ def test_eeg_measurement_rejects_unknown_key() -> None:
 def test_connectome_rejects_unknown_key() -> None:
     """Test Connectome rejects unknown key."""
     with pytest.raises(ValidationError, match="Connectome"):
-        Connectome.from_config({"gamma_spread": 20.0, "gama_spread": 20.0})
+        Connectome.from_config({"speed": 50.0, "speeed": 50.0})
 
 
 def test_jansen_rit_dynamics_rejects_unknown_key() -> None:

@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING
 
 import h5py
 import numpy as np
+from scipy.io import loadmat
 
 if TYPE_CHECKING:
     from neuro.types import FloatArray
@@ -25,6 +26,9 @@ def _decode_char(node: h5py.Dataset) -> str:
 
 def load_leadfield_mat(mat_path: Path) -> tuple[FloatArray, list[str], list[str], list[str], FloatArray]:
     """Load the leadfield, requested/ROAST channel labels, region labels and normals from a MAT file.
+
+    The leadfield is ``(n_channels, n_regions, 3)``: the ``(Ex, Ey, Ez)`` field in V/m at each
+    region centroid per +1 mA at that channel, MNI RAS, with the return channel's row zero.
 
     ``generate_roast_leadfield_3d.m`` writes ``-v7.3``, so the file is HDF5 and every array
     arrives transposed relative to its MATLAB shape.
@@ -74,7 +78,12 @@ def convert_roast_leadfield_to_npz(
     mat_path: str | Path = "data/roast_leadfield_3d.mat",
     npz_path: str | Path = "data/roast_leadfield_3d.npz",
 ) -> None:
-    """Read a ROAST leadfield MAT file and write the NPZ that :class:`Connectome` loads."""
+    """Read a ROAST leadfield MAT file and write the NPZ that :class:`Roast3DStim` loads.
+
+    ``generate_roast_leadfield_3d.m`` solves one ROAST run per scalp electrode at +1 mA against
+    the return, so a row is the V/m field per mA and the montage's field is linear in the
+    currents.
+    """
     src = Path(mat_path)
     dst = Path(npz_path)
 
@@ -100,3 +109,65 @@ def convert_roast_leadfield_to_npz(
     print(f"  Channels ({len(channel_labels)}): {channel_labels[:5]} ... {channel_labels[-1]}")  # noqa: T201
     print(f"  Regions ({len(region_labels)}): {region_labels[:5]} ...")  # noqa: T201
     print(f"  Substituted electrodes: {substituted or 'none'}")  # noqa: T201
+
+
+def load_gamma_mat(mat_path: Path) -> tuple[FloatArray, list[str]]:
+    """Load the Yu signed-magnitude gamma and its region labels from a v7 or v7.3 MAT file."""
+    try:
+        mat_data = loadmat(mat_path, squeeze_me=True)
+        gamma = np.asarray(mat_data["gamma"], dtype=np.float64)
+        metadata = mat_data.get("metadata", {})
+        region_labels = list(metadata.get("regionLabels", []))
+    except (NotImplementedError, ValueError):
+        with h5py.File(mat_path, "r") as h5_file:
+            gamma = np.asarray(h5_file["gamma"], dtype=np.float64)
+            # In HDF5 v7.3, MATLAB stores matrices transposed (n_regions x n_montages).
+            if gamma.ndim == 2 and gamma.shape[0] > gamma.shape[1]:  # noqa: PLR2004
+                gamma = gamma.T
+            region_labels = []
+
+    if gamma.ndim == 1:
+        gamma = gamma[None, :]
+    return gamma, region_labels
+
+
+def convert_roast_gamma_to_npz(
+    mat_path: str | Path = "data/roast_gamma.mat",
+    npz_path: str | Path = "data/roast_gamma.npz",
+    electrode_labels: tuple[str, ...] = ("TP9", "CP5"),
+) -> None:
+    """Read a Yu signed-magnitude gamma MAT file and write the NPZ that :class:`YuStim` loads.
+
+    ``run_current_montage_gamma.m`` writes one row per bipolar montage pair at ``-1 mA`` on the
+    drive electrode; ``electrode_labels`` names the drive electrode of each row in that order.
+    """
+    src = Path(mat_path)
+    dst = Path(npz_path)
+
+    if not src.exists():
+        msg = f"Source MAT file not found at {src}"
+        raise FileNotFoundError(msg)
+
+    gamma, region_labels = load_gamma_mat(src)
+
+    if len(region_labels) == 0:
+        geom_path = Path("data/tvb_geometry.npz")
+        if geom_path.exists():
+            with np.load(geom_path) as geom:
+                region_labels = list(geom["region_labels"].astype(str))
+
+    if len(gamma) != len(electrode_labels):
+        msg = f"gamma has {len(gamma)} rows but {len(electrode_labels)} electrode labels were given"
+        raise ValueError(msg)
+
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    np.savez(
+        dst,
+        gamma_phi=gamma,
+        electrode_labels=np.asarray(electrode_labels, dtype=str),
+        region_labels=np.asarray(region_labels, dtype=str),
+    )
+    print(f"Successfully converted {src} -> {dst}")  # noqa: T201
+    print(f"  Gamma shape: {gamma.shape}")  # noqa: T201
+    print(f"  Electrodes: {electrode_labels}")  # noqa: T201
+    print(f"  Regions: {len(region_labels)}")  # noqa: T201

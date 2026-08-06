@@ -76,7 +76,7 @@ def _(Path, mo, np, run_dir_input, yaml):
         _cost = data.get("controller_cost", _nan)
 
     _ctrl = _config.get("controller", {})
-    _electrodes = _config.get("dynamics", {}).get("connectome", {}).get("target_electrode")
+    _electrodes = _config.get("dynamics", {}).get("stimulation", {}).get("electrodes")
     if not (isinstance(_electrodes, list) and len(_electrodes) == _u.shape[1]):
         _electrodes = [f"E{_i}" for _i in range(_u.shape[1])]
 

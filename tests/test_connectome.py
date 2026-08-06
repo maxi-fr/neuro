@@ -1,10 +1,10 @@
 import re
-from pathlib import Path
 
 import numpy as np
 import pytest
 
-from neuro.connectome import Connectome, centres_to_mni_ras, sensor_positions_mm
+from neuro.connectome import Connectome
+from neuro.geometry import centres_to_mni_ras, sensor_positions_mm
 
 _N_REGIONS = 76
 _N_CHANNELS = 62
@@ -90,57 +90,6 @@ def test_hemispheres_split(connectome: Connectome) -> None:
     assert right + left == _N_REGIONS
 
 
-def test_npz_round_trip(connectome: Connectome, tmp_path: Path) -> None:
-    """The connectome can be saved to and loaded from an NPZ file."""
-    path = tmp_path / "connectome.npz"
-    connectome.to_npz(path)
-    loaded = Connectome.from_npz(path)
-
-    assert loaded.K == connectome.K
-    np.testing.assert_array_equal(loaded.weights, connectome.weights)
-    np.testing.assert_array_equal(loaded.tract_lengths, connectome.tract_lengths)
-    np.testing.assert_array_equal(loaded.centres, connectome.centres)
-    np.testing.assert_array_equal(loaded.region_labels, connectome.region_labels)
-    np.testing.assert_array_equal(loaded.hemispheres, connectome.hemispheres)
-    assert loaded.speed == connectome.speed
-    np.testing.assert_array_equal(loaded.delays, connectome.delays)
-    np.testing.assert_array_equal(loaded.gain, connectome.gain)
-    np.testing.assert_array_equal(loaded.channel_labels, connectome.channel_labels)
-    assert loaded.region_index == connectome.region_index
-    assert loaded.channel_index == connectome.channel_index
-    np.testing.assert_array_equal(loaded.gamma, connectome.gamma)
-
-
-def test_from_config_target_electrode_builds_gamma() -> None:
-    """A ``target_electrode`` yields a Coulomb kernel that decays with distance from it.
-
-    The kernel is a potential per unit current, so it is positive and largest at the region
-    nearest the electrode; the applied current's sign is what sets cathode versus anode.
-    """
-    conn = Connectome.from_config({"target_electrode": "CP5", "gamma_spread": 15.0})
-    assert conn.gamma.shape == (_N_REGIONS,)
-    assert (conn.gamma > 0.0).all()
-
-    _, positions = sensor_positions_mm()
-    dist = np.linalg.norm(conn.centres - positions[conn.channel_index["CP5"]], axis=1)
-    assert conn.gamma.argmax() == dist.argmin()
-
-
-def test_from_config_default_gamma_is_zero() -> None:
-    """Without a ``target_electrode`` the projection is all-zero (open loop)."""
-    conn = Connectome.from_config({})
-    np.testing.assert_array_equal(conn.gamma, np.zeros(_N_REGIONS))
-
-
-def test_from_config_analytical_gamma_model() -> None:
-    """Option B (analytical) builds Laplacian dipolar Coulomb projection without independent peak clipping."""
-    conn = Connectome.from_config(
-        {"target_electrode": ["CP5", "T7"], "gamma_model": "analytical", "gamma_spread": 15.0}
-    )
-    assert conn.gamma.shape == (2, _N_REGIONS)
-    assert (conn.gamma > 0.0).all()
-
-
 def test_sensor_positions_land_on_their_own_lead_field() -> None:
     """Placed electrodes sit near the regions their EEG lead field is strongest on.
 
@@ -165,47 +114,6 @@ def test_sensor_positions_land_on_their_own_lead_field() -> None:
         assert left_region[dist[conn.channel_index[channel]].argmin()], f"{channel} is not on the left"
 
 
-def test_gamma_rows_are_distinguishable_per_electrode() -> None:
-    """Nearby electrodes still steer distinct fields, so a zero-sum montage keeps authority.
-
-    ``sum(u) = 0`` (Kirchhoff) means only *differences* between gamma rows can drive the
-    network, so near-collinear rows leave the controller powerless. Their pairwise cosine is
-    the direct measure of that.
-    """
-    conn = Connectome.from_config(
-        {"target_electrode": ["TP9", "CP6"], "gamma_model": "analytical", "gamma_spread": 15.0}
-    )
-    rows = conn.gamma / np.linalg.norm(conn.gamma, axis=1, keepdims=True)
-    assert float(rows[0] @ rows[1]) < 0.95
-
-    u = np.array([-1.0, 1.0])
-    drive = u @ conn.gamma
-    ez = [conn.region_index[name] for name in ("lHC", "lPHC", "lAMYG")]
-    assert drive[ez].mean() < -0.1, "cathodal current must hyperpolarize the epileptogenic zone"
-
-
-def test_extracephalic_return_drives_no_region_anodally() -> None:
-    """An extracephalic return keeps a cathodal montage cathodal *everywhere*.
-
-    Kirchhoff forces the injected current back out somewhere, and wherever it leaves the drive
-    is anodal -- seizure-promoting. That is the real cost of ``sum(u) = 0`` with a scalp
-    return, and it is what an off-head return buys out: ``EX_NECK`` is 145+ mm from every
-    region, so its Coulomb potential there is small and near-uniform and no region ever
-    crosses into positive drive.
-    """
-    conn = Connectome.from_config({"target_electrode": ["TP9", "EX_NECK"], "gamma_model": "analytical"})
-    assert conn.gamma.shape == (2, _N_REGIONS)
-
-    ex = conn.gamma[1]
-    assert np.ptp(ex) / ex.mean() < 0.75, "extracephalic kernel is not near-uniform across regions"
-
-    drive = np.array([-1.0, 1.0]) @ conn.gamma
-    assert (drive < 0.0).all(), "an extracephalic return must leave no region anodally driven"
-
-    ez = [conn.region_index[name] for name in ("lHC", "lPHC", "lAMYG")]
-    assert drive[ez].mean() < drive.mean(), "the focus must be driven harder than the network mean"
-
-
 def test_centres_to_mni_ras(connectome: Connectome) -> None:
     """The connectome (anterior, left, superior) frame maps to MNI RAS.
 
@@ -223,16 +131,3 @@ def test_centres_to_mni_ras(connectome: Connectome) -> None:
     left = np.array([str(label).startswith("l") for label in connectome.region_labels])
     assert ras[left, 0].mean() < 0.0, "left-hemisphere regions must land at negative RAS x"
     assert ras[~left, 0].mean() > 0.0, "right-hemisphere regions must land at positive RAS x"
-
-
-def test_kcl_zero_sum_non_cancellation() -> None:
-    """Zero-sum tES current under analytical model creates strong differential push-pull fields."""
-    electrodes = ["CP5", "T7"]
-    u = np.array([1.0, -1.0])
-
-    conn_analyt = Connectome.from_config({"target_electrode": electrodes, "gamma_model": "analytical"})
-
-    field_analyt = u @ conn_analyt.gamma
-
-    assert np.linalg.norm(field_analyt) > 0.0
-    assert np.var(field_analyt) > 0.0
