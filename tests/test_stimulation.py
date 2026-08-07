@@ -6,14 +6,13 @@ import h5py
 import numpy as np
 import pytest
 from pydantic import TypeAdapter, ValidationError
-from scipy.io import savemat
 
 from neuro.connectome import Connectome
 from neuro.geometry import EXTRACEPHALIC_ELECTRODES_MM, sensor_positions_mm
 from neuro.jansen_rit import JansenRitDynamics, JansenRitParams
-from neuro.stimulation import AnalyticalStim, NullStim, Roast3DStim, YuStim, build_stimulation
+from neuro.stimulation import AnalyticalStim, DynamicYuStim, NullStim, Roast3DStim, build_stimulation
 from neuro.stimulation.base import StimulationConfig
-from neuro.stimulation.roast_io import convert_roast_gamma_to_npz, convert_roast_leadfield_to_npz
+from neuro.stimulation.roast_io import convert_roast_leadfield_to_npz
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -175,20 +174,23 @@ def test_zero_current_short_circuits(connectome: Connectome) -> None:
 # --------------------------------------------------------------------------------------
 
 
-def _write_leadfield_npz(path: Path, region_labels: StrArray, *, normals_zero: bool = False) -> None:
+def _write_leadfield_npz(
+    path: Path, region_labels: StrArray, *, normals_zero: bool = False, legacy_key: bool = False
+) -> None:
     """Write a synthetic ROAST leadfield NPZ over the given region ordering."""
     rng = np.random.default_rng(999)
     n_nodes = len(region_labels)
     normals = np.zeros((n_nodes, 3)) if normals_zero else rng.standard_normal((n_nodes, 3))
     if not normals_zero:
         normals /= np.linalg.norm(normals, axis=1, keepdims=True)
-    np.savez(
-        path,
-        leadfield_3d=rng.standard_normal((63, n_nodes, 3)),
-        channel_labels=np.array([f"C{i}" for i in range(62)] + ["Ex8"], dtype=str),
-        region_labels=np.asarray(region_labels, dtype=str),
-        region_normals=normals,
-    )
+    lf_data = rng.standard_normal((63, n_nodes, 3))
+    ch_labels = np.array([f"C{i}" for i in range(62)] + ["Ex8"], dtype=str)
+    r_labels = np.asarray(region_labels, dtype=str)
+    if legacy_key:
+        np.savez(path, leadfield_3d=lf_data, channel_labels=ch_labels, region_labels=r_labels, region_normals=normals)
+    else:
+        np.savez(path, leadfield_E=lf_data, channel_labels=ch_labels, region_labels=r_labels, region_normals=normals)
+
 
 
 def test_roast_3d_reduces_along_the_cortical_normal(connectome: Connectome, tmp_path: Path) -> None:
@@ -207,10 +209,20 @@ def test_roast_3d_reduces_along_the_cortical_normal(connectome: Connectome, tmp_
     u = np.zeros(63)
     u[0], u[5], u[-1] = 1.0, 2.0, -3.0
     with np.load(npz) as raw:
-        leadfield, normals = raw["leadfield_3d"], raw["region_normals"]
+        leadfield = raw["leadfield_E"] if "leadfield_E" in raw else raw["leadfield_3d"]
+        normals = raw["region_normals"]
     e_node = np.tensordot(u, leadfield, axes=(0, 0))
     expected = Roast3DStim.polarization_length_mm * (e_node * normals).sum(axis=1)
     np.testing.assert_allclose(stim.project(u), expected)
+
+
+def test_roast_3d_loads_legacy_leadfield_3d_key(connectome: Connectome, tmp_path: Path) -> None:
+    """Legacy leadfield_3d NPZ files must load gracefully via the fallback path."""
+    npz = tmp_path / "legacy.npz"
+    _write_leadfield_npz(npz, connectome.region_labels, legacy_key=True)
+    stim = _build({"model": "roast_3d", "leadfield_path": str(npz)}, connectome)
+    assert isinstance(stim, Roast3DStim)
+    assert stim.n_controls == 63
 
 
 def test_roast_3d_projection_is_linear_and_signed(connectome: Connectome, tmp_path: Path) -> None:
@@ -268,68 +280,6 @@ def test_roast_3d_drives_the_plant(connectome: Connectome, tmp_path: Path) -> No
 
 
 # --------------------------------------------------------------------------------------
-# yu_signed
-# --------------------------------------------------------------------------------------
-
-
-def test_yu_normalises_rows_to_positive_drive_current(connectome: Connectome) -> None:
-    """The stored rows are -1 mA pairs; they are flipped once at load to a +1 mA convention.
-
-    A sign error here is invisible downstream -- the fields still look plausible and the
-    controller simply pushes the focus the wrong way -- so it is pinned against the raw file.
-    """
-    stim = _build({"model": "yu_signed"}, connectome)
-    assert isinstance(stim, YuStim)
-    assert stim.n_controls == 3
-    assert list(stim.control_labels) == ["TP9", "CP5", "EX8"]
-
-    with np.load("data/roast_gamma.npz") as raw:
-        gamma_phi = np.asarray(raw["gamma_phi"], dtype=np.float64)
-    np.testing.assert_allclose(stim.gamma[:2], -gamma_phi)
-    np.testing.assert_array_equal(stim.gamma[2], np.zeros(_N_REGIONS))
-
-
-def test_yu_return_row_is_redundant_under_kirchhoff(connectome: Connectome) -> None:
-    """The pair basis and the electrode basis agree, so ``u_EX8`` must contribute nothing."""
-    stim = _build({"model": "yu_signed"}, connectome)
-    drive = stim.project(np.array([-0.5, -0.5, 1.0]))
-    np.testing.assert_allclose(drive, stim.project(np.array([-0.5, -0.5, 0.0])))
-
-    with np.load("data/roast_gamma.npz") as raw:
-        gamma_phi = np.asarray(raw["gamma_phi"], dtype=np.float64)
-    np.testing.assert_allclose(drive, 0.5 * gamma_phi.sum(axis=0))
-
-
-def test_yu_rejects_permuted_region_order(connectome: Connectome, tmp_path: Path) -> None:
-    """The Yu NPZ matches TVB's ordering today; nothing else may be loaded silently."""
-    npz = tmp_path / "gamma.npz"
-    with np.load("data/roast_gamma.npz") as raw:
-        np.savez(
-            npz,
-            gamma_phi=raw["gamma_phi"],
-            electrode_labels=raw["electrode_labels"],
-            region_labels=raw["region_labels"][::-1],
-        )
-    with pytest.raises(ValueError, match="region_labels do not match"):
-        _build({"model": "yu_signed", "path": str(npz)}, connectome)
-
-
-def test_yu_electrodes_subset(connectome: Connectome) -> None:
-    """``electrodes`` selects and orders the rows, matched case-insensitively."""
-    stim = _build({"model": "yu_signed", "electrodes": ["cp5", "TP9"]}, connectome)
-    assert list(stim.control_labels) == ["CP5", "TP9"]
-
-    full = _build({"model": "yu_signed"}, connectome)
-    np.testing.assert_allclose(stim.gamma, full.gamma[[1, 0]])
-
-
-def test_yu_rejects_unknown_electrode(connectome: Connectome) -> None:
-    """Asking for an electrode the file has no row for is an error, not a silent drop."""
-    with pytest.raises(ValueError, match="not in the file"):
-        _build({"model": "yu_signed", "electrodes": ["Fz"]}, connectome)
-
-
-# --------------------------------------------------------------------------------------
 # MAT -> NPZ conversion
 # --------------------------------------------------------------------------------------
 
@@ -345,17 +295,23 @@ def _write_cellstr(mat: h5py.File, group: h5py.Group, name: str, strings: list[s
 
 def _write_fake_roast_mat(
     path: Path,
-    leadfield: np.ndarray,
+    leadfield_e: np.ndarray,
     channel_labels: list[str],
     roast_labels: list[str],
     region_labels: list[str],
     region_normals: np.ndarray,
+    *,
     normals_frame: str = "mni_ras",
+    leadfield_v: np.ndarray | None = None,
+    legacy_key: bool = False,
 ) -> None:
     """Write a v7.3-style MAT file mimicking generate_roast_leadfield_3d.m's output layout."""
     with h5py.File(path, "w") as mat:
         # MATLAB writes arrays transposed relative to their numpy shape.
-        mat.create_dataset("leadfield_3d", data=leadfield.transpose(2, 1, 0))
+        key = "leadfield_3d" if legacy_key else "leadfield_E"
+        mat.create_dataset(key, data=leadfield_e.transpose(2, 1, 0))
+        if leadfield_v is not None:
+            mat.create_dataset("leadfield_V", data=leadfield_v.T)
         meta = mat.create_group("metadata")
         _write_cellstr(mat, meta, "channelLabels", channel_labels)
         _write_cellstr(mat, meta, "roastLabels", roast_labels)
@@ -367,8 +323,10 @@ def _write_fake_roast_mat(
 def test_converter_recovers_v73_metadata(tmp_path: Path) -> None:
     """The .m saves -v7.3, so the HDF5 path must decode labels rather than silently dropping them."""
     rng = np.random.default_rng(7)
-    leadfield = rng.standard_normal((5, 4, 3))
-    leadfield[-1] = 0.0  # return row is the zero reference
+    leadfield_e = rng.standard_normal((5, 4, 3))
+    leadfield_e[-1] = 0.0  # return row is the zero reference
+    leadfield_v = rng.standard_normal((5, 4))
+    leadfield_v[-1] = 0.0
     normals = rng.standard_normal((4, 3))
     channels = ["CP5", "TP9", "TP10", "Fz", "Ex8"]
     roast = ["CP5", "TPP9", "TPP10", "Fz", "Ex8"]
@@ -376,16 +334,35 @@ def test_converter_recovers_v73_metadata(tmp_path: Path) -> None:
 
     mat_path = tmp_path / "roast_leadfield_3d.mat"
     npz_path = tmp_path / "roast_leadfield_3d.npz"
-    _write_fake_roast_mat(mat_path, leadfield, channels, roast, regions, normals)
+    _write_fake_roast_mat(mat_path, leadfield_e, channels, roast, regions, normals, leadfield_v=leadfield_v)
 
     convert_roast_leadfield_to_npz(mat_path, npz_path)
 
     with np.load(npz_path) as out:
-        np.testing.assert_allclose(out["leadfield_3d"], leadfield)
+        np.testing.assert_allclose(out["leadfield_E"], leadfield_e)
+        np.testing.assert_allclose(out["leadfield_V"], leadfield_v)
         np.testing.assert_allclose(out["region_normals"], normals)
         assert list(out["channel_labels"]) == channels
         assert list(out["roast_labels"]) == roast
         assert list(out["region_labels"]) == regions
+
+
+def test_converter_supports_legacy_leadfield_3d_mat_key(tmp_path: Path) -> None:
+    """MAT files carrying the legacy leadfield_3d key must convert properly."""
+    rng = np.random.default_rng(123)
+    leadfield_e = rng.standard_normal((3, 2, 3))
+    leadfield_e[-1] = 0.0
+    normals = rng.standard_normal((2, 3))
+    mat_path = tmp_path / "legacy_roast.mat"
+    npz_path = tmp_path / "legacy_roast.npz"
+    _write_fake_roast_mat(
+        mat_path, leadfield_e, ["C1", "C2", "Ex8"], ["C1", "C2", "Ex8"], ["r1", "r2"], normals, legacy_key=True
+    )
+
+    convert_roast_leadfield_to_npz(mat_path, npz_path)
+
+    with np.load(npz_path) as out:
+        np.testing.assert_allclose(out["leadfield_E"], leadfield_e)
 
 
 def test_converter_rejects_connectome_frame_normals(tmp_path: Path) -> None:
@@ -410,10 +387,100 @@ def test_converter_rejects_nonzero_return_row(tmp_path: Path) -> None:
         convert_roast_leadfield_to_npz(mat_path, tmp_path / "out.npz")
 
 
-def test_gamma_converter_rejects_mislabelled_rows(tmp_path: Path) -> None:
-    """One label per stored montage row, or the +1 mA rows would be named after the wrong site."""
-    mat_path = tmp_path / "roast_gamma.mat"
-    savemat(mat_path, {"gamma": np.zeros((2, _N_REGIONS))})
+# --------------------------------------------------------------------------------------
+# yu_dynamic
+# --------------------------------------------------------------------------------------
 
-    with pytest.raises(ValueError, match="electrode labels"):
-        convert_roast_gamma_to_npz(mat_path, tmp_path / "out.npz", ("TP9",))
+
+
+def _write_dynamic_leadfield_npz(
+    path: Path, region_labels: StrArray, *, include_v: bool = True, legacy_key: bool = False
+) -> None:
+    """Write a synthetic ROAST leadfield NPZ carrying leadfield_E (or leadfield_3d) and leadfield_V."""
+    rng = np.random.default_rng(42)
+    n_nodes = len(region_labels)
+    normals = rng.standard_normal((n_nodes, 3))
+    normals /= np.linalg.norm(normals, axis=1, keepdims=True)
+    lf_data = rng.standard_normal((63, n_nodes, 3))
+    v_data = rng.standard_normal((63, n_nodes))
+    ch_labels = np.array([f"C{i}" for i in range(62)] + ["Ex8"], dtype=str)
+    r_labels = np.asarray(region_labels, dtype=str)
+
+    if legacy_key:
+        if include_v:
+            np.savez(
+                path,
+                leadfield_3d=lf_data,
+                leadfield_V=v_data,
+                channel_labels=ch_labels,
+                region_labels=r_labels,
+                region_normals=normals,
+            )
+        else:
+            np.savez(
+                path,
+                leadfield_3d=lf_data,
+                channel_labels=ch_labels,
+                region_labels=r_labels,
+                region_normals=normals,
+            )
+    elif include_v:
+        np.savez(
+            path,
+            leadfield_E=lf_data,
+            leadfield_V=v_data,
+            channel_labels=ch_labels,
+            region_labels=r_labels,
+            region_normals=normals,
+        )
+    else:
+        np.savez(
+            path,
+            leadfield_E=lf_data,
+            channel_labels=ch_labels,
+            region_labels=r_labels,
+            region_normals=normals,
+        )
+
+
+
+def test_dynamic_yu_stim_project(connectome: Connectome, tmp_path: Path) -> None:
+    """DynamicYuStim projects currents using vector E-field magnitude and smooth voltage polarity."""
+    npz = tmp_path / "lf_dynamic.npz"
+    _write_dynamic_leadfield_npz(npz, connectome.region_labels)
+
+    stim = _build({"model": "yu_dynamic", "leadfield_path": str(npz), "alpha": 4.0}, connectome)
+    assert isinstance(stim, DynamicYuStim)
+    assert stim.n_controls == 63
+    assert stim.alpha == 4.0
+
+    u = np.zeros(63)
+    u[0], u[-1] = 1.0, -1.0
+    drive = stim.project(u)
+    assert drive.shape == (_N_REGIONS,)
+    assert np.isfinite(drive).all()
+
+    # Scaling input current scales field magnitude linearly
+    u2 = 2.0 * u
+    drive2 = stim.project(u2)
+    assert not np.allclose(drive2, drive)
+
+
+def test_dynamic_yu_loads_legacy_leadfield_3d_key(connectome: Connectome, tmp_path: Path) -> None:
+    """DynamicYuStim must load legacy leadfield_3d NPZ files gracefully."""
+    npz = tmp_path / "lf_dynamic_legacy.npz"
+    _write_dynamic_leadfield_npz(npz, connectome.region_labels, legacy_key=True)
+
+    stim = _build({"model": "yu_dynamic", "leadfield_path": str(npz)}, connectome)
+    assert isinstance(stim, DynamicYuStim)
+
+
+def test_dynamic_yu_rejects_missing_leadfield_v(connectome: Connectome, tmp_path: Path) -> None:
+    """Loading a leadfield without leadfield_V must fail with a clear error."""
+    npz = tmp_path / "lf_no_v.npz"
+    _write_dynamic_leadfield_npz(npz, connectome.region_labels, include_v=False)
+
+    with pytest.raises(ValueError, match="does not carry 'leadfield_V'"):
+        _build({"model": "yu_dynamic", "leadfield_path": str(npz)}, connectome)
+
+

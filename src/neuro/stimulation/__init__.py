@@ -6,18 +6,18 @@ from neuro.stimulation.analytical import AnalyticalStim
 from neuro.stimulation.base import StimulationConfig, StimulationModel
 from neuro.stimulation.null import NullStim
 from neuro.stimulation.roast_3d import Roast3DStim
-from neuro.stimulation.yu import YuStim
+from neuro.stimulation.yu_dynamic import DynamicYuStim
 
 if TYPE_CHECKING:
     from neuro.connectome import Connectome
 
 __all__ = [
     "AnalyticalStim",
+    "DynamicYuStim",
     "NullStim",
     "Roast3DStim",
     "StimulationConfig",
     "StimulationModel",
-    "YuStim",
     "build_stimulation",
 ]
 
@@ -31,5 +31,7 @@ def build_stimulation(cfg: StimulationConfig, conn: Connectome) -> StimulationMo
             return AnalyticalStim(cfg, conn.centres)
         case "roast_3d":
             return Roast3DStim(cfg, conn.region_labels)
-        case "yu_signed":
-            return YuStim(cfg, conn.region_labels)
+        case "yu_dynamic":
+            return DynamicYuStim(cfg, conn.region_labels)
+
+

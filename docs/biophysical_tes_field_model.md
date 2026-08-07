@@ -141,15 +141,14 @@ dynamics:
     electrodes: [TP9, CP5, EX8]   # omit for all 63 rows in the file
 ```
 
-The four models are `none`, `analytical` (Coulomb point source, `electrodes` + `spread`),
-`roast_3d` (above) and `yu_signed` (`path` + `electrodes`); each rejects the others' keys rather
+The models are `none`, `analytical` (Coulomb point source, `electrodes` + `spread`),
+`roast_3d` (above) and `yu_dynamic` (`leadfield_path` + `electrodes` + `alpha`); each rejects the others' keys rather
 than ignoring them. `electrodes` selects and orders the montage on every model, so swapping
 `model:` swaps the physics while holding the control problem fixed.
 
 The control vector is the per-electrode current over `stim.control_labels`, and must sum to zero.
-For `roast_3d` the last row is the `Ex8` return the leadfield is referenced to; for `yu_signed`
-the stored `-1 mA` pair rows are flipped at load to a `+1 mA` convention and an all-zero `EX8`
-row is appended, so both models present the same electrode-level basis.
+For `roast_3d` the last row is the `Ex8` return the leadfield is referenced to; for `yu_dynamic`
+dynamic vector superposition of electric fields ($L_E u$) and potentials ($L_V u$) is calculated inside `project(u)`.
 
 The leadfield holds the field in V/m per +1 mA at each channel, so $\mathbf{E} \cdot \hat{\mathbf{n}}$
 comes out in V/m -- that is mV/mm, and `Roast3DStim.polarization_length_mm` ($\lambda$ = 0.35 mm, the
@@ -163,13 +162,13 @@ unsigned $\|\mathbf{E}\|$ reduction was dropped: it is even in the current, $\|-
 can only ever excite, and it does not superpose. Because the dot product *does* commute with the
 superposition over electrodes,
 
-$$\Bigl(\sum_k u_k \mathbf{E}_k\Bigr) \cdot \hat{\mathbf{n}} = \sum_k u_k igl(\mathbf{E}_k \cdot \hat{\mathbf{n}}igr),$$
+$$\Bigl(\sum_k u_k \mathbf{E}_k\Bigr) \cdot \hat{\mathbf{n}} = \sum_k u_k (\mathbf{E}_k \cdot \hat{\mathbf{n}}),$$
 
 `Roast3DStim` contracts $\lambda\,(\mathbf{E}_k \cdot \hat{\mathbf{n}})$ into a constant
 `(n_controls, n_nodes)` matrix at build time -- the same object as the analytical model's
 $\gamma$ -- and `project` is a single `u @ gamma`. The 3-vectors never reach the hot loop.
 
-File-backed models (`roast_3d`, `yu_signed`) assert their stored `region_labels` match the
+File-backed models (`roast_3d`, `yu_dynamic`) assert their stored `region_labels` match the
 connectome's node order element-by-element, and `roast_3d` requires the region normals to come
 from its own leadfield file -- the leadfield and the normals it is reduced against are one
 artefact from one MATLAB run sharing one MNI RAS frame.

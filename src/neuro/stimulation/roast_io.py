@@ -5,10 +5,12 @@ from typing import TYPE_CHECKING
 
 import h5py
 import numpy as np
-from scipy.io import loadmat
 
 if TYPE_CHECKING:
     from neuro.types import FloatArray
+
+
+
 
 _NDIM_3D = 3
 _EXPECTED_NORMALS_FRAME = "mni_ras"
@@ -24,18 +26,33 @@ def _decode_char(node: h5py.Dataset) -> str:
     return "".join(chr(c) for c in np.asarray(node).ravel())
 
 
-def load_leadfield_mat(mat_path: Path) -> tuple[FloatArray, list[str], list[str], list[str], FloatArray]:
-    """Load the leadfield, requested/ROAST channel labels, region labels and normals from a MAT file.
+def load_leadfield_mat(
+    mat_path: Path,
+) -> tuple[FloatArray, FloatArray | None, list[str], list[str], list[str], FloatArray]:
+    """Load the leadfield E-field, optional potential V, channel labels, region labels and normals from a MAT file.
 
-    The leadfield is ``(n_channels, n_regions, 3)``: the ``(Ex, Ey, Ez)`` field in V/m at each
+    The leadfield_E is ``(n_channels, n_regions, 3)``: the ``(Ex, Ey, Ez)`` field in V/m at each
     region centroid per +1 mA at that channel, MNI RAS, with the return channel's row zero.
+    ``leadfield_V`` is ``(n_channels, n_regions)``: the electrostatic potential in V at each centroid.
 
     ``generate_roast_leadfield_3d.m`` writes ``-v7.3``, so the file is HDF5 and every array
     arrives transposed relative to its MATLAB shape.
     """
     with h5py.File(mat_path, "r") as mat:
         # MATLAB (63, 76, 3) is stored as (3, 76, 63).
-        leadfield = np.transpose(np.asarray(mat["leadfield_3d"], dtype=np.float64), (2, 1, 0))
+        if "leadfield_E" in mat:
+            leadfield_E = np.transpose(np.asarray(mat["leadfield_E"], dtype=np.float64), (2, 1, 0))
+        elif "leadfield_3d" in mat:  # TODO: delete fallback for legacy 'leadfield_3d' key soon
+            leadfield_E = np.transpose(np.asarray(mat["leadfield_3d"], dtype=np.float64), (2, 1, 0))
+        else:
+            msg = f"MAT file at {mat_path} carries neither 'leadfield_E' nor legacy 'leadfield_3d'"
+            raise KeyError(msg)
+
+        leadfield_V = (
+            np.asarray(mat["leadfield_V"], dtype=np.float64).T
+            if "leadfield_V" in mat
+            else None
+        )
 
         meta = mat["metadata"]
         channel_labels = _decode_strings(mat, meta["channelLabels"])
@@ -52,26 +69,31 @@ def load_leadfield_mat(mat_path: Path) -> tuple[FloatArray, list[str], list[str]
         )
         raise ValueError(msg)
 
-    return leadfield, channel_labels, roast_labels, region_labels, region_normals
+    return leadfield_E, leadfield_V, channel_labels, roast_labels, region_labels, region_normals
 
 
 def _validate(
-    leadfield: FloatArray,
+    leadfield_E: FloatArray,
     channel_labels: list[str],
     region_labels: list[str],
     region_normals: FloatArray,
+    leadfield_V: FloatArray | None = None,
 ) -> None:
-    """Check the leadfield's shape against its labels and that the return row is the zero reference."""
+    """Check the leadfield_E shape against its labels and that the return row is the zero reference."""
     expected = (len(channel_labels), len(region_labels), _NDIM_3D)
-    if leadfield.shape != expected:
-        msg = f"leadfield_3d shape {leadfield.shape} does not match {expected}"
+    if leadfield_E.shape != expected:
+        msg = f"leadfield_E shape {leadfield_E.shape} does not match {expected}"
         raise ValueError(msg)
     if region_normals.shape != (len(region_labels), _NDIM_3D):
         msg = f"region_normals shape {region_normals.shape} does not match ({len(region_labels)}, {_NDIM_3D})"
         raise ValueError(msg)
-    if np.any(leadfield[-1]):
+    if leadfield_V is not None and leadfield_V.shape != (len(channel_labels), len(region_labels)):
+        msg = f"leadfield_V shape {leadfield_V.shape} does not match ({len(channel_labels)}, {len(region_labels)})"
+        raise ValueError(msg)
+    if np.any(leadfield_E[-1]):
         msg = f"the return row ({channel_labels[-1]}) is not zero; it must be the reference ground"
         raise ValueError(msg)
+
 
 
 def convert_roast_leadfield_to_npz(
@@ -91,83 +113,38 @@ def convert_roast_leadfield_to_npz(
         msg = f"Source MAT file not found at {src}"
         raise FileNotFoundError(msg)
 
-    leadfield_3d, channel_labels, roast_labels, region_labels, region_normals = load_leadfield_mat(src)
-    _validate(leadfield_3d, channel_labels, region_labels, region_normals)
+    leadfield_E, leadfield_V, channel_labels, roast_labels, region_labels, region_normals = load_leadfield_mat(src)
+    _validate(leadfield_E, channel_labels, region_labels, region_normals, leadfield_V=leadfield_V)
 
     dst.parent.mkdir(parents=True, exist_ok=True)
-    np.savez(
-        dst,
-        leadfield_3d=leadfield_3d,
-        channel_labels=np.asarray(channel_labels, dtype=str),
-        roast_labels=np.asarray(roast_labels, dtype=str),
-        region_labels=np.asarray(region_labels, dtype=str),
-        region_normals=region_normals,
-    )
+    if leadfield_V is not None:
+        np.savez(
+            dst,
+            leadfield_E=leadfield_E,
+            leadfield_V=leadfield_V,
+            channel_labels=np.asarray(channel_labels, dtype=str),
+            roast_labels=np.asarray(roast_labels, dtype=str),
+            region_labels=np.asarray(region_labels, dtype=str),
+            region_normals=region_normals,
+        )
+    else:
+        np.savez(
+            dst,
+            leadfield_E=leadfield_E,
+            channel_labels=np.asarray(channel_labels, dtype=str),
+            roast_labels=np.asarray(roast_labels, dtype=str),
+            region_labels=np.asarray(region_labels, dtype=str),
+            region_normals=region_normals,
+        )
+
     substituted = [(req, got) for req, got in zip(channel_labels, roast_labels, strict=True) if req != got]
     print(f"Successfully converted {src} -> {dst}")  # noqa: T201
-    print(f"  Leadfield 3D shape: {leadfield_3d.shape}")  # noqa: T201
+    print(f"  Leadfield E shape: {leadfield_E.shape}")  # noqa: T201
+    if leadfield_V is not None:
+        print(f"  Leadfield V shape: {leadfield_V.shape}")  # noqa: T201
     print(f"  Channels ({len(channel_labels)}): {channel_labels[:5]} ... {channel_labels[-1]}")  # noqa: T201
     print(f"  Regions ({len(region_labels)}): {region_labels[:5]} ...")  # noqa: T201
     print(f"  Substituted electrodes: {substituted or 'none'}")  # noqa: T201
 
 
-def load_gamma_mat(mat_path: Path) -> tuple[FloatArray, list[str]]:
-    """Load the Yu signed-magnitude gamma and its region labels from a v7 or v7.3 MAT file."""
-    try:
-        mat_data = loadmat(mat_path, squeeze_me=True)
-        gamma = np.asarray(mat_data["gamma"], dtype=np.float64)
-        metadata = mat_data.get("metadata", {})
-        region_labels = list(metadata.get("regionLabels", []))
-    except (NotImplementedError, ValueError):
-        with h5py.File(mat_path, "r") as h5_file:
-            gamma = np.asarray(h5_file["gamma"], dtype=np.float64)
-            # In HDF5 v7.3, MATLAB stores matrices transposed (n_regions x n_montages).
-            if gamma.ndim == 2 and gamma.shape[0] > gamma.shape[1]:  # noqa: PLR2004
-                gamma = gamma.T
-            region_labels = []
 
-    if gamma.ndim == 1:
-        gamma = gamma[None, :]
-    return gamma, region_labels
-
-
-def convert_roast_gamma_to_npz(
-    mat_path: str | Path = "data/roast_gamma.mat",
-    npz_path: str | Path = "data/roast_gamma.npz",
-    electrode_labels: tuple[str, ...] = ("TP9", "CP5"),
-) -> None:
-    """Read a Yu signed-magnitude gamma MAT file and write the NPZ that :class:`YuStim` loads.
-
-    ``run_current_montage_gamma.m`` writes one row per bipolar montage pair at ``-1 mA`` on the
-    drive electrode; ``electrode_labels`` names the drive electrode of each row in that order.
-    """
-    src = Path(mat_path)
-    dst = Path(npz_path)
-
-    if not src.exists():
-        msg = f"Source MAT file not found at {src}"
-        raise FileNotFoundError(msg)
-
-    gamma, region_labels = load_gamma_mat(src)
-
-    if len(region_labels) == 0:
-        geom_path = Path("data/tvb_geometry.npz")
-        if geom_path.exists():
-            with np.load(geom_path) as geom:
-                region_labels = list(geom["region_labels"].astype(str))
-
-    if len(gamma) != len(electrode_labels):
-        msg = f"gamma has {len(gamma)} rows but {len(electrode_labels)} electrode labels were given"
-        raise ValueError(msg)
-
-    dst.parent.mkdir(parents=True, exist_ok=True)
-    np.savez(
-        dst,
-        gamma_phi=gamma,
-        electrode_labels=np.asarray(electrode_labels, dtype=str),
-        region_labels=np.asarray(region_labels, dtype=str),
-    )
-    print(f"Successfully converted {src} -> {dst}")  # noqa: T201
-    print(f"  Gamma shape: {gamma.shape}")  # noqa: T201
-    print(f"  Electrodes: {electrode_labels}")  # noqa: T201
-    print(f"  Regions: {len(region_labels)}")  # noqa: T201

@@ -80,15 +80,19 @@ class _Roast3DConfig(StrictConfig):
     electrodes: list[str] | None = None
 
 
-class _YuConfig(StrictConfig):
-    """Yu et al. (2024) signed field magnitude, stored per bipolar montage pair."""
+class _DynamicYuConfig(StrictConfig):
+    """Dynamic Yu stimulation model: ||L_E u|| * smooth_sign(L_V u - V_med)."""
 
-    model: Literal["yu_signed"]
-    path: str | Path = "data/roast_gamma.npz"
+    model: Literal["yu_dynamic"]
+    leadfield_path: str | Path = "data/roast_leadfield_3d.npz"
     electrodes: list[str] | None = None
+    alpha: float = Field(default=3.0, gt=0.0)
+    scale_factor: float = Field(default=1.0, gt=0.0)
 
 
 StimulationConfig = Annotated[
-    _NullConfig | _AnalyticalConfig | _Roast3DConfig | _YuConfig,
+    _NullConfig | _AnalyticalConfig | _Roast3DConfig | _DynamicYuConfig,
     Field(discriminator="model"),
 ]
+
+

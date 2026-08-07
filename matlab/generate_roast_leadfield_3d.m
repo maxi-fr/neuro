@@ -1,16 +1,16 @@
-function [leadfield_3d, metadata] = generate_roast_leadfield_3d(varargin)
-% GENERATE_ROAST_LEADFIELD_3D Computes the 3D electric field leadfield matrix (L)
-% for 63 input channels (62 scalp electrodes + Ex8 return) to
-% 76 output Jansen-Rit node positions using the ROAST library.
+function [leadfield_E, metadata] = generate_roast_leadfield_3d(varargin)
+% GENERATE_ROAST_LEADFIELD_3D Computes the 3D electric field leadfield matrix (leadfield_E)
+% and potential matrix (leadfield_V) for 63 input channels (62 scalp electrodes + Ex8 return)
+% to 76 output Jansen-Rit node positions using the ROAST library.
 %
 % Outputs:
-%   leadfield_3d - Array of shape (63, 76, 3) containing (Ex, Ey, Ez) at each JR node
-%                  per +1 mA stimulation channel relative to Ex8 reference return.
-%                  Row 63 (Ex8 anode) is defined as zeros (reference ground).
-%   metadata     - Struct containing channel labels, region labels, coordinates, and options.
-%                  channelLabels holds the requested (TVB) names; roastLabels holds the
-%                  ROAST cap electrode actually simulated for each row, and labelDots the
-%                  cosine between the two positions.
+%   leadfield_E - Array of shape (63, 76, 3) containing (Ex, Ey, Ez) at each JR node
+%                 per +1 mA stimulation channel relative to Ex8 reference return.
+%                 Row 63 (Ex8 anode) is defined as zeros (reference ground).
+%   metadata    - Struct containing channel labels, region labels, coordinates, and options.
+%                 channelLabels holds the requested (TVB) names; roastLabels holds the
+%                 ROAST cap electrode actually simulated for each row, and labelDots the
+%                 cosine between the two positions.
 %
 % Usage:
 %   [L, meta] = generate_roast_leadfield_3d('outputFile', 'data/roast_leadfield_3d.mat');
@@ -93,7 +93,8 @@ function [leadfield_3d, metadata] = generate_roast_leadfield_3d(varargin)
     end
     fprintf('=======================================================\n\n');
 
-    leadfield_3d = zeros(nChannels, nRegions, 3);
+    leadfield_E = zeros(nChannels, nRegions, 3);
+    leadfield_V = zeros(nChannels, nRegions);
 
     % Enter the ROAST directory once. Re-creating the onCleanup inside the loop would destroy
     % the previous one and cd back out, leaving every iteration after the first in the wrong cwd.
@@ -142,6 +143,7 @@ function [leadfield_3d, metadata] = generate_roast_leadfield_3d(varargin)
         voxCoords = voxHom(1:3, :)';
 
         ef_all = resData.ef_all; % (dim1, dim2, dim3, 3)
+        vol_all = resData.vol_all; % (dim1, dim2, dim3) voltage potential in V
         [dim1, dim2, dim3, ~] = size(ef_all);
         [X, Y, Z] = ndgrid(1:dim1, 1:dim2, 1:dim3);
 
@@ -159,14 +161,17 @@ function [leadfield_3d, metadata] = generate_roast_leadfield_3d(varargin)
         Ex_regions = interp3(Y, X, Z, Ex_grid, voxCoords(:,2), voxCoords(:,1), voxCoords(:,3), 'linear', 0);
         Ey_regions = interp3(Y, X, Z, Ey_grid, voxCoords(:,2), voxCoords(:,1), voxCoords(:,3), 'linear', 0);
         Ez_regions = interp3(Y, X, Z, Ez_grid, voxCoords(:,2), voxCoords(:,1), voxCoords(:,3), 'linear', 0);
+        V_regions = interp3(Y, X, Z, vol_all, voxCoords(:,2), voxCoords(:,1), voxCoords(:,3), 'linear', 0);
 
-        leadfield_3d(k, :, 1) = Ex_regions;
-        leadfield_3d(k, :, 2) = Ey_regions;
-        leadfield_3d(k, :, 3) = Ez_regions;
+        leadfield_E(k, :, 1) = Ex_regions;
+        leadfield_E(k, :, 2) = Ey_regions;
+        leadfield_E(k, :, 3) = Ez_regions;
+        leadfield_V(k, :) = V_regions;
     end
 
     % Row 63 (return electrode) is the zero reference
-    leadfield_3d(nChannels, :, :) = 0;
+    leadfield_E(nChannels, :, :) = 0;
+    leadfield_V(nChannels, :) = 0;
 
     % Build metadata
     metadata = struct();
@@ -188,10 +193,11 @@ function [leadfield_3d, metadata] = generate_roast_leadfield_3d(varargin)
         if ~isempty(outDir) && ~exist(outDir, 'dir')
             mkdir(outDir);
         end
-        save(outputFile, 'leadfield_3d', 'metadata', '-v7.3');
-        fprintf('\nSaved ROAST 3D Leadfield matrix (%d x %d x 3) to %s\n', ...
-                nChannels, nRegions, outputFile);
+        save(outputFile, 'leadfield_E', 'leadfield_V', 'metadata', '-v7.3');
+        fprintf('\nSaved ROAST 3D Electric Field Leadfield matrix (%d x %d x 3) and Potential matrix (%d x %d) to %s\n', ...
+                nChannels, nRegions, nChannels, nRegions, outputFile);
     end
+
 end
 
 %% Helper: Resolve requested electrode labels to ROAST cap electrodes
