@@ -14,9 +14,8 @@ dynamics:
     speed: 50.0
     K: 0.60
   stimulation:
-    model: analytical
-    electrodes: [TP9, CP5, EX8]
-    spread: 15.0
+    model: roast_3d
+    leadfield_path: data/roast_leadfield_3d.npz
   params:
     sigma: 280.0
     A: [3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25,
@@ -33,8 +32,7 @@ sensors:
   dt: 0.0001
   std_dev: 0.0
   measurement:
-    class_path: neuro.measurement.EEGMeasurement
-    speed: 50.0
+    class_path: neuro.eeg.EEGMeasurement
     # 10-20 (19 ch) + inferior-temporal additions covering the left mesial-temporal EZ.
     selected_channels: [Fp1, Fp2, F7, F3, Fz, F4, F8, T7, C3, Cz, C4, T8, P7, P3, Pz, P4, P8, O1, O2, TP9, TP7, CP5, FC5, P5, PO7]
 

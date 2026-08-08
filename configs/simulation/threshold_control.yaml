@@ -14,9 +14,8 @@ dynamics:
     speed: 50.0
     K: 0.60
   stimulation:
-    model: analytical
-    electrodes: [TP9, CP5, EX8]
-    spread: 15.0
+    model: roast_3d
+    leadfield_path: data/roast_leadfield_3d.npz
   params:
     sigma: 280.0
     A: [3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25,
@@ -33,8 +32,7 @@ sensors:
   dt: 0.0001
   std_dev: 0.0
   measurement:
-    class_path: neuro.measurement.EEGMeasurement
-    speed: 50.0
+    class_path: neuro.eeg.EEGMeasurement
 
 estimator: {class_path: simulate.estimator.IdentityEstimator, dt: 0.0001}
 
@@ -43,9 +41,15 @@ controller:
   dt: 0.01
   # TP9 (channel 27) sits over the focus: ~12 mV ptp before spread, ~45 mV once established.
   channel: 27
-  threshold: 20.0
+  # 10 mV, not the 20 mV the analytical plant was tuned to. Under roast_3d the only region with
+  # real control authority is lTCI, and suppression works by holding its gate shut rather than
+  # by aborting an established seizure -- so a late trigger never recovers. Over 7 seeds a
+  # 20 mV trigger suppresses 1/7 and 10 mV suppresses 6/7 at the same current.
+  threshold: 10.0
   window: 1.0
   burst_duration: 1.0
-  # 0.5 mA at each left-temporal cathode, returning through the extracephalic electrode.
-  amplitude: [-0.5, -0.5, 1.0]
+  # +2 mA at TP9 returning through Ex8. CP5 is left at zero: its row is ~4x weaker than TP9's
+  # and points mostly at contralateral rTCI, so it buys nothing here (it stays in the montage
+  # as the second control DOF the MPC and the L1-sparsity work need).
+  amplitude: [2.0, 0.0, -2.0]
   n_u: 3

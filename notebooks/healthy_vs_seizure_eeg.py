@@ -1,6 +1,6 @@
 import marimo
 
-__generated_with = "0.23.10"
+__generated_with = "0.23.13"
 app = marimo.App(
     width="medium",
     app_title="Healthy vs. Seizure EEG Comparison",
@@ -16,6 +16,7 @@ def _():
     from matplotlib import pyplot as plt
 
     from neuro.connectome import Connectome
+    from neuro.eeg import build_eeg_gain
     from neuro.jansen_rit import JansenRitDynamics, JansenRitParams, lfp, simulate_network
     from utils.plotting import plot_psd
     from utils.processing import band_energy, steady_window
@@ -25,6 +26,7 @@ def _():
         JansenRitDynamics,
         JansenRitParams,
         band_energy,
+        build_eeg_gain,
         lfp,
         mo,
         np,
@@ -109,6 +111,7 @@ def _(connectome, mo):
 def _(
     JansenRitDynamics,
     JansenRitParams,
+    build_eeg_gain,
     connectome,
     deterministic_toggle,
     duration_slider,
@@ -157,8 +160,9 @@ def _(
     y_healthy_steady = steady_window(y_healthy, dt_ms, transient_ms)
     y_seizure_steady = steady_window(y_seizure, dt_ms, transient_ms)
 
-    eeg_healthy = conn.gain @ y_healthy_steady
-    eeg_seizure = conn.gain @ y_seizure_steady
+    gain, _ = build_eeg_gain()
+    eeg_healthy = gain @ y_healthy_steady
+    eeg_seizure = gain @ y_seizure_steady
 
     t[round(transient_ms / dt_ms) :]
     return dt_ms, eeg_healthy, eeg_seizure

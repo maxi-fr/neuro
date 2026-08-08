@@ -148,10 +148,7 @@ def _two_node_delayed_connectome() -> Connectome:
         hemispheres=np.array([False, False]),
         speed=1.0,
         delays=delays,
-        gain=np.zeros((1, 2)),
-        channel_labels=np.array(["c0"]),
         region_index={"n0": 0, "n1": 1},
-        channel_index={"c0": 0},
     )
 
 

@@ -33,5 +33,3 @@ def build_stimulation(cfg: StimulationConfig, conn: Connectome) -> StimulationMo
             return Roast3DStim(cfg, conn.region_labels)
         case "yu_dynamic":
             return DynamicYuStim(cfg, conn.region_labels)
-
-

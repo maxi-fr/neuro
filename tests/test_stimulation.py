@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import h5py
@@ -8,6 +9,7 @@ import pytest
 from pydantic import TypeAdapter, ValidationError
 
 from neuro.connectome import Connectome
+from neuro.eeg import build_eeg_gain
 from neuro.geometry import EXTRACEPHALIC_ELECTRODES_MM, sensor_positions_mm
 from neuro.jansen_rit import JansenRitDynamics, JansenRitParams
 from neuro.stimulation import AnalyticalStim, DynamicYuStim, NullStim, Roast3DStim, build_stimulation
@@ -15,11 +17,10 @@ from neuro.stimulation.base import StimulationConfig
 from neuro.stimulation.roast_io import convert_roast_leadfield_to_npz
 
 if TYPE_CHECKING:
-    from pathlib import Path
-
     from neuro.types import StrArray
 
 _N_REGIONS = 76
+_SHIPPED_LEADFIELD = Path("data/roast_leadfield_3d.npz")
 
 
 @pytest.fixture(scope="module")
@@ -98,9 +99,11 @@ def test_analytical_kernel_decays_from_its_electrode(connectome: Connectome) -> 
     assert stim.gamma.shape == (2, _N_REGIONS)
     assert (stim.gamma > 0.0).all()
 
+    _, channel_labels = build_eeg_gain()
+    channel_index = {label: idx for idx, label in enumerate(channel_labels)}
     _, positions = sensor_positions_mm()
     for row, channel in enumerate(("CP5", "T7")):
-        dist = np.linalg.norm(connectome.centres - positions[connectome.channel_index[channel]], axis=1)
+        dist = np.linalg.norm(connectome.centres - positions[channel_index[channel]], axis=1)
         assert stim.gamma[row].argmax() == dist.argmin(), channel
 
 
@@ -192,7 +195,6 @@ def _write_leadfield_npz(
         np.savez(path, leadfield_E=lf_data, channel_labels=ch_labels, region_labels=r_labels, region_normals=normals)
 
 
-
 def test_roast_3d_reduces_along_the_cortical_normal(connectome: Connectome, tmp_path: Path) -> None:
     """The drive is ``lambda * (E . n)`` on the superposed field, checked against the raw file.
 
@@ -277,6 +279,30 @@ def test_roast_3d_drives_the_plant(connectome: Connectome, tmp_path: Path) -> No
     out = plant.dynamics(t=0.0, x=plant.x, u=u)
     assert out.shape == (6, _N_REGIONS)
     assert not np.isnan(out).any()
+
+
+@pytest.mark.skipif(not _SHIPPED_LEADFIELD.exists(), reason="shipped ROAST leadfield not present")
+def test_shipped_roast_montage_hyperpolarizes_the_propagation_hub(connectome: Connectome) -> None:
+    """The shipped TP9/CP5/Ex8 leadfield must keep the montage's sign and its reachable target.
+
+    Every closed-loop result on this plant rests on one fact: positive current at ``TP9``
+    against the ``Ex8`` return hyperpolarizes ``lTCI``, the propagation hub, which blocks the
+    spread. A frame or sign regression in the MATLAB run would invert that and quietly turn
+    every suppression run into a seizure-promoting one, so it is asserted against the real
+    artifact rather than a synthetic one.
+
+    The mesial EZ is deliberately *not* asserted on: ROAST puts 0.04-0.17 V/m per mA there,
+    which is far too little to control (see ``docs/tes_field_geometry.md`` section 10.2).
+    """
+    stim = _build({"model": "roast_3d", "leadfield_path": str(_SHIPPED_LEADFIELD)}, connectome)
+    assert list(stim.control_labels) == ["TP9", "CP5", "Ex8"]
+
+    drive = stim.project(np.array([2.0, 0.0, -2.0]))
+    hub = connectome.region_index["lTCI"]
+
+    assert drive[hub] < -0.5, "positive TP9 current must hyperpolarize the lTCI propagation hub"
+    assert drive.argmin() == hub, "lTCI must be the most-suppressed region of the montage"
+    assert abs(drive[hub]) > 5.0 * np.abs(np.delete(drive, hub)).mean(), "the montage is not focal"
 
 
 # --------------------------------------------------------------------------------------
@@ -392,7 +418,6 @@ def test_converter_rejects_nonzero_return_row(tmp_path: Path) -> None:
 # --------------------------------------------------------------------------------------
 
 
-
 def _write_dynamic_leadfield_npz(
     path: Path, region_labels: StrArray, *, include_v: bool = True, legacy_key: bool = False
 ) -> None:
@@ -443,7 +468,6 @@ def _write_dynamic_leadfield_npz(
         )
 
 
-
 def test_dynamic_yu_stim_project(connectome: Connectome, tmp_path: Path) -> None:
     """DynamicYuStim projects currents using vector E-field magnitude and smooth voltage polarity."""
     npz = tmp_path / "lf_dynamic.npz"
@@ -482,5 +506,3 @@ def test_dynamic_yu_rejects_missing_leadfield_v(connectome: Connectome, tmp_path
 
     with pytest.raises(ValueError, match="does not carry 'leadfield_V'"):
         _build({"model": "yu_dynamic", "leadfield_path": str(npz)}, connectome)
-
-

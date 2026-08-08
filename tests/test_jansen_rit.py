@@ -25,7 +25,7 @@ _DT = 1e-4
 
 
 def _single_node_connectome() -> Connectome:
-    """Degenerate one-node, one-channel connectome (no coupling) for isolated-node runs."""
+    """Degenerate one-node connectome (no coupling) for isolated-node runs."""
     return Connectome(
         K=1.0,
         weights=np.zeros((1, 1)),
@@ -35,10 +35,7 @@ def _single_node_connectome() -> Connectome:
         hemispheres=np.array([False]),
         speed=1.0,
         delays=np.zeros((1, 1)),
-        gain=np.ones((1, 1)),
-        channel_labels=np.array(["c0"]),
         region_index={"n0": 0},
-        channel_index={"c0": 0},
     )
 
 

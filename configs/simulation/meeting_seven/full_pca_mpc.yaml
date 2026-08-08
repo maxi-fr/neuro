@@ -15,9 +15,8 @@ dynamics:
     speed: 50.0
     K: 0.60
   stimulation:
-    model: analytical
-    electrodes: [TP9, CP5, EX8]
-    spread: 15.0
+    model: roast_3d
+    leadfield_path: data/roast_leadfield_3d.npz
   params:
     sigma: 280.0
     A: [3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25,
@@ -34,8 +33,7 @@ sensors:
   dt: 0.0001
   std_dev: 0.0
   measurement:
-    class_path: neuro.measurement.EEGMeasurement
-    speed: 50.0
+    class_path: neuro.eeg.EEGMeasurement
     # Full EEG: no selected_channels -> all 62 channels (matches the nonlinear_full_pca predictor).
 
 estimator: {class_path: simulate.estimator.IdentityEstimator, dt: 0.0001}

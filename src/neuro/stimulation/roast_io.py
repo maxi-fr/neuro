@@ -10,8 +10,6 @@ if TYPE_CHECKING:
     from neuro.types import FloatArray
 
 
-
-
 _NDIM_3D = 3
 _EXPECTED_NORMALS_FRAME = "mni_ras"
 
@@ -48,11 +46,7 @@ def load_leadfield_mat(
             msg = f"MAT file at {mat_path} carries neither 'leadfield_E' nor legacy 'leadfield_3d'"
             raise KeyError(msg)
 
-        leadfield_V = (
-            np.asarray(mat["leadfield_V"], dtype=np.float64).T
-            if "leadfield_V" in mat
-            else None
-        )
+        leadfield_V = np.asarray(mat["leadfield_V"], dtype=np.float64).T if "leadfield_V" in mat else None
 
         meta = mat["metadata"]
         channel_labels = _decode_strings(mat, meta["channelLabels"])
@@ -93,7 +87,6 @@ def _validate(
     if np.any(leadfield_E[-1]):
         msg = f"the return row ({channel_labels[-1]}) is not zero; it must be the reference ground"
         raise ValueError(msg)
-
 
 
 def convert_roast_leadfield_to_npz(
@@ -145,6 +138,3 @@ def convert_roast_leadfield_to_npz(
     print(f"  Channels ({len(channel_labels)}): {channel_labels[:5]} ... {channel_labels[-1]}")  # noqa: T201
     print(f"  Regions ({len(region_labels)}): {region_labels[:5]} ...")  # noqa: T201
     print(f"  Substituted electrodes: {substituted or 'none'}")  # noqa: T201
-
-
-

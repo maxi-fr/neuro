@@ -1,8 +1,7 @@
-# Closed-loop seizure suppression, setup 6/6: SELECTED 25-channel EEG + Linear MPC.
-# LinearMPCController solves a convex QP using a depth-0 (affine) NN predictor trained on the
-# manually-selected 25-channel montage. Consumes the linear_selected artifact
-# (mpc_linear_selected.yaml). Controller runs at the predictor native step dt: 0.01 = plant
-# dt 1e-4 x downsample 100.
+# Closed-loop seizure suppression on the roast_3d plant: full 62-channel EEG + Nonlinear MPC.
+# MPCController solves an IPOPT NLP over a depth-1 softplus NN predictor identified on
+# data/experiment_excited_roast, with no PCA -- the optimisation runs directly in EEG space.
+# shooting_depth 1 is single shooting, which is what keeps this tractable.
 t_end: 20.0
 
 dynamics:
@@ -33,18 +32,17 @@ sensors:
   std_dev: 0.0
   measurement:
     class_path: neuro.eeg.EEGMeasurement
-    # Must match the montage the predictor was trained on (see jansen_rit_seizure_excited.yaml).
-    selected_channels: [Fp1, Fp2, F7, F3, Fz, F4, F8, T7, C3, Cz, C4, T8, P7, P3, Pz, P4, P8, O1, O2, TP9, TP7, CP5, FC5, P5, PO7]
+    # Full EEG: no selected_channels -> all 62 channels (matches the nonlinear_full predictor).
 
 estimator: {class_path: simulate.estimator.IdentityEstimator, dt: 0.0001}
 
 controller:
-  class_path: neuro.control.LinearMPCController
+  class_path: neuro.control.MPCController
   dt: 0.01
-  artifact: artifacts/meeting_seven_experiment/linear_selected/model   # depth-0 (linear) artifact basename
+  artifact: artifacts/roast/nonlinear_full/model
   horizon: 20
-  u_max: 3.0
+  u_max: 2.0
   w_y: 1.0
   w_u: 10.0
-  formulation: dense    # `sparse` -> OSQP (stacked) ; `dense` -> qpOASES (condensed)
-  osqp_eps: 1.0e-9      # OSQP abs/rel tolerance (sparse formulation only; ignored for dense)
+  shooting_depth: 1     # single shooting
+  max_iter: 100

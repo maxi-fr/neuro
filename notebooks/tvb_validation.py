@@ -1,6 +1,6 @@
 import marimo
 
-__generated_with = "0.23.10"
+__generated_with = "0.23.13"
 app = marimo.App(width="medium", app_title="Stage 7: TVB Reference Validation")
 
 
@@ -116,6 +116,7 @@ def _(
     JansenRitDynamics,
     JansenRitParams,
     a_gains,
+    build_eeg_gain,
     build_reference_simulator,
     conn,
     deterministic_toggle,
@@ -151,7 +152,8 @@ def _(
     )
     (hr_t, _x) = simulate_network(dyn=hr_dyn, duration=float(duration_slider.value))
     hr_y = lfp(_x)
-    hr_eeg = conn.gain @ hr_y
+    _gain, _ = build_eeg_gain()
+    hr_eeg = _gain @ hr_y
     return hr_eeg, hr_t, hr_y, tvb
 
 
@@ -261,7 +263,7 @@ def _(band_energy, conn, hr_eeg, np, plt, steady_window, tvb):
 def _(build_reference_simulator, conn, mo, np, plt, reference_eeg_gain):
     from tvb.datatypes.sensors import SensorsEEG
 
-    from neuro.connectome import _mirror_partner_permutation
+    from neuro.eeg import _mirror_partner_permutation, build_eeg_gain
 
     _sim = build_reference_simulator(conn, with_eeg=True)
     _tvb_gain = reference_eeg_gain(_sim)
@@ -269,17 +271,18 @@ def _(build_reference_simulator, conn, mo, np, plt, reference_eeg_gain):
         np.asarray(SensorsEEG.from_file("eeg_unitvector_62.txt.bz2").locations, dtype=float)
     )
     _aligned = _tvb_gain[_partner]
-    _max_diff = float(np.max(np.abs(_aligned - conn.gain)))
+    _our_gain, _ = build_eeg_gain()
+    _max_diff = float(np.max(np.abs(_aligned - _our_gain)))
 
     _fig, _ax = plt.subplots(figsize=(5, 5), layout="constrained")
-    _ax.scatter(conn.gain.ravel(), _aligned.ravel(), s=2, alpha=0.3, color="#2ca02c")
-    _lim = [conn.gain.min(), conn.gain.max()]
+    _ax.scatter(_our_gain.ravel(), _aligned.ravel(), s=2, alpha=0.3, color="#2ca02c")
+    _lim = [_our_gain.min(), _our_gain.max()]
     _ax.plot(_lim, _lim, "k--", lw=0.8)
-    _ax.set_title(f"L validation: TVB gain vs connectome.gain\nmax |Δ| = {_max_diff:.2e}")
-    _ax.set_xlabel("connectome.gain")
+    _ax.set_title(f"L validation: TVB gain vs build_eeg_gain()\nmax |Δ| = {_max_diff:.2e}")
+    _ax.set_xlabel("build_eeg_gain()")
     _ax.set_ylabel("TVB gain (mirror-aligned)")
     mo.vstack([_fig, mo.md(f"**max |Δ| = {_max_diff:.2e}** — the two forward operators are identical.")])
-    return
+    return (build_eeg_gain,)
 
 
 if __name__ == "__main__":

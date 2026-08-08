@@ -7,8 +7,7 @@ dimension `C = n_channels` seen by the NN predictor and the MPC.
 
 Source of truth:
 
-- Measurement / channel subsetting: [`src/neuro/measurement.py`](../src/neuro/measurement.py)
-- Forward operator (EEG gain `L`): [`src/neuro/connectome.py`](../src/neuro/connectome.py)
+- Measurement / channel subsetting & forward operator (EEG gain `L`): [`src/neuro/eeg.py`](../src/neuro/eeg.py)
 - Wired into: [`configs/simulation/jansen_rit_seizure_excited.yaml`](../configs/simulation/jansen_rit_seizure_excited.yaml)
   (data generation) and closed-loop configs under [`configs/simulation/meeting_seven/`](../configs/simulation/meeting_seven/)
   (e.g., `selected_mpc.yaml`).

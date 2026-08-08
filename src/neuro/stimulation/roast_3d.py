@@ -65,7 +65,6 @@ def load_roast_3d_leadfield(
     return leadfield_E, channel_labels, region_labels, region_normals
 
 
-
 class Roast3DStim(StimulationModel):
     """tES field from a ROAST 3D FEM leadfield, reduced along each region's cortical normal.
 

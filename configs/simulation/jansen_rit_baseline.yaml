@@ -26,8 +26,7 @@ sensors:
   dt: 0.0001
   std_dev: 0.0
   measurement:
-    class_path: neuro.measurement.EEGMeasurement
-    speed: 50.0
+    class_path: neuro.eeg.EEGMeasurement
 
 estimator:
   class_path: simulate.estimator.IdentityEstimator

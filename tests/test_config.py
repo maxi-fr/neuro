@@ -13,8 +13,8 @@ from neuro.config import (
 )
 from neuro.connectome import Connectome
 from neuro.control import ZeroController
+from neuro.eeg import EEGMeasurement
 from neuro.jansen_rit import JansenRitDynamics
-from neuro.measurement import EEGMeasurement
 
 
 def test_defaults_applied_for_missing_sections() -> None:
@@ -196,7 +196,7 @@ def test_zero_controller_rejects_unknown_key() -> None:
 def test_eeg_measurement_rejects_unknown_key() -> None:
     """Test Eeg measurement rejects unknown key."""
     with pytest.raises(ValidationError, match="EEGMeasurement"):
-        EEGMeasurement.from_config({"speed": 50.0, "speeed": 1})
+        EEGMeasurement.from_config({"n_nodes": 76, "speeed": 1})
 
 
 def test_connectome_rejects_unknown_key() -> None:

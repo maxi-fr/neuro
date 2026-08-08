@@ -94,5 +94,3 @@ StimulationConfig = Annotated[
     _NullConfig | _AnalyticalConfig | _Roast3DConfig | _DynamicYuConfig,
     Field(discriminator="model"),
 ]
-
-

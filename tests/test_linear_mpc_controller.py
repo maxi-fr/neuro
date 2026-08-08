@@ -348,8 +348,7 @@ def test_closed_loop_simulation_runs(tmp_path: Path, formulation: str) -> None:
             "dt": 1e-4,
             "std_dev": 0.0,
             "measurement": {
-                "class_path": "neuro.measurement.EEGMeasurement",
-                "speed": 50.0,
+                "class_path": "neuro.eeg.EEGMeasurement",
                 "selected_channels": [0, 1, 2],
             },
         },

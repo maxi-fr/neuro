@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
-from neuro.connectome import _PROJECTION_FILE, _REGION_MAPPING_FILE, _mirror_partner_permutation
+from neuro.eeg import _PROJECTION_FILE, _REGION_MAPPING_FILE, _mirror_partner_permutation
 from neuro.geometry import SENSORS_FILE
 
 with warnings.catch_warnings():

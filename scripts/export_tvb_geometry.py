@@ -8,6 +8,7 @@ import numpy as np
 from scipy.io import savemat
 
 from neuro.connectome import Connectome
+from neuro.eeg import build_eeg_gain
 from neuro.geometry import centres_to_mni_ras, sensor_positions_mm
 
 with warnings.catch_warnings():
@@ -37,6 +38,7 @@ def main() -> None:
     args = parse_args()
 
     conn = Connectome.from_config({})
+    gain, channel_labels = build_eeg_gain()
     surface = CorticalSurface.from_file()
     region_of_vertex = np.asarray(RegionMapping.from_file(_REGION_MAPPING_FILE).array_data, dtype=np.int64)
 
@@ -63,8 +65,8 @@ def main() -> None:
     region_normals_ras = centres_to_mni_ras(region_normals_conn)
 
     sensor_labels, sensor_conn = sensor_positions_mm()
-    if not np.array_equal(sensor_labels, conn.channel_labels):
-        msg = "sensor file labels do not match the connectome's channel labels"
+    if not np.array_equal(sensor_labels, channel_labels):
+        msg = "sensor file labels do not match the EEG channel labels"
         raise ValueError(msg)
     channel_positions_ras = centres_to_mni_ras(sensor_conn)
 
@@ -76,9 +78,9 @@ def main() -> None:
         surface_region=region_of_vertex,
         region_normals_mni_ras=region_normals_ras,
         region_normals_conn=region_normals_conn,
-        channel_labels=conn.channel_labels,
+        channel_labels=channel_labels,
         channel_positions_mni_ras=channel_positions_ras,
-        gain=conn.gain,
+        gain=gain,
     )
     mat_out = args.out.with_suffix(".mat")
     savemat(
@@ -90,13 +92,13 @@ def main() -> None:
             "surface_region": region_of_vertex,
             "region_normals_mni_ras": region_normals_ras,
             "region_normals_conn": region_normals_conn,
-            "channel_labels": np.asarray(conn.channel_labels, dtype=object),
+            "channel_labels": np.asarray(channel_labels, dtype=object),
             "channel_positions_mni_ras": channel_positions_ras,
-            "gain": conn.gain,
+            "gain": gain,
         },
     )
     print(
-        f"Wrote {args.out} and {mat_out}: {len(conn.region_labels)} regions, {len(vertices)} vertices, {conn.gain.shape} gain"
+        f"Wrote {args.out} and {mat_out}: {len(conn.region_labels)} regions, {len(vertices)} vertices, {gain.shape} gain"
     )
 
 
