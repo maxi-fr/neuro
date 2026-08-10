@@ -1,0 +1,51 @@
+simulation:
+  dt: 0.0001
+  downsample: 100        # effective dt = 1e-2 s
+  n_steps: null
+  data_path: "data/experiment_excited_roast/train"
+
+model:
+  horizon: 20
+  activation: softplus
+  n_y: 15
+  n_u: 10
+
+training:
+  epochs: 100
+  train_split: 0.8
+  seed: 1903
+  w_psd: 0.0
+  w_fc: 0.0
+  patience: 30
+  scaler: "robust"
+  global_scaling: true
+  batch_size: 128
+  curriculum_start_epoch: 20
+  curriculum_end_epoch: 80
+
+sweep:
+  artifact: "artifacts/sweep_closed_loop_roast"
+  n_trials: 15
+  closed_loop:
+    simulation_config: "configs/simulation/roast/nonlinear_full_mpc.yaml"
+    seeds: [69, 1023, 1024, 1025, 1026, 1027, 1028]   # the documented 7-seed ensemble
+    t_end: 20.0
+    seizure_ptp_mv: 5.0
+    max_seizing_regions: 5     # suppressed basin is ~4-5 regions, unsuppressed ~27-35
+  model:
+    hidden_size:
+      type: categorical
+      choices: [32, 64, 128]
+    depth:
+      type: int
+      low: 1
+      high: 3
+  training:
+    learning_rate:
+      type: loguniform
+      low: 0.00001
+      high: 0.001
+    weight_decay:
+      type: loguniform
+      low: 0.000001
+      high: 0.001

@@ -5,6 +5,7 @@ from pathlib import Path
 import optuna
 import yaml
 
+from neuro.closed_loop_eval import evaluate_closed_loop_suppression
 from neuro.config import (
     ModelConfig,
     NNPredictorConfig,
@@ -17,9 +18,12 @@ from neuro.nn_training import train_and_save_predictor
 
 
 def objective(
-    trial: optuna.Trial, base_config: NNPredictorConfig, data_files: list[str], base_artifact_dir: Path
+    trial: optuna.Trial,
+    base_config: NNPredictorConfig,
+    data_files: list[str],
+    base_artifact_dir: Path,
 ) -> float:
-    """Optuna objective: apply the trial's suggested params, then train and evaluate the predictor."""
+    """Optuna objective: apply the trial's suggested params, train predictor, and compute metric."""
     sweep = base_config.sweep
     if sweep is None:
         msg = "objective requires a config with a 'sweep' section."
@@ -57,6 +61,20 @@ def objective(
             raise optuna.TrialPruned from e
         raise
 
+    trial.set_user_attr("nmse", float(nmse))
+
+    if sweep.closed_loop is not None:
+        print(f"\nEvaluating closed-loop seizure suppression on trial {trial.number}...")
+        score, summary = evaluate_closed_loop_suppression(trial_dir, sweep.closed_loop)
+        for k, v in summary.items():
+            trial.set_user_attr(k, v)
+        print(
+            f"\nTrial {trial.number} completed with score: {score:.4f} "
+            f"({int(summary['suppressed_seeds'])}/{int(summary['total_seeds'])} seeds suppressed, "
+            f"mean amplitude: {summary['mean_amplitude']:.2%}, NMSE: {nmse:.4f})"
+        )
+        return score
+
     print(f"\nTrial {trial.number} completed with NMSE: {nmse}")
     return nmse
 
@@ -64,23 +82,17 @@ def objective(
 def main() -> None:
     """Execute the hyperparameter sweep script."""
     parser = argparse.ArgumentParser(description="Run Optuna Sweep for JAX NN Predictor.")
-    parser.add_argument(
-        "--config", type=str, default="configs/nn_predictor/sweep_config.yaml", help="Path to sweep config YAML."
-    )
+    parser.add_argument("--config", type=str, required=True, help="Path to sweep config YAML.")
     parser.add_argument("--data-path", type=str, help="Override config data path.")
     args = parser.parse_args()
 
     config_path = Path(args.config)
-    try:
-        config = load_config(config_path)
-        data_files = resolve_data_files(config, args.data_path)
-    except (FileNotFoundError, ValueError) as e:
-        print(e)
-        return
+    config = load_config(config_path)
+    data_files = resolve_data_files(config, args.data_path)
 
     if config.sweep is None:
-        print("No 'sweep' section found in config.")
-        return
+        msg = f"No 'sweep' section found in config: {config_path}"
+        raise ValueError(msg)
 
     base_artifact_dir = resolve_artifact_dir(config.sweep.artifact, "sweep_nn_predictor")
     shutil.copy2(config_path, base_artifact_dir / config_path.name)
@@ -91,13 +103,14 @@ def main() -> None:
 
     study = optuna.create_study(study_name=study_name, storage=storage_url, direction="minimize", load_if_exists=True)
     study.optimize(
-        lambda trial: objective(trial, config, data_files, base_artifact_dir), n_trials=config.sweep.n_trials
+        lambda trial: objective(trial, config, data_files, base_artifact_dir),
+        n_trials=config.sweep.n_trials,
     )
 
     print("\n================== SWEEP COMPLETED ==================")
     print("Best trial:")
     best_trial = study.best_trial
-    print(f"  Value (NMSE): {best_trial.value}")
+    print(f"  Value (Score): {best_trial.value}")
     print("  Params: ")
     for key, value in best_trial.params.items():
         print(f"    {key}: {value}")

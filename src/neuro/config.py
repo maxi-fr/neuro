@@ -142,6 +142,16 @@ ParamSpec = Annotated[
 ]
 
 
+class ClosedLoopEvalConfig(StrictConfig):
+    """Settings for closed-loop evaluation in Optuna hyperparameter sweeps."""
+
+    simulation_config: str
+    seeds: list[int]
+    t_end: float = Field(gt=0)
+    seizure_ptp_mv: float = Field(gt=0)
+    max_seizing_regions: int = Field(ge=0)
+
+
 class SweepConfig(StrictConfig):
     """Optuna sweep settings: trial count, output dir and per-group search spaces."""
 
@@ -149,6 +159,7 @@ class SweepConfig(StrictConfig):
     artifact: str | None = None
     model: dict[str, ParamSpec] = Field(default_factory=dict)
     training: dict[str, ParamSpec] = Field(default_factory=dict)
+    closed_loop: ClosedLoopEvalConfig | None = None
 
 
 class NNPredictorConfig(StrictConfig):
