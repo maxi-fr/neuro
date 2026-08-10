@@ -292,7 +292,7 @@ def test_shipped_roast_montage_hyperpolarizes_the_propagation_hub(connectome: Co
     artifact rather than a synthetic one.
 
     The mesial EZ is deliberately *not* asserted on: ROAST puts 0.04-0.17 V/m per mA there,
-    which is far too little to control (see ``docs/tes_field_geometry.md`` section 10.2).
+    which is far too little to control (see ``docs/tes_field_geometry.md`` section 1.1).
     """
     stim = _build({"model": "roast_3d", "leadfield_path": str(_SHIPPED_LEADFIELD)}, connectome)
     assert list(stim.control_labels) == ["TP9", "CP5", "Ex8"]

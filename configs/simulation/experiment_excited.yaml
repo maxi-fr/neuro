@@ -109,8 +109,6 @@ experiments:
     n_u: 3
     input_type: ras
     amp: 3.0
-    # Mixed block lengths (10 ms = one predictor step, plus 50/200 ms so the low-frequency band
-    # the MPC actually commands in is excited) -- see base config & docs/tes_field_geometry.md sec. 9.8
     hold_ms: [10.0, 50.0, 200.0]
     transient_ms: 1000.0
     duration: 20.0

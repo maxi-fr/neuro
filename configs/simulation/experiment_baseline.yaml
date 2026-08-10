@@ -1,10 +1,3 @@
-# Paired zero-stimulation twin of experiment_excited.yaml: identical plant, identical seeds,
-# amp 0.0 so the WaveformController emits no current. The plant's noise draw does not depend on
-# u, so trial k here shares its noise realisation with trial k there and the difference of the
-# two EEG recordings is the noise-cancelled tES response. Without it the control explains only
-# ~6e-4 of the one-step EEG variance and the identified B is fit to that residual --
-# see docs/tes_field_geometry.md sec. 9.8. Regenerate with the same command, then split
-# sim_000-021 into train/ and sim_022-024 into test/ exactly as for the excited set.
 experiments:
 - t_end: 20.0
   dynamics:
@@ -117,7 +110,7 @@ experiments:
     input_type: ras
     amp: 0.0    # paired baseline: no stimulation
     # Mixed block lengths (10 ms = one predictor step, plus 50/200 ms so the low-frequency band
-    # the MPC actually commands in is excited) -- see base config & docs/tes_field_geometry.md sec. 9.8
+    # the MPC actually commands in is excited) -- see base config & docs/tes_field_geometry.md
     hold_ms: [10.0, 50.0, 200.0]
     transient_ms: 1000.0
     duration: 20.0

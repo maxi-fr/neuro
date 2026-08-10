@@ -44,12 +44,6 @@ controller:
   n_u: 3              # one per stimulation electrode (TP9, CP5 cathodes + EX8 return)
   input_type: ras   # ras | prbs | multisine
   amp: 3.0
-  # Mixed block lengths, drawn per block. 10 ms is one predictor step (plant dt 1e-4 x downsample
-  # 100) and matches the closed-loop MPC's per-step control rate, so the per-step tES->EEG response
-  # is excited. On its own it is not enough: it excites only around the control rate, while the MPC
-  # commands near-constant currents over a whole horizon, leaving that low-frequency gain
-  # identified from almost no data. The 50/200 ms blocks cover that band -- see
-  # docs/tes_field_geometry.md sec. 9.8.
   hold_ms: [10.0, 50.0, 200.0]
   transient_ms: 1000.0  # zero stimulation during the leading transient
   duration: 20.0         # schedule length in seconds; keep equal to t_end

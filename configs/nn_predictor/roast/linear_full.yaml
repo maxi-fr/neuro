@@ -1,0 +1,35 @@
+# Linear (depth 0, affine) NARX predictor on the full 62-channel EEG, identified on the
+# roast_3d plant. Serves the full-EEG Linear MPC closed-loop setup (LinearMPCController
+# requires a depth-0 artifact). Same architecture and hyperparameters as
+# meeting_seven/linear_full.yaml, so the only difference is the stimulation model the
+# identification data was generated under.
+
+simulation:
+  dt: 0.0001
+  downsample: 100        # effective dt = 1e-2 s
+  n_steps: null          
+  data_path: "data/experiment_excited_roast/train"   # full 62-channel EEG, roast_3d plant
+
+model:
+  n_y: 15
+  n_u: 7
+  horizon: 20
+  depth: 0               # linear (single affine layer) -> required by Linear* controllers
+  latent_dim: null       # no PCA
+
+training:
+  epochs: 250
+  batch_size: 512
+  learning_rate: 0.0001
+  weight_decay: 0.001
+  train_split: 0.8
+  curriculum_start_epoch: 50
+  curriculum_end_epoch: 225
+  seed: 69
+  w_psd: 0.0
+  w_fc: 0.0
+  patience: 100
+  scaler: "robust"
+  global_scaling: true
+
+artifact: "artifacts/roast/linear_full"

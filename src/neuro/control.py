@@ -329,7 +329,7 @@ class _MPCControllerConfig(StrictConfig):
     w_u: float = Field(default=0.0, ge=0)
     w_u_l1: float = Field(default=0.0, ge=0)
     w_du: float = Field(default=0.0, ge=0)
-    shooting_depth: int = Field(default=1, ge=1)
+    shooting_depth: int | None = Field(default=None, ge=1)
     max_iter: int = Field(default=100, ge=1)
     max_cpu_time: float | None = Field(default=None, gt=0)
     expand: bool = False
@@ -350,7 +350,7 @@ class MPCController(Controller[MPCControllerLog]):
         w_u_l1: float = 0.0,
         w_du: float = 0.0,
         *,
-        shooting_depth: int = 1,
+        shooting_depth: int | None = None,
         max_iter: int = 100,
         max_cpu_time: float | None = None,
         expand: bool = False,
@@ -381,6 +381,12 @@ class MPCController(Controller[MPCControllerLog]):
             penalty); ``0`` disables it (default). Needed whenever the identified model
             under-estimates the plant's response to fast-alternating currents, which otherwise
             makes bang-bang chattering look free to the optimizer.
+        shooting_depth
+            Size ``D`` of the shooting segments: a state shooting root is introduced every ``D``
+            steps. ``D = 1`` is full multiple shooting (a root at every step), ``D >= horizon``
+            is single shooting (no roots; the states are condensed out and the NLP is over the
+            controls alone). Defaults to ``horizon``, i.e. single shooting, because the extra
+            decision variables of multiple shooting make the EEG-space problem intractable.
         max_iter
             Hard cap on IPOPT iterations per solve. When the cap is hit the best warm-started iterate is applied
             and ``success`` is ``False`` (capped, not failed).
@@ -398,7 +404,7 @@ class MPCController(Controller[MPCControllerLog]):
         self.w_u = float(w_u)
         self.w_u_l1 = float(w_u_l1)
         self.w_du = float(w_du)
-        self.shooting_depth = int(shooting_depth)
+        self.shooting_depth = int(shooting_depth) if shooting_depth is not None else self.horizon
         self.max_iter = int(max_iter)
         self.max_cpu_time = float(max_cpu_time) if max_cpu_time is not None else None
         self.expand = bool(expand)

@@ -1,5 +1,3 @@
-# Hyperparameter sweep on the corrected identification data (mixed-hold excitation, untruncated
-# trajectories -- see docs/tes_field_geometry.md sec. 9.8). Ranked on validation NMSE.
 
 simulation:
   dt: 0.0001

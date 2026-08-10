@@ -86,7 +86,7 @@ That intent was defeated in practice until 2026-08-01: every config still carrie
 `n_steps: 500`, which caps a trajectory at 5 s, so the extra 15 s of propagation was loaded and
 then discarded. Every predictor fitted between 2026-07-30 and that date saw only each trial's
 first 5 s — mostly pre-seizure. All configs now use `n_steps: null`
-(see [tes_field_geometry.md](tes_field_geometry.md) §9.8).
+(see [tes_field_geometry.md](tes_field_geometry.md)).
 
 The excitation was widened at the same time: `hold_ms` is now `[10, 50, 200]` ms rather than a
 flat 10 ms, so the identification input covers the low-frequency band the MPC commands in and not
@@ -96,7 +96,7 @@ response directly observable for diagnostics.
 
 Which of these mattered was settled by ablation: the truncation is what decides whether the
 controller can silence the focus at all, and the excitation bandwidth is what keeps the effect
-lateralised. Both were needed — see [tes_field_geometry.md](tes_field_geometry.md) §9.8.
+lateralised. Both were needed — see [tes_field_geometry.md](tes_field_geometry.md).
 
 ### 2.2 Loading and downsampling
 

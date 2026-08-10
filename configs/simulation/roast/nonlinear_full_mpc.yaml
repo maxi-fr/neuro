@@ -1,7 +1,7 @@
 # Closed-loop seizure suppression on the roast_3d plant: full 62-channel EEG + Nonlinear MPC.
 # MPCController solves an IPOPT NLP over a depth-1 softplus NN predictor identified on
 # data/experiment_excited_roast, with no PCA -- the optimisation runs directly in EEG space.
-# shooting_depth 1 is single shooting, which is what keeps this tractable.
+# shooting_depth >= horizon is single shooting, which is what keeps this tractable.
 t_end: 20.0
 
 dynamics:
@@ -44,5 +44,5 @@ controller:
   u_max: 2.0
   w_y: 1.0
   w_u: 10.0
-  shooting_depth: 1     # single shooting
+  shooting_depth: 20    # >= horizon -> single shooting (states condensed out; controls-only NLP)
   max_iter: 100
