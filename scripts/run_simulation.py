@@ -70,11 +70,11 @@ def main() -> None:
         sim.run(output_dir, prefix="log", use_mmap=args.mmap)
         sim.export_results(output_dir, prefix="log", compress=args.compress)
 
-    # Post-process logs to delete state 'x' from them
+    # Post-process logs to delete state 'dynamics.x' if present
     for npz_path in output_dir.rglob("*.npz"):
         data = dict(np.load(npz_path))
-        if "x" in data:
-            del data["x"]
+        if "dynamics.x" in data:
+            del data["dynamics.x"]
             if args.compress:
                 np.savez_compressed(npz_path, **data)
             else:

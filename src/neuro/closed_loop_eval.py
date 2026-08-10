@@ -16,23 +16,53 @@ if TYPE_CHECKING:
     from neuro.config import ClosedLoopEvalConfig
 
 
-def _spread_profile_from_logs(logs: list[dict[str, Any]], dt: float, threshold: float) -> SpreadProfile:
-    """Build the PTP envelope of a logged closed-loop run, one window at a time."""
+def _spread_profile_from_eeg(eeg: np.ndarray, dt: float, threshold: float) -> SpreadProfile:
+    """Build the PTP envelope of a logged EEG output trajectory, one window at a time."""
+    n_samples = eeg.shape[0]
     window = round(SPREAD_WINDOW_S / dt)
     hop = round(SPREAD_HOP_S / dt)
-    if len(logs) < window:
-        msg = f"Run is shorter than the {SPREAD_WINDOW_S} s spread window ({len(logs)} of {window} samples)."
+    if n_samples < window:
+        msg = f"Run is shorter than the {SPREAD_WINDOW_S} s spread window ({n_samples} of {window} samples)."
         raise ValueError(msg)
 
     ptp_cols: list[np.ndarray] = []
     times: list[float] = []
-    for start in range(0, len(logs) - window + 1, hop):
-        # Stack one window at a time: the full state trajectory stays on disk (mmap-backed).
-        y = lfp(np.stack([entry["x"] for entry in logs[start : start + window]], axis=-1))
+    for start in range(0, n_samples - window + 1, hop):
+        y_win = eeg[start : start + window]
+        ptp_cols.append(np.ptp(y_win, axis=0))
+        times.append((start + window) * dt - SPREAD_WINDOW_S / 2.0)
+
+    return SpreadProfile.from_ptp(np.asarray(times, dtype=np.float64), np.stack(ptp_cols, axis=1), threshold=threshold)
+
+
+def _spread_profile_from_trajectory(x_traj: np.ndarray, dt: float, threshold: float) -> SpreadProfile:
+    """Build the PTP envelope of a logged closed-loop run, one window at a time."""
+    n_samples = x_traj.shape[0]
+    window = round(SPREAD_WINDOW_S / dt)
+    hop = round(SPREAD_HOP_S / dt)
+    if n_samples < window:
+        msg = f"Run is shorter than the {SPREAD_WINDOW_S} s spread window ({n_samples} of {window} samples)."
+        raise ValueError(msg)
+
+    ptp_cols: list[np.ndarray] = []
+    times: list[float] = []
+    for start in range(0, n_samples - window + 1, hop):
+        # Move step axis to end -> (6, N, window) so lfp returns (N, window)
+        x_win = np.moveaxis(x_traj[start : start + window], 0, -1)
+        y = lfp(x_win)
         ptp_cols.append(np.ptp(y, axis=1))
         times.append((start + window) * dt - SPREAD_WINDOW_S / 2.0)
 
     return SpreadProfile.from_ptp(np.asarray(times, dtype=np.float64), np.stack(ptp_cols, axis=1), threshold=threshold)
+
+
+def _spread_profile_from_logs(logs: list[dict[str, Any]], dt: float, threshold: float) -> SpreadProfile:
+    """Build the PTP envelope of a logged closed-loop run from a list of per-step dict logs."""
+    if not logs:
+        msg = f"Run is shorter than the {SPREAD_WINDOW_S} s spread window (0 samples)."
+        raise ValueError(msg)
+    x_traj = np.stack([entry["x"] for entry in logs], axis=0)
+    return _spread_profile_from_trajectory(x_traj, dt, threshold)
 
 
 def evaluate_closed_loop_suppression(trial_dir: Path, eval_cfg: ClosedLoopEvalConfig) -> tuple[float, dict[str, float]]:
@@ -79,11 +109,11 @@ def evaluate_closed_loop_suppression(trial_dir: Path, eval_cfg: ClosedLoopEvalCo
                 )
                 raise TypeError(msg)
 
-            logs = sim.logger.core_logs
-            us = np.stack([np.atleast_1d(np.asarray(entry["u"], dtype=np.float64)) for entry in logs])
+            us = sim.logger.signal("controller", "u")
             amplitudes.append(float(np.mean(np.abs(us) / np.asarray(u_max, dtype=np.float64))))
 
-            profile = _spread_profile_from_logs(logs, sim.dt, eval_cfg.seizure_ptp_mv)
+            y_mea = sim.logger.signal("sensor_0", "y_mea")
+            profile = _spread_profile_from_eeg(y_mea, sim.dt, eval_cfg.seizure_ptp_mv)
 
         n_seizing = int(profile.n_seizing()[-1])
         seizing_counts.append(n_seizing)

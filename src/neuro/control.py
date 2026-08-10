@@ -282,8 +282,9 @@ class WaveformController(Controller[NoLog]):
 
 @dataclasses.dataclass(frozen=True)
 class MPCControllerLog:
-    """Per-step diagnostics for any MPC controller: the optimal cost, solver success, and a warm-up flag."""
+    """Per-step diagnostics for any MPC controller: the applied control, optimal cost, solver success, and a warm-up flag."""
 
+    u: FloatArray
     cost: float
     success: bool
     warmup: bool
@@ -573,13 +574,14 @@ class MPCController(Controller[MPCControllerLog]):
         self._n_seen += 1
 
         if self._n_seen < self.n_y:
-            self._u_buf = np.vstack([self._u_buf[1:], np.zeros((1, self.n_controls))])
-            return np.zeros(self.n_controls, dtype=np.float64), MPCControllerLog(cost=0.0, success=True, warmup=True)
+            u_zero = np.zeros(self.n_controls, dtype=np.float64)
+            self._u_buf = np.vstack([self._u_buf[1:], u_zero.reshape(1, self.n_controls)])
+            return u_zero, MPCControllerLog(u=u_zero, cost=0.0, success=True, warmup=True)
 
         x0 = np.concatenate([self._y_buf.reshape(-1), self._u_buf.reshape(-1)])
         u0, cost, success = self._solve(x0)
         self._u_buf = np.vstack([self._u_buf[1:], u0.reshape(1, self.n_controls)])
-        return u0, MPCControllerLog(cost=cost, success=success, warmup=False)
+        return u0, MPCControllerLog(u=u0.copy(), cost=cost, success=success, warmup=False)
 
 
 class _LinearMPCControllerConfig(StrictConfig):
@@ -831,10 +833,11 @@ class LinearMPCController(Controller[MPCControllerLog]):
 
         # While the window is still zero-padded, hold off stimulating.
         if self._n_seen < self.n_y:
-            self._u_buf = np.vstack([self._u_buf[1:], np.zeros((1, self.n_controls))])
-            return np.zeros(self.n_controls, dtype=np.float64), MPCControllerLog(cost=0.0, success=True, warmup=True)
+            u_zero = np.zeros(self.n_controls, dtype=np.float64)
+            self._u_buf = np.vstack([self._u_buf[1:], u_zero.reshape(1, self.n_controls)])
+            return u_zero, MPCControllerLog(u=u_zero, cost=0.0, success=True, warmup=True)
 
         x0 = np.concatenate([self._y_buf.reshape(-1), self._u_buf.reshape(-1)])
         u0, cost, success = self._solve(x0)
         self._u_buf = np.vstack([self._u_buf[1:], u0.reshape(1, self.n_controls)])
-        return u0, MPCControllerLog(cost=cost, success=success, warmup=False)
+        return u0, MPCControllerLog(u=u0.copy(), cost=cost, success=success, warmup=False)

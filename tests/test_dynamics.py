@@ -78,8 +78,7 @@ def test_simulation_matches_simulate_network() -> None:
     sim.run()
 
     assert sim.logger is not None
-    logs = sim.logger.core_logs
-    orch_x = np.stack([np.asarray(entry["x"], dtype=np.float64) for entry in logs], axis=-1)
+    orch_x = np.moveaxis(sim.logger.signal("sensor_0", "y_mea"), 0, -1)
     n = x_ref.shape[2]
     assert orch_x.shape[2] >= n
     np.testing.assert_allclose(orch_x[:, :, :n], x_ref, atol=1e-12)

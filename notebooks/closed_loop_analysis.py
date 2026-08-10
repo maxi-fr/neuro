@@ -69,8 +69,8 @@ def _(Path, mo, np, run_dir_input, yaml):
         _config = yaml.safe_load(f)
 
     with np.load(_npz_path) as data:
-        _y_mea = data["y_mea"]
-        _u = data["u"]
+        _y_mea = data["sensor_0.y_mea"]
+        _u = data["controller.u"]
         _u = _u.reshape(_u.shape[0], -1)
         _nan = np.full(_u.shape[0], np.nan)
         _cost = data.get("controller_cost", _nan)

@@ -29,12 +29,12 @@ _SEED = 7
 
 
 def _write_trajectory(path: Path, n_steps: int, n_eeg: int, n_controls: int) -> str:
-    """Write a synthetic ``.npz`` trajectory (``y_mea``/``u``) and return its path."""
+    """Write a synthetic ``.npz`` trajectory (``sensor_0.y_mea``/``controller.u``) and return its path."""
     rng = np.random.default_rng(_SEED + hash(str(path)) % 1000)
 
     y = rng.standard_normal((n_steps, n_eeg)) + np.arange(1.0, n_eeg + 1.0)
     u = rng.standard_normal((n_steps, n_controls))
-    np.savez(path, y_mea=y, u=u)
+    np.savez(path, **{"sensor_0.y_mea": y, "controller.u": u})
     return str(path)
 
 

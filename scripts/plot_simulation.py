@@ -64,14 +64,14 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
 
     activity = None
     with np.load(npz_path) as data:
-        eeg: FloatArray = data["y_mea"].T
-        u: FloatArray = data["u"]
+        eeg: FloatArray = data["sensor_0.y_mea"].T
+        u: FloatArray = data["controller.u"]
 
         r_sync = None
         is_jansen_rit = "JansenRit" in config["dynamics"]["class_path"]
-        if is_jansen_rit and "x" in data:
+        if is_jansen_rit and "dynamics.x" in data:
             try:
-                x_flat = data["x"].squeeze()
+                x_flat = data["dynamics.x"].squeeze()
                 if x_flat.ndim == 1:
                     x_flat = x_flat[np.newaxis, :]
                 n_samples_logged = x_flat.shape[0]

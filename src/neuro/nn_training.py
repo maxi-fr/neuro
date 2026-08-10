@@ -41,8 +41,8 @@ def load_trajectory(data_file: str, n_steps: int | None, downsample: int) -> tup
     """
     with np.load(data_file) as data:
         max_idx = None if n_steps is None else n_steps * downsample
-        y_data = data["y_mea"][:max_idx:downsample]
-        u_data = data["u"][:max_idx:downsample]
+        y_data = data["sensor_0.y_mea"][:max_idx:downsample]
+        u_data = data["controller.u"][:max_idx:downsample]
 
     return u_data, y_data
 
