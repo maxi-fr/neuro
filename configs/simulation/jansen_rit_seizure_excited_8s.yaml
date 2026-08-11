@@ -1,14 +1,20 @@
 # Whole-brain Jansen-Rit seizure plant driven by a persistently-exciting tES waveform, for
 # input->output (plant) identification. The WaveformController plays back a precomputed
-# per-electrode current (ras/prbs/multisine). Expand this base into a multi-trial ensemble
-# with scripts/generate_experiment.py (varies dynamics.seed and controller.input_seed), then
-# run the generated `experiments:` file through scripts/run_simulation.py.
-t_end: 20.0
+# per-electrode current (ras).
+#
+# t_end is 8 s so the set spends its samples on the seizure transition rather than on saturated
+# dynamics. The trajectories themselves are downsample-independent -- they are logged at the full
+# 1e-4 rate and decimated at load time -- so one set serves every training downsample. The single
+# coupling is hold_ms: each hold must be an integer multiple of dt_mpc = downsample * 1e-4, or a
+# block boundary lands mid-step and the strided u records a command the plant only partly held.
+# Every hold below is a multiple of 10 ms, so this grid is aligned for downsample 100 and nothing
+# coarser: at 200 the 10 ms hold is half a step, and at 400 the 10 and 100 ms holds are fractional.
+t_end: 8.0
 
 dynamics:
   class_path: neuro.jansen_rit.JansenRitDynamics
   dt: 0.0001
-  seed: 69
+  seed: 70
   initial_state: rest
   connectome:
     speed: 50.0
@@ -33,8 +39,6 @@ sensors:
   std_dev: 0.0
   measurement:
     class_path: neuro.eeg.EEGMeasurement
-    # 10-20 (19 ch) + inferior-temporal additions covering the left mesial-temporal EZ.
-    selected_channels: [Fp1, Fp2, F7, F3, Fz, F4, F8, T7, C3, Cz, C4, T8, P7, P3, Pz, P4, P8, O1, O2, TP9, TP7, CP5, FC5, P5, PO7]
 
 estimator: {class_path: simulate.estimator.IdentityEstimator, dt: 0.0001}
 
@@ -42,9 +46,8 @@ controller:
   class_path: neuro.control.WaveformController
   dt: 0.0001
   n_u: 3              # one per stimulation electrode (TP9, CP5 cathodes + EX8 return)
-  input_type: ras   # ras | prbs | multisine
+  input_type: ras
   amp: 3.0
-  hold_ms: [10.0, 50.0, 200.0]
-  transient_ms: 1000.0  # zero stimulation during the leading transient
-  duration: 20.0         # schedule length in seconds; keep equal to t_end
-  input_seed: 10069
+  hold_ms: [10.0, 100.0, 200.0, 400., 1000.0] 
+  duration: 8.0         
+  input_seed: 109

@@ -37,6 +37,9 @@ sensors:
     class_path: neuro.eeg.EEGMeasurement
     # Full EEG: no selected_channels -> all 62 channels (matches the linear_full predictor).
 
+# IdentityEstimator, not AntiAliasEstimator: linear_full was identified on bare-strided data, so
+# filtering here would feed it a signal (8.4 ms group delay) it was never fit on. Switch to
+# AntiAliasEstimator only once a filter-trained linear artifact exists.
 estimator: {class_path: simulate.estimator.IdentityEstimator, dt: 0.0001}
 
 controller:
