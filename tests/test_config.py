@@ -212,7 +212,7 @@ def test_jansen_rit_dynamics_rejects_unknown_key() -> None:
 
 
 CLOSED_LOOP_RAW = {
-    "simulation_config": "configs/simulation/roast/nonlinear_full_mpc.yaml",
+    "simulation_config": "configs/simulation/nonlinear_full_mpc.yaml",
     "seeds": [69, 1023],
     "t_end": 10.0,
     "seizure_ptp_mv": 4.5,

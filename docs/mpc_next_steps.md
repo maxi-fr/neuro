@@ -14,8 +14,7 @@ not suppress" — is too generous. The MPC spreads the seizure.**
 
 All rows below: the `roast_3d` plant, the *identical* dynamics block across arms, seeds 69 and 1026,
 scored on per-region LFP PTP over 76 regions at the 5 mV criterion — the instrument
-`max_seizing_regions` names and
-[`sweep_closed_loop.yaml`](../configs/nn_predictor/roast/sweep_closed_loop.yaml) calibrates
+`max_seizing_regions` names and the (now deleted) `sweep_closed_loop.yaml` calibrated against
 ("suppressed basin is ~4-5 regions, unsuppressed ~27-35").
 
 | arm | seizing regions, `t_end: 12` | seizing regions, `t_end: 20` | eegMS at 20 | duty | mean \|u\| (mA) |
@@ -97,14 +96,10 @@ then hold" measured directly — the controller must value an action whose payof
 
 ## Next steps
 
-**Ordering, revised again 2026-08-11: step 1, then step 5, then step 4's `downsample` route.**
-Step 4's cheap variant has been
+**Ordering, revised again 2026-08-11: step 1 is generated (see below), then step 5, then the rest of
+step 4's `downsample` route.** Step 4's cheap variant has been
 tried and failed (see step 4); the failure was not about lookahead, so the ordering below is
-otherwise intact. Step 1 is now backed by direct evidence rather than inference, and is much cheaper
-on this branch than costed below: staying at `downsample: 100` with 20 s trajectories needs ~22
-trajectories and ~4.5 GB, not 690 and ~57 GB. Note the base config
-`jansen_rit_seizure_excited.yaml` selects a **25-channel** montage while the roast predictors are
-62-channel — regenerating off it as-is produces an untrainable set.
+otherwise intact.
 
 **Superseded ordering (2026-08-10), kept for the reasoning.** Steps 2 and 3 are done; 1, 4 and 5
 remain. Step 3's answer reshuffled the
@@ -117,14 +112,46 @@ now" to last**: its hold grid, its trajectory count, and its window geometry are
 `downsample` step 3 just changed, and generating first means generating twice — at ~57–98 GB a throw.
 
 One practical note before any of it: **the original `data/experiment_excited_roast/` is not on this
-machine** — `data/` holds only the leadfield and geometry files. Any instruction here that reads
-"compare against the existing training set" needs regenerating it first.
+machine**. The configs that pointed at it — the whole `configs/{nn_predictor,simulation}/roast/`
+tree — were **deleted on 2026-08-11**, since every config is a roast config now and those four
+could not be retrained as written. `artifacts/roast/` is kept: `nonlinear_full_lowpass` is what the
+MPC still loads, and `linear_full` / `nonlinear_full` are unreproducible without that dataset.
+The two configs live code depends on moved up a level, to
+[`configs/simulation/nonlinear_full_mpc.yaml`](../configs/simulation/nonlinear_full_mpc.yaml) and
+[`configs/nn_predictor/nonlinear_full_8s.yaml`](../configs/nn_predictor/nonlinear_full_8s.yaml).
+Anything below that reads "compare against the existing training set" means the new set instead.
 
-**1. Regenerate the excitation set: sustained holds, and coverage of the transition.**
-`hold_ms: [10, 50, 200]` means the longest constant command in training is 200 ms, while the working
-policy holds for seconds at 95 % duty. This is a *prerequisite for step 4*, not the root cause: at a
-200 ms horizon the gap does not bind; past 500 ms the model would extrapolate on every solve.
-Changing the data alone would not have moved the closed loop.
+**1. GENERATED 2026-08-11 — `data/experiment_excited_roast_8s` (9.6 GB).** 200 train + 41 test
+trajectories, seeds 2000-2199 / disjoint test range, 8 s each, `roast_3d` stimulation, full 62
+channels, `controller.u` present. The training config is
+[`nonlinear_full_8s.yaml`](../configs/nn_predictor/nonlinear_full_8s.yaml): `downsample: 200`
+(`dt_mpc` 20 ms), `horizon: 50`, `n_y: 15`, `n_u: 10`, depth 2 / 64 hidden. **It folds step 4's
+`downsample` move into step 1 rather than following it**, which is the right order given step 3 —
+`50 x 20 ms` is a **1.0 s** lookahead against the 0.2 s in every result above, landing exactly on
+step 3's crossover.
+
+Window budget: 400 samples per trajectory, minus `n_y + horizon - 1 = 64` of edge (16 %), gives
+~336 windows x 200 = **67 k windows** against today's 43.3 k — so the 2x target below is roughly met
+at a third of the trajectory count the `downsample: 500/750` rows were costed at.
+
+Two things to check before reading its first closed-loop result:
+
+* **The grid `[10, 100, 200, 400, 1000]` ms puts its longest hold exactly at one solve's horizon**
+  (1000 ms vs 1.0 s of lookahead), where the argument below asked for a cap comfortably *above* it.
+  The model will be extrapolating at the last step of every solve rather than within a hold it has
+  seen. If the closed loop still refuses to hold, regenerate at `2000` before concluding anything
+  about the horizon.
+* **The 10 ms entry sits below the `dt_mpc` floor of 20 ms** and cannot survive decimation — it is a
+  command the controller cannot issue, and its logged `u` at the kept sample stands for a value the
+  plant held for half a step. Harmless if it is a small share of time (the inverse-length weighting
+  at [`control.py:222`](../src/neuro/control.py#L222) is in and makes each entry an equal share),
+  but it is ~20 % of the blocks contributing input-channel alias.
+
+The reasoning that produced this, kept because the constraints still bind on any regeneration:
+`hold_ms: [10, 50, 200]` meant the longest constant command in training was 200 ms, while the
+working policy holds for seconds at 95 % duty. This is a *prerequisite for step 4*, not the root
+cause: at a 200 ms horizon the gap does not bind; past 500 ms the model would extrapolate on every
+solve. Changing the data alone would not have moved the closed loop.
 
 The grid is `[dt_mpc, 200, 2000]` ms — short holds down to whatever the MPC step allows, one long
 hold added, and nothing above 2000 ms. Three constraints fix it:
@@ -184,6 +211,7 @@ with `dt_mpc` and step 3 pushed `dt_mpc` from 25 ms to 50–75 ms:
 | 8 s, `downsample: 400` (superseded) | 520 | 4160 | 166 | 17.0 % | 86.3 k | 2.0× |
 | 8 s, `downsample: 500`, target | **690** | 5520 | 126 | **21.3 %** | 86.9 k | 2.0× |
 | 8 s, `downsample: 750`, target | **1200** | 9600 | 72 | **32.1 %** | 86.4 k | 2.0× |
+| **8 s, `downsample: 200`, generated** | **200** | 1600 | 336 | 16.0 % | **67 k** | 1.5× |
 
 An 8 s trajectory at `downsample: 750` is only 106 samples long, of which the `n_y: 15` /
 `horizon: 20` window geometry discards 34 — a third of every run is edge. That is the dominant cost
@@ -191,15 +219,13 @@ of step 3's result on the data side, and it is worth asking whether `n_y` should
 before generating: 15 lags at 75 ms is 1.1 s of history, where 15 lags at 10 ms was 150 ms. Halving
 `n_y` would recover most of the loss. **This is an open question, not a decided plan.**
 
-Generate against the final `downsample`, not before it is fixed: `scripts/generate_experiment.py
---n-trials 690` (or 1200) off a base config with `t_end` and the controller's `duration` both at
-8.0, plus ~20 % more on a disjoint seed range for test. Generation is no longer the free part —
-measured at 1.47 s wall per simulated second, 5520 s of trajectory is ~2.3 h single-core and ~45 min
-at 3 workers; 9600 s is ~3.9 h and ~1.3 h.
+The generated row is the one that exists; the `500`/`750` rows are what a further coarsening would
+cost, and both remain open. The last two paragraphs of this costing are what the generated set
+avoided: the ~57–98 GB disk figures apply to 690–1200 trajectories, where 200 came to 9.6 GB.
 
 Two costs that scale worse. **Disk:** trajectories are stored at the full 10 kHz whatever
 `downsample` later does with them, so an 8 s run is ~82 MB — **~57 GB at 690 trajectories and ~98 GB
-at 1200** (`--compress` helps; the existing 22 × 20 s set is ~4.5 GB). At 1200 this stops being a
+at 1200** (`--compress` helps). At 1200 this stops being a
 footnote and needs a decision before the run starts. Nearly half of it is avoidable — under
 `IdentityEstimator` the
 logged `estimator.x_hat` is a byte-for-byte duplicate of `sensor_0.y_mea`, 40 MB of every 82 MB
@@ -262,9 +288,9 @@ decimated grid — and shifting by one decimated sample collapses the difference
 is identical on both paths, so it belongs to the identified plant exactly as intended and costs
 nothing measurable. Anyone reading "1 %" as "the training signal barely moves" will be wrong by 25×.
 
-Artifacts: `artifacts/roast/nonlinear_full_lowpass` (keep) and
-`artifacts/roast/nonlinear_full_nofilter_ab` (the control); `artifacts/roast/nonlinear_full`
-untouched. `downsample` left at 100 everywhere — moving it is step 4.
+Artifacts: `artifacts/roast/nonlinear_full_lowpass` (keep); `artifacts/roast/nonlinear_full`
+untouched. The A/B control `nonlinear_full_nofilter_ab` was deleted on 2026-08-11 — the table above
+is all that remains of it. `downsample` left at 100 everywhere — moving it is step 4.
 
 **Fixed in passing: `controller.u` was not being logged at all.** `WaveformController` returned
 `NoLog()`, and `simulate`'s logger records only the *fields* of a component's log dataclass, so a
@@ -273,8 +299,7 @@ field-less log model is skipped wholesale. Excitation trajectories therefore con
 freshly generated set. The excitation data pipeline was broken at HEAD, silently, since the simulate
 upgrade in `e8f6097`. `WaveformController` now carries a `WaveformControllerLog` with `u`, covered
 by a test. **This blocked step 1 outright** and is the first thing to verify if a regenerated dataset
-misbehaves. Note `data/experiment_excited_roast_regen` (~7 GB, generated during the A/B) predates the
-fix and has no `controller.u`; it is not trainable as-is and step 1 will supersede it anyway.
+misbehaves; `experiment_excited_roast_8s` was generated after it and carries `controller.u`.
 
 **3. DONE — the payoff crosses over between 0.8 s and 1.0 s.** The 5-seed `u = 0` vs `[+2, 0, -2]`
 mA probe was rerun at 0.2 / 0.4 / 0.6 / 0.8 / 1.0 / 1.5 / 2.0 s
@@ -461,7 +486,7 @@ If revisited, falsify cheaply first — scale `w_y` on the final step only (2 li
 across the whole window, not just at its end.
 
 **Skip for now — the `w_psd` / `w_fc` auxiliary losses.** Both are 0 in every config under
-`configs/nn_predictor/roast/`, and enabling them as-is is not a one-line change. Measured on a
+every `configs/nn_predictor/` config, and enabling them as-is is not a one-line change. Measured on a
 512-sample batch against `artifacts/roast/linear_full`, raw components are `mse` 0.234, `psd` 5.779,
 `fc` 0.012 — the two auxiliaries are miscalibrated against the MSE in *opposite* directions, by 25×
 and 20×. `w_psd = 1` puts the spectral term 25:1 over the MSE and inflates the gradient norm 4.1×;
