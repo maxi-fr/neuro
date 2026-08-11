@@ -10,6 +10,22 @@ from simulate.experiment import ExperimentManager
 from simulate.simulation import Simulation
 
 
+def _redundant_keys(data: dict[str, np.ndarray]) -> set[str]:
+    """Name the logged channels that carry no information.
+
+    The full state, plus a noiseless sensor's 'truth' and 'noise' -- a duplicate of 'y_mea' and
+    zeros, together most of an excitation trajectory's bytes.
+    """
+    drop = {"dynamics.x"} & set(data)
+    for key, value in data.items():
+        measured = data.get(key.replace(".truth", ".y_mea"))
+        is_dead_noise = key.endswith(".noise") and not value.any()
+        is_dup_truth = key.endswith(".truth") and measured is not None and np.array_equal(value, measured)
+        if is_dead_noise or is_dup_truth:
+            drop.add(key)
+    return drop
+
+
 def main() -> None:
     """Execute the main entry point for the simulation CLI."""
     parser = argparse.ArgumentParser(description="Modular Python Framework for Control System Simulation")
@@ -34,6 +50,12 @@ def main() -> None:
         "--compress",
         action="store_true",
         help="Enable zlib compression for output files (default: False/uncompressed).",
+    )
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=1,
+        help="Processes to run an `experiments:` batch across (default: 1).",
     )
 
     args = parser.parse_args()
@@ -64,21 +86,20 @@ def main() -> None:
         for override in raw_configs[1:]:
             configs.append(deep_merge(configs[-1], override))
 
-        manager.run_batch(configs, use_mmap=args.mmap, compress=args.compress)
+        manager.run_batch(configs, max_num_processes=args.workers, use_mmap=args.mmap, compress=args.compress)
     else:
         sim = Simulation.from_config(config)
         sim.run(output_dir, prefix="log", use_mmap=args.mmap)
         sim.export_results(output_dir, prefix="log", compress=args.compress)
 
-    # Post-process logs to delete state 'dynamics.x' if present
     for npz_path in output_dir.rglob("*.npz"):
         data = dict(np.load(npz_path))
-        if "dynamics.x" in data:
-            del data["dynamics.x"]
-            if args.compress:
-                np.savez_compressed(npz_path, **data)
-            else:
-                np.savez(npz_path, **data)
+        drop = _redundant_keys(data)
+        if drop:
+            for key in drop:
+                del data[key]
+            save = np.savez_compressed if args.compress else np.savez
+            save(npz_path, **data)
 
 
 if __name__ == "__main__":

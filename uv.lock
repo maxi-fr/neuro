@@ -2187,7 +2187,7 @@ wheels = [
 [[package]]
 name = "simulate"
 version = "2.0"
-source = { git = "https://github.com/maxi-fr/simulate.git#b36747001db14dbcdf94c7f8e2b977f580c197cb" }
+source = { git = "https://github.com/maxi-fr/simulate.git#68b7fd6af16bbfa1ead5b451fa5f3858545b5d88" }
 dependencies = [
     { name = "ipython" },
     { name = "matplotlib" },
