@@ -6,7 +6,6 @@ from typing import TYPE_CHECKING, Any, Literal, Self
 import casadi as ca
 import numpy as np
 from pydantic import Field, PositiveFloat
-from simulate.component import NoLog
 from simulate.controller import Controller
 
 from neuro.config import StrictConfig
@@ -27,7 +26,14 @@ class _ZeroControllerConfig(StrictConfig):
     n_u: int = Field(default=1, ge=1)
 
 
-class ZeroController(Controller[NoLog]):
+@dataclasses.dataclass(frozen=True)
+class ZeroControllerLog:
+    """Log carrying the zero control vector."""
+
+    u: FloatArray
+
+
+class ZeroController(Controller[ZeroControllerLog]):
     """Controller that ignores its inputs and always outputs a zero ``(n_u,)`` vector."""
 
     def __init__(self, dt: float, n_u: int = 1) -> None:
@@ -46,15 +52,17 @@ class ZeroController(Controller[NoLog]):
         t: float,  # noqa: ARG002
         ref: FloatArray,  # noqa: ARG002
         x_hat: FloatArray,  # noqa: ARG002
-    ) -> tuple[FloatArray, NoLog]:
+    ) -> tuple[FloatArray, ZeroControllerLog]:
         """Return a zero control vector regardless of reference or state."""
-        return np.zeros(self.n_u, dtype=np.float64), NoLog()
+        u = np.zeros(self.n_u, dtype=np.float64)
+        return u, ZeroControllerLog(u=u)
 
 
 @dataclasses.dataclass(frozen=True)
 class AmplitudeThresholdControllerLog:
     """Dataclass for AmplitudeThresholdController logging."""
 
+    u: FloatArray
     amplitude: float
     triggered: bool
     active: bool
@@ -162,7 +170,7 @@ class AmplitudeThresholdController(Controller[AmplitudeThresholdControllerLog]):
             self._until = t + self.burst_duration
         active = t < self._until
         u = self.amplitude if active else np.zeros(self.n_u, dtype=np.float64)
-        return u, AmplitudeThresholdControllerLog(amplitude=amplitude, triggered=triggered, active=active)
+        return u, AmplitudeThresholdControllerLog(u=u.copy(), amplitude=amplitude, triggered=triggered, active=active)
 
 
 _MULTISINE_F_MIN_HZ = 1

@@ -10,7 +10,13 @@ from simulate.simulation import Simulation
 from neuro.connectome import Connectome
 from neuro.control import ZeroController
 from neuro.eeg import EEGMeasurement, build_eeg_gain
-from neuro.jansen_rit import JansenRitDynamics, JansenRitParams, simulate_network
+from neuro.jansen_rit import (
+    JansenRitDynamics,
+    JansenRitLFPLog,
+    JansenRitParams,
+    JansenRitStateLog,
+    simulate_network,
+)
 from neuro.stimulation import StimulationModel
 
 _DT = 1e-4
@@ -84,13 +90,32 @@ def test_simulation_matches_simulate_network() -> None:
     np.testing.assert_allclose(orch_x[:, :, :n], x_ref, atol=1e-12)
 
 
+def test_dynamics_logging_modes() -> None:
+    """Test that JansenRitDynamics produces NoLog, JansenRitLFPLog, or JansenRitStateLog according to config."""
+    conn = _toy_connectome()
+    dyn_none = JansenRitDynamics(dt=_DT, params=JansenRitParams(), conn=conn, log="none")
+    log_none = dyn_none._make_log()  # noqa: SLF001
+    assert type(log_none).__name__ == "NoLog"
+
+    dyn_lfp = JansenRitDynamics(dt=_DT, params=JansenRitParams(), conn=conn, log="lfp")
+    log_lfp = dyn_lfp._make_log()  # noqa: SLF001
+    assert isinstance(log_lfp, JansenRitLFPLog)
+    assert log_lfp.lfp.shape == (conn.weights.shape[0],)
+
+    dyn_state = JansenRitDynamics(dt=_DT, params=JansenRitParams(), conn=conn, log="state")
+    log_state = dyn_state._make_log()  # noqa: SLF001
+    assert isinstance(log_state, JansenRitStateLog)
+    assert log_state.x.shape == (6, conn.weights.shape[0])
+
+
 def test_dynamics_from_config_builds_network() -> None:
     """from_config loads the TVB connectome and one step yields a finite (6, N) state."""
     dyn = JansenRitDynamics.from_config(
-        {"dt": _DT, "connectome": {"speed": 50.0, "K": 0.5357}, "params": {"A": 3.25}, "seed": 69}
+        {"dt": _DT, "connectome": {"speed": 50.0, "K": 0.5357}, "params": {"A": 3.25}, "seed": 69, "log": "lfp"}
     )
     assert dyn.x.shape == (_STATE_DIM, _N_REGIONS_TVB)
     assert dyn.enforce_zero_sum_current is True
+    assert dyn.log_mode == "lfp"
 
     out, _ = dyn.evaluate(0.0, np.array([0.0]))
     out = np.asarray(out)

@@ -16,8 +16,9 @@ _DT = 0.1
 def test_zero_controller_outputs_zero_vector() -> None:
     """ZeroController ignores its inputs and returns an (n_u,) zero control."""
     controller = ZeroController(dt=_DT, n_u=3)
-    u, _ = controller.update(0.0, ref=np.array([1.0]), x_hat=np.ones(5))
+    u, log = controller.update(0.0, ref=np.array([1.0]), x_hat=np.ones(5))
     np.testing.assert_array_equal(np.atleast_1d(u), np.zeros(3))
+    np.testing.assert_array_equal(log.u, np.zeros(3))
 
 
 def test_zero_controller_from_config() -> None:

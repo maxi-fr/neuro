@@ -6,7 +6,11 @@ import numpy as np
 import pytest
 import yaml
 
-from neuro.closed_loop_eval import _spread_profile_from_logs, evaluate_closed_loop_suppression
+from neuro.closed_loop_eval import (
+    _spread_profile_from_lfp,
+    _spread_profile_from_logs,
+    evaluate_closed_loop_suppression,
+)
 from neuro.config import ClosedLoopEvalConfig
 
 if TYPE_CHECKING:
@@ -62,6 +66,18 @@ def test_spread_profile_counts_regions_above_threshold() -> None:
     ptp_mv = np.array([20.0, 8.0, 1.0, 0.0])
     profile = _spread_profile_from_logs(_logs(200, ptp_mv), dt=0.01, threshold=5.0)
 
+    assert profile.ptp.shape[0] == len(ptp_mv)
+    assert profile.ptp[:, -1] == pytest.approx(ptp_mv)
+    assert int(profile.n_seizing()[-1]) == 2
+
+
+def test_spread_profile_from_lfp() -> None:
+    """Test building a spread profile directly from a logged 2D region LFP trajectory."""
+    ptp_mv = np.array([20.0, 8.0, 1.0, 0.0])
+    wave = np.sign(np.sin(np.linspace(0.0, 8.0 * np.pi, 200)))
+    y_traj = 0.5 * ptp_mv[None, :] * wave[:, None]
+
+    profile = _spread_profile_from_lfp(y_traj, dt=0.01, threshold=5.0)
     assert profile.ptp.shape[0] == len(ptp_mv)
     assert profile.ptp[:, -1] == pytest.approx(ptp_mv)
     assert int(profile.n_seizing()[-1]) == 2

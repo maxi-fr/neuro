@@ -16,9 +16,9 @@ if TYPE_CHECKING:
     from neuro.config import ClosedLoopEvalConfig
 
 
-def _spread_profile_from_eeg(eeg: np.ndarray, dt: float, threshold: float) -> SpreadProfile:
-    """Build the PTP envelope of a logged EEG output trajectory, one window at a time."""
-    n_samples = eeg.shape[0]
+def _spread_profile_from_lfp(y_traj: np.ndarray, dt: float, threshold: float) -> SpreadProfile:
+    """Build the PTP envelope of a logged region LFP trajectory, one window at a time."""
+    n_samples = y_traj.shape[0]
     window = round(SPREAD_WINDOW_S / dt)
     hop = round(SPREAD_HOP_S / dt)
     if n_samples < window:
@@ -28,7 +28,7 @@ def _spread_profile_from_eeg(eeg: np.ndarray, dt: float, threshold: float) -> Sp
     ptp_cols: list[np.ndarray] = []
     times: list[float] = []
     for start in range(0, n_samples - window + 1, hop):
-        y_win = eeg[start : start + window]
+        y_win = y_traj[start : start + window]
         ptp_cols.append(np.ptp(y_win, axis=0))
         times.append((start + window) * dt - SPREAD_WINDOW_S / 2.0)
 
@@ -91,6 +91,8 @@ def evaluate_closed_loop_suppression(trial_dir: Path, eval_cfg: ClosedLoopEvalCo
         sim_dict["t_end"] = eval_cfg.t_end
         sim_dict["dynamics"]["seed"] = seed
         sim_dict["controller"]["artifact"] = str(model_artifact_path)
+        if sim_dict["dynamics"].get("log", "none") == "none":
+            sim_dict["dynamics"]["log"] = "lfp"
 
         sim = Simulation.from_config(sim_dict)
         # Log to a scratch directory so the full state trajectory never becomes resident, and
@@ -112,8 +114,14 @@ def evaluate_closed_loop_suppression(trial_dir: Path, eval_cfg: ClosedLoopEvalCo
             us = sim.logger.signal("controller", "u")
             amplitudes.append(float(np.mean(np.abs(us) / np.asarray(u_max, dtype=np.float64))))
 
-            y_mea = sim.logger.signal("sensor_0", "y_mea")
-            profile = _spread_profile_from_eeg(y_mea, sim.dt, eval_cfg.seizure_ptp_mv)
+            # One of the two region-space logs is always present: the config is coerced to "lfp"
+            # above unless it already asked for "state".
+            if ("dynamics", "lfp") in set(sim.logger.signals()):
+                y_reg = sim.logger.signal("dynamics", "lfp")
+                profile = _spread_profile_from_lfp(y_reg, sim.dt, eval_cfg.seizure_ptp_mv)
+            else:
+                x_traj = sim.logger.signal("dynamics", "x")
+                profile = _spread_profile_from_trajectory(x_traj, sim.dt, eval_cfg.seizure_ptp_mv)
 
         n_seizing = int(profile.n_seizing()[-1])
         seizing_counts.append(n_seizing)

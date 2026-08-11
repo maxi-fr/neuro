@@ -288,6 +288,20 @@ def _assert_zero_sum_current(u: FloatArray) -> None:
         raise ValueError(msg)
 
 
+@dataclass
+class JansenRitStateLog:
+    """Log carrying the full network state x of shape (6, n_nodes)."""
+
+    x: FloatArray
+
+
+@dataclass
+class JansenRitLFPLog:
+    """Log carrying the network local field potential y = x2 - x3 of shape (n_nodes,)."""
+
+    lfp: FloatArray
+
+
 class _JansenRitDynamicsConfig(StrictConfig):
     """Config schema for :meth:`JansenRitDynamics.from_config`."""
 
@@ -295,12 +309,13 @@ class _JansenRitDynamicsConfig(StrictConfig):
     seed: int | None = None
     enforce_zero_sum_current: bool = True
     initial_state: Literal["zeros", "rest"] = "zeros"
+    log: Literal["none", "lfp", "state"] = "none"
     connectome: _ConnectomeConfig = Field(default_factory=_ConnectomeConfig)
     stimulation: StimulationConfig = Field(default_factory=_NullConfig)
     params: _JansenRitParamsConfig = Field(default_factory=_JansenRitParamsConfig)
 
 
-class JansenRitDynamics(Dynamics[NoLog]):
+class JansenRitDynamics(Dynamics[JansenRitStateLog | JansenRitLFPLog | NoLog]):
     """Whole-brain Jansen-Rit network as a ``simulate`` :class:`Dynamics` plant."""
 
     def __init__(  # noqa: PLR0913
@@ -313,6 +328,7 @@ class JansenRitDynamics(Dynamics[NoLog]):
         initial_state: FloatArray | None = None,
         *,
         enforce_zero_sum_current: bool = True,
+        log: Literal["none", "lfp", "state"] = "none",
     ) -> None:
         """Initialize the network plant from ``params``, the structural ``conn`` and ``stim``.
 
@@ -321,6 +337,7 @@ class JansenRitDynamics(Dynamics[NoLog]):
         super().__init__(dt, integrator=None)
         self.K = conn.K
         self.enforce_zero_sum_current = enforce_zero_sum_current
+        self.log_mode = log
 
         n_nodes = conn.weights.shape[0]
         weights = conn.weights
@@ -367,6 +384,7 @@ class JansenRitDynamics(Dynamics[NoLog]):
             seed=cfg.seed,
             initial_state=resting_state(conn, cfg.dt) if cfg.initial_state == "rest" else None,
             enforce_zero_sum_current=cfg.enforce_zero_sum_current,
+            log=cfg.log,
         )
 
     def dynamics(self, t: float, x: FloatArray, u: FloatArray) -> FloatArray:
@@ -391,6 +409,10 @@ class JansenRitDynamics(Dynamics[NoLog]):
         xi = self.rng.standard_normal(n_nodes)
         return _heun_step_jit(x, u_node, self.params_tuple, self.dt, xi, coupling)
 
-    def _make_log(self) -> NoLog:
-        """Build a snapshot log of the current network state."""
+    def _make_log(self) -> JansenRitStateLog | JansenRitLFPLog | NoLog:
+        """Build a snapshot log of the current network state or LFP, if requested."""
+        if self.log_mode == "state":
+            return JansenRitStateLog(x=self.x.copy())
+        if self.log_mode == "lfp":
+            return JansenRitLFPLog(lfp=lfp(self.x))
         return NoLog()

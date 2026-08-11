@@ -13,10 +13,10 @@ from simulate.simulation import Simulation
 def _redundant_keys(data: dict[str, np.ndarray]) -> set[str]:
     """Name the logged channels that carry no information.
 
-    The full state, plus a noiseless sensor's 'truth' and 'noise' -- a duplicate of 'y_mea' and
+    A noiseless sensor's 'truth' and 'noise' -- a duplicate of 'y_mea' and
     zeros, together most of an excitation trajectory's bytes.
     """
-    drop = {"dynamics.x"} & set(data)
+    drop: set[str] = set()
     for key, value in data.items():
         measured = data.get(key.replace(".truth", ".y_mea"))
         is_dead_noise = key.endswith(".noise") and not value.any()

@@ -48,6 +48,6 @@ controller:
   n_u: 3              # one per stimulation electrode (TP9, CP5 cathodes + EX8 return)
   input_type: ras
   amp: 3.0
-  hold_ms: [10.0, 100.0, 200.0, 400., 1000.0] 
-  duration: 8.0         
+  hold_ms: [10.0, 100.0, 200.0, 400., 1000.0]
+  duration: 8.0
   input_seed: 109
