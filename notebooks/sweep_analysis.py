@@ -164,7 +164,7 @@ def load_trial_data(
     train_split = float(_train_cfg.get("train_split", 0.8))
     _train_cfg.get("global_scaling", True)
 
-    X_full, Y_full, n_channels = prepare_datasets(data_files, n_steps_cfg, downsample, n_y, n_u, horizon)
+    X_full, Y_full, n_channels = prepare_datasets(data_files, n_steps_cfg, downsample, n_y, n_u, horizon, dt_base)
     n_controls = (X_full.shape[1] - n_y * n_channels) // (n_u + horizon)
 
     split_idx = int(train_split * len(X_full))

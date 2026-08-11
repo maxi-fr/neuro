@@ -12,6 +12,7 @@ from jax.scipy.signal import welch
 from tqdm import tqdm
 
 from neuro.config import NNPredictorConfig
+from neuro.filtering import antialias_filter
 from neuro.prediction import AutoregressivePredictor, MLPArtifact, get_activation
 from neuro.transforms import PCAProjection, Pipeline, Standardizer
 from neuro.types import FloatArray
@@ -20,8 +21,14 @@ from utils.plotting import plot_multistep_predictions
 jax.config.update("jax_enable_x64", val=True)
 
 
-def load_trajectory(data_file: str, n_steps: int | None, downsample: int) -> tuple[FloatArray, FloatArray]:
-    """Load a single simulation trajectory.
+def load_trajectory(data_file: str, n_steps: int | None, downsample: int, dt: float) -> tuple[FloatArray, FloatArray]:
+    """Load a single simulation trajectory and decimate it.
+
+    The EEG is causally low-passed at the decimated Nyquist rate before striding (see
+    :func:`neuro.filtering.antialias_filter`); the identical filter runs online in
+    :class:`neuro.filtering.AntiAliasEstimator`, so the identified model sees the same signal
+    in the loop that it was fit on. The control is strided unfiltered -- it is a command the
+    controller issues on the decimated grid, not a sampled continuous signal.
 
     Parameters
     ----------
@@ -31,6 +38,8 @@ def load_trajectory(data_file: str, n_steps: int | None, downsample: int) -> tup
         The total number of time steps to load, or ``None`` to load the entire trajectory.
     downsample : int
         The downsampling factor to apply.
+    dt : float
+        Sample time of the stored trajectory, used to design the anti-alias filter.
 
     Returns
     -------
@@ -41,8 +50,10 @@ def load_trajectory(data_file: str, n_steps: int | None, downsample: int) -> tup
     """
     with np.load(data_file) as data:
         max_idx = None if n_steps is None else n_steps * downsample
-        y_data = data["sensor_0.y_mea"][:max_idx:downsample]
+        y_full = np.asarray(data["sensor_0.y_mea"][:max_idx], dtype=np.float64)
         u_data = data["controller.u"][:max_idx:downsample]
+
+    y_data = antialias_filter(y_full, 1.0 / dt, downsample)[::downsample]
 
     return u_data, y_data
 
@@ -188,6 +199,7 @@ def prepare_datasets(  # noqa: PLR0913
     n_y: int,
     n_u: int,
     horizon: int,
+    dt: float,
 ) -> tuple[FloatArray, FloatArray, int]:
     """Load data and build the raw (unscaled) dataset across multiple trajectories.
 
@@ -209,6 +221,8 @@ def prepare_datasets(  # noqa: PLR0913
         Number of past input steps to include.
     horizon : int
         Prediction horizon.
+    dt : float
+        Sample time of the stored trajectories (the anti-alias filter is designed at ``1 / dt``).
 
     Returns
     -------
@@ -222,7 +236,7 @@ def prepare_datasets(  # noqa: PLR0913
     all_X, all_Y = [], []
     n_channels = 1
     for df in data_files:
-        u, y = load_trajectory(df, n_steps_cfg, downsample)
+        u, y = load_trajectory(df, n_steps_cfg, downsample, dt)
         n_channels = y.shape[1]
         X_traj, Y_traj = build_dataset_for_trajectory(u, y, n_y, n_u, horizon)
         all_X.append(X_traj)
@@ -908,7 +922,7 @@ def train_and_save_predictor(  # noqa: PLR0915
     scaler_type = train_cfg.scaler
     global_scaling = train_cfg.global_scaling
 
-    X_full, Y_full, n_channels = prepare_datasets(data_files, n_steps_cfg, downsample, n_y, n_u, horizon)
+    X_full, Y_full, n_channels = prepare_datasets(data_files, n_steps_cfg, downsample, n_y, n_u, horizon, sim_cfg.dt)
     n_controls = (X_full.shape[1] - n_y * n_channels) // (n_u + horizon)
 
     split_idx = int(train_split * len(X_full))
