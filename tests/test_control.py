@@ -5,6 +5,7 @@ import pytest
 
 from neuro.control import (
     AmplitudeThresholdController,
+    WaveformController,
     ZeroController,
     build_input_schedule,
 )
@@ -24,6 +25,26 @@ def test_zero_controller_from_config() -> None:
     controller = ZeroController.from_config({"dt": _DT, "n_u": 2})
     assert controller.dt == _DT
     assert controller.n_u == 2
+
+
+def test_waveform_controller_logs_the_applied_control() -> None:
+    """The played-back current is logged, so ``controller.u`` lands in the excitation datasets.
+
+    ``load_trajectory`` identifies the predictor against ``controller.u``; a log model with no
+    fields is skipped wholesale by the logger, which silently drops the input channel.
+    """
+    schedule = np.array([[1.0, -1.0], [2.0, -2.0]])
+    controller = WaveformController(dt=_DT, schedule=schedule)
+
+    for k in range(schedule.shape[0]):
+        u, log = controller.update(k * _DT, ref=np.zeros(1), x_hat=np.zeros(1))
+        np.testing.assert_array_equal(np.atleast_1d(u), schedule[k])
+        np.testing.assert_array_equal(log.u, schedule[k])
+
+    # Past the end of the schedule the controller emits -- and logs -- zeros.
+    u, log = controller.update(schedule.shape[0] * _DT, ref=np.zeros(1), x_hat=np.zeros(1))
+    np.testing.assert_array_equal(np.atleast_1d(u), np.zeros(2))
+    np.testing.assert_array_equal(log.u, np.zeros(2))
 
 
 @pytest.mark.parametrize("input_type", ["ras", "prbs", "multisine"])
@@ -83,6 +104,32 @@ def test_mixed_hold_schedule_spans_the_requested_block_lengths() -> None:
     assert runs[:-1].min() >= min(expected)
     assert set(runs[:-1].tolist()) <= set(expected)
     assert max(expected) in runs.tolist()
+
+
+def test_mixed_hold_schedule_splits_time_evenly_across_holds() -> None:
+    """Each entry in ``hold_ms`` occupies a roughly equal share of the schedule's *time*.
+
+    Drawn uniformly over the values, a hold's share of time is proportional to its own length, so
+    on ``[75, 200, 2000]`` the 2000 ms entry would take ~88 % of every trajectory and leave almost
+    no short-hold data. The inverse-length weighting is what lets the grid span 75-2000 ms at all.
+    """
+    dt, holds = 1e-4, [75.0, 200.0, 2000.0]
+    schedule = build_input_schedule(
+        input_type="ras",
+        n_steps=4_000_000,
+        transient_steps=0,
+        n_controls=3,
+        amp=3.0,
+        hold_ms=holds,
+        dt=dt,
+        rng=np.random.default_rng(0),
+    )
+
+    changes = np.flatnonzero(np.any(np.diff(schedule, axis=0) != 0.0, axis=1)) + 1
+    runs = np.diff(np.concatenate([[0], changes, [len(schedule)]]))[:-1]
+    expected = [round(h / (dt * 1000.0)) for h in holds]
+    share = np.array([runs[runs == length].sum() for length in expected], dtype=np.float64)
+    np.testing.assert_allclose(share / share.sum(), 1.0 / len(expected), atol=0.05)
 
 
 def _run_threshold_controller(

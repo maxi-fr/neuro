@@ -372,3 +372,40 @@ def test_closed_loop_simulation_runs(tmp_path: Path, formulation: str) -> None:
     us = sim.logger.signal("controller", "u")
     assert us.shape[1] == 2
     assert np.all(np.abs(us) <= u_max + 1e-6)
+
+
+def test_terminal_weight_defaults_to_uniform(tmp_path: Path) -> None:
+    """``w_y_terminal`` equal to ``w_y`` is the uniform cost, so the applied control is unchanged."""
+    n_y, n_channels = 4, 2
+    kw: dict[str, Any] = {"dt": 0.01, "u_max": 5.0, "horizon": 4, "w_y": 1.0, "w_u": 0.1}
+    model = NNSymbolicModel.from_artifact(_build_artifact(tmp_path, n_y=n_y, n_channels=n_channels))
+
+    u_uniform = _drive(MPCController(model=model, **kw), n_y, n_channels)[-1][0]
+    u_explicit = _drive(MPCController(model=model, w_y_terminal=1.0, **kw), n_y, n_channels)[-1][0]
+
+    np.testing.assert_allclose(u_uniform, u_explicit, atol=1e-6)
+
+
+def test_terminal_only_cost_differs_from_uniform(tmp_path: Path) -> None:
+    """Costing the terminal step alone (``w_y = 0``) is a different objective, so it moves the control."""
+    n_y, n_channels = 4, 2
+    kw: dict[str, Any] = {"dt": 0.01, "u_max": 5.0, "horizon": 4, "w_u": 0.1}
+    model = NNSymbolicModel.from_artifact(_build_artifact(tmp_path, n_y=n_y, n_channels=n_channels))
+
+    u_uniform = _drive(MPCController(model=model, w_y=1.0, **kw), n_y, n_channels)[-1][0]
+    u_terminal = _drive(MPCController(model=model, w_y=0.0, w_y_terminal=1.0, **kw), n_y, n_channels)[-1][0]
+
+    assert not np.allclose(u_uniform, u_terminal, atol=1e-4)
+
+
+def test_solve_logs_iteration_count(tmp_path: Path) -> None:
+    """Post-warmup solves report IPOPT's iteration count and whether the cap was hit."""
+    n_y, n_channels = 4, 2
+    model = NNSymbolicModel.from_artifact(_build_artifact(tmp_path, n_y=n_y, n_channels=n_channels))
+    controller = MPCController(dt=0.01, model=model, u_max=5.0, horizon=4, w_y=1.0, w_u=0.1)
+
+    _, log = _drive(controller, n_y, n_channels)[-1]
+
+    assert not log.warmup
+    assert log.n_iter > 0
+    assert not log.capped

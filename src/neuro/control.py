@@ -208,7 +208,13 @@ def build_input_schedule(  # noqa: PLR0913
         holds = np.atleast_1d(np.asarray(hold_ms, dtype=np.float64))
         hold_steps = np.maximum(1, np.round(holds / (dt * 1000.0)).astype(int))
         n_blocks = int(np.ceil(active / hold_steps.min()))
-        lengths = rng.choice(hold_steps, size=n_blocks) if hold_steps.size > 1 else np.repeat(hold_steps, n_blocks)
+        if hold_steps.size > 1:
+            # Draw p ~ 1 / length so each entry gets an equal share of *time*: drawn uniformly, a
+            # value's share is proportional to its own length and the longest hold eats the run.
+            p = (1.0 / hold_steps) / np.sum(1.0 / hold_steps)
+            lengths = rng.choice(hold_steps, size=n_blocks, p=p)
+        else:
+            lengths = np.repeat(hold_steps, n_blocks)
         n_blocks = int(np.searchsorted(np.cumsum(lengths), active) + 1)
         lengths = lengths[:n_blocks]
         if input_type == "ras":
@@ -242,7 +248,14 @@ class _WaveformControllerConfig(StrictConfig):
     hold_ms: PositiveFloat | list[PositiveFloat] = 50.0
 
 
-class WaveformController(Controller[NoLog]):
+@dataclasses.dataclass(frozen=True)
+class WaveformControllerLog:
+    """Log carrying the applied control; excitation datasets are identified against it."""
+
+    u: FloatArray
+
+
+class WaveformController(Controller[WaveformControllerLog]):
     """Open-loop controller that plays back a precomputed per-electrode tES waveform."""
 
     def __init__(self, dt: float, schedule: ArrayLike) -> None:
@@ -272,22 +285,23 @@ class WaveformController(Controller[NoLog]):
         t: float,
         ref: FloatArray,  # noqa: ARG002
         x_hat: FloatArray,  # noqa: ARG002
-    ) -> tuple[FloatArray, NoLog]:
+    ) -> tuple[FloatArray, WaveformControllerLog]:
         """Emit the scheduled per-electrode current for the current step."""
         k = round(t / self.dt)
-        if k >= self.schedule.shape[0]:
-            return np.zeros(self.n_u, dtype=np.float64), NoLog()
-        return self.schedule[k], NoLog()
+        u = np.zeros(self.n_u, dtype=np.float64) if k >= self.schedule.shape[0] else self.schedule[k]
+        return u, WaveformControllerLog(u=u.copy())
 
 
 @dataclasses.dataclass(frozen=True)
 class MPCControllerLog:
-    """Per-step diagnostics for any MPC controller: the applied control, optimal cost, solver success, and a warm-up flag."""
+    """Per-step diagnostics for any MPC controller: the applied control, optimal cost, solver success, iteration count, iteration-cap flag, and a warm-up flag."""
 
     u: FloatArray
     cost: float
     success: bool
     warmup: bool
+    n_iter: int = 0
+    capped: bool = False
 
 
 def _l1_epigraph(u_vars: list[ca.MX], w_l1: float) -> tuple[list[ca.MX], ca.MX, ca.MX]:
@@ -327,6 +341,7 @@ class _MPCControllerConfig(StrictConfig):
     u_max: float | list[float]
     horizon: int | None = Field(default=None, ge=1)
     w_y: float = Field(default=1.0, ge=0)
+    w_y_terminal: float | None = Field(default=None, ge=0)
     w_u: float = Field(default=0.0, ge=0)
     w_u_l1: float = Field(default=0.0, ge=0)
     w_du: float = Field(default=0.0, ge=0)
@@ -351,6 +366,7 @@ class MPCController(Controller[MPCControllerLog]):
         w_u_l1: float = 0.0,
         w_du: float = 0.0,
         *,
+        w_y_terminal: float | None = None,
         shooting_depth: int | None = None,
         max_iter: int = 100,
         max_cpu_time: float | None = None,
@@ -374,20 +390,20 @@ class MPCController(Controller[MPCControllerLog]):
             Weight on predicted EEG power in the cost.
         w_u
             Weight on control effort (quadratic) in the cost.
+        w_y_terminal
+            Weight on predicted EEG power at the *final* horizon step, replacing ``w_y`` there;
+            ``None`` (default) keeps ``w_y`` uniform over the horizon.
         w_u_l1
             Weight on the L1 norm of the control effort (a sparse-stimulation penalty); ``0``
             disables it (default), leaving the pure-quadratic problem unchanged.
         w_du
             Weight on the step-to-step control change ``||u_k - u_{k-1}||^2`` (a slew-rate
-            penalty); ``0`` disables it (default). Needed whenever the identified model
-            under-estimates the plant's response to fast-alternating currents, which otherwise
-            makes bang-bang chattering look free to the optimizer.
+            penalty); ``0`` disables it (default).
         shooting_depth
             Size ``D`` of the shooting segments: a state shooting root is introduced every ``D``
             steps. ``D = 1`` is full multiple shooting (a root at every step), ``D >= horizon``
             is single shooting (no roots; the states are condensed out and the NLP is over the
-            controls alone). Defaults to ``horizon``, i.e. single shooting, because the extra
-            decision variables of multiple shooting make the EEG-space problem intractable.
+            controls alone). Defaults to ``horizon``, i.e. single shooting
         max_iter
             Hard cap on IPOPT iterations per solve. When the cap is hit the best warm-started iterate is applied
             and ``success`` is ``False`` (capped, not failed).
@@ -402,6 +418,7 @@ class MPCController(Controller[MPCControllerLog]):
         self.model = model
         self.horizon = int(horizon) if horizon is not None else model.artifact.horizon
         self.w_y = float(w_y)
+        self.w_y_terminal = float(w_y_terminal) if w_y_terminal is not None else None
         self.w_u = float(w_u)
         self.w_u_l1 = float(w_u_l1)
         self.w_du = float(w_du)
@@ -447,6 +464,7 @@ class MPCController(Controller[MPCControllerLog]):
             w_u=cfg.w_u,
             w_u_l1=cfg.w_u_l1,
             w_du=cfg.w_du,
+            w_y_terminal=cfg.w_y_terminal,
             shooting_depth=cfg.shooting_depth,
             max_iter=cfg.max_iter,
             max_cpu_time=cfg.max_cpu_time,
@@ -487,7 +505,9 @@ class MPCController(Controller[MPCControllerLog]):
                 x_next = self.model.f_step(x_curr, u_curr)
                 y_next = self.model.f_out(x_next)
 
-                cost = cost + self.w_y * ca.sumsqr(y_next) + self.w_u * ca.sumsqr(u_curr)
+                is_terminal = step == h - 1 and self.w_y_terminal is not None
+                w_y_step = self.w_y_terminal if is_terminal else self.w_y
+                cost = cost + w_y_step * ca.sumsqr(y_next) + self.w_u * ca.sumsqr(u_curr)
                 x_curr = x_next
 
             if k < n_segments:
@@ -535,8 +555,8 @@ class MPCController(Controller[MPCControllerLog]):
 
         self._solver = ca.nlpsol("mpc", "ipopt", nlp, opts)
 
-    def _solve(self, x0: FloatArray) -> tuple[FloatArray, float, bool]:
-        """Solve the NLP for window-state ``x0``; return ``(u_0*, cost, success)``."""
+    def _solve(self, x0: FloatArray) -> tuple[FloatArray, float, bool, int, bool]:
+        """Solve the NLP for window-state ``x0``; return ``(u_0*, cost, success, n_iter, capped)``."""
         m, h = self.n_controls, self.horizon
         D = self.shooting_depth
         u_guess = self._u_prev if self._u_prev is not None else np.zeros((h, m))
@@ -557,9 +577,16 @@ class MPCController(Controller[MPCControllerLog]):
         u_opt = np.asarray(sol["x"]).reshape(-1)[: h * m].reshape(h, m)
         self._u_prev = np.vstack([u_opt[1:], u_opt[-1:]])
 
-        status = self._solver.stats()["return_status"]
+        stats = self._solver.stats()
+        status = stats["return_status"]
         success = status in {"Solve_Succeeded", "Solved_To_Acceptable_Level"}
-        return u_opt[0], float(sol["f"]), success
+        return (
+            u_opt[0],
+            float(sol["f"]),
+            success,
+            int(stats.get("iter_count", 0)),
+            status == "Maximum_Iterations_Exceeded",
+        )
 
     def update(
         self,
@@ -579,9 +606,9 @@ class MPCController(Controller[MPCControllerLog]):
             return u_zero, MPCControllerLog(u=u_zero, cost=0.0, success=True, warmup=True)
 
         x0 = np.concatenate([self._y_buf.reshape(-1), self._u_buf.reshape(-1)])
-        u0, cost, success = self._solve(x0)
+        u0, cost, success, n_iter, capped = self._solve(x0)
         self._u_buf = np.vstack([self._u_buf[1:], u0.reshape(1, self.n_controls)])
-        return u0, MPCControllerLog(u=u0.copy(), cost=cost, success=success, warmup=False)
+        return u0, MPCControllerLog(u=u0.copy(), cost=cost, success=success, warmup=False, n_iter=n_iter, capped=capped)
 
 
 class _LinearMPCControllerConfig(StrictConfig):
