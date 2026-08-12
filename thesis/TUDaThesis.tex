@@ -1,0 +1,157 @@
+\documentclass[
+    english,
+	ruledheaders=section,%Ebene bis zu der die Überschriften mit Linien abgetrennt werden, vgl. DEMO-TUDaPub
+	class=report,% Basisdokumentenklasse. Wählt die Korrespondierende KOMA-Script Klasse
+	thesis={type=master},% Dokumententyp Thesis (projektseminar, proseminar, bachelor, master)
+	accentcolor=2c, % Akzentfarbe FG rtm
+	custommargins=false,
+	marginpar=false,
+	BCOR=10mm, % Bindekorrektur (etwas größere mittlere Ränder)
+	parskip=half-, % Absatzkennzeichnung durch Abstand vgl. KOMA-Sript
+	fontsize=11pt, % Basisschriftgröße laut Corporate Design ist mit 9pt häufig zu klein
+  	twoside,
+  	numbers=noendperiod,
+  	fleqn,
+  	captions=oneline, % Einzeilige Captions zentrieren
+	captions=tableheading, % Für besseren Abstand bei TabellenÜBERschriften
+  	IMRAD=false
+]{tudapub}
+
+
+% Der folgende Block ist nur bei pdfTeX auf Versionen vor April 2018 notwendig
+\usepackage{iftex}
+\ifPDFTeX
+\usepackage[utf8]{inputenc}%kompatibilität mit TeX Versionen vor April 2018
+\fi
+
+%%%%%%%%%%%%%%%%%%%
+%Sprachanpassung & Verbesserte Trennregeln
+%%%%%%%%%%%%%%%%%%%
+\usepackage[main=english, ngerman]{babel}
+\usepackage[autostyle]{csquotes}% Anführungszeichen vereinfacht
+\usepackage{microtype}
+
+
+%%%%%%%%%%%%%%%%%%%
+%Literaturverzeichnis
+%%%%%%%%%%%%%%%%%%%
+\catcode30=12  % Workaround for current biblatex problem (https://tex.stackexchange.com/questions/564990/error-after-miktex-reinstall-text-line-contains-an-invalid-character)
+\usepackage[backend=biber,style=ieee,bibencoding=utf8]{biblatex}
+\addbibresource{literature.bib}
+
+% ======================================================
+% Fix für Fehlermeldungen 'Undifined control sequence' und 'Missing number, treated as zero.' bei gestapelten Akzenten in der Mathe-Umgebung. (z.B. \dot{\hat{x}})
+% Der Fehler tritt auf bei tuda-ci v3.10 (Feb. 2021) in Kombination mit dem amsmath package.
+%
+% BITTE PRÜFEN, OB DER FEHLER NOCH BESTEHT UND DEN WORKAROUND GGF. WIEDER ENTFERNEN
+%
+% workaround/solution by skillmon posted here
+% https://tex.stackexchange.com/questions/482281/math-accent-symbol-over-parentheses-enclosing-accented-symbol-amsmath
+\makeatletter
+\protected\def\mathaccentV#1#2#3#4#5%
+  {%
+    \ifmmode
+      \mathaccentV@do{#2}{#3}{#4}{#5}%
+    \else
+      \@xp\nonmatherr@\csname #1\endcsname
+    \fi
+  }
+\def\mathaccentV@do#1#2#3#4%
+  {%
+    \global\let\macc@nucleus\@empty
+    \mathaccent"\accentclass@#1#2#3{#4}\macc@nucleus
+  }
+\makeatother
+% ======================================================
+
+\begin{document}
+
+\Metadata{	% Metadaten im erzeugten PDF/A
+	title=Eine minimale LaTeX-Vorlage für schriftliche (Abschluss-)Arbeiten am IAT,
+	author=Rudi Ratlos,
+	keywords={TU Darmstadt \sep Corporate Design \sep LaTeX},
+}
+
+\title{Eine minimale \LaTeX-Vorlage für schriftliche (Abschluss-)Arbeiten am IAT}
+\subtitle{\textmd{Electrical Engineering and Information Technology program}}
+\author[R. Ratlos]{Rudi Ratlos}
+\reviewer*[First Examiner,Supervisor]{Prof. Dr.-Ing. Rolf Findeisen \and NameGoesHere} % erst ab Version v3.06 (2020-10-20) des tuda-ci-Pakets möglich
+
+\department{etit}
+
+\addTitleBox{\includegraphics[width=\linewidth]{CCPS_logo}}
+
+%\date{\today}
+\submissiondate{1. April 2020}
+
+\lowertitleback{
+	Technische Universität Darmstadt\\
+	Institut für Automatisierungstechnik und Mechatronik\\
+	Fachgebiet Regelungstechnik und Cyber-Physische Systeme\\
+	Prof. Dr.-Ing. Rolf Findeisen\\
+}
+
+\frontmatter
+\maketitle
+
+\clearpage
+\setcounter{page}{1}
+\section*{Task Description}
+
+	Provided by supervisor
+	
+ \vspace{0.5cm}
+\begin{tabular}{ll}
+	Start date: 	& ------ \\
+	End date: 		& ------ \\
+	Date of the colloquium: 	& ------ \\
+\end{tabular}
+\clearpage
+
+\affidavit[digital]
+	
+\section*{Abstract}
+	Abstract in main document language, here English.
+\section*{Zusammenfassung}
+	Additional abstract in German.	
+
+\cleardoublepage
+
+\tableofcontents
+\cleardoublepage
+
+\mainmatter
+
+\chapter{Introduction}
+
+Content Content Content
+
+\cite{Duden}
+
+Diese Vorlage dient als Grundlage für Abschlussarbeiten und andere Dokumente am rtm. Sie nutzt das offizielle LaTex-Paket der Technischen Universität Darmstadt *tuda-ci*, das in allen aktuellen LaTex-Distributionen verfügbar ist.
+
+Aufbauend auf dieser Minimalvorlage existieren zwei weitere Projekte:
+
+- https://git.rtm.e-technik.tu-darmstadt.de/tuda-ci_templates/tuda-ci_thesisinfo: ein Dokument mit vielen Tipps und Informationen zum schreiben einer Abschlussarbeit
+- ttps://git.rtm.e-technik.tu-darmstadt.de/tuda-ci_templates/tuda-ci_useful-packages: ein Dokument mit Beispielen von potentiell nützlichen Paketen
+
+
+
+% =================================================================================
+% Anhang
+% =================================================================================
+\appendix % Damit wird der Anhang begonnen. Die Kapitel werden ab jetzt mit Buchstaben nummeriert
+
+
+% =================================================================================
+% Literaturverzeichnis
+% =================================================================================
+\cleardoublepage        % Auf eine leere Seite einfügen
+\phantomsection         % Für Aufnahme ins Inhaltsverzeichnis
+\addcontentsline{toc}{chapter}{\bibname}  % In Inhaltsverzeichnis von
+                                          % Dokument und pdf aufnehmen
+\printbibliography 
+% =================================================================================
+
+	
+\end{document}
