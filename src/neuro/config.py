@@ -152,8 +152,8 @@ class ClosedLoopEvalConfig(StrictConfig):
     max_seizing_regions: int = Field(ge=0)
 
 
-class SweepConfig(StrictConfig):
-    """Optuna sweep settings: trial count, output dir and per-group search spaces."""
+class NNSweepConfig(StrictConfig):
+    """Optuna sweep settings for the NN predictor: trial count, output dir and per-group search spaces."""
 
     n_trials: int = Field(default=20, ge=1)
     artifact: str | None = None
@@ -169,7 +169,7 @@ class NNPredictorConfig(StrictConfig):
     model: ModelConfig = Field(default_factory=ModelConfig)
     training: TrainingConfig = Field(default_factory=TrainingConfig)
     artifact: str | None = None
-    sweep: SweepConfig | None = None
+    sweep: NNSweepConfig | None = None
 
     @classmethod
     def from_dict(cls, data: dict[str, Any] | None) -> NNPredictorConfig:
@@ -191,28 +191,83 @@ class NNPredictorConfig(StrictConfig):
         if self.sweep is None:
             return self
 
-        sweep_model_keys = set(self.sweep.model.keys())
-        invalid_model_keys = sweep_model_keys - set(self.model.__class__.model_fields.keys())
-        if invalid_model_keys:
-            msg = f"Keys {sorted(invalid_model_keys)} in 'sweep.model' are not valid 'model' parameters."
-            raise ValueError(msg)
+        _validate_sweep_overlap_and_keys(self.sweep.model, self.model, "model")
+        _validate_sweep_overlap_and_keys(self.sweep.training, self.training, "training")
+        return self
 
-        overlap_model = sweep_model_keys & self.model.model_fields_set
-        if overlap_model:
-            msg = f"Parameters cannot be defined in both regular 'model' and 'sweep.model'. Overlap: {sorted(overlap_model)}"
-            raise ValueError(msg)
 
-        sweep_training_keys = set(self.sweep.training.keys())
-        invalid_training_keys = sweep_training_keys - set(self.training.__class__.model_fields.keys())
-        if invalid_training_keys:
-            msg = f"Keys {sorted(invalid_training_keys)} in 'sweep.training' are not valid 'training' parameters."
-            raise ValueError(msg)
+def _validate_sweep_overlap_and_keys(
+    sweep_dict: dict[str, ParamSpec],
+    target_config: StrictConfig,
+    target_name: str,
+) -> None:
+    sweep_keys = set(sweep_dict.keys())
+    invalid_keys = sweep_keys - set(target_config.__class__.model_fields.keys())
+    if invalid_keys:
+        msg = f"Keys {sorted(invalid_keys)} in 'sweep.{target_name}' are not valid '{target_name}' parameters."
+        raise ValueError(msg)
 
-        overlap_training = sweep_training_keys & self.training.model_fields_set
-        if overlap_training:
-            msg = f"Parameters cannot be defined in both regular 'training' and 'sweep.training'. Overlap: {sorted(overlap_training)}"
-            raise ValueError(msg)
+    overlap = sweep_keys & target_config.model_fields_set
+    if overlap:
+        msg = (
+            f"Parameters cannot be defined in both regular '{target_name}' and 'sweep.{target_name}'."
+            f" Overlap: {sorted(overlap)}"
+        )
+        raise ValueError(msg)
 
+
+class ESNModelConfig(StrictConfig):
+    """ESN predictor architecture settings."""
+
+    reservoir_size: int = Field(default=500, ge=1)
+    spectral_radius: float = Field(default=0.9, gt=0)
+    leak_rate: float = Field(default=0.1, gt=0, le=1)
+    density: float = Field(default=0.1, gt=0, le=1)
+    input_scaling: float = Field(default=0.1, gt=0)
+    washout: int = Field(default=100, ge=0)
+    ridge_lambda: float = Field(default=1e-3, ge=0)
+    noise_sigma: float = Field(default=0.0, ge=0)
+    horizon: int = Field(default=50, ge=1)
+    latent_dim: int | None = Field(default=None, ge=1)
+
+
+class ESNTrainingConfig(StrictConfig):
+    """Training settings for ESN predictor."""
+
+    train_split: float = Field(default=0.8, gt=0, lt=1)
+    seed: int = Field(default=69, ge=0)
+    scaler: Literal["standard", "robust"] = "standard"
+    global_scaling: bool = False
+
+
+class ESNSweepConfig(StrictConfig):
+    """Optuna sweep settings for ESN predictor."""
+
+    reservoir_sizes: list[int] = Field(default_factory=lambda: [100, 250, 500, 1000])
+    lambdas: list[float] = Field(default_factory=lambda: [1e-5, 1e-4, 1e-3, 1e-2, 1e-1, 1.0, 10.0])
+    n_trials: int = Field(default=50, ge=1)
+    model: dict[str, ParamSpec] = Field(default_factory=dict)
+
+
+class ESNPredictorConfig(StrictConfig):
+    """Fully-resolved, validated configuration for the ESN-predictor pipeline."""
+
+    simulation: SimulationConfig = Field(default_factory=SimulationConfig)
+    model: ESNModelConfig = Field(default_factory=ESNModelConfig)
+    training: ESNTrainingConfig = Field(default_factory=ESNTrainingConfig)
+    artifact: str | None = None
+    sweep: ESNSweepConfig | None = None
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any] | None) -> ESNPredictorConfig:
+        """Build a typed config from a raw YAML mapping, rejecting unknown keys everywhere."""
+        return cls.model_validate({} if data is None else data)
+
+    @model_validator(mode="after")
+    def _validate_sweep_exclusivity_and_keys(self) -> Self:
+        if self.sweep is None:
+            return self
+        _validate_sweep_overlap_and_keys(self.sweep.model, self.model, "model")
         return self
 
 
@@ -226,7 +281,19 @@ def load_config(path: Path) -> NNPredictorConfig:
     return NNPredictorConfig.from_dict(raw)
 
 
-def resolve_data_files(config: NNPredictorConfig, data_path_override: str | None = None) -> list[str]:
+def load_esn_config(path: Path) -> ESNPredictorConfig:
+    """Load and strictly validate an ESN-predictor YAML config from ``path``."""
+    if not path.exists():
+        msg = f"Config file not found: {path}"
+        raise FileNotFoundError(msg)
+    with path.open() as f:
+        raw = yaml.safe_load(f)
+    return ESNPredictorConfig.from_dict(raw)
+
+
+def resolve_data_files(
+    config: NNPredictorConfig | ESNPredictorConfig, data_path_override: str | None = None
+) -> list[str]:
     """Resolve and validate the ``.npz`` training files from the config or an override."""
     data_path_str = data_path_override or config.simulation.data_path
     if not data_path_str:

@@ -16,7 +16,7 @@ if TYPE_CHECKING:
 
     from numpy.typing import ArrayLike
 
-    from neuro.types import FloatArray
+    from neuro.types import FloatArray, SymbolicModel
 
 
 class _ZeroControllerConfig(StrictConfig):
@@ -330,15 +330,100 @@ def _l1_epigraph(u_vars: list[ca.MX], w_l1: float) -> tuple[list[ca.MX], ca.MX, 
     return slacks, cost, ca.vertcat(*g)
 
 
-def _rate_penalty(u_vars: list[ca.MX], u_last: ca.MX, w_du: float) -> ca.MX:
-    """Quadratic slew cost ``w_du * sum_k ||u_k - u_{k-1}||^2``, with ``u_{-1} = u_last``."""
-    diffs = [u_vars[0] - u_last] + [u_vars[k] - u_vars[k - 1] for k in range(1, len(u_vars))]
-    return w_du * sum(ca.sumsqr(d) for d in diffs)
-
-
 def _sum_to_zero(u_vars: list[ca.MX]) -> ca.MX:
     """Kirchhoff current-law equality: the per-electrode currents sum to zero at each step."""
     return ca.vertcat(*[ca.sum1(u) for u in u_vars])
+
+
+def build_mpc_nlp(  # noqa: PLR0913
+    model: SymbolicModel,
+    *,
+    horizon: int,
+    shooting_depth: int,
+    n_controls: int,
+    u_max: FloatArray,
+    w_y: float,
+    w_y_terminal: float | None,
+    w_u: float,
+    w_u_l1: float,
+    max_iter: int,
+    max_cpu_time: float | None,
+    expand: bool,
+    ipopt_options: dict[str, Any],
+) -> tuple[ca.Function, FloatArray, FloatArray, FloatArray | float, FloatArray | float]:
+    """Build the PCMS shooting NLP and its IPOPT solver; returns (solver, lbx, ubx, lbg, ubg)."""
+    n_state = model.state_shape[0]
+    n_ctrl, h = n_controls, horizon
+    D = shooting_depth
+
+    x0_p = ca.MX.sym("x0", n_state)
+    u_vars = [ca.MX.sym(f"u_{k}", n_ctrl) for k in range(h)]
+
+    n_segments = (h - 1) // D
+    phi_vars = [ca.MX.sym(f"phi_{k}", n_state) for k in range(1, n_segments + 1)]
+
+    def get_phi(idx: int) -> ca.MX:
+        return x0_p if idx == 0 else phi_vars[idx - 1]
+
+    defects, cost = [], ca.MX(0)
+    for k in range(n_segments + 1):
+        x_curr = get_phi(k)
+        start_step = k * D
+        end_step = min((k + 1) * D, h)
+
+        for step in range(start_step, end_step):
+            u_curr = u_vars[step]
+            x_next = model.f_step(x_curr, u_curr)
+            y_next = model.f_out(x_next)
+
+            is_terminal = step == h - 1 and w_y_terminal is not None
+            w_y_step = w_y_terminal if is_terminal else w_y
+            cost = cost + w_y_step * ca.sumsqr(y_next) + w_u * ca.sumsqr(u_curr)
+            x_curr = x_next
+
+        if k < n_segments:
+            defects.append(x_curr - get_phi(k + 1))
+
+    x_parts = [*u_vars, *phi_vars]
+    g_parts = [*defects, _sum_to_zero(u_vars)]
+    n_eq = len(defects) * n_state + h
+    n_phi_vars = len(phi_vars) * n_state
+    lbx = np.concatenate([np.tile(-u_max, h), np.full(n_phi_vars, -np.inf)])
+    ubx = np.concatenate([np.tile(u_max, h), np.full(n_phi_vars, np.inf)])
+
+    if w_u_l1 > 0:
+        slacks, l1_cost, l1_g = _l1_epigraph(u_vars, w_u_l1)
+        cost = cost + l1_cost
+        x_parts += slacks
+        g_parts.append(l1_g)
+        n_l1 = l1_g.numel()
+        lbg = np.concatenate([np.zeros(n_eq), np.zeros(n_l1)])
+        ubg = np.concatenate([np.zeros(n_eq), np.full(n_l1, np.inf)])
+        lbx = np.concatenate([lbx, np.zeros(h * n_ctrl)])
+        ubx = np.concatenate([ubx, np.full(h * n_ctrl, np.inf)])
+    else:
+        lbg = ubg = 0.0
+
+    x_nlp = ca.vertcat(*x_parts)
+    g_nlp = ca.vertcat(*g_parts) if g_parts else ca.MX(0)
+    nlp = {"x": x_nlp, "f": cost, "g": g_nlp, "p": x0_p}
+    opts = {
+        "print_time": False,
+        "expand": expand,
+        "ipopt.print_level": 0,
+        "ipopt.sb": "yes",
+        "ipopt.max_iter": max_iter,
+        "ipopt.hessian_approximation": "limited-memory",
+    }
+    if max_cpu_time is not None:
+        opts["ipopt.max_cpu_time"] = max_cpu_time
+
+    if ipopt_options:
+        for k, v in ipopt_options.items():
+            opts[f"ipopt.{k}" if not k.startswith("ipopt.") else k] = v
+
+    solver = ca.nlpsol("mpc", "ipopt", nlp, opts)
+    return solver, lbx, ubx, lbg, ubg
 
 
 class _MPCControllerConfig(StrictConfig):
@@ -352,7 +437,6 @@ class _MPCControllerConfig(StrictConfig):
     w_y_terminal: float | None = Field(default=None, ge=0)
     w_u: float = Field(default=0.0, ge=0)
     w_u_l1: float = Field(default=0.0, ge=0)
-    w_du: float = Field(default=0.0, ge=0)
     shooting_depth: int | None = Field(default=None, ge=1)
     max_iter: int = Field(default=100, ge=1)
     max_cpu_time: float | None = Field(default=None, gt=0)
@@ -372,7 +456,6 @@ class MPCController(Controller[MPCControllerLog]):
         w_y: float = 1.0,
         w_u: float = 0.0,
         w_u_l1: float = 0.0,
-        w_du: float = 0.0,
         *,
         w_y_terminal: float | None = None,
         shooting_depth: int | None = None,
@@ -404,9 +487,6 @@ class MPCController(Controller[MPCControllerLog]):
         w_u_l1
             Weight on the L1 norm of the control effort (a sparse-stimulation penalty); ``0``
             disables it (default), leaving the pure-quadratic problem unchanged.
-        w_du
-            Weight on the step-to-step control change ``||u_k - u_{k-1}||^2`` (a slew-rate
-            penalty); ``0`` disables it (default).
         shooting_depth
             Size ``D`` of the shooting segments: a state shooting root is introduced every ``D``
             steps. ``D = 1`` is full multiple shooting (a root at every step), ``D >= horizon``
@@ -429,7 +509,6 @@ class MPCController(Controller[MPCControllerLog]):
         self.w_y_terminal = float(w_y_terminal) if w_y_terminal is not None else None
         self.w_u = float(w_u)
         self.w_u_l1 = float(w_u_l1)
-        self.w_du = float(w_du)
         self.shooting_depth = int(shooting_depth) if shooting_depth is not None else self.horizon
         self.max_iter = int(max_iter)
         self.max_cpu_time = float(max_cpu_time) if max_cpu_time is not None else None
@@ -471,7 +550,6 @@ class MPCController(Controller[MPCControllerLog]):
             w_y=cfg.w_y,
             w_u=cfg.w_u,
             w_u_l1=cfg.w_u_l1,
-            w_du=cfg.w_du,
             w_y_terminal=cfg.w_y_terminal,
             shooting_depth=cfg.shooting_depth,
             max_iter=cfg.max_iter,
@@ -481,87 +559,22 @@ class MPCController(Controller[MPCControllerLog]):
         )
 
     def _build_solver(self) -> None:
-        """Build the PCMS multiple-shooting NLP and its IPOPT solver, once.
-
-        The problem is partitioned into segments of size D (shooting_depth). The decision
-        variables are the control sequence ``[u_0, ..., u_{H-1}]`` and the sparse sequence of
-        intermediate state shooting roots ``[phi_1, ..., phi_{floor((H-1)/D)}]``.
-        The parameter ``x0`` is the current window-state (phi_0). The state maps exactly
-        via the CasADi f_step block and constraints close the gaps between the segments.
-        """
-        n_state = self.model.state_shape[0]
-        n_ctrl, h = self.n_controls, self.horizon
-        D = self.shooting_depth
-
-        x0_p = ca.MX.sym("x0", n_state)
-        u_vars = [ca.MX.sym(f"u_{k}", n_ctrl) for k in range(h)]
-
-        n_segments = (h - 1) // D
-        phi_vars = [ca.MX.sym(f"phi_{k}", n_state) for k in range(1, n_segments + 1)]
-
-        def get_phi(idx: int) -> ca.MX:
-            return x0_p if idx == 0 else phi_vars[idx - 1]
-
-        defects, cost = [], ca.MX(0)
-        for k in range(n_segments + 1):
-            x_curr = get_phi(k)
-            start_step = k * D
-            end_step = min((k + 1) * D, h)
-
-            for step in range(start_step, end_step):
-                u_curr = u_vars[step]
-                x_next = self.model.f_step(x_curr, u_curr)
-                y_next = self.model.f_out(x_next)
-
-                is_terminal = step == h - 1 and self.w_y_terminal is not None
-                w_y_step = self.w_y_terminal if is_terminal else self.w_y
-                cost = cost + w_y_step * ca.sumsqr(y_next) + self.w_u * ca.sumsqr(u_curr)
-                x_curr = x_next
-
-            if k < n_segments:
-                defects.append(x_curr - get_phi(k + 1))
-
-        if self.w_du > 0:
-            cost = cost + _rate_penalty(u_vars, x0_p[-n_ctrl:], self.w_du)
-
-        x_parts = [*u_vars, *phi_vars]
-        g_parts = [*defects, _sum_to_zero(u_vars)]
-        n_eq = len(defects) * n_state + h
-        n_phi_vars = len(phi_vars) * n_state
-        self._lbx = np.concatenate([np.tile(-self.u_max, h), np.full(n_phi_vars, -np.inf)])
-        self._ubx = np.concatenate([np.tile(self.u_max, h), np.full(n_phi_vars, np.inf)])
-
-        if self.w_u_l1 > 0:
-            slacks, l1_cost, l1_g = _l1_epigraph(u_vars, self.w_u_l1)
-            cost = cost + l1_cost
-            x_parts += slacks
-            g_parts.append(l1_g)
-            n_l1 = l1_g.numel()
-            self._lbg = np.concatenate([np.zeros(n_eq), np.zeros(n_l1)])
-            self._ubg = np.concatenate([np.zeros(n_eq), np.full(n_l1, np.inf)])
-            self._lbx = np.concatenate([self._lbx, np.zeros(h * n_ctrl)])
-            self._ubx = np.concatenate([self._ubx, np.full(h * n_ctrl, np.inf)])
-        else:
-            self._lbg = self._ubg = 0.0
-
-        x_nlp = ca.vertcat(*x_parts)
-        g_nlp = ca.vertcat(*g_parts) if g_parts else ca.MX(0)
-        nlp = {"x": x_nlp, "f": cost, "g": g_nlp, "p": x0_p}
-        opts = {
-            "print_time": False,
-            "expand": self.expand,
-            "ipopt.print_level": 0,
-            "ipopt.sb": "yes",
-            "ipopt.max_iter": self.max_iter,
-            "ipopt.hessian_approximation": "limited-memory",
-        }
-        if self.max_cpu_time is not None:
-            opts["ipopt.max_cpu_time"] = self.max_cpu_time
-
-        for k, v in self.ipopt_options.items():
-            opts[f"ipopt.{k}" if not k.startswith("ipopt.") else k] = v
-
-        self._solver = ca.nlpsol("mpc", "ipopt", nlp, opts)
+        """Build the PCMS multiple-shooting NLP and its IPOPT solver, once."""
+        self._solver, self._lbx, self._ubx, self._lbg, self._ubg = build_mpc_nlp(
+            self.model,
+            horizon=self.horizon,
+            shooting_depth=self.shooting_depth,
+            n_controls=self.n_controls,
+            u_max=self.u_max,
+            w_y=self.w_y,
+            w_y_terminal=self.w_y_terminal,
+            w_u=self.w_u,
+            w_u_l1=self.w_u_l1,
+            max_iter=self.max_iter,
+            max_cpu_time=self.max_cpu_time,
+            expand=self.expand,
+            ipopt_options=self.ipopt_options,
+        )
 
     def _solve(self, x0: FloatArray) -> tuple[FloatArray, float, bool, int, bool]:
         """Solve the NLP for window-state ``x0``; return ``(u_0*, cost, success, n_iter, capped)``."""
@@ -629,7 +642,6 @@ class _LinearMPCControllerConfig(StrictConfig):
     w_y: float = Field(default=1.0, ge=0)
     w_u: float = Field(default=0.0, ge=0)
     w_u_l1: float = Field(default=0.0, ge=0)
-    w_du: float = Field(default=0.0, ge=0)
     formulation: Literal["sparse", "dense"] = "sparse"
     osqp_eps: float = Field(default=1e-9, gt=0)
 
@@ -646,7 +658,6 @@ class LinearMPCController(Controller[MPCControllerLog]):
         w_y: float = 1.0,
         w_u: float = 0.0,
         w_u_l1: float = 0.0,
-        w_du: float = 0.0,
         *,
         formulation: str = "sparse",
         osqp_eps: float = 1e-9,
@@ -674,11 +685,6 @@ class LinearMPCController(Controller[MPCControllerLog]):
             Weight on the L1 norm of the control effort (a sparse-stimulation penalty); ``0``
             disables it (default). When positive the QP gains slack variables and the
             inequalities ``t >= |u|`` so it stays a convex QP.
-        w_du
-            Weight on the step-to-step control change ``||u_k - u_{k-1}||^2`` (a slew-rate
-            penalty); ``0`` disables it (default). Needed whenever the identified model
-            under-estimates the plant's response to fast-alternating currents, which otherwise
-            makes bang-bang chattering look free to the optimizer.
         formulation
             ``"sparse"`` (stacked states, OSQP) or ``"dense"`` (condensed, qpOASES).
         osqp_eps
@@ -703,7 +709,6 @@ class LinearMPCController(Controller[MPCControllerLog]):
         self.w_y = float(w_y)
         self.w_u = float(w_u)
         self.w_u_l1 = float(w_u_l1)
-        self.w_du = float(w_du)
         self.formulation = formulation
         self.osqp_eps = float(osqp_eps)
 
@@ -740,7 +745,6 @@ class LinearMPCController(Controller[MPCControllerLog]):
             w_y=cfg.w_y,
             w_u=cfg.w_u,
             w_u_l1=cfg.w_u_l1,
-            w_du=cfg.w_du,
             formulation=cfg.formulation,
             osqp_eps=cfg.osqp_eps,
         )
@@ -793,9 +797,6 @@ class LinearMPCController(Controller[MPCControllerLog]):
             ubx = np.concatenate([np.tile(self.u_max, h), np.full(n_x_vars, np.inf)])
             lbg = np.zeros(h * n_state + h)  # continuity defects + sum-to-zero (equalities)
             ubg = np.zeros(h * n_state + h)
-
-        if self.w_du > 0:
-            cost = cost + _rate_penalty(u_vars, x0_p[-n_ctrl:], self.w_du)
 
         if self.w_u_l1 > 0:
             slacks, l1_cost, l1_g = _l1_epigraph(u_vars, self.w_u_l1)

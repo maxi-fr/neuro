@@ -123,16 +123,15 @@ def _drive(
     return out
 
 
-@pytest.mark.parametrize(("w_u_l1", "w_du"), [(0.0, 0.0), (0.5, 0.0), (0.0, 0.7), (0.5, 0.7)])
-def test_sparse_dense_ipopt_equivalence(tmp_path: Path, w_u_l1: float, w_du: float) -> None:
+@pytest.mark.parametrize("w_u_l1", [0.0, 0.5])
+def test_sparse_dense_ipopt_equivalence(tmp_path: Path, w_u_l1: float) -> None:
     """sparse (OSQP), dense (qpOASES), and the IPOPT MPC solve the same QP on a linear model.
 
     Driving exactly ``n_y`` steps lets the window fill with identical measurements and all-zero
     controls, so every controller's first real solve sees the *same* ``x0``. With ``w_u>0`` the
     QP is strictly convex (unique optimum), so the applied control must agree across the two QP
     formulations (tightly) and the nonlinear IPOPT MPC on the same affine model (loosely). The
-    optional L1 penalty ``w_u_l1`` (epigraph-reformulated) and the slew-rate penalty ``w_du``
-    (which reads ``u_{-1}`` off the shared window-state parameter) must be applied identically by
+    optional L1 penalty ``w_u_l1`` (epigraph-reformulated) must be applied identically by
     all three, so equivalence holds for every combination of them.
     """
     n_y, n_channels = 4, 2
@@ -143,7 +142,6 @@ def test_sparse_dense_ipopt_equivalence(tmp_path: Path, w_u_l1: float, w_du: flo
         "w_y": 1.0,
         "w_u": 0.1,
         "w_u_l1": w_u_l1,
-        "w_du": w_du,
     }
     model = NNSymbolicModel.from_artifact(_build_artifact(tmp_path, n_y=n_y, n_channels=n_channels))
 
@@ -225,30 +223,6 @@ def test_l1_penalty_yields_sparse_control(tmp_path: Path, formulation: str) -> N
     assert n_zero_l2 == 0
     assert n_zero_l1 > n_zero_l2
     np.testing.assert_allclose(u_big, np.zeros(n_controls), atol=1e-6)
-
-
-@pytest.mark.parametrize("formulation", ["sparse", "dense"])
-def test_rate_penalty_suppresses_chattering(tmp_path: Path, formulation: str) -> None:
-    """``w_du`` penalises step-to-step control change, so the applied sequence stops chattering.
-
-    Measured as the total variation of the *applied* controls across solves: it must fall
-    monotonically as ``w_du`` rises, and a large weight must pin each control to its predecessor.
-    The across-solve pinning is the part that matters -- it only holds because the penalty reads
-    ``u_{-1}`` from the window-state parameter rather than starting each horizon afresh.
-    """
-    n_y, n_ch, n_controls = 4, 2, 3
-    model = NNSymbolicModel.from_artifact(_build_artifact(tmp_path, n_y=n_y, n_channels=n_ch, n_controls=n_controls))
-    base: dict[str, Any] = {"dt": 0.01, "u_max": 5.0, "horizon": 4, "w_y": 1.0, "w_u": 0.0, "formulation": formulation}
-    n_steps = n_y + 12
-
-    def applied(w_du: float) -> FloatArray:
-        """Controls applied after the window has filled, shape ``(n_solves, n_controls)``."""
-        driven = _drive(LinearMPCController(model=model, w_du=w_du, **base), n_steps, n_ch)
-        return np.array([u for u, log in driven if not log.warmup])
-
-    tv = {w: np.abs(np.diff(applied(w), axis=0)).sum() for w in (0.0, 1.0, 1000.0)}
-    assert tv[0.0] > tv[1.0] > tv[1000.0]
-    assert tv[1000.0] < 1e-3 * tv[0.0]
 
 
 @pytest.mark.parametrize("formulation", ["sparse", "dense"])

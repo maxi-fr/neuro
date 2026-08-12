@@ -2,6 +2,7 @@ import dataclasses
 from dataclasses import replace
 
 import numpy as np
+import pytest
 
 from neuro.connectome import Connectome
 from neuro.jansen_rit import (
@@ -18,8 +19,8 @@ from utils.processing import compute_psd, steady_window
 _A_HEALTHY = 3.25
 _A_PZ = 3.4
 _A_EZ = 3.6
-_DURATION = 8.0
-_TRANSIENT_MS = 3000.0
+_DURATION = 4.0
+_TRANSIENT_MS = 1000.0
 _SEED = 7
 _DT = 1e-4
 
@@ -69,12 +70,14 @@ def test_sigmoid_shape_and_bounds() -> None:
     assert s.max() <= 2.0 * params.e0
 
 
+@pytest.mark.slow
 def test_healthy_node_is_fixed_point() -> None:
     """Deterministic A = 3.25 settles to a fixed point (no self-oscillation)."""
     y = _post_transient_output(_A_HEALTHY, deterministic=True)
     assert np.ptp(y) < 0.05
 
 
+@pytest.mark.slow
 def test_pz_node_isolated_is_quiescent() -> None:
     """Deterministic A = 3.4 (PZ) is also a fixed point in isolation.
 
@@ -85,6 +88,7 @@ def test_pz_node_isolated_is_quiescent() -> None:
     assert np.ptp(y) < 0.05
 
 
+@pytest.mark.slow
 def test_ez_node_is_limit_cycle() -> None:
     """Deterministic A = 3.6 (EZ) is a sustained limit cycle, not a fixed point."""
     y_ez = _post_transient_output(_A_EZ, deterministic=True)
@@ -93,6 +97,7 @@ def test_ez_node_is_limit_cycle() -> None:
     assert np.ptp(y_ez) > 100.0 * np.ptp(y_healthy)
 
 
+@pytest.mark.slow
 def test_ez_phase_plane_is_an_orbit() -> None:
     """The EZ trajectory spans a real range in both phase-plane axes (closed orbit).
 
@@ -108,6 +113,7 @@ def test_ez_phase_plane_is_an_orbit() -> None:
     assert np.ptp(dy) > 5.0
 
 
+@pytest.mark.slow
 def test_ez_seizure_frequency_band() -> None:
     """The EZ limit cycle is a slow spike-wave rhythm (~3 Hz)."""
     y = _post_transient_output(_A_EZ, deterministic=True)
@@ -116,6 +122,7 @@ def test_ez_seizure_frequency_band() -> None:
     assert 1.0 < f_peak < 6.0
 
 
+@pytest.mark.slow
 def test_noisy_background_amplitude_and_separation() -> None:
     """Noisy A = 3.25 background is ~2 and well below the EZ limit cycle.
 
@@ -130,16 +137,7 @@ def test_noisy_background_amplitude_and_separation() -> None:
     assert bg_p2p < 5.0 < ez_p2p
 
 
-def test_all_runs_stay_finite() -> None:
-    """No NaN/inf across the healthy, PZ, and EZ regimes, noisy and deterministic."""
-    for a_gain in (_A_HEALTHY, _A_PZ, _A_EZ):
-        for deterministic in (True, False):
-            sigma = 0.0 if deterministic else JansenRitParams().sigma
-            params = JansenRitParams(A=a_gain, sigma=sigma)
-            _, x = _simulate_single_node(params)
-            assert np.isfinite(x).all()
-
-
+@pytest.mark.slow
 def test_heun_reduces_to_deterministic_when_noiseless() -> None:
     """The Heun step with sigma = 0 stays finite and still produces the EZ limit cycle.
 

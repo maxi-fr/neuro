@@ -110,6 +110,11 @@ class MLPArtifact:
     u_pipeline: Pipeline
 
     @property
+    def model_type(self) -> str:
+        """Model architecture type string ('mlp')."""
+        return "mlp"
+
+    @property
     def n_y(self) -> int:
         """Number of past EEG (output) steps in the model's history window."""
         return self.model.n_y
@@ -140,6 +145,11 @@ class MLPArtifact:
         pca = self.y_pipeline.pca
         return pca.basis.shape[1] if pca is not None else self.n_channels
 
+    @property
+    def priming_steps(self) -> int:
+        """Minimum number of history steps required to initialize the model state."""
+        return max(self.n_y, self.n_u)
+
     def encode(self, y: FloatArray) -> FloatArray:
         """Map raw EEG ``(..., n_eeg_channels)`` into model space (standardize, then project)."""
         return self.y_pipeline.transform(np.asarray(y, dtype=np.float64))
@@ -147,6 +157,37 @@ class MLPArtifact:
     def decode(self, z: FloatArray) -> FloatArray:
         """Reconstruct raw EEG ``(..., n_eeg_channels)`` from model-space values."""
         return self.y_pipeline.inverse_transform(np.asarray(z, dtype=np.float64))
+
+    def prime(self, y_hist: FloatArray, u_hist: FloatArray) -> FloatArray:
+        """Absorb raw history into an initial state. y_hist (k, n_eeg_channels), u_hist (k, n_controls)."""
+        y_arr = np.asarray(y_hist, dtype=np.float64)
+        u_arr = np.asarray(u_hist, dtype=np.float64)
+        z_hist = self.encode(y_arr)
+        w_hist = self.u_pipeline.transform(u_arr)
+        z_past = z_hist[-self.n_y :].reshape(-1)
+        w_past = w_hist[-self.n_u :].reshape(-1)
+        return np.concatenate([z_past, w_past])
+
+    def rollout(self, state: FloatArray, u_future: FloatArray) -> FloatArray:
+        """Free-run from ``state`` under raw ``u_future`` (steps, n_controls) -> (steps, n_eeg_channels)."""
+        u_arr = np.asarray(u_future, dtype=np.float64)
+        w_future = self.u_pipeline.transform(u_arr)
+        max_steps = len(u_future)
+
+        p = self.model
+        predictor = AutoregressivePredictor(
+            model=p.model,
+            n_y=p.n_y,
+            n_u=p.n_u,
+            horizon=max_steps,
+            n_channels=p.n_channels,
+            n_controls=p.n_controls,
+            activation=p.activation,
+        )
+
+        x = np.concatenate([state, w_future.reshape(-1)])
+        pred = np.asarray(predictor(jnp.asarray(x))).reshape(max_steps, -1)
+        return self.decode(pred)
 
     @classmethod
     def load(cls, artifact: str | Path) -> MLPArtifact:

@@ -1,0 +1,27 @@
+simulation:
+  dt: 1.0e-4
+  downsample: 200
+  data_path: data/experiment_excited_roast_8s/train
+
+model:
+  reservoir_size: 500
+  spectral_radius: 0.9
+  leak_rate: 0.1
+  density: 0.1
+  input_scaling: 0.1
+  washout: 100
+  ridge_lambda: 1.0e-3
+  noise_sigma: 0.0
+  horizon: 50
+
+training:
+  train_split: 0.8
+  seed: 69
+  scaler: robust
+  global_scaling: true
+
+artifact: artifacts/esn_8s
+
+sweep:
+  reservoir_sizes: [250, 500, 1000, 2000]
+  n_trials: 50
