@@ -33,11 +33,27 @@
 
 
 %%%%%%%%%%%%%%%%%%%
-%Literaturverzeichnis
+% Literaturverzeichnis
 %%%%%%%%%%%%%%%%%%%
 \catcode30=12  % Workaround for current biblatex problem (https://tex.stackexchange.com/questions/564990/error-after-miktex-reinstall-text-line-contains-an-invalid-character)
 \usepackage[backend=biber,style=ieee,bibencoding=utf8]{biblatex}
 \addbibresource{literature.bib}
+
+% Additional Packages
+\usepackage{acro} % Acronym management
+\usepackage{amsmath, amssymb}
+\usepackage{booktabs} % Professional table formatting
+\usepackage{siunitx}
+\usepackage{tikz}
+\usepackage{graphicx} % for pdf, bitmapped graphics files
+%\usepackage{cleveref} % Smart cross-referencing (load late)
+
+% Acronym definitions (acro package)
+\DeclareAcronym{mpc}{
+  short = MPC ,
+  long  = Model Predictive Control ,
+}
+
 
 % ======================================================
 % Fix für Fehlermeldungen 'Undifined control sequence' und 'Missing number, treated as zero.' bei gestapelten Akzenten in der Mathe-Umgebung. (z.B. \dot{\hat{x}})
@@ -111,7 +127,12 @@
 \affidavit[digital]
 
 \section*{Abstract}
-	Abstract in main document language, here English.
+	% Abstract structure (increasing scope):
+	% 1. Context (current state of the topic)
+	% 2. Problem or open research points
+	% 3. Solution
+	% 4. Key takeaway
+
 \section*{Zusammenfassung}
 	Additional abstract in German.
 
@@ -123,19 +144,95 @@
 \mainmatter
 
 \chapter{Introduction}
+\paragraph{Context}
+\paragraph{Problem Statement and Open Research Points}
+\paragraph{Proposed Solution}
+\paragraph{Contributions}
+\paragraph{Thesis Structure}
 
-Content Content Content
+\chapter{Foundations}
+\section{Whole-Brain Biophysical Modeling}
+
+\subsection{Introduction \& Historical Context}
+% Cite Jansen \& Rit (1995) and Lopes da Silva et al. (1974)
+% Explain the neural mass modeling paradigm: mean-field approximation of cortical macro-columns
+
+\subsection{Biological Architecture \& Microcircuit Setup}
+% Describe the 3 interacting neuronal subpopulations:
+%   1. Pyramidal cells (PY) - main projection neurons
+%   2. Excitatory interneurons (eIN) - positive feedback loop
+%   3. Inhibitory interneurons (iIN) - negative feedback loop
+% Outline intrinsic connectivity constants (C_1, C_2, C_3, C_4)
+
+\subsection{Mathematical Formulation of Single-Node Dynamics}
+
+\subsubsection{Postsynaptic Impulse Responses \& Sigmoidal Activation}
+% Linear pulse-to-wave operator: 2nd-order impulse response kernels h_e(t) and h_i(t)
+% Static wave-to-pulse operator: instantaneous nonlinear sigmoid S(v)
+
+\subsubsection{Six-State ODE Representation}
+% State-space formulation with 6 coupled 1st-order ODEs per node (x_1 ... x_6)
+% Physical interpretation of PSP states (x_1, x_2, x_3) and velocity states (x_4, x_5, x_6)
+% Local node output signal: y_i(t) = x_{i,2}(t) - x_{i,3}(t) (net pyramidal depolarisation)
+
+\subsubsection{Bifurcation Behavior \& Regional Excitability}
+% Excitatory synaptic gain (A) as the primary bifurcation parameter
+% Three-level excitability mapping (Yu et al. framework):
+%   - Healthy background tissue (A = 3.25 mV): baseline alpha activity (~10 Hz)
+%   - Propagation Zone / PZ (A = 3.4 mV): sub-critical, network-recruited state
+%   - Epileptogenic Zone / EZ (A = 3.6 mV): autonomous seizure-like limit cycles
+% Spectral dynamics, time constants (tau_e, tau_i), and bistability between limit cycles and fixed points
+
+\subsection{Whole-Brain Connectome Network Coupling}
+
+\subsubsection{Structural Connectivity \& Inter-Node Topology}
+% Scaling from single column to N-region Brain Network Model (BNM)
+% Connectome structural connectivity matrix (W_{ij}) from DTI / CoCoMac
+% Global coupling scale factor (K)
+
+\subsubsection{Axonal Conduction Delays}
+% Inter-regional fiber tract lengths (d_{ij}) and conduction velocity (v)
+% Calculation of conduction delays: \tau_{ij} = d_{ij} / v
+% Integration of delayed presynaptic input S(y_j(t - \tau_{ij})) into excitatory PSP channel (x_{i,5})
+
+\subsection{Electrophysiological Interpretation}
+\paragraph{Primary and Secondary Dipole Currents}
+
+\paragraph{EEG Observation Model}
+
+\paragraph{Electrical Stimulation Model}
+% Direct additive voltage perturbation inside the pyramidal sigmoid: S(x_{i,2} - x_{i,3} + U_{\text{tES},i})
+
+% Reciprocity principle formulation and justification for having two different leadfield models for
+
+\section{Data-Driven Dynamics Identification}
+
+\subsection{Multilayer Perceptrons (MLP)}
+
+\subsection{Echo State Networks (ESN)}
+
+\section{Model Predictive Control (MPC)}
+
+\subsection{Fundamentals of Receding Horizon Control}
+
+\subsection{Nonlinear ARX (NARX) Formulation}
+
+\subsection{Mixed-Integer MPC for Discrete Neurostimulation}
+
+\chapter{Methodology}
+\section{Closed-Loop Neurostimulation Architecture}
+\section{Surrogate Model Training and CasADi Integration}
+\section{MPC Controller and Cost Function Design}
+
+\chapter{Experiments and Evaluation}
+
+\chapter{Conclusion and Discussion}
+\section{Summary of Key Findings}
+\section{Limitations and Critical Discussion}
+\section{Future Directions}
+
 
 \cite{Duden}
-
-Diese Vorlage dient als Grundlage für Abschlussarbeiten und andere Dokumente am rtm. Sie nutzt das offizielle LaTex-Paket der Technischen Universität Darmstadt *tuda-ci*, das in allen aktuellen LaTex-Distributionen verfügbar ist.
-
-Aufbauend auf dieser Minimalvorlage existieren zwei weitere Projekte:
-
-- https://git.rtm.e-technik.tu-darmstadt.de/tuda-ci_templates/tuda-ci_thesisinfo: ein Dokument mit vielen Tipps und Informationen zum schreiben einer Abschlussarbeit
-- ttps://git.rtm.e-technik.tu-darmstadt.de/tuda-ci_templates/tuda-ci_useful-packages: ein Dokument mit Beispielen von potentiell nützlichen Paketen
-
-
 
 % =================================================================================
 % Anhang
