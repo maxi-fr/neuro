@@ -6,7 +6,7 @@ from pathlib import Path
 
 import numpy as np
 
-from neuro.artifacts import build_symbolic_model, load_any_artifact, prime_symbolic_state
+from neuro.artifacts import build_symbolic_model, load_any_artifact
 from neuro.control import build_mpc_nlp
 from neuro.nn_training import load_trajectory
 
@@ -71,7 +71,7 @@ def main() -> None:  # noqa: PLR0915
         for t0 in range(art.priming_steps, len(y_raw) - horizon, 50):
             y_hist = y_raw[t0 - art.priming_steps : t0]
             u_hist = u_raw[t0 - art.priming_steps : t0]
-            x0_samples.append(prime_symbolic_state(art, y_hist, u_hist))
+            x0_samples.append(art.prime(y_hist, u_hist))
             if len(x0_samples) >= args.n_solves:
                 break
         if len(x0_samples) >= args.n_solves:

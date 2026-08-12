@@ -35,20 +35,6 @@ def build_symbolic_model(art: PredictorArtifact) -> SymbolicModel:
     return NNSymbolicModel(art)
 
 
-def prime_symbolic_state(art: PredictorArtifact, y_hist: FloatArray, u_hist: FloatArray) -> FloatArray:
-    """Prime an initial state in the *CasADi* convention: model-space y, but **raw** u.
-
-    ``MLPArtifact.prime`` follows the JAX convention and carries a model-space u tail, which
-    ``NNSymbolicModel.step`` would then z-score a second time. The ESN state is a bare ``h``, so it
-    is convention-free and this is just :meth:`prime`.
-    """
-    if isinstance(art, MLPArtifact):
-        z_hist = art.encode(np.asarray(y_hist, dtype=np.float64))
-        u_arr = np.asarray(u_hist, dtype=np.float64)
-        return np.concatenate([z_hist[-art.n_y :].reshape(-1), u_arr[-art.n_u :].reshape(-1)])
-    return art.prime(y_hist, u_hist)
-
-
 def accumulate_rollout_errors(
     art: PredictorArtifact,
     trajectories: list[tuple[FloatArray, FloatArray]],

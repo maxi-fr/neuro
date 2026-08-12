@@ -159,20 +159,27 @@ class MLPArtifact:
         return self.y_pipeline.inverse_transform(np.asarray(z, dtype=np.float64))
 
     def prime(self, y_hist: FloatArray, u_hist: FloatArray) -> FloatArray:
-        """Absorb raw history into an initial state. y_hist (k, n_eeg_channels), u_hist (k, n_controls)."""
+        """Absorb raw history into an initial state (model-space y, **raw** u tail).
+
+        y_hist (k, n_eeg_channels), u_hist (k, n_controls).
+        """
         y_arr = np.asarray(y_hist, dtype=np.float64)
         u_arr = np.asarray(u_hist, dtype=np.float64)
-        z_hist = self.encode(y_arr)
-        w_hist = self.u_pipeline.transform(u_arr)
-        z_past = z_hist[-self.n_y :].reshape(-1)
-        w_past = w_hist[-self.n_u :].reshape(-1)
-        return np.concatenate([z_past, w_past])
+        z_past = self.encode(y_arr)[-self.n_y :].reshape(-1)
+        u_past = u_arr[-self.n_u :].reshape(-1)
+        return np.concatenate([z_past, u_past])
 
     def rollout(self, state: FloatArray, u_future: FloatArray) -> FloatArray:
         """Free-run from ``state`` under raw ``u_future`` (steps, n_controls) -> (steps, n_eeg_channels)."""
         u_arr = np.asarray(u_future, dtype=np.float64)
         w_future = self.u_pipeline.transform(u_arr)
         max_steps = len(u_future)
+
+        state_arr = np.asarray(state, dtype=np.float64)
+        n_z = self.n_y * self.n_channels
+        z_past = state_arr[:n_z]
+        u_past = state_arr[n_z:].reshape(self.n_u, self.n_controls)
+        w_past = self.u_pipeline.transform(u_past).reshape(-1)
 
         p = self.model
         predictor = AutoregressivePredictor(
@@ -185,7 +192,7 @@ class MLPArtifact:
             activation=p.activation,
         )
 
-        x = np.concatenate([state, w_future.reshape(-1)])
+        x = np.concatenate([z_past, w_past, w_future.reshape(-1)])
         pred = np.asarray(predictor(jnp.asarray(x))).reshape(max_steps, -1)
         return self.decode(pred)
 
