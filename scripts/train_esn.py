@@ -105,8 +105,8 @@ def main() -> None:
     )
 
     print("Evaluating validation rollout NMSE...", flush=True)
-    val_nmse = evaluate_rollouts(art, data.val_trajs, cfg.model.horizon)
-    print(f"Validation rollout NMSE at horizon {cfg.model.horizon}: {val_nmse:.4f}", flush=True)
+    rollout = evaluate_rollouts(art, data.val_trajs, cfg.model.horizon)
+    print(f"Validation rollout NMSE at horizon {cfg.model.horizon}: {rollout.pooled:.4f}", flush=True)
 
     artifact_dir = resolve_artifact_dir(cfg.artifact, "esn")
     artifact_base = artifact_dir / "model"
@@ -115,7 +115,8 @@ def main() -> None:
     stats = {
         "harvest_seconds": harvest_seconds,
         "fit_seconds": fit_seconds,
-        "val_nmse": val_nmse,
+        "nmse_rollout": rollout.pooled,
+        "nmse_rollout_per_step": rollout.per_step.tolist(),
     }
     (artifact_dir / "training_stats.json").write_text(json.dumps(stats, indent=2))
     with (artifact_dir / "config.yaml").open("w") as f:

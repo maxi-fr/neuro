@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, NamedTuple
 
 import numpy as np
 
@@ -65,13 +65,31 @@ def accumulate_rollout_errors(
     return sq_err, power, pred_power
 
 
+def nmse(sq_err: FloatArray | float, power: FloatArray | float) -> FloatArray:
+    """Normalize squared error by the true signal's energy, elementwise (``inf`` where it is silent).
+
+    The reference is the uncentered second moment ``sum(y_true ** 2)``, not the variance, so
+    ``1.0`` is the score of the zero predictor. This is the repo's single NMSE definition; every
+    reported NMSE -- per horizon step, pooled, teacher-forced or free-running -- goes through here.
+    """
+    err = np.asarray(sq_err, dtype=np.float64)
+    ref = np.asarray(power, dtype=np.float64)
+    return np.divide(err, ref, out=np.full_like(err, np.inf), where=ref > 0)
+
+
+class RolloutNMSE(NamedTuple):
+    """Free-run rollout NMSE, resolved per horizon step and pooled over the whole horizon."""
+
+    pooled: float
+    per_step: FloatArray
+
+
 def evaluate_rollouts(
     art: PredictorArtifact,
     val_trajs: list[tuple[FloatArray, FloatArray]],
     horizon: int,
     step_stride: int = 25,
-) -> float:
-    """Evaluate rollout NMSE pooled over every horizon step and window."""
+) -> RolloutNMSE:
+    """Evaluate free-run rollout NMSE per horizon step and pooled over every step and window."""
     sq_err, power, _ = accumulate_rollout_errors(art, val_trajs, horizon, stride=step_stride)
-    total_power = float(power.sum())
-    return float(sq_err.sum() / total_power) if total_power > 0 else float("inf")
+    return RolloutNMSE(pooled=float(nmse(sq_err.sum(), power.sum())), per_step=nmse(sq_err, power))

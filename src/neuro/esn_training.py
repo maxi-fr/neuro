@@ -5,7 +5,7 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
-from neuro.nn_training import load_trajectory
+from neuro.nn_training import load_trajectory, split_data_files
 from neuro.transforms import PCAProjection, Pipeline, Standardizer
 
 if TYPE_CHECKING:
@@ -26,14 +26,13 @@ class ESNTrainingData:
 
 def prepare_training_data(cfg: ESNPredictorConfig, data_files: list[str]) -> ESNTrainingData:
     """Split ``data_files`` by trajectory, load them, and fit the y/u pipelines on the training split."""
-    n_train = int(len(data_files) * cfg.training.train_split)
-    n_train = max(1, min(n_train, len(data_files) - 1)) if len(data_files) > 1 else 1
+    train_files, val_files = split_data_files(data_files, cfg.training.train_split)
 
     def load(files: list[str]) -> list[tuple[FloatArray, FloatArray]]:
         return [load_trajectory(f, cfg.simulation.n_steps, cfg.simulation.downsample, cfg.simulation.dt) for f in files]
 
-    train_trajs = load(data_files[:n_train])
-    val_trajs = load(data_files[n_train:])
+    train_trajs = load(train_files)
+    val_trajs = load(val_files)
 
     all_y_train = np.vstack([y for _, y in train_trajs])
     all_u_train = np.vstack([u for u, _ in train_trajs])

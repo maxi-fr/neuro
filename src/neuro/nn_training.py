@@ -11,6 +11,7 @@ import optax
 from jax.scipy.signal import welch
 from tqdm import tqdm
 
+from neuro.artifacts import evaluate_rollouts
 from neuro.config import NNPredictorConfig
 from neuro.filtering import antialias_filter
 from neuro.prediction import AutoregressivePredictor, MLPArtifact, get_activation
@@ -56,6 +57,20 @@ def load_trajectory(data_file: str, n_steps: int | None, downsample: int, dt: fl
     y_data = antialias_filter(y_full, 1.0 / dt, downsample)[::downsample]
 
     return u_data, y_data
+
+
+def split_data_files(data_files: list[str], train_split: float) -> tuple[list[str], list[str]]:
+    """Split trajectory files into train/validation lists, keeping at least one file on each side.
+
+    Splitting by trajectory rather than by window keeps the validation set free of windows that
+    overlap training windows, so free-run rollouts started there are genuinely held out.
+    """
+    n_train = min(max(int(len(data_files) * train_split), 1), len(data_files) - 1)
+    train_files, val_files = data_files[:n_train], data_files[n_train:]
+    if not train_files or not val_files:
+        msg = f"need at least 2 trajectory files to hold one out for validation, got {len(data_files)}"
+        raise ValueError(msg)
+    return train_files, val_files
 
 
 def extract_windows_flattened(data: FloatArray, window_size: int) -> FloatArray:
@@ -886,11 +901,10 @@ def train_and_save_predictor(  # noqa: PLR0915
     Returns
     -------
     float
-        *Normalized* mean squared error on the validation set: the raw-EEG MSE divided by the
-        variance of the validation targets, i.e. the fraction of target variance the forecast
-        leaves unexplained (``0`` perfect, ``1`` no better than predicting the mean). Normalizing
-        makes it comparable across trials whose window offsets -- and therefore target variance --
-        differ; the un-normalized MSE is still recorded in ``training_stats.json``.
+        Free-run rollout NMSE on the held-out trajectories, pooled over the horizon (see
+        :func:`neuro.artifacts.evaluate_rollouts`) -- the same quantity the ESN sweep minimizes,
+        so trials are comparable across model families. The per-step rollout curve and the
+        un-normalized raw-EEG MSE are recorded in ``training_stats.json``.
     """
     sim_cfg = config.simulation
     downsample = sim_cfg.downsample
@@ -922,12 +936,14 @@ def train_and_save_predictor(  # noqa: PLR0915
     scaler_type = train_cfg.scaler
     global_scaling = train_cfg.global_scaling
 
-    X_full, Y_full, n_channels = prepare_datasets(data_files, n_steps_cfg, downsample, n_y, n_u, horizon, sim_cfg.dt)
-    n_controls = (X_full.shape[1] - n_y * n_channels) // (n_u + horizon)
+    train_files, val_files = split_data_files(data_files, train_split)
+    X_train, Y_train, n_channels = prepare_datasets(train_files, n_steps_cfg, downsample, n_y, n_u, horizon, sim_cfg.dt)
+    n_controls = (X_train.shape[1] - n_y * n_channels) // (n_u + horizon)
 
-    split_idx = int(train_split * len(X_full))
-    X_train, X_val = X_full[:split_idx], X_full[split_idx:]
-    Y_train, Y_val = Y_full[:split_idx], Y_full[split_idx:]
+    val_trajs = [load_trajectory(f, n_steps_cfg, downsample, sim_cfg.dt) for f in val_files]
+    val_windows = [build_dataset_for_trajectory(u, y, n_y, n_u, horizon) for u, y in val_trajs]
+    X_val = np.concatenate([x for x, _ in val_windows], axis=0)
+    Y_val = np.concatenate([y for _, y in val_windows], axis=0)
 
     y_past_train = X_train[:, : n_y * n_channels].reshape(-1, n_channels)
     u_past_train = X_train[:, n_y * n_channels : n_y * n_channels + n_u * n_controls].reshape(-1, n_controls)
@@ -985,18 +1001,25 @@ def train_and_save_predictor(  # noqa: PLR0915
     if not isinstance(model, AutoregressivePredictor):
         msg = f"expected train_model to return an AutoregressivePredictor, got {type(model)}"
         raise TypeError(msg)
-    MLPArtifact(
+    art = MLPArtifact(
         model=model,
         dt=float(dt_real),
         downsample=int(downsample),
         y_pipeline=y_pipeline,
         u_pipeline=u_pipeline,
-    ).save(artifact_dir / "model.eqx")
+    )
+    art.save(artifact_dir / "model.eqx")
 
     Y_pred_raw_flat, mse = evaluate_model(model, y_pipeline, X_val_m, Y_val, latent)
-    nmse = float(mse) / float(np.var(Y_val))
+    rollout = evaluate_rollouts(art, val_trajs, horizon)
 
-    stats = {"train_loss": train_losses, "val_loss": val_losses, "mse": float(mse), "nmse": nmse}
+    stats = {
+        "train_loss": train_losses,
+        "val_loss": val_losses,
+        "mse": float(mse),
+        "nmse_rollout": rollout.pooled,
+        "nmse_rollout_per_step": rollout.per_step.tolist(),
+    }
     (artifact_dir / "training_stats.json").write_text(json.dumps(stats, indent=2))
 
     Y_pred_unflat = np.asarray(reshape_to_trajectory(Y_pred_raw_flat, horizon, n_channels))
@@ -1013,4 +1036,4 @@ def train_and_save_predictor(  # noqa: PLR0915
     fig.savefig(str(artifact_dir / "comparison.png"), dpi=300)
     plt.close(fig)
 
-    return nmse
+    return rollout.pooled

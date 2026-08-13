@@ -3,7 +3,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from neuro.artifacts import accumulate_rollout_errors, load_any_artifact
+from neuro.artifacts import accumulate_rollout_errors, load_any_artifact, nmse
 from neuro.nn_training import load_trajectory
 
 _REPORT_STEPS = (1, 5, 10, 20, 40, 60, 80, 100, 125, 150)
@@ -70,7 +70,7 @@ def main() -> None:
             art, trajectories, args.max_steps, stride=args.stride, start=global_start
         )
 
-        nmse = sq_err / power
+        per_step_nmse = nmse(sq_err, power)
         power_ratio = pred_power / power
 
         print(
@@ -80,7 +80,9 @@ def main() -> None:
         print(f"{'step':>6} {'lookahead':>10} {'NMSE':>9} {'power_ratio':>13}", flush=True)
         for k in _REPORT_STEPS:
             if k <= args.max_steps:
-                print(f"{k:>6} {k * art.dt:>9.2f}s {nmse[k - 1]:>9.4f} {power_ratio[k - 1]:>13.4f}", flush=True)
+                print(
+                    f"{k:>6} {k * art.dt:>9.2f}s {per_step_nmse[k - 1]:>9.4f} {power_ratio[k - 1]:>13.4f}", flush=True
+                )
 
 
 if __name__ == "__main__":

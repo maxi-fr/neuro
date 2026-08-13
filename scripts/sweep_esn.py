@@ -174,7 +174,7 @@ def main() -> None:  # noqa: PLR0915
                         u_pipeline=data.u_pipeline,
                     )
 
-                    val_nmse = evaluate_rollouts(art, data.val_trajs, cfg.model.horizon)
+                    val_nmse = evaluate_rollouts(art, data.val_trajs, cfg.model.horizon).pooled
                     if val_nmse < trial_best_nmse:
                         trial_best_nmse = val_nmse
                         trial_best_lam = lam

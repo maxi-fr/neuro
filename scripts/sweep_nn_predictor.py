@@ -54,14 +54,14 @@ def objective(
         yaml.dump(trial_config, f)
 
     try:
-        nmse = train_and_save_predictor(config, data_files, trial_dir, seed_offset=trial.number)
+        nmse_rollout = train_and_save_predictor(config, data_files, trial_dir, seed_offset=trial.number)
     except ValueError as e:
         if "NaN" in str(e):
             print(f"Trial {trial.number} pruned: {e}")
             raise optuna.TrialPruned from e
         raise
 
-    trial.set_user_attr("nmse", float(nmse))
+    trial.set_user_attr("nmse_rollout", float(nmse_rollout))
 
     if sweep.closed_loop is not None:
         print(f"\nEvaluating closed-loop seizure suppression on trial {trial.number}...")
@@ -71,12 +71,12 @@ def objective(
         print(
             f"\nTrial {trial.number} completed with score: {score:.4f} "
             f"({int(summary['suppressed_seeds'])}/{int(summary['total_seeds'])} seeds suppressed, "
-            f"mean amplitude: {summary['mean_amplitude']:.2%}, NMSE: {nmse:.4f})"
+            f"mean amplitude: {summary['mean_amplitude']:.2%}, rollout NMSE: {nmse_rollout:.4f})"
         )
         return score
 
-    print(f"\nTrial {trial.number} completed with NMSE: {nmse}")
-    return nmse
+    print(f"\nTrial {trial.number} completed with rollout NMSE: {nmse_rollout}")
+    return nmse_rollout
 
 
 def main() -> None:
