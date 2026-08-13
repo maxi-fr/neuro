@@ -49,6 +49,19 @@ and the next scheduled control into the history windows and re-applies the *same
 (Section 5). Training the rollout end-to-end therefore trains a single one-step model that is
 consistent under its own feedback.
 
+### 1.1 Indexing notation conventions
+
+To avoid ambiguity between global time-series progression, dataset windowing, and algorithmic loops:
+
+| index | range / domain | scope & meaning |
+| ----- | -------------- | --------------- |
+| $t$   | $0, \dots, T-1$ | Continuous time step index along a full trajectory recording |
+| $k$   | $k_\text{start}, \dots, k_\text{end}-1$ | Anchor step index along a trajectory where a sliding window ends |
+| $j$   | $0, \dots, N-1$ | Relative step index during sequential rollout unrolling (predicting $y_{k+j+1}$) |
+| $i$   | $0, \dots, N-1$ | Relative horizon step index in algebraic loss and metric summations ($\text{NMSE}_i$) |
+| $b$   | $0, \dots, B-1$ | Window / sample index within a batch or validation set |
+| $c$   | $0, \dots, C-1$ | EEG channel index ($C = n_\text{ch} = 62$) |
+
 ---
 
 ## 2. Training data
@@ -60,10 +73,10 @@ directory such as `data/experiment_excited/train/`. Files are discovered and sor
 [`resolve_data_files`](../src/neuro/config.py); **every** `.npz` in the directory becomes a training
 trajectory. Each file provides two arrays:
 
-| key (new / legacy)                | meaning                       | shape        |
-| --------------------------------- | ----------------------------- | ------------ |
-| `y_mea` / `universal_y_mea`       | measured EEG output           | $(T, C)$     |
-| `u` / `universal_u`               | stimulation input             | $(T, m)$     |
+| key     | meaning                       | shape        |
+| ------- | ----------------------------- | ------------ |
+| `y_mea` | measured EEG output           | $(T, C)$     |
+| `u`     | stimulation input             | $(T, m)$     |
 
 The recordings are **persistently exciting** tES sequences (broadband stimulation), so the control
 $u$ visits enough of the input space for the network to learn the input→output response rather than
@@ -201,16 +214,19 @@ configs use `latent_dim = null` (projection disabled).
 
 ### 4.1 Train / validation split
 
-A **chronological** (index-order, no shuffle) split is applied to the concatenated dataset:
+The split is applied **by trajectory file**, in name order and before any windowing
+([`split_data_files`](../src/neuro/nn_training.py)):
 
 $$
-\text{split} = \lfloor \texttt{train\_split} \cdot M \rfloor, \qquad
-(X_\text{train}, Y_\text{train}) = (X_{0:\text{split}},\,Y_{0:\text{split}}), \qquad
-(X_\text{val}, Y_\text{val}) = (X_{\text{split}:},\,Y_{\text{split}:}).
+n_\text{train} = \lfloor \texttt{train\_split} \cdot n_\text{files} \rfloor, \qquad
+\text{train} = \text{files}_{0:n_\text{train}}, \qquad
+\text{val} = \text{files}_{n_\text{train}:},
 $$
 
-Holding out the tail (rather than random sampling) limits leakage between the heavily-overlapping
-sliding windows: a random split would put nearly-identical adjacent windows in both sets.
+clamped so each side keeps at least one of the $n_\text{files}$ files. Splitting whole trajectories rather than
+the concatenated window index avoids leakage between the heavily-overlapping sliding windows, and it
+leaves the validation trajectories intact so free-run rollouts can be scored on them (§8). The ESN
+path splits identically, so the two model families are validated on the same held-out files.
 
 ### 4.2 Transforms (standardize, then optionally project)
 
@@ -471,18 +487,56 @@ The function returns the **best** (lowest-val-loss) model plus the per-epoch tra
 
 ## 8. Evaluation & artifacts
 
-[`evaluate_model`](../src/neuro/nn_training.py) runs the best model on the scaled validation inputs,
-**inverse-scales** the predictions back to raw EEG units, and reports
+Carrying the notation of §1, §3 and §6 through this section, all in **raw EEG units**:
+
+| symbol | is | indices |
+| ------ | -- | ------- |
+| $y_t \in \mathbb{R}^{C}$ | one measured EEG sample at time step $t$ (§1) | channel $c$ |
+| $Y \in \mathbb{R}^{M_\text{val} \times NC}$ | the stacked validation targets (§3); $Y_{b,i,c}$ is horizon step $i$, channel $c$ of window $b$ | window $b$, step $i$, channel $c$ |
+| $\hat{Y}$ | the model's prediction of $Y$ — the rollout $F_\theta$ of §5.2, run from the window's true history | as $Y$ |
+
+Lowercase $y$ is always a single time step; uppercase $Y$ is always the stacked $N$-step block
+$[\,y_{k+1},\dots,y_{k+N}\,]$ of §3, so $Y_{b,i,c} = y_{t_b + i,\,c}$ for the window starting at
+$t_b$. A hat is a prediction. Both metrics below score the *same* predictor — $F_\theta$ is
+autoregressive, so $\hat{Y}$ is already a free-running rollout that feeds each predicted step back
+into its own history (§1, §5.2); there is no teacher-forced evaluation anywhere in this section.
+Everything is scored in **raw EEG units**: when a latent projection is active the model's $\hat{z}$
+is decoded through $\hat{z}E + \mu$ and then the standardizer's inverse (§3.1, §4.2), so the numbers
+are comparable across `latent_dim`.
+
+[`evaluate_model`](../src/neuro/nn_training.py) runs the best model on **every** validation window,
+inverse-scales its predictions back to raw EEG units, and reports
 
 $$
-\text{MSE} = \frac{1}{M_\text{val} \cdot NC}\sum \big(Y_\text{val} - \hat{Y}_\text{val}^{\text{unscaled}}\big)^2,
+\text{MSE} = \frac{1}{M_\text{val} N C}\sum_{b,i,c} \big(Y_{b,i,c} - \hat{Y}_{b,i,c}\big)^2 .
 $$
 
-against the raw (unscaled) targets. When a latent projection is active, both prediction and target are
-first decoded to raw EEG channels ($\hat{y} = z E + \mu$) so the MSE is in the raw EEG space and
-comparable across `latent_dim`. This MSE is the scalar returned by
+Every reported NMSE — here and in the ESN path — divides a summed squared error by the **energy** of
+the true signal over the same index set (the uncentred second moment, not the variance) through the
+single definition in [`nmse`](../src/neuro/artifacts.py), so $1.0$ is always the score of the zero
+predictor. [`evaluate_rollouts`](../src/neuro/artifacts.py) computes it over windows started on a
+stride-25 grid, through the saved artifact's `prime`/`rollout` interface — the same one the MPC
+calls — resolved per horizon step $i$ and then pooled:
+
+$$
+\text{NMSE}_i = \frac{\sum_{b,c}\big(Y_{b,i,c} - \hat{Y}_{b,i,c}\big)^2}{\sum_{b,c} Y_{b,i,c}^2},
+\qquad
+\text{NMSE} = \frac{\sum_{i}\sum_{b,c}\big(Y_{b,i,c} - \hat{Y}_{b,i,c}\big)^2}{\sum_{i}\sum_{b,c} Y_{b,i,c}^2}.
+$$
+
+Pooling divides summed error by summed energy — it is *not* the plain mean of the per-step curve but
+its energy-weighted mean, so steps where the EEG is loud count for more. The per-step curve is the
+informative half: it shows *where* along the horizon the model stops beating silence
+($\text{NMSE}_i \to 1$), which the pooled scalar hides.
+
+The pooled NMSE is the scalar returned by
 [`train_and_save_predictor`](../src/neuro/nn_training.py) and used as the **Optuna objective**
-(minimised) in the sweep.
+(minimised) in the sweep — the same quantity `sweep_esn` minimises, so the two model families rank
+on one metric. Rolling out *past* the trained horizon $N$ is a separate question, measured by
+[`probe_rollout_horizon.py`](../scripts/probe_rollout_horizon.py), which reports the same
+$\text{NMSE}_i$ alongside a power ratio $\sum \hat{Y}^2 / \sum Y^2$ — needed because a model that
+decays to zero output scores $\text{NMSE}_i \to 1$, indistinguishable on that number alone from one
+that is merely wrong.
 
 [`train_and_save_predictor`](../src/neuro/nn_training.py) writes into the artifact directory:
 
@@ -492,7 +546,7 @@ comparable across `latent_dim`. This MSE is the scalar returned by
 | `model.json`           | architecture metadata (`in/out size`, `hidden_size`, `depth`, `activation`, `n_y/n_u/horizon`, `n_channels/n_controls`, `dt`, `downsample`, projection flags) |
 | `model.scalers.npz`    | `u_mean/u_scale/y_mean/y_scale` (+ `latent_basis/latent_mean` if projected)               |
 | `loss_curve.png`       | train vs. val scaled-MSE per epoch                                                        |
-| `training_stats.json`  | `{train_loss[], val_loss[], mse}`                                                         |
+| `training_stats.json`  | `{train_loss[], val_loss[], mse, nmse_rollout, nmse_rollout_per_step[]}`                   |
 | `comparison.png`       | $N$-step-ahead prediction vs. truth on up to 200 validation windows, 4 channels          |
 
 These three model files (`.eqx` / `.json` / `.scalers.npz`) are exactly what

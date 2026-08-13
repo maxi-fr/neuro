@@ -2,8 +2,6 @@
 
 ## Refactors
 
-* how does training data generation differ between MLP and ESN?
-
 ## Other
 
 * write chapter on Jansen-Rit model
