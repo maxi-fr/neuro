@@ -64,7 +64,7 @@ class ThesisPlotSaver:
                 stacklevel=2,
             )
 
-        mpl.rcParams.update(rc_params)
+        mpl.rcParams.update(rc_params)  # ty:ignore[no-matching-overload]
 
     def _get_git_commit(self) -> str:
         """Query the local git repository for the current commit hash identifier."""

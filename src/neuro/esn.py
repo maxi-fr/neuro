@@ -16,7 +16,7 @@ if TYPE_CHECKING:
     from neuro.types import FloatArray
 
 
-def generate_reservoir(  # noqa: PLR0913
+def generate_reservoir(  # noqa: PLR0913, PLR0917
     reservoir_size: int,
     spectral_radius: float,
     density: float,
@@ -78,7 +78,7 @@ def generate_reservoir(  # noqa: PLR0913
     return w_res, w_in
 
 
-def harvest_normal_equations(  # noqa: PLR0913
+def harvest_normal_equations(  # noqa: PLR0913, PLR0917
     trajectories: list[tuple[FloatArray, FloatArray]],
     y_pipeline: Pipeline,
     u_pipeline: Pipeline,

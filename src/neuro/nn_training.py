@@ -177,25 +177,23 @@ def build_dataset_for_trajectory(
     return X, Y
 
 
-def get_dataloaders(
-    X: FloatArray | jax.Array, Y: FloatArray | jax.Array, batch_size: int = 128
-) -> Iterator[tuple[FloatArray | jax.Array, FloatArray | jax.Array]]:
+def get_dataloaders(X: jax.Array, Y: jax.Array, batch_size: int = 128) -> Iterator[tuple[jax.Array, jax.Array]]:
     """Generate batches of data.
 
     Parameters
     ----------
-    X : FloatArray | jax.Array
+    X : jax.Array
         Input features array, shape ``(samples, n_features)``.
-    Y : FloatArray | jax.Array
+    Y : jax.Array
         Target labels array, shape ``(samples, n_targets)``.
     batch_size : int, optional
         Number of samples per batch. Defaults to 128.
 
     Yields
     ------
-    batch_x : FloatArray | jax.Array
+    batch_x : jax.Array
         A batch of input features, shape ``(batch_size, n_features)``.
-    batch_y : FloatArray | jax.Array
+    batch_y : jax.Array
         A batch of target labels, shape ``(batch_size, n_targets)``.
     """
     n_samples = X.shape[0]
@@ -207,7 +205,7 @@ def get_dataloaders(
         yield X[batch_idx], Y[batch_idx]
 
 
-def prepare_datasets(  # noqa: PLR0913
+def prepare_datasets(  # noqa: PLR0913, PLR0917
     data_files: list[str],
     n_steps_cfg: int | None,
     downsample: int,
@@ -262,7 +260,7 @@ def prepare_datasets(  # noqa: PLR0913
     return X_full, Y_full, n_channels
 
 
-def create_model(  # noqa: PLR0913
+def create_model(  # noqa: PLR0913, PLR0917
     in_size: int,
     out_size: int,
     hidden_size: int,
@@ -324,7 +322,7 @@ def create_model(  # noqa: PLR0913
     )
 
 
-def transform_features(  # noqa: PLR0913
+def transform_features(  # noqa: PLR0913, PLR0917
     X: FloatArray,
     y_pipeline: Pipeline,
     u_pipeline: Pipeline,
@@ -377,7 +375,7 @@ def predict_batch(m: eqx.Module, x: jax.Array) -> jax.Array:
     jax.Array
         Batch of predictions, shape ``(batch_size, n_targets)``.
     """
-    return jax.vmap(m)(x)
+    return jax.vmap(m)(x)  # ty:ignore[invalid-argument-type]
 
 
 def _masked_fc(traj: jax.Array, step_mask: jax.Array, eps: float) -> jax.Array:
@@ -409,7 +407,7 @@ def _masked_fc(traj: jax.Array, step_mask: jax.Array, eps: float) -> jax.Array:
     return corr - jnp.diag(jnp.diag(corr))
 
 
-def compute_loss(  # noqa: PLR0913
+def compute_loss(  # noqa: PLR0913, PLR0917
     m: eqx.Module,
     x: jax.Array,
     y: jax.Array,
@@ -489,7 +487,7 @@ def compute_loss(  # noqa: PLR0913
     return total, aux
 
 
-def step(  # noqa: PLR0913
+def step(  # noqa: PLR0913, PLR0917
     m: eqx.Module,
     opt_s: optax.OptState,
     x: jax.Array,
@@ -595,7 +593,7 @@ def _step_mask_selector(
     return select
 
 
-def _warm_start_linear_model(  # noqa: PLR0913
+def _warm_start_linear_model(  # noqa: PLR0913, PLR0917
     model: AutoregressivePredictor,
     X_train_s: FloatArray,
     Y_train_s: FloatArray,
@@ -633,7 +631,7 @@ def _warm_start_linear_model(  # noqa: PLR0913
     return eqx.tree_at(lambda m: m.model, model, mlp)
 
 
-def train_model(  # noqa: PLR0913, PLR0915
+def train_model(  # noqa: PLR0913, PLR0915, PLR0917
     model: eqx.Module,
     X_train_s: FloatArray,
     Y_train_s: FloatArray,

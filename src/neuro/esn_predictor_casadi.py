@@ -131,7 +131,7 @@ class ESNSymbolicModel:
         n_eeg = self.n_eeg_channels
         center = np.broadcast_to(std.center, (n_eeg,)).reshape(-1, 1)
         scale = np.broadcast_to(std.scale, (n_eeg,)).reshape(-1, 1)
-        return unzscore(y_std, center, scale)  # ty:ignore[invalid-return-type]
+        return unzscore(y_std, center, scale)
 
     @cached_property
     def f_step(self) -> ca.Function:

@@ -55,7 +55,7 @@ class ReferenceResult:
     eeg: FloatArray | None
 
 
-def _spatialized_gain(  # noqa: PLR0913
+def _spatialized_gain(  # noqa: PLR0913, PLR0917
     connectome: Connectome,
     ez: Sequence[str],
     pz: Sequence[str],

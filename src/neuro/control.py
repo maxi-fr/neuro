@@ -83,7 +83,7 @@ class _AmplitudeThresholdControllerConfig(StrictConfig):
 class AmplitudeThresholdController(Controller[AmplitudeThresholdControllerLog]):
     """Trigger a fixed-length constant stimulus whenever EEG amplitude crosses a threshold."""
 
-    def __init__(  # noqa: PLR0913
+    def __init__(  # noqa: PLR0913, PLR0917
         self,
         dt: float,
         amplitude: ArrayLike,
@@ -447,7 +447,7 @@ class _MPCControllerConfig(StrictConfig):
 class MPCController(Controller[MPCControllerLog]):
     """Receding-horizon MPC that suppresses EEG power using the CasADi NN predictor."""
 
-    def __init__(  # noqa: PLR0913
+    def __init__(  # noqa: PLR0913, PLR0917
         self,
         dt: float,
         model: NNSymbolicModel,
@@ -649,7 +649,7 @@ class _LinearMPCControllerConfig(StrictConfig):
 class LinearMPCController(Controller[MPCControllerLog]):
     """Receding-horizon MPC for a *linear* (0-hidden-layer) NN predictor, solved as a QP."""
 
-    def __init__(  # noqa: PLR0913
+    def __init__(  # noqa: PLR0913, PLR0917
         self,
         dt: float,
         model: NNSymbolicModel,

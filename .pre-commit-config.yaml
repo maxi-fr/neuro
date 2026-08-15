@@ -18,7 +18,7 @@ repos:
       - id: validate-pyproject
 
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.15.14
+    rev: v0.16.3
     hooks:
       - id: ruff
         args: [ --fix, --unsafe-fixes ]
@@ -26,7 +26,7 @@ repos:
 
   - repo: https://github.com/astral-sh/uv-pre-commit
     # uv version.
-    rev: 0.11.16
+    rev: 0.12.5
     hooks:
       # Update the requirements.txt if pyproject.toml changes
       - id: uv-export
@@ -34,7 +34,7 @@ repos:
       - id: uv-lock
 
   - repo: https://github.com/DavidAnson/markdownlint-cli2
-    rev: v0.22.1
+    rev: v0.23.2
     hooks:
       - id: markdownlint-cli2
         args: ["--fix"]

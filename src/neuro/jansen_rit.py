@@ -92,7 +92,7 @@ class JansenRitParams:
         """Convert params to a JIT-friendly tuple, broadcasting regional parameters."""
         a_gains = self.A
         if n_nodes == 1:
-            a_gains_val = float(a_gains.item()) if isinstance(a_gains, np.ndarray) else float(a_gains)  # ty:ignore[no-matching-overload]
+            a_gains_val = float(a_gains.item()) if isinstance(a_gains, np.ndarray) else float(a_gains)
         else:
             a_gains_val = (
                 np.asarray(a_gains, dtype=np.float64)
@@ -152,7 +152,7 @@ def _jr_rhs_jit(x: FloatArray, params_tuple: tuple[Any, ...], coupling: FloatArr
 
 
 @numba.njit(fastmath=True, cache=True)
-def _heun_step_jit(  # noqa: PLR0913
+def _heun_step_jit(  # noqa: PLR0913, PLR0917
     x: FloatArray,
     u_tes: FloatArray,
     params_tuple: tuple[Any, ...],
@@ -172,7 +172,7 @@ def _heun_step_jit(  # noqa: PLR0913
 
 
 @numba.njit(fastmath=True, cache=True)
-def _dynamics_history_coupling_jit(  # noqa: PLR0913
+def _dynamics_history_coupling_jit(  # noqa: PLR0913, PLR0917
     history: FloatArray,
     k: int,
     max_history_len: int,
@@ -318,7 +318,7 @@ class _JansenRitDynamicsConfig(StrictConfig):
 class JansenRitDynamics(Dynamics[JansenRitStateLog | JansenRitLFPLog | NoLog]):
     """Whole-brain Jansen-Rit network as a ``simulate`` :class:`Dynamics` plant."""
 
-    def __init__(  # noqa: PLR0913
+    def __init__(  # noqa: PLR0913, PLR0917
         self,
         dt: float,
         params: JansenRitParams,
