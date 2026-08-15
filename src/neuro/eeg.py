@@ -78,6 +78,15 @@ def build_eeg_gain() -> tuple[FloatArray, StrArray]:
     return gain, channel_labels
 
 
+def focal_channels(gain: FloatArray, region: int, k: int = 4) -> npt.NDArray[np.int64]:
+    """Find the ``k`` EEG channels loading hardest on ``region``, by ``|gain[:, region]|``.
+
+    Derives a focal channel set from the forward operator instead of naming one by hand, so
+    "the channels that see this region" stays a property of the montage.
+    """
+    return np.argsort(np.abs(gain[:, region]))[::-1][:k].astype(np.int64)
+
+
 class _EEGMeasurementConfig(StrictConfig):
     """Config schema for :class:`EEGMeasurement`."""
 

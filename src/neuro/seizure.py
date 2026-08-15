@@ -110,6 +110,51 @@ class SpreadProfile:
         return int(np.count_nonzero(onsets <= t))
 
 
+def spread_profile_from_lfp(
+    y: FloatArray,
+    dt: float,
+    *,
+    window_s: float = SPREAD_WINDOW_S,
+    hop_s: float = SPREAD_HOP_S,
+    threshold: float = SEIZURE_PTP_MV,
+) -> SpreadProfile:
+    """Measure when each region starts seizing from an already-recorded region LFP.
+
+    Parameters
+    ----------
+    y
+        Region LFP ``y = x2 - x3`` in mV, shape ``(n_nodes, n_samples)``.
+    dt
+        Sampling interval of ``y`` in seconds.
+    window_s
+        Length of the amplitude window in seconds.
+    hop_s
+        Spacing between consecutive windows in seconds.
+    threshold
+        Peak-to-peak amplitude in mV above which a region counts as seizing.
+
+    Returns
+    -------
+    SpreadProfile
+        Window times, the per-region amplitude envelope, and the onset times.
+
+    Raises
+    ------
+    ValueError
+        If ``y`` is shorter than one window.
+    """
+    window = round(window_s / dt)
+    hop = round(hop_s / dt)
+    if y.shape[1] < window:
+        msg = f"Run is shorter than the {window_s} s spread window ({y.shape[1]} of {window} samples)."
+        raise ValueError(msg)
+
+    starts = range(0, y.shape[1] - window + 1, hop)
+    ptp = np.stack([np.ptp(y[:, s : s + window], axis=1) for s in starts], axis=1)
+    times = np.asarray([(s + window) * dt - window_s / 2.0 for s in starts], dtype=np.float64)
+    return SpreadProfile.from_ptp(times, ptp, threshold=threshold)
+
+
 def spread_profile(
     dyn: JansenRitDynamics,
     duration: float,

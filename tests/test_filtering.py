@@ -1,9 +1,18 @@
 from __future__ import annotations
 
 import numpy as np
+import pytest
 from scipy.signal import sosfreqz
 
-from neuro.filtering import AntiAliasEstimator, antialias_filter, design_antialias_sos
+from neuro.filtering import (
+    AntiAliasEstimator,
+    antialias_filter,
+    causal_filter,
+    design_antialias_sos,
+    design_bandpass_sos,
+    design_lowpass_sos,
+    group_delay_s,
+)
 
 _SEED = 7
 _FS = 1e4
@@ -91,3 +100,87 @@ def test_downsample_one_is_a_passthrough() -> None:
     """No decimation means no anti-alias filter, so the signal is returned untouched."""
     y = _plant_signal(200, 2)
     np.testing.assert_array_equal(antialias_filter(y, _FS, 1), y)
+
+
+# --- the bandwidth axis --------------------------------------------------------------------
+
+
+def _channels_first(freq_hz: float, n_samples: int, n_channels: int = 3) -> np.ndarray:
+    """A tone as ``(n_channels, n_samples)`` -- the layout the metric path filters in."""
+    t = np.arange(n_samples) / _FS
+    return np.tile(np.sin(2 * np.pi * freq_hz * t), (n_channels, 1))
+
+
+def test_the_antialias_design_is_the_lowpass_design_at_the_implied_cutoff() -> None:
+    """One filter definition in the repo: the sweep cannot drift away from the controller's."""
+    np.testing.assert_array_equal(
+        design_antialias_sos(_FS, _DOWNSAMPLE),
+        design_lowpass_sos(_FS, _FS / (2 * _DOWNSAMPLE)),
+    )
+
+
+def test_causal_filter_opens_with_no_step_from_zero() -> None:
+    """A constant comes back as itself everywhere.
+
+    Zero-state ``sosfilt`` would ramp up from 0 over the first time constants. That opening
+    transient is near-identical across rollouts branched from one parent, so it would inflate
+    short-lookahead predictability for a reason that has nothing to do with the plant.
+    """
+    constant = np.full((3, 500), 5.0)
+
+    np.testing.assert_allclose(causal_filter(constant, design_lowpass_sos(_FS, 45.0)), constant, atol=1e-9)
+
+
+def test_causal_filter_never_sees_the_future() -> None:
+    signals = _channels_first(8.0, 1000)
+    perturbed = signals.copy()
+    perturbed[:, 600:] += 50.0
+
+    sos = design_lowpass_sos(_FS, 45.0)
+    filtered, filtered_perturbed = causal_filter(signals, sos), causal_filter(perturbed, sos)
+
+    np.testing.assert_allclose(filtered[:, :600], filtered_perturbed[:, :600], atol=1e-12)
+    assert not np.allclose(filtered[:, 600:], filtered_perturbed[:, 600:])
+
+
+def test_the_lowpass_keeps_a_tone_below_the_cutoff_and_kills_one_above() -> None:
+    sos = design_lowpass_sos(_FS, 45.0)
+
+    passed = causal_filter(_channels_first(8.0, 4000), sos)
+    stopped = causal_filter(_channels_first(400.0, 4000), sos)
+
+    assert np.ptp(passed[:, 2000:]) == pytest.approx(2.0, rel=0.05)
+    assert np.ptp(stopped[:, 2000:]) < 0.01
+
+
+def test_the_bandpass_admits_the_seizure_band_and_rejects_either_side() -> None:
+    sos = design_bandpass_sos(_FS, (3.0, 12.0))
+    settled = slice(20000, None)
+
+    in_band = causal_filter(_channels_first(7.0, 30000), sos)
+    below = causal_filter(_channels_first(0.5, 30000), sos)
+    above = causal_filter(_channels_first(60.0, 30000), sos)
+
+    assert np.ptp(in_band[:, settled]) == pytest.approx(2.0, rel=0.1)
+    assert np.ptp(below[:, settled]) < 0.2
+    assert np.ptp(above[:, settled]) < 0.2
+
+
+def test_group_delay_is_positive_and_grows_as_the_cutoff_falls() -> None:
+    """The latency a controller pays for bandwidth -- what stops the sweep bottoming out at DC."""
+    delays = [group_delay_s(design_lowpass_sos(_FS, cutoff), _FS) for cutoff in (500.0, 100.0, 45.0, 10.0)]
+
+    assert all(d > 0 for d in delays)
+    assert delays == sorted(delays)
+
+
+def test_group_delay_matches_the_measured_lag_of_a_slow_tone() -> None:
+    """Measured against the thing it claims to predict, not against another formula."""
+    sos = design_lowpass_sos(_FS, 45.0)
+    signals = _channels_first(5.0, 20000)
+
+    filtered = causal_filter(signals, sos)
+    settled = slice(10000, 14000)
+    lag = np.argmax([np.dot(signals[0, settled], np.roll(filtered[0], -shift)[settled]) for shift in range(200)])
+
+    assert lag / _FS == pytest.approx(group_delay_s(sos, _FS), abs=1e-3)

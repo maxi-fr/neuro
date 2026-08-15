@@ -7,11 +7,11 @@ import pytest
 import yaml
 
 from neuro.closed_loop_eval import (
-    _spread_profile_from_lfp,
     _spread_profile_from_logs,
     evaluate_closed_loop_suppression,
 )
 from neuro.config import ClosedLoopEvalConfig
+from neuro.seizure import spread_profile_from_lfp
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -77,7 +77,7 @@ def test_spread_profile_from_lfp() -> None:
     wave = np.sign(np.sin(np.linspace(0.0, 8.0 * np.pi, 200)))
     y_traj = 0.5 * ptp_mv[None, :] * wave[:, None]
 
-    profile = _spread_profile_from_lfp(y_traj, dt=0.01, threshold=5.0)
+    profile = spread_profile_from_lfp(y_traj.T, dt=0.01, threshold=5.0)
     assert profile.ptp.shape[0] == len(ptp_mv)
     assert profile.ptp[:, -1] == pytest.approx(ptp_mv)
     assert int(profile.n_seizing()[-1]) == 2

@@ -10,29 +10,10 @@ from simulate.config import load_config as load_sim_config
 from simulate.simulation import Simulation
 
 from neuro.jansen_rit import lfp
-from neuro.seizure import SPREAD_HOP_S, SPREAD_WINDOW_S, SpreadProfile
+from neuro.seizure import SPREAD_HOP_S, SPREAD_WINDOW_S, SpreadProfile, spread_profile_from_lfp
 
 if TYPE_CHECKING:
     from neuro.config import ClosedLoopEvalConfig
-
-
-def _spread_profile_from_lfp(y_traj: np.ndarray, dt: float, threshold: float) -> SpreadProfile:
-    """Build the PTP envelope of a logged region LFP trajectory, one window at a time."""
-    n_samples = y_traj.shape[0]
-    window = round(SPREAD_WINDOW_S / dt)
-    hop = round(SPREAD_HOP_S / dt)
-    if n_samples < window:
-        msg = f"Run is shorter than the {SPREAD_WINDOW_S} s spread window ({n_samples} of {window} samples)."
-        raise ValueError(msg)
-
-    ptp_cols: list[np.ndarray] = []
-    times: list[float] = []
-    for start in range(0, n_samples - window + 1, hop):
-        y_win = y_traj[start : start + window]
-        ptp_cols.append(np.ptp(y_win, axis=0))
-        times.append((start + window) * dt - SPREAD_WINDOW_S / 2.0)
-
-    return SpreadProfile.from_ptp(np.asarray(times, dtype=np.float64), np.stack(ptp_cols, axis=1), threshold=threshold)
 
 
 def _spread_profile_from_trajectory(x_traj: np.ndarray, dt: float, threshold: float) -> SpreadProfile:
@@ -118,7 +99,7 @@ def evaluate_closed_loop_suppression(trial_dir: Path, eval_cfg: ClosedLoopEvalCo
             # above unless it already asked for "state".
             if ("dynamics", "lfp") in set(sim.logger.signals()):
                 y_reg = sim.logger.signal("dynamics", "lfp")
-                profile = _spread_profile_from_lfp(y_reg, sim.dt, eval_cfg.seizure_ptp_mv)
+                profile = spread_profile_from_lfp(y_reg.T, sim.dt, threshold=eval_cfg.seizure_ptp_mv)
             else:
                 x_traj = sim.logger.signal("dynamics", "x")
                 profile = _spread_profile_from_trajectory(x_traj, sim.dt, eval_cfg.seizure_ptp_mv)
