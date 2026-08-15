@@ -10,12 +10,9 @@ from neuro.metrics import (
     baseline_r2,
     controllability,
     coupling,
-    predictability_r2,
-    scalp_region_correlation,
     score_store,
     separability,
     sigma_ens,
-    spread_reference,
     state_predictability_r2,
     state_readout_r2,
     variance_ratio,
@@ -37,7 +34,7 @@ def _ensemble(by_state: np.ndarray) -> Ensemble:
 # --- ensemble bookkeeping ------------------------------------------------------------------
 
 
-def test_by_parent_restores_the_parent_grouping() -> None:
+def test_by_state_restores_the_state_grouping() -> None:
     block = _RNG.normal(size=(4, 5, 3))
 
     ens = _ensemble(block)
@@ -54,56 +51,47 @@ def test_a_ragged_ensemble_is_rejected() -> None:
 # --- predictability ------------------------------------------------------------------------
 
 
-def test_r2_is_one_when_the_future_is_fixed_by_the_parent() -> None:
+def test_r2_is_one_when_the_future_is_fixed_by_the_state() -> None:
     block = np.tile(_RNG.normal(size=(4, 1, 3)), (1, 5, 1))
 
-    assert predictability_r2(_ensemble(block)) == pytest.approx(np.ones(3))
+    assert variance_ratio(_ensemble(block).values, 5) == pytest.approx(np.ones(3))
 
 
-def test_r2_is_zero_when_every_parent_has_the_same_children() -> None:
-    """Parents that carry no information leave the conditional variance equal to the total."""
+def test_r2_is_zero_when_every_state_has_the_same_replicates() -> None:
+    """States that carry no information leave the conditional variance equal to the total."""
     block = np.tile(_RNG.normal(size=(1, 5, 3)), (4, 1, 1))
 
-    assert predictability_r2(_ensemble(block)) == pytest.approx(np.zeros(3), abs=1e-12)
+    assert variance_ratio(_ensemble(block).values, 5) == pytest.approx(np.zeros(3), abs=1e-12)
 
 
-def test_r2_is_the_between_parent_share_of_the_total_variance() -> None:
+def test_r2_is_the_between_state_share_of_the_total_variance() -> None:
     ens = _ensemble(_RNG.normal(size=(4, 5, 3)))
 
     between = ens.by_state.mean(axis=1).var(axis=0)
     total = ens.values.var(axis=0)
 
-    assert predictability_r2(ens) == pytest.approx(between / total)
+    assert variance_ratio(ens.values, ens.n_replicates) == pytest.approx(between / total)
 
 
-def test_r2_falls_as_the_within_parent_spread_grows() -> None:
+def test_r2_falls_as_the_within_state_spread_grows() -> None:
     means = _RNG.normal(size=(4, 1, 3))
     tight = _ensemble(means + 0.1 * _RNG.normal(size=(4, 200, 3)))
     loose = _ensemble(means + 2.0 * _RNG.normal(size=(4, 200, 3)))
 
-    assert np.all(predictability_r2(tight) > predictability_r2(loose))
+    assert np.all(variance_ratio(tight.values, tight.n_replicates) > variance_ratio(loose.values, loose.n_replicates))
 
 
-def test_sigma_ens_measures_the_within_parent_spread_not_the_parent_offsets() -> None:
+def test_sigma_ens_measures_the_within_state_spread_not_the_state_offsets() -> None:
     offsets = np.array([0.0, 100.0, -100.0, 50.0]).reshape(4, 1, 1)
     block = offsets + _RNG.normal(scale=3.0, size=(4, 4000, 2))
 
     assert sigma_ens(_ensemble(block)) == pytest.approx(np.full(2, 3.0), rel=0.05)
 
 
-def test_spread_reference_returns_the_p5_p95_band() -> None:
-    block = np.arange(100, dtype=np.float64).reshape(4, 25, 1)
-
-    low, high = spread_reference(_ensemble(block))
-
-    assert low == pytest.approx(np.percentile(np.arange(100), 5))
-    assert high == pytest.approx(np.percentile(np.arange(100), 95))
-
-
 # --- separability --------------------------------------------------------------------------
 
 
-def test_cohens_d_matches_the_pooled_sd_definition_on_parent_means() -> None:
+def test_cohens_d_matches_the_pooled_sd_definition_on_state_means() -> None:
     healthy = _ensemble(_RNG.normal(loc=1.0, size=(8, 4, 2)))
     saturated = _ensemble(_RNG.normal(loc=5.0, size=(8, 4, 2)))
 
@@ -177,23 +165,6 @@ def test_relative_is_one_when_stimulation_closes_the_whole_gap() -> None:
     assert score.relative == pytest.approx(np.ones(2))
 
 
-# --- observability -------------------------------------------------------------------------
-
-
-def test_scalp_region_correlation_is_one_for_an_affine_pair() -> None:
-    scalp = _ensemble(_RNG.normal(size=(2, 3, 40)))
-    region = _ensemble(3.0 * scalp.by_state + 7.0)
-
-    assert scalp_region_correlation(scalp, region) == pytest.approx(np.ones(6))
-
-
-def test_scalp_region_correlation_is_near_zero_for_unrelated_series() -> None:
-    scalp = _ensemble(_RNG.normal(size=(2, 3, 4000)))
-    region = _ensemble(_RNG.normal(size=(2, 3, 4000)))
-
-    assert np.all(np.abs(scalp_region_correlation(scalp, region)) < 0.2)
-
-
 # --- state readout -------------------------------------------------------------------------
 
 
@@ -236,6 +207,19 @@ def test_readout_carries_a_channel_axis_through_independently() -> None:
     assert score.r2[1] == pytest.approx(0.0, abs=0.15)
 
 
+def test_readout_survives_the_point_mass_at_zero_state() -> None:
+    """Every pre-onset window has s = 0, so quantile edges coincide and bins would come out empty."""
+    state = np.concatenate([np.zeros(300), np.repeat(np.linspace(0.2, 1.0, 5), 40)])
+    metric = np.stack([2.0 * state + 1.0, _RNG.normal(size=state.shape)], axis=1)
+
+    score = state_readout_r2(metric, state, n_bins=10)
+
+    assert score.bin_metric.shape == (len(score.bin_state), 2)
+    assert np.isfinite(score.r2).all()
+    assert score.r2[0] > 0.9
+    assert score.r2[1] == pytest.approx(0.0, abs=0.15)
+
+
 def test_readout_returns_the_calibration_curve_the_notebook_plots() -> None:
     state = np.tile(np.arange(10) / 10.0, 50)
 
@@ -270,14 +254,16 @@ def test_state_predictability_goes_negative_when_the_noise_exceeds_the_state_ran
 
 
 def test_state_predictability_uses_the_same_denominator_at_every_branch() -> None:
-    """Unlike predictability_r2, whose denominator is whatever spread the trajectories happened to have."""
+    """Unlike variance_ratio, whose denominator is whatever spread the trajectories happened to have."""
     tight = _ensemble(0.01 * _RNG.normal(size=(4, 1, 2)) + _RNG.normal(scale=0.5, size=(4, 500, 2)))
     wide = _ensemble(10.0 * _RNG.normal(size=(4, 1, 2)) + _RNG.normal(scale=0.5, size=(4, 500, 2)))
 
     assert state_predictability_r2(tight, np.full(2, 4.0)) == pytest.approx(
         state_predictability_r2(wide, np.full(2, 4.0)), abs=0.1
     )
-    assert np.all(predictability_r2(tight) < predictability_r2(wide) - 0.5)
+    assert np.all(
+        variance_ratio(tight.values, tight.n_replicates) < variance_ratio(wide.values, wide.n_replicates) - 0.5
+    )
 
 
 # --- coupling: does moving the metric move the seizure? --------------------------------------
@@ -311,6 +297,24 @@ def test_coupling_is_near_zero_when_the_metric_moves_and_the_seizure_does_not_fo
     assert np.all(np.abs(coupling(zero_m, stim_m, zero_s, stim_s)) < 0.1)
 
 
+def test_coupling_scores_each_channel_against_the_one_network_state() -> None:
+    """The state is one scalar per rollout, so a per-channel metric gets one correlation per channel."""
+    zero_s = _ensemble(_RNG.normal(size=(4, 40, 3)))
+    delta_s = _RNG.normal(size=(160, 3))
+    stim_s = Ensemble(zero_s.times, zero_s.values + delta_s, 40)
+
+    zero_m = Ensemble(zero_s.times, _RNG.normal(size=(160, 2, 3)), 40)
+    # channel 0 is shifted exactly with the state, channel 1 independently of it
+    delta_m = np.stack([delta_s, _RNG.normal(size=(160, 3))], axis=1)
+    stim_m = Ensemble(zero_m.times, zero_m.values + delta_m, 40)
+
+    rho = coupling(zero_m, stim_m, zero_s, stim_s)
+
+    assert rho.shape == (2, 3)
+    assert rho[0] == pytest.approx(np.ones(3))
+    assert np.all(np.abs(rho[1]) < 0.4)
+
+
 def test_coupling_ignores_the_mean_effect_and_scores_only_the_covariation() -> None:
     """The mean shift is what d_ctrl and d_state already report; this axis asks the other question."""
     zero_m, zero_s = _ensemble(_RNG.normal(size=(4, 200, 2))), _ensemble(_RNG.normal(size=(4, 200, 2)))
@@ -336,7 +340,7 @@ def test_variance_ratio_carries_trailing_axes_through_untouched() -> None:
 
     assert per_channel.shape == (8, 20)
     for channel in range(8):
-        expected = predictability_r2(_ensemble(block[:, :, channel, :]))
+        expected = variance_ratio(_ensemble(block[:, :, channel, :]).values, 4)
         assert per_channel[channel] == pytest.approx(expected)
 
 
@@ -377,8 +381,8 @@ def test_score_store_scores_one_pass_exactly_as_the_metric_scores_one_rollout() 
     _, scored = score_store(store, 1000.0, metrics=METRICS, channel_sets=_ALL62, n_replicates=2)
 
     for name, metric in METRICS.items():
-        _, expected = metric.pooled(store[2], 1000.0)
-        assert scored[name, "all62"].values[2] == pytest.approx(expected)
+        _, per_channel = metric(store[2], 1000.0)
+        assert scored[name, "all62"].values[2] == pytest.approx(per_channel.mean(axis=0))
 
 
 def test_score_store_keeps_the_channel_axis_when_asked_not_to_pool() -> None:
@@ -431,7 +435,7 @@ def test_baseline_r2_drops_the_envelope_under_a_cutoff() -> None:
     assert set(scores) == {"waveform"}
 
 
-def test_baseline_r2_is_one_when_every_child_of_a_parent_is_identical() -> None:
+def test_baseline_r2_is_one_when_every_replicate_of_a_state_is_identical() -> None:
     block = np.tile(_RNG.normal(size=(2, 1, 6, 1000)), (1, 3, 1, 1))
 
     scores = baseline_r2(_baseline_store(block), 1000.0, times=baseline_grid(1.0), n_replicates=3)
@@ -439,7 +443,7 @@ def test_baseline_r2_is_one_when_every_child_of_a_parent_is_identical() -> None:
     assert scores["waveform"] == pytest.approx(np.ones_like(scores["waveform"]))
 
 
-def test_baseline_r2_is_zero_when_the_parents_carry_no_information() -> None:
+def test_baseline_r2_is_zero_when_the_states_carry_no_information() -> None:
     block = np.tile(_RNG.normal(size=(1, 3, 6, 1000)), (2, 1, 1, 1))
 
     scores = baseline_r2(_baseline_store(block), 1000.0, times=baseline_grid(1.0), n_replicates=3)

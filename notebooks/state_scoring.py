@@ -13,34 +13,43 @@ def _():
     import pandas as pd
     from matplotlib import pyplot as plt
 
-    from neuro.ensembles import load_manifest, score_ensemble_dir
+    from neuro.ensembles import RAW, SWEPT_METRICS, load_manifest, score_ensemble_dir
+    from neuro.filtering import design_lowpass_sos, group_delay_s
     from neuro.metrics import (
         METRICS,
         Ensemble,
         controllability,
         coupling,
-        predictability_r2,
         separability,
         sigma_ens,
+        state_predictability_r2,
         state_readout_r2,
+        variance_ratio,
     )
+    from neuro.seizure import SPREAD_WINDOW_S
 
     return (
         Ensemble,
         METRICS,
         Path,
+        RAW,
+        SPREAD_WINDOW_S,
+        SWEPT_METRICS,
         controllability,
         coupling,
+        design_lowpass_sos,
+        group_delay_s,
         load_manifest,
         mo,
         np,
         pd,
         plt,
-        predictability_r2,
         score_ensemble_dir,
         separability,
         sigma_ens,
+        state_predictability_r2,
         state_readout_r2,
+        variance_ratio,
     )
 
 
@@ -53,9 +62,9 @@ def _(mo):
     ground truth** — the fraction of brain regions actually seizing — rather than against the
     branch labels or against the metrics themselves.
 
-    It is the successor to `metric_scoring.py`, which scores the same ensemble on the four axes of
-    `docs/predictability_controllability_experiment.md`. Three things changed, each because a
-    measurement said so; the sections below give the evidence in place.
+    It replaces `metric_scoring.py`, which scored the same ensemble on the four axes of
+    `docs/predictability_controllability_experiment.md` and has been removed. Three things
+    changed, each because a measurement said so; the sections below give the evidence in place.
 
     | | old | here |
     | --- | --- | --- |
@@ -153,7 +162,14 @@ def _(Path, load_manifest, mo, score_ensemble_dir):
         f"Seizure state on a {len(archive.state_times)}-point grid, "
         f"{archive.state_times[0]:.2f}–{archive.state_times[-1]:.2f} s."
     )
-    return archive, branch_names, channel_labels, n_regions, seizure_branches
+    return (
+        archive,
+        branch_names,
+        channel_labels,
+        manifest,
+        n_regions,
+        seizure_branches,
+    )
 
 
 @app.cell
@@ -239,8 +255,8 @@ def _(mo):
     The two splits answer the two questions. Question 1 (*what correlates with seizure state?*)
     is $V_{\text{state}}$ against the total. Question 2 (*what can we predict?*) is
     $V_{\text{rep}}(h)$ against $V_{\text{state}}$ — **not** against the total, and that is the
-    substantive change from the old notebook, which used the spread of whatever states the eight
-    seeds happened to produce at that branch. That denominator is an accident of the draw: at
+    substantive change from the superseded four-axis scoring, which used the spread of whatever
+    states the eight seeds happened to produce at that branch. That denominator is an accident of the draw: at
     `pre_onset` the trajectories are nearly identical and it is tiny, at `saturated` they are
     bimodal and it is large, so the old $R^2$ is not comparable across branches. $V_{\text{state}}$
     is the same number everywhere and it is the quantity a controller has to resolve.
@@ -260,8 +276,7 @@ def _(mo):
 def _(archive, np):
     def align(metric: str):
         """Index the metric grid at each seizure-state time, so the two line up sample for sample."""
-        idx = np.array([int(np.argmin(np.abs(archive.times[metric] - t))) for t in archive.state_times])
-        return archive.state_times, idx
+        return np.array([int(np.argmin(np.abs(archive.times[metric] - t))) for t in archive.state_times])
 
     def observations(metric: str, branches, channel_set: str = "all62", arm: str = "zero"):
         """Stack (metric, state) pairs over branches, rollouts and times into a flat design.
@@ -269,16 +284,16 @@ def _(archive, np):
         Returns ``(M, s)`` with ``M`` of shape ``(n_obs, n_channels)`` and ``s`` of ``(n_obs,)``.
         Rollout-major so the two orders match exactly.
         """
-        _, idx = align(metric)
+        idx = align(metric)
         metric_rows, state_rows = [], []
         for branch in branches:
-            values = archive.channel_ensemble(branch, arm, metric, channel_set).values[:, :, idx]
+            values = archive.ensemble(branch, arm, metric, channel_set, pool=False).values[:, :, idx]
             state = archive.state(branch, arm).values
             metric_rows.append(values.transpose(0, 2, 1).reshape(-1, values.shape[1]))
             state_rows.append(state.reshape(-1))
         return np.concatenate(metric_rows), np.concatenate(state_rows)
 
-    return (observations,)
+    return align, observations
 
 
 @app.cell
@@ -297,8 +312,8 @@ def _(mo):
     want opposite pooling, which is why they are separate cells rather than one number.
 
     This axis replaces both **separability** (Cohen's $d$ between two extreme branches, $n = 8$)
-    and **observability** (scalp-vs-region correlation of the same metric) from the old notebook.
-    Both were approximating this with less of the data.
+    and **observability** (scalp-vs-region correlation of the same metric). Both were
+    approximating this with less of the data, and both are now gone from `metrics.py`.
     """)
     return
 
@@ -382,17 +397,17 @@ def _(mo):
 
     $$R^2_{\text{pred}}(h) \;=\; 1 - \frac{V_{\text{rep}}(h)}{V_{\text{state}}}$$
 
-    Same numerator as the old score — the spread that survives fixing $x_0$ — against a **stated**
-    denominator instead of an incidental one. It reads as: *is my forecast error small compared to
-    the state difference I am trying to steer between?*
+    The numerator is the spread that survives fixing $x_0$ — the irreducible forecast error —
+    against a **stated** denominator instead of an incidental one. It reads as: *is my forecast
+    error small compared to the state difference I am trying to steer between?*
 
     It is **unbounded below**, and that is not a defect. $R^2_{\text{pred}} < 0$ says the metric's
     irreducible noise at lookahead $h$ is wider than the whole span it traverses from healthy to
     saturated — so at that horizon the observable cannot distinguish the states the controller
     exists to move between, however smooth its curve looks.
 
-    The dashed lines are the old per-branch $R^2$ for comparison. Where they disagree, the
-    denominator is the reason, not the metric.
+    Curves start at $h = 1$ s: $V_{\text{state}}$ is referenced to $s$, which does not exist below
+    its own window.
     """)
     return
 
@@ -400,11 +415,11 @@ def _(mo):
 @app.cell
 def _(
     METRICS,
+    SPREAD_WINDOW_S,
     archive,
     n_bins,
     observations,
     plt,
-    predictability_r2,
     seizure_branches,
     state_predictability_r2,
     state_readout_r2,
@@ -416,11 +431,12 @@ def _(
         _v_state = state_readout_r2(_m.mean(axis=1), _s, n_bins=n_bins.value).explained_var
         _t = archive.times[_name]
         _valid = _t >= METRICS[_name].window_s
+        # V_state is referenced to s, which does not exist below its own 1 s window
+        _state_valid = _valid & (_t >= SPREAD_WINDOW_S)
 
         for _b in seizure_branches:
-            _ens = archive.ensemble("scalp", _b, "zero", _name, "all62")
-            _ax.plot(_t[_valid], state_predictability_r2(_ens, _v_state)[_valid], lw=2, label=_b)
-            _ax.plot(_t[_valid], predictability_r2(_ens)[_valid], lw=0.8, ls="--", alpha=0.5)
+            _ens = archive.ensemble(_b, "zero", _name, "all62")
+            _ax.plot(_t[_state_valid], state_predictability_r2(_ens, _v_state)[_state_valid], lw=2, label=_b)
 
         _ax.axhline(0.0, color="k", lw=0.6)
         _ax.set_ylim(-1.5, 1.05)
@@ -430,7 +446,7 @@ def _(
     _axes[0, 0].set_ylabel("$R^2$")
     _axes[1, 0].set_ylabel("$R^2$")
     _axes[0, 0].legend(fontsize=6)
-    _fig.suptitle("solid: $R^2_{pred}$ against $V_{state}$   ·   dashed: old per-branch $R^2$", fontsize=10)
+    _fig.suptitle("$R^2_{pred}$ against $V_{state}$, per branch", fontsize=10)
     _fig.tight_layout()
     _fig
     return
@@ -518,6 +534,8 @@ def _(d_state, mo):
 def _(
     Ensemble,
     METRICS,
+    SPREAD_WINDOW_S,
+    align,
     archive,
     controllability,
     coupling,
@@ -526,7 +544,6 @@ def _(
     np,
     observations,
     pd,
-    predictability_r2,
     readout_table,
     seizure_branches,
     separability,
@@ -543,16 +560,16 @@ def _(
             m_all, s_all = observations(name, seizure_branches, "all62")
             v_state = state_readout_r2(m_all.mean(axis=1), s_all, n_bins=bins).explained_var
             sep = separability(
-                archive.ensemble("scalp", "healthy", "zero", name, "all62"),
-                archive.ensemble("scalp", "saturated", "zero", name, "all62"),
+                archive.ensemble("healthy", "zero", name, "all62"),
+                archive.ensemble("saturated", "zero", name, "all62"),
             )
             for branch in seizure_branches:
-                zero = archive.ensemble("scalp", branch, "zero", name, "all62")
-                stim = archive.ensemble("scalp", branch, "d1", name, "all62")
+                zero = archive.ensemble(branch, "zero", name, "all62")
+                stim = archive.ensemble(branch, "d1", name, "all62")
                 s_zero, s_stim = archive.state(branch, "zero"), archive.state(branch, "d1")
                 ctrl = controllability(zero, stim, direction=sep.direction, gap=sep.gap)
                 # align the metric onto the coarser state grid before pairing the two deltas
-                on_state = np.array([int(np.argmin(np.abs(grid - t))) for t in archive.state_times])
+                on_state = align(name)
                 rho = coupling(
                     Ensemble(archive.state_times, zero.values[:, on_state], zero.n_replicates),
                     Ensemble(archive.state_times, stim.values[:, on_state], stim.n_replicates),
@@ -565,10 +582,10 @@ def _(
                         "branch": branch,
                         "R2_read": read.loc[name, "R2_read all62"],
                         "R2_pred": state_predictability_r2(zero, v_state)[idx],
-                        "R2_old": predictability_r2(zero)[idx],
                         "d_ctrl": ctrl.d_ctrl[idx],
                         "rho": rho[s_idx],
-                        "valid": grid[idx] >= METRICS[name].window_s,
+                        # R2_pred and rho are referenced to s, so they need its 1 s window too
+                        "valid": grid[idx] >= max(METRICS[name].window_s, SPREAD_WINDOW_S),
                     }
                 )
         return pd.DataFrame(rows)
@@ -623,7 +640,204 @@ def _(np, plt, scores, seizure_branches):
 @app.cell
 def _(mo):
     mo.md(r"""
-    ## 8 Caveats that belong with the numbers
+    ## 8 Does a metric beat the raw signal?
+
+    A metric is a *reduction* of the scalp signal, and a reduction is only worth making if what
+    survives it is easier to forecast than what went in. The two rungs are the raw signal itself:
+
+    - **waveform** — predict the sample values. Needs the phase, which diverges fastest.
+    - **envelope** — predict the analytic amplitude, phase discarded. The rung a metric has to clear.
+
+    **These curves are on a different scale from §5 and must not be read across to it.** Both the
+    rungs and the metric curves here are $1 - V_{\text{rep}}/V_{\text{total}}$ — variance explained
+    by $x_0$ within one branch, bounded in $[0,1]$, which is a statement about *how deterministic
+    the plant is*, not about resolving seizure states. That is exactly the denominator §5 rejects
+    as an accident of the trajectory draw. It is the right denominator here only because the
+    question is a like-for-like race between quantities read off the same rollouts.
+
+    The rungs carry a 5 ms grid of their own: waveform predictability collapses inside a few
+    hundred ms, which the metrics' 50 ms hop would miss.
+    """)
+    return
+
+
+@app.cell
+def _(archive, branch_names, mo):
+    rung_branch = mo.ui.dropdown(options=branch_names, value="ez_ignited", label="Branch")
+    rung_set = mo.ui.dropdown(options=archive.channel_sets, value="all62", label="Channel set")
+    mo.hstack([rung_branch, rung_set])
+    return rung_branch, rung_set
+
+
+@app.cell
+def _(METRICS, RAW, archive, plt, rung_branch, rung_set, variance_ratio):
+    _fig, _ax = plt.subplots(figsize=(8, 4.2))
+
+    for _i, _name in enumerate(METRICS):
+        _ens = archive.ensemble(rung_branch.value, "zero", _name, rung_set.value)
+        _ax.plot(
+            archive.times[_name],
+            variance_ratio(_ens.values, _ens.n_replicates),
+            color=f"C{_i}",
+            lw=1.1,
+            alpha=0.7,
+            label=_name,
+        )
+
+    for _name, _style in (("waveform", "-"), ("envelope", "--")):
+        _ax.plot(
+            archive.baseline_times,
+            archive.baseline(rung_branch.value, _name, rung_set.value, RAW),
+            color="k",
+            lw=1.4,
+            ls=_style,
+            label=_name,
+        )
+
+    _ax.axhline(0.0, color="0.5", lw=0.8)
+    _ax.set_xlabel("lookahead $h$ (s)")
+    _ax.set_ylabel(r"$1 - V_{rep}/V_{total}$")
+    _ax.set_title(f"predictability rungs — {rung_branch.value} / {rung_set.value}", fontsize=10)
+    _ax.legend(frameon=False, fontsize=8, ncol=2)
+    _ax.spines[["top", "right"]].set_visible(False)
+    _ax.grid(visible=True, which="both", linestyle="--", alpha=0.3)
+    _fig.tight_layout()
+    _fig
+    return
+
+
+@app.cell
+def _(mo):
+    mo.md(r"""
+    ## 9 What does bandwidth cost the readout?
+
+    Every low-pass buys noise rejection and pays group delay. The cost is not the cutoff but the
+    **effective latency** — the metric's own window plus the filter's group delay — because that is
+    what the controller actually waits for before it can act on a sample.
+
+    Asked here against $s$, not against the old per-branch $R^2$: the $y$ axis is
+    $R^2_{\text{read}}$, so the question is *how much of the metric's ability to see the seizure
+    survives the filter*, alongside $d_{\text{ctrl}}$ for how much of its drivability does.
+
+    Only the four amplitude-like metrics are swept. `band_power` and `spectral_centroid` are
+    excluded because a low-pass **redefines** them rather than denoising them — it mutilates a
+    3–12 Hz integral and moves a centroid down mechanically — so their sweep would not be one
+    metric measured at several bandwidths.
+    """)
+    return
+
+
+@app.cell
+def _(
+    METRICS,
+    RAW,
+    SWEPT_METRICS,
+    align,
+    archive,
+    controllability,
+    design_lowpass_sos,
+    group_delay_s,
+    manifest,
+    n_bins,
+    np,
+    pd,
+    rung_set,
+    seizure_branches,
+    separability,
+    state_readout_r2,
+):
+    def _latency(name: str, cutoff: str) -> float:
+        fs = manifest["fs"]
+        delay = 0.0 if cutoff == RAW else group_delay_s(design_lowpass_sos(fs, float(cutoff)), fs)
+        return METRICS[name].window_s + delay
+
+    def _pooled_observations(metric: str, cutoff: str):
+        """Stack (M, s) pairs over the seizure branches for a pooled, possibly filtered series."""
+        idx = align(metric)
+        m_rows, s_rows = [], []
+        for branch in seizure_branches:
+            m_rows.append(archive.ensemble(branch, "zero", metric, rung_set.value, cutoff).values[:, idx].reshape(-1))
+            s_rows.append(archive.state(branch, "zero").values.reshape(-1))
+        return np.concatenate(m_rows), np.concatenate(s_rows)
+
+    def _sweep_rows(h: float, bins: int) -> pd.DataFrame:
+        rows = []
+        for cutoff in archive.cutoffs:
+            for name in SWEPT_METRICS:
+                grid = archive.times[name]
+                idx = int(np.argmin(np.abs(grid - h)))
+                m, s = _pooled_observations(name, cutoff)
+                sep = separability(
+                    archive.ensemble("healthy", "zero", name, rung_set.value, cutoff),
+                    archive.ensemble("saturated", "zero", name, rung_set.value, cutoff),
+                )
+                latency = _latency(name, cutoff)
+                per_branch = []
+                for branch in seizure_branches:
+                    zero = archive.ensemble(branch, "zero", name, rung_set.value, cutoff)
+                    stim = archive.ensemble(branch, "d1", name, rung_set.value, cutoff)
+                    per_branch.append(controllability(zero, stim, direction=sep.direction, gap=sep.gap).d_ctrl[idx])
+                rows.append(
+                    {
+                        "metric": name,
+                        "cutoff_hz": cutoff,
+                        "latency_s": latency,
+                        "R2_read": float(state_readout_r2(m, s, n_bins=bins).r2),
+                        "d_ctrl": float(np.mean(per_branch)),
+                        "valid": grid[idx] >= latency,
+                    }
+                )
+        return pd.DataFrame(rows)
+
+    sweep = _sweep_rows(1.5, n_bins.value)
+    return (sweep,)
+
+
+@app.cell
+def _(mo, sweep):
+    mo.ui.table(sweep.round({"latency_s": 4, "R2_read": 3, "d_ctrl": 3}), page_size=12, selection=None)
+    return
+
+
+@app.cell
+def _(SWEPT_METRICS, np, plt, sweep):
+    _fig, _axes = plt.subplots(1, 2, figsize=(11, 4), sharex=True)
+
+    for _i, _name in enumerate(SWEPT_METRICS):
+        _sub = sweep[sweep["metric"] == _name].sort_values("latency_s")
+        _ok = _sub["valid"].to_numpy()
+        for _ax, _column in zip(_axes, ["R2_read", "d_ctrl"], strict=True):
+            _ax.plot(_sub["latency_s"], _sub[_column], color=f"C{_i}", lw=1.3, alpha=0.8, label=_name)
+            _ax.scatter(
+                _sub["latency_s"],
+                _sub[_column],
+                s=42,
+                color=np.where(_ok, f"C{_i}", "none"),
+                edgecolors=f"C{_i}",
+                zorder=3,
+            )
+
+    for _ax, _label in zip(_axes, [r"$R^2_{read}$", r"$d_{ctrl}$"], strict=True):
+        _ax.axhline(0.0, color="0.5", lw=0.8)
+        _ax.set_xscale("log")
+        _ax.set_xlabel("effective latency = window + group delay (s)")
+        _ax.set_ylabel(_label)
+        _ax.spines[["top", "right"]].set_visible(False)
+        _ax.grid(visible=True, which="both", linestyle="--", alpha=0.3)
+
+    _axes[0].set_title("bandwidth vs seizure readout", fontsize=10)
+    _axes[1].set_title(r"bandwidth vs drivability (mean over seizure branches)", fontsize=10)
+    _axes[0].legend(frameon=False, fontsize=8)
+    _fig.suptitle("hollow markers: $h$ shorter than the effective latency", fontsize=9)
+    _fig.tight_layout()
+    _fig
+    return
+
+
+@app.cell
+def _(mo):
+    mo.md(r"""
+    ## 10 Caveats that belong with the numbers
 
     **The basin mixture.** One of eight trajectories (seed 1076) settles at 4 seizing regions where
     the others reach 25–35. It is a mixture, not an outlier to drop — but $V_{\text{state}}$ and

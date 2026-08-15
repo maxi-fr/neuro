@@ -106,17 +106,6 @@ class Metric:
         """Score ``signals`` per channel, returning ``(times, (n_channels, n_windows))``."""
         return windowed(signals, fs, self.reduce, window_s=self.window_s, hop_s=hop_s)
 
-    def pooled(
-        self,
-        signals: FloatArray,
-        fs: float,
-        *,
-        hop_s: float = DEFAULT_HOP_S,
-    ) -> tuple[FloatArray, FloatArray]:
-        """Score ``signals`` and average over channels, returning ``(times, (n_windows,))``."""
-        times, values = self(signals, fs, hop_s=hop_s)
-        return times, values.mean(axis=0)
-
 
 def _block_ptp(block: FloatArray, _fs: float) -> FloatArray:
     """Per-channel peak-to-peak amplitude of the block."""
@@ -298,16 +287,6 @@ def variance_ratio(values: FloatArray, n_replicates: int) -> FloatArray:
     return 1.0 - np.divide(within, total, out=np.full_like(total, np.nan), where=total > 0)
 
 
-def predictability_r2(ens: Ensemble) -> FloatArray:
-    """Share of the metric's variance that knowing the branch state removes, per lookahead.
-
-    Its denominator is the spread *across the states of this one branch*, which is whatever the
-    trajectory draw happened to produce, so the score is not comparable between branches. See
-    :func:`state_predictability_r2` for the version referenced to a stated denominator.
-    """
-    return variance_ratio(ens.values, ens.n_replicates)
-
-
 def sigma_ens(ens: Ensemble) -> FloatArray:
     """Within-state standard deviation in the metric's native units, per lookahead.
 
@@ -315,14 +294,6 @@ def sigma_ens(ens: Ensemble) -> FloatArray:
     resolve, and so the honest denominator for :func:`controllability`.
     """
     return np.sqrt(ens.by_state.var(axis=1, ddof=1).mean(axis=0))
-
-
-def spread_reference(ens: Ensemble) -> tuple[FloatArray, FloatArray]:
-    """Compute the p5 and p95 of the metric across all rollouts, as a scale reference for `sigma_ens`."""
-    return (
-        np.percentile(ens.values, 5, axis=0),
-        np.percentile(ens.values, 95, axis=0),
-    )
 
 
 class StateReadout(NamedTuple):
@@ -339,9 +310,10 @@ class StateReadout(NamedTuple):
         counterpart, and the stated denominator :func:`state_predictability_r2` references a
         forecast error against.
     bin_state
-        Mean seizure state in each bin, shape ``(n_bins,)``.
+        Mean seizure state in each occupied bin, shape ``(n_filled,)`` -- at most ``n_bins``.
     bin_metric
-        Mean metric value in each bin -- with ``bin_state``, the calibration curve.
+        Mean metric value in each bin, trailing axes carried through as in ``r2`` -- with
+        ``bin_state``, the calibration curve.
     """
 
     r2: FloatArray
@@ -358,6 +330,10 @@ def state_readout_r2(metric: FloatArray, state: FloatArray, *, n_bins: int = 10)
     **quantiles** of ``state``, so each carries a comparable number of observations however the
     states are distributed -- which they are not evenly, the branches being clustered.
 
+    ``state`` carries a point mass at zero -- every pre-onset window -- so several quantile edges
+    coincide there. Duplicate edges are dropped rather than kept as empty bins, and ``n_bins`` is
+    therefore an upper bound: the returned curve has one point per *distinct* edge.
+
     This is the answer to "does the controller's observable see the seizure at all", and it is
     the axis that :func:`separability`'s two-point Cohen's d approximates with only the healthy
     and saturated ends.
@@ -371,20 +347,22 @@ def state_readout_r2(metric: FloatArray, state: FloatArray, *, n_bins: int = 10)
     n_bins
         Quantile bins of ``state`` to condition on.
     """
-    edges = np.quantile(state, np.linspace(0.0, 1.0, n_bins + 1))
-    index = np.clip(np.searchsorted(edges[1:-1], state, side="right"), 0, n_bins - 1)
+    edges = np.unique(np.quantile(state, np.linspace(0.0, 1.0, n_bins + 1)))
+    n_filled = len(edges) - 1
+    index = np.clip(np.searchsorted(edges[1:-1], state, side="right"), 0, n_filled - 1)
 
-    counts = np.bincount(index, minlength=n_bins)
+    counts = np.bincount(index, minlength=n_filled)
     occupied = counts > 0
-    grouped = [metric[index == b] for b in range(n_bins)]
+    grouped = [metric[index == b] for b in range(n_filled)]
+    unfilled = np.full(metric.shape[1:], np.nan)
 
-    within = sum((counts[b] / len(state)) * grouped[b].var(axis=0) for b in range(n_bins) if occupied[b])
+    within = sum((counts[b] / len(state)) * grouped[b].var(axis=0) for b in range(n_filled) if occupied[b])
     total = metric.var(axis=0)
     return StateReadout(
         r2=1.0 - np.divide(within, total, out=np.full_like(total, np.nan), where=total > 0),
         explained_var=total - within,
-        bin_state=np.array([state[index == b].mean() if occupied[b] else np.nan for b in range(n_bins)]),
-        bin_metric=np.array([grouped[b].mean(axis=0) if occupied[b] else np.nan for b in range(n_bins)]),
+        bin_state=np.array([state[index == b].mean() if occupied[b] else np.nan for b in range(n_filled)]),
+        bin_metric=np.stack([grouped[b].mean(axis=0) if occupied[b] else unfilled for b in range(n_filled)]),
     )
 
 
@@ -394,8 +372,8 @@ class Separability(NamedTuple):
     Attributes
     ----------
     cohens_d
-        Standardised healthy-to-saturated difference over the **parent means**, so ``n`` is the
-        parent count; children within a parent are not independent draws from a class.
+        Standardised healthy-to-saturated difference over the **state means**, so ``n`` is the
+        state count; replicates of a state are not independent draws from a class.
     gap
         Raw signed difference ``mean_saturated - mean_healthy`` in native units.
     direction
@@ -458,7 +436,7 @@ def controllability(
 ) -> Controllability:
     """Score how far a stimulation arm moves a metric against the spread a controller faces.
 
-    ``zero`` and ``stim`` must be row-aligned -- same parents, same children, same seeds -- so
+    ``zero`` and ``stim`` must be row-aligned -- same trajectories, replicates and seeds -- so
     the difference is paired. The ``sigma_ens`` of the **unstimulated** arm is the denominator:
     a real controller cannot know the noise realisation, so scoring on the much smaller paired
     spread would credit effects no causal controller can act on.
@@ -478,9 +456,12 @@ def controllability(
 def state_predictability_r2(ens: Ensemble, explained_var: FloatArray) -> FloatArray:
     """Forecast error at each lookahead, referenced to the metric's seizure-state range.
 
-    ``1 - Var_replicate(h) / explained_var``. Same numerator as :func:`predictability_r2` -- the
-    spread that survives fixing ``x0``, which is the irreducible forecast error -- against a
-    **stated** denominator instead of an incidental one. ``predictability_r2`` divides by the
+    ``1 - Var_replicate(h) / explained_var``. The numerator is the spread that survives fixing
+    ``x0``, which is the irreducible forecast error, against a **stated** denominator instead of
+    an incidental one. It is :func:`sigma_ens` squared, so ``ddof=1`` rather than
+    :func:`predictability_r2`'s ``ddof=0``: nothing here has to sum to a total, so the unbiased
+    estimate is the right one and the two scores differ slightly beyond their denominators.
+    ``predictability_r2`` divides by the
     spread of whatever states this branch's trajectories happened to land in, so its value is
     set by the trajectory draw and is not comparable between branches; ``explained_var`` from
     :func:`state_readout_r2` is the same number at every branch.
@@ -507,40 +488,26 @@ def coupling(zero_metric: Ensemble, stim_metric: Ensemble, zero_state: Ensemble,
     ``corr_i(delta M_i, delta s_i)`` over rollouts, where each ``delta`` is the paired
     stimulated-minus-unstimulated difference of one noise realisation. Positive means the
     rollouts in which stimulation pushed the metric furthest are the rollouts in which it
-    pushed the seizure furthest -- so steering the metric steers the seizure.
+    pushed the seizure furthest. ``d_ctrl`` scores that a metric *can* be driven and ``d_state``
+    that the seizure *can* be suppressed; only their covariation says the first buys the second.
 
-    This is the axis the four in
-    ``docs/predictability_controllability_experiment.md`` leave out, and the one
-    ``tes_field_geometry.md`` §2.3 turned on: there the objective moved 57 % in the intended
-    direction while regional seizure count did not move at all. ``d_ctrl`` scores that a metric
-    *can* be driven and ``d_state`` that the seizure *can* be suppressed; only their covariation
-    says the first buys the second.
+    Both deltas are centred, so this is blind to the mean effect that ``d_ctrl`` and ``d_state``
+    already report: a command shifting every rollout by the same constant scores ``NaN``, not
+    zero. Read it **with** those two, never alone -- alone it cannot tell a metric that tracks
+    the seizure from one whose trial-to-trial jitter merely shares a noise source.
 
-    Deliberately blind to the mean effect, which is exactly what ``d_ctrl`` and ``d_state``
-    already report: a command that shifts every rollout by the same constant has no covariation
-    to measure and scores ``NaN``, not zero.
-
-    All four ensembles must be row-aligned -- same trajectories, same replicates, same seeds.
+    The state is one scalar per rollout, so a per-channel metric scores one correlation per
+    channel. All four ensembles must be row-aligned -- same trajectories, replicates and seeds.
     """
     delta_m = stim_metric.values - zero_metric.values
     delta_s = stim_state.values - zero_state.values
+    # the state is one scalar per rollout, so a per-channel metric needs it broadcast over channels
+    delta_s = delta_s.reshape(delta_s.shape[0], *(1,) * (delta_m.ndim - delta_s.ndim), delta_s.shape[-1])
 
     a = delta_m - delta_m.mean(axis=0)
     b = delta_s - delta_s.mean(axis=0)
     norm = np.sqrt((a**2).sum(axis=0) * (b**2).sum(axis=0))
     return np.divide((a * b).sum(axis=0), norm, out=np.full_like(norm, np.nan), where=norm > 0)
-
-
-def scalp_region_correlation(scalp: Ensemble, region: Ensemble) -> FloatArray:
-    """Per-rollout correlation between the scalp and region readings of one metric, over `h`.
-
-    The observability axis: it catches metrics that volume conduction has smeared away by the
-    time they reach the scalp. Region space is only ever this reference, never the primary.
-    """
-    a = scalp.values - scalp.values.mean(axis=1, keepdims=True)
-    b = region.values - region.values.mean(axis=1, keepdims=True)
-    norm = np.linalg.norm(a, axis=1) * np.linalg.norm(b, axis=1)
-    return np.divide((a * b).sum(axis=1), norm, out=np.full(a.shape[0], np.nan), where=norm > 0)
 
 
 def envelope(

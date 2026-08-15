@@ -259,9 +259,9 @@ difference is no more sensitive than the unpaired one and during ignition it is 
 Common random numbers is still the right construction — it costs nothing and it is what makes the
 difference a *difference of the same realisation* rather than of two populations. But the extra
 statistical power it buys is a short-lookahead effect, and at the default `h_eval` of 1.0 s there
-is none to speak of. `metric_scoring.py` plots this ratio against `h` so the claim is checked per
-run rather than assumed. The headline `d_ctrl` is unaffected: it uses the unpaired `sigma_ens` by
-design, for the reason above.
+is none to speak of. `controllability` still returns `paired_sd` alongside `d_ctrl` so the claim can
+be checked per run rather than assumed, though no notebook plots the ratio any more. The headline
+`d_ctrl` is unaffected: it uses the unpaired `sigma_ens` by design, for the reason above.
 
 `d_ctrl` and `R2` are both dimensionless SNRs, so the headline scatter has commensurate axes.
 
@@ -529,7 +529,26 @@ the first buys the second.
 | --- | --- |
 | `metrics.py` | metrics are **per channel**; `seizure_state`, `state_readout_r2`, `state_predictability_r2`, `coupling`, `state_store` |
 | `ensembles.py` | `states` joins `ScoreArchive`; raw-cutoff scalp series stored per channel, pooled on read |
-| `notebooks/state_scoring.py` | the new quantitative notebook, alongside `metric_scoring.py` |
+| `notebooks/state_scoring.py` | the new quantitative notebook, replacing `metric_scoring.py` |
+
+### Removed with the old notebook
+
+`metric_scoring.py` is deleted, and with it everything that had no other consumer:
+
+| removed | why |
+| --- | --- |
+| `scalp_region_correlation` | the observability axis, superseded above |
+| the region-space **metric scoring** pass in `score_ensemble_dir` | existed only to feed it. The region store is still read once per branch and arm, for `seizure_state` alone |
+| `REGION_SET`, the `space` key in `ScoreArchive.series` | with region space gone the key is scalp-only, so `ensemble` and `channel_ensemble` collapse into one method with a `pool` flag |
+| `spread_reference` | a p5/p95 band nothing else plotted |
+| `predictability_r2` | the old per-branch score. `variance_ratio`, the shared core, stays — the rungs still need it |
+| `Metric.pooled` | a one-line delegate only a test called |
+
+The **bandwidth sweep** and the **raw-signal rungs** survive, ported into `state_scoring.py` §§8–9
+and re-asked against `s`: the sweep's y-axis is now `R2_read`, so it measures how much of a metric's
+seizure readout a filter costs, against effective latency. The rungs stay on the `variance_ratio`
+scale for both the metrics and the baselines, because that comparison is a like-for-like race on the
+same rollouts — and §8 says in the notebook that this scale must not be read across to `R2_pred`.
 
 `synchronization` is replaced by **`fc_strength`**, channel `c`'s mean `|corr|` with the other
 channels. Per-channel like the other five, so all six fit one framework and the channel set becomes
@@ -547,6 +566,111 @@ Series round-trip through float32 — they are scores off a float32 region store
 **state** `x0` (a trajectory frozen at a branch), **replicate** (one noise realisation from that
 state). Parent/child named the operation but not the statistics, which is what every formula is
 about. `EnsembleConfig` and the manifest keep the generation-side names.
+
+## Does the generation design still fit? — proposal, not implemented
+
+**Date:** 2026-08-15. **Status: analysis only.** No generation code is changed by this section.
+`BRANCHES`, `ARMS` and `EnsembleConfig` are exactly as they were, and the current ensemble stays
+valid. This is the audit asked for before deciding whether to regenerate.
+
+The generation design was shaped by the four axes that are now superseded. The question is which of
+its choices were load-bearing for *those* axes and which are load-bearing for the five that
+replaced them.
+
+### What the new scoring actually asks of the generation
+
+| score | what it consumes | what it is sensitive to |
+| --- | --- | --- |
+| `R2_read` | (M, s) pairs pooled over branches, rollouts and times | **coverage of the s range**, not branch identity |
+| `R2_pred` | within-state variance over replicates; `V_state` from `R2_read` | replicates per state, and the s range that sets the denominator |
+| `d_ctrl`, `d_state` | paired zero/stim arms at one branch | trajectories (the t-tests are n = 8) |
+| `rho` | both arms, per rollout | trajectories, and **a stimulus that actually moves `s`** |
+
+The reframe that matters: branches are no longer *strata to condition on*, they are a **device for
+spreading `s`**. §"What was measured first" showed the branch label is a weak proxy for the state —
+within-branch spread is as large as between-branch separation. Under the old design that was a
+defect, because the branch *was* the ground truth. Under `R2_read` it is irrelevant: the score
+conditions on measured `s`, and a branch that produces a wide spread of `s` is a *better* sampling
+device, not a worse stratum.
+
+### Branch audit
+
+| branch | old role | role now | verdict |
+| --- | --- | --- | --- |
+| `healthy` | separability reference (Cohen's d) | anchors `s ≈ 0` for the `V_state` range | **keep** — but see the inconsistency below |
+| `pre_onset` | the actionable window | the only branch where `d1` clearly moves `s` (t(7) = −4.47, 8/8) | **keep**, the load-bearing one |
+| `ez_ignited` | focus seizing | second-strongest control effect (t(7) = −2.17, 6/8) | **keep** |
+| `mid_spread` | PZ recruited | no control effect (t(7) = −1.25); still supplies mid-range `s` | **keep for `R2_read`**, not for the control axes |
+| `saturated` | "nothing helps" regime | no control effect (t(7) = −1.10); anchors the top of the `s` range | **keep for `R2_read`**, not for the control axes |
+
+So no branch should be dropped — but two of them are now *readout* samples only, and paying for a
+stimulated arm at those two buys a `d_ctrl` and a `rho` the doc's own caveats already say are
+undetermined.
+
+**A live inconsistency to settle first.** §5's prose says a negative `R2_pred` means the noise is
+wider than "the whole span it traverses from healthy to saturated", but every `observations()` call
+in `state_scoring.py` passes `seizure_branches`, so `healthy` is **excluded** from `V_state`. Either
+the prose or the pooling is wrong. Including `healthy` widens `V_state` and makes every `R2_pred`
+less negative; excluding it makes the denominator "the span across seizure states", which is
+arguably the more honest control target. This is a one-line decision that moves every number on
+axis 2, and it needs making before any regeneration is judged.
+
+### Arms: the one real gap
+
+The doc has flagged this twice already — §"Stimulation arms" and §8 of the notebook. With
+`{0, +d1}` only, a null `rho` cannot distinguish *"this metric is not coupled to the seizure"* from
+*"not along the one direction probed"*. Under KCL the `roast_3d` leadfield's three electrodes give
+an admissible input space of **exactly two dimensions**, so `−d1` plus a matched-norm orthogonal
+`d2` would characterise first-order controllability completely.
+
+This is the single largest scientific gap in the current ensemble, and it is the one thing here that
+genuinely cannot be fixed by re-scoring.
+
+### Trajectories against replicates — a free improvement
+
+`n_parents = 8`, `n_children = 16` gives 128 rollouts per branch and arm. Every *inferential* claim
+in the new scoring is at the trajectory level (the t-tests, `V_state`, the basin mixture), and every
+one of them runs at n = 8. Swapping to **I = 16, J = 8** keeps the rollout count identical:
+
+| quantity | df now (I=8, J=16) | df at I=16, J=8 | effect |
+| --- | --- | --- | --- |
+| trajectory-level means (t-tests, `V_state`) | 7 | 15 | CI half-width **−36 %** (t/√I: 0.836 → 0.533) |
+| pooled within-state variance, `I(J−1)` | 120 | 112 | rel. sd of the estimate 0.129 → 0.134, **+4 %** |
+
+The within-state variance is pooled across trajectories, so halving the replicates costs it almost
+nothing — while doubling the trajectories nearly halves the width of every interval the document
+actually quotes. The basin mixture makes this sharper: one of eight trajectories settling in a
+different basin is 12.5 % of the sample, and at I = 16 an equivalent draw would be 6 %.
+
+### Cost
+
+Arms are currently a flat global tuple applied to every branch. Allocating them per branch costs
+nothing and would need `Branch` to carry its own `arms` (or `EnsembleConfig` a mapping) — a small
+change to `ensembles.py`, not a redesign.
+
+| allocation | branch × arm pairs | rollouts | storage |
+| --- | --- | --- | --- |
+| current (5 branches × 2 arms) | 10 | 1280 | ~19 GB |
+| proposed | 10 | 1280 | ~19 GB |
+
+Proposed: `healthy` → `{0}`; `pre_onset` → `{0, +d1, −d1}`; `ez_ignited` → `{0, +d1, −d1}`;
+`mid_spread` → `{0, +d1}`; `saturated` → `{0}`. The stimulated arms move to the branches where
+stimulation demonstrably does something, and pay for the second probe direction there.
+
+**This is cost-neutral**: same rollout count, same runtime, same storage, and it buys the `−d1`
+direction at both branches where the probe works. What it gives up is `d_ctrl`/`d_state`/`rho` at
+`saturated`, which the notebook's own caveats already report as undetermined.
+
+### Recommendation
+
+1. **Settle the `healthy`-in-`V_state` question** — no regeneration needed, and it moves axis 2.
+2. **If regenerating: I = 16, J = 8, and per-branch arms with `−d1`.** Cost-neutral, and it fixes
+   the two things re-scoring cannot: the trajectory-level n, and the single probe direction.
+3. **Do not drop any branch.** Their role changed from stratum to `s`-sampling device, and the two
+   with no control effect still anchor the range `V_state` is defined over.
+4. `rollout_s = 3.0` is worth a second look but not on its own: `s` is undefined below h = 1 s, so
+   the first third of every rollout yields no state-referenced score. That is a 33 % tax on the
+   region store, payable only if the h ∈ [1, 3] s window is the one that matters.
 
 ## Known confounds
 
@@ -580,19 +704,20 @@ mitigation: any threshold is then applied in the open, against the whole curve.
 | `src/neuro/ensembles.py` | parent runs, snapshot/branch, arm execution, scoring sweep and caches |
 | `scripts/run_predictability_experiment.py` | generation CLI |
 | `notebooks/ensemble_explorer.py` | trajectories, FC, PSD, topoplots, healthy vs seizure |
-| `notebooks/metric_scoring.py` | R², `d_ctrl`, separability table, the 2D scatter |
+| `notebooks/state_scoring.py` | the quantitative notebook: all five scores, the rungs, the bandwidth sweep |
 
-The score functions (`predictability_r2`, `sigma_ens`, `separability`, `controllability`,
-`scalp_region_correlation`) live in `metrics.py` rather than in the notebook. They are the
-quantitative claim of the experiment and every one of them is a formula that fails quietly when it
-is wrong — a sign convention, a variance denominator, a `ddof`. In a notebook cell none of that is
-testable; `tests/test_metric_scores.py` pins all of it. The notebook only selects and plots.
+The score functions (`variance_ratio`, `sigma_ens`, `separability`, `controllability`,
+`state_readout_r2`, `state_predictability_r2`, `coupling`) live in `metrics.py` rather than in the
+notebook. They are the quantitative claim of the experiment and every one of them is a formula that
+fails quietly when it is wrong — a sign convention, a variance denominator, a `ddof`. In a notebook
+cell none of that is testable; `tests/test_metric_scores.py` pins all of it. The notebook only
+selects and plots.
 
 ### Running it
 
 ```bash
 uv run python scripts/run_predictability_experiment.py --out data/predictability_ensemble
-uv run marimo edit notebooks/metric_scoring.py     # scores and caches on first run
+uv run marimo edit notebooks/state_scoring.py      # scores and caches on first run
 uv run marimo edit notebooks/ensemble_explorer.py
 ```
 

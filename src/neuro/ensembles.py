@@ -453,7 +453,6 @@ def load_manifest(out_dir: Path) -> dict[str, Any]:
 
 
 SCORES_FILE = "scores.npz"
-REGION_SET = "regions"
 CACHE_DIR = "cache_1khz"
 
 RAW = "raw"
@@ -509,8 +508,9 @@ class ScoreArchive:
         Lookahead grid per metric, in seconds since the branch. Metrics with different windows
         have different grids, which is why this is not one shared axis.
     series
-        ``(space, branch, arm, metric, channel_set, cutoff) -> (n_rollouts, n_times)``, where
-        ``space`` is ``"scalp"`` or ``"region"`` and ``cutoff`` is a :func:`cutoff_key`.
+        ``(branch, arm, metric, channel_set, cutoff) -> (n_rollouts, n_times)``, or
+        ``(n_rollouts, n_channels, n_times)`` at the raw cutoff, where ``cutoff`` is a
+        :func:`cutoff_key`. Scalp only: region space is read for the seizure state alone.
     baselines
         ``(branch, baseline, cutoff) -> (n_channels, n_times)``: per-channel R2 of the
         raw-signal rungs the metrics are ranked against. Cached as scores rather than series --
@@ -533,7 +533,7 @@ class ScoreArchive:
     """
 
     times: dict[str, FloatArray]
-    series: dict[tuple[str, str, str, str, str, str], FloatArray]
+    series: dict[tuple[str, str, str, str, str], FloatArray]
     baselines: dict[tuple[str, str, str], FloatArray]
     baseline_times: FloatArray
     states: dict[tuple[str, str], FloatArray]
@@ -543,37 +543,25 @@ class ScoreArchive:
 
     def ensemble(  # noqa: PLR0913
         self,
-        space: str,
         branch: str,
         arm: str,
         metric: str,
         channel_set: str,
         cutoff: str = RAW,
+        *,
+        pool: bool = True,
     ) -> Ensemble:
-        """Rebuild one scored ensemble, pooled over channels, ready for the score functions.
+        """Rebuild one scored ensemble, ready for the score functions.
 
-        The raw-cutoff scalp series are stored per channel; this averages them on read, so the
-        pooled view is identical to what a channel-mean metric would have produced.
+        Only the raw cutoff is stored per channel -- the bandwidth sweep is a pooled axis, and 6
+        cutoffs of per-channel series would be gigabytes for a question the sweep does not ask.
+        So ``pool=False`` is meaningful only there; elsewhere the series is already pooled and
+        the flag is a no-op.
         """
-        values = self.series[space, branch, arm, metric, channel_set, cutoff]
-        return Ensemble(
-            times=self.times[metric],
-            values=np.asarray(values.mean(axis=1) if values.ndim == 3 else values, dtype=np.float64),  # noqa: PLR2004
-            n_replicates=self.n_replicates,
-        )
-
-    def channel_ensemble(self, branch: str, arm: str, metric: str, channel_set: str = "all62") -> Ensemble:
-        """Rebuild one scored ensemble keeping the channel axis, ``(n_rollouts, n_channels, n_times)``.
-
-        Only the unfiltered scalp series are stored per channel -- the bandwidth sweep is a
-        pooled axis, and 6 cutoffs of per-channel series would be gigabytes for a question the
-        sweep does not ask.
-        """
-        return Ensemble(
-            times=self.times[metric],
-            values=np.asarray(self.series["scalp", branch, arm, metric, channel_set, RAW], dtype=np.float64),
-            n_replicates=self.n_replicates,
-        )
+        values = np.asarray(self.series[branch, arm, metric, channel_set, cutoff], dtype=np.float64)
+        if pool and values.ndim == 3:  # noqa: PLR2004
+            values = values.mean(axis=1)
+        return Ensemble(times=self.times[metric], values=values, n_replicates=self.n_replicates)
 
     def state(self, branch: str, arm: str) -> Ensemble:
         """Rebuild the seizure-state ensemble of one branch and arm."""
@@ -600,7 +588,7 @@ class ScoreArchive:
     @property
     def cutoffs(self) -> list[str]:
         """Bandwidth-axis keys present in the archive, unfiltered first then widest to narrowest."""
-        keys = {key[-1] for key in self.series if key[0] == "scalp"}
+        keys = {key[-1] for key in self.series}
         return [RAW, *sorted(keys - {RAW}, key=float, reverse=True)]
 
 
@@ -623,8 +611,8 @@ def score_ensemble_dir(
     rather than denoising them -- it mutilates a 3-12 Hz integral, and it moves a centroid down
     mechanically -- so sweeping them would not be one metric measured at several bandwidths.
 
-    Region space is scored unfiltered only: it is the observability axis's reference signal,
-    never the controller's input, so its bandwidth is not the question being asked.
+    The region store is read once per branch and arm for the seizure state alone; no metric is
+    scored in region space, that having been the superseded observability axis's reference.
     """
     manifest = load_manifest(out_dir)
     cache = out_dir / SCORES_FILE
@@ -641,7 +629,7 @@ def score_ensemble_dir(
     grid = baseline_grid(float(manifest["rollout_s"]), hop_s=hop_s)
 
     times: dict[str, FloatArray] = {}
-    series: dict[tuple[str, str, str, str, str, str], FloatArray] = {}
+    series: dict[tuple[str, str, str, str, str], FloatArray] = {}
     baselines: dict[tuple[str, str, str], FloatArray] = {}
     states: dict[tuple[str, str], FloatArray] = {}
     state_times = np.empty(0, dtype=np.float64)
@@ -663,24 +651,13 @@ def score_ensemble_dir(
                 )
                 times.update(metric_times)
                 for (name, set_name), ens in scored.items():
-                    series["scalp", branch, arm, name, set_name, key] = ens.values
+                    series[branch, arm, name, set_name, key] = ens.values
                 if arm == arms[0]:
                     scored_baselines = baseline_r2(scalp, fs, times=grid, n_replicates=n_replicates, cutoff_hz=cutoff)
                     baselines.update({(branch, name, key): r2 for name, r2 in scored_baselines.items()})
 
             region = np.load(region_path(out_dir, branch, arm), mmap_mode="r")
-            region_fs = float(manifest["region_fs"])
-            _, region_scored = score_store(
-                region,
-                region_fs,
-                metrics=METRICS,
-                channel_sets={REGION_SET: np.arange(region.shape[1], dtype=np.intp)},
-                n_replicates=n_replicates,
-                hop_s=hop_s,
-            )
-            for (name, set_name), ens in region_scored.items():
-                series["region", branch, arm, name, set_name, RAW] = ens.values
-            state_times, states[branch, arm] = state_store(region, region_fs, hop_s=hop_s)
+            state_times, states[branch, arm] = state_store(region, float(manifest["region_fs"]), hop_s=hop_s)
 
     archive = ScoreArchive(
         times=times,
@@ -715,7 +692,7 @@ def _save_scores(cache: Path, archive: ScoreArchive) -> None:
 def _load_scores(cache: Path, manifest: dict[str, Any]) -> ScoreArchive:
     """Read a cached score archive back into its keyed form."""
     times: dict[str, FloatArray] = {}
-    series: dict[tuple[str, str, str, str, str, str], FloatArray] = {}
+    series: dict[tuple[str, str, str, str, str], FloatArray] = {}
     baselines: dict[tuple[str, str, str], FloatArray] = {}
     states: dict[tuple[str, str], FloatArray] = {}
     baseline_times = np.empty(0, dtype=np.float64)
@@ -737,8 +714,8 @@ def _load_scores(cache: Path, manifest: dict[str, Any]) -> ScoreArchive:
                 branch, arm = rest.split("|")
                 states[branch, arm] = data[key]
             else:
-                space, branch, arm, metric, channel_set, cutoff = rest.split("|")
-                series[space, branch, arm, metric, channel_set, cutoff] = data[key]
+                branch, arm, metric, channel_set, cutoff = rest.split("|")
+                series[branch, arm, metric, channel_set, cutoff] = data[key]
 
     return ScoreArchive(
         times=times,

@@ -9,7 +9,6 @@ import pytest
 from neuro.ensembles import (
     ARMS,
     RAW,
-    REGION_SET,
     SWEPT_METRICS,
     Arm,
     Branch,
@@ -233,7 +232,7 @@ def scored(plants: PlantPair, tmp_path_factory: pytest.TempPathFactory) -> tuple
 def test_only_the_swept_metrics_are_rescored_under_a_filter(scored: tuple[Path, ScoreArchive]) -> None:
     """A low-pass redefines a band integral and a centroid, so sweeping those is not one metric."""
     _, archive = scored
-    keyed = {(metric, cutoff) for _, _, _, metric, _, cutoff in archive.series if cutoff != RAW}
+    keyed = {(metric, cutoff) for _, _, metric, _, cutoff in archive.series if cutoff != RAW}
 
     assert {metric for metric, _ in keyed} == set(SWEPT_METRICS)
     assert {cutoff for _, cutoff in keyed} == {cutoff_key(c) for c in _CUTOFFS if c is not None}
@@ -243,22 +242,22 @@ def test_every_metric_is_scored_on_the_unfiltered_signal(scored: tuple[Path, Sco
     _, archive = scored
 
     for name in METRICS:
-        assert archive.ensemble("scalp", "pre_onset", "zero", name, "all62").n_states == 2
-        assert archive.ensemble("region", "pre_onset", "zero", name, REGION_SET).n_states == 2
+        assert archive.ensemble("pre_onset", "zero", name, "all62").n_states == 2
 
 
-def test_region_space_is_never_filtered(scored: tuple[Path, ScoreArchive]) -> None:
-    """It is the observability axis's reference signal, so its bandwidth is not the question."""
+def test_the_region_store_is_read_for_the_seizure_state_only(scored: tuple[Path, ScoreArchive]) -> None:
+    """No metric is scored in region space -- that was the superseded observability axis's reference."""
     _, archive = scored
 
-    assert {key[-1] for key in archive.series if key[0] == "region"} == {RAW}
+    assert set(archive.states) == {(branch, arm) for branch, arm, _, _, _ in archive.series}
+    assert archive.state("pre_onset", "zero").values.shape[1] == len(archive.state_times)
 
 
 def test_a_narrower_band_strips_the_content_line_length_lives_on(scored: tuple[Path, ScoreArchive]) -> None:
     """Half of why R2 alone cannot rank the bandwidth axis: the filter removes signal, not just noise."""
     _, archive = scored
-    raw = archive.ensemble("scalp", "pre_onset", "zero", "line_length", "all62")
-    narrow = archive.ensemble("scalp", "pre_onset", "zero", "line_length", "all62", cutoff_key(20.0))
+    raw = archive.ensemble("pre_onset", "zero", "line_length", "all62")
+    narrow = archive.ensemble("pre_onset", "zero", "line_length", "all62", cutoff_key(20.0))
 
     assert np.median(narrow.values) < np.median(raw.values)
 
@@ -304,11 +303,11 @@ def test_the_cached_archive_reloads_to_float32_precision(scored: tuple[Path, Sco
 def test_the_raw_scalp_series_keep_the_channel_axis_and_pool_on_read(
     scored: tuple[Path, ScoreArchive],
 ) -> None:
-    """One traversal serves both notebooks: per-channel on disk, channel-mean through `ensemble`."""
+    """One traversal serves both views: per-channel on disk, channel-mean through `pool=True`."""
     _, archive = scored
 
-    per_channel = archive.channel_ensemble("pre_onset", "zero", "eeg_ms")
-    pooled = archive.ensemble("scalp", "pre_onset", "zero", "eeg_ms", "all62")
+    per_channel = archive.ensemble("pre_onset", "zero", "eeg_ms", "all62", pool=False)
+    pooled = archive.ensemble("pre_onset", "zero", "eeg_ms", "all62")
 
     assert per_channel.values.shape == (4, 62, len(archive.times["eeg_ms"]))
     assert pooled.values == pytest.approx(per_channel.values.mean(axis=1))
