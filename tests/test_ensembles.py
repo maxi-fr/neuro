@@ -243,8 +243,8 @@ def test_every_metric_is_scored_on_the_unfiltered_signal(scored: tuple[Path, Sco
     _, archive = scored
 
     for name in METRICS:
-        assert archive.ensemble("scalp", "pre_onset", "zero", name, "all62").n_parents == 2
-        assert archive.ensemble("region", "pre_onset", "zero", name, REGION_SET).n_parents == 2
+        assert archive.ensemble("scalp", "pre_onset", "zero", name, "all62").n_states == 2
+        assert archive.ensemble("region", "pre_onset", "zero", name, REGION_SET).n_states == 2
 
 
 def test_region_space_is_never_filtered(scored: tuple[Path, ScoreArchive]) -> None:
@@ -286,7 +286,8 @@ def test_a_baseline_is_stored_per_channel_so_the_channel_sets_come_free(
     assert not np.allclose(focal, archive.baseline("pre_onset", "waveform", "all62"))
 
 
-def test_the_cached_archive_reloads_identically(scored: tuple[Path, ScoreArchive]) -> None:
+def test_the_cached_archive_reloads_to_float32_precision(scored: tuple[Path, ScoreArchive]) -> None:
+    """Series round-trip through float32: they are scores off a float32 store, not raw data."""
     out_dir, archive = scored
 
     reloaded = score_ensemble_dir(out_dir, cutoffs=_CUTOFFS)
@@ -295,6 +296,30 @@ def test_the_cached_archive_reloads_identically(scored: tuple[Path, ScoreArchive
     assert set(reloaded.baselines) == set(archive.baselines)
     assert np.array_equal(reloaded.baseline_times, archive.baseline_times)
     for key, values in archive.series.items():
-        assert np.array_equal(reloaded.series[key], values)
+        assert reloaded.series[key] == pytest.approx(values, rel=1e-6)
     for key, values in archive.baselines.items():
         assert np.array_equal(reloaded.baselines[key], values)
+
+
+def test_the_raw_scalp_series_keep_the_channel_axis_and_pool_on_read(
+    scored: tuple[Path, ScoreArchive],
+) -> None:
+    """One traversal serves both notebooks: per-channel on disk, channel-mean through `ensemble`."""
+    _, archive = scored
+
+    per_channel = archive.channel_ensemble("pre_onset", "zero", "eeg_ms")
+    pooled = archive.ensemble("scalp", "pre_onset", "zero", "eeg_ms", "all62")
+
+    assert per_channel.values.shape == (4, 62, len(archive.times["eeg_ms"]))
+    assert pooled.values == pytest.approx(per_channel.values.mean(axis=1))
+
+
+def test_the_seizure_state_is_stored_for_every_branch_and_arm(scored: tuple[Path, ScoreArchive]) -> None:
+    """Both arms, because d_state -- does the probe move the seizure -- is a paired difference."""
+    _, archive = scored
+
+    assert set(archive.states) == {("pre_onset", "zero"), ("pre_onset", "d1")}
+    for arm in ("zero", "d1"):
+        state = archive.state("pre_onset", arm)
+        assert state.values.shape == (4, len(archive.state_times))
+        assert np.all((state.values >= 0.0) & (state.values <= 1.0))

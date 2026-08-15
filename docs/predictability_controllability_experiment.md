@@ -432,6 +432,122 @@ arm** for the baselines. The baselines are not folded into the metric pass on pu
 per-channel where the metrics are scalar, and one function doing both would be doing two unrelated
 things to save a traversal that costs a `sosfilt` and a memory-mapped read.
 
+## Seizure state as the scoring target
+
+**Date:** 2026-08-15. A re-scoring of the same generated ensemble — no regeneration. It replaces
+two of the four axes rather than adding a fifth, and it adds the one axis the original design has
+no slot for.
+
+### What was measured first
+
+Four checks were run against the generated ensemble before any code changed, because three of the
+design's premises turned out to be testable directly from the region stores.
+
+**1. The probe does move the seizure, and only early.** Region-space `n_seizing` under `d1` against
+`zero`, per trajectory (n = 8, so the 16 replicates of a state are not counted as independent):
+
+| branch | Δ n_seizing | `d_state` | t(7) | trajectories moved |
+| --- | --- | --- | --- | --- |
+| `pre_onset` | **−5.7** | −0.52 | **−4.47** | 8/8 |
+| `ez_ignited` | −5.0 | −0.53 | −2.17 | 6/8 |
+| `mid_spread` | −1.3 | −0.18 | −1.25 | 4/8 |
+| `saturated` | −0.8 | −0.16 | −1.10 | 4/8 |
+
+This is §3.4's "effective control requires early intervention" with an effect size. It also means
+`d_ctrl` at `mid_spread` and `saturated` scores metric response to an actuator that is not moving
+the seizure, so no metric ranking at those branches is interpretable.
+
+**2. A per-channel seizure state is redundant.** A leadfield-weighted per-channel target
+`s_c = Σ w_cn z_n / Σ w_cn` correlates with the single network scalar at a median **0.996**
+(`pre_onset`), **0.995** (`ez_ignited`), **0.982** (`mid_spread`) across all 62 channels under
+`|L|` weights. Volume conduction is broad enough that every channel sees nearly the same weighted
+fraction. So the target is network-level, and the `|L|` against `L²` weighting question — coherent
+against incoherent source summation — never has to be settled.
+
+**3. The branch label is a weak proxy for the state.** `n_seizing` at h = 3 s, mean ± sd over all
+rollouts: `pre_onset` 11.6 ± 12.1, `ez_ignited` 14.7 ± 12.8, `mid_spread` 22.2 ± 11.4, `saturated`
+26.7 ± 7.6. The within-branch spread is as large as the between-branch separation, and
+`pre_onset` reaches double digits during its own rollout. Conditioning on the branch does not hold
+the seizure state fixed.
+
+**4. The incumbent objective is the best state readout.** R² of each metric against `n_seizing`,
+pooled over the seizure branches: `eeg_ms` 0.897, `line_length` 0.884, `block_ptp` 0.879,
+`band_power` 0.828, `spectral_centroid` 0.462, `synchronization` 0.440 — and `all62` beats the
+`lTCI` set for five of six. Global scalp power sees the seizure at R² = 0.90. §2.3's failure is
+therefore not that the observable is blind to the seizure; it has to be in the coupling.
+
+### The ground truth
+
+```text
+s(t) = (1/N) * count_n[ PTP_n(t-1s, t) > 5 mV ]
+```
+
+`SpreadProfile`'s criterion unchanged, reduced to a network scalar, on the **causal** grid of
+`windowed` rather than that class's window-*centre* one. Its 1 s window is inherited from the
+threshold's calibration — a shorter window measures less peak-to-peak and would silently re-tune
+the 5 mV — so `s` is only defined for `h >= 1 s`, and every state-referenced score starts there.
+
+### Scores
+
+```text
+R2_read      = Var_s(E[M|s]) / Var(M)                      does the metric see the seizure?
+R2_pred(h)   = 1 - Var_replicate(h) / V_state              is the forecast error small against
+                                                           the states being steered between?
+d_ctrl(h)    = dir * mean(dM) / sigma_replicate            does u move the metric?
+d_state(h)   = -mean(ds) / sigma_replicate(s)              does u move the seizure?
+rho(h)       = corr_ij( dM_ij(h), ds_ij(h) )               does moving the metric move it?
+```
+
+`R2_read` is estimated by binning `s` into deciles, so no functional form is imposed and a
+non-monotone metric is not penalised for being non-monotone.
+
+**The `R2_pred` denominator is the substantive change.** The original score divides by the spread
+of whatever states the eight seeds happened to produce *at that branch*, so at `pre_onset` — where
+the trajectories are nearly identical — it is tiny, and at `saturated` — where they are bimodal —
+it is large. The score is therefore set by the trajectory draw and is not comparable across
+branches. `V_state` is the same number everywhere and is the quantity a controller must resolve.
+It is unbounded below, and negative is a real answer: the metric's noise floor at that lookahead is
+wider than the whole span it traverses from healthy to saturated.
+
+**`rho` is the axis the four above leave out**, and the one §2.3 turned on: there the objective
+moved 57 % in the intended direction while regional seizure count stayed at 31/34. `d_ctrl` says a
+metric can be driven and `d_state` says the seizure can be suppressed; only their covariation says
+the first buys the second.
+
+### Superseded
+
+- **Separability** (Cohen's d, healthy against saturated, n = 8) — a two-point approximation of
+  `R2_read` using two of five branches. `separability` stays in `metrics.py` because `controllability`
+  needs its `direction` and `gap`.
+- **Observability** (scalp↔region correlation of the same metric) — it correlated scalp `block_ptp`
+  against a 76-region mean dominated by the ~70 healthy regions, over 3 s at one phase where the
+  state barely moves. `R2_read` asks the same question against a defined ground truth.
+
+### Implementation deltas
+
+| file | change |
+| --- | --- |
+| `metrics.py` | metrics are **per channel**; `seizure_state`, `state_readout_r2`, `state_predictability_r2`, `coupling`, `state_store` |
+| `ensembles.py` | `states` joins `ScoreArchive`; raw-cutoff scalp series stored per channel, pooled on read |
+| `notebooks/state_scoring.py` | the new quantitative notebook, alongside `metric_scoring.py` |
+
+`synchronization` is replaced by **`fc_strength`**, channel `c`'s mean `|corr|` with the other
+channels. Per-channel like the other five, so all six fit one framework and the channel set becomes
+a downstream choice rather than something baked into the reduction. The magnitude is taken because
+the forward operator is signed: two channels straddling a source see the same synchronous activity
+with opposite sign, and averaging the signed correlation cancels exactly the synchrony a seizure is
+characterised by. That the focal set beat `all62` for `synchronization` alone (0.681 against 0.440)
+is the evidence.
+
+Scoring stores per-channel series at the raw cutoff only; the bandwidth sweep stays pooled, since
+six cutoffs of per-channel series would be gigabytes for a question that sweep does not ask.
+Series round-trip through float32 — they are scores off a float32 region store, not raw data.
+
+**Vocabulary.** The scoring layer now says **trajectory** (one realisation of the disease course),
+**state** `x0` (a trajectory frozen at a branch), **replicate** (one noise realisation from that
+state). Parent/child named the operation but not the statistics, which is what every formula is
+about. `EnsembleConfig` and the manifest keep the generation-side names.
+
 ## Known confounds
 
 **Windowed metrics inflate short-`h` scores.** For `h` shorter than the metric window, the trailing

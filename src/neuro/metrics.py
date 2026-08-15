@@ -7,7 +7,8 @@ import numpy as np
 from scipy.signal import detrend
 
 from neuro.filtering import causal_filter, design_bandpass_sos, design_lowpass_sos
-from utils.processing import band_energy, compute_psd, synchronization
+from neuro.seizure import SEIZURE_PTP_MV, SPREAD_WINDOW_S
+from utils.processing import band_energy, compute_psd
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
@@ -26,12 +27,12 @@ BASELINE_FINE_UNTIL_S = 0.5
 def windowed(
     signals: FloatArray,
     fs: float,
-    reduce: Callable[[FloatArray, float], float],
+    reduce: Callable[[FloatArray, float], FloatArray],
     *,
     window_s: float,
     hop_s: float = DEFAULT_HOP_S,
 ) -> tuple[FloatArray, FloatArray]:
-    """Slide a **trailing** window over ``signals`` and reduce each block to a scalar.
+    """Slide a **trailing** window over ``signals`` and reduce each block per channel.
 
     Windows are causal: the point reported at time ``t`` is computed from the samples in
     ``(t - window_s, t]``, and ``t`` is the instant the value first becomes available. So the
@@ -46,7 +47,7 @@ def windowed(
     fs
         Sampling rate in Hz.
     reduce
-        Maps one ``(n_channels, n_window)`` block and ``fs`` to a scalar.
+        Maps one ``(n_channels, n_window)`` block and ``fs`` to one value per channel.
     window_s
         Window length in seconds.
     hop_s
@@ -58,14 +59,15 @@ def windowed(
         Window-end times in seconds since the start of ``signals``, shape ``(n_windows,)``.
         Empty if ``signals`` is shorter than one window.
     values
-        The reduction of each window, shape ``(n_windows,)``.
+        The reduction of each window, shape ``(n_channels, n_windows)``.
     """
     n_window = round(window_s * fs)
     n_hop = round(hop_s * fs)
     starts = np.arange(0, signals.shape[1] - n_window + 1, n_hop)
 
     times = (starts + n_window) / fs
-    values = np.array([reduce(signals[:, s : s + n_window], fs) for s in starts], dtype=np.float64)
+    columns = [np.asarray(reduce(signals[:, s : s + n_window], fs), dtype=np.float64) for s in starts]
+    values = np.stack(columns, axis=-1) if columns else np.empty((signals.shape[0], 0), dtype=np.float64)
     return times.astype(np.float64), values
 
 
@@ -82,15 +84,17 @@ class Metric:
         metric needing a window longer than the control period is unusable whatever else it
         scores.
     reduce
-        The per-window reduction, ``(block, fs) -> float``.
+        The per-window reduction, ``(block, fs) -> (n_channels,)``.
 
-    Every reduction pools over channels with a plain mean, so the pooling convention is shared
-    and the caller's choice of channel slice is a clean second axis.
+    Reductions are **per channel**, and pooling to a scalar is a downstream choice
+    (:meth:`pooled`). Metrics are read off a channel at a time because that is how they are
+    defined, and collapsing them at source would throw away the spatial structure a focal
+    seizure lives in.
     """
 
     name: str
     window_s: float
-    reduce: Callable[[FloatArray, float], float]
+    reduce: Callable[[FloatArray, float], FloatArray]
 
     def __call__(
         self,
@@ -99,37 +103,61 @@ class Metric:
         *,
         hop_s: float = DEFAULT_HOP_S,
     ) -> tuple[FloatArray, FloatArray]:
-        """Score ``signals`` on this metric's own window, returning ``(times, values)``."""
+        """Score ``signals`` per channel, returning ``(times, (n_channels, n_windows))``."""
         return windowed(signals, fs, self.reduce, window_s=self.window_s, hop_s=hop_s)
 
-
-def _block_ptp(block: FloatArray, _fs: float) -> float:
-    """Mean over channels of the block's peak-to-peak amplitude."""
-    return float(np.mean(np.ptp(block, axis=1)))
-
-
-def _line_length(block: FloatArray, _fs: float) -> float:
-    """Mean absolute sample-to-sample difference -- line length as a per-sample density."""
-    return float(np.mean(np.abs(np.diff(block, axis=1))))
-
-
-def _eeg_ms(block: FloatArray, _fs: float) -> float:
-    """Mean square over channels and samples -- the incumbent MPC objective."""
-    return float(np.mean(block**2))
+    def pooled(
+        self,
+        signals: FloatArray,
+        fs: float,
+        *,
+        hop_s: float = DEFAULT_HOP_S,
+    ) -> tuple[FloatArray, FloatArray]:
+        """Score ``signals`` and average over channels, returning ``(times, (n_windows,))``."""
+        times, values = self(signals, fs, hop_s=hop_s)
+        return times, values.mean(axis=0)
 
 
-def _band_power(block: FloatArray, fs: float) -> float:
-    """Mean over channels of the un-normalised PSD integral over :data:`SEIZURE_BAND_HZ`."""
-    return float(np.mean(band_energy(block, 1000.0 / fs, band=SEIZURE_BAND_HZ, normalize=False)))
+def _block_ptp(block: FloatArray, _fs: float) -> FloatArray:
+    """Per-channel peak-to-peak amplitude of the block."""
+    return np.ptp(block, axis=1)
 
 
-def _synchronization(block: FloatArray, _fs: float) -> float:
-    """Mean off-diagonal channel correlation -- the scalar reduction of the FC matrix."""
-    return synchronization(block)
+def _line_length(block: FloatArray, _fs: float) -> FloatArray:
+    """Per-channel mean absolute sample-to-sample difference -- line length as a density."""
+    return np.abs(np.diff(block, axis=1)).mean(axis=1)
 
 
-def _spectral_centroid(block: FloatArray, fs: float) -> float:
-    """PSD-weighted mean frequency in Hz over :data:`CENTROID_BAND_HZ`.
+def _eeg_ms(block: FloatArray, _fs: float) -> FloatArray:
+    """Per-channel mean square -- the incumbent MPC objective, before pooling."""
+    return (block**2).mean(axis=1)
+
+
+def _band_power(block: FloatArray, fs: float) -> FloatArray:
+    """Per-channel un-normalised PSD integral over :data:`SEIZURE_BAND_HZ`."""
+    return band_energy(block, 1000.0 / fs, band=SEIZURE_BAND_HZ, normalize=False)
+
+
+def _fc_strength(block: FloatArray, _fs: float) -> FloatArray:
+    """Per-channel FC node strength: mean ``|correlation|`` with the other channels.
+
+    The magnitude is taken because the EEG forward operator is signed, so two channels
+    straddling a source see the *same* synchronous activity with opposite sign. Averaging the
+    signed correlation -- as :func:`utils.processing.synchronization` does -- cancels exactly
+    the synchrony a seizure is characterised by.
+
+    Pooling this over channels gives the magnitude analogue of that scalar, so the metric is
+    both a per-channel quantity and a drop-in for the network synchrony index.
+    """
+    if block.shape[0] < 2:  # noqa: PLR2004
+        return np.full(block.shape[0], np.nan)
+    corr = np.abs(np.corrcoef(block))
+    np.fill_diagonal(corr, np.nan)
+    return np.nanmean(corr, axis=1)
+
+
+def _spectral_centroid(block: FloatArray, fs: float) -> FloatArray:
+    """Per-channel PSD-weighted mean frequency in Hz over :data:`CENTROID_BAND_HZ`.
 
     Bounded well below Nyquist on purpose: the plant's noise is white on ``x5'``, so a
     full-band centroid at 10 kHz would track that tail rather than any physiology.
@@ -138,13 +166,12 @@ def _spectral_centroid(block: FloatArray, fs: float) -> float:
     low, high = CENTROID_BAND_HZ
     mask = (freqs >= low) & (freqs <= high)
     weight = psd[:, mask].sum(axis=1)
-    centroid = np.divide(
+    return np.divide(
         psd[:, mask] @ freqs[mask],
         weight,
         out=np.zeros_like(weight),
         where=weight > 0,
     )
-    return float(np.mean(centroid))
 
 
 METRICS: dict[str, Metric] = {
@@ -154,81 +181,140 @@ METRICS: dict[str, Metric] = {
         Metric("line_length", 0.1, _line_length),
         Metric("eeg_ms", 0.1, _eeg_ms),
         Metric("band_power", 0.5, _band_power),
-        Metric("synchronization", 0.5, _synchronization),
+        Metric("fc_strength", 0.5, _fc_strength),
         Metric("spectral_centroid", 0.5, _spectral_centroid),
     )
 }
+
+
+def seizure_state(
+    region_lfp: FloatArray,
+    fs: float,
+    *,
+    window_s: float = SPREAD_WINDOW_S,
+    hop_s: float = DEFAULT_HOP_S,
+    threshold: float = SEIZURE_PTP_MV,
+) -> tuple[FloatArray, FloatArray]:
+    """Fraction of regions seizing over time -- the ground truth the metrics are scored against.
+
+    The network reduction of :class:`~neuro.seizure.SpreadProfile`'s criterion, on the causal
+    grid of :func:`windowed` rather than that class's window-*centre* one, so it lines up sample
+    for sample with a metric read off the scalp at the same instant.
+
+    Network rather than per-channel by measurement: a leadfield-weighted per-channel seizure
+    state correlates with this single scalar at a median 0.98 across the 62 channels at the
+    branches where stimulation has any effect, so the channel axis carries no target information
+    there and only costs resolution.
+
+    ``window_s`` defaults to :data:`~neuro.seizure.SPREAD_WINDOW_S` because ``threshold``
+    is calibrated for that window -- a shorter one measures less peak-to-peak and would silently
+    re-tune the criterion.
+
+    Parameters
+    ----------
+    region_lfp
+        Region LFP ``y = x2 - x3`` in mV, shape ``(n_regions, n_samples)``.
+    fs
+        Sampling rate of ``region_lfp`` in Hz.
+
+    Returns
+    -------
+    times
+        Window-end times in seconds since the start of ``region_lfp``.
+    state
+        Fraction of regions above ``threshold`` in each window, in ``[0, 1]``.
+    """
+    times, ptp = windowed(region_lfp, fs, lambda block, _: np.ptp(block, axis=1), window_s=window_s, hop_s=hop_s)
+    return times, (ptp > threshold).mean(axis=0)
 
 
 @dataclass(frozen=True)
 class Ensemble:
     """One metric's value across one branch and arm, on the lookahead grid.
 
+    Vocabulary, used throughout the scoring layer:
+
+    - **trajectory** -- one independent realisation of the disease course (one plant seed);
+    - **state** ``x0`` -- a trajectory frozen at a branch time, the thing a predictor conditions on;
+    - **replicate** -- one noise realisation rolled out from a state.
+
+    Rows are ordered ``trajectory * n_replicates + replicate``, so one branch and arm has one
+    state per trajectory and :attr:`by_state` recovers the grouping.
+
     Attributes
     ----------
     times
         Lookahead `h` since the branch, in seconds, shape ``(n_times,)``.
     values
-        Metric value per rollout, shape ``(n_parents * n_children, n_times)``, in the store's
-        row order.
-    n_children
-        Rollouts per parent, which is what makes the parent grouping recoverable.
+        Metric value per rollout, shape ``(n_states * n_replicates, ..., n_times)``, in the
+        store's row order. Trailing axes are free: a pooled metric is ``(n_rollouts, n_times)``
+        and a per-channel one ``(n_rollouts, n_channels, n_times)``.
+    n_replicates
+        Rollouts per state, which is what makes the state grouping recoverable.
     """
 
     times: FloatArray
     values: FloatArray
-    n_children: int
+    n_replicates: int
 
     def __post_init__(self) -> None:
-        """Reject a rollout count that is not a whole number of equal-sized parents."""
-        if self.values.shape[0] % self.n_children:
-            msg = f"{self.values.shape[0]} rollouts is not a whole number of parents at {self.n_children} children each"
+        """Reject a rollout count that is not a whole number of equal-sized states."""
+        if self.values.shape[0] % self.n_replicates:
+            msg = (
+                f"{self.values.shape[0]} rollouts is not a whole number of states "
+                f"at {self.n_replicates} replicates each"
+            )
             raise ValueError(msg)
 
     @property
-    def n_parents(self) -> int:
-        """Parents in this ensemble."""
-        return self.values.shape[0] // self.n_children
+    def n_states(self) -> int:
+        """Distinct branch states in this ensemble, one per trajectory."""
+        return self.values.shape[0] // self.n_replicates
 
     @property
-    def by_parent(self) -> FloatArray:
-        """Values regrouped as ``(n_parents, n_children, n_times)``."""
-        return self.values.reshape(self.n_parents, self.n_children, -1)
+    def by_state(self) -> FloatArray:
+        """Values regrouped as ``(n_states, n_replicates, ...)``, trailing axes preserved."""
+        return self.values.reshape(self.n_states, self.n_replicates, *self.values.shape[1:])
 
 
-def variance_ratio(values: FloatArray, n_children: int) -> FloatArray:
-    """Share of variance that knowing the parent removes, over the leading rollout axis.
+def variance_ratio(values: FloatArray, n_replicates: int) -> FloatArray:
+    """Share of variance that knowing the state removes, over the leading rollout axis.
 
-    ``1 - Var_within_ensemble / Var_total``: the numerator is what is still unknown once ``x0``
-    is fixed, the denominator what was unknown before. This is a ceiling on any predictor, and
+    ``1 - Var_replicate / Var_total``: the numerator is what is still unknown once ``x0`` is
+    fixed, the denominator what was unknown before. This is a ceiling on any predictor, and
     being model-free it does not depend on the state of the predictor pipeline.
 
-    Trailing axes are carried through untouched, so the one formula serves both a scalar metric
-    series ``(n_rollouts, n_times)`` and the per-channel raw-signal baselines
-    ``(n_rollouts, n_channels, n_times)``.
+    Trailing axes are carried through untouched, so the one formula serves a pooled metric
+    series ``(n_rollouts, n_times)``, a per-channel one ``(n_rollouts, n_channels, n_times)``
+    and the raw-signal baselines alike.
 
-    Population variances (``ddof=0``) on purpose: the design is balanced, so within-parent and
-    between-parent variance then sum exactly to the total and the score lands in ``[0, 1]``.
+    Population variances (``ddof=0``) on purpose: the design is balanced, so within-state and
+    between-state variance then sum exactly to the total and the score lands in ``[0, 1]``.
     Use :func:`sigma_ens` for the spread as an *estimate* in native units.
     """
-    by_parent = values.reshape(values.shape[0] // n_children, n_children, *values.shape[1:])
-    within = by_parent.var(axis=1).mean(axis=0)
+    by_state = values.reshape(values.shape[0] // n_replicates, n_replicates, *values.shape[1:])
+    within = by_state.var(axis=1).mean(axis=0)
     total = values.var(axis=0)
     return 1.0 - np.divide(within, total, out=np.full_like(total, np.nan), where=total > 0)
 
 
 def predictability_r2(ens: Ensemble) -> FloatArray:
-    """Share of the metric's variance that knowing the parent state removes, per lookahead."""
-    return variance_ratio(ens.values, ens.n_children)
+    """Share of the metric's variance that knowing the branch state removes, per lookahead.
+
+    Its denominator is the spread *across the states of this one branch*, which is whatever the
+    trajectory draw happened to produce, so the score is not comparable between branches. See
+    :func:`state_predictability_r2` for the version referenced to a stated denominator.
+    """
+    return variance_ratio(ens.values, ens.n_replicates)
 
 
 def sigma_ens(ens: Ensemble) -> FloatArray:
-    """Within-ensemble standard deviation in the metric's native units, per lookahead.
+    """Within-state standard deviation in the metric's native units, per lookahead.
 
     The spread that survives knowing the branch state -- the noise a causal controller cannot
     resolve, and so the honest denominator for :func:`controllability`.
     """
-    return np.sqrt(ens.by_parent.var(axis=1, ddof=1).mean(axis=0))
+    return np.sqrt(ens.by_state.var(axis=1, ddof=1).mean(axis=0))
 
 
 def spread_reference(ens: Ensemble) -> tuple[FloatArray, FloatArray]:
@@ -236,6 +322,69 @@ def spread_reference(ens: Ensemble) -> tuple[FloatArray, FloatArray]:
     return (
         np.percentile(ens.values, 5, axis=0),
         np.percentile(ens.values, 95, axis=0),
+    )
+
+
+class StateReadout(NamedTuple):
+    """How much of a metric's variation the seizure state accounts for.
+
+    Attributes
+    ----------
+    r2
+        ``1 - E[Var(M | s)] / Var(M)``: the share of the metric's variance that knowing the
+        seizure state removes. Trailing axes of the metric are carried through, so a
+        per-channel metric gives one score per channel.
+    explained_var
+        ``Var(M) - E[Var(M | s)]`` in the metric's **native units squared** -- the numerator's
+        counterpart, and the stated denominator :func:`state_predictability_r2` references a
+        forecast error against.
+    bin_state
+        Mean seizure state in each bin, shape ``(n_bins,)``.
+    bin_metric
+        Mean metric value in each bin -- with ``bin_state``, the calibration curve.
+    """
+
+    r2: FloatArray
+    explained_var: FloatArray
+    bin_state: FloatArray
+    bin_metric: FloatArray
+
+
+def state_readout_r2(metric: FloatArray, state: FloatArray, *, n_bins: int = 10) -> StateReadout:
+    """Score how well a metric reads the seizure state, by conditional variance reduction.
+
+    Binned rather than fitted, so no functional form is imposed: a metric that tracks the state
+    non-monotonically is scored on what it resolves, not on how linear it is. Bins are
+    **quantiles** of ``state``, so each carries a comparable number of observations however the
+    states are distributed -- which they are not evenly, the branches being clustered.
+
+    This is the answer to "does the controller's observable see the seizure at all", and it is
+    the axis that :func:`separability`'s two-point Cohen's d approximates with only the healthy
+    and saturated ends.
+
+    Parameters
+    ----------
+    metric
+        Metric values, shape ``(n_obs, ...)``, pooled over rollouts and times.
+    state
+        Matching seizure state per observation, shape ``(n_obs,)``.
+    n_bins
+        Quantile bins of ``state`` to condition on.
+    """
+    edges = np.quantile(state, np.linspace(0.0, 1.0, n_bins + 1))
+    index = np.clip(np.searchsorted(edges[1:-1], state, side="right"), 0, n_bins - 1)
+
+    counts = np.bincount(index, minlength=n_bins)
+    occupied = counts > 0
+    grouped = [metric[index == b] for b in range(n_bins)]
+
+    within = sum((counts[b] / len(state)) * grouped[b].var(axis=0) for b in range(n_bins) if occupied[b])
+    total = metric.var(axis=0)
+    return StateReadout(
+        r2=1.0 - np.divide(within, total, out=np.full_like(total, np.nan), where=total > 0),
+        explained_var=total - within,
+        bin_state=np.array([state[index == b].mean() if occupied[b] else np.nan for b in range(n_bins)]),
+        bin_metric=np.array([grouped[b].mean(axis=0) if occupied[b] else np.nan for b in range(n_bins)]),
     )
 
 
@@ -262,8 +411,8 @@ class Separability(NamedTuple):
 
 def separability(healthy: Ensemble, saturated: Ensemble) -> Separability:
     """Score a metric's healthy-against-saturated contrast, and read off its recovery direction."""
-    h = healthy.by_parent.mean(axis=1)
-    s = saturated.by_parent.mean(axis=1)
+    h = healthy.by_state.mean(axis=1)
+    s = saturated.by_state.mean(axis=1)
     n_h, n_s = h.shape[0], s.shape[0]
 
     pooled = np.sqrt(((n_h - 1) * h.var(axis=0, ddof=1) + (n_s - 1) * s.var(axis=0, ddof=1)) / (n_h + n_s - 2))
@@ -324,6 +473,62 @@ def controllability(
         relative=direction
         * np.divide(delta_bar, np.abs(gap), out=np.full_like(delta_bar, np.nan), where=np.abs(gap) > 0),
     )
+
+
+def state_predictability_r2(ens: Ensemble, explained_var: FloatArray) -> FloatArray:
+    """Forecast error at each lookahead, referenced to the metric's seizure-state range.
+
+    ``1 - Var_replicate(h) / explained_var``. Same numerator as :func:`predictability_r2` -- the
+    spread that survives fixing ``x0``, which is the irreducible forecast error -- against a
+    **stated** denominator instead of an incidental one. ``predictability_r2`` divides by the
+    spread of whatever states this branch's trajectories happened to land in, so its value is
+    set by the trajectory draw and is not comparable between branches; ``explained_var`` from
+    :func:`state_readout_r2` is the same number at every branch.
+
+    That also makes the score operational rather than descriptive: it asks whether the forecast
+    error is small against the state difference a controller is trying to steer between, which
+    is what an MPC needs, rather than whether the metric is accurately forecastable in its own
+    units, which nothing needs.
+
+    Unbounded below, and negative is a real answer: the metric's noise floor is wider than the
+    span of seizure states it is supposed to distinguish.
+    """
+    return 1.0 - np.divide(
+        sigma_ens(ens) ** 2,
+        explained_var,
+        out=np.full_like(explained_var, np.nan),
+        where=explained_var > 0,
+    )
+
+
+def coupling(zero_metric: Ensemble, stim_metric: Ensemble, zero_state: Ensemble, stim_state: Ensemble) -> FloatArray:
+    """Correlate the per-rollout metric shift against the per-rollout seizure-state shift.
+
+    ``corr_i(delta M_i, delta s_i)`` over rollouts, where each ``delta`` is the paired
+    stimulated-minus-unstimulated difference of one noise realisation. Positive means the
+    rollouts in which stimulation pushed the metric furthest are the rollouts in which it
+    pushed the seizure furthest -- so steering the metric steers the seizure.
+
+    This is the axis the four in
+    ``docs/predictability_controllability_experiment.md`` leave out, and the one
+    ``tes_field_geometry.md`` §2.3 turned on: there the objective moved 57 % in the intended
+    direction while regional seizure count did not move at all. ``d_ctrl`` scores that a metric
+    *can* be driven and ``d_state`` that the seizure *can* be suppressed; only their covariation
+    says the first buys the second.
+
+    Deliberately blind to the mean effect, which is exactly what ``d_ctrl`` and ``d_state``
+    already report: a command that shifts every rollout by the same constant has no covariation
+    to measure and scores ``NaN``, not zero.
+
+    All four ensembles must be row-aligned -- same trajectories, same replicates, same seeds.
+    """
+    delta_m = stim_metric.values - zero_metric.values
+    delta_s = stim_state.values - zero_state.values
+
+    a = delta_m - delta_m.mean(axis=0)
+    b = delta_s - delta_s.mean(axis=0)
+    norm = np.sqrt((a**2).sum(axis=0) * (b**2).sum(axis=0))
+    return np.divide((a * b).sum(axis=0), norm, out=np.full_like(norm, np.nan), where=norm > 0)
 
 
 def scalp_region_correlation(scalp: Ensemble, region: Ensemble) -> FloatArray:
@@ -391,9 +596,10 @@ def score_store(  # noqa: PLR0913
     *,
     metrics: Mapping[str, Metric],
     channel_sets: Mapping[str, IntArray],
-    n_children: int,
+    n_replicates: int,
     hop_s: float = DEFAULT_HOP_S,
     cutoff_hz: float | None = None,
+    pool: bool = True,
 ) -> tuple[dict[str, FloatArray], dict[tuple[str, str], Ensemble]]:
     """Score every rollout of a ``(n_rollouts, n_channels, n_samples)`` store, in one pass.
 
@@ -403,6 +609,11 @@ def score_store(  # noqa: PLR0913
 
     ``cutoff_hz`` applies the causal low-pass of the bandwidth axis before scoring; ``None`` is
     the raw signal. Filtering happens before the channel slice, so the two axes stay independent.
+
+    ``pool`` averages each metric over its channel set, giving ``Ensemble.values`` of shape
+    ``(n_rollouts, n_times)``; with ``pool=False`` the channel axis is kept and the values are
+    ``(n_rollouts, n_channels, n_times)``. Every score function carries trailing axes through
+    untouched, so both shapes score identically.
 
     Returns
     -------
@@ -423,12 +634,36 @@ def score_store(  # noqa: PLR0913
             block = signals[channels]
             for name, metric in metrics.items():
                 times[name], values = metric(block, fs, hop_s=hop_s)
-                rows[name, set_name].append(values)
+                rows[name, set_name].append(values.mean(axis=0) if pool else values)
 
     return times, {
-        key: Ensemble(times=times[key[0]], values=np.stack(values), n_children=n_children)
+        key: Ensemble(times=times[key[0]], values=np.stack(values), n_replicates=n_replicates)
         for key, values in rows.items()
     }
+
+
+def state_store(
+    store: FloatArray,
+    fs: float,
+    *,
+    hop_s: float = DEFAULT_HOP_S,
+    window_s: float = SPREAD_WINDOW_S,
+) -> tuple[FloatArray, FloatArray]:
+    """Read the seizure state off every rollout of a ``(n_rollouts, n_regions, n_samples)`` store.
+
+    Returns
+    -------
+    times
+        Lookahead grid in seconds since the branch.
+    state
+        Fraction of regions seizing, shape ``(n_rollouts, n_times)``.
+    """
+    times = np.empty(0, dtype=np.float64)
+    rows: list[FloatArray] = []
+    for row in range(store.shape[0]):
+        times, values = seizure_state(np.asarray(store[row], dtype=np.float64), fs, window_s=window_s, hop_s=hop_s)
+        rows.append(values)
+    return times, np.stack(rows)
 
 
 def baseline_r2(
@@ -436,7 +671,7 @@ def baseline_r2(
     fs: float,
     *,
     times: FloatArray,
-    n_children: int,
+    n_replicates: int,
     cutoff_hz: float | None = None,
 ) -> dict[str, FloatArray]:
     """Per-channel predictability of the signal itself, as the reference the metrics are ranked against.
@@ -467,7 +702,7 @@ def baseline_r2(
         if sos is None:
             band.append(sample_at(envelope(raw, fs), fs, times))
 
-    scores = {"waveform": variance_ratio(np.stack(waveform), n_children)}
+    scores = {"waveform": variance_ratio(np.stack(waveform), n_replicates)}
     if sos is None:
-        scores["envelope"] = variance_ratio(np.stack(band), n_children)
+        scores["envelope"] = variance_ratio(np.stack(band), n_replicates)
     return scores

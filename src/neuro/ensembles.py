@@ -14,7 +14,15 @@ from simulate.config import load_config as load_sim_config
 from neuro.connectome import Connectome
 from neuro.eeg import build_eeg_gain, focal_channels
 from neuro.jansen_rit import JansenRitDynamics, lfp, simulate_network
-from neuro.metrics import DEFAULT_HOP_S, METRICS, Ensemble, baseline_grid, baseline_r2, score_store
+from neuro.metrics import (
+    DEFAULT_HOP_S,
+    METRICS,
+    Ensemble,
+    baseline_grid,
+    baseline_r2,
+    score_store,
+    state_store,
+)
 from neuro.seizure import A_HEALTHY, build_seizure_a_gains, spread_profile_from_lfp
 
 if TYPE_CHECKING:
@@ -450,7 +458,7 @@ CACHE_DIR = "cache_1khz"
 
 RAW = "raw"
 CUTOFFS_HZ: tuple[float | None, ...] = (None, 500.0, 100.0, 45.0, 20.0, 10.0)
-SWEPT_METRICS: tuple[str, ...] = ("block_ptp", "line_length", "eeg_ms", "synchronization")
+SWEPT_METRICS: tuple[str, ...] = ("block_ptp", "line_length", "eeg_ms", "fc_strength")
 
 
 def cutoff_key(cutoff: float | None) -> str:
@@ -511,8 +519,15 @@ class ScoreArchive:
     baseline_times
         Lookahead grid the baselines are read on. Finer than the metric grid at short lookahead,
         which is where waveform predictability lives and dies.
-    n_children
-        Rollouts per parent, carried so an :class:`~neuro.metrics.Ensemble` can be rebuilt.
+    states
+        ``(branch, arm) -> (n_rollouts, n_times)``: the fraction of regions seizing, from
+        :func:`~neuro.metrics.seizure_state`. The ground truth every metric is scored against,
+        and -- read on the ``d1`` arm against the ``zero`` one -- the only measurement of whether
+        the probe moves the seizure rather than merely the observable.
+    state_times
+        Lookahead grid the seizure state is read on.
+    n_replicates
+        Rollouts per state, carried so an :class:`~neuro.metrics.Ensemble` can be rebuilt.
     manifest
         The generating run's manifest.
     """
@@ -521,7 +536,9 @@ class ScoreArchive:
     series: dict[tuple[str, str, str, str, str, str], FloatArray]
     baselines: dict[tuple[str, str, str], FloatArray]
     baseline_times: FloatArray
-    n_children: int
+    states: dict[tuple[str, str], FloatArray]
+    state_times: FloatArray
+    n_replicates: int
     manifest: dict[str, Any]
 
     def ensemble(  # noqa: PLR0913
@@ -533,11 +550,37 @@ class ScoreArchive:
         channel_set: str,
         cutoff: str = RAW,
     ) -> Ensemble:
-        """Rebuild one scored ensemble, ready for the score functions in :mod:`neuro.metrics`."""
+        """Rebuild one scored ensemble, pooled over channels, ready for the score functions.
+
+        The raw-cutoff scalp series are stored per channel; this averages them on read, so the
+        pooled view is identical to what a channel-mean metric would have produced.
+        """
+        values = self.series[space, branch, arm, metric, channel_set, cutoff]
         return Ensemble(
             times=self.times[metric],
-            values=self.series[space, branch, arm, metric, channel_set, cutoff],
-            n_children=self.n_children,
+            values=np.asarray(values.mean(axis=1) if values.ndim == 3 else values, dtype=np.float64),  # noqa: PLR2004
+            n_replicates=self.n_replicates,
+        )
+
+    def channel_ensemble(self, branch: str, arm: str, metric: str, channel_set: str = "all62") -> Ensemble:
+        """Rebuild one scored ensemble keeping the channel axis, ``(n_rollouts, n_channels, n_times)``.
+
+        Only the unfiltered scalp series are stored per channel -- the bandwidth sweep is a
+        pooled axis, and 6 cutoffs of per-channel series would be gigabytes for a question the
+        sweep does not ask.
+        """
+        return Ensemble(
+            times=self.times[metric],
+            values=np.asarray(self.series["scalp", branch, arm, metric, channel_set, RAW], dtype=np.float64),
+            n_replicates=self.n_replicates,
+        )
+
+    def state(self, branch: str, arm: str) -> Ensemble:
+        """Rebuild the seizure-state ensemble of one branch and arm."""
+        return Ensemble(
+            times=self.state_times,
+            values=np.asarray(self.states[branch, arm], dtype=np.float64),
+            n_replicates=self.n_replicates,
         )
 
     def baseline(self, branch: str, name: str, channel_set: str, cutoff: str = RAW) -> FloatArray:
@@ -591,7 +634,7 @@ def score_ensemble_dir(
     channel_sets = {name: np.asarray(idx, dtype=np.intp) for name, idx in manifest["channel_sets"].items()}
     branches = [b["name"] for b in manifest["branches"]]
     arms = [a["name"] for a in manifest["arms"]]
-    n_children = int(manifest["n_children"])
+    n_replicates = int(manifest["n_children"])
     fs = float(manifest["fs"])
 
     swept = {name: METRICS[name] for name in SWEPT_METRICS}
@@ -600,6 +643,8 @@ def score_ensemble_dir(
     times: dict[str, FloatArray] = {}
     series: dict[tuple[str, str, str, str, str, str], FloatArray] = {}
     baselines: dict[tuple[str, str, str], FloatArray] = {}
+    states: dict[tuple[str, str], FloatArray] = {}
+    state_times = np.empty(0, dtype=np.float64)
 
     for branch in branches:
         for arm in arms:
@@ -611,35 +656,40 @@ def score_ensemble_dir(
                     fs,
                     metrics=METRICS if cutoff is None else swept,
                     channel_sets=channel_sets,
-                    n_children=n_children,
+                    n_replicates=n_replicates,
                     hop_s=hop_s,
                     cutoff_hz=cutoff,
+                    pool=cutoff is not None,
                 )
                 times.update(metric_times)
                 for (name, set_name), ens in scored.items():
                     series["scalp", branch, arm, name, set_name, key] = ens.values
                 if arm == arms[0]:
-                    scored_baselines = baseline_r2(scalp, fs, times=grid, n_children=n_children, cutoff_hz=cutoff)
+                    scored_baselines = baseline_r2(scalp, fs, times=grid, n_replicates=n_replicates, cutoff_hz=cutoff)
                     baselines.update({(branch, name, key): r2 for name, r2 in scored_baselines.items()})
 
             region = np.load(region_path(out_dir, branch, arm), mmap_mode="r")
+            region_fs = float(manifest["region_fs"])
             _, region_scored = score_store(
                 region,
-                float(manifest["region_fs"]),
+                region_fs,
                 metrics=METRICS,
                 channel_sets={REGION_SET: np.arange(region.shape[1], dtype=np.intp)},
-                n_children=n_children,
+                n_replicates=n_replicates,
                 hop_s=hop_s,
             )
             for (name, set_name), ens in region_scored.items():
                 series["region", branch, arm, name, set_name, RAW] = ens.values
+            state_times, states[branch, arm] = state_store(region, region_fs, hop_s=hop_s)
 
     archive = ScoreArchive(
         times=times,
         series=series,
         baselines=baselines,
         baseline_times=grid,
-        n_children=n_children,
+        states=states,
+        state_times=state_times,
+        n_replicates=n_replicates,
         manifest=manifest,
     )
     _save_scores(cache, archive)
@@ -647,13 +697,19 @@ def score_ensemble_dir(
 
 
 def _save_scores(cache: Path, archive: ScoreArchive) -> None:
-    """Flatten a score archive into one compressed npz beside the stores."""
-    payload: dict[str, FloatArray] = {f"series|{'|'.join(key)}": v for key, v in archive.series.items()}
+    """Flatten a score archive into one compressed npz beside the stores.
+
+    Series are narrowed to float32 on the way out. They are scores derived from a float32 region
+    store and a chaotic plant, so the seventh significant digit is not information; keeping the
+    per-channel raw-cutoff series at float64 would double a ~100 MB artefact for none.
+    """
+    payload: dict[str, Any] = {f"series|{'|'.join(key)}": v.astype(np.float32) for key, v in archive.series.items()}
     payload.update({f"baseline|{'|'.join(key)}": v for key, v in archive.baselines.items()})
     payload.update({f"times|{name}": grid for name, grid in archive.times.items()})
+    payload.update({f"state|{'|'.join(key)}": v.astype(np.float32) for key, v in archive.states.items()})
     payload["baseline_times"] = archive.baseline_times
-    # ty cannot tell a **dict of arrays apart from savez's own bool keyword arguments.
-    np.savez_compressed(cache, **payload)  # ty:ignore[invalid-argument-type]
+    payload["state_times"] = archive.state_times
+    np.savez_compressed(cache, **payload)
 
 
 def _load_scores(cache: Path, manifest: dict[str, Any]) -> ScoreArchive:
@@ -661,18 +717,25 @@ def _load_scores(cache: Path, manifest: dict[str, Any]) -> ScoreArchive:
     times: dict[str, FloatArray] = {}
     series: dict[tuple[str, str, str, str, str, str], FloatArray] = {}
     baselines: dict[tuple[str, str, str], FloatArray] = {}
+    states: dict[tuple[str, str], FloatArray] = {}
     baseline_times = np.empty(0, dtype=np.float64)
+    state_times = np.empty(0, dtype=np.float64)
 
     with np.load(cache) as data:
         for key in data.files:
             kind, _, rest = key.partition("|")
             if kind == "baseline_times":
                 baseline_times = data[key]
+            elif kind == "state_times":
+                state_times = data[key]
             elif kind == "times":
                 times[rest] = data[key]
             elif kind == "baseline":
                 branch, name, cutoff = rest.split("|")
                 baselines[branch, name, cutoff] = data[key]
+            elif kind == "state":
+                branch, arm = rest.split("|")
+                states[branch, arm] = data[key]
             else:
                 space, branch, arm, metric, channel_set, cutoff = rest.split("|")
                 series[space, branch, arm, metric, channel_set, cutoff] = data[key]
@@ -682,6 +745,8 @@ def _load_scores(cache: Path, manifest: dict[str, Any]) -> ScoreArchive:
         series=series,
         baselines=baselines,
         baseline_times=baseline_times,
-        n_children=manifest["n_children"],
+        states=states,
+        state_times=state_times,
+        n_replicates=manifest["n_children"],
         manifest=manifest,
     )

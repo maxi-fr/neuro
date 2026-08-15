@@ -28,7 +28,7 @@ def _sine(freq_hz: float, duration_s: float, amplitude: float = 1.0, n_channels:
 
 
 def test_times_are_window_end_so_the_first_lands_exactly_on_the_window_length() -> None:
-    times, _ = windowed(np.zeros((2, 1000)), _FS, lambda b, _fs: float(b.sum()), window_s=0.1, hop_s=0.05)
+    times, _ = windowed(np.zeros((2, 1000)), _FS, lambda b, _fs: b.sum(axis=1), window_s=0.1, hop_s=0.05)
 
     assert times[0] == pytest.approx(0.1)
     assert np.allclose(np.diff(times), 0.05)
@@ -36,9 +36,9 @@ def test_times_are_window_end_so_the_first_lands_exactly_on_the_window_length() 
 
 def test_window_count_matches_the_trailing_grid() -> None:
     # 1.0 s of samples, 0.1 s window, 0.05 s hop -> starts at 0, 50, ..., 900 -> 19 windows.
-    times, values = windowed(np.zeros((2, 1000)), _FS, lambda b, _fs: float(b.sum()), window_s=0.1, hop_s=0.05)
+    times, values = windowed(np.zeros((2, 1000)), _FS, lambda b, _fs: b.sum(axis=1), window_s=0.1, hop_s=0.05)
 
-    assert len(times) == len(values) == 19
+    assert len(times) == values.shape[1] == 19
 
 
 def test_windows_are_causal_and_never_see_the_future() -> None:
@@ -49,8 +49,8 @@ def test_windows_are_causal_and_never_see_the_future() -> None:
 
     times, values = windowed(signals, _FS, METRICS["eeg_ms"].reduce, window_s=0.1, hop_s=0.05)
 
-    assert np.all(values[times <= 1.0] == 0.0)
-    assert values[-1] == pytest.approx(1.0)
+    assert np.all(values[:, times <= 1.0] == 0.0)
+    assert values[:, -1] == pytest.approx(1.0)
 
 
 def test_the_first_window_covering_the_step_is_the_one_ending_just_after_it() -> None:
@@ -58,27 +58,34 @@ def test_the_first_window_covering_the_step_is_the_one_ending_just_after_it() ->
     signals[:, 1000:] = 1.0
 
     times, values = windowed(signals, _FS, METRICS["eeg_ms"].reduce, window_s=0.1, hop_s=0.05)
-    first_nonzero = times[np.flatnonzero(values > 0.0)[0]]
+    first_nonzero = times[np.flatnonzero(values[0] > 0.0)[0]]
 
     assert first_nonzero == pytest.approx(1.05)
 
 
 def test_a_signal_shorter_than_the_window_yields_an_empty_grid() -> None:
-    times, values = windowed(np.zeros((2, 50)), _FS, lambda b, _fs: float(b.sum()), window_s=0.1, hop_s=0.05)
+    times, values = windowed(np.zeros((2, 50)), _FS, lambda b, _fs: np.ptp(b, axis=1), window_s=0.1, hop_s=0.05)
 
-    assert times.shape == values.shape == (0,)
+    assert times.shape == (0,)
+    assert values.shape == (2, 0)
 
 
 def test_a_signal_exactly_one_window_long_yields_one_point() -> None:
-    times, values = windowed(np.zeros((2, 100)), _FS, lambda b, _fs: float(b.sum()), window_s=0.1, hop_s=0.05)
+    times, values = windowed(np.zeros((2, 100)), _FS, lambda b, _fs: b.sum(axis=1), window_s=0.1, hop_s=0.05)
 
-    assert len(times) == len(values) == 1
+    assert len(times) == values.shape[1] == 1
     assert times[0] == pytest.approx(0.1)
 
 
 def test_each_window_sees_exactly_window_samples() -> None:
     widths: list[int] = []
-    windowed(np.zeros((2, 1000)), _FS, lambda b, _fs: widths.append(b.shape[1]) or 0.0, window_s=0.1, hop_s=0.05)
+    windowed(
+        np.zeros((2, 1000)),
+        _FS,
+        lambda b, _fs: widths.append(b.shape[1]) or np.zeros(b.shape[0]),
+        window_s=0.1,
+        hop_s=0.05,
+    )
 
     assert set(widths) == {100}
 
@@ -123,15 +130,25 @@ def test_band_power_passes_an_in_band_tone_and_rejects_an_out_of_band_one() -> N
     assert np.median(in_band) > 100.0 * np.median(out_of_band)
 
 
-def test_synchronization_separates_identical_channels_from_independent_ones() -> None:
+def test_fc_strength_separates_identical_channels_from_independent_ones() -> None:
     identical = np.tile(_RNG.normal(size=(1, 3000)), (6, 1))
     independent = _RNG.normal(size=(6, 3000))
 
-    _, locked = METRICS["synchronization"](identical, _FS)
-    _, unlocked = METRICS["synchronization"](independent, _FS)
+    _, locked = METRICS["fc_strength"](identical, _FS)
+    _, unlocked = METRICS["fc_strength"](independent, _FS)
 
     assert np.median(locked) == pytest.approx(1.0, abs=1e-6)
     assert abs(np.median(unlocked)) < 0.2
+
+
+def test_fc_strength_is_blind_to_the_sign_a_channel_sees_a_shared_source_with() -> None:
+    """The EEG forward operator is signed: an inverted channel is synchronous, not unrelated."""
+    source = _RNG.normal(size=(1, 3000))
+    flipped = np.tile(source, (6, 1)) * np.array([1.0, -1.0, 1.0, -1.0, 1.0, -1.0])[:, None]
+
+    _, values = METRICS["fc_strength"](flipped, _FS)
+
+    assert np.median(values) == pytest.approx(1.0, abs=1e-6)
 
 
 def test_spectral_centroid_recovers_the_frequency_of_a_pure_tone() -> None:
@@ -156,7 +173,7 @@ def test_every_metric_returns_a_finite_series_on_the_same_grid(name: str) -> Non
 
     times, values = METRICS[name](signals, _FS)
 
-    assert times.shape == values.shape
+    assert values.shape == (8, len(times))
     assert len(times) > 0
     assert np.all(np.isfinite(values))
     assert times[0] == pytest.approx(METRICS[name].window_s)

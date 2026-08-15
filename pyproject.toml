@@ -102,6 +102,7 @@ convention = "numpy"
     "PLR0915", # Too many statements (complex layout and plotting code in cells)
     "C901",    # Too complex (conditional logic for selecting stages in notebooks)
     "PLR0912", # Too many branches (conditional validation switches in notebooks)
+    "PD011",   # `.values` on neuro.metrics.Ensemble is a numpy array, not a DataFrame
 ]
 "tests/*" = [
     "S101",    # assert
