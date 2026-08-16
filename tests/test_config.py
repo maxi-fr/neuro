@@ -30,13 +30,14 @@ def test_defaults_applied_for_missing_sections() -> None:
 def test_known_keys_parsed() -> None:
     """Test Known keys parsed."""
     raw = {
-        "simulation": {"dt": 1e-4, "downsample": 100, "n_steps": 50000, "data_path": "data/x"},
+        "simulation": {"dt": 1e-4, "downsample": 100, "n_steps": 50000, "data_path": "data/x", "cutoff_hz": 45.0},
         "model": {"n_y": 14, "latent_dim": 16},
         "training": {"epochs": 5, "scaler": "robust"},
     }
     cfg = NNPredictorConfig.from_dict(raw)
     assert cfg.simulation.downsample == 100
     assert cfg.simulation.n_steps == 50000
+    assert cfg.simulation.cutoff_hz == 45.0
     assert cfg.model.n_y == 14
     assert cfg.model.latent_dim == 16
     assert cfg.training.scaler == "robust"

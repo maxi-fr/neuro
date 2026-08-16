@@ -156,3 +156,20 @@ def test_artifact_without_projection_is_backward_compatible(tmp_path: Path) -> N
     loaded = MLPArtifact.load(artifact)
     assert loaded.y_pipeline.pca is None
     assert loaded.n_eeg_channels == n_channels
+
+
+def test_load_trajectory_and_prepare_datasets_with_cutoff_hz(tmp_path: Path) -> None:
+    """load_trajectory and prepare_datasets apply custom lowpass cutoff_hz when supplied."""
+    n_eeg, n_controls, n_steps = 4, 2, 200
+    n_y, n_u, horizon = 3, 2, 4
+    file = _write_trajectory(tmp_path / "traj.npz", n_steps, n_eeg, n_controls)
+
+    u, y = load_trajectory(file, n_steps, 2, 1e-4, cutoff_hz=45.0)
+    assert u.shape == (n_steps // 2, n_controls)
+    assert y.shape == (n_steps // 2, n_eeg)
+
+    x_full, y_full, n_channels = prepare_datasets([file], n_steps, 2, n_y, n_u, horizon, 1e-4, cutoff_hz=45.0)
+    assert n_channels == n_eeg
+    x_manual, y_manual = build_dataset_for_trajectory(u, y, n_y, n_u, horizon)
+    np.testing.assert_allclose(x_full, x_manual, atol=1e-12)
+    np.testing.assert_allclose(y_full, y_manual, atol=1e-12)

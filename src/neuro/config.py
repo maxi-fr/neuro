@@ -54,6 +54,7 @@ class SimulationConfig(StrictConfig):
     downsample: int = Field(default=1, ge=1)
     n_steps: int | None = Field(default=None, ge=1)
     data_path: str | None = None
+    cutoff_hz: float | None = Field(default=None, gt=0)
 
 
 class TrainingConfig(StrictConfig):

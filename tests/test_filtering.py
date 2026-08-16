@@ -6,12 +6,13 @@ from scipy.signal import sosfreqz
 
 from neuro.filtering import (
     AntiAliasEstimator,
+    LowPassEstimator,
     antialias_filter,
     causal_filter,
-    design_antialias_sos,
     design_bandpass_sos,
     design_lowpass_sos,
     group_delay_s,
+    lowpass_filter,
 )
 
 _SEED = 7
@@ -59,6 +60,31 @@ def test_estimator_logs_the_filtered_measurement() -> None:
     assert not np.allclose(np.stack(logs), y)
 
 
+def test_lowpass_estimator_matches_offline_filter() -> None:
+    """Sample-by-sample filtering with LowPassEstimator equals lowpass_filter offline."""
+    cutoff_hz = 45.0
+    n_steps, n_channels = 1000, 3
+    y = _plant_signal(n_steps, n_channels)
+
+    offline = lowpass_filter(y, _FS, cutoff_hz)
+
+    estimator = LowPassEstimator(dt=1.0 / _FS, cutoff_hz=cutoff_hz)
+    u = np.zeros(3)
+    online = np.stack([estimator.evaluate(k / _FS, y[k], u)[0] for k in range(n_steps)])
+
+    np.testing.assert_allclose(online, offline, atol=1e-12)
+
+
+def test_lowpass_estimator_from_config_and_logging() -> None:
+    """LowPassEstimator instantiates from config and logs x_hat."""
+    estimator = LowPassEstimator.from_config({"dt": 1e-4, "cutoff_hz": 45.0})
+    assert estimator.sos.shape == (2, 6)
+    y_sample = np.array([1.0, 2.0])
+    u_sample = np.zeros(2)
+    x_hat, log = estimator.update(0.0, y_sample, u_sample)
+    np.testing.assert_array_equal(x_hat, log.x_hat)
+
+
 def test_filter_is_causal() -> None:
     """Samples after ``k`` cannot change the output at ``k`` (``sosfilt``, not ``sosfiltfilt``)."""
     y = _plant_signal(1000, 2)
@@ -85,8 +111,8 @@ def test_filter_starts_from_zero_state() -> None:
 
 def test_design_is_low_pass_at_the_decimated_nyquist() -> None:
     """The response is flat at DC, -3 dB at the new Nyquist and negligible at the old one."""
-    sos = design_antialias_sos(_FS, _DOWNSAMPLE)
     nyquist_new = _FS / (2 * _DOWNSAMPLE)
+    sos = design_lowpass_sos(_FS, nyquist_new)
 
     _, h = sosfreqz(sos, worN=[0.0, nyquist_new, _FS / 2], fs=_FS)
     gain = np.abs(h)
@@ -112,9 +138,10 @@ def _channels_first(freq_hz: float, n_samples: int, n_channels: int = 3) -> np.n
 
 
 def test_the_antialias_design_is_the_lowpass_design_at_the_implied_cutoff() -> None:
-    """One filter definition in the repo: the sweep cannot drift away from the controller's."""
+    """AntiAliasEstimator configures the lowpass design at the implied cutoff."""
+    estimator = AntiAliasEstimator(dt=1.0 / _FS, downsample=_DOWNSAMPLE)
     np.testing.assert_array_equal(
-        design_antialias_sos(_FS, _DOWNSAMPLE),
+        estimator.sos,
         design_lowpass_sos(_FS, _FS / (2 * _DOWNSAMPLE)),
     )
 

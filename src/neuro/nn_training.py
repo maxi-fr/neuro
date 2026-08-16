@@ -13,7 +13,7 @@ from tqdm import tqdm
 
 from neuro.artifacts import evaluate_rollouts
 from neuro.config import NNPredictorConfig
-from neuro.filtering import antialias_filter
+from neuro.filtering import antialias_filter, lowpass_filter
 from neuro.prediction import AutoregressivePredictor, MLPArtifact, get_activation
 from neuro.transforms import PCAProjection, Pipeline, Standardizer
 from neuro.types import FloatArray
@@ -22,14 +22,17 @@ from utils.plotting import plot_multistep_predictions
 jax.config.update("jax_enable_x64", val=True)
 
 
-def load_trajectory(data_file: str, n_steps: int | None, downsample: int, dt: float) -> tuple[FloatArray, FloatArray]:
+def load_trajectory(
+    data_file: str,
+    n_steps: int | None,
+    downsample: int,
+    dt: float,
+    cutoff_hz: float | None = None,
+) -> tuple[FloatArray, FloatArray]:
     """Load a single simulation trajectory and decimate it.
 
-    The EEG is causally low-passed at the decimated Nyquist rate before striding (see
-    :func:`neuro.filtering.antialias_filter`); the identical filter runs online in
-    :class:`neuro.filtering.AntiAliasEstimator`, so the identified model sees the same signal
-    in the loop that it was fit on. The control is strided unfiltered -- it is a command the
-    controller issues on the decimated grid, not a sampled continuous signal.
+    The EEG is causally low-passed (at ``cutoff_hz`` if specified, or at the decimated Nyquist
+    rate) before striding. The control is strided unfiltered.
 
     Parameters
     ----------
@@ -40,7 +43,9 @@ def load_trajectory(data_file: str, n_steps: int | None, downsample: int, dt: fl
     downsample : int
         The downsampling factor to apply.
     dt : float
-        Sample time of the stored trajectory, used to design the anti-alias filter.
+        Sample time of the stored trajectory, used to design the low-pass filter.
+    cutoff_hz : float | None, optional
+        Explicit -3 dB cutoff frequency in Hz. If ``None``, defaults to the decimated Nyquist rate.
 
     Returns
     -------
@@ -54,7 +59,11 @@ def load_trajectory(data_file: str, n_steps: int | None, downsample: int, dt: fl
         y_full = np.asarray(data["sensor_0.y_mea"][:max_idx], dtype=np.float64)
         u_data = data["controller.u"][:max_idx:downsample]
 
-    y_data = antialias_filter(y_full, 1.0 / dt, downsample)[::downsample]
+    if cutoff_hz is not None:
+        y_filtered = lowpass_filter(y_full, 1.0 / dt, cutoff_hz)
+    else:
+        y_filtered = antialias_filter(y_full, 1.0 / dt, downsample)
+    y_data = y_filtered[::downsample]
 
     return u_data, y_data
 
@@ -213,6 +222,7 @@ def prepare_datasets(  # noqa: PLR0913, PLR0917
     n_u: int,
     horizon: int,
     dt: float,
+    cutoff_hz: float | None = None,
 ) -> tuple[FloatArray, FloatArray, int]:
     """Load data and build the raw (unscaled) dataset across multiple trajectories.
 
@@ -235,7 +245,9 @@ def prepare_datasets(  # noqa: PLR0913, PLR0917
     horizon : int
         Prediction horizon.
     dt : float
-        Sample time of the stored trajectories (the anti-alias filter is designed at ``1 / dt``).
+        Sample time of the stored trajectories (the filter is designed at ``1 / dt``).
+    cutoff_hz : float | None, optional
+        Explicit -3 dB cutoff frequency in Hz. If ``None``, defaults to the decimated Nyquist rate.
 
     Returns
     -------
@@ -249,7 +261,7 @@ def prepare_datasets(  # noqa: PLR0913, PLR0917
     all_X, all_Y = [], []
     n_channels = 1
     for df in data_files:
-        u, y = load_trajectory(df, n_steps_cfg, downsample, dt)
+        u, y = load_trajectory(df, n_steps_cfg, downsample, dt, cutoff_hz=cutoff_hz)
         n_channels = y.shape[1]
         X_traj, Y_traj = build_dataset_for_trajectory(u, y, n_y, n_u, horizon)
         all_X.append(X_traj)
@@ -935,10 +947,14 @@ def train_and_save_predictor(  # noqa: PLR0915
     global_scaling = train_cfg.global_scaling
 
     train_files, val_files = split_data_files(data_files, train_split)
-    X_train, Y_train, n_channels = prepare_datasets(train_files, n_steps_cfg, downsample, n_y, n_u, horizon, sim_cfg.dt)
+    X_train, Y_train, n_channels = prepare_datasets(
+        train_files, n_steps_cfg, downsample, n_y, n_u, horizon, sim_cfg.dt, cutoff_hz=sim_cfg.cutoff_hz
+    )
     n_controls = (X_train.shape[1] - n_y * n_channels) // (n_u + horizon)
 
-    val_trajs = [load_trajectory(f, n_steps_cfg, downsample, sim_cfg.dt) for f in val_files]
+    val_trajs = [
+        load_trajectory(f, n_steps_cfg, downsample, sim_cfg.dt, cutoff_hz=sim_cfg.cutoff_hz) for f in val_files
+    ]
     val_windows = [build_dataset_for_trajectory(u, y, n_y, n_u, horizon) for u, y in val_trajs]
     X_val = np.concatenate([x for x, _ in val_windows], axis=0)
     Y_val = np.concatenate([y for _, y in val_windows], axis=0)

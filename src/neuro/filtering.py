@@ -16,11 +16,6 @@ _ORDER = 4
 def design_lowpass_sos(fs: float, cutoff: float) -> FloatArray:
     """Design the causal Butterworth low-pass of order ``_ORDER`` at ``cutoff`` Hz.
 
-    The one low-pass definition in the repo. :func:`design_antialias_sos` picks its cutoff from a
-    decimation factor; the bandwidth sweep of
-    ``docs/predictability_controllability_experiment.md`` picks it directly, and both land here so
-    the sweep cannot drift into a second, silently different filter.
-
     Parameters
     ----------
     fs : float
@@ -93,28 +88,24 @@ def group_delay_s(sos: FloatArray, fs: float, *, freq_hz: float = 0.0) -> float:
     return float(-(phase[1] - phase[0]) / (2.0 * np.pi * (freqs[1] - freqs[0])))
 
 
-def design_antialias_sos(fs: float, downsample: int) -> FloatArray:
-    """Design the causal anti-alias low-pass shared by the training and closed-loop paths.
-
-    :func:`design_lowpass_sos` cut off at the Nyquist rate implied by ``downsample``
-    (``fs / (2 * downsample)``). Both the offline decimation in
-    :func:`neuro.nn_training.load_trajectory` and the online :class:`AntiAliasEstimator` design
-    their filter here, so the model cannot be fit on a differently-filtered signal than it sees
-    in the loop.
+def lowpass_filter(y: FloatArray, fs: float, cutoff_hz: float) -> FloatArray:
+    """Apply the causal Butterworth low-pass along axis 0, starting from zero filter state.
 
     Parameters
     ----------
+    y : FloatArray
+        Signal of shape ``(T, C)`` sampled at ``fs``.
     fs : float
-        Sample rate of the signal to be filtered (the plant rate, e.g. 1e4 Hz).
-    downsample : int
-        Decimation factor applied after filtering; must be ``>= 2``.
+        Sample rate of ``y``.
+    cutoff_hz : float
+        -3 dB cutoff frequency in Hz.
 
     Returns
     -------
     FloatArray
-        Second-order sections, shape ``(_ORDER // 2, 6)``.
+        Filtered signal, same shape as ``y``.
     """
-    return design_lowpass_sos(fs, fs / (2 * downsample))
+    return np.asarray(sosfilt(design_lowpass_sos(fs, cutoff_hz), y, axis=0), dtype=np.float64)
 
 
 def antialias_filter(y: FloatArray, fs: float, downsample: int) -> FloatArray:
@@ -139,44 +130,37 @@ def antialias_filter(y: FloatArray, fs: float, downsample: int) -> FloatArray:
     """
     if downsample == 1:
         return y
-    return np.asarray(sosfilt(design_antialias_sos(fs, downsample), y, axis=0), dtype=np.float64)
+    return lowpass_filter(y, fs, fs / (2 * downsample))
 
 
 @dataclasses.dataclass(frozen=True)
-class AntiAliasEstimatorLog:
+class LowPassEstimatorLog:
     """Log carrying the low-pass filtered measurement handed to the controller."""
 
     x_hat: np.ndarray
 
 
-class AntiAliasEstimator(Estimator[AntiAliasEstimatorLog]):
-    """Estimator that causally low-passes the measurement at the controller's Nyquist rate.
+class LowPassEstimator(Estimator[LowPassEstimatorLog]):
+    """Estimator that causally low-passes the measurement at a specified cutoff frequency."""
 
-    Runs at the plant ``dt`` and applies exactly the filter
-    :func:`neuro.nn_training.load_trajectory` applies before striding, so the controller's
-    zero-order hold picking off every ``downsample``-th estimate reproduces the decimation the
-    predictor was identified on. The filter state starts at zero, as it does offline.
-    """
-
-    def __init__(self, dt: float, downsample: int) -> None:
-        """Initialize the filter from the plant sample time ``dt`` and the decimation factor."""
+    def __init__(self, dt: float, cutoff_hz: float) -> None:
+        """Initialize the filter from the plant sample time ``dt`` and the cutoff frequency."""
         super().__init__(dt)
-        self.sos = design_antialias_sos(1.0 / dt, downsample)
+        self.sos = design_lowpass_sos(1.0 / dt, cutoff_hz)
         self._zi: np.ndarray | None = None
 
     @classmethod
     def from_config(cls, config: dict[str, Any]) -> Self:
         """Instantiate the component from a raw configuration dictionary."""
-        return cls(dt=float(config["dt"]), downsample=int(config["downsample"]))
+        return cls(dt=float(config["dt"]), cutoff_hz=float(config["cutoff_hz"]))
 
     def update(
         self,
         t: float,  # noqa: ARG002
         y_mea: np.ndarray,
         u: np.ndarray,  # noqa: ARG002
-    ) -> tuple[np.ndarray, AntiAliasEstimatorLog]:
-        """
-        Advance the low-pass by one sample and return the filtered measurement.
+    ) -> tuple[np.ndarray, LowPassEstimatorLog]:
+        """Advance the low-pass by one sample and return the filtered measurement.
 
         Parameters
         ----------
@@ -191,7 +175,7 @@ class AntiAliasEstimator(Estimator[AntiAliasEstimatorLog]):
         -------
         x_hat : numpy.ndarray
             The low-pass filtered measurement.
-        log : AntiAliasEstimatorLog
+        log : LowPassEstimatorLog
             Log containing the filtered measurement.
         """
         if self._zi is None:
@@ -199,4 +183,24 @@ class AntiAliasEstimator(Estimator[AntiAliasEstimatorLog]):
 
         filtered, self._zi = sosfilt(self.sos, np.atleast_1d(y_mea)[None, :], axis=0, zi=self._zi)
         x_hat = np.asarray(filtered[0]).reshape(np.shape(y_mea))
-        return x_hat, AntiAliasEstimatorLog(x_hat=x_hat.copy())
+        return x_hat, LowPassEstimatorLog(x_hat=x_hat.copy())
+
+
+class AntiAliasEstimator(LowPassEstimator):
+    """Estimator that causally low-passes the measurement at the controller's Nyquist rate.
+
+    Runs at the plant ``dt`` and applies exactly the filter
+    :func:`neuro.nn_training.load_trajectory` applies before striding, so the controller's
+    zero-order hold picking off every ``downsample``-th estimate reproduces the decimation the
+    predictor was identified on. The filter state starts at zero, as it does offline.
+    """
+
+    def __init__(self, dt: float, downsample: int) -> None:
+        """Initialize the filter from the plant sample time ``dt`` and the decimation factor."""
+        super().__init__(dt=dt, cutoff_hz=(1.0 / dt) / (2 * downsample))
+        self.downsample = downsample
+
+    @classmethod
+    def from_config(cls, config: dict[str, Any]) -> Self:
+        """Instantiate the component from a raw configuration dictionary."""
+        return cls(dt=float(config["dt"]), downsample=int(config["downsample"]))

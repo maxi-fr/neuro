@@ -29,7 +29,16 @@ def prepare_training_data(cfg: ESNPredictorConfig, data_files: list[str]) -> ESN
     train_files, val_files = split_data_files(data_files, cfg.training.train_split)
 
     def load(files: list[str]) -> list[tuple[FloatArray, FloatArray]]:
-        return [load_trajectory(f, cfg.simulation.n_steps, cfg.simulation.downsample, cfg.simulation.dt) for f in files]
+        return [
+            load_trajectory(
+                f,
+                cfg.simulation.n_steps,
+                cfg.simulation.downsample,
+                cfg.simulation.dt,
+                cutoff_hz=cfg.simulation.cutoff_hz,
+            )
+            for f in files
+        ]
 
     train_trajs = load(train_files)
     val_trajs = load(val_files)
