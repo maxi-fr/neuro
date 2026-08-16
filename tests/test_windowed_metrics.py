@@ -9,8 +9,8 @@ from neuro.metrics import (
     DEFAULT_HOP_S,
     METRICS,
     Metric,
-    baseline_grid,
     envelope,
+    raw_series_grid,
     sample_at,
     seizure_state,
     windowed,
@@ -198,7 +198,7 @@ def test_registry_keys_match_the_metric_names(name: str) -> None:
     assert METRICS[name].name == name
 
 
-# --- the raw-signal baselines --------------------------------------------------------------
+# --- the window-free series ------------------------------------------------------------------
 
 _SETTLED = slice(round(1.5 * _FS), None)
 
@@ -228,7 +228,7 @@ def test_envelope_rejects_a_tone_outside_the_band() -> None:
 
 
 def test_envelope_is_causal_so_a_burst_casts_no_shadow_before_itself() -> None:
-    """A Hilbert envelope would leak the burst backwards -- and inflate the baseline it feeds."""
+    """A Hilbert envelope would leak the burst backwards -- and inflate the predictability it feeds."""
     signals = _sine(7.0, 4.0)
     signals[:, : round(2.0 * _FS)] = 0.0
 
@@ -238,8 +238,8 @@ def test_envelope_is_causal_so_a_burst_casts_no_shadow_before_itself() -> None:
     assert np.mean(values[:, round(3.5 * _FS) :]) == pytest.approx(1.0, rel=0.02)
 
 
-def test_baseline_grid_is_fine_early_and_the_shared_grid_later() -> None:
-    grid = baseline_grid(3.0, hop_s=DEFAULT_HOP_S)
+def test_raw_series_grid_is_fine_early_and_the_shared_grid_later() -> None:
+    grid = raw_series_grid(3.0, hop_s=DEFAULT_HOP_S)
     fine, coarse = grid[grid < BASELINE_FINE_UNTIL_S], grid[grid >= BASELINE_FINE_UNTIL_S]
 
     assert grid[0] == pytest.approx(BASELINE_FINE_HOP_S)
@@ -261,9 +261,9 @@ def test_sample_at_reads_the_instant_a_windowed_value_would_be_stamped() -> None
 def test_sample_at_keeps_the_channel_axis() -> None:
     signals = _RNG.normal(size=(62, 3000))
 
-    values = sample_at(signals, _FS, baseline_grid(3.0))
+    values = sample_at(signals, _FS, raw_series_grid(3.0))
 
-    assert values.shape == (62, len(baseline_grid(3.0)))
+    assert values.shape == (62, len(raw_series_grid(3.0)))
 
 
 def test_seizure_state_times_are_branch_referenced_and_start_at_zero() -> None:

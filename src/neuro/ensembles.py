@@ -17,9 +17,10 @@ from neuro.jansen_rit import JansenRitDynamics, lfp, simulate_network
 from neuro.metrics import (
     DEFAULT_HOP_S,
     METRICS,
+    RAW_SERIES,
     Ensemble,
-    baseline_grid,
-    baseline_r2,
+    raw_series_grid,
+    score_raw_store,
     score_store,
     state_store,
 )
@@ -539,7 +540,11 @@ SCORES_FILE = "scores.npz"
 CACHE_DIR = "cache_1khz"
 
 RAW = "raw"
-CUTOFFS_HZ: tuple[float | None, ...] = (None, 500.0, 100.0, 45.0, 20.0, 10.0)
+# Measured on this ensemble, >99% of the scalp power sits below 50 Hz and >94% below 12 Hz, so a
+# cutoff above 50 Hz is a no-op on the signal and only trims the plant's white x5' noise tail --
+# which the unfiltered point already prices. The grid is spent inside the band instead, finer at
+# the low end where a cutoff starts eating the 3-12 Hz seizure band rather than the noise above it.
+CUTOFFS_HZ: tuple[float | None, ...] = (None, 50.0, 40.0, 30.0, 25.0, 20.0, 15.0, 10.0)
 SWEPT_METRICS: tuple[str, ...] = ("block_ptp", "line_length", "eeg_ms", "fc_strength")
 
 
@@ -588,20 +593,15 @@ class ScoreArchive:
     Attributes
     ----------
     times
-        Lookahead grid per metric, in seconds since the branch. Metrics with different windows
-        have different grids, which is why this is not one shared axis.
+        Lookahead grid per observable, in seconds since the branch. Metrics with different windows
+        have different grids, and the window-free series carry a finer one, which is why this is
+        not one shared axis.
     series
         ``(branch, arm, metric, channel_set, cutoff) -> (n_rollouts, n_times)``, or
         ``(n_rollouts, n_channels, n_times)`` at the raw cutoff, where ``cutoff`` is a
-        :func:`cutoff_key`. Scalp only: region space is read for the seizure state alone.
-    baselines
-        ``(branch, baseline, cutoff) -> (n_channels, n_times)``: per-channel R2 of the
-        raw-signal rungs the metrics are ranked against. Cached as scores rather than series --
-        the series would be ~500 MB against the archive's few, and would buy only a baseline
-        ``d_ctrl`` that nothing needs.
-    baseline_times
-        Lookahead grid the baselines are read on. Finer than the metric grid at short lookahead,
-        which is where waveform predictability lives and dies.
+        :func:`cutoff_key`. Carries the :data:`~neuro.metrics.RAW_SERIES` alongside the windowed
+        metrics, at the raw cutoff only. Scalp only: region space is read for the seizure state
+        alone.
     states
         ``(branch, arm) -> (n_rollouts, n_times)``: the fraction of regions seizing, from
         :func:`~neuro.metrics.seizure_state`. The ground truth every metric is scored against,
@@ -617,8 +617,6 @@ class ScoreArchive:
 
     times: dict[str, FloatArray]
     series: dict[tuple[str, str, str, str, str], FloatArray]
-    baselines: dict[tuple[str, str, str], FloatArray]
-    baseline_times: FloatArray
     states: dict[tuple[str, str], FloatArray]
     state_times: FloatArray
     n_replicates: int
@@ -640,6 +638,10 @@ class ScoreArchive:
         cutoffs of per-channel series would be gigabytes for a question the sweep does not ask.
         So ``pool=False`` is meaningful only there; elsewhere the series is already pooled and
         the flag is a no-op.
+
+        Pooling a :data:`~neuro.metrics.RAW_SERIES` waveform averages a signed signal and largely
+        cancels, which is a fact about that observable rather than a defect here: read it per
+        channel.
         """
         values = np.asarray(self.series[branch, arm, metric, channel_set, cutoff], dtype=np.float64)
         if pool and values.ndim == 3:  # noqa: PLR2004
@@ -653,15 +655,6 @@ class ScoreArchive:
             values=np.asarray(self.states[branch, arm], dtype=np.float64),
             n_replicates=self.n_replicates,
         )
-
-    def baseline(self, branch: str, name: str, channel_set: str, cutoff: str = RAW) -> FloatArray:
-        """Average one baseline's per-channel R2 over a channel set, giving a curve over `h`.
-
-        Averaging the R2 rather than the signal is the whole reason the baselines are stored per
-        channel: a channel-mean of a signed waveform cancels.
-        """
-        channels = self.manifest["channel_sets"][channel_set]
-        return np.asarray(self.baselines[branch, name, cutoff][channels].mean(axis=0), dtype=np.float64)
 
     @property
     def channel_sets(self) -> list[str]:
@@ -685,9 +678,9 @@ def score_ensemble_dir(
     """Score every stored rollout on every metric and bandwidth, caching the result beside the stores.
 
     Reads the stores memory-mapped, one rollout at a time, so the 19 GB artefact is never
-    resident. Each cutoff costs one traversal of the scalp store for the metrics and, on the
-    reference arm, one more for the baselines; within a traversal every metric and channel set is
-    read off the same rollout rather than the store being re-read per metric.
+    resident. Each cutoff costs one traversal of the scalp store, plus one more for the window-free
+    :data:`~neuro.metrics.RAW_SERIES`; within a traversal every metric and channel set is read off
+    the same rollout rather than the store being re-read per metric.
 
     Only :data:`SWEPT_METRICS` are re-scored under a filter. ``band_power`` and
     ``spectral_centroid`` stay at the unfiltered signal because the low-pass redefines them
@@ -707,11 +700,10 @@ def score_ensemble_dir(
     fs = float(manifest["fs"])
 
     swept = {name: METRICS[name] for name in SWEPT_METRICS}
-    grid = baseline_grid(float(manifest["rollout_s"]), hop_s=hop_s)
+    grid = raw_series_grid(float(manifest["rollout_s"]), hop_s=hop_s)
 
-    times: dict[str, FloatArray] = {}
+    times: dict[str, FloatArray] = dict.fromkeys(RAW_SERIES, grid)
     series: dict[tuple[str, str, str, str, str], FloatArray] = {}
-    baselines: dict[tuple[str, str, str], FloatArray] = {}
     states: dict[tuple[str, str], FloatArray] = {}
     state_times = np.empty(0, dtype=np.float64)
 
@@ -735,9 +727,17 @@ def score_ensemble_dir(
                 times.update(metric_times)
                 for (name, set_name), ens in scored.items():
                     series[branch, arm, name, set_name, key] = ens.values
-                if arm == branch_arms[0]:
-                    scored_baselines = baseline_r2(scalp, fs, times=grid, n_replicates=n_replicates, cutoff_hz=cutoff)
-                    baselines.update({(branch, name, key): r2 for name, r2 in scored_baselines.items()})
+
+            raw = score_raw_store(
+                scalp,
+                fs,
+                times=grid,
+                series=RAW_SERIES,
+                channel_sets=channel_sets,
+                n_replicates=n_replicates,
+            )
+            for (name, set_name), ens in raw.items():
+                series[branch, arm, name, set_name, RAW] = ens.values
 
             region = np.load(region_path(out_dir, branch, arm), mmap_mode="r")
             state_times, states[branch, arm] = state_store(region, float(manifest["region_fs"]), hop_s=hop_s)
@@ -745,8 +745,6 @@ def score_ensemble_dir(
     archive = ScoreArchive(
         times=times,
         series=series,
-        baselines=baselines,
-        baseline_times=grid,
         states=states,
         state_times=state_times,
         n_replicates=n_replicates,
@@ -764,10 +762,8 @@ def _save_scores(cache: Path, archive: ScoreArchive) -> None:
     per-channel raw-cutoff series at float64 would double a ~100 MB artefact for none.
     """
     payload: dict[str, Any] = {f"series|{'|'.join(key)}": v.astype(np.float32) for key, v in archive.series.items()}
-    payload.update({f"baseline|{'|'.join(key)}": v for key, v in archive.baselines.items()})
     payload.update({f"times|{name}": grid for name, grid in archive.times.items()})
     payload.update({f"state|{'|'.join(key)}": v.astype(np.float32) for key, v in archive.states.items()})
-    payload["baseline_times"] = archive.baseline_times
     payload["state_times"] = archive.state_times
     np.savez_compressed(cache, **payload)
 
@@ -776,23 +772,16 @@ def _load_scores(cache: Path, manifest: dict[str, Any]) -> ScoreArchive:
     """Read a cached score archive back into its keyed form."""
     times: dict[str, FloatArray] = {}
     series: dict[tuple[str, str, str, str, str], FloatArray] = {}
-    baselines: dict[tuple[str, str, str], FloatArray] = {}
     states: dict[tuple[str, str], FloatArray] = {}
-    baseline_times = np.empty(0, dtype=np.float64)
     state_times = np.empty(0, dtype=np.float64)
 
     with np.load(cache) as data:
         for key in data.files:
             kind, _, rest = key.partition("|")
-            if kind == "baseline_times":
-                baseline_times = data[key]
-            elif kind == "state_times":
+            if kind == "state_times":
                 state_times = data[key]
             elif kind == "times":
                 times[rest] = data[key]
-            elif kind == "baseline":
-                branch, name, cutoff = rest.split("|")
-                baselines[branch, name, cutoff] = data[key]
             elif kind == "state":
                 branch, arm = rest.split("|")
                 states[branch, arm] = data[key]
@@ -803,8 +792,6 @@ def _load_scores(cache: Path, manifest: dict[str, Any]) -> ScoreArchive:
     return ScoreArchive(
         times=times,
         series=series,
-        baselines=baselines,
-        baseline_times=baseline_times,
         states=states,
         state_times=state_times,
         n_replicates=manifest["n_children"],

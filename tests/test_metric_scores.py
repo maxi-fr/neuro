@@ -5,11 +5,15 @@ import pytest
 
 from neuro.metrics import (
     METRICS,
+    RAW_SERIES,
     Ensemble,
-    baseline_grid,
-    baseline_r2,
     controllability,
     coupling,
+    envelope,
+    latency_s,
+    raw_series_grid,
+    sample_at,
+    score_raw_store,
     score_store,
     separability,
     sigma_ens,
@@ -429,44 +433,78 @@ def test_a_cutoff_strips_the_high_frequency_content_line_length_lives_on() -> No
     assert np.median(filtered["line_length", "all62"].values) < 0.1 * np.median(raw["line_length", "all62"].values)
 
 
-# --- the raw-signal baselines ---------------------------------------------------------------
+# --- the window-free series ------------------------------------------------------------------
+
+_RAW_SETS = {"all6": np.arange(6), "focal": np.array([1, 4])}
 
 
-def _baseline_store(by_state: np.ndarray) -> np.ndarray:
+def _raw_store(by_state: np.ndarray) -> np.ndarray:
     """Flatten a ``(n_states, n_replicates, n_channels, n_samples)`` block into store row order."""
     return by_state.reshape(-1, *by_state.shape[2:])
 
 
-def test_baseline_r2_scores_both_rungs_on_the_raw_signal() -> None:
+def _scored_raw(store: np.ndarray, n_replicates: int) -> dict[tuple[str, str], Ensemble]:
+    return score_raw_store(
+        store,
+        1000.0,
+        times=raw_series_grid(1.0),
+        series=RAW_SERIES,
+        channel_sets=_RAW_SETS,
+        n_replicates=n_replicates,
+    )
+
+
+def test_score_raw_store_returns_one_ensemble_per_series_and_channel_set() -> None:
     store = _RNG.normal(size=(4, 6, 1000))
-    times = baseline_grid(1.0)
 
-    scores = baseline_r2(store, 1000.0, times=times, n_replicates=2)
+    scored = _scored_raw(store, 2)
 
-    assert set(scores) == {"waveform", "envelope"}
-    assert all(value.shape == (6, len(times)) for value in scores.values())
-
-
-def test_baseline_r2_drops_the_envelope_under_a_cutoff() -> None:
-    """Its band is fixed, so the bandwidth axis would redefine it rather than filter it."""
-    store = _RNG.normal(size=(4, 6, 1000))
-
-    scores = baseline_r2(store, 1000.0, times=baseline_grid(1.0), n_replicates=2, cutoff_hz=45.0)
-
-    assert set(scores) == {"waveform"}
+    assert set(scored) == {(name, channels) for name in RAW_SERIES for channels in _RAW_SETS}
+    assert scored["waveform", "all6"].values.shape == (4, 6, len(raw_series_grid(1.0)))
+    assert scored["envelope", "focal"].values.shape == (4, 2, len(raw_series_grid(1.0)))
 
 
-def test_baseline_r2_is_one_when_every_replicate_of_a_state_is_identical() -> None:
+def test_score_raw_store_keeps_the_channel_axis_so_a_signed_waveform_does_not_cancel() -> None:
+    """Channels straddling a source see it with opposite sign, so their mean cancels what is there."""
+    signs = np.array([1.0, -1.0, 1.0, -1.0, 1.0, -1.0])[:, None]
+    store = signs * _RNG.normal(size=(4, 1, 1000))
+
+    values = _scored_raw(store, 2)["waveform", "all6"].values
+
+    assert np.abs(values).mean() > 0.5
+    assert values.mean(axis=1) == pytest.approx(np.zeros((4, len(raw_series_grid(1.0)))))
+
+
+def test_score_raw_store_samples_the_transform_rather_than_reducing_a_window() -> None:
+    store = _RNG.normal(size=(2, 6, 1000))
+    times = raw_series_grid(1.0)
+
+    scored = _scored_raw(store, 2)
+
+    assert scored["waveform", "all6"].values[1] == pytest.approx(sample_at(store[1], 1000.0, times))
+    assert scored["envelope", "all6"].values[1] == pytest.approx(sample_at(envelope(store[1], 1000.0), 1000.0, times))
+
+
+def test_a_raw_series_is_predictable_when_every_replicate_of_a_state_is_identical() -> None:
     block = np.tile(_RNG.normal(size=(2, 1, 6, 1000)), (1, 3, 1, 1))
 
-    scores = baseline_r2(_baseline_store(block), 1000.0, times=baseline_grid(1.0), n_replicates=3)
+    ens = _scored_raw(_raw_store(block), 3)["waveform", "all6"]
+    scores = variance_ratio(ens.values, ens.n_replicates)
 
-    assert scores["waveform"] == pytest.approx(np.ones_like(scores["waveform"]))
+    assert scores == pytest.approx(np.ones_like(scores))
 
 
-def test_baseline_r2_is_zero_when_the_states_carry_no_information() -> None:
+def test_a_raw_series_is_unpredictable_when_the_states_carry_no_information() -> None:
     block = np.tile(_RNG.normal(size=(1, 3, 6, 1000)), (2, 1, 1, 1))
 
-    scores = baseline_r2(_baseline_store(block), 1000.0, times=baseline_grid(1.0), n_replicates=3)
+    ens = _scored_raw(_raw_store(block), 3)["waveform", "all6"]
+    scores = variance_ratio(ens.values, ens.n_replicates)
 
-    assert scores["waveform"] == pytest.approx(np.zeros_like(scores["waveform"]), abs=1e-12)
+    assert scores == pytest.approx(np.zeros_like(scores), abs=1e-12)
+
+
+def test_latency_is_the_window_for_a_metric_and_the_group_delay_for_a_raw_series() -> None:
+    """The window-free series still make the controller wait -- for their filters, not a window."""
+    assert latency_s("band_power", 1000.0) == pytest.approx(METRICS["band_power"].window_s)
+    assert latency_s("waveform", 1000.0) == 0.0
+    assert latency_s("envelope", 1000.0) > 0.0

@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, NamedTuple
 import numpy as np
 from scipy.signal import detrend
 
-from neuro.filtering import causal_filter, design_bandpass_sos, design_lowpass_sos
+from neuro.filtering import causal_filter, design_bandpass_sos, design_lowpass_sos, group_delay_s
 from neuro.seizure import SEIZURE_PTP_MV, SPREAD_WINDOW_S
 from utils.processing import band_energy, compute_psd
 
@@ -544,12 +544,60 @@ def envelope(
     return 0.5 * np.pi * causal_filter(np.abs(passband), design_lowpass_sos(fs, smooth_hz))
 
 
-def baseline_grid(duration_s: float, *, hop_s: float = DEFAULT_HOP_S) -> FloatArray:
-    """Lookahead grid for the raw-signal baselines: fine early, the shared metric grid later.
+def envelope_latency_s(
+    fs: float,
+    *,
+    band: tuple[float, float] = SEIZURE_BAND_HZ,
+    smooth_hz: float = ENVELOPE_SMOOTH_HZ,
+) -> float:
+    """Group delay of :func:`envelope`'s two causal filters -- its analogue of a metric window."""
+    return group_delay_s(design_bandpass_sos(fs, band), fs) + group_delay_s(design_lowpass_sos(fs, smooth_hz), fs)
+
+
+@dataclass(frozen=True)
+class RawSeries:
+    """An observable read straight off the rollout rather than reduced over a window.
+
+    The window-free counterpart of :class:`Metric`, and scored on exactly the same axes: these are
+    the signals the existing predictor pipeline is trained against, so a candidate metric only
+    earns its window by beating them.
+
+    Attributes
+    ----------
+    name
+        Registry key.
+    transform
+        Causal whole-signal map, ``(signals, fs) -> (n_channels, n_samples)``.
+    latency
+        Seconds before the first valid sample, given ``fs`` -- what :attr:`Metric.window_s` is for
+        a windowed metric.
+    """
+
+    name: str
+    transform: Callable[[FloatArray, float], FloatArray]
+    latency: Callable[[float], float]
+
+
+RAW_SERIES: dict[str, RawSeries] = {
+    series.name: series
+    for series in (
+        RawSeries("waveform", lambda signals, _fs: signals, lambda _fs: 0.0),
+        RawSeries("envelope", envelope, envelope_latency_s),
+    )
+}
+
+
+def latency_s(name: str, fs: float) -> float:
+    """Seconds of signal an observable needs before its first valid sample, windowed or not."""
+    return METRICS[name].window_s if name in METRICS else RAW_SERIES[name].latency(fs)
+
+
+def raw_series_grid(duration_s: float, *, hop_s: float = DEFAULT_HOP_S) -> FloatArray:
+    """Lookahead grid for the window-free series: fine early, the shared metric grid later.
 
     The plant is chaotic in phase, so waveform predictability is expected to collapse within a
-    couple hundred milliseconds -- below the resolution of the shared 50 ms grid, on which the
-    baseline would read as a flat zero and look like a bug rather than a result.
+    couple hundred milliseconds -- below the resolution of the shared 50 ms grid, on which it
+    would read as a flat zero and look like a bug rather than a result.
     """
     fine = np.arange(BASELINE_FINE_HOP_S, BASELINE_FINE_UNTIL_S, BASELINE_FINE_HOP_S)
     coarse = np.arange(BASELINE_FINE_UNTIL_S, duration_s + 0.5 * hop_s, hop_s)
@@ -643,43 +691,39 @@ def state_store(
     return times, np.stack(rows)
 
 
-def baseline_r2(
+def score_raw_store(  # noqa: PLR0913
     store: FloatArray,
     fs: float,
     *,
     times: FloatArray,
+    series: Mapping[str, RawSeries],
+    channel_sets: Mapping[str, IntArray],
     n_replicates: int,
-    cutoff_hz: float | None = None,
-) -> dict[str, FloatArray]:
-    """Per-channel predictability of the signal itself, as the reference the metrics are ranked against.
+) -> dict[tuple[str, str], Ensemble]:
+    """Sample every window-free observable of a ``(n_rollouts, n_channels, n_samples)`` store.
 
-    The rungs the scored metrics sit above: ``waveform`` bounds a predictor forecasting ``y(t)``
-    sample-wise, which is what the existing MLP/ESN pipeline does, and ``envelope`` bounds one
-    forecasting band amplitude with phase discarded. The gap between them is the cost of phase
-    divergence, which is the number that says whether moving the objective off the waveform buys
-    anything at all.
+    The counterpart of :func:`score_store` for the observables that are not a windowed reduction:
+    each is a causal transform of the whole rollout, read at ``times`` rather than over a window.
+    They come out as :class:`Ensemble` like any metric, so ``waveform`` -- what the predictor
+    pipeline is actually trained on -- is scored on the same axes as the candidates that would
+    replace it, rather than only on predictability.
 
-    ``envelope`` is returned only for the raw signal: its band is fixed at
-    :data:`SEIZURE_BAND_HZ`, so the bandwidth axis would redefine it rather than filter it, and
-    recomputing it per cutoff would be waste.
+    Kept per channel, and pooled on read: a channel mean of a signed waveform cancels, so the
+    honest reading of that one is per-channel.
 
-    Returns
-    -------
-    dict[str, FloatArray]
-        R2 of shape ``(n_channels, n_times)`` per baseline name. Channel sets are applied
-        afterwards by averaging rows, so scoring never has to run twice.
+    Neither is scored under a low-pass. The envelope's band is fixed at :data:`SEIZURE_BAND_HZ`,
+    so a cutoff redefines it rather than denoising it, and a filtered waveform is a question the
+    bandwidth sweep asks of the metrics that survive it.
     """
-    sos = None if cutoff_hz is None else design_lowpass_sos(fs, cutoff_hz)
-    waveform: list[FloatArray] = []
-    band: list[FloatArray] = []
+    rows: dict[tuple[str, str], list[FloatArray]] = {(n, s): [] for n in series for s in channel_sets}
 
     for row in range(store.shape[0]):
-        raw = np.asarray(store[row], dtype=np.float64)
-        waveform.append(sample_at(raw if sos is None else causal_filter(raw, sos), fs, times))
-        if sos is None:
-            band.append(sample_at(envelope(raw, fs), fs, times))
+        signals = np.asarray(store[row], dtype=np.float64)
+        for name, raw in series.items():
+            sampled = sample_at(raw.transform(signals, fs), fs, times)
+            for set_name, channels in channel_sets.items():
+                rows[name, set_name].append(sampled[channels])
 
-    scores = {"waveform": variance_ratio(np.stack(waveform), n_replicates)}
-    if sos is None:
-        scores["envelope"] = variance_ratio(np.stack(band), n_replicates)
-    return scores
+    return {
+        key: Ensemble(times=times, values=np.stack(values), n_replicates=n_replicates) for key, values in rows.items()
+    }

@@ -32,7 +32,7 @@ from neuro.ensembles import (
     run_segment,
     score_ensemble_dir,
 )
-from neuro.metrics import METRICS
+from neuro.metrics import METRICS, RAW_SERIES
 from neuro.seizure import SPREAD_WINDOW_S
 
 if TYPE_CHECKING:
@@ -367,27 +367,27 @@ def test_a_narrower_band_strips_the_content_line_length_lives_on(scored: tuple[P
     assert np.median(narrow.values) < np.median(raw.values)
 
 
-def test_baselines_cover_every_cutoff_but_the_envelope_only_the_raw_signal(
+def test_the_window_free_series_are_scored_on_every_arm_at_the_raw_signal_only(
+    scored: tuple[Path, ScoreArchive],
+) -> None:
+    """They are scored on the arm contrasts too, so a candidate metric is ranked against them there."""
+    _, archive = scored
+    keyed = {(name, arm, cutoff) for _, arm, name, _, cutoff in archive.series if name in RAW_SERIES}
+
+    assert {cutoff for _, _, cutoff in keyed} == {RAW}
+    assert {arm for _, arm, _ in keyed} == {"zero", "d1"}
+
+
+def test_a_window_free_series_keeps_the_channel_axis_so_a_signed_waveform_does_not_cancel(
     scored: tuple[Path, ScoreArchive],
 ) -> None:
     _, archive = scored
-    keys = {(name, cutoff) for _, name, cutoff in archive.baselines}
 
-    assert {cutoff for name, cutoff in keys if name == "waveform"} == {cutoff_key(c) for c in _CUTOFFS}
-    assert {cutoff for name, cutoff in keys if name == "envelope"} == {RAW}
+    per_channel = archive.ensemble("pre_onset", "zero", "waveform", "all62", pool=False)
+    focal = archive.ensemble("pre_onset", "zero", "waveform", "lTCI", pool=False)
 
-
-def test_a_baseline_is_stored_per_channel_so_the_channel_sets_come_free(
-    scored: tuple[Path, ScoreArchive],
-) -> None:
-    _, archive = scored
-
-    per_channel = archive.baselines["pre_onset", "waveform", RAW]
-    focal = archive.baseline("pre_onset", "waveform", "lTCI")
-
-    assert per_channel.shape == (62, len(archive.baseline_times))
-    assert focal == pytest.approx(per_channel[[27, 55, 12, 14]].mean(axis=0))
-    assert not np.allclose(focal, archive.baseline("pre_onset", "waveform", "all62"))
+    assert per_channel.values.shape == (4, 62, len(archive.times["waveform"]))
+    assert focal.values == pytest.approx(per_channel.values[:, [27, 55, 12, 14]], rel=1e-6)
 
 
 def test_the_cached_archive_reloads_to_float32_precision(scored: tuple[Path, ScoreArchive]) -> None:
@@ -397,12 +397,9 @@ def test_the_cached_archive_reloads_to_float32_precision(scored: tuple[Path, Sco
     reloaded = score_ensemble_dir(out_dir, cutoffs=_CUTOFFS)
 
     assert set(reloaded.series) == set(archive.series)
-    assert set(reloaded.baselines) == set(archive.baselines)
-    assert np.array_equal(reloaded.baseline_times, archive.baseline_times)
+    assert set(reloaded.times) == set(archive.times)
     for key, values in archive.series.items():
         assert reloaded.series[key] == pytest.approx(values, rel=1e-6)
-    for key, values in archive.baselines.items():
-        assert np.array_equal(reloaded.baselines[key], values)
 
 
 def test_the_raw_scalp_series_keep_the_channel_axis_and_pool_on_read(
