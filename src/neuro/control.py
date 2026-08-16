@@ -8,8 +8,8 @@ import numpy as np
 from pydantic import Field, PositiveFloat
 from simulate.controller import Controller
 
+from neuro.artifacts import build_symbolic_model, load_any_artifact
 from neuro.config import StrictConfig
-from neuro.nn_predictor_casadi import NNSymbolicModel
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -445,12 +445,12 @@ class _MPCControllerConfig(StrictConfig):
 
 
 class MPCController(Controller[MPCControllerLog]):
-    """Receding-horizon MPC that suppresses EEG power using the CasADi NN predictor."""
+    """Receding-horizon MPC that suppresses EEG power using a CasADi symbolic predictor."""
 
     def __init__(  # noqa: PLR0913, PLR0917
         self,
         dt: float,
-        model: NNSymbolicModel,
+        model: SymbolicModel,
         u_max: ArrayLike,
         horizon: int | None = None,
         w_y: float = 1.0,
@@ -471,7 +471,7 @@ class MPCController(Controller[MPCControllerLog]):
         dt
             Controller update step in seconds; should equal the predictor's native dt.
         model
-            The CasADi NN predictor used as the prediction model.
+            The CasADi symbolic predictor used as the prediction model.
         u_max
             Per-electrode amplitude bound: a scalar shared by every electrode or a
             length-``n_controls`` vector. The box constraint is ``-u_max <= u <= u_max``.
@@ -504,7 +504,7 @@ class MPCController(Controller[MPCControllerLog]):
         """
         super().__init__(dt)
         self.model = model
-        self.horizon = int(horizon) if horizon is not None else model.artifact.horizon
+        self.horizon = int(horizon) if horizon is not None else model.native_horizon
         self.w_y = float(w_y)
         self.w_y_terminal = float(w_y_terminal) if w_y_terminal is not None else None
         self.w_u = float(w_u)
@@ -515,9 +515,6 @@ class MPCController(Controller[MPCControllerLog]):
         self.expand = bool(expand)
         self.ipopt_options = dict(ipopt_options) if ipopt_options is not None else {}
 
-        self.n_y = model.artifact.n_y
-        self.n_u = model.artifact.n_u
-        self.n_channels = model.n_channels
         self.n_controls = model.n_controls
 
         u_max_arr = np.atleast_1d(np.asarray(u_max, dtype=np.float64))
@@ -528,23 +525,19 @@ class MPCController(Controller[MPCControllerLog]):
             raise ValueError(msg)
         self.u_max = np.ascontiguousarray(u_max_arr)
 
-        # History windows (oldest first, newest last)
-        self._y_buf = np.zeros((self.n_y, self.n_channels), dtype=np.float64)
-        self._u_buf = np.zeros((self.n_u, self.n_controls), dtype=np.float64)
-        self._n_seen = 0
+        self._state = model.initial_state()
+        self._u_last = np.zeros(self.n_controls, dtype=np.float64)
         self._u_prev: FloatArray | None = None
 
         self._build_solver()
 
     @classmethod
     def from_config(cls, config: dict[str, Any]) -> Self:
-        """Instantiate from a config dict, loading the NN predictor artifact from disk."""
-        from neuro.nn_predictor_casadi import NNSymbolicModel  # noqa: PLC0415
-
+        """Instantiate from a config dict, loading the predictor artifact from disk."""
         cfg = _MPCControllerConfig.model_validate(config)
         return cls(
             dt=cfg.dt,
-            model=NNSymbolicModel.from_artifact(cfg.artifact),
+            model=build_symbolic_model(load_any_artifact(cfg.artifact)),
             u_max=cfg.u_max,
             horizon=cfg.horizon,
             w_y=cfg.w_y,
@@ -616,19 +609,15 @@ class MPCController(Controller[MPCControllerLog]):
         x_hat: FloatArray,
     ) -> tuple[FloatArray, MPCControllerLog]:
         """Ingest the current EEG measurement, solve the NLP, and emit the first control."""
-        y_eeg = x_hat.reshape(-1)
-        y = self.model.artifact.encode(y_eeg)
-        self._y_buf = np.vstack([self._y_buf[1:], y])
-        self._n_seen += 1
+        self._state = self.model.absorb(self._state, x_hat.reshape(-1), self._u_last)
 
-        if self._n_seen < self.n_y:
+        if not self.model.is_ready(self._state):
             u_zero = np.zeros(self.n_controls, dtype=np.float64)
-            self._u_buf = np.vstack([self._u_buf[1:], u_zero.reshape(1, self.n_controls)])
+            self._u_last = u_zero
             return u_zero, MPCControllerLog(u=u_zero, cost=0.0, success=True, warmup=True)
 
-        x0 = np.concatenate([self._y_buf.reshape(-1), self._u_buf.reshape(-1)])
-        u0, cost, success, n_iter, capped = self._solve(x0)
-        self._u_buf = np.vstack([self._u_buf[1:], u0.reshape(1, self.n_controls)])
+        u0, cost, success, n_iter, capped = self._solve(self._state)
+        self._u_last = u0
         return u0, MPCControllerLog(u=u0.copy(), cost=cost, success=success, warmup=False, n_iter=n_iter, capped=capped)
 
 
@@ -652,7 +641,7 @@ class LinearMPCController(Controller[MPCControllerLog]):
     def __init__(  # noqa: PLR0913, PLR0917
         self,
         dt: float,
-        model: NNSymbolicModel,
+        model: SymbolicModel,
         u_max: ArrayLike,
         horizon: int | None = None,
         w_y: float = 1.0,
@@ -669,9 +658,8 @@ class LinearMPCController(Controller[MPCControllerLog]):
         dt
             Controller update step in seconds; should equal the predictor's native dt.
         model
-            The CasADi NN predictor used as the prediction model. Must be linear: its inner
-            ``eqx.nn.MLP`` must have ``depth == 0`` (a single affine layer), otherwise the QP
-            would silently use the quadratic Taylor expansion of a nonlinear map.
+            The CasADi symbolic predictor used as the prediction model. Must be linear: its inner
+            structure must have 0 hidden layers, otherwise the QP would silently linearize it.
         u_max
             Per-electrode amplitude bound: a scalar shared by every electrode or a
             length-``n_controls`` vector. The box constraint is ``-u_max <= u <= u_max``.
@@ -696,25 +684,21 @@ class LinearMPCController(Controller[MPCControllerLog]):
         if formulation not in ("sparse", "dense"):
             msg = f"formulation must be 'sparse' or 'dense', got {formulation!r}"
             raise ValueError(msg)
-        depth = model.artifact.model.model.depth
-        if depth != 0:
+        if not model.is_linear:
             msg = (
-                "LinearMPCController requires a linear predictor (0 hidden layers); got an MLP "
-                f"with depth {depth}. Use MPCController for a nonlinear predictor."
+                "LinearMPCController requires a linear predictor (0 hidden layers); got a nonlinear "
+                "predictor. Use MPCController for a nonlinear predictor."
             )
             raise ValueError(msg)
 
         self.model = model
-        self.horizon = int(horizon) if horizon is not None else model.artifact.horizon
+        self.horizon = int(horizon) if horizon is not None else model.native_horizon
         self.w_y = float(w_y)
         self.w_u = float(w_u)
         self.w_u_l1 = float(w_u_l1)
         self.formulation = formulation
         self.osqp_eps = float(osqp_eps)
 
-        self.n_y = model.artifact.n_y
-        self.n_u = model.artifact.n_u
-        self.n_channels = model.n_channels
         self.n_controls = model.n_controls
 
         u_max_arr = np.atleast_1d(np.asarray(u_max, dtype=np.float64))
@@ -725,21 +709,19 @@ class LinearMPCController(Controller[MPCControllerLog]):
             raise ValueError(msg)
         self.u_max = np.ascontiguousarray(u_max_arr)
 
-        # History windows (oldest first, newest last)
-        self._y_buf = np.zeros((self.n_y, self.n_channels), dtype=np.float64)
-        self._u_buf = np.zeros((self.n_u, self.n_controls), dtype=np.float64)
-        self._n_seen = 0
+        self._state = model.initial_state()
+        self._u_last = np.zeros(self.n_controls, dtype=np.float64)
         self._u_prev: FloatArray | None = None
 
         self._build_solver()
 
     @classmethod
     def from_config(cls, config: dict[str, Any]) -> Self:
-        """Instantiate from a config dict, loading the NN predictor artifact from disk."""
+        """Instantiate from a config dict, loading the predictor artifact from disk."""
         cfg = _LinearMPCControllerConfig.model_validate(config)
         return cls(
             dt=cfg.dt,
-            model=NNSymbolicModel.from_artifact(cfg.artifact),
+            model=build_symbolic_model(load_any_artifact(cfg.artifact)),
             u_max=cfg.u_max,
             horizon=cfg.horizon,
             w_y=cfg.w_y,
@@ -861,19 +843,13 @@ class LinearMPCController(Controller[MPCControllerLog]):
         x_hat: FloatArray,
     ) -> tuple[FloatArray, MPCControllerLog]:
         """Ingest the current EEG measurement, solve the QP, and emit the first control."""
-        y_eeg = x_hat.reshape(-1)
-        # Encode to the model's state space: latent components with a projection, else a no-op.
-        y = self.model.artifact.encode(y_eeg)
-        self._y_buf = np.vstack([self._y_buf[1:], y])
-        self._n_seen += 1
+        self._state = self.model.absorb(self._state, x_hat.reshape(-1), self._u_last)
 
-        # While the window is still zero-padded, hold off stimulating.
-        if self._n_seen < self.n_y:
+        if not self.model.is_ready(self._state):
             u_zero = np.zeros(self.n_controls, dtype=np.float64)
-            self._u_buf = np.vstack([self._u_buf[1:], u_zero.reshape(1, self.n_controls)])
+            self._u_last = u_zero
             return u_zero, MPCControllerLog(u=u_zero, cost=0.0, success=True, warmup=True)
 
-        x0 = np.concatenate([self._y_buf.reshape(-1), self._u_buf.reshape(-1)])
-        u0, cost, success = self._solve(x0)
-        self._u_buf = np.vstack([self._u_buf[1:], u0.reshape(1, self.n_controls)])
+        u0, cost, success = self._solve(self._state)
+        self._u_last = u0
         return u0, MPCControllerLog(u=u0.copy(), cost=cost, success=success, warmup=False)

@@ -16,11 +16,31 @@ if TYPE_CHECKING:
 
     import scipy.sparse
 
+    from neuro.types import FloatArray
+
 
 def _scipy_csr_to_casadi(mat: scipy.sparse.csr_matrix) -> ca.DM:
     """Convert a scipy CSR matrix to a CasADi sparse DM matrix."""
     coo = mat.tocoo()
     return ca.DM.triplet(coo.row.tolist(), coo.col.tolist(), coo.data.tolist(), mat.shape[0], mat.shape[1])
+
+
+class ReservoirState(np.ndarray):
+    """Reservoir state vector carrying history step count."""
+
+    steps_seen: int = 0
+
+    def __new__(cls, input_array: FloatArray, steps_seen: int = 0) -> Self:
+        """Create a new ReservoirState array view with step counter."""
+        obj = np.asarray(input_array, dtype=np.float64).view(cls)
+        obj.steps_seen = steps_seen
+        return obj
+
+    def __array_finalize__(self, obj: object | None) -> None:
+        """Preserve steps_seen attribute across slicing or array operations."""
+        if obj is None:
+            return
+        self.steps_seen = getattr(obj, "steps_seen", 0)
 
 
 @dataclass(frozen=True)
@@ -63,9 +83,37 @@ class ESNSymbolicModel:
         return self.artifact.n_eeg_channels
 
     @property
+    def native_horizon(self) -> int:
+        """Native prediction horizon of the underlying artifact."""
+        return self.artifact.horizon
+
+    @property
+    def is_linear(self) -> bool:
+        """Whether the model represents a linear predictor (always False for ESN)."""
+        return False
+
+    @property
     def free_syms(self) -> dict[str, ca.MX]:
         """Free symbolic parameters; always empty -- this model is purely numeric."""
         return {}
+
+    def initial_state(self) -> FloatArray:
+        """Return initial zero reservoir state."""
+        return ReservoirState(np.zeros(self.artifact.reservoir_size, dtype=np.float64), steps_seen=0)
+
+    def absorb(self, state: FloatArray, y: FloatArray, u: FloatArray) -> FloatArray:
+        """Absorb raw measurement y and control u via ESN teacher step."""
+        assert isinstance(state, ReservoirState)  # noqa: S101
+        z = self.artifact.encode(np.asarray(y, dtype=np.float64).reshape(-1))
+        v = self.artifact.u_pipeline.transform(np.asarray(u, dtype=np.float64).reshape(1, -1)).reshape(-1)
+        h_arr = np.asarray(state, dtype=np.float64).reshape(-1)
+        h_next = self.artifact.predictor.teacher_step(h_arr, z, v)
+        return ReservoirState(h_next, steps_seen=state.steps_seen + 1)
+
+    def is_ready(self, state: FloatArray) -> bool:
+        """Return True if reservoir has absorbed at least washout priming steps."""
+        assert isinstance(state, ReservoirState)  # noqa: S101
+        return state.steps_seen >= self.artifact.washout
 
     @cached_property
     def _w_res_dm(self) -> ca.DM:
@@ -116,9 +164,9 @@ class ESNSymbolicModel:
         net = ca.mtimes(self._w_res_dm, h) + ca.mtimes(self._w_in_dm, in_vec)
         return (1.0 - alpha) * h + alpha * ca.tanh(net)
 
-    def output(self, h: ca.SX | ca.MX) -> ca.SX | ca.MX:
-        """Decode readout prediction from reservoir state h to raw EEG space."""
-        h_aug = ca.vertcat(h, 1.0)
+    def output(self, x: ca.SX | ca.MX) -> ca.SX | ca.MX:
+        """Decode readout prediction from reservoir state to raw EEG space."""
+        h_aug = ca.vertcat(x, 1.0)
         z_hat = ca.mtimes(self._w_out_dm, h_aug)
 
         pca = self.artifact.y_pipeline.pca

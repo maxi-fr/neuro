@@ -13,6 +13,8 @@ jax.config.update("jax_enable_x64", True)  # noqa: FBT003
 from simulate.simulation import Simulation  # noqa: E402
 
 from neuro.control import MPCController, MPCControllerLog  # noqa: E402
+from neuro.esn import ESNArtifact, generate_reservoir  # noqa: E402
+from neuro.esn_predictor_casadi import ESNSymbolicModel  # noqa: E402
 from neuro.nn_predictor_casadi import NNSymbolicModel  # noqa: E402
 from neuro.prediction import AutoregressivePredictor, MLPArtifact  # noqa: E402
 from neuro.transforms import PCAProjection, Pipeline, Standardizer  # noqa: E402
@@ -317,3 +319,132 @@ def test_projection_shrinks_shooting_state_and_respects_bounds(tmp_path: Path) -
     assert u.shape == (n_controls,)
     assert np.isfinite(u).all()
     assert np.all(np.abs(u) <= u_max + 1e-6)
+
+
+def _build_tiny_esn_artifact(
+    tmp_path: Path,
+    *,
+    reservoir_size: int = 30,
+    washout: int = 5,
+    horizon: int = 3,
+    n_channels: int = 2,
+    n_controls: int = 2,
+) -> Path:
+    """Save a tiny synthetic ESN artifact for testing."""
+    rng = np.random.default_rng(_SEED)
+    in_dim = n_channels + n_controls + 1
+    w_res, w_in = generate_reservoir(
+        reservoir_size=reservoir_size,
+        spectral_radius=0.9,
+        density=0.2,
+        input_scaling=0.1,
+        in_dim=in_dim,
+        seed=_SEED,
+    )
+    w_out = rng.uniform(-0.1, 0.1, size=(n_channels, reservoir_size + 1))
+    y_pipeline = _standardizer_pipeline(rng.uniform(-1.0, 1.0, n_channels), rng.uniform(0.5, 2.0, n_channels))
+    u_pipeline = _standardizer_pipeline(rng.uniform(-1.0, 1.0, n_controls), rng.uniform(0.5, 2.0, n_controls))
+    artifact = tmp_path / "esn_art"
+    ESNArtifact(
+        w_in=w_in,
+        w_out=w_out,
+        w_res=w_res,
+        dt=0.01,
+        downsample=1,
+        horizon=horizon,
+        reservoir_size=reservoir_size,
+        leak_rate=0.1,
+        spectral_radius=0.9,
+        washout=washout,
+        input_scaling=0.1,
+        density=0.2,
+        noise_sigma=0.0,
+        ridge_lambda=1e-3,
+        seed=_SEED,
+        y_pipeline=y_pipeline,
+        u_pipeline=u_pipeline,
+    ).save(artifact)
+    return artifact
+
+
+def test_mpc_controller_with_esn_model(tmp_path: Path) -> None:
+    """MPCController runs end-to-end with an ESNSymbolicModel across warmup and active steps."""
+    washout = 5
+    art_path = _build_tiny_esn_artifact(tmp_path, washout=washout)
+    model = ESNSymbolicModel.from_artifact(art_path)
+    u_max = 0.5
+    controller = MPCController(dt=0.01, model=model, u_max=u_max, horizon=3, w_y=1.0, w_u=0.0)
+
+    results = _drive(controller, n_steps=washout + 3, n_channels=model.n_channels)
+    for u, log in results[: washout - 1]:
+        assert log.warmup
+        np.testing.assert_array_equal(u, np.zeros(model.n_controls))
+
+    for u, log in results[washout - 1 :]:
+        assert not log.warmup
+        assert u.shape == (model.n_controls,)
+        assert np.isfinite(u).all()
+        assert np.all(np.abs(u) <= u_max + 1e-6)
+
+
+def test_mpc_from_config_loads_esn_artifact(tmp_path: Path) -> None:
+    """MPCController.from_config routes through build_symbolic_model for ESN artifacts."""
+    art_path = _build_tiny_esn_artifact(tmp_path, washout=3)
+    controller = MPCController.from_config(
+        {
+            "dt": 0.01,
+            "artifact": str(art_path),
+            "u_max": 0.5,
+            "horizon": 3,
+        }
+    )
+    assert isinstance(controller.model, ESNSymbolicModel)
+    assert controller.horizon == 3
+    assert controller.n_controls == 2
+
+
+def test_symbolic_model_priming_seam(tmp_path: Path) -> None:
+    """initial_state, absorb, and is_ready match the artifact prime contract for NN and ESN."""
+    rng = np.random.default_rng(_SEED + 5)
+
+    # NN model priming
+    n_y, n_u, n_ch, n_ctrl = 4, 3, 2, 2
+    nn_art_path = _build_artifact(tmp_path, n_y=n_y, n_u=n_u, n_channels=n_ch, n_controls=n_ctrl)
+    nn_art = MLPArtifact.load(nn_art_path)
+    nn_model = NNSymbolicModel(nn_art)
+
+    assert nn_model.native_horizon == nn_art.horizon
+    state = nn_model.initial_state()
+    assert not nn_model.is_ready(state)
+
+    y_seq = rng.standard_normal((n_y, n_ch))
+    u_zeros = np.zeros(n_ctrl)
+    for t in range(n_y - 1):
+        state = nn_model.absorb(state, y_seq[t], u_zeros)
+        assert not nn_model.is_ready(state)
+
+    state = nn_model.absorb(state, y_seq[n_y - 1], u_zeros)
+    assert nn_model.is_ready(state)
+    expected_nn = nn_art.prime(y_seq, np.zeros((n_y, n_ctrl)))
+    np.testing.assert_allclose(state, expected_nn, atol=1e-12)
+
+    # ESN model priming
+    washout, res_size = 6, 20
+    esn_art_path = _build_tiny_esn_artifact(tmp_path, reservoir_size=res_size, washout=washout, n_channels=n_ch)
+    esn_art = ESNArtifact.load(esn_art_path)
+    esn_model = ESNSymbolicModel(esn_art)
+
+    assert esn_model.native_horizon == esn_art.horizon
+    esn_state = esn_model.initial_state()
+    assert not esn_model.is_ready(esn_state)
+
+    y_esn = rng.standard_normal((washout, n_ch))
+    u_esn = rng.standard_normal((washout, n_ctrl))
+    for t in range(washout - 1):
+        esn_state = esn_model.absorb(esn_state, y_esn[t], u_esn[t])
+        assert not esn_model.is_ready(esn_state)
+
+    esn_state = esn_model.absorb(esn_state, y_esn[washout - 1], u_esn[washout - 1])
+    assert esn_model.is_ready(esn_state)
+    expected_esn = esn_art.prime(y_esn, u_esn)
+    np.testing.assert_allclose(esn_state, expected_esn, atol=1e-12)

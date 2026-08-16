@@ -120,9 +120,47 @@ class NNSymbolicModel:
         return self.artifact.n_eeg_channels
 
     @property
+    def native_horizon(self) -> int:
+        """Native prediction horizon of the underlying artifact."""
+        return self.artifact.horizon
+
+    @property
+    def is_linear(self) -> bool:
+        """Whether the underlying MLP is linear (0 hidden layers)."""
+        return self.artifact.model.model.depth == 0
+
+    @property
     def free_syms(self) -> dict[str, ca.MX]:
         """Free symbolic parameters; always empty -- this model is purely numeric."""
         return {}
+
+    def initial_state(self) -> FloatArray:
+        """Return initial state with NaN-padded EEG history and zero-padded control history."""
+        n_y, n_ch = self.artifact.n_y, self.artifact.n_channels
+        n_u, n_ctrl = self.artifact.n_u, self.artifact.n_controls
+        y_buf = np.full(n_y * n_ch, np.nan, dtype=np.float64)
+        u_buf = np.zeros(n_u * n_ctrl, dtype=np.float64)
+        return np.concatenate([y_buf, u_buf])
+
+    def absorb(self, state: FloatArray, y: FloatArray, u: FloatArray) -> FloatArray:
+        """Absorb raw measurement y and control u into the shift-register state."""
+        n_y, n_ch = self.artifact.n_y, self.artifact.n_channels
+        n_u, n_ctrl = self.artifact.n_u, self.artifact.n_controls
+        split = n_y * n_ch
+
+        y_buf = state[:split].reshape(n_y, n_ch)
+        u_buf = state[split:].reshape(n_u, n_ctrl)
+
+        z = self.artifact.encode(np.asarray(y, dtype=np.float64).reshape(-1))
+        new_y_buf = np.vstack([y_buf[1:], z.reshape(1, n_ch)])
+        new_u_buf = np.vstack([u_buf[1:], np.asarray(u, dtype=np.float64).reshape(1, n_ctrl)])
+
+        return np.concatenate([new_y_buf.reshape(-1), new_u_buf.reshape(-1)])
+
+    def is_ready(self, state: FloatArray) -> bool:
+        """Return True if the EEG history buffer has absorbed at least n_y samples."""
+        n_y, n_ch = self.artifact.n_y, self.artifact.n_channels
+        return not np.isnan(state[: n_y * n_ch]).any()
 
     @cached_property
     def _layers(self) -> tuple[tuple[FloatArray, FloatArray], ...]:
