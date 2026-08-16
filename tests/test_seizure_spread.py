@@ -52,6 +52,12 @@ def test_onset_requires_persistence() -> None:
     assert profile.onsets[1] == pytest.approx(times[3])
 
 
+def test_onset_rejects_an_envelope_shorter_than_the_persistence_window() -> None:
+    """Too few windows to establish a sustained run must raise, not score every region NaN."""
+    with pytest.raises(ValueError, match="shorter than the"):
+        SpreadProfile.from_ptp(_times(3), np.full((2, 3), 10.0), threshold=5.0, persist_s=1.0)
+
+
 def test_onset_ignores_activity_below_threshold() -> None:
     """Raising the threshold above the envelope leaves every region unrecruited."""
     times = _times(8)

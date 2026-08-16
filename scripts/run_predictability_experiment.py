@@ -8,13 +8,15 @@ from neuro.ensembles import (
     PLANT_CONFIG,
     EnsembleConfig,
     PlantPair,
+    all_arms,
     build_plants,
     generate_iter,
 )
+from neuro.seizure import SPREAD_WINDOW_S
 
-# Generates the ensemble that docs/predictability_controllability_experiment.md scores: 8 healthy
-# and 8 seizure parents, each snapshotted at its branch points and branched into 16 children run
-# under every stimulation arm on a shared seed. Nothing is scored here -- the notebooks do that.
+# Generates the ensemble that docs/predictability_controllability_experiment.md scores: 16 healthy
+# and 16 seizure parents, each snapshotted at its branch points and branched into 8 children run
+# under per-branch stimulation arms on a shared seed. Nothing is scored here -- the notebooks do that.
 _DESCRIPTION = "Generate the predictability/controllability ensemble."
 
 
@@ -26,18 +28,18 @@ def simulated_seconds(cfg: EnsembleConfig) -> float:
         if not branches:
             continue
         parent_s = max(b.t_branch for b in branches)
-        child_s = len(branches) * cfg.n_children * len(cfg.arms) * cfg.rollout_s
+        child_s = sum(len(b.arms) * cfg.n_children * cfg.rollout_s for b in branches)
         total += cfg.n_parents * (parent_s + child_s)
     return total
 
 
 def stored_bytes(cfg: EnsembleConfig, plants: PlantPair) -> int:
     """Bytes the stores will occupy: full-rate scalp EEG plus decimated region LFP."""
-    n_files = len(cfg.branches) * len(cfg.arms)
+    n_pairs = sum(len(b.arms) for b in cfg.branches)
     n_channels, n_nodes = plants.eeg_gain.shape
     eeg = cfg.n_rollouts * n_channels * round(cfg.rollout_s / plants.seizure.dt) * 8
-    region = cfg.n_rollouts * n_nodes * round(cfg.rollout_s * cfg.region_fs) * 4
-    return n_files * (eeg + region)
+    region = cfg.n_rollouts * n_nodes * round((SPREAD_WINDOW_S + cfg.rollout_s) * cfg.region_fs) * 4
+    return n_pairs * (eeg + region)
 
 
 def parse_args() -> argparse.Namespace:
@@ -45,8 +47,8 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=_DESCRIPTION)
     parser.add_argument("--out", type=Path, required=True, help="Output directory for the stores and manifest.")
     parser.add_argument("--config", type=Path, default=PLANT_CONFIG, help="Plant config to take the dynamics from.")
-    parser.add_argument("--n-parents", type=int, default=8, help="Distinct plant seeds per plant kind.")
-    parser.add_argument("--n-children", type=int, default=16, help="Noise realisations branched off each snapshot.")
+    parser.add_argument("--n-parents", type=int, default=16, help="Distinct plant seeds per plant kind.")
+    parser.add_argument("--n-children", type=int, default=8, help="Noise realisations branched off each snapshot.")
     parser.add_argument("--rollout", type=float, default=3.0, help="Child rollout length in seconds.")
     parser.add_argument("--region-fs", type=float, default=1000.0, help="Rate the stored region LFP is decimated to.")
     parser.add_argument("--dry-run", action="store_true", help="Print the cost and storage plan, then stop.")
@@ -66,11 +68,12 @@ def main() -> None:
     plants = build_plants(args.config)
     sim_s = simulated_seconds(cfg)
     n_parent_runs = cfg.n_parents * len({b.plant for b in cfg.branches})
+    n_rollouts_total = sum(len(b.arms) * cfg.n_rollouts for b in cfg.branches)
 
     print(f"plant      : {args.config}")
     print(f"branches   : {', '.join(f'{b.name}@{b.t_branch:g}s' for b in cfg.branches)}")
-    print(f"arms       : {', '.join(f'{a.name}={list(a.current)}' for a in cfg.arms)}")
-    print(f"rollouts   : {len(cfg.branches) * cfg.n_rollouts * len(cfg.arms)}")
+    print(f"arms       : {', '.join(f'{a.name}={list(a.current)}' for a in all_arms(cfg.branches))}")
+    print(f"rollouts   : {n_rollouts_total}")
     print(f"simulated  : {sim_s:.0f} s over {n_parent_runs} parent runs")
     print(f"storage    : {stored_bytes(cfg, plants) / 1e9:.1f} GB into {args.out}")
     if args.dry_run:

@@ -235,13 +235,13 @@ def test_readout_returns_the_calibration_curve_the_notebook_plots() -> None:
 def test_state_predictability_is_one_when_the_state_fixes_the_future() -> None:
     block = np.tile(_RNG.normal(size=(4, 1, 3)), (1, 50, 1))
 
-    assert state_predictability_r2(_ensemble(block), np.ones(3)) == pytest.approx(np.ones(3))
+    assert state_predictability_r2(_ensemble(block), 1.0) == pytest.approx(np.ones(3))
 
 
 def test_state_predictability_is_zero_when_the_forecast_error_fills_the_state_range() -> None:
     block = _RNG.normal(scale=2.0, size=(4, 4000, 2))
 
-    score = state_predictability_r2(_ensemble(block), np.full(2, 4.0))
+    score = state_predictability_r2(_ensemble(block), 4.0)
 
     assert score == pytest.approx(np.zeros(2), abs=0.05)
 
@@ -250,7 +250,7 @@ def test_state_predictability_goes_negative_when_the_noise_exceeds_the_state_ran
     """Unbounded below on purpose: it says the metric cannot resolve the states it must steer between."""
     block = _RNG.normal(scale=4.0, size=(4, 4000, 2))
 
-    assert np.all(state_predictability_r2(_ensemble(block), np.full(2, 1.0)) < -10.0)
+    assert np.all(state_predictability_r2(_ensemble(block), 1.0) < -10.0)
 
 
 def test_state_predictability_uses_the_same_denominator_at_every_branch() -> None:
@@ -258,12 +258,33 @@ def test_state_predictability_uses_the_same_denominator_at_every_branch() -> Non
     tight = _ensemble(0.01 * _RNG.normal(size=(4, 1, 2)) + _RNG.normal(scale=0.5, size=(4, 500, 2)))
     wide = _ensemble(10.0 * _RNG.normal(size=(4, 1, 2)) + _RNG.normal(scale=0.5, size=(4, 500, 2)))
 
-    assert state_predictability_r2(tight, np.full(2, 4.0)) == pytest.approx(
-        state_predictability_r2(wide, np.full(2, 4.0)), abs=0.1
-    )
+    assert state_predictability_r2(tight, 4.0) == pytest.approx(state_predictability_r2(wide, 4.0), abs=0.1)
     assert np.all(
         variance_ratio(tight.values, tight.n_replicates) < variance_ratio(wide.values, wide.n_replicates) - 0.5
     )
+
+
+def test_state_predictability_takes_the_scalar_explained_var_of_a_pooled_metric() -> None:
+    """A pooled metric's V_state is one number, not one per lookahead -- the notebook's own path."""
+    state = np.tile(np.arange(10) / 10.0, 50)
+    v_state = state_readout_r2(2.0 * state + 1.0, state, n_bins=10).explained_var
+    ens = _ensemble(_RNG.normal(scale=0.1, size=(4, 200, 3)))
+
+    score = state_predictability_r2(ens, v_state)
+
+    assert np.ndim(v_state) == 0
+    assert score == pytest.approx(1.0 - sigma_ens(ens) ** 2 / float(v_state))
+
+
+def test_state_predictability_scores_a_per_channel_metric_against_its_own_state_range() -> None:
+    """One explained_var per channel, one curve per channel -- the trailing axes both sides carry."""
+    ens = Ensemble(times=np.arange(3, dtype=np.float64), values=_RNG.normal(size=(20, 2, 3)), n_replicates=5)
+
+    score = state_predictability_r2(ens, np.array([4.0, 1.0]))
+
+    assert score.shape == (2, 3)
+    assert score[0] == pytest.approx(state_predictability_r2(_ensemble(ens.by_state[:, :, 0, :]), 4.0))
+    assert score[1] == pytest.approx(state_predictability_r2(_ensemble(ens.by_state[:, :, 1, :]), 1.0))
 
 
 # --- coupling: does moving the metric move the seizure? --------------------------------------

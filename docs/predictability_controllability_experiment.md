@@ -57,7 +57,7 @@ EZ (`lHC`, `lPHC`, `lAMYG`) and `3.4` at the PZ (`lTCI`, `lTCV`). Everything els
 [`nonlinear_full_mpc.yaml`](../configs/simulation/nonlinear_full_mpc.yaml), so the healthy/seizure
 contrast carries no confound.
 
-**16 parent runs**: 8 healthy seeds to 4 s, 8 seizure seeds to 14 s. Each seizure parent is
+**32 parent runs**: 16 healthy seeds to 4 s, 16 seizure seeds to 14 s. Each seizure parent is
 snapshotted at all four seizure branch points, so one run serves four branches.
 
 | branch | plant | `t_branch` | what it represents |
@@ -89,10 +89,14 @@ preserves `x`, `history` and `k` exactly and needs no API change.
 
 ### Stimulation arms
 
-Two arms per child, **sharing child seeds**:
+Arms are allocated **per branch** and **share child seeds**:
 
-- `u = 0`
-- sustained hold `u = d1 = [+2.0, 0.0, -2.0]` mA over `(TP9, CP5, Ex8)`
+- `u = 0`, at every branch
+- sustained hold `u = d1 = [+2.0, 0.0, -2.0]` mA over `(TP9, CP5, Ex8)`, where the probe moves the
+  seizure
+- `u = −d1`, at the two branches where it moves it most
+
+See §"Regeneration" for the allocation and why it is that one.
 
 `d1` is the `GOOD_COMMAND` constant in
 [`probe_payoff_crossover.py`](../scripts/probe_payoff_crossover.py). At `u_max: 2.0` it sits exactly
@@ -106,13 +110,14 @@ statistical power.
 **The arm list is a config parameter.** With only `{0, +d1}`, a null controllability result cannot
 distinguish "this metric cannot be steered" from "not along the one direction probed" — the exact
 ambiguity the `gamma` investigation turned on. Under KCL the `roast_3d` leadfield's 3 electrodes
-give an admissible input space of **exactly 2 dimensions**, so adding `-d1` and a matched-norm
-orthogonal `d2` would characterise first-order controllability completely. That is deferred, not
-excluded; adding it must be a config line, not a redesign.
+give an admissible input space of **exactly 2 dimensions**, so `-d1` and a matched-norm orthogonal
+`d2` would characterise first-order controllability completely. `-d1` was bought; `d2` was not, so
+half the space is still unprobed. Adding it is a config line, not a redesign.
 
 ### Ensemble size
 
-Per branch: **8 parents × 16 children × 2 arms**, 3 s rollout. **1280 rollouts total.**
+Per branch and arm: **16 trajectories × 8 replicates**, 3 s rollout — 128 rollouts. Ten branch-arm
+pairs, so **1280 rollouts total.**
 
 Multiple parents are load-bearing twice over. They supply the R² denominator (below), and without
 them the separability arm has n = 1 per class, which makes Cohen's d, AUC and every other
@@ -484,8 +489,14 @@ s(t) = (1/N) * count_n[ PTP_n(t-1s, t) > 5 mV ]
 
 `SpreadProfile`'s criterion unchanged, reduced to a network scalar, on the **causal** grid of
 `windowed` rather than that class's window-*centre* one. Its 1 s window is inherited from the
-threshold's calibration — a shorter window measures less peak-to-peak and would silently re-tune
-the 5 mV — so `s` is only defined for `h >= 1 s`, and every state-referenced score starts there.
+threshold's calibration — a shorter window measures less peak-to-peak and would silently re-tune the
+5 mV, which §"Regeneration" measures rather than assumes.
+
+Being causal, it needs history. Each region rollout is therefore stored with `SPREAD_WINDOW_S`
+seconds of its parent's pre-branch LFP in front of it, so the first window closes exactly at the
+branch and `s` is defined from **`h = 0`**. What that history cannot supply is *contrast*: it is one
+array per trajectory and branch, shared by every replicate and every arm, so `δs` — and with it
+`d_state` and `rho` — is diluted below `h = W`.
 
 ### Scores
 
@@ -567,117 +578,130 @@ Series round-trip through float32 — they are scores off a float32 region store
 state). Parent/child named the operation but not the statistics, which is what every formula is
 about. `EnsembleConfig` and the manifest keep the generation-side names.
 
-## Does the generation design still fit? — proposal, not implemented
+## Regeneration: what the generation design became
 
-**Date:** 2026-08-15. **Status: analysis only.** No generation code is changed by this section.
-`BRANCHES`, `ARMS` and `EnsembleConfig` are exactly as they were, and the current ensemble stays
-valid. This is the audit asked for before deciding whether to regenerate.
+**Date:** 2026-08-15. **Status: implemented.** The generation design was shaped by the four axes
+that are now superseded, and it was re-audited against the five that replaced them. `BRANCHES` and
+`EnsembleConfig` carry the outcome; this section records the decisions and the reasons, which the
+code does not.
 
-The generation design was shaped by the four axes that are now superseded. The question is which of
-its choices were load-bearing for *those* axes and which are load-bearing for the five that
-replaced them.
+The reframe underneath all of them: branches are no longer *strata to condition on*, they are a
+**device for spreading `s`**. §"What was measured first" showed the branch label is a weak proxy for
+the state — within-branch spread is as large as between-branch separation. Under the old design that
+was a defect, because the branch *was* the ground truth. Under `R2_read` it is irrelevant: the score
+conditions on measured `s`, and a branch producing a wide spread of `s` is a *better* sampling
+device, not a worse stratum. **No branch was dropped**, including the two with no control effect —
+they still anchor the range `V_state` is defined over.
 
-### What the new scoring actually asks of the generation
+### Per-branch stimulation arms
 
-| score | what it consumes | what it is sensitive to |
-| --- | --- | --- |
-| `R2_read` | (M, s) pairs pooled over branches, rollouts and times | **coverage of the s range**, not branch identity |
-| `R2_pred` | within-state variance over replicates; `V_state` from `R2_read` | replicates per state, and the s range that sets the denominator |
-| `d_ctrl`, `d_state` | paired zero/stim arms at one branch | trajectories (the t-tests are n = 8) |
-| `rho` | both arms, per rollout | trajectories, and **a stimulus that actually moves `s`** |
+`Branch` carries its own arms rather than a flat global tuple:
 
-The reframe that matters: branches are no longer *strata to condition on*, they are a **device for
-spreading `s`**. §"What was measured first" showed the branch label is a weak proxy for the state —
-within-branch spread is as large as between-branch separation. Under the old design that was a
-defect, because the branch *was* the ground truth. Under `R2_read` it is irrelevant: the score
-conditions on measured `s`, and a branch that produces a wide spread of `s` is a *better* sampling
-device, not a worse stratum.
+| branch | arms |
+| --- | --- |
+| `healthy` | `{0}` |
+| `pre_onset` | `{0, +d1, −d1}` |
+| `ez_ignited` | `{0, +d1, −d1}` |
+| `mid_spread` | `{0, +d1}` |
+| `saturated` | `{0}` |
 
-### Branch audit
+Ten branch-arm pairs and 1280 rollouts — exactly what the flat `5 branches × 2 arms` allocation
+cost, so this is **cost-neutral** in rollouts, runtime and storage. The stimulated arms sit where
+the probe demonstrably moves the seizure (§"What was measured first": t(7) = −4.47 at `pre_onset`,
+−2.17 at `ez_ignited`, and nothing significant beyond), and the budget freed at `saturated` buys the
+`−d1` direction where it can actually be read. What it gives up is `d_ctrl`, `d_state` and `rho` at
+`saturated`, which the notebook's own caveats already report as undetermined.
 
-| branch | old role | role now | verdict |
-| --- | --- | --- | --- |
-| `healthy` | separability reference (Cohen's d) | anchors `s ≈ 0` for the `V_state` range | **keep** — but see the inconsistency below |
-| `pre_onset` | the actionable window | the only branch where `d1` clearly moves `s` (t(7) = −4.47, 8/8) | **keep**, the load-bearing one |
-| `ez_ignited` | focus seizing | second-strongest control effect (t(7) = −2.17, 6/8) | **keep** |
-| `mid_spread` | PZ recruited | no control effect (t(7) = −1.25); still supplies mid-range `s` | **keep for `R2_read`**, not for the control axes |
-| `saturated` | "nothing helps" regime | no control effect (t(7) = −1.10); anchors the top of the `s` range | **keep for `R2_read`**, not for the control axes |
+**The orthogonal `d2` was not bought, and that is the largest remaining gap.** Under KCL the
+`roast_3d` leadfield's three electrodes give an admissible input space of **exactly two
+dimensions**, so first-order controllability is still only half-characterised: with `{0, ±d1}` a
+null `rho` cannot fully separate *"this metric is not coupled to the seizure"* from *"not along the
+direction probed"*. It is the one thing here that no amount of re-scoring can fix.
 
-So no branch should be dropped — but two of them are now *readout* samples only, and paying for a
-stimulated arm at those two buys a `d_ctrl` and a `rho` the doc's own caveats already say are
-undetermined.
+### I = 16 trajectories, J = 8 replicates
 
-**A live inconsistency to settle first.** §5's prose says a negative `R2_pred` means the noise is
-wider than "the whole span it traverses from healthy to saturated", but every `observations()` call
-in `state_scoring.py` passes `seizure_branches`, so `healthy` is **excluded** from `V_state`. Either
-the prose or the pooling is wrong. Including `healthy` widens `V_state` and makes every `R2_pred`
-less negative; excluding it makes the denominator "the span across seizure states", which is
-arguably the more honest control target. This is a one-line decision that moves every number on
-axis 2, and it needs making before any regeneration is judged.
+Was `n_parents = 8`, `n_children = 16`; the rollout count is unchanged at 128 per branch and arm.
+Every *inferential* claim in the scoring is at the trajectory level — the t-tests, `V_state`, the
+basin mixture — and every one of them ran at n = 8.
 
-### Arms: the one real gap
-
-The doc has flagged this twice already — §"Stimulation arms" and §8 of the notebook. With
-`{0, +d1}` only, a null `rho` cannot distinguish *"this metric is not coupled to the seizure"* from
-*"not along the one direction probed"*. Under KCL the `roast_3d` leadfield's three electrodes give
-an admissible input space of **exactly two dimensions**, so `−d1` plus a matched-norm orthogonal
-`d2` would characterise first-order controllability completely.
-
-This is the single largest scientific gap in the current ensemble, and it is the one thing here that
-genuinely cannot be fixed by re-scoring.
-
-### Trajectories against replicates — a free improvement
-
-`n_parents = 8`, `n_children = 16` gives 128 rollouts per branch and arm. Every *inferential* claim
-in the new scoring is at the trajectory level (the t-tests, `V_state`, the basin mixture), and every
-one of them runs at n = 8. Swapping to **I = 16, J = 8** keeps the rollout count identical:
-
-| quantity | df now (I=8, J=16) | df at I=16, J=8 | effect |
+| quantity | df at I=8, J=16 | df at I=16, J=8 | effect |
 | --- | --- | --- | --- |
 | trajectory-level means (t-tests, `V_state`) | 7 | 15 | CI half-width **−36 %** (t/√I: 0.836 → 0.533) |
 | pooled within-state variance, `I(J−1)` | 120 | 112 | rel. sd of the estimate 0.129 → 0.134, **+4 %** |
 
-The within-state variance is pooled across trajectories, so halving the replicates costs it almost
-nothing — while doubling the trajectories nearly halves the width of every interval the document
-actually quotes. The basin mixture makes this sharper: one of eight trajectories settling in a
-different basin is 12.5 % of the sample, and at I = 16 an equivalent draw would be 6 %.
+Within-state variance is pooled across trajectories, so halving the replicates costs it almost
+nothing, while doubling the trajectories nearly halves the width of every interval this document
+quotes. The basin mixture sharpens it: one trajectory in a different basin is 12.5 % of a sample of
+8 and 6 % of a sample of 16.
 
-### Cost
+### `healthy` stays out of `V_state`
 
-Arms are currently a flat global tuple applied to every branch. Allocating them per branch costs
-nothing and would need `Branch` to carry its own `arms` (or `EnsembleConfig` a mapping) — a small
-change to `ensembles.py`, not a redesign.
+`healthy` runs a **different plant** — `A_HEALTHY` uniform rather than `build_seizure_a_gains`'s
+EZ/PZ vector — so pooling it into `V_state` would make `s` partly a plant label and reference the
+forecast error to a span no electrode can traverse. `pre_onset` already anchors `s ≈ 0` under the
+dynamics the controller actually faces, and with per-branch arms `healthy` carries only the zero
+arm, so it can contribute nothing to axes 3–5 either. §4's prose already said "pooled over the four
+seizure branches"; only §5's was inconsistent, and it has been corrected in the notebook. `healthy`
+stays in the ensemble for what it does earn: the sign and the native-units gap `separability` gives
+`controllability`.
 
-| allocation | branch × arm pairs | rollouts | storage |
-| --- | --- | --- | --- |
-| current (5 branches × 2 arms) | 10 | 1280 | ~19 GB |
-| proposed | 10 | 1280 | ~19 GB |
+### `rollout_s` stays 3.0 — the argument for shortening it inverted
 
-Proposed: `healthy` → `{0}`; `pre_onset` → `{0, +d1, −d1}`; `ez_ignited` → `{0, +d1, −d1}`;
-`mid_spread` → `{0, +d1}`; `saturated` → `{0}`. The stimulated arms move to the branches where
-stimulation demonstrably does something, and pay for the second probe direction there.
+The case for a second look was that `s` was undefined below `h = 1 s`, so the first third of every
+rollout yielded no state-referenced score — a 33 % tax on the region store. Prepending
+`SPREAD_WINDOW_S` seconds of the parent's pre-branch region LFP to each rollout removed that tax
+entirely: the first causal window now closes exactly at the branch, `s` is defined from `h = 0`, and
+the full 61-point grid is state-referenced. Shortening `rollout_s` therefore now costs
+proportionally *more* usable grid than it did when the argument was made.
 
-**This is cost-neutral**: same rollout count, same runtime, same storage, and it buys the `−d1`
-direction at both branches where the probe works. What it gives up is `d_ctrl`/`d_state`/`rho` at
-`saturated`, which the notebook's own caveats already report as undetermined.
+### `SPREAD_WINDOW_S` stays 1.0 — a shorter window cannot detect earlier
 
-### Recommendation
+It was briefly lowered to 0.5 s and has been reverted. Recorded because the rationale for lowering
+it — less delay before `s` responds — is **structurally impossible**, and someone will otherwise try
+it again. For a *trailing* window, PTP over `(t − 1.0, t]` is by construction ≥ PTP over
+`(t − 0.5, t]`, so at a fixed threshold the shorter window can never cross earlier than the longer
+one. It can only cross later, or not at all.
 
-1. **Settle the `healthy`-in-`V_state` question** — no regeneration needed, and it moves axis 2.
-2. **If regenerating: I = 16, J = 8, and per-branch arms with `−d1`.** Cost-neutral, and it fixes
-   the two things re-scoring cannot: the trajectory-level n, and the single probe direction.
-3. **Do not drop any branch.** Their role changed from stratum to `s`-sampling device, and the two
-   with no control effect still anchor the range `V_state` is defined over.
-4. `rollout_s = 3.0` is worth a second look but not on its own: `s` is undefined below h = 1 s, so
-   the first third of every rollout yields no state-referenced score. That is a 33 % tax on the
-   region store, payable only if the h ∈ [1, 3] s window is the one that matters.
+Measured over 8 seeds at the unchanged 5.0 mV threshold, 0.5 s against 1.0 s:
+
+| quantity | effect of the shorter window |
+| --- | --- |
+| causal first crossing | **1.6 ms later** on average, and never earlier |
+| `SpreadProfile.onsets` | 0.25 s later |
+| chatter in `s(t)` | **+121 %** (2.9 → 6.4 mean flips per region) |
+| seizing cells missed | 10.7 % |
+| mean `n_seizing_final` | 29.4 → 25.0 |
+
+At 0.5 s the threshold would need retuning to ~4.2 mV, which is a recalibration of the criterion
+rather than a change of window. 0.75 s was measured too — no median PTP bias, 5.0 mV still valid,
++31 % chatter, 4.3 % of cells missed — and rejected on the chatter. **No basin label flipped at any
+window**, so nothing downstream of the label depended on the choice.
+
+### What the horizon tax became
+
+The pre-branch history is one array per trajectory and branch, shared by every replicate **and every
+arm**. So for `h < SPREAD_WINDOW_S` the trailing window producing `s(t)` is partly composed of
+samples that are bit-identical across arms, and the arm difference `δs` is diluted in proportion to
+the overlap — exactly zero at `h = 0`, half strength at `h = W/2`. The resulting ramp from zero
+reads exactly like a stimulation latency and is pure window overlap. It affects `δs`-derived
+quantities **only** — `rho` and `d_state` — over 20 of the 61 grid points, and they are shaded there
+rather than hidden.
+
+`d_ctrl` is not in that band: the scalp store is rollout-only (`n_eeg = rollout_s / dt`), so a
+metric window is post-branch from its first sample and `METRICS[name].window_s` already covers it.
+Nor is `R2_pred`: every replicate branches from the same `x0` and `s` is continuous, so within-state
+variance genuinely goes to zero as `h → 0`, and `R2_pred → 1` there is the plant being
+deterministic at short range rather than an artefact.
 
 ## Known confounds
 
-**Windowed metrics inflate short-`h` scores.** For `h` shorter than the metric window, the trailing
-window still overlaps pre-branch history that every child shares, so `sigma_ens` is artificially
-near zero. Scores are valid only for `h >= window`; the invalid region is **shaded in plots, not
-hidden**.
+**Short-`h` scores are degraded — but not by the metric windows.** The scalp store is rollout-only
+(`n_eeg = rollout_s / dt`), so a metric's trailing window is post-branch from its first sample and
+its grid simply starts at `h = window`; nothing there is inflated, and `METRICS[name].window_s` is
+the whole validity condition. What *is* shared across children is the **region** store's pre-branch
+history — one array per trajectory and branch, common to every replicate and arm — which dilutes
+`δs` and so `d_state` and `rho` below `h = SPREAD_WINDOW_S`. Either way, the invalid region is
+**shaded in plots, not hidden**.
 
 **The plant is bimodal across seeds.** [`tes_field_geometry.md`](tes_field_geometry.md) §1.3:
 outcomes split into ~4–5 seizing regions (suppressed) or ~27–35 (unsuppressed). Consequences:
@@ -732,12 +756,12 @@ panel per phase, marker size = Cohen's d, marker shape = channel set.
 
 ### Cost and storage
 
-Simulated time is fixed by the design: 16 parent runs come to **144 s**, and 1280 child rollouts of
-3 s come to **3840 s**, so **3984 s** in total.
+Simulated time is fixed by the design: 32 parent runs come to **288 s**, and 1280 child rollouts of
+3 s come to **3840 s**, so **4128 s** in total.
 
 **Measured**, not extrapolated, on the real `ensembles.py` path (1 parent per plant kind, all five
 branches, 78 simulated s): **36 s wall for 78 simulated s, i.e. 0.46x realtime**. Generation is
-therefore about **31 min single-threaded**, not the ~2.7 h a `probe_payoff_crossover.py`-based
+therefore about **32 min single-threaded**, not the ~2.7 h a `probe_payoff_crossover.py`-based
 estimate suggests. The gap is the orchestrator: that probe drives a full `Simulation` with sensor,
 estimator, controller and logger per step, where this path steps `simulate_network` directly and
 reduces to EEG once at the end. Left serial — it is a one-off overnight-scale job at worst, and
@@ -756,9 +780,10 @@ branch × arm (10 files, ~1.9 GB each), opened with `mmap_mode='r'` — the repo
 because `np.load(..., mmap_mode=...)` is silently ignored for `.npz`; and each file is written
 through `np.lib.format.open_memmap`, so generation never holds 1.9 GB resident.
 
-Region LFP is stored too — the observability axis is a scalp↔region correlation, so it needs region
-metrics — but **decimated to 1 kHz at float32**: `1280 × 3000 × 76 × 4 B` ≈ **1.2 GB**, against
-23 GB if it were kept at 10 kHz like the scalp. Region space is only ever a reference signal, never
+Region LFP is stored too — it carries the seizure-state ground truth — but **decimated to 1 kHz at
+float32**, and with `SPREAD_WINDOW_S` of pre-branch history in front of each rollout:
+`1280 × 4000 × 76 × 4 B` ≈ **1.6 GB**, against 31 GB if it were kept at 10 kHz like the scalp, so
+**20.6 GB** in total — what `--dry-run` reports. Region space is only ever a reference signal, never
 the controller's input, so it does not need the raw rate; and correlation across the time grid is
 scale-invariant, so metrics whose value depends on `fs` (line length) still compare cleanly.
 

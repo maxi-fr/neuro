@@ -83,9 +83,19 @@ class SpreadProfile:
         threshold: float = SEIZURE_PTP_MV,
         persist_s: float = SPREAD_PERSIST_S,
     ) -> SpreadProfile:
-        """Derive the onsets of a stored amplitude envelope, so it can be re-thresholded."""
+        """Derive the onsets of a stored amplitude envelope, so it can be re-thresholded.
+
+        Raises
+        ------
+        ValueError
+            If the envelope is shorter than the persistence window, which would score every
+            region as never seizing rather than measuring anything.
+        """
         hop = float(times[1] - times[0]) if len(times) > 1 else 1.0
         n_hold = max(1, round(persist_s / hop))
+        if ptp.shape[1] < n_hold:
+            msg = f"Envelope is shorter than the {persist_s} s persistence window ({ptp.shape[1]} of {n_hold} windows)."
+            raise ValueError(msg)
 
         above = ptp > threshold
         sustained = np.logical_and.reduce([above[:, i : above.shape[1] - n_hold + 1 + i] for i in range(n_hold)])

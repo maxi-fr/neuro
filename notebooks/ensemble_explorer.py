@@ -14,12 +14,13 @@ def _():
 
     from neuro.ensembles import cached_scalp, load_manifest, region_path
     from neuro.geometry import sensor_positions_mm
-    from neuro.seizure import SEIZURE_PTP_MV, spread_profile_from_lfp
+    from neuro.seizure import SEIZURE_PTP_MV, SPREAD_WINDOW_S, spread_profile_from_lfp
     from utils.processing import compute_psd, synchronization
 
     return (
         Path,
         SEIZURE_PTP_MV,
+        SPREAD_WINDOW_S,
         cached_scalp,
         compute_psd,
         load_manifest,
@@ -77,9 +78,10 @@ def _(Path, dir_input, load_manifest, mo):
 
     manifest = load_manifest(ens_dir)
     branch_names = [b["name"] for b in manifest["branches"]]
-    arm_names = [a["name"] for a in manifest["arms"]]
+    # arms are allocated per branch, so only these pairs have a store on disk
+    branch_arms = {b["name"]: list(b["arms"]) for b in manifest["branches"]}
     n_rollouts = manifest["n_parents"] * manifest["n_children"]
-    return arm_names, branch_names, ens_dir, manifest, n_rollouts
+    return branch_arms, branch_names, ens_dir, manifest, n_rollouts
 
 
 @app.cell
@@ -131,12 +133,19 @@ def _(manifest, mo, np, plt):
 
 
 @app.cell
-def _(arm_names, branch_names, mo, n_rollouts):
+def _(branch_names, mo, n_rollouts):
     branch_select = mo.ui.dropdown(options=branch_names, value=branch_names[0], label="Branch")
-    arm_select = mo.ui.dropdown(options=arm_names, value=arm_names[0], label="Arm")
     rollout_slider = mo.ui.slider(0, n_rollouts - 1, value=0, label="Rollout", show_value=True)
+    return branch_select, rollout_slider
+
+
+@app.cell
+def _(branch_arms, branch_select, mo, rollout_slider):
+    # rebuilt whenever the branch changes, so the arm offered is always one this branch carries
+    _arms = branch_arms[branch_select.value]
+    arm_select = mo.ui.dropdown(options=_arms, value=_arms[0], label="Arm")
     mo.hstack([branch_select, arm_select, rollout_slider], justify="start", gap=2)
-    return arm_select, branch_select, rollout_slider
+    return (arm_select,)
 
 
 @app.cell
@@ -517,6 +526,7 @@ def _(mo):
 @app.cell
 def _(
     SEIZURE_PTP_MV,
+    SPREAD_WINDOW_S,
     manifest,
     mo,
     np,
@@ -527,13 +537,13 @@ def _(
     spread_profile_from_lfp,
 ):
     _reg = np.asarray(region[rollout_slider.value], dtype=np.float64)
-    _too_short = _reg.shape[1] < region_fs
+    _too_short = _reg.shape[1] < SPREAD_WINDOW_S * region_fs
 
     mo.stop(
         _too_short,
         mo.md(
-            f"⚠️ The rollout is {_reg.shape[1] / region_fs:.2f} s, shorter than the 1 s spread "
-            "window, so no `SpreadProfile` is defined for it."
+            f"⚠️ The rollout is {_reg.shape[1] / region_fs:.2f} s, shorter than the "
+            f"{SPREAD_WINDOW_S:g} s spread window, so no `SpreadProfile` is defined for it."
         ),
     )
 
@@ -541,7 +551,8 @@ def _(
     _left = [_i for _i, _n in enumerate(manifest["region_labels"]) if _n.startswith("l")]
 
     _fig, _ax = plt.subplots(figsize=(9, 5))
-    _im = _ax.pcolormesh(_profile.times, np.arange(len(_left)), _profile.ptp[_left], cmap="magma")
+    # the store leads the branch by SPREAD_WINDOW_S, so shift the profile onto branch-referenced time
+    _im = _ax.pcolormesh(_profile.times - SPREAD_WINDOW_S, np.arange(len(_left)), _profile.ptp[_left], cmap="magma")
     _ax.set_yticks(np.arange(len(_left)) + 0.5)
     _ax.set_yticklabels([manifest["region_labels"][_i] for _i in _left], fontsize=5)
     _ax.set_xlabel("lookahead h since branch [s]")

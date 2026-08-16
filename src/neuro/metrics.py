@@ -35,10 +35,7 @@ def windowed(
     """Slide a **trailing** window over ``signals`` and reduce each block per channel.
 
     Windows are causal: the point reported at time ``t`` is computed from the samples in
-    ``(t - window_s, t]``, and ``t`` is the instant the value first becomes available. So the
-    grid starts at exactly ``window_s`` and a value never depends on the future. (This differs
-    from :func:`neuro.seizure.spread_profile`, which timestamps window *centres* -- that is a
-    labelling job, not a control one.)
+    ``(t - window_s, t]``, and ``t`` is the instant the value first becomes available.
 
     Parameters
     ----------
@@ -190,14 +187,12 @@ def seizure_state(
     grid of :func:`windowed` rather than that class's window-*centre* one, so it lines up sample
     for sample with a metric read off the scalp at the same instant.
 
-    Network rather than per-channel by measurement: a leadfield-weighted per-channel seizure
-    state correlates with this single scalar at a median 0.98 across the 62 channels at the
-    branches where stimulation has any effect, so the channel axis carries no target information
-    there and only costs resolution.
+    ``region_lfp`` is expected to start ``window_s`` before the branch, so the first window ends
+    at the branch and the returned times are branch-referenced, starting at 0.
 
-    ``window_s`` defaults to :data:`~neuro.seizure.SPREAD_WINDOW_S` because ``threshold``
-    is calibrated for that window -- a shorter one measures less peak-to-peak and would silently
-    re-tune the criterion.
+    ``threshold`` and ``window_s`` are calibrated together -- :data:`~neuro.seizure.SEIZURE_PTP_MV`
+    is the peak-to-peak a seizing region reaches over :data:`~neuro.seizure.SPREAD_WINDOW_S`, and a
+    shorter window measures less of it, so moving one without the other re-tunes the criterion.
 
     Parameters
     ----------
@@ -205,16 +200,22 @@ def seizure_state(
         Region LFP ``y = x2 - x3`` in mV, shape ``(n_regions, n_samples)``.
     fs
         Sampling rate of ``region_lfp`` in Hz.
+    window_s
+        Window length in seconds.
+    hop_s
+        Spacing between consecutive windows in seconds.
+    threshold
+        PTP threshold in mV for declaring a region seizing.
 
     Returns
     -------
     times
-        Window-end times in seconds since the start of ``region_lfp``.
+        Window-end times in seconds since the branch, starting at 0.
     state
         Fraction of regions above ``threshold`` in each window, in ``[0, 1]``.
     """
     times, ptp = windowed(region_lfp, fs, lambda block, _: np.ptp(block, axis=1), window_s=window_s, hop_s=hop_s)
-    return times, (ptp > threshold).mean(axis=0)
+    return times - window_s, (ptp > threshold).mean(axis=0)
 
 
 @dataclass(frozen=True)
@@ -453,7 +454,7 @@ def controllability(
     )
 
 
-def state_predictability_r2(ens: Ensemble, explained_var: FloatArray) -> FloatArray:
+def state_predictability_r2(ens: Ensemble, explained_var: FloatArray | float) -> FloatArray:
     """Forecast error at each lookahead, referenced to the metric's seizure-state range.
 
     ``1 - Var_replicate(h) / explained_var``. The numerator is the spread that survives fixing
@@ -473,12 +474,19 @@ def state_predictability_r2(ens: Ensemble, explained_var: FloatArray) -> FloatAr
 
     Unbounded below, and negative is a real answer: the metric's noise floor is wider than the
     span of seizure states it is supposed to distinguish.
+
+    ``explained_var`` carries the metric's trailing axes and no lookahead axis -- a scalar for a
+    pooled metric, one value per channel for a per-channel one -- and the score is shaped like
+    :func:`sigma_ens`, one curve over `h` per trailing axis.
     """
+    var_rep = sigma_ens(ens) ** 2
+    # the denominator is one number per channel, so it needs the lookahead axis the score runs over
+    denominator = np.asarray(explained_var)[..., np.newaxis]
     return 1.0 - np.divide(
-        sigma_ens(ens) ** 2,
-        explained_var,
-        out=np.full_like(explained_var, np.nan),
-        where=explained_var > 0,
+        var_rep,
+        denominator,
+        out=np.full_like(var_rep, np.nan),
+        where=denominator > 0,
     )
 
 
@@ -618,10 +626,12 @@ def state_store(
 ) -> tuple[FloatArray, FloatArray]:
     """Read the seizure state off every rollout of a ``(n_rollouts, n_regions, n_samples)`` store.
 
+    Each rollout is expected to start ``window_s`` before the branch, per :func:`seizure_state`.
+
     Returns
     -------
     times
-        Lookahead grid in seconds since the branch.
+        Lookahead grid in seconds since the branch, starting at 0.
     state
         Fraction of regions seizing, shape ``(n_rollouts, n_times)``.
     """

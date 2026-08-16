@@ -23,7 +23,7 @@ from neuro.metrics import (
     score_store,
     state_store,
 )
-from neuro.seizure import A_HEALTHY, build_seizure_a_gains, spread_profile_from_lfp
+from neuro.seizure import A_HEALTHY, SPREAD_WINDOW_S, build_seizure_a_gains, spread_profile_from_lfp
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -34,25 +34,6 @@ PLANT_CONFIG = Path("configs/simulation/nonlinear_full_mpc.yaml")
 GOOD_COMMAND = (2.0, 0.0, -2.0)
 
 PlantKind = Literal["healthy", "seizure"]
-
-
-@dataclass(frozen=True)
-class Branch:
-    """One operating point to branch ensembles from.
-
-    Attributes
-    ----------
-    name
-        Output key; one ``.npy`` per branch and arm is named after it.
-    plant
-        Which ``A`` vector the parent runs under.
-    t_branch
-        Seconds of parent run before the snapshot is taken.
-    """
-
-    name: str
-    plant: PlantKind
-    t_branch: float
 
 
 @dataclass(frozen=True)
@@ -71,18 +52,50 @@ class Arm:
     current: tuple[float, ...]
 
 
+@dataclass(frozen=True)
+class Branch:
+    """One operating point to branch ensembles from.
+
+    Attributes
+    ----------
+    name
+        Output key; one ``.npy`` per branch and arm is named after it.
+    plant
+        Which ``A`` vector the parent runs under.
+    t_branch
+        Seconds of parent run before the snapshot is taken.
+    arms
+        Stimulation conditions allocated to this branch.
+    """
+
+    name: str
+    plant: PlantKind
+    t_branch: float
+    arms: tuple[Arm, ...]
+
+
+ARM_ZERO = Arm("zero", (0.0, 0.0, 0.0))
+ARM_D1 = Arm("d1", GOOD_COMMAND)
+# 0.0 - c rather than -c: negating the null electrode would render as -0.0.
+ARM_NEG_D1 = Arm("-d1", tuple(0.0 - c for c in GOOD_COMMAND))
+
+ARMS: tuple[Arm, ...] = (ARM_ZERO, ARM_D1, ARM_NEG_D1)
+
 BRANCHES: tuple[Branch, ...] = (
-    Branch("healthy", "healthy", 4.0),
-    Branch("pre_onset", "seizure", 1.0),
-    Branch("ez_ignited", "seizure", 3.0),
-    Branch("mid_spread", "seizure", 7.0),
-    Branch("saturated", "seizure", 14.0),
+    Branch("healthy", "healthy", 4.0, arms=(ARM_ZERO,)),
+    Branch("pre_onset", "seizure", 1.0, arms=(ARM_ZERO, ARM_D1, ARM_NEG_D1)),
+    Branch("ez_ignited", "seizure", 3.0, arms=(ARM_ZERO, ARM_D1, ARM_NEG_D1)),
+    Branch("mid_spread", "seizure", 7.0, arms=(ARM_ZERO, ARM_D1)),
+    Branch("saturated", "seizure", 14.0, arms=(ARM_ZERO,)),
 )
 
-ARMS: tuple[Arm, ...] = (
-    Arm("zero", (0.0, 0.0, 0.0)),
-    Arm("d1", GOOD_COMMAND),
-)
+
+def all_arms(branches: tuple[Branch, ...]) -> tuple[Arm, ...]:
+    """Collect the unique arms across ``branches``, preserving first-seen order."""
+    seen: dict[str, Arm] = {}
+    for branch in branches:
+        seen.update({arm.name: arm for arm in branch.arms if arm.name not in seen})
+    return tuple(seen.values())
 
 
 @dataclass(frozen=True)
@@ -100,10 +113,7 @@ class EnsembleConfig:
     rollout_s
         Length of each child rollout in seconds.
     branches
-        Operating points to branch from.
-    arms
-        Stimulation conditions. Every child is run under all of them on a **shared** seed, so
-        the arms see the same noise realisation and their difference is paired.
+        Operating points to branch from, each carrying its own stimulation arms.
     parent_seed_base, child_seed_base
         Roots of the two seed sequences; child seeds are shared across arms by construction.
     region_fs
@@ -116,17 +126,26 @@ class EnsembleConfig:
         Granularity the parent run is stepped in; only bounds peak memory.
     """
 
-    n_parents: int = 8
-    n_children: int = 16
+    n_parents: int = 16
+    n_children: int = 8
     rollout_s: float = 3.0
     branches: tuple[Branch, ...] = BRANCHES
-    arms: tuple[Arm, ...] = ARMS
     parent_seed_base: int = 69
     child_seed_base: int = 1_000_000
     region_fs: float = 1000.0
     focus_region: str = "lTCI"
     n_focal_channels: int = 4
     chunk_s: float = 1.0
+
+    def __post_init__(self) -> None:
+        """Reject a branch too early to carry the pre-branch history the seizure state needs."""
+        for branch in self.branches:
+            if branch.t_branch < SPREAD_WINDOW_S:
+                msg = (
+                    f"Branch '{branch.name}' branches at {branch.t_branch} s, shorter than the "
+                    f"{SPREAD_WINDOW_S} s of pre-branch history each region rollout carries."
+                )
+                raise ValueError(msg)
 
     def child_seed(self, parent: int, child: int) -> int:
         """Seed of one child, shared by every arm so the arms are common-random-number coupled."""
@@ -242,18 +261,21 @@ def run_segment(dyn: JansenRitDynamics, n_steps: int, current: tuple[float, ...]
 
 @dataclass
 class Parent:
-    """One parent run: its branch snapshots and the spread it produced.
+    """The state of one parent run at its branch points and its recruitment ground truth.
 
     Attributes
     ----------
     index
-        Position of this parent in its plant kind's block.
+        Parent index within its plant kind (0 to ``n_parents - 1``).
     plant
-        Which plant kind it was run under.
+        Which plant kind generated this parent.
     seed
-        Its noise seed.
+        Random seed the parent was initialised with.
     snapshots
         Deep copies of the plant taken at each branch's ``t_branch``, keyed by branch name.
+    pre_regions
+        Full-rate pre-branch region LFPs leading up to each snapshot, keyed by branch name. Kept
+        undecimated so :func:`run_child` can decimate across the branch instant in one pass.
     n_seizing_final
         Regions seizing in the last spread window -- the basin label. The plant is bimodal
         across seeds, so pooling parents without this hides a mixture rather than averaging one.
@@ -265,24 +287,55 @@ class Parent:
     plant: PlantKind
     seed: int
     snapshots: dict[str, JansenRitDynamics]
+    pre_regions: dict[str, FloatArray]
     n_seizing_final: int
     onsets: FloatArray
+
+
+def _to_region_fs(y: FloatArray, dt: float, region_fs: float) -> npt.NDArray[np.float32]:
+    """Decimate a full-rate region LFP to ``region_fs`` and narrow it to the stored float32.
+
+    Zero-phase, which is legitimate here: the causal constraint applies to the control path, not
+    to an artefact read back offline.
+    """
+    factor = round(1.0 / (dt * region_fs))
+    return np.asarray(decimate(y, factor, axis=1) if factor > 1 else y, dtype=np.float32)
+
+
+def _trailing(chunks: list[FloatArray], n: int) -> FloatArray:
+    """Join the last ``n`` columns of ``chunks``, touching only the chunks that cover them.
+
+    Equivalent to ``np.concatenate(chunks, axis=1)[:, -n:]``, but without copying the history
+    ahead of the window -- 85 MB per branch by the 14 s one, which would defeat ``chunk_s``.
+    """
+    tail: list[FloatArray] = []
+    need = n
+    for chunk in reversed(chunks):
+        taken = chunk if need >= chunk.shape[1] else chunk[:, chunk.shape[1] - need :]
+        tail.append(taken)
+        need -= taken.shape[1]
+        if need == 0:
+            break
+    return np.concatenate(tail[::-1], axis=1)
 
 
 def run_parent(plants: PlantPair, cfg: EnsembleConfig, plant: PlantKind, index: int) -> Parent:
     """Run one unstimulated parent to its last branch point, snapshotting on the way."""
     dyn = reseed(plants.of(plant), cfg.parent_seed(plant, index))
-    zero = tuple(0.0 for _ in cfg.arms[0].current)
+    zero = (0.0,) * dyn.n_controls
 
     n_chunk = round(cfg.chunk_s / dyn.dt)
     snapshots: dict[str, JansenRitDynamics] = {}
+    pre_regions: dict[str, FloatArray] = {}
     y_chunks: list[FloatArray] = []
+    n_pre = round(SPREAD_WINDOW_S / dyn.dt)
 
     for branch in cfg.branches_of(plant):
         target = round(branch.t_branch / dyn.dt)
         while _elapsed_steps(dyn) < target:
             y_chunks.append(run_segment(dyn, min(n_chunk, target - _elapsed_steps(dyn)), zero))
         snapshots[branch.name] = deepcopy(dyn)
+        pre_regions[branch.name] = _trailing(y_chunks, n_pre)
 
     profile = spread_profile_from_lfp(np.concatenate(y_chunks, axis=1), dyn.dt)
     return Parent(
@@ -290,35 +343,53 @@ def run_parent(plants: PlantPair, cfg: EnsembleConfig, plant: PlantKind, index: 
         plant=plant,
         seed=cfg.parent_seed(plant, index),
         snapshots=snapshots,
+        pre_regions=pre_regions,
         n_seizing_final=int(profile.n_seizing()[-1]),
         onsets=profile.onsets,
     )
 
 
-def run_child(
+def run_child(  # noqa: PLR0913, PLR0917
     snapshot: JansenRitDynamics,
     plants: PlantPair,
     cfg: EnsembleConfig,
     seed: int,
     arm: Arm,
+    pre_region: FloatArray,
 ) -> tuple[FloatArray, npt.NDArray[np.float32]]:
     """Branch one noise realisation off ``snapshot`` and roll it out under ``arm``.
+
+    Parameters
+    ----------
+    snapshot
+        The parent plant frozen at its branch point; it is copied, not advanced.
+    plants
+        The plant pair, for its EEG leadfield.
+    cfg
+        Rollout length and region sampling rate.
+    seed
+        Noise seed of this child, shared across arms.
+    arm
+        The stimulation condition held for the whole rollout.
+    pre_region
+        The parent's full-rate region LFP over the window ending at the branch, prepended to the
+        rollout so the causal seizure-state window can evaluate from lookahead 0.
 
     Returns
     -------
     eeg
         Scalp EEG at the plant's own rate, shape ``(n_channels, n_samples)``.
     region
-        Region LFP decimated to ``cfg.region_fs``, shape ``(n_nodes, n_samples_region)``.
-        Zero-phase, which is legitimate here: the causal constraint applies to the control
-        path, not to an artefact read back offline.
+        ``pre_region`` joined to the rollout's region LFP and decimated to ``cfg.region_fs`` in a
+        single pass, shape ``(n_nodes, n_samples_region)``. Decimating once rather than per
+        segment keeps an anti-alias edge transient off the branch instant, which is exactly where
+        the lookahead-0 seizure state is read.
     """
     dyn = reseed(snapshot, seed)
     y = run_segment(dyn, round(cfg.rollout_s / dyn.dt), arm.current)
 
-    factor = round(1.0 / (dyn.dt * cfg.region_fs))
-    region = decimate(y, factor, axis=1) if factor > 1 else y
-    return plants.eeg_gain @ y, np.asarray(region, dtype=np.float32)
+    region = _to_region_fs(np.concatenate([pre_region, y], axis=1), dyn.dt, cfg.region_fs)
+    return plants.eeg_gain @ y, region
 
 
 def _open_store(path: Path, shape: tuple[int, ...], dtype: type[np.floating]) -> np.memmap:
@@ -356,13 +427,13 @@ def _build_stores(out_dir: Path, cfg: EnsembleConfig, plants: PlantPair) -> _Sto
     """Pre-allocate one store per branch and arm, in both spaces."""
     dt = plants.seizure.dt
     n_eeg = round(cfg.rollout_s / dt)
-    n_region = round(cfg.rollout_s * cfg.region_fs)
+    n_region = round((SPREAD_WINDOW_S + cfg.rollout_s) * cfg.region_fs)
     n_channels = plants.eeg_gain.shape[0]
     n_nodes = plants.eeg_gain.shape[1]
 
     stores = _Stores()
     for branch in cfg.branches:
-        for arm in cfg.arms:
+        for arm in branch.arms:
             key = (branch.name, arm.name)
             stores.eeg[key] = _open_store(eeg_path(out_dir, *key), (cfg.n_rollouts, n_channels, n_eeg), np.float64)
             stores.region[key] = _open_store(
@@ -394,14 +465,16 @@ def generate_iter(out_dir: Path, cfg: EnsembleConfig, plants: PlantPair) -> Iter
         for index in range(cfg.n_parents):
             parent = run_parent(plants, cfg, plant, index)
             for branch in branches:
+                pre_region = parent.pre_regions[branch.name]
                 for child in range(cfg.n_children):
                     seed = cfg.child_seed(index, child)
                     row = index * cfg.n_children + child
-                    for arm in cfg.arms:
-                        eeg, region = run_child(parent.snapshots[branch.name], plants, cfg, seed, arm)
+                    for arm in branch.arms:
+                        eeg, region = run_child(parent.snapshots[branch.name], plants, cfg, seed, arm, pre_region)
                         stores.eeg[branch.name, arm.name][row] = eeg
                         stores.region[branch.name, arm.name][row] = region
             parent.snapshots.clear()
+            parent.pre_regions.clear()
             parents.append(parent)
             yield _manifest(out_dir, cfg, plants, parents)
 
@@ -419,11 +492,21 @@ def _manifest(out_dir: Path, cfg: EnsembleConfig, plants: PlantPair, parents: li
         "fs": 1.0 / plants.seizure.dt,
         "region_fs": cfg.region_fs,
         "rollout_s": cfg.rollout_s,
+        # Provenance only -- the read side takes the convention from SPREAD_WINDOW_S.
+        "pre_branch_s": SPREAD_WINDOW_S,
         "n_parents": cfg.n_parents,
         "n_children": cfg.n_children,
         "rollout_index": "parent * n_children + child",
-        "branches": [{"name": b.name, "plant": b.plant, "t_branch": b.t_branch} for b in cfg.branches],
-        "arms": [{"name": a.name, "current": list(a.current)} for a in cfg.arms],
+        "branches": [
+            {
+                "name": b.name,
+                "plant": b.plant,
+                "t_branch": b.t_branch,
+                "arms": [a.name for a in b.arms],
+            }
+            for b in cfg.branches
+        ],
+        "arms": [{"name": a.name, "current": list(a.current)} for a in all_arms(cfg.branches)],
         "electrode_labels": [str(label) for label in plants.seizure.stim.control_labels],
         "channel_labels": plants.channel_labels,
         "region_labels": [str(label) for label in plants.connectome.region_labels],
@@ -620,8 +703,6 @@ def score_ensemble_dir(
         return _load_scores(cache, manifest)
 
     channel_sets = {name: np.asarray(idx, dtype=np.intp) for name, idx in manifest["channel_sets"].items()}
-    branches = [b["name"] for b in manifest["branches"]]
-    arms = [a["name"] for a in manifest["arms"]]
     n_replicates = int(manifest["n_children"])
     fs = float(manifest["fs"])
 
@@ -634,8 +715,10 @@ def score_ensemble_dir(
     states: dict[tuple[str, str], FloatArray] = {}
     state_times = np.empty(0, dtype=np.float64)
 
-    for branch in branches:
-        for arm in arms:
+    for branch_info in manifest["branches"]:
+        branch = branch_info["name"]
+        branch_arms = branch_info["arms"]
+        for arm in branch_arms:
             scalp = np.load(eeg_path(out_dir, branch, arm), mmap_mode="r")
             for cutoff in cutoffs:
                 key = cutoff_key(cutoff)
@@ -652,7 +735,7 @@ def score_ensemble_dir(
                 times.update(metric_times)
                 for (name, set_name), ens in scored.items():
                     series[branch, arm, name, set_name, key] = ens.values
-                if arm == arms[0]:
+                if arm == branch_arms[0]:
                     scored_baselines = baseline_r2(scalp, fs, times=grid, n_replicates=n_replicates, cutoff_hz=cutoff)
                     baselines.update({(branch, name, key): r2 for name, r2 in scored_baselines.items()})
 

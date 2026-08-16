@@ -12,6 +12,7 @@ from neuro.metrics import (
     baseline_grid,
     envelope,
     sample_at,
+    seizure_state,
     windowed,
 )
 
@@ -263,3 +264,12 @@ def test_sample_at_keeps_the_channel_axis() -> None:
     values = sample_at(signals, _FS, baseline_grid(3.0))
 
     assert values.shape == (62, len(baseline_grid(3.0)))
+
+
+def test_seizure_state_times_are_branch_referenced_and_start_at_zero() -> None:
+    """The region LFP leads the branch by one window, so the first causal point is lookahead 0."""
+    times, state = seizure_state(np.zeros((76, 4000)), _FS, window_s=1.0, hop_s=0.05)
+
+    assert times[0] == pytest.approx(0.0)
+    assert times[-1] == pytest.approx(3.0)
+    assert len(times) == len(state) == 61

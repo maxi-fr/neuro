@@ -1,12 +1,17 @@
 from __future__ import annotations
 
 import json
+import math
 from typing import TYPE_CHECKING
 
 import numpy as np
+import numpy.typing as npt
 import pytest
+from scipy.signal import decimate
 
 from neuro.ensembles import (
+    ARM_D1,
+    ARM_ZERO,
     ARMS,
     RAW,
     SWEPT_METRICS,
@@ -15,6 +20,7 @@ from neuro.ensembles import (
     EnsembleConfig,
     PlantPair,
     ScoreArchive,
+    all_arms,
     build_plants,
     cutoff_key,
     eeg_path,
@@ -27,6 +33,7 @@ from neuro.ensembles import (
     score_ensemble_dir,
 )
 from neuro.metrics import METRICS
+from neuro.seizure import SPREAD_WINDOW_S
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -126,30 +133,127 @@ def test_run_parent_snapshots_at_every_branch_time(plants: PlantPair) -> None:
         n_parents=1,
         n_children=1,
         rollout_s=0.1,
-        branches=(Branch("early", "seizure", 0.6), Branch("late", "seizure", 1.1)),
+        branches=(Branch("early", "seizure", 1.2, arms=(ARM_ZERO,)), Branch("late", "seizure", 1.75, arms=(ARM_ZERO,))),
         chunk_s=0.25,
     )
 
     parent = run_parent(plants, cfg, "seizure", 0)
 
     assert set(parent.snapshots) == {"early", "late"}
-    assert parent.snapshots["early"].next_update_time == pytest.approx(0.6)
-    assert parent.snapshots["late"].next_update_time == pytest.approx(1.1)
+    assert parent.snapshots["early"].next_update_time == pytest.approx(1.2)
+    assert parent.snapshots["late"].next_update_time == pytest.approx(1.75)
     assert parent.onsets.shape == (len(plants.connectome.region_labels),)
     assert 0 <= parent.n_seizing_final <= len(plants.connectome.region_labels)
+
+
+def test_run_parent_carries_one_window_of_pre_branch_history(plants: PlantPair) -> None:
+    """Full rate, not decimated: run_child decimates across the branch instant in one pass."""
+    cfg = EnsembleConfig(
+        n_parents=1,
+        n_children=1,
+        rollout_s=0.1,
+        branches=(Branch("late", "seizure", 1.75, arms=(ARM_ZERO,)),),
+        chunk_s=0.25,
+    )
+
+    parent = run_parent(plants, cfg, "seizure", 0)
+
+    assert parent.pre_regions["late"].shape == (len(plants.connectome.region_labels), 10_000)
+    assert parent.pre_regions["late"].dtype == np.float64
+
+
+def test_a_branch_at_exactly_the_pre_branch_window_fills_it_with_nothing_to_spare(plants: PlantPair) -> None:
+    """``pre_onset`` branches at ``t_branch == SPREAD_WINDOW_S``, so the whole parent run *is* its history.
+
+    The equality case ``EnsembleConfig`` admits: one sample short here and every stored region
+    rollout would be one sample short of ``_build_stores``' ``n_region``.
+    """
+    cfg = EnsembleConfig(
+        n_parents=1,
+        n_children=1,
+        rollout_s=0.2,
+        branches=(
+            Branch("pre_onset", "seizure", SPREAD_WINDOW_S, arms=(ARM_ZERO,)),
+            Branch("late", "seizure", 1.75, arms=(ARM_ZERO,)),
+        ),
+        chunk_s=0.3,
+    )
+
+    parent = run_parent(plants, cfg, "seizure", 0)
+    pre_region = parent.pre_regions["pre_onset"]
+    _, region = run_child(parent.snapshots["pre_onset"], plants, cfg, seed=1, arm=ARM_ZERO, pre_region=pre_region)
+
+    assert pre_region.shape[1] == round(SPREAD_WINDOW_S / plants.seizure.dt)
+    assert region.shape[1] == round((SPREAD_WINDOW_S + cfg.rollout_s) * cfg.region_fs)
+
+
+@pytest.mark.parametrize("chunk_s", [0.5, 0.4])
+def test_the_pre_branch_window_is_the_trailing_history_whatever_the_chunking(plants: PlantPair, chunk_s: float) -> None:
+    """Taking the window off the covering chunks only must be bit-identical to slicing the whole run.
+
+    ``chunk_s=1.75`` leaves one chunk, so its window *is* the slice off the full concatenation. The
+    other chunkings straddle a boundary and truncate the last chunk, which is the hazard.
+    """
+    branches = (Branch("late", "seizure", 1.75, arms=(ARM_ZERO,)),)
+
+    def parent(chunk: float) -> npt.NDArray[np.float64]:
+        cfg = EnsembleConfig(n_parents=1, n_children=1, rollout_s=0.1, branches=branches, chunk_s=chunk)
+        return run_parent(plants, cfg, "seizure", 0).pre_regions["late"]
+
+    assert np.array_equal(parent(chunk_s), parent(1.75))
 
 
 def test_run_child_returns_scalp_at_full_rate_and_region_decimated(plants: PlantPair) -> None:
     cfg = EnsembleConfig(rollout_s=0.5, region_fs=1000.0)
     snapshot = reseed(plants.seizure, 7)
     run_segment(snapshot, 200, _ZERO)
+    n_nodes = len(plants.connectome.region_labels)
+    pre_region = np.zeros((n_nodes, 10_000), dtype=np.float64)
 
-    eeg, region = run_child(snapshot, plants, cfg, seed=3, arm=Arm("zero", _ZERO))
+    eeg, region = run_child(snapshot, plants, cfg, seed=3, arm=Arm("zero", _ZERO), pre_region=pre_region)
 
     assert eeg.shape == (62, 5000)
-    assert region.shape == (len(plants.connectome.region_labels), 500)
+    assert region.shape == (n_nodes, 1500)
     assert region.dtype == np.float32
+    assert np.abs(region[:, :400]).max() < 1e-6
     assert np.all(np.isfinite(eeg))
+
+
+def test_the_region_rollout_is_decimated_in_one_pass_across_the_branch(plants: PlantPair) -> None:
+    """Decimating the two segments apart puts two anti-alias edge transients on the branch instant.
+
+    That is the sample the lookahead-0 seizure state is read from, so the seam is not cosmetic.
+    """
+    cfg = EnsembleConfig(rollout_s=0.5, region_fs=1000.0)
+    dt = plants.seizure.dt
+    factor = round(1.0 / (dt * cfg.region_fs))
+    assert factor > 1, "a decimation factor of 1 cannot show the seam"
+
+    snapshot = reseed(plants.seizure, 7)
+    run_segment(snapshot, 2000, _ZERO)
+    pre_region = run_segment(reseed(snapshot, 11), round(SPREAD_WINDOW_S / dt), _ZERO)
+
+    _, region = run_child(snapshot, plants, cfg, seed=3, arm=ARM_ZERO, pre_region=pre_region)
+
+    rollout = run_segment(reseed(snapshot, 3), round(cfg.rollout_s / dt), _ZERO)
+    one_pass = decimate(np.concatenate([pre_region, rollout], axis=1), factor, axis=1)
+    two_pass = np.concatenate([decimate(pre_region, factor, axis=1), decimate(rollout, factor, axis=1)], axis=1)
+    seam = round(SPREAD_WINDOW_S * cfg.region_fs)
+
+    assert region.shape[1] == round((SPREAD_WINDOW_S + cfg.rollout_s) * cfg.region_fs)
+    assert np.array_equal(region, one_pass.astype(np.float32))
+    # The arrangement this replaced, whose seam artefact is four orders of magnitude past float32.
+    assert np.abs(two_pass - one_pass)[:, seam - 5 : seam + 5].max() > 1e-3
+
+
+def test_the_production_join_still_decimates_to_the_stored_region_length(plants: PlantPair) -> None:
+    """One decimation of the joined signal must land on _build_stores' n_region, not one short."""
+    cfg = EnsembleConfig()
+    factor = round(1.0 / (plants.seizure.dt * cfg.region_fs))
+    n_joined = round((SPREAD_WINDOW_S + cfg.rollout_s) / plants.seizure.dt)
+
+    assert (factor, n_joined) == (10, 40_000)
+    assert math.ceil(n_joined / factor) == round((SPREAD_WINDOW_S + cfg.rollout_s) * cfg.region_fs) == 4000
 
 
 # --- generation end to end -----------------------------------------------------------------
@@ -160,24 +264,26 @@ def test_generate_writes_one_store_per_branch_and_arm_plus_a_manifest(plants: Pl
         n_parents=1,
         n_children=2,
         rollout_s=0.3,
-        branches=(Branch("pre_onset", "seizure", 1.0),),
+        branches=(Branch("pre_onset", "seizure", 1.75, arms=(ARM_ZERO, ARM_D1)),),
         region_fs=1000.0,
         chunk_s=0.5,
     )
 
     manifest = generate(tmp_path, cfg, plants)
 
-    for arm in cfg.arms:
+    for arm in cfg.branches[0].arms:
         eeg = np.load(eeg_path(tmp_path, "pre_onset", arm.name), mmap_mode="r")
         region = np.load(region_path(tmp_path, "pre_onset", arm.name), mmap_mode="r")
         assert eeg.shape == (2, 62, 3000)
-        assert region.shape == (2, 76, 300)
+        assert region.shape == (2, 76, 1300)
         assert np.all(np.isfinite(np.asarray(eeg)))
         assert np.any(np.asarray(eeg) != 0.0)
 
     assert manifest == json.loads((tmp_path / "manifest.json").read_text(encoding="utf-8"))
     assert manifest["channel_sets"]["lTCI"] == [27, 55, 12, 14]
     assert [c["name"] for c in manifest["arms"]] == ["zero", "d1"]
+    assert manifest["branches"][0]["arms"] == ["zero", "d1"]
+    assert manifest["pre_branch_s"] == SPREAD_WINDOW_S
     assert manifest["parents"][0]["seed"] == cfg.parent_seed("seizure", 0)
     assert len(manifest["parents"][0]["onsets"]) == 76
 
@@ -192,8 +298,7 @@ def test_generated_arms_share_their_noise_realisation(plants: PlantPair, tmp_pat
         n_parents=1,
         n_children=2,
         rollout_s=0.3,
-        branches=(Branch("pre_onset", "seizure", 1.0),),
-        arms=(Arm("first", _ZERO), Arm("second", _ZERO)),
+        branches=(Branch("pre_onset", "seizure", 1.75, arms=(Arm("first", _ZERO), Arm("second", _ZERO))),),
         chunk_s=0.5,
     )
 
@@ -222,7 +327,7 @@ def scored(plants: PlantPair, tmp_path_factory: pytest.TempPathFactory) -> tuple
         n_parents=2,
         n_children=2,
         rollout_s=0.6,
-        branches=(Branch("pre_onset", "seizure", 1.0),),
+        branches=(Branch("pre_onset", "seizure", 1.75, arms=(ARM_ZERO, ARM_D1)),),
         chunk_s=0.5,
     )
     generate(out_dir, cfg, plants)
@@ -314,11 +419,38 @@ def test_the_raw_scalp_series_keep_the_channel_axis_and_pool_on_read(
 
 
 def test_the_seizure_state_is_stored_for_every_branch_and_arm(scored: tuple[Path, ScoreArchive]) -> None:
-    """Both arms, because d_state -- does the probe move the seizure -- is a paired difference."""
+    """All configured branch arms are stored, so controllability differences are supported."""
     _, archive = scored
 
     assert set(archive.states) == {("pre_onset", "zero"), ("pre_onset", "d1")}
+    assert archive.state_times[0] == pytest.approx(0.0)
+    assert archive.state_times[-1] == pytest.approx(0.6)
+    assert len(archive.state_times) == 13
     for arm in ("zero", "d1"):
         state = archive.state("pre_onset", arm)
         assert state.values.shape == (4, len(archive.state_times))
         assert np.all((state.values >= 0.0) & (state.values <= 1.0))
+
+
+def test_default_branches_have_per_branch_arms_allocated() -> None:
+    """Per-branch arms: healthy and saturated have {0}, pre_onset and ez_ignited have {0, d1, -d1}, mid_spread {0, d1}."""
+    cfg = EnsembleConfig()
+
+    by_name = {b.name: [a.name for a in b.arms] for b in cfg.branches}
+    assert by_name["healthy"] == ["zero"]
+    assert by_name["pre_onset"] == ["zero", "d1", "-d1"]
+    assert by_name["ez_ignited"] == ["zero", "d1", "-d1"]
+    assert by_name["mid_spread"] == ["zero", "d1"]
+    assert by_name["saturated"] == ["zero"]
+    assert sum(len(arms) for arms in by_name.values()) == 10
+    assert cfg.n_parents == 16
+    assert cfg.n_children == 8
+
+
+def test_all_arms_deduplicates_across_branches_in_first_seen_order() -> None:
+    assert [a.name for a in all_arms(EnsembleConfig().branches)] == ["zero", "d1", "-d1"]
+
+
+def test_ensemble_config_rejects_a_branch_too_early_for_its_pre_branch_history() -> None:
+    with pytest.raises(ValueError, match="shorter than the"):
+        EnsembleConfig(branches=(Branch("too_short", "seizure", 0.3, arms=(ARM_ZERO,)),))
