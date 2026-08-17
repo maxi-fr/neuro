@@ -4,12 +4,14 @@ from pathlib import Path
 
 import optuna
 import yaml
+from simulate.config import deep_merge
 
 from neuro.closed_loop_eval import evaluate_closed_loop_suppression
 from neuro.config import (
     ModelConfig,
     NNPredictorConfig,
     TrainingConfig,
+    expand_dotted_dict,
     load_config,
     resolve_artifact_dir,
     resolve_data_files,
@@ -31,10 +33,12 @@ def objective(
 
     model_overrides = {name: spec.suggest(trial, name) for name, spec in sweep.model.items()}
     training_overrides = {name: spec.suggest(trial, name) for name, spec in sweep.training.items()}
+    merged_model = deep_merge(base_config.model.model_dump(), expand_dotted_dict(model_overrides))
+    merged_training = deep_merge(base_config.training.model_dump(), expand_dotted_dict(training_overrides))
     config = base_config.model_copy(
         update={
-            "model": ModelConfig.model_validate({**base_config.model.model_dump(), **model_overrides}),
-            "training": TrainingConfig.model_validate({**base_config.training.model_dump(), **training_overrides}),
+            "model": ModelConfig.model_validate(merged_model),
+            "training": TrainingConfig.model_validate(merged_training),
         }
     )
 

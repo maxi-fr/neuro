@@ -5,10 +5,16 @@ from pydantic import ValidationError
 
 from neuro.config import (
     CategoricalParam,
+    CurriculumMSESpec,
     FloatParam,
     IntParam,
     LogUniformParam,
+    LossSpecs,
+    ModelConfig,
     NNPredictorConfig,
+    SimulationConfig,
+    TrainingConfig,
+    expand_dotted_dict,
     resolve_data_files,
 )
 from neuro.connectome import Connectome
@@ -16,10 +22,22 @@ from neuro.control import ZeroController
 from neuro.eeg import EEGMeasurement
 from neuro.jansen_rit import JansenRitDynamics
 
+_VALID_TRAINING = {
+    "eval_horizon_s": 0.2,
+    "losses": {
+        "curriculum_mse": {
+            "weight": 1.0,
+            "span_s": 0.2,
+            "curr_start": 0,
+            "curr_end": 10,
+        }
+    },
+}
+
 
 def test_defaults_applied_for_missing_sections() -> None:
     """Test Defaults applied for missing sections."""
-    cfg = NNPredictorConfig.from_dict({})
+    cfg = NNPredictorConfig.from_dict({"training": _VALID_TRAINING})
     assert cfg.simulation.n_steps is None
     assert cfg.model.n_y == 5
     assert cfg.training.epochs == 100
@@ -32,7 +50,11 @@ def test_known_keys_parsed() -> None:
     raw = {
         "simulation": {"dt": 1e-4, "downsample": 100, "n_steps": 50000, "data_path": "data/x", "cutoff_hz": 45.0},
         "model": {"n_y": 14, "latent_dim": 16},
-        "training": {"epochs": 5, "scaler": "robust"},
+        "training": {
+            **_VALID_TRAINING,
+            "epochs": 5,
+            "scaler": "robust",
+        },
     }
     cfg = NNPredictorConfig.from_dict(raw)
     assert cfg.simulation.downsample == 100
@@ -48,10 +70,16 @@ def test_known_keys_parsed() -> None:
     [
         {"trainng": {}},
         {"model": {"n_yy": 3}},
+        {"model": {"horizon": 5}},
         {"sweep": {"model": {"depth": {"typ": "int", "low": 0, "high": 5}}}},
         {"sweep": {"trials": 5}},
-        {"training": {"curriculum_alpha_min": 1.0}},
-        {"training": {"curriculum_decay_fraction": 0.5}},
+        {"training": {**_VALID_TRAINING, "w_psd": 0.1}},
+        {"training": {**_VALID_TRAINING, "curriculum_start_epoch": 10}},
+        {"training": {**_VALID_TRAINING, "curriculum_end_epoch": 10}},
+        {"training": {**_VALID_TRAINING, "curriculum_max_steps": 10}},
+        {"training": {**_VALID_TRAINING, "curriculum_alpha_min": 1.0}},
+        {"training": {**_VALID_TRAINING, "curriculum_decay_fraction": 0.5}},
+        {"training": {"eval_horizon_s": 0.2, "losses": {"unknown_loss": {"weight": 1.0, "span_s": 0.2}}}},
     ],
 )
 def test_unknown_keys_rejected(raw: dict) -> None:
@@ -63,12 +91,13 @@ def test_unknown_keys_rejected(raw: dict) -> None:
 def test_wrong_scalar_type_rejected() -> None:
     """Test Wrong scalar type rejected."""
     with pytest.raises(ValidationError):
-        NNPredictorConfig.from_dict({"model": {"n_y": "not-an-int"}})
+        NNPredictorConfig.from_dict({"model": {"n_y": "not-an-int"}, "training": _VALID_TRAINING})
 
 
 def test_sweep_section_typed() -> None:
     """Test Sweep section typed."""
     raw = {
+        "training": _VALID_TRAINING,
         "sweep": {
             "n_trials": 7,
             "model": {
@@ -79,7 +108,7 @@ def test_sweep_section_typed() -> None:
                 "learning_rate": {"type": "loguniform", "low": 1e-4, "high": 1e-2},
                 "weight_decay": {"type": "float", "low": 1e-4, "high": 1e-1},
             },
-        }
+        },
     }
     cfg = NNPredictorConfig.from_dict(raw)
     assert cfg.sweep is not None
@@ -93,25 +122,73 @@ def test_sweep_section_typed() -> None:
 def test_sweep_unknown_param_type_rejected() -> None:
     """Test Sweep unknown param type rejected."""
     with pytest.raises(ValidationError):
-        NNPredictorConfig.from_dict({"sweep": {"model": {"x": {"type": "bogus", "low": 0, "high": 1}}}})
+        NNPredictorConfig.from_dict(
+            {"training": _VALID_TRAINING, "sweep": {"model": {"x": {"type": "bogus", "low": 0, "high": 1}}}}
+        )
 
 
 @pytest.mark.parametrize(
     "raw",
     [
-        {"simulation": {"dt": 0}},
-        {"simulation": {"downsample": 0}},
-        {"model": {"depth": -1}},
-        {"model": {"n_y": 0}},
-        {"training": {"learning_rate": 0}},
-        {"training": {"train_split": 1.0}},
-        {"training": {"scaler": "standrd"}},
-        {"model": {"latent_dim": 0}},
-        {"training": {"curriculum_start_epoch": -1}},
-        {"training": {"curriculum_end_epoch": -1}},
-        {"training": {"curriculum_start_epoch": 100, "curriculum_end_epoch": 50}},
-        {"sweep": {"training": {"lr": {"type": "loguniform", "low": 0, "high": 1}}}},
-        {"sweep": {"model": {"n_y": {"type": "int", "low": 10, "high": 5}}}},
+        {"training": _VALID_TRAINING, "simulation": {"dt": 0}},
+        {"training": _VALID_TRAINING, "simulation": {"downsample": 0}},
+        {"training": _VALID_TRAINING, "model": {"depth": -1}},
+        {"training": _VALID_TRAINING, "model": {"n_y": 0}},
+        {"training": {**_VALID_TRAINING, "learning_rate": 0}},
+        {"training": {**_VALID_TRAINING, "train_split": 1.0}},
+        {"training": {**_VALID_TRAINING, "scaler": "standrd"}},
+        {"training": _VALID_TRAINING, "model": {"latent_dim": 0}},
+        {"training": {"eval_horizon_s": 0.0, "losses": _VALID_TRAINING["losses"]}},
+        {"training": {"eval_horizon_s": 0.2, "losses": {}}},
+        {
+            "training": {
+                "eval_horizon_s": 0.2,
+                "losses": {
+                    "curriculum_mse": {
+                        "weight": 1.0,
+                        "span_s": 0.2,
+                        "curr_start": 100,
+                        "curr_end": 50,
+                    }
+                },
+            }
+        },
+        {
+            "simulation": {"dt": 0.01, "downsample": 1},
+            "training": {
+                "eval_horizon_s": 0.2,
+                "losses": {
+                    "curriculum_mse": {"weight": 1.0, "span_s": 0.2, "curr_start": 0, "curr_end": 10},
+                    "eeg_ms": {"weight": 1.0, "span_s": 0.05, "window_s": 0.1},
+                },
+            },
+        },
+        {
+            "simulation": {"dt": 0.01, "downsample": 1},
+            "training": {
+                "eval_horizon_s": 0.2,
+                "losses": {
+                    "curriculum_mse": {"weight": 1.0, "span_s": 0.2, "curr_start": 0, "curr_end": 10},
+                    "psd": {"weight": 1.0, "span_s": 0.01},
+                },
+            },
+        },
+        {
+            "training": {
+                "eval_horizon_s": 0.2,
+                "losses": {
+                    "curriculum_mse": {
+                        "weight": 1.0,
+                        "span_s": 0.2,
+                        "curr_start": 0,
+                        "curr_end": 10,
+                        "start_epoch": 5,
+                    }
+                },
+            }
+        },
+        {"training": _VALID_TRAINING, "sweep": {"training": {"lr": {"type": "loguniform", "low": 0, "high": 1}}}},
+        {"training": _VALID_TRAINING, "sweep": {"model": {"n_y": {"type": "int", "low": 10, "high": 5}}}},
     ],
 )
 def test_value_constraints_rejected(raw: dict) -> None:
@@ -124,13 +201,19 @@ def test_valid_boundaries_accepted() -> None:
     """Test Valid boundaries accepted."""
     cfg = NNPredictorConfig.from_dict(
         {
-            "model": {"depth": 0, "horizon": 20},
-            "training": {"w_psd": 0.0, "curriculum_start_epoch": 5, "curriculum_end_epoch": 5},
+            "model": {"depth": 0},
+            "training": {
+                "eval_horizon_s": 0.2,
+                "losses": {
+                    "curriculum_mse": {"weight": 1.0, "span_s": 0.2, "curr_start": 5, "curr_end": 5},
+                },
+            },
         }
     )
     assert cfg.model.depth == 0
-    assert cfg.training.curriculum_start_epoch == 5
-    assert cfg.training.curriculum_end_epoch == 5
+    assert cfg.training.losses.curriculum_mse is not None
+    assert cfg.training.losses.curriculum_mse.curr_start == 5
+    assert cfg.training.losses.curriculum_mse.curr_end == 5
 
 
 @pytest.mark.parametrize(
@@ -139,16 +222,28 @@ def test_valid_boundaries_accepted() -> None:
         (
             {
                 "model": {"n_y": 10},
+                "training": _VALID_TRAINING,
                 "sweep": {"model": {"n_y": {"type": "int", "low": 5, "high": 15}}},
             },
             r"Overlap: \['n_y'\]",
         ),
         (
             {
-                "training": {"learning_rate": 1e-4, "epochs": 50},
+                "training": {**_VALID_TRAINING, "learning_rate": 1e-4, "epochs": 50},
                 "sweep": {"training": {"epochs": {"type": "int", "low": 10, "high": 100}}},
             },
             r"Overlap: \['epochs'\]",
+        ),
+        (
+            {
+                "training": _VALID_TRAINING,
+                "sweep": {
+                    "training": {
+                        "losses.curriculum_mse.span_s": {"type": "float", "low": 0.1, "high": 0.5},
+                    }
+                },
+            },
+            r"Overlap: \['losses\.curriculum_mse\.span_s'\]",
         ),
     ],
 )
@@ -163,15 +258,31 @@ def test_sweep_overlap_rejected(raw: dict, match: str) -> None:
     [
         (
             {
+                "training": _VALID_TRAINING,
                 "sweep": {"model": {"not_a_param": {"type": "int", "low": 1, "high": 5}}},
             },
             r"Keys \['not_a_param'\] in 'sweep.model' are not valid",
         ),
         (
             {
+                "training": _VALID_TRAINING,
                 "sweep": {"training": {"lr": {"type": "loguniform", "low": 1e-5, "high": 1e-3}}},
             },
             r"Keys \['lr'\] in 'sweep.training' are not valid",
+        ),
+        (
+            {
+                "training": _VALID_TRAINING,
+                "sweep": {"training": {"losses.bogus.weight": {"type": "float", "low": 0.1, "high": 1.0}}},
+            },
+            r"Keys \['losses\.bogus\.weight'\] in 'sweep.training' are not valid",
+        ),
+        (
+            {
+                "training": _VALID_TRAINING,
+                "sweep": {"training": {"losses.eeg_ms.weight": {"type": "float", "low": 0.1, "high": 1.0}}},
+            },
+            r"Loss 'eeg_ms' referenced in 'sweep\.training\.losses\.eeg_ms\.weight' is not configured",
         ),
     ],
 )
@@ -181,9 +292,34 @@ def test_sweep_invalid_keys_rejected(raw: dict, match: str) -> None:
         NNPredictorConfig.from_dict(raw)
 
 
+def test_sweep_valid_dotted_path_accepted() -> None:
+    """Test valid dotted path for optional/default field on configured loss is accepted."""
+    cfg = NNPredictorConfig.from_dict(
+        {
+            "training": _VALID_TRAINING,
+            "sweep": {
+                "n_trials": 5,
+                "training": {
+                    "losses.curriculum_mse.start_epoch": {"type": "int", "low": 0, "high": 50},
+                },
+            },
+        }
+    )
+    assert cfg.sweep is not None
+    assert "losses.curriculum_mse.start_epoch" in cfg.sweep.training
+
+
+def test_expand_dotted_dict_nests_sweep_overrides() -> None:
+    """The dotted keys the sweep suggests expand into the nesting deep_merge expects."""
+    assert expand_dotted_dict({"losses.eeg_ms.weight": 0.3, "batch_size": 64}) == {
+        "losses": {"eeg_ms": {"weight": 0.3}},
+        "batch_size": 64,
+    }
+
+
 def test_resolve_data_files_missing_path() -> None:
     """Test Resolve data files missing path."""
-    cfg = NNPredictorConfig.from_dict({})
+    cfg = NNPredictorConfig.from_dict({"training": _VALID_TRAINING})
     with pytest.raises(ValueError, match="data_path not specified"):
         resolve_data_files(cfg)
 
@@ -223,7 +359,9 @@ CLOSED_LOOP_RAW = {
 
 def test_closed_loop_eval_config_validation() -> None:
     """Test ClosedLoopEvalConfig parses a fully specified closed_loop section."""
-    cfg = NNPredictorConfig.from_dict({"sweep": {"n_trials": 10, "closed_loop": CLOSED_LOOP_RAW}})
+    cfg = NNPredictorConfig.from_dict(
+        {"training": _VALID_TRAINING, "sweep": {"n_trials": 10, "closed_loop": CLOSED_LOOP_RAW}}
+    )
     assert cfg.sweep is not None
     assert cfg.sweep.closed_loop is not None
     assert cfg.sweep.closed_loop.simulation_config == CLOSED_LOOP_RAW["simulation_config"]
@@ -235,7 +373,7 @@ def test_closed_loop_eval_config_validation() -> None:
 
 def test_sweep_without_closed_loop_section() -> None:
     """Test omitting closed_loop leaves it unset rather than silently defaulted."""
-    cfg = NNPredictorConfig.from_dict({"sweep": {"n_trials": 10}})
+    cfg = NNPredictorConfig.from_dict({"training": _VALID_TRAINING, "sweep": {"n_trials": 10}})
     assert cfg.sweep is not None
     assert cfg.sweep.closed_loop is None
 
@@ -245,4 +383,4 @@ def test_closed_loop_eval_config_requires_every_field(missing: str) -> None:
     """Test ClosedLoopEvalConfig has no defaults: every field is required."""
     raw = {k: v for k, v in CLOSED_LOOP_RAW.items() if k != missing}
     with pytest.raises(ValidationError, match=missing):
-        NNPredictorConfig.from_dict({"sweep": {"n_trials": 10, "closed_loop": raw}})
+        NNPredictorConfig.from_dict({"training": _VALID_TRAINING, "sweep": {"n_trials": 10, "closed_loop": raw}})

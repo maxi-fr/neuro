@@ -379,82 +379,100 @@ interconvertible by lagging the u-window one step (see `_casadi_horizon_rollout`
 
 ## 6. Loss function
 
-Implemented in [`predictor_loss`](../src/neuro/predictor/losses.py). The model rolls out in
-**model space** (the $k$-dimensional latent components under a projection, else the $C$ channels),
-producing $\hat{Z} \in \mathbb{R}^{B \times N \times k}$. Before any loss term this is **decoded into
-standardized-channel space** with the fixed, differentiable inverse PCA,
+Implemented in [`losses.py`](../src/neuro/predictor/losses.py). The training loss is a weighted sum
+of independently configured loss terms:
+
+$$
+\boxed{\;\mathcal{L} = \sum_i w_i\,\mathcal{L}_i\;}
+$$
+
+The model rolls out in **model space** (the $k$-dimensional latent components under a projection,
+else the $C$ channels), producing $\hat{Z} \in \mathbb{R}^{B \times N \times k}$, where the training
+rollout horizon $N = \max_i (\text{span\_steps}_i)$ is derived from the active losses. Before any loss
+term is evaluated, this is **decoded into standardized-channel space** with the fixed,
+differentiable inverse PCA:
 
 $$
 \hat{Y} = \hat{Z}E + \mu \in \mathbb{R}^{B \times N \times C}
 $$
 
 (the identity map when there is no projection, i.e. $k = C$). The targets $Y \in \mathbb{R}^{B
-\times N \times C}$ are the standardized EEG channels (§4.2), so **both terms below live in EEG
-channel space**.
+\times N \times C}$ are the standardized EEG channels (§4.2). Each loss term receives
+$(\hat{Y}, Y, \text{ctx})$, where [`LossContext`](../src/neuro/predictor/losses.py) provides unit
+recovery parameters ($y_\text{center}$, $y_\text{scale}$), sample rate $f_s$, and the current epoch
+$e$ ($\text{epoch} = \text{null}$ during validation to evaluate terminal schedules).
 
-### 6.1 Horizon-length curriculum MSE (the primary loss)
+### 6.1 Horizon-length curriculum MSE (`curriculum_mse`)
 
-The MSE is scored over the first $L$ rollout steps selected by a **step mask** $s \in \{0,1\}^N$ (a
-prefix of $L$ ones, $s_i = \mathbb{1}[i < L]$). With per-step errors
+The MSE is scored over the first $L(e)$ rollout steps, where $L \le \text{span\_steps}$.
+With per-step errors
 
 $$
 e_i = \frac{1}{BC}\sum_{b,c}\big(\hat{Y}_{b,i,c} - Y_{b,i,c}\big)^2,
 $$
 
-the curriculum MSE is their masked mean:
+the curriculum MSE is their mean over that prefix:
 
 $$
-\boxed{\;\mathcal{L}_\text{MSE} = \frac{\sum_{i} s_i\, e_i}{\sum_i s_i}\;}
+\boxed{\;\mathcal{L}_\text{MSE} = \frac{1}{L}\sum_{i<L} e_i\;}
 $$
 
 - $L = 1$ → pure one-step (teacher forcing): only the first step (ground-truth context, no feedback).
-- $L = N$ → pure $N$-step rollout: the objective we ultimately care about, but harder (exposes the
-  model to its own compounding errors).
+- $L = \text{span\_steps}$ → pure multi-step rollout: the objective we ultimately care about,
+  exposing the model to its compounding errors.
 
-$L$ is grown from 1 to $N$ over training (Section 7.3), so the model is trained on progressively
-longer free-running rollouts — a curriculum that keeps multi-step structure throughout and never
-anneals a teacher-forcing weight down to a pure $N$-step loss.
+$L$ is grown from 1 to $\text{span\_steps}$ over training epochs $[e_0, e_1]$ = `[curr_start, curr_end]`
+(Section 7.3). Note that the full model horizon $N$ is always rolled out; the loss simply slices the
+prefix $[:L]$ it scores, so the untrusted tail contributes no gradient.
 
-Note that the *whole* horizon is always rolled out; the mask only decides which steps are scored.
-Truncating the rollout to $L$ steps would have been cheaper, but the mask keeps the graph shape
-fixed and the value comparable across epochs.
+### 6.2 Auxiliary spectral loss (`psd`)
 
-### 6.2 Auxiliary spectral loss (optional, horizon > 1)
+Pushes the *statistics* of the rollout toward the data, not just point accuracy. Active when `psd` is
+configured in `training.losses` and $e \ge \text{start\_epoch}$ (requires $\text{span\_steps} \ge 2$).
 
-One optional term pushes the *statistics* of the rollout toward the data, not just point accuracy.
-It is active only when `w_psd > 0`, and is identically 0 when `horizon = 1`.
-
-**PSD loss (log-spectral distance, Welch) — active only at full rollout.** The PSD is a
-batch-of-snippets estimate over the **full** horizon window: per channel $c$, all $B$ windows are
-concatenated into one length-$BN$ series and Welch's method is applied with `nperseg = N`,
-`noverlap = 0` (each horizon-length window becomes one segment; averaging $B$ periodograms gives a
-stable spectrum with $\lfloor N/2\rfloor + 1$ frequency bins). A meaningful spectrum needs the whole
-window, so the term is **gated on only once $L = N$** (via the last mask entry $s_{N-1}$):
+**PSD loss (log-spectral distance, Welch).** The PSD is a batch-of-snippets estimate over the loss's
+span: per channel $c$, all $B$ windows are concatenated into one length-$B \cdot \text{span\_steps}$
+series and Welch's method is applied with `nperseg = span_steps`, `noverlap = 0`:
 
 $$
-\mathcal{L}_\text{PSD} = s_{N-1}\cdot\frac{1}{C\,F}\sum_{c,f}\Big(\log\big(\hat{P}_{c,f} + \varepsilon\big)
+\mathcal{L}_\text{PSD} = \frac{1}{C\,F}\sum_{c,f}\Big(\log\big(\hat{P}_{c,f} + \varepsilon\big)
 - \log\big(P_{c,f} + \varepsilon\big)\Big)^2, \qquad \varepsilon = 10^{-8}.
 $$
 
 [`welch_psd`](../src/neuro/predictor/losses.py) is a differentiable, bit-faithful replica of
-`scipy.signal.welch(x, nperseg=N, noverlap=0, axis=-1)` under that call's defaults —
-`detrend="constant"` (per-segment mean removed *before* windowing), a **periodic** Hann window,
-`scaling="density"` ($1/(f_s \sum w^2)$), one-sided folding (every bin doubled except DC, and except
-Nyquist when $N$ is even), and mean averaging over segments. It is pinned against SciPy to `1e-10`
-for even and odd `nperseg` in
-[`test_predictor_losses.py`](../tests/test_predictor_losses.py); the scaling conventions are the
-entire reason that test exists.
+`scipy.signal.welch(x, nperseg=span_steps, noverlap=0, axis=-1)` under that call's defaults —
+`detrend="constant"`, a periodic Hann window, `scaling="density"`, one-sided folding, and mean
+averaging over segments. It is pinned against SciPy to `1e-10` in
+[`test_predictor_losses.py`](../tests/test_predictor_losses.py).
 
-### 6.3 Total loss
+### 6.3 Metric-twin losses (`eeg_ms`, etc.)
+
+Metric-twin losses align training objectives with evaluation metrics defined in
+[`metrics.py`](../src/neuro/metrics.py).
+
+- **EEG Mean Square (`eeg_ms`):** Evaluates the rolling power envelope in **raw EEG units**.
+  The standardized tensors $\hat{Y}$ and $Y$ are converted to raw units via
+  $\text{ctx.to\_raw}(\cdot) = (\cdot) \odot y_\text{scale} + y_\text{center}$, sliced to
+  `[:span_steps]`, and unfolded into sliding windows of length $W = \operatorname{round}(\text{window\_s} \cdot f_s)$
+  and hop $H = \operatorname{round}(\text{hop\_s} \cdot f_s)$. The mean square per window is computed,
+  and scored via log-space MSE:
 
 $$
-\boxed{\;\mathcal{L} = \mathcal{L}_\text{MSE} \;+\; w_\text{psd}\,\mathcal{L}_\text{PSD}\;}
+\mathcal{L}_\text{ms} = \frac{1}{B\,C\,K}\sum_{b,c,k}\Big(\log\big(\hat{M}_{b,c,k} + \varepsilon\big)
+- \log\big(M_{b,c,k} + \varepsilon\big)\Big)^2.
 $$
 
-$w_\text{psd}$ is a weight on the raw log-spectral distance $\mathcal{L}_\text{PSD}$. The unweighted `mse`
-and `psd` values are returned alongside the total for logging, and are what the progress bar shows.
+`EegMsLoss` is bit-pinned against `METRICS["eeg_ms"]` to $< 10^{-12}$ across sample rates and hop
+lengths in [`test_metric_losses.py`](../tests/test_metric_losses.py).
 
-### 6.4 Why decoding is safe for the MSE (orthonormality)
+### 6.4 Total loss and component logging
+
+The total loss $\mathcal{L} = \sum_i w_i \mathcal{L}_i$ is used for backpropagation. Unweighted
+individual components $\mathcal{L}_i$ (and diagnostics like current rollout length $L$) are
+recorded per epoch into `TrainingResult.train_components` and `val_components`, saved in
+`training_stats.json`, and displayed in the training progress bar and loss curves.
+
+### 6.5 Why decoding is safe for the MSE (orthonormality)
 
 The PCA basis has orthonormal rows ($EE^\top = I_k$). Split a channel target into its in-subspace
 part and residual, $Y - \mu = ZE + r$ with $rE^\top = 0$. For a latent prediction $\hat{Z}$ decoded
@@ -467,7 +485,7 @@ $$
 and $\|r\|^2$ is parameter-independent, so $\nabla_\theta$ of the channel-space (summed) MSE equals
 $\nabla_\theta$ of the latent MSE. Computing the MSE in EEG space therefore does **not** change what
 the model learns for point accuracy — it only makes the reported number honest and, crucially,
-unlocks the PSD term, which *is* genuinely different in channel space. The two mean-reductions
+unlocks the PSD and metric terms, which *are* genuinely different in channel space. The two mean-reductions
 divide the same summed error by $B\!N\!C$ vs $B\!N\!k$, so the gradients are parallel with ratio
 $k/C$ — pinned as a `torch.autograd` regression test in
 [`test_predictor_losses.py`](../tests/test_predictor_losses.py).
@@ -528,21 +546,19 @@ pins this behaviour.
 
 ### 7.3 Curriculum schedule
 
-Let $e_0 = \texttt{curriculum\_start\_epoch}$, $e_1 = \texttt{curriculum\_end\_epoch}$, and
-$N^\star = \min(\texttt{curriculum\_max\_steps} \text{ or } N,\; N)$. The trusted rollout length $L$
-holds at 1 (teacher forcing) until $e_0$, ramps linearly $1 \to N^\star$ between $e_0$ and $e_1$, and
-holds at $N^\star$ afterwards:
+Configured per loss term (e.g. `training.losses.curriculum_mse`). Let $e_0 = \texttt{curr\_start}$,
+$e_1 = \texttt{curr\_end}$, and $N_\text{span} = \text{span\_steps}$. The trusted rollout length $L$
+holds at 1 (teacher forcing) until $e_0$, ramps linearly $1 \to N_\text{span}$ between $e_0$ and $e_1$, and
+holds at $N_\text{span}$ afterwards:
 
 $$
-L(e) = \operatorname{clip}\!\Big(\operatorname{round}\big(1 + (N^\star - 1)\cdot\operatorname{clip}(\tfrac{e - e_0}{\max(e_1 - e_0,\,1)},\,0,\,1)\big),\ 1,\ N^\star\Big).
+L(e) = \operatorname{round}\big(1 + (N_\text{span} - 1)\cdot\operatorname{clip}(\tfrac{e - e_0}{\max(e_1 - e_0,\,1)},\,0,\,1)\big).
 $$
 
-The per-epoch step mask is the prefix of $L(e)$ ones over the full horizon width
-([`curriculum_mask`](../src/neuro/predictor/losses.py)). So epochs before $e_0$ train on pure teacher
-forcing, epochs in $[e_0, e_1]$ grow the rollout $1 \to N^\star$, and the remainder trains on the
-$N^\star$-step objective (with the PSD term active only if $N^\star = N$, since the gate is the
-*last* mask entry). `curriculum_max_steps` therefore lets a long-horizon model be trained on a
-shorter trusted prefix; leaving it `null` (every shipped config) means $N^\star = N$.
+The loss scores the first $L(e)$ steps of its span
+([`CurriculumMSE.trusted_length`](../src/neuro/predictor/losses.py)). Epochs before $e_0$ train on pure teacher
+forcing, epochs in $[e_0, e_1]$ grow the rollout $1 \to N_\text{span}$, and the remainder trains on
+the full span objective.
 
 ### 7.4 Linear warm start
 
@@ -554,21 +570,21 @@ shifted forward one step, matching what the rollout feeds the MLP at $j = 0$; $Z
 target step, projected into latent space if PCA is on.
 
 A model that already solves the $L = 1$ problem has nothing to learn from the teacher-forcing phase,
-so a warm-started run **skips straight to epoch $e_0$** — its loss curves are
-$\texttt{epochs} - \texttt{curriculum\_start\_epoch}$ entries long, not `epochs`. That surprises
+so a warm-started run **skips straight to epoch `curriculum_mse.curr_start`** (if configured, else 0) — its loss
+curves are $\texttt{epochs} - \texttt{curr\_start}$ entries long, not `epochs`. That surprises
 readers of `training_stats.json`, where a linear preset's arrays are visibly shorter than a
 nonlinear one's.
 
 ### 7.5 Training loop, validation, early stopping
 
 [`_fit`](../src/neuro/predictor/train.py) runs the loop over epochs $e_\text{first}, \dots,
-\texttt{epochs}-1$ (with $e_\text{first} = e_0$ for a warm-started linear model, else 0):
+\texttt{epochs}-1$ (with $e_\text{first} = \texttt{curr\_start}$ for a warm-started linear model, else 0):
 
-1. Compute the step mask $L(e)$; iterate shuffled batches, take an optimizer step on each,
-   accumulate the batch losses; the epoch train loss is the mean over batches.
-2. **Validation loss** = `predictor_loss` on the full validation set with the full-horizon mask
-   ($L = N$) — i.e. always the pure $N$-step rollout error (plus the PSD term when `w_psd > 0`), the
-   quantity we ultimately minimise, comparable across epochs and rollout lengths.
+1. Compute the training loss with `ctx = LossContext(..., epoch=epoch)` on shuffled batches, take an
+   optimizer step on each, and accumulate the batch losses and individual components.
+2. **Validation loss** = `_batch_loss` on the full validation set with `ctx = LossContext(..., epoch=None)`
+   (terminal schedule: all components active over their full spans), the quantity we ultimately minimise,
+   comparable across epochs and rollout lengths.
 3. **NaN guard**: if either the train or val loss is NaN, raise `ValueError("Loss is NaN…")`
    (the Optuna sweep catches this and prunes the trial).
 4. **Best-model tracking**: `copy.deepcopy(model.state_dict())` whenever the validation loss
@@ -579,7 +595,7 @@ nonlinear one's.
 5. **Early stopping**: stop once `patience` consecutive epochs pass with no validation improvement.
 
 On exit the best state dict is loaded back into the model, so `train` always returns the
-lowest-validation-loss weights plus the per-epoch train/val loss histories.
+lowest-validation-loss weights plus the per-epoch train/val loss and component histories.
 
 ---
 
@@ -594,8 +610,9 @@ it neither writes files nor imports `matplotlib`. It returns a
 | field | is |
 | ----- | -- |
 | `artifact` | the best-epoch [`MLPArtifact`](../src/neuro/predictor/artifact.py): NumPy weights + fitted pipelines + native `dt` |
-| `train_losses`, `val_losses` | per-epoch loss, one entry per epoch actually run |
-| `rollout` | a [`RolloutNMSE`](../src/neuro/artifacts.py) — free-run NMSE `pooled` and `per_step` |
+| `train_losses`, `val_losses` | per-epoch total loss, one entry per epoch actually run |
+| `train_components`, `val_components` | per-epoch dict of unweighted loss components and diagnostics |
+| `rollout` | a [`RolloutNMSE`](../src/neuro/artifacts.py) — free-run NMSE `pooled` and `per_step` evaluated over `eval_horizon_s` |
 | `val_trajs` | the held-out `(u, y)` trajectories, whole |
 | `du_sensitivity` | the control-sensitivity scalar of §8.3 |
 
@@ -612,8 +629,12 @@ Carrying the notation of §1, §3 and §6 through this section, all in **raw EEG
 | $Y$ | the stacked validation targets (§3); $Y_{b,i,c}$ is horizon step $i$, channel $c$ of window $b$ | window $b$, step $i$, channel $c$ |
 | $\hat{Y}$ | the model's prediction of $Y$ — the rollout $F_\theta$ of §5.2, run from the window's true history | as $Y$ |
 
-Lowercase $y$ is always a single time step; uppercase $Y$ is always the stacked $N$-step block
-$[\,y_{k+1},\dots,y_{k+N}\,]$ of §3, so $Y_{b,i,c} = y_{t_b + i,\,c}$ for the window starting at
+Evaluation rollout horizon is configured explicitly via `training.eval_horizon_s`
+($N_\text{eval} = \max(1, \operatorname{round}(\text{eval\_horizon\_s} \cdot f_s))$), independent of the
+training rollout horizon $N = \max_i (\text{span\_steps}_i)$, and may exceed it.
+
+Lowercase $y$ is always a single time step; uppercase $Y$ is always the stacked $N_\text{eval}$-step block
+$[\,y_{k+1},\dots,y_{k+N_\text{eval}}\,]$ of §3, so $Y_{b,i,c} = y_{t_b + i,\,c}$ for the window starting at
 $t_b$. A hat is a prediction. $F_\theta$ is autoregressive, so $\hat{Y}$ is already a free-running
 rollout that feeds each predicted step back into its own history (§1, §5.2); there is no
 teacher-forced evaluation anywhere in this section. Everything is scored in **raw EEG units**: when a
@@ -645,7 +666,7 @@ window, which is worth 2–4× at the default `stride = 25` depending on model s
 `nonlinear_full`'s dimensions). Both artifact families implement the batched pair.
 
 The pooled NMSE is the **Optuna objective** (minimised) in the sweep — the same quantity `sweep_esn`
-minimises, so the two model families rank on one metric. Rolling out *past* the trained horizon $N$
+minimises, so the two model families rank on one metric. Rolling out *past* the evaluation horizon $N_\text{eval}$
 is a separate question, measured by
 [`probe_rollout_horizon.py`](../scripts/probe_rollout_horizon.py), which reports the same
 $\text{NMSE}_i$ alongside a power ratio $\sum \hat{Y}^2 / \sum Y^2$ — needed because a model that
@@ -695,8 +716,8 @@ the plots and a copy of the resolved config YAML for provenance.
 | file | written by | contents |
 | ---- | ---------- | -------- |
 | `model.npz` | `save` | the artifact of §8.4 |
-| `training_stats.json` | `save` | exactly `train_loss[]`, `val_loss[]`, `nmse_rollout`, `nmse_rollout_per_step[]`, `du_sensitivity` |
-| `loss_curve.png` | run script | train vs. val loss per epoch |
+| `training_stats.json` | `save` | `train_loss[]`, `val_loss[]`, `train_components{}`, `val_components{}`, `nmse_rollout`, `nmse_rollout_per_step[]`, `du_sensitivity` |
+| `loss_curve.png` | run script | total train vs. val loss and per-loss component curves per epoch |
 | `comparison.png` | run script | free-run rollout fans vs. truth on the first held-out trajectory, up to 200 anchors, 4 channels |
 | `<config>.yaml` | run script | copy of the resolved config, named after the source file |
 
@@ -708,6 +729,7 @@ it used to plot teacher-forced $N$-step predictions; the curves are correspondin
 correspondingly more honest, since free-run is what the MPC does.
 
 [`sweep_nn_predictor.py`](../scripts/sweep_nn_predictor.py) calls the same `save` into each
+
 `trial_<n>/` and **does not plot**: a sweep produces one artifact per trial and nobody opens the
 PNGs.
 
@@ -754,7 +776,6 @@ out-of-range values raise `ValidationError` rather than silently defaulting.
 | ------------- | ------- | ----------------------------------------------------------- |
 | `n_y`         | `5`     | past EEG steps in history                                   |
 | `n_u`         | `5`     | past control steps in history                               |
-| `horizon` $N$ | `5`     | direct prediction horizon                                   |
 | `hidden_size` | `128`   | MLP width (ignored when `depth = 0`)                        |
 | `depth`       | `2`     | hidden layers; `0` ⇒ linear model                           |
 | `activation`  | `relu`  | `relu` / `tanh` / `softplus` (a `Literal`, so typos fail at load) |
@@ -769,37 +790,58 @@ out-of-range values raise `ValidationError` rather than silently defaulting.
 | `learning_rate` $\eta$       | `1e-3`  | AdamW peak LR, cosine-annealed to 0                           |
 | `weight_decay` $\lambda$     | `1e-4`  | AdamW decoupled decay                                         |
 | `train_split`                | `0.8`   | fraction used for training (tail held out for val)            |
-| `curriculum_start_epoch`     | `0`     | epoch the rollout length starts growing ($L = 1$ before it)   |
-| `curriculum_end_epoch`       | `80`    | epoch the rollout length reaches $N^\star$ (held after)       |
-| `curriculum_max_steps`       | `null`  | cap $N^\star$ on the trusted rollout length; `null` ⇒ the horizon |
 | `seed`                       | `69`    | seed for weight init **and** the epoch shuffle (`+ seed_offset` in sweeps) |
-| `w_psd`                      | `0.0`   | weight of the auxiliary PSD loss                              |
 | `patience`                   | `50`    | early-stopping patience (epochs)                              |
 | `scaler`                     | `standard` | `standard` / `robust`                                      |
 | `global_scaling`             | `false` | one shared scalar vs. per-channel scaling                     |
 | `device`                     | `cpu`   | `cpu` / `cuda` — see the caveat below                         |
+| `eval_horizon_s`             | *(required)* | evaluation rollout horizon in seconds                     |
+| `losses`                     | *(required)* | composable loss terms (at least one must be active)           |
 
 > **`device: cuda` is untested.** Only the CPU path has been exercised. The code moves the model and
 > both resident dataset tensors onto `torch.device(training.device)` and is float64 throughout, which
 > is a poor fit for consumer GPUs; treat CUDA as unvalidated rather than supported.
 
-`curriculum_end_epoch >= curriculum_start_epoch` is enforced by a model validator on
-`NNPredictorConfig`.
+#### Loss specifications (`training.losses`)
+
+The model's training rollout horizon is derived automatically as $N = \max_i (\text{span\_steps}_i)$,
+where $\text{span\_steps} = \operatorname{round}(\text{span\_s} \cdot f_s)$. At least one active loss must have
+`start_epoch = 0` (otherwise epoch 0 has no gradient, rejected at load).
+
+- **`curriculum_mse`**:
+  - `weight: float` *(required)*
+  - `span_s: float` *(required)*
+  - `curr_start: int` *(required)* — epoch where rollout starts expanding ($L = 1$ before it)
+  - `curr_end: int` *(required)* — epoch where rollout reaches full span (held after; requires `curr_end >= curr_start`)
+  - `start_epoch: int = 0` — epoch where this loss begins contributing to the gradient
+- **`psd`**:
+  - `weight: float` *(required)*
+  - `span_s: float` *(required)* — requires $\operatorname{round}(\text{span\_s} \cdot f_s) \ge 2$
+  - `start_epoch: int = 0`
+- **`eeg_ms`** (and future metric twins):
+  - `weight: float` *(required)*
+  - `span_s: float` *(required)*
+  - `window_s: float | null = null` — window duration; defaults to `METRICS[name].window_s` in `neuro.metrics` (0.1 s for `eeg_ms`; requires $1 \le \operatorname{round}(\text{window\_s} \cdot f_s) \le \text{span\_steps}$)
+  - `hop_s: float | null = null` — window hop; defaults to `neuro.metrics.DEFAULT_HOP_S` (0.05 s) (requires $\operatorname{round}(\text{hop\_s} \cdot f_s) \ge 1$)
+  - `start_epoch: int = 0`
+
+**Units convention:** All time durations and horizons are specified in **seconds** (`span_s`,
+`eval_horizon_s`, `window_s`, `hop_s`), converted to steps via $f_s = 1 / (\text{dt} \cdot \text{downsample})$.
+All schedule checkpoints and gates are specified in integer **epochs** (`curr_start`, `curr_end`, `start_epoch`).
 
 ### Shipped presets
 
-| preset                                                              | `depth` | `n_u` | `lr`      | `wd`     | `batch` | `curr.` | `w_psd` |
-| ------------------------------------------------------------------- | :-----: | :---: | --------- | -------- | :-----: | :-----: | :-----: |
-| [`meeting_seven/linear_full.yaml`](../configs/nn_predictor/meeting_seven/linear_full.yaml)      | 0 (linear) | 7  | $10^{-4}$ | $10^{-3}$ | 512   | 0.9     | 0       |
-| [`meeting_seven/nonlinear_full.yaml`](../configs/nn_predictor/meeting_seven/nonlinear_full.yaml)| 1       | 10    | $10^{-5}$ | $5\!\cdot\!10^{-4}$ | 128 | 0.8 | 0     |
+| preset | `depth` | `n_u` | `lr` | `wd` | `batch` | `eval_horizon_s` | `curr.` |
+| ------ | :-----: | :---: | ---- | ---- | :-----: | :--------------: | :-----: |
+| [`meeting_seven/linear_full.yaml`](../configs/nn_predictor/meeting_seven/linear_full.yaml) | 0 (linear) | 7 | $10^{-4}$ | $10^{-3}$ | 512 | 0.2 s | 0.9 |
+| [`meeting_seven/nonlinear_full.yaml`](../configs/nn_predictor/meeting_seven/nonlinear_full.yaml) | 1 | 10 | $10^{-5}$ | $5\!\cdot\!10^{-4}$ | 128 | 0.2 s | 0.8 |
 
-`curr.` is `curriculum_end_epoch` as a fraction of `epochs`. Common to both: `n_y=15`, `horizon=20`,
-`hidden_size=128`, `activation=softplus`, `latent_dim=null`, `epochs=250`, `train_split=0.8`,
-`seed=69`, `patience=100`, `scaler=robust`, `global_scaling=true`, and the 100 Hz / 20 s data
-described in Section 2.2. The other `meeting_seven/` presets vary the montage
-(`*_selected.yaml`, 25 channels) and the projection (`nonlinear_full_pca.yaml`, $k = 25$);
-`nonlinear_full_8s*.yaml` target the 50 Hz / 8 s ROAST dataset at `horizon=50`, `depth=2`.
-No shipped config sets `w_psd > 0`, `curriculum_max_steps`, `cutoff_hz` or `device`.
+`curr.` is `curriculum_mse.curr_end` as a fraction of `epochs`. Common to both: `n_y=15`,
+`losses.curriculum_mse.span_s=0.2`, `hidden_size=128`, `activation=softplus`, `latent_dim=null`,
+`epochs=250`, `train_split=0.8`, `seed=69`, `patience=100`, `scaler=robust`, `global_scaling=true`,
+and the 100 Hz / 20 s data described in Section 2.2. The other `meeting_seven/` presets vary the
+montage (`*_selected.yaml`, 25 channels) and the projection (`nonlinear_full_pca.yaml`, $k = 25$);
+`nonlinear_full_8s*.yaml` target the 50 Hz / 8 s ROAST dataset at `eval_horizon_s=1.0`, `span_s=1.0`, `depth=2`.
 
 ---
 
@@ -808,14 +850,33 @@ No shipped config sets `w_psd > 0`, `curriculum_max_steps`, `cutoff_hz` or `devi
 [`scripts/sweep_nn_predictor.py`](../scripts/sweep_nn_predictor.py) wraps the same `train()` in an
 **Optuna** study (`direction="minimize"`, persisted to a SQLite study DB in the sweep artifact
 directory). A `sweep` config section declares per-field search spaces (`categorical` / `int` /
-`float` / `loguniform`); each trial samples overrides, re-validates the merged `model` / `training`
-sections, uses `seed_offset = trial.number` to decorrelate otherwise identical trials, and saves a
-full artifact under `trial_<n>/` along with its resolved `trial_config.yaml`. A `ValueError`
-mentioning NaN is converted into `optuna.TrialPruned`.
+`float` / `loguniform`), including **dotted nested paths** such as `losses.curriculum_mse.curr_end` or
+`losses.eeg_ms.weight`:
 
-The objective is `result.rollout.pooled` — the free-run rollout NMSE of §8.2 — recorded on the trial
-as the `nmse_rollout` user attribute. If the sweep config carries a `closed_loop` section, the trial
-instead returns the closed-loop suppression score from
+```yaml
+sweep:
+  artifact: "artifacts/sweep_losses"
+  n_trials: 30
+  training:
+    learning_rate:
+      type: loguniform
+      low: 0.000005
+      high: 0.0001
+    losses.curriculum_mse.curr_end:
+      type: int
+      low: 50
+      high: 200
+```
+
+Each trial samples overrides, expands dotted keys into nested dicts, deep-merges them onto the base
+config, and re-validates the merged `model` / `training` sections. Sweep parameters on unconfigured
+losses or overlapping with explicitly defined base values raise `ValidationError` at study setup.
+Each trial uses `seed_offset = trial.number` to decorrelate otherwise identical runs and saves a full
+artifact under `trial_<n>/`. A `ValueError` mentioning NaN is converted into `optuna.TrialPruned`.
+
+The objective is `result.rollout.pooled` — the free-run rollout NMSE over `eval_horizon_s` of §8.2 —
+recorded on the trial as the `nmse_rollout` user attribute. If the sweep config carries a
+`closed_loop` section, the trial instead returns the closed-loop suppression score from
 [`evaluate_closed_loop_suppression`](../src/neuro/closed_loop_eval.py), which loads the trial's
 `model.npz` and runs the MPC; the rollout NMSE is still recorded alongside it.
 
@@ -823,6 +884,16 @@ instead returns the closed-loop suppression score from
 
 ## 11. Notes & gotchas
 
+- **Derived training horizon vs explicit evaluation horizon.** Training rollout width is derived as
+  $N = \max_i (\text{span\_steps}_i)$ across active loss terms, ensuring the computational graph is
+  only as wide as needed for the losses. Evaluation rollout horizon is set independently by
+  `eval_horizon_s` and may exceed the trained rollout width.
+- **Seconds vs epochs units.** All spans, window lengths, hop intervals, and evaluation horizons are
+  given in seconds (`span_s`, `eval_horizon_s`, `window_s`, `hop_s`). All schedule checkpoints and
+  gates are given in integer epoch numbers (`curr_start`, `curr_end`, `start_epoch`).
+- **Window and span bounds.** Metric losses enforce $\operatorname{round}(\text{window\_s} \cdot f_s) \ge 1$,
+  $\operatorname{round}(\text{hop\_s} \cdot f_s) \ge 1$, and $\text{window\_s} \le \text{span\_s}$ at config
+  load. `psd` requires $\operatorname{round}(\text{span\_s} \cdot f_s) \ge 2$.
 - **Units.** EEG is in arbitrary units (see the project *uncalibrated units* note), so absolute MSE
   values are not physically meaningful; training happens in standardised space, and the reported
   NMSE is normalised by the true signal's energy so that it is scale-invariant.
@@ -833,9 +904,6 @@ instead returns the closed-loop suppression score from
   `hidden_size` are inert for `linear_full.yaml`. It is also the only case that gets the
   least-squares warm start, and therefore the only case whose loss curves are shorter than `epochs`
   (§7.4).
-- **The PSD loss needs `horizon > 1`** and is computed in EEG channel space, so it works **with**
-  `latent_dim` too (the latent rollout is decoded first; §3.1, §6). For `horizon = 1` it is skipped
-  outright.
 - **Reproducibility.** A run is reproducible from `training.seed (+ seed_offset)`: it seeds both
   `torch.manual_seed` and the epoch-shuffle RNG. No `torch.use_deterministic_algorithms` is set — it
   buys nothing on the CPU path.

@@ -1,4 +1,3 @@
-
 simulation:
   dt: 0.0001
   downsample: 100        # effective dt = 1e-2 s
@@ -6,7 +5,6 @@ simulation:
   data_path: "data/experiment_excited_long/train"
 
 model:
-  horizon: 20
   activation: softplus
   n_y: 15
   n_u: 10
@@ -15,13 +13,17 @@ training:
   epochs: 250
   train_split: 0.8
   seed: 1903
-  w_psd: 0.0
   patience: 50
   scaler: "robust"
   global_scaling: true
   batch_size: 256
-  curriculum_start_epoch: 100
-  curriculum_end_epoch: 200
+  eval_horizon_s: 0.2
+  losses:
+    curriculum_mse:
+      weight: 1.0
+      span_s: 0.2
+      curr_start: 100
+      curr_end: 200
 
 sweep:
   artifact: "artifacts/sweep_nn_predictor_long"

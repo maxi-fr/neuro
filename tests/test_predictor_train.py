@@ -3,20 +3,27 @@
 from __future__ import annotations
 
 import json
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 import numpy as np
 import pytest
 import torch
 
 from neuro.artifacts import load_any_artifact
-from neuro.config import ModelConfig, NNPredictorConfig, SimulationConfig, TrainingConfig
+from neuro.config import (
+    CurriculumMSESpec,
+    LossSpecs,
+    ModelConfig,
+    NNPredictorConfig,
+    SimulationConfig,
+    TrainingConfig,
+)
 from neuro.predictor.artifact import MLPArtifact
 from neuro.predictor.data import apply_to_blocks, prepare_datasets, transform_features
-from neuro.predictor.losses import predictor_loss
+from neuro.predictor.losses import LossContext, build_losses, total_loss
 from neuro.predictor.module import AutoregressiveMLP
 from neuro.predictor.train import train
-from neuro.transforms import Pipeline
+from neuro.transforms import Pipeline, Standardizer
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -41,21 +48,27 @@ def _write_trajectories(tmp_path: Path) -> list[str]:
     return files
 
 
-def _config(depth: int = 1, **training: object) -> NNPredictorConfig:
+def _config(depth: int = 1, curr_start: int = 0, curr_end: int = 2, **training: object) -> NNPredictorConfig:
     """A tiny but complete predictor config; ``training`` overrides the optimisation defaults."""
+    fs = 1.0 / (_DT * 1)
+    span_s = _HORIZON / fs
+    losses = LossSpecs(
+        curriculum_mse=CurriculumMSESpec(weight=1.0, span_s=span_s, curr_start=curr_start, curr_end=curr_end)
+    )
     defaults = {
         "epochs": 3,
         "batch_size": 64,
         "learning_rate": 1e-2,
         "weight_decay": 0.0,
         "train_split": 0.5,
-        "curriculum_end_epoch": 2,
         "seed": _SEED,
         "patience": 50,
+        "eval_horizon_s": span_s,
+        "losses": losses,
     }
     return NNPredictorConfig(
         simulation=SimulationConfig(dt=_DT, downsample=1),
-        model=ModelConfig(n_y=_N_Y, n_u=_N_U, horizon=_HORIZON, hidden_size=4, depth=depth),
+        model=ModelConfig(n_y=_N_Y, n_u=_N_U, hidden_size=4, depth=depth),
         training=TrainingConfig.model_validate({**defaults, **training}),
     )
 
@@ -68,14 +81,27 @@ def _weights(art: MLPArtifact) -> list[np.ndarray]:
 def _validation_loss(cfg: NNPredictorConfig, files: list[str], art: MLPArtifact) -> float:
     """Re-score ``art`` on the validation windows exactly as the training loop does."""
     mdl = cfg.model
-    data = prepare_datasets(files, None, 1, mdl.n_y, mdl.n_u, mdl.horizon, _DT, cfg.training.train_split)
+    fs = cfg.fs
+    losses = build_losses(cfg.training.losses, fs)
+    horizon = max(loss_obj.span_steps for loss_obj in losses)
+
+    data = prepare_datasets(files, None, 1, mdl.n_y, mdl.n_u, horizon, _DT, cfg.training.train_split)
     X = transform_features(data.X_val, art.y_pipeline, art.u_pipeline, mdl.n_y, data.n_channels, data.n_controls)
     Y = apply_to_blocks(data.Y_val, Pipeline(art.y_pipeline.steps[:1]), data.n_channels)
 
     model = AutoregressiveMLP.from_artifact(art)
-    pred = model(torch.as_tensor(X)).reshape(-1, mdl.horizon, art.n_channels)
-    target = torch.as_tensor(Y).reshape(-1, mdl.horizon, data.n_channels)
-    loss, _ = predictor_loss(model, pred, target, torch.ones(mdl.horizon, dtype=torch.float64), cfg.training.w_psd)
+    pred = model(torch.as_tensor(X)).reshape(-1, horizon, art.n_channels)
+    if model.decode_basis is not None:
+        pred = pred @ model.decode_basis + model.decode_mean
+    target = torch.as_tensor(Y).reshape(-1, horizon, data.n_channels)
+    standardizer = cast("Standardizer", art.y_pipeline.steps[0])
+    ctx = LossContext(
+        y_center=torch.as_tensor(standardizer.center, dtype=torch.float64),
+        y_scale=torch.as_tensor(standardizer.scale, dtype=torch.float64),
+        fs=fs,
+        epoch=None,
+    )
+    loss, _ = total_loss(losses, pred, target, ctx)
     return float(loss.detach())
 
 
@@ -106,7 +132,15 @@ def test_save_round_trip_predicts_identically(files: list[str], tmp_path: Path) 
 
     result.save(artifact_dir)
     stats = json.loads((artifact_dir / "training_stats.json").read_text())
-    assert set(stats) == {"train_loss", "val_loss", "nmse_rollout", "nmse_rollout_per_step", "du_sensitivity"}
+    assert set(stats) == {
+        "train_loss",
+        "val_loss",
+        "train_components",
+        "val_components",
+        "nmse_rollout",
+        "nmse_rollout_per_step",
+        "du_sensitivity",
+    }
     assert stats["nmse_rollout"] == result.rollout.pooled
 
     loaded = load_any_artifact(artifact_dir / "model")
@@ -126,7 +160,7 @@ def test_returned_artifact_is_the_best_epoch_not_the_last(files: list[str]) -> N
     epoch. Stopping on ``patience`` guarantees the run ends on non-improving epochs, so the best
     epoch cannot be the last; re-scoring the returned artifact then pins which epoch it came from.
     """
-    cfg = _config(epochs=20, learning_rate=0.3, curriculum_end_epoch=1, patience=2)
+    cfg = _config(epochs=20, learning_rate=0.3, curr_end=1, patience=2)
     result = train(cfg, files)
 
     assert len(result.val_losses) < 20, "the run must stop on patience, not on the epoch budget"
@@ -155,9 +189,8 @@ def test_same_seed_reproduces_and_offset_decorrelates(files: list[str]) -> None:
 
 def test_linear_model_is_warm_started_and_skips_the_one_step_epochs(files: list[str]) -> None:
     """A depth-0 model starts from the exact 1-step solution, so the L = 1 epochs are skipped."""
-    settings: dict[str, object] = {"epochs": 3, "curriculum_start_epoch": 2, "curriculum_end_epoch": 2}
-    linear = train(_config(depth=0, **settings), files)
-    nonlinear = train(_config(depth=1, **settings), files)
+    linear = train(_config(depth=0, epochs=3, curr_start=2, curr_end=2), files)
+    nonlinear = train(_config(depth=1, epochs=3, curr_start=2, curr_end=2), files)
 
     assert linear.artifact.is_linear
     assert len(linear.train_losses) == 1

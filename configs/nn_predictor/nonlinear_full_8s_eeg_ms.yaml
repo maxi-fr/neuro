@@ -29,5 +29,10 @@ training:
       span_s: 1.0
       curr_start: 100
       curr_end: 250
+    eeg_ms:
+      weight: 0.5
+      span_s: 1.0
+      window_s: 0.1
+      hop_s: 0.05
 
-artifact: "artifacts/nonlinear_full_8s"
+artifact: "artifacts/nonlinear_full_8s_eeg_ms"

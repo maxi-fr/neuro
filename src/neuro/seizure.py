@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 
 from neuro.jansen_rit import JansenRitDynamics, lfp, simulate_network
+from neuro.seizure_calibration import SEIZURE_PTP_MV, SPREAD_HOP_S, SPREAD_PERSIST_S, SPREAD_WINDOW_S
 
 if TYPE_CHECKING:
     import numpy.typing as npt
@@ -25,11 +26,6 @@ PZ_REGIONS = ("lTCI", "lTCV")
 A_HEALTHY = 3.25
 A_EZ = 3.6
 A_PZ = 3.4
-
-SPREAD_WINDOW_S = 1.0
-SPREAD_HOP_S = 0.25
-SPREAD_PERSIST_S = 1.0
-SEIZURE_PTP_MV = 5.0
 
 T_EZ_TARGET = 1.5
 T_PZ_TARGET = 5.0

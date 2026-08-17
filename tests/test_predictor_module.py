@@ -184,6 +184,8 @@ def test_decode_buffers_carry_the_projection(latent_dim: int | None) -> None:
 
     pca = art.y_pipeline.pca
     assert pca is not None
+    assert model.decode_basis is not None
+    assert model.decode_mean is not None
     assert model.decode_basis.dtype == torch.float64
     assert model.decode_basis.shape == (latent_dim, _N_EEG)
     assert model.decode_mean.shape == (_N_EEG,)

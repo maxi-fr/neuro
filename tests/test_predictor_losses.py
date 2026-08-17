@@ -2,12 +2,24 @@
 
 from __future__ import annotations
 
+import itertools
+
 import numpy as np
 import pytest
 import torch
 from scipy.signal import welch
 
-from neuro.predictor.losses import predictor_loss, welch_psd
+from neuro.config import CurriculumMSESpec, EegMsSpec, LossSpec, LossSpecs, PSDSpec
+from neuro.predictor.losses import (
+    CurriculumMSE,
+    EegMsLoss,
+    Loss,
+    LossContext,
+    PSDLoss,
+    build_losses,
+    total_loss,
+    welch_psd,
+)
 from neuro.predictor.module import AutoregressiveMLP
 
 _SEED = 3
@@ -78,22 +90,75 @@ def test_decoded_mse_gradient_is_scalar_multiple_of_latent_gradient() -> None:
 
     x = torch.as_tensor(rng.standard_normal((batch, n_y * k + n_u * n_controls + horizon * n_controls)))
     z = rng.standard_normal((batch, horizon, k))  # latent target
-    step_mask = torch.ones(horizon, dtype=torch.float64)
+
+    loss_fn = CurriculumMSE(weight=1.0, span_steps=horizon, start_epoch=0, curr_start=0, curr_end=1)
+    ctx = LossContext(
+        y_center=torch.zeros(c, dtype=torch.float64),
+        y_scale=torch.ones(c, dtype=torch.float64),
+        fs=1.0,
+        epoch=None,
+    )
 
     channel = _model(n_y, n_u, horizon, k, n_controls, basis, mean)
+    pred_latent = channel(x).reshape(batch, horizon, k)
+    pred_channel = pred_latent @ torch.as_tensor(basis) + torch.as_tensor(mean)
     y_channel = torch.as_tensor(z @ basis + mean)
-    loss_channel, _ = predictor_loss(channel, channel(x).reshape(batch, horizon, k), y_channel, step_mask, 0.0)
+    loss_channel, _ = loss_fn(pred_channel, y_channel, ctx)
     loss_channel.backward()
 
     latent = _model(n_y, n_u, horizon, k, n_controls)
-    loss_latent, _ = predictor_loss(latent, latent(x).reshape(batch, horizon, k), torch.as_tensor(z), step_mask, 0.0)
+    pred_latent_model = latent(x).reshape(batch, horizon, k)
+    loss_latent, _ = loss_fn(pred_latent_model, torch.as_tensor(z), ctx)
     loss_latent.backward()
 
     np.testing.assert_allclose(_flat_grad(channel), (k / c) * _flat_grad(latent), rtol=1e-8, atol=1e-10)
 
 
-def test_psd_is_gated_off_until_the_curriculum_reaches_full_length() -> None:
-    """``step_mask[-1]`` gates the PSD term: zero while ``L < horizon``, live once ``L == horizon``."""
+def test_curriculum_ramps_the_trusted_prefix_then_holds() -> None:
+    """L holds at 1 until curr_start, ramps 1 -> span_steps by curr_end, then holds there."""
+    span_steps, curr_start, curr_end = 20, 10, 90
+    loss_fn = CurriculumMSE(weight=1.0, span_steps=span_steps, start_epoch=0, curr_start=curr_start, curr_end=curr_end)
+
+    lengths = [loss_fn.trusted_length(e) for e in range(curr_end + 1)]
+    assert lengths[: curr_start + 1] == [1] * (curr_start + 1)
+    assert lengths[-1] == span_steps
+    assert all(b >= a for a, b in itertools.pairwise(lengths))
+    assert loss_fn.trusted_length(curr_end + 500) == span_steps
+    assert loss_fn.trusted_length(None) == span_steps  # terminal schedule
+
+
+def test_curriculum_zero_width_window_jumps_to_full_span() -> None:
+    """With curr_start == curr_end the trusted prefix jumps 1 -> span_steps (no divide-by-zero)."""
+    pivot, span_steps = 30, 20
+    loss_fn = CurriculumMSE(weight=1.0, span_steps=span_steps, start_epoch=0, curr_start=pivot, curr_end=pivot)
+    assert loss_fn.trusted_length(pivot) == 1
+    assert loss_fn.trusted_length(pivot + 1) == span_steps
+
+
+def test_curriculum_scores_only_the_trusted_prefix() -> None:
+    """Only the trusted prefix reaches the MSE, and its width is reported as the 'L' diagnostic."""
+    rng = np.random.default_rng(_SEED + 3)
+    batch, span_steps, c = 4, 10, 3
+    pred = torch.as_tensor(rng.standard_normal((batch, span_steps, c)))
+    true = torch.as_tensor(rng.standard_normal((batch, span_steps, c)))
+    ctx = LossContext(
+        y_center=torch.zeros(c, dtype=torch.float64),
+        y_scale=torch.ones(c, dtype=torch.float64),
+        fs=1.0,
+        epoch=0,
+    )
+
+    loss_fn = CurriculumMSE(weight=1.0, span_steps=span_steps, start_epoch=0, curr_start=0, curr_end=100)
+    value, diag = loss_fn(pred, true, ctx)
+
+    assert diag["L"] == 1.0
+    # At L = 1 the loss must equal the plain MSE of the first step alone.
+    expected = torch.mean((pred[:, 0] - true[:, 0]) ** 2)
+    torch.testing.assert_close(value, expected)
+
+
+def test_psd_is_gated_off_until_start_epoch() -> None:
+    """total_loss gates off the PSD term when ctx.epoch < psd.start_epoch."""
     rng = np.random.default_rng(_SEED + 1)
     n_y, n_u, horizon, c, n_controls, batch, w_psd = 2, 2, 6, 5, 2, 32, 0.1
     model = _model(n_y, n_u, horizon, c, n_controls)
@@ -102,25 +167,67 @@ def test_psd_is_gated_off_until_the_curriculum_reaches_full_length() -> None:
     true_traj = torch.as_tensor(rng.standard_normal((batch, horizon, c)))
     pred_traj = model(x).reshape(batch, horizon, c)
 
-    partial = torch.tensor([1.0, 1.0, 1.0, 0.0, 0.0, 0.0], dtype=torch.float64)
-    total_partial, comps_partial = predictor_loss(model, pred_traj, true_traj, partial, w_psd)
-    total_full, comps_full = predictor_loss(model, pred_traj, true_traj, torch.ones_like(partial), w_psd)
+    losses: list[Loss] = [
+        CurriculumMSE(weight=1.0, span_steps=horizon, start_epoch=0, curr_start=0, curr_end=0),
+        PSDLoss(weight=w_psd, span_steps=horizon, start_epoch=10),
+    ]
 
-    assert comps_partial["psd"] == 0.0
-    assert float(total_partial.detach()) == pytest.approx(comps_partial["mse"])
-    assert comps_full["psd"] > 0.0
-    assert float(total_full.detach()) == pytest.approx(comps_full["mse"] + w_psd * comps_full["psd"])
+    ctx_gated = LossContext(
+        y_center=torch.zeros(c, dtype=torch.float64),
+        y_scale=torch.ones(c, dtype=torch.float64),
+        fs=1.0,
+        epoch=5,
+    )
+    ctx_active = LossContext(
+        y_center=torch.zeros(c, dtype=torch.float64),
+        y_scale=torch.ones(c, dtype=torch.float64),
+        fs=1.0,
+        epoch=10,
+    )
+
+    total_gated, comps_gated = total_loss(losses, pred_traj, true_traj, ctx_gated)
+    total_active, comps_active = total_loss(losses, pred_traj, true_traj, ctx_active)
+
+    assert comps_gated["psd"] == 0.0
+    assert float(total_gated.detach()) == pytest.approx(comps_gated["curriculum_mse"])
+    assert comps_active["psd"] > 0.0
+    assert float(total_active.detach()) == pytest.approx(comps_active["curriculum_mse"] + w_psd * comps_active["psd"])
 
 
-def test_single_step_horizon_skips_the_psd_term() -> None:
-    """With ``horizon == 1`` there is no spectrum to score, so the PSD term is identically zero."""
-    rng = np.random.default_rng(_SEED + 2)
-    n_y, n_u, c, n_controls, batch = 2, 2, 4, 2, 8
-    model = _model(n_y, n_u, 1, c, n_controls)
+def test_build_losses_instantiates_from_specs() -> None:
+    """build_losses correctly instantiates loss terms from LossSpecs and dict mappings."""
+    fs = 100.0
+    specs = LossSpecs(
+        curriculum_mse=CurriculumMSESpec(weight=1.0, span_s=0.2, curr_start=0, curr_end=10, start_epoch=0),
+        psd=PSDSpec(weight=0.1, span_s=0.2, start_epoch=5),
+        eeg_ms=EegMsSpec(weight=0.5, span_s=0.2, window_s=0.1, hop_s=0.01, start_epoch=2),
+    )
 
-    x = torch.as_tensor(rng.standard_normal((batch, n_y * c + n_u * n_controls + n_controls)))
-    true_traj = torch.as_tensor(rng.standard_normal((batch, 1, c)))
+    losses = build_losses(specs, fs)
+    assert len(losses) == 3
+    assert isinstance(losses[0], CurriculumMSE)
+    assert losses[0].span_steps == 20
+    assert losses[0].curr_end == 10
 
-    _, comps = predictor_loss(model, model(x).reshape(batch, 1, c), true_traj, torch.ones(1, dtype=torch.float64), 1.0)
+    assert isinstance(losses[1], PSDLoss)
+    assert losses[1].span_steps == 20
+    assert losses[1].start_epoch == 5
 
-    assert comps["psd"] == 0.0
+    assert isinstance(losses[2], EegMsLoss)
+    assert losses[2].span_steps == 20
+    assert losses[2].n_window == 10
+    assert losses[2].n_hop == 1
+
+    # Also test passing a plain dict
+    losses_dict = build_losses(specs.active(), fs)
+    assert len(losses_dict) == 3
+
+
+def test_build_losses_unknown_spec_raises() -> None:
+    """build_losses raises TypeError when encountering an unrecognized LossSpec subclass."""
+
+    class DummySpec(LossSpec):
+        pass
+
+    with pytest.raises(TypeError, match="Unknown loss spec type"):
+        build_losses({"dummy": DummySpec(weight=1.0, span_s=0.1)}, fs=100.0)

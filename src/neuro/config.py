@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import datetime
+import types
+import typing
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Any, Literal
 
@@ -8,10 +10,14 @@ import numpy as np
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from neuro.metrics import DEFAULT_HOP_S, METRICS
+
 if TYPE_CHECKING:
     from typing import Self
 
     import optuna
+
+_MIN_PSD_SPAN_STEPS = 2
 
 
 def parse_array(val: Any) -> Any:  # noqa: ANN401
@@ -40,7 +46,6 @@ class ModelConfig(StrictConfig):
 
     n_y: int = Field(default=5, ge=1)
     n_u: int = Field(default=5, ge=1)
-    horizon: int = Field(default=5, ge=1)
     hidden_size: int = Field(default=128, ge=1)
     depth: int = Field(default=2, ge=0)
     activation: Literal["relu", "tanh", "softplus"] = "relu"
@@ -57,6 +62,81 @@ class SimulationConfig(StrictConfig):
     cutoff_hz: float | None = Field(default=None, gt=0)
 
 
+class LossSpec(StrictConfig):
+    """Base for one additive loss term: its weight, its epoch gate and its rollout span."""
+
+    weight: float = Field(ge=0)
+    span_s: float = Field(gt=0)
+    start_epoch: int = Field(default=0, ge=0)
+
+    def span_steps(self, fs: float) -> int:
+        """Rollout length in steps implied by span_s at fs, >= 1."""
+        return max(1, round(self.span_s * fs))
+
+
+class CurriculumMSESpec(LossSpec):
+    """Curriculum MSE loss spec: ramps trusted rollout length over curr_start -> curr_end."""
+
+    curr_start: int = Field(ge=0)
+    curr_end: int = Field(ge=0)
+
+    @model_validator(mode="after")
+    def _validate_curr_epochs(self) -> Self:
+        if self.curr_end < self.curr_start:
+            msg = f"curr_end ({self.curr_end}) must be >= curr_start ({self.curr_start})."
+            raise ValueError(msg)
+        return self
+
+
+class PSDSpec(LossSpec):
+    """Welch PSD matching loss spec."""
+
+
+class MetricLossSpec(LossSpec):
+    """Base for a metric twin: window geometry in seconds, as metrics.py defines it.
+
+    Both geometry fields default to ``None``, meaning "whatever grid ``metrics.py`` scores
+    ``name`` on"; the resolution happens in the ``*_steps`` methods, so the defaults live in
+    exactly one place -- :mod:`neuro.metrics` -- rather than being copied here.
+    """
+
+    window_s: float | None = Field(default=None, gt=0)
+    hop_s: float | None = Field(default=None, gt=0)
+
+    def window_steps(self, fs: float, name: str) -> int:
+        """Trailing-window length in steps at ``fs``, defaulting to ``METRICS[name]``'s window."""
+        window_s = self.window_s if self.window_s is not None else METRICS[name].window_s
+        return round(window_s * fs)
+
+    def hop_steps(self, fs: float) -> int:
+        """Window spacing in steps at ``fs``, defaulting to the metrics layer's own hop."""
+        hop_s = self.hop_s if self.hop_s is not None else DEFAULT_HOP_S
+        return round(hop_s * fs)
+
+
+class EegMsSpec(MetricLossSpec):
+    """EEG mean square metric loss spec."""
+
+
+class LossSpecs(StrictConfig):
+    """Config-declared set of additive loss terms."""
+
+    curriculum_mse: CurriculumMSESpec | None = None
+    psd: PSDSpec | None = None
+    eeg_ms: EegMsSpec | None = None
+
+    def active(self) -> dict[str, LossSpec]:
+        """Return a mapping of non-None configured loss specs."""
+        return {name: spec for name in self.__class__.model_fields if (spec := getattr(self, name)) is not None}
+
+    @model_validator(mode="after")
+    def _validate_non_empty(self) -> Self:
+        if not self.active():
+            msg = "At least one loss must be configured in 'training.losses'."
+            raise ValueError(msg)
+        return self
+
+
 class TrainingConfig(StrictConfig):
     """Optimisation and scaling settings for the NN predictor."""
 
@@ -65,15 +145,13 @@ class TrainingConfig(StrictConfig):
     learning_rate: float = Field(default=1e-3, gt=0)
     weight_decay: float = Field(default=1e-4, ge=0)
     train_split: float = Field(default=0.8, gt=0, lt=1)
-    curriculum_start_epoch: int = Field(default=0, ge=0)
-    curriculum_end_epoch: int = Field(default=80, ge=0)
-    curriculum_max_steps: int | None = Field(default=None, ge=1)
     seed: int = Field(default=69, ge=0)
-    w_psd: float = Field(default=0.0, ge=0)
     patience: int = Field(default=50, ge=1)
     scaler: Literal["standard", "robust"] = "standard"
     global_scaling: bool = False
     device: Literal["cpu", "cuda"] = "cpu"
+    eval_horizon_s: float = Field(gt=0)
+    losses: LossSpecs
 
 
 class CategoricalParam(StrictConfig):
@@ -168,9 +246,14 @@ class NNPredictorConfig(StrictConfig):
 
     simulation: SimulationConfig = Field(default_factory=SimulationConfig)
     model: ModelConfig = Field(default_factory=ModelConfig)
-    training: TrainingConfig = Field(default_factory=TrainingConfig)
+    training: TrainingConfig
     artifact: str | None = None
     sweep: NNSweepConfig | None = None
+
+    @property
+    def fs(self) -> float:
+        """Effective sampling frequency in Hz after downsampling."""
+        return 1.0 / (self.simulation.dt * self.simulation.downsample)
 
     @classmethod
     def from_dict(cls, data: dict[str, Any] | None) -> NNPredictorConfig:
@@ -178,13 +261,33 @@ class NNPredictorConfig(StrictConfig):
         return cls.model_validate({} if data is None else data)
 
     @model_validator(mode="after")
-    def _validate_curriculum_epochs(self) -> Self:
-        if self.training.curriculum_end_epoch < self.training.curriculum_start_epoch:
-            msg = (
-                f"curriculum_end_epoch ({self.training.curriculum_end_epoch}) must be "
-                f">= curriculum_start_epoch ({self.training.curriculum_start_epoch})."
-            )
+    def _validate_losses_and_horizon(self) -> Self:
+        fs = self.fs
+        active = self.training.losses.active()
+        if all(spec.start_epoch > 0 for spec in active.values()):
+            msg = "At least one loss must have start_epoch = 0; otherwise epoch 0 has no gradient."
             raise ValueError(msg)
+
+        if self.training.losses.psd is not None:
+            psd_steps = self.training.losses.psd.span_steps(fs)
+            if psd_steps < _MIN_PSD_SPAN_STEPS:
+                msg = f"psd.span_steps ({psd_steps}) must be >= {_MIN_PSD_SPAN_STEPS} at fs={fs} Hz."
+                raise ValueError(msg)
+
+        for name, spec in active.items():
+            if isinstance(spec, MetricLossSpec):
+                n_window = spec.window_steps(fs, name)
+                n_hop = spec.hop_steps(fs)
+                span_steps = spec.span_steps(fs)
+                if not (1 <= n_window <= span_steps):
+                    msg = (
+                        f"Metric loss '{name}' requires 1 <= round(window_s * fs) <= span_steps, "
+                        f"got window_steps={n_window}, span_steps={span_steps} at fs={fs} Hz."
+                    )
+                    raise ValueError(msg)
+                if n_hop < 1:
+                    msg = f"Metric loss '{name}' hop_s resolves to < 1 sample at fs={fs} Hz."
+                    raise ValueError(msg)
         return self
 
     @model_validator(mode="after")
@@ -197,24 +300,77 @@ class NNPredictorConfig(StrictConfig):
         return self
 
 
+def _resolve_field_model(cls: type[BaseModel], field_name: str) -> type[BaseModel] | None:
+    if field_name not in cls.model_fields:
+        return None
+    annotation = cls.model_fields[field_name].annotation
+
+    if annotation is None:
+        return None
+    if isinstance(annotation, type) and issubclass(annotation, BaseModel):
+        return annotation
+    origin = typing.get_origin(annotation)
+    if origin is typing.Union or origin is types.UnionType:
+        for arg in typing.get_args(annotation):
+            if isinstance(arg, type) and issubclass(arg, BaseModel):
+                return arg
+    return None
+
+
 def _validate_sweep_overlap_and_keys(
     sweep_dict: dict[str, ParamSpec],
     target_config: StrictConfig,
     target_name: str,
 ) -> None:
-    sweep_keys = set(sweep_dict.keys())
-    invalid_keys = sweep_keys - set(target_config.__class__.model_fields.keys())
+    invalid_keys: list[str] = []
+    overlap_keys: list[str] = []
+
+    for sweep_key in sweep_dict:
+        parts = sweep_key.split(".")
+        curr_cls: type[BaseModel] | None = target_config.__class__
+        curr_obj: Any = target_config
+
+        for i, part in enumerate(parts):
+            if curr_cls is None or part not in curr_cls.model_fields:
+                invalid_keys.append(sweep_key)
+                break
+
+            if i == len(parts) - 1:
+                if curr_obj is not None and part in curr_obj.model_fields_set:
+                    overlap_keys.append(sweep_key)
+            else:
+                if curr_obj is not None:
+                    curr_obj = getattr(curr_obj, part)
+                    if curr_obj is None:
+                        msg = (
+                            f"Loss '{part}' referenced in 'sweep.{target_name}.{sweep_key}' "
+                            f"is not configured in '{target_name}.{'.'.join(parts[: i + 1])}'."
+                        )
+                        raise ValueError(msg)
+                curr_cls = _resolve_field_model(curr_cls, part)
+
     if invalid_keys:
         msg = f"Keys {sorted(invalid_keys)} in 'sweep.{target_name}' are not valid '{target_name}' parameters."
         raise ValueError(msg)
 
-    overlap = sweep_keys & target_config.model_fields_set
-    if overlap:
+    if overlap_keys:
         msg = (
             f"Parameters cannot be defined in both regular '{target_name}' and 'sweep.{target_name}'."
-            f" Overlap: {sorted(overlap)}"
+            f" Overlap: {sorted(overlap_keys)}"
         )
         raise ValueError(msg)
+
+
+def expand_dotted_dict(flat: dict[str, Any]) -> dict[str, Any]:
+    """Expand flat dotted keys like ``{'losses.eeg_ms.weight': 0.3}`` into nested mappings."""
+    nested: dict[str, Any] = {}
+    for key, value in flat.items():
+        parts = key.split(".")
+        curr = nested
+        for part in parts[:-1]:
+            curr = curr.setdefault(part, {})
+        curr[parts[-1]] = value
+    return nested
 
 
 class ESNModelConfig(StrictConfig):

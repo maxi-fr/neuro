@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import itertools
-from typing import TYPE_CHECKING, Self
+from typing import TYPE_CHECKING, Self, cast
 
 import numpy as np
 import torch
@@ -64,6 +64,9 @@ class AutoregressiveMLP(nn.Module):
         PCA per-channel mean buffer ``(n_eeg_channels,)``, paired with ``decode_basis``.
     """
 
+    decode_basis: Tensor | None
+    decode_mean: Tensor | None
+
     def __init__(  # noqa: PLR0913
         self,
         *,
@@ -120,6 +123,12 @@ class AutoregressiveMLP(nn.Module):
             preds.append(y_next)
 
         return torch.cat(preds, dim=1)
+
+    def decode(self, y: Tensor) -> Tensor:
+        """Map model-space channels ``(..., n_channels)`` back to EEG channel space."""
+        if self.decode_basis is None:
+            return y
+        return y @ self.decode_basis + cast("Tensor", self.decode_mean)  # registered as a pair
 
     def to_artifact(self, dt: float, downsample: int, y_pipeline: Pipeline, u_pipeline: Pipeline) -> MLPArtifact:
         """Freeze the trained weights and the given transforms into a framework-free artifact."""

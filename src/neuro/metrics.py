@@ -7,7 +7,7 @@ import numpy as np
 from scipy.signal import detrend
 
 from neuro.filtering import causal_filter, design_bandpass_sos, design_lowpass_sos, group_delay_s
-from neuro.seizure import SEIZURE_PTP_MV, SPREAD_WINDOW_S
+from neuro.seizure_calibration import SEIZURE_PTP_MV, SPREAD_WINDOW_S
 from utils.processing import band_energy, compute_psd
 
 if TYPE_CHECKING:

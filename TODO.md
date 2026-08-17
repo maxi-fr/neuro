@@ -14,6 +14,8 @@
 
 * Optuna sweep objective - smt with closed loop MPC performance
 
+* remove PCA
+
 ## Other
 
 * write chapter on Jansen-Rit model

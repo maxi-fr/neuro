@@ -14,12 +14,34 @@ MAX_PLOT_CHANNELS = 4
 
 
 def plot_training_curves(result: TrainingResult, plot_path: Path) -> None:
-    """Plot training and validation loss curves."""
+    """Plot training and validation loss curves with per-loss components."""
     plt.figure(figsize=(8, 5))
-    plt.plot(result.train_losses, label="Train Loss (Scaled MSE)", linewidth=1.5)
-    plt.plot(result.val_losses, label="Val Loss (Scaled MSE)", linewidth=1.5)
+    plt.plot(result.train_losses, label="Train Total", linewidth=2.0)
+    plt.plot(result.val_losses, label="Val Total", linewidth=2.0)
+
+    prop_cycle = plt.rcParams["axes.prop_cycle"].by_key()["color"]
+    for i, key in enumerate(result.train_components):
+        color = prop_cycle[(i + 2) % len(prop_cycle)]
+        plt.plot(
+            result.train_components[key],
+            label=f"Train {key}",
+            linewidth=1.0,
+            linestyle="--",
+            alpha=0.7,
+            color=color,
+        )
+        if key in result.val_components:
+            plt.plot(
+                result.val_components[key],
+                label=f"Val {key}",
+                linewidth=1.0,
+                linestyle=":",
+                alpha=0.7,
+                color=color,
+            )
+
     plt.xlabel("Epoch")
-    plt.ylabel("Scaled MSE")
+    plt.ylabel("Loss")
     plt.title("Training and Validation Loss")
     plt.legend()
     plt.grid(visible=True, linestyle="--", alpha=0.6)
