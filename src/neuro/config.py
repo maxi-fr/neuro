@@ -73,6 +73,7 @@ class TrainingConfig(StrictConfig):
     patience: int = Field(default=50, ge=1)
     scaler: Literal["standard", "robust"] = "standard"
     global_scaling: bool = False
+    device: Literal["cpu", "cuda"] = "cpu"
 
 
 class CategoricalParam(StrictConfig):

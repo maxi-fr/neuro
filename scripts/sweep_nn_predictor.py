@@ -14,7 +14,7 @@ from neuro.config import (
     resolve_artifact_dir,
     resolve_data_files,
 )
-from neuro.nn_training import train_and_save_predictor
+from neuro.predictor.train import train
 
 
 def objective(
@@ -54,13 +54,15 @@ def objective(
         yaml.dump(trial_config, f)
 
     try:
-        nmse_rollout = train_and_save_predictor(config, data_files, trial_dir, seed_offset=trial.number)
+        result = train(config, data_files, seed_offset=trial.number)
     except ValueError as e:
         if "NaN" in str(e):
             print(f"Trial {trial.number} pruned: {e}")
             raise optuna.TrialPruned from e
         raise
 
+    result.save(trial_dir)
+    nmse_rollout = result.rollout.pooled
     trial.set_user_attr("nmse_rollout", float(nmse_rollout))
 
     if sweep.closed_loop is not None:
@@ -81,7 +83,7 @@ def objective(
 
 def main() -> None:
     """Execute the hyperparameter sweep script."""
-    parser = argparse.ArgumentParser(description="Run Optuna Sweep for JAX NN Predictor.")
+    parser = argparse.ArgumentParser(description="Run Optuna Sweep for the torch NN Predictor.")
     parser.add_argument("--config", type=str, required=True, help="Path to sweep config YAML.")
     parser.add_argument("--data-path", type=str, help="Override config data path.")
     args = parser.parse_args()
