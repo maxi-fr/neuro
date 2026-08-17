@@ -139,7 +139,7 @@ def test_prime_rollout_matches_the_training_window_at_the_same_index(latent_dim:
 @pytest.mark.parametrize("depth", [0, 2])
 @pytest.mark.parametrize("latent_dim", [None, _LATENT])
 def test_torch_rollout_matches_casadi(latent_dim: int | None, depth: int, activation: Activation) -> None:
-    """The torch rollout reproduces the CasADi f_step/f_out chain, closing torch == CasADi == JAX.
+    """The torch rollout reproduces the CasADi f_step/f_out chain, closing torch == CasADi.
 
     The u convention is the trap: ``NNSymbolicModel`` standardizes raw controls internally, while
     the torch module consumes controls already in model space.

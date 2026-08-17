@@ -445,20 +445,14 @@ for even and odd `nperseg` in
 [`test_predictor_losses.py`](../tests/test_predictor_losses.py); the scaling conventions are the
 entire reason that test exists.
 
-There is no functional-connectivity term. An FC loss existed in the JAX pipeline and was deleted
-together with its `w_fc` knob: every shipped config ran it at `0.0`, so it was never load-bearing.
-
 ### 6.3 Total loss
 
 $$
 \boxed{\;\mathcal{L} = \mathcal{L}_\text{MSE} \;+\; w_\text{psd}\,\mathcal{L}_\text{PSD}\;}
 $$
 
-$w_\text{psd}$ is a plain weight on the raw log-spectral distance. The JAX version additionally
-divided each auxiliary term by its own detached value, making the term's *value* scale-free and its
-gradient a relative one; that normalisation went away with the FC term, so `w_psd` now has to absorb
-the absolute scale of the log-spectral distance itself. The unweighted `mse` and `psd` values are
-returned alongside the total for logging, and are what the progress bar shows.
+$w_\text{psd}$ is a weight on the raw log-spectral distance $\mathcal{L}_\text{PSD}$. The unweighted `mse`
+and `psd` values are returned alongside the total for logging, and are what the progress bar shows.
 
 ### 6.4 Why decoding is safe for the MSE (orthonormality)
 
@@ -498,9 +492,8 @@ v_t &= \beta_2 v_{t-1} + (1-\beta_2) g_t^2,\\
 \end{aligned}
 $$
 
-with decoupled decay $\lambda = \texttt{weight\_decay}$. Unlike the JAX pipeline the learning rate is
-**not** constant: a `torch.optim.lr_scheduler.CosineAnnealingLR` steps once **per batch** and anneals
-$\eta$ from $\texttt{learning\_rate}$ down to $0$ over
+with decoupled decay $\lambda = \texttt{weight\_decay}$. A `torch.optim.lr_scheduler.CosineAnnealingLR`
+steps once **per batch** and anneals $\eta$ from $\texttt{learning\_rate}$ down to $0$ over
 
 $$
 T_\text{max} = \Big\lceil \tfrac{M_\text{train}}{\texttt{batch\_size}} \Big\rceil \cdot (\texttt{epochs} - e_\text{first}),
@@ -530,10 +523,8 @@ so a batch is a single fancy-index gather. Validation is evaluated on the **whol
 a single `torch.no_grad()` call (not batched).
 
 Because the shuffle RNG and `torch.manual_seed` are both driven by `training.seed + seed_offset`, a
-run is reproducible from its config. This was **not** true of the JAX pipeline, whose per-epoch
-shuffle used a bare unseeded `np.random.default_rng()`; `seed` there only fixed weight
-initialisation. `tests/test_predictor_train.py::test_same_seed_reproduces_and_offset_decorrelates`
-pins the new behaviour.
+run is reproducible from its config. `tests/test_predictor_train.py::test_same_seed_reproduces_and_offset_decorrelates`
+pins this behaviour.
 
 ### 7.3 Curriculum schedule
 
@@ -680,7 +671,7 @@ no equivalent.
 ### 8.4 The artifact: one `.npz`, no framework
 
 [`MLPArtifact`](../src/neuro/predictor/artifact.py) is a frozen dataclass of NumPy arrays. It
-imports neither torch nor JAX, and it is what everything downstream of training consumes.
+imports no deep-learning framework, and it is what everything downstream of training consumes.
 `save` writes a single file (path convention: configs give a suffix-less stem such as
 `artifacts/x/model`, and `save`/`load` apply `.with_suffix(".npz")`):
 
@@ -695,9 +686,6 @@ imports neither torch nor JAX, and it is what everything downstream of training 
 Storing `meta` as a 0-d `"<U"` array (not an object array) is deliberate: `np.load` reads it back
 without `allow_pickle`, so loading an artifact never executes pickled code.
 [`load_any_artifact`](../src/neuro/artifacts.py) dispatches on `meta["model_type"]`.
-
-This replaces the JAX pipeline's three-file `model.eqx` / `model.json` / `model.scalers.npz` set.
-**There is no backward compatibility**: `.eqx` artifacts cannot be loaded and must be retrained.
 
 ### 8.5 What lands in the artifact directory
 
@@ -732,8 +720,7 @@ This is a load-bearing architectural property, not an implementation detail:
 
 Training is the only thing in this repo that needs a deep-learning framework. Inference, the CasADi
 bridge, the MPC and every closed-loop simulation run on NumPy and CasADi alone, reading the
-framework-free artifact of §8.4. That is what let the whole JAX → torch rewrite happen without the
-control path changing at all, and it is what keeps a `torch` import (and its multi-second cost, and
+framework-free artifact of §8.4. This keeps a `torch` import (and its multi-second cost, and
 its threading defaults) out of the closed loop.
 
 It is enforced, not merely intended:
@@ -851,8 +838,7 @@ instead returns the closed-loop suppression score from
   outright.
 - **Reproducibility.** A run is reproducible from `training.seed (+ seed_offset)`: it seeds both
   `torch.manual_seed` and the epoch-shuffle RNG. No `torch.use_deterministic_algorithms` is set — it
-  buys nothing on the CPU path. Note this is a *change*: the JAX pipeline's shuffle was unseeded, so
-  its runs were not bit-reproducible even at fixed `seed`.
+  buys nothing on the CPU path.
 - **`n_channels` is model space, `n_eeg_channels` is raw EEG.** Under a projection the first is the
   latent $k$ and the second is $C$; without one they are equal. Nearly every shape bug in this
   pipeline is these two swapped.

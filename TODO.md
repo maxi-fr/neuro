@@ -12,6 +12,8 @@
 
 * possible to remove torch.cat from AutoregressiveMLP.forward? for efficiency?
 
+* Optuna sweep objective - smt with closed loop MPC performance
+
 ## Other
 
 * write chapter on Jansen-Rit model
