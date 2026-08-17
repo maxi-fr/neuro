@@ -49,6 +49,11 @@ nothing better exists with these three electrodes.
 | `configs/simulation/nonlinear_full_mpc.yaml` | the closed-loop config |
 | `configs/simulation/threshold_control.yaml` | the working 6/7 result |
 
+The three `model.eqx` artifacts **predate the PyTorch rewrite and can no longer be loaded** — the
+Equinox path is deleted and the loader only reads the single-`.npz` artifact
+(see [nn_predictor_training.md](nn_predictor_training.md) §8.4). Retrain them from their configs
+before reusing any of the numbers above.
+
 The `configs/{nn_predictor,simulation}/roast/` subfolders were deleted on 2026-08-11: every config
 is a roast config now, and the four that pointed at `experiment_excited_roast` could not be
 retrained without it. The two still in use moved up a level, as above.

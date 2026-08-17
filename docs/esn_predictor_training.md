@@ -89,14 +89,14 @@ The stimulation sequence is persistently exciting broadband tES satisfying **Kir
 
 ### 2.2 Loading and downsampling
 
-[`load_trajectory`](../src/neuro/predictor/data.py) loads up to `n_steps · downsample` raw samples (or the full file if `n_steps` is `null`) and decimates by taking every `downsample`-th sample:
+[`load_trajectory`](../src/neuro/predictor/data.py) — shared with the MLP path — loads up to `n_steps · downsample` raw samples (or the full file if `n_steps` is `null`), causally low-passes the EEG, and decimates by taking every `downsample`-th sample:
 
 $$
-y^{\text{ds}}_k = y^{\text{raw}}_{k\cdot d}, \qquad
+y^{\text{ds}}_k = \big(\mathcal{H}\,y^{\text{raw}}\big)_{k\cdot d}, \qquad
 u^{\text{ds}}_k = u^{\text{raw}}_{k\cdot d}, \qquad k = 0,\dots,n_\text{steps}-1,
 $$
 
-with $d = \texttt{downsample}$. The effective sample step is
+with $d = \texttt{downsample}$. $\mathcal{H}$ is a causal Butterworth low-pass at `simulation.cutoff_hz` if set, otherwise at the decimated Nyquist rate; the control is strided unfiltered (see [nn_predictor_training.md](nn_predictor_training.md) §2.2). The effective sample step is
 
 $$
 \Delta t_\text{real} = \Delta t \cdot d.
@@ -264,8 +264,8 @@ Carrying notation through in **raw EEG units**:
 Evaluation is performed on held-out validation trajectories using [`evaluate_rollouts`](../src/neuro/artifacts.py):
 
 1. Validation trajectories are windowed on a stride-25 grid.
-2. For each window $b$, past history of length $W = \texttt{washout}$ is passed to `art.prime(y_hist, u_hist)` to obtain state $h_b$.
-3. `art.rollout(h_b, u_future)` computes the free-running forecast $\hat{Y}_b \in \mathbb{R}^{N \times C}$.
+2. A trajectory's whole grid of past histories, each of length $W = \texttt{washout}$, is passed to `art.prime_many(y_hists, u_hists)` in one call to obtain the states $h_b$.
+3. `art.rollout_many(states, u_futures)` computes the free-running forecasts $\hat{Y}_b \in \mathbb{R}^{N \times C}$, again one call per trajectory. The scalar `prime` / `rollout` pair is still what the MPC drives step by step; the batched pair only vectorises the evaluation loop. Batching changes the order of float summation inside the reservoir update, so ESN rollout numbers can shift at roundoff level (order $10^{-9}$ relative on a poorly-conditioned fit) against the pre-batching values.
 4. **Normalized Mean Squared Error (NMSE)** is computed using the energy of the true signal over the index set:
 
 $$
@@ -304,8 +304,9 @@ Configurations are declared in YAML files and validated using Pydantic ([`ESNPre
 | ------------ | ------ | ------- | ------------------------------------------------------ |
 | `dt`         | float  | `1e-4`  | Raw simulation step (s)                                |
 | `downsample` | int    | `100`   | Decimation factor $d$                                  |
-| `n_steps`    | int    | `null`  | Raw steps loaded per trajectory (`null` $\Rightarrow$ all) |
+| `n_steps`    | int    | `null`  | Downsampled steps loaded per trajectory (`null` $\Rightarrow$ all) |
 | `data_path`  | string | required| Directory containing `.npz` trajectory files           |
+| `cutoff_hz`  | float  | `null`  | Explicit -3 dB low-pass cutoff before decimation (`null` $\Rightarrow$ decimated Nyquist) |
 
 ### `model`
 
@@ -393,7 +394,7 @@ sweep:
 ## 11. Notes & gotchas (Comparison to NN predictor)
 
 - **Memory vs. Window Lag:** Unlike the MLP, which relies on an explicit finite history window ($n_y, n_u$), the ESN stores dynamic history implicitly in its state vector $h_t \in \mathbb{R}^{N_\text{res}}$.
-- **One-Shot Closed Form vs. Iterative Gradient Descent:** ESN training evaluates state dynamics in a single pass and computes readout weights $W_\text{out}$ via a direct linear matrix solve ($O(N_\text{res}^3)$), taking seconds to train compared to multi-epoch Optax AdamW backpropagation.
+- **One-Shot Closed Form vs. Iterative Gradient Descent:** ESN training evaluates state dynamics in a single pass and computes readout weights $W_\text{out}$ via a direct linear matrix solve ($O(N_\text{res}^3)$), taking seconds to train compared to the MLP's multi-epoch AdamW backpropagation. Nothing on the ESN path imports torch.
 - **Bias Term Unregularized:** In `solve_ridge`, $I_\text{unreg}[-1, -1] = 0.0$ ensures the constant bias offset is not shrunk toward zero, preventing systematic state offsets.
 - **Washout Priming Requirement:** During deployment or evaluation, an ESN requires $W = \texttt{washout}$ initial steps of consecutive history to warm up state $h_t$ before issuing valid rollout predictions.
 - **Determinism & Seeding:** Reservoir generation ($W_\text{res}, W_\text{in}$) is strictly deterministic given `training.seed`.
