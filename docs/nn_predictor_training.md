@@ -694,8 +694,7 @@ imports neither torch nor JAX, and it is what everything downstream of training 
 
 Storing `meta` as a 0-d `"<U"` array (not an object array) is deliberate: `np.load` reads it back
 without `allow_pickle`, so loading an artifact never executes pickled code.
-[`load_any_artifact`](../src/neuro/artifacts.py) dispatches on the presence of `model.npz` — the ESN
-writes `model.weights.npz`, so there is no collision — and then on `meta["model_type"]`.
+[`load_any_artifact`](../src/neuro/artifacts.py) dispatches on `meta["model_type"]`.
 
 This replaces the JAX pipeline's three-file `model.eqx` / `model.json` / `model.scalers.npz` set.
 **There is no backward compatibility**: `.eqx` artifacts cannot be loaded and must be retrained.

@@ -384,22 +384,18 @@ class ESNArtifact:
 
     @classmethod
     def load(cls, artifact: str | Path) -> ESNArtifact:
-        """Load the 3-file ESN artifact (.json/.scalers.npz/.weights.npz) from disk."""
-        artifact = Path(artifact)
-        meta: dict[str, Any] = json.loads(artifact.with_suffix(".json").read_text())
-        with np.load(artifact.with_suffix(".scalers.npz")) as sc:
-            arrays_sc = {k: np.asarray(sc[k], dtype=np.float64) for k in sc.files}
-        with np.load(artifact.with_suffix(".weights.npz")) as w:
-            w_in = np.asarray(w["W_in"], dtype=np.float64)
-            w_out = np.asarray(w["W_out"], dtype=np.float64)
-            w_res_data = np.asarray(w["W_res.data"], dtype=np.float64)
-            w_res_indices = np.asarray(w["W_res.indices"], dtype=np.int32)
-            w_res_indptr = np.asarray(w["W_res.indptr"], dtype=np.int32)
-            w_res_shape = tuple(w["W_res.shape"])
+        """Load the single-``.npz`` ESN artifact from disk (``artifact`` is a suffix-less stem)."""
+        path = Path(artifact).with_suffix(".npz")
+        with np.load(path) as npz:
+            meta: dict[str, Any] = json.loads(str(npz["meta"]))
+            w_in = np.asarray(npz["W_in"], dtype=np.float64)
+            w_out = np.asarray(npz["W_out"], dtype=np.float64)
+            w_res_data = np.asarray(npz["W_res.data"], dtype=np.float64)
+            w_res_indices = np.asarray(npz["W_res.indices"], dtype=np.int32)
+            w_res_indptr = np.asarray(npz["W_res.indptr"], dtype=np.int32)
+            w_res_shape = tuple(npz["W_res.shape"])
             w_res = scipy.sparse.csr_matrix((w_res_data, w_res_indices, w_res_indptr), shape=w_res_shape)
-
-        y_pipeline = Pipeline.from_serialized("y", meta["y_pipeline"], arrays_sc)
-        u_pipeline = Pipeline.from_serialized("u", meta["u_pipeline"], arrays_sc)
+            arrays = {k: np.asarray(npz[k], dtype=np.float64) for k in npz.files if k.startswith(("y.", "u."))}
 
         return cls(
             w_in=w_in,
@@ -417,20 +413,20 @@ class ESNArtifact:
             noise_sigma=float(meta["noise_sigma"]),
             ridge_lambda=float(meta["ridge_lambda"]),
             seed=int(meta["seed"]),
-            y_pipeline=y_pipeline,
-            u_pipeline=u_pipeline,
+            y_pipeline=Pipeline.from_serialized("y", meta["y_pipeline"], arrays),
+            u_pipeline=Pipeline.from_serialized("u", meta["u_pipeline"], arrays),
         )
 
     def save(self, artifact: str | Path) -> None:
-        """Persist weights, transforms, and metadata to disk."""
-        artifact = Path(artifact)
-        artifact.parent.mkdir(parents=True, exist_ok=True)
-        artifact.with_suffix(".json").write_text(json.dumps(self.meta, indent=2))
+        """Persist weights, transforms and metadata into one ``.npz`` (``artifact`` is a stem).
 
-        transform_arrays = {**self.y_pipeline.array_dict("y"), **self.u_pipeline.array_dict("u")}
-        np.savez(artifact.with_suffix(".scalers.npz"), **transform_arrays)  # ty: ignore[invalid-argument-type]
+        ``meta`` is stored as a 0-d unicode array holding JSON, so loading needs no ``allow_pickle``.
+        """
+        path = Path(artifact).with_suffix(".npz")
+        path.parent.mkdir(parents=True, exist_ok=True)
 
-        weight_arrays = {
+        arrays: dict[str, np.ndarray[Any, Any]] = {
+            "meta": np.array(json.dumps(self.meta)),
             "W_in": self.w_in,
             "W_out": self.w_out,
             "W_res.data": self.w_res.data,
@@ -438,4 +434,7 @@ class ESNArtifact:
             "W_res.indptr": self.w_res.indptr,
             "W_res.shape": np.array(self.w_res.shape),
         }
-        np.savez(artifact.with_suffix(".weights.npz"), **weight_arrays)  # ty: ignore[invalid-argument-type]
+        arrays.update(self.y_pipeline.array_dict("y"))
+        arrays.update(self.u_pipeline.array_dict("u"))
+
+        np.savez(path, **arrays)  # ty: ignore[invalid-argument-type]

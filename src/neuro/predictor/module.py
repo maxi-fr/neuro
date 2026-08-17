@@ -115,8 +115,10 @@ class AutoregressiveMLP(nn.Module):
 
         preds = []
         for t in range(self.horizon):
-            # The control window shifts *before* the MLP call, so the newest control is already
-            # in the window when y_next is predicted.
+            # The feature row's u-window ends one step *behind* its y-window (see the slicing in
+            # build_dataset_for_trajectory), so the control shifts in before the MLP call to bring
+            # the two level. MLPArtifact.rollout shifts *after* because a prime() state is already
+            # level -- opposite order, same rule: both windows end at t when y_{t+1} is predicted.
             u_window = torch.cat([u_window[:, 1:], u_future[:, t : t + 1]], dim=1)
             mlp_in = torch.cat([y_window.reshape(batch, -1), u_window.reshape(batch, -1)], dim=1)
             y_next = self._forward_1step(mlp_in)

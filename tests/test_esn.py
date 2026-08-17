@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import json
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import pytest
 
+from neuro.artifacts import load_any_artifact
 from neuro.esn import (
     ESNArtifact,
     ESNPredictor,
@@ -169,6 +171,11 @@ def test_artifact_round_trip_preserves_weights(tmp_path: Path) -> None:
 
     art_save_path = tmp_path / "roundtrip"
     art_orig.save(art_save_path)
+    assert (tmp_path / "roundtrip.npz").exists()
+    assert not (tmp_path / "roundtrip.json").exists()
+    assert not (tmp_path / "roundtrip.scalers.npz").exists()
+    assert not (tmp_path / "roundtrip.weights.npz").exists()
+
     art_loaded = ESNArtifact.load(art_save_path)
 
     np.testing.assert_array_equal(art_orig.w_in, art_loaded.w_in)
@@ -297,3 +304,20 @@ def test_mlp_prime_rollout_matches_hand_rolled_windows(tmp_path: Path) -> None:
     y_pred_new = art.rollout(state, u_raw[t0 : t0 + max_steps])
 
     np.testing.assert_allclose(y_pred_new, y_pred_manual, atol=1e-12)
+
+
+def test_load_any_artifact_dispatches_by_model_type(tmp_path: Path) -> None:
+    """load_any_artifact switches on meta['model_type'] and loads ESN or MLP correctly."""
+    esn_path = _build_tiny_esn_artifact(tmp_path)
+    mlp_path = _build_tiny_mlp_artifact(tmp_path)
+
+    loaded_esn = load_any_artifact(esn_path)
+    assert isinstance(loaded_esn, ESNArtifact)
+
+    loaded_mlp = load_any_artifact(mlp_path)
+    assert isinstance(loaded_mlp, MLPArtifact)
+
+    bad_path = tmp_path / "bad_model"
+    np.savez(bad_path.with_suffix(".npz"), meta=np.array(json.dumps({"model_type": "unknown"})))
+    with pytest.raises(ValueError, match="unsupported model_type 'unknown'"):
+        load_any_artifact(bad_path)

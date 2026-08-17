@@ -10,10 +10,7 @@
 
 * move _spread_profile_from_trajectory to seizure
 
-* Potentially: full rewrite
-  * at least of the predictor part
-  * move from jax to pytorch
-  * list every feature and remove what is not necessary
+* possible to remove torch.cat from AutoregressiveMLP.forward? for efficiency?
 
 ## Other
 

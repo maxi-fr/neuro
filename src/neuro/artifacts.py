@@ -18,17 +18,17 @@ PredictorArtifact = MLPArtifact | ESNArtifact
 
 
 def load_any_artifact(artifact_path: str | Path) -> PredictorArtifact:
-    """Load an artifact from disk: a single ``.npz`` is an MLP, otherwise the ESN's 3-file set."""
+    """Load a single-``.npz`` predictor artifact (MLP or ESN) from disk."""
     p = Path(artifact_path)
     npz_path = p.with_suffix(".npz")
-    if npz_path.exists():
-        with np.load(npz_path) as npz:
-            model_type = json.loads(str(npz["meta"]))["model_type"]
-        if model_type != "mlp":
-            msg = f"unsupported model_type {model_type!r} in {npz_path}"
-            raise ValueError(msg)
+    with np.load(npz_path) as npz:
+        model_type = json.loads(str(npz["meta"]))["model_type"]
+    if model_type == "mlp":
         return MLPArtifact.load(p)
-    return ESNArtifact.load(p)
+    if model_type == "esn":
+        return ESNArtifact.load(p)
+    msg = f"unsupported model_type {model_type!r} in {npz_path}"
+    raise ValueError(msg)
 
 
 def build_symbolic_model(art: PredictorArtifact) -> SymbolicModel:

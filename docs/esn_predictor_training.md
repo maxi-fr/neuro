@@ -284,9 +284,7 @@ An $\text{NMSE} = 1.0$ corresponds to a zero-output baseline.
 
 | file                  | contents                                                                                    |
 | --------------------- | ------------------------------------------------------------------------------------------- |
-| `model.json`          | Metadata dictionary (`dt`, `downsample`, `horizon`, `reservoir_size`, `leak_rate`, `spectral_radius`, `washout`, `input_scaling`, `density`, `noise_sigma`, `ridge_lambda`, `seed`, pipeline steps) |
-| `model.scalers.npz`   | Pipeline transformation parameters (`y` and `u` standardizers + PCA basis/mean)            |
-| `model.weights.npz`   | Weight matrices `W_in`, `W_out`, and CSR sparse components `W_res.data`, `W_res.indices`, `W_res.indptr`, `W_res.shape` |
+| `model.npz`           | Single NPZ artifact containing metadata, weight matrices (`W_in`, `W_out`), CSR sparse components (`W_res.data`, `W_res.indices`, `W_res.indptr`, `W_res.shape`), and pipeline parameters (`y` and `u`) |
 | `training_stats.json` | Execution timings (`harvest_seconds`, `fit_seconds`), pooled `nmse_rollout`, and per-step `nmse_rollout_per_step` |
 | `config.yaml`         | Copy of resolved configuration YAML for full provenance                                     |
 
