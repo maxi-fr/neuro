@@ -46,11 +46,29 @@ def _spread_profile_from_logs(logs: list[dict[str, Any]], dt: float, threshold: 
     return _spread_profile_from_trajectory(x_traj, dt, threshold)
 
 
+def seizure_burden(profile: SpreadProfile) -> float:
+    """Time-mean fraction of regions seizing over a run -- the continuous suppression score.
+
+    The closed-loop reading of :func:`neuro.metrics.seizure_state`, and the run-averaged
+    counterpart of ``SpreadProfile.n_seizing()[-1]``. Continuous in ``[0, 1]``, so it separates
+    controllers the terminal count ties, and lower for a seizure ended sooner rather than one
+    merely ended by the last window.
+    """
+    return float(np.mean(profile.n_seizing() / profile.ptp.shape[0]))
+
+
 def evaluate_closed_loop_suppression(trial_dir: Path, eval_cfg: ClosedLoopEvalConfig) -> tuple[float, dict[str, float]]:
     """Run closed-loop simulations across ``eval_cfg.seeds`` and score seizure suppression proficiency.
 
-    Returns the Optuna score to minimize -- negative suppressed-seed count, with the mean
-    stimulation amplitude (in [0, 1]) as a tie-break -- and the summary stats.
+    Returns the Optuna score to minimize and the summary stats. The score is the **seizure
+    burden**: the fraction of regions seizing, averaged over the whole run and over the seeds,
+    plus ``eval_cfg.amplitude_weight`` times the mean stimulation amplitude.
+
+    Burden rather than a suppressed-seed count because the count is integer-valued over a handful
+    of seeds, so it hands the sampler a few wide plateaus and no gradient between them. Averaging
+    over the run rather than reading the terminal window also rewards suppressing early, which the
+    terminal count cannot see. ``max_seizing_regions`` still defines the reported
+    ``suppressed_seeds`` diagnostic; it no longer drives the score.
     """
     base_sim_path = Path(eval_cfg.simulation_config)
     if not base_sim_path.exists():
@@ -66,6 +84,7 @@ def evaluate_closed_loop_suppression(trial_dir: Path, eval_cfg: ClosedLoopEvalCo
     suppressed_count = 0
     amplitudes: list[float] = []
     seizing_counts: list[int] = []
+    burdens: list[float] = []
 
     for seed in eval_cfg.seeds:
         sim_dict = deepcopy(base_sim_dict)
@@ -104,16 +123,19 @@ def evaluate_closed_loop_suppression(trial_dir: Path, eval_cfg: ClosedLoopEvalCo
                 x_traj = sim.logger.signal("dynamics", "x")
                 profile = _spread_profile_from_trajectory(x_traj, sim.dt, eval_cfg.seizure_ptp_mv)
 
-        n_seizing = int(profile.n_seizing()[-1])
-        seizing_counts.append(n_seizing)
-        if n_seizing <= eval_cfg.max_seizing_regions:
+        burdens.append(seizure_burden(profile))
+        n_seizing_final = int(profile.n_seizing()[-1])
+        seizing_counts.append(n_seizing_final)
+        if n_seizing_final <= eval_cfg.max_seizing_regions:
             suppressed_count += 1
 
     mean_amplitude = float(np.mean(amplitudes))
-    score = -float(suppressed_count) + mean_amplitude
+    mean_burden = float(np.mean(burdens))
+    score = mean_burden + eval_cfg.amplitude_weight * mean_amplitude
 
     summary = {
         "score": score,
+        "seizure_burden": mean_burden,
         "suppressed_seeds": float(suppressed_count),
         "total_seeds": float(len(eval_cfg.seeds)),
         "mean_amplitude": mean_amplitude,

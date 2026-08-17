@@ -119,6 +119,19 @@ def test_sweep_section_typed() -> None:
     assert isinstance(cfg.sweep.training["weight_decay"], FloatParam)
 
 
+def test_sweep_objective_defaults_to_log_energy() -> None:
+    """Test the sweep objective defaults to the log-energy metric rather than waveform NMSE."""
+    cfg = NNPredictorConfig.from_dict({"training": _VALID_TRAINING, "sweep": {"n_trials": 3}})
+    assert cfg.sweep is not None
+    assert cfg.sweep.objective == "log_energy"
+
+
+def test_closed_loop_objective_without_its_section_rejected() -> None:
+    """Test asking for the closed-loop objective without configuring the evaluation is rejected."""
+    with pytest.raises(ValidationError, match=r"requires a 'sweep\.closed_loop' section"):
+        NNPredictorConfig.from_dict({"training": _VALID_TRAINING, "sweep": {"objective": "closed_loop"}})
+
+
 def test_sweep_unknown_param_type_rejected() -> None:
     """Test Sweep unknown param type rejected."""
     with pytest.raises(ValidationError):
@@ -137,6 +150,8 @@ def test_sweep_unknown_param_type_rejected() -> None:
         {"training": {**_VALID_TRAINING, "learning_rate": 0}},
         {"training": {**_VALID_TRAINING, "train_split": 1.0}},
         {"training": {**_VALID_TRAINING, "scaler": "standrd"}},
+        {"training": {**_VALID_TRAINING, "warmup_epochs": -1}},
+        {"training": {**_VALID_TRAINING, "epochs": 10, "warmup_epochs": 10}},
         {"training": {"eval_horizon_s": 0.0, "losses": _VALID_TRAINING["losses"]}},
         {"training": {"eval_horizon_s": 0.2, "losses": {}}},
         {

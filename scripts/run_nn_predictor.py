@@ -102,7 +102,10 @@ def main() -> None:
     plot_training_curves(result, artifact_dir / "loss_curve.png")
     plot_rollout_comparison(result, artifact_dir / "comparison.png")
 
-    print(f"Rollout NMSE: {result.rollout.pooled:.4f}, du sensitivity: {result.du_sensitivity:.4f}")
+    print(
+        f"Rollout NMSE: {result.rollout.pooled:.4f}, log-energy error: {result.log_energy.pooled:.4f}, "
+        f"du sensitivity: {result.du_sensitivity:.4f}"
+    )
     print(f"Saved NN predictor artifact -> {artifact_dir / 'model.npz'}")
     print(f"Plot saved to {artifact_dir / 'comparison.png'}")
 

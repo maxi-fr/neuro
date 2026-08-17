@@ -449,17 +449,35 @@ v_t &= \beta_2 v_{t-1} + (1-\beta_2) g_t^2,\\
 \end{aligned}
 $$
 
-with decoupled decay $\lambda = \texttt{weight\_decay}$. A `torch.optim.lr_scheduler.CosineAnnealingLR`
-steps once **per batch** and anneals $\eta$ from $\texttt{learning\_rate}$ down to $0$ over
+with decoupled decay $\lambda = \texttt{weight\_decay}$. The learning rate schedule
+([`_lr_schedule`](../src/neuro/predictor/train.py)) steps once **per batch** over a budget of
 
 $$
-T_\text{max} = \Big\lceil \tfrac{M_\text{train}}{\texttt{batch\_size}} \Big\rceil \cdot (\texttt{epochs} - e_\text{first}),
+T_\text{total} = \Big\lceil \tfrac{M_\text{train}}{\texttt{batch\_size}} \Big\rceil \cdot (\texttt{epochs} - e_\text{first}),
 \qquad
-\eta_t = \tfrac{\texttt{learning\_rate}}{2}\Big(1 + \cos\tfrac{\pi t}{T_\text{max}}\Big),
+T_\text{warm} = \Big\lceil \tfrac{M_\text{train}}{\texttt{batch\_size}} \Big\rceil \cdot \texttt{warmup\_epochs},
 $$
 
-where $e_\text{first}$ is the first epoch actually run (§7.5). $T_\text{max}$ is budgeted for the
+where $e_\text{first}$ is the first epoch actually run (§7.5). It is a `LinearLR` ramp and a
+`CosineAnnealingLR` decay joined by a `SequentialLR` at $T_\text{warm}$:
+
+$$
+\eta_t = \begin{cases}
+\texttt{learning\_rate} \cdot \tfrac{t + 1}{T_\text{warm}} & t < T_\text{warm}\\[4pt]
+\tfrac{\texttt{learning\_rate}}{2}\Big(1 + \cos\pi\tfrac{t - T_\text{warm}}{T_\text{total} - T_\text{warm}}\Big) & t \ge T_\text{warm}
+\end{cases}
+$$
+
+so $\eta$ climbs to the peak at $T_\text{warm}$ and anneals from there to $0$ at $T_\text{total}$.
+`warmup_epochs = 0` (the default) collapses this to the bare cosine. The budget is computed for the
 *full* `epochs`, so an early-stopped run simply never reaches the tail of the cosine.
+
+The warm-up exists because the rollout is $N = \max_i(\text{span\_steps}_i)$ deep from the very
+first batch (§6), so a randomly initialised model backpropagates through the whole horizon at epoch
+0 regardless of where the curriculum starts. Taking that first, badly-conditioned gradient at the
+peak learning rate is what the ramp avoids. $T_\text{warm}$ is clamped below $T_\text{total}$,
+because a warm-started linear model (§7.4) skips ahead to `curr_start` and can be left with fewer
+epochs than `warmup_epochs` asks for.
 
 One training step is `loss.backward()` + `optimizer.step()` + `scheduler.step()`, in eager mode.
 Nothing is JIT-compiled or `torch.compile`d.
@@ -471,7 +489,7 @@ indices **every epoch** from a single `np.random.default_rng(training.seed + see
 once per run, then yields contiguous index slices of `batch_size`:
 
 $$
-\text{#batches} = \Big\lceil \tfrac{M_\text{train}}{\texttt{batch\_size}} \Big\rceil,
+\text{\#batches} = \Big\lceil \tfrac{M_\text{train}}{\texttt{batch\_size}} \Big\rceil,
 $$
 
 the final batch being smaller when $M_\text{train}$ is not a multiple of the batch size. There is no
@@ -552,6 +570,7 @@ it neither writes files nor imports `matplotlib`. It returns a
 | `train_losses`, `val_losses` | per-epoch total loss, one entry per epoch actually run |
 | `train_components`, `val_components` | per-epoch dict of unweighted loss components and diagnostics |
 | `rollout` | a [`RolloutNMSE`](../src/neuro/artifacts.py) — free-run NMSE `pooled` and `per_step` evaluated over `eval_horizon_s` |
+| `log_energy` | a [`LogEnergyError`](../src/neuro/artifacts.py) — free-run windowed-energy log-ratio error of §8.2.1, `pooled` and `per_position` |
 | `val_trajs` | the held-out `(u, y)` trajectories, whole |
 | `du_sensitivity` | the control-sensitivity scalar of §8.3 |
 
@@ -603,13 +622,58 @@ and issues one batched `prime_many` + `rollout_many` call per trajectory rather 
 window, which is worth 2–4× at the default `stride = 25` depending on model size (3.7× measured on
 `nonlinear_full`'s dimensions). Both artifact families implement the batched pair.
 
-The pooled NMSE is the **Optuna objective** (minimised) in the sweep — the same quantity `sweep_esn`
-minimises, so the two model families rank on one metric. Rolling out *past* the evaluation horizon $N_\text{eval}$
-is a separate question, measured by
+The pooled NMSE remains the quantity `sweep_esn` minimises, and is available to the NN sweep as
+`objective: rollout_nmse` — but it is **no longer the default objective**, for the reason §8.2.1
+gives. Rolling out *past* the evaluation horizon $N_\text{eval}$ is a separate question, measured by
 [`probe_rollout_horizon.py`](../scripts/probe_rollout_horizon.py), which reports the same
 $\text{NMSE}_i$ alongside a power ratio $\sum \hat{Y}^2 / \sum Y^2$ — needed because a model that
 decays to zero output scores $\text{NMSE}_i \to 1$, indistinguishable on that number alone from one
 that is merely wrong.
+
+### 8.2.1 Log-energy error — the functional the MPC actually costs
+
+Waveform NMSE stops discriminating well before the horizons of interest. Its saturation value is
+exactly $1.0$ (the zero predictor), the plant's phase is chaotic, and at a $\approx 9.3$ Hz peak the
+waveform decorrelates within a couple hundred milliseconds — the same collapse
+[`raw_series_grid`](../src/neuro/metrics.py) is built around. Past that point every candidate reads
+$\approx 1.0$ and a sweep ranking on it is ranking sampler noise.
+
+The deeper reason is that NMSE measures a quantity the controller discards. The MPC's stage cost is
+`w_y * sumsqr(y_next) + w_u * sumsqr(u_curr)` ([`build_mpc_nlp`](../src/neuro/control.py)): it asks
+the predictor for **energy over the horizon** and for how that energy moves with $u$, never for a
+waveform. A phase-scrambled rollout carrying the right energy course yields the same optimal $u$.
+
+[`evaluate_log_energy`](../src/neuro/artifacts.py) scores that functional directly. With
+$E_{b,w} = \frac{1}{W C}\sum_{i \in w}\sum_c Y_{b,i,c}^2$ the cross-channel mean square of window
+$b$ over trailing window position $w$ (length $W$ steps, spaced by the hop):
+
+$$
+D_w = \frac{1}{B}\sum_b \Big(\log(\hat{E}_{b,w} + \varepsilon) - \log(E_{b,w} + \varepsilon)\Big)^2,
+\qquad D = \frac{1}{|w|}\sum_w D_w.
+$$
+
+Four choices, each load-bearing:
+
+- **Log space**, because energy spans orders of magnitude between interictal and ictal and the
+  controller responds to the ratio, not the difference.
+- **Resolved per window $b$ before averaging.** Pooling numerator and denominator first — which is
+  what the `pred_power` returned by `accumulate_rollout_errors` would give — lets over- and
+  under-prediction cancel across windows, so a model right only *on average* would score perfectly.
+- **Unbounded above**, so a prediction that decays to silence is scored as the failure it is rather
+  than tying at $1.0$ with everything else. $\varepsilon = 10^{-12}$ mV⁴ floors the log of a
+  collapsed prediction, not of a genuinely quiet one.
+- **Window and hop follow the metrics layer's own `eeg_ms` convention** (`METRICS["eeg_ms"].window_s`
+  and `DEFAULT_HOP_S`) rather than a config knob of their own, clamped where $N_\text{eval}$ is too
+  short to hold one window.
+
+Both scores are built on the shared batched-rollout generator
+[`rollout_batches`](../src/neuro/artifacts.py) — extracted out of `accumulate_rollout_errors` so the
+priming and free-run logic lives in one place — but they call it separately, so each traversal of the
+validation windows happens once per score. Cheap next to training, and not worth fusing the two
+accumulators for.
+
+$D = 0$ is exact and lower is better. It is **not** an NMSE and does not share NMSE's scale; do not
+compare the two numbers to each other.
 
 ### 8.3 `du_sensitivity` — is stimulation doing anything?
 
@@ -721,8 +785,9 @@ out-of-range values raise `ValidationError` rather than silently defaulting.
 | key                          | default | meaning                                                       |
 | ---------------------------- | ------- | ------------------------------------------------------------- |
 | `epochs`                     | `100`   | max epochs                                                    |
+| `warmup_epochs`              | `0`     | epochs of linear LR ramp before the cosine (must be `< epochs`) |
 | `batch_size`                 | `128`   | SGD batch size                                                |
-| `learning_rate` $\eta$       | `1e-3`  | AdamW peak LR, cosine-annealed to 0                           |
+| `learning_rate` $\eta$       | `1e-3`  | AdamW peak LR, reached at `warmup_epochs` then cosine-annealed to 0 |
 | `weight_decay` $\lambda$     | `1e-4`  | AdamW decoupled decay                                         |
 | `train_split`                | `0.8`   | fraction used for training (tail held out for val)            |
 | `seed`                       | `69`    | seed for weight init **and** the epoch shuffle (`+ seed_offset` in sweeps) |
@@ -766,16 +831,28 @@ All schedule checkpoints and gates are specified in integer **epochs** (`curr_st
 
 ### Shipped presets
 
-| preset | `epochs` | `patience` | extra loss | `curr_start` / `curr_end` |
-| ------ | :------: | :--------: | ---------- | :-----------------------: |
-| [`nonlinear_full_8s.yaml`](../configs/nn_predictor/nonlinear_full_8s.yaml) | 300 | 100 | — | 100 / 250 |
-| [`nonlinear_full_8s_eeg_ms.yaml`](../configs/nn_predictor/nonlinear_full_8s_eeg_ms.yaml) | 300 | 100 | `eeg_ms` (weight 0.5) | 100 / 250 |
-| [`nonlinear_full_8s_no_curr.yaml`](../configs/nn_predictor/nonlinear_full_8s_no_curr.yaml) | 200 | 750 | — | 301 / 301 (never fires) |
+| preset | `epochs` | `patience` | `curriculum_mse.span_s` | extra loss | `curr_start` / `curr_end` |
+| ------ | :------: | :--------: | :---------------------: | ---------- | :-----------------------: |
+| [`nonlinear_full_8s.yaml`](../configs/nn_predictor/nonlinear_full_8s.yaml) | 300 | 100 | 1.0 | — | 100 / 250 |
+| [`nonlinear_full_8s_eeg_ms.yaml`](../configs/nn_predictor/nonlinear_full_8s_eeg_ms.yaml) | 300 | 100 | 1.0 | `eeg_ms` (weight 0.5) | 100 / 250 |
+| [`nonlinear_full_8s_no_curr.yaml`](../configs/nn_predictor/nonlinear_full_8s_no_curr.yaml) | 200 | 750 | 1.0 | — | 301 / 301 (never fires) |
+| [`nonlinear_full_8s_mse02_eeg_ms.yaml`](../configs/nn_predictor/nonlinear_full_8s_mse02_eeg_ms.yaml) | 300 | 100 | 0.2 | `eeg_ms` (weight 0.08, from epoch 80) | 20 / 80 |
+| [`nonlinear_full_8s_mse02_psd.yaml`](../configs/nn_predictor/nonlinear_full_8s_mse02_psd.yaml) | 300 | 100 | 0.2 | `psd` (weight 1.0, from epoch 80) | 20 / 80 |
 
-All three target the 50 Hz / 8 s ROAST dataset described in Section 2.2 and share `n_y=15`, `n_u=10`,
+All five target the 50 Hz / 8 s ROAST dataset described in Section 2.2 and share `n_y=15`, `n_u=10`,
 `hidden_size=64`, `depth=2`, `activation=softplus`, `batch_size=128`, `learning_rate=1e-5`,
-`weight_decay=5e-4`, `train_split=0.8`, `seed=69`, `scaler=robust`, `global_scaling=true`,
-`eval_horizon_s=1.0`, and `losses.curriculum_mse.span_s=1.0`.
+`weight_decay=5e-4`, `train_split=0.8`, `seed=69`, `scaler=robust`, `global_scaling=true` and
+`eval_horizon_s=1.0`.
+
+The last two are a matched pair: the MSE is trusted only out to **0.2 s** and everything from there
+to 1 s is shaped by the auxiliary term alone, so they isolate what each auxiliary loss contributes
+past the point where the waveform is predictable. They are the only presets that set
+`warmup_epochs` (10). Their weights are anchored on measured magnitudes: over a 1 s span at 50 Hz a
+prediction that is merely a *different* EEG window scores `eeg_ms` ≈ 4.5 but `psd` ≈ 0.014, because
+[`PSDLoss`](../src/neuro/predictor/losses.py) pools the batch into one spectrum per channel and so
+compares batch-mean spectra rather than per-window ones. `eeg_ms` is therefore a per-window
+objective that has to be scaled *down* to sit alongside the MSE, while `psd` acts as a barrier —
+negligible when the spectrum matches, $O(10^2)$ when the rollout drifts to DC — and is weighted up.
 
 ---
 
@@ -791,6 +868,7 @@ directory). A `sweep` config section declares per-field search spaces (`categori
 sweep:
   artifact: "artifacts/sweep_losses"
   n_trials: 30
+  objective: log_energy   # log_energy | val_loss | rollout_nmse | closed_loop
   training:
     learning_rate:
       type: loguniform
@@ -808,11 +886,46 @@ losses or overlapping with explicitly defined base values raise `ValidationError
 Each trial uses `seed_offset = trial.number` to decorrelate otherwise identical runs and saves a full
 artifact under `trial_<n>/`. A `ValueError` mentioning NaN is converted into `optuna.TrialPruned`.
 
-The objective is `result.rollout.pooled` — the free-run rollout NMSE over `eval_horizon_s` of §8.2 —
-recorded on the trial as the `nmse_rollout` user attribute. If the sweep config carries a
-`closed_loop` section, the trial instead returns the closed-loop suppression score from
-[`evaluate_closed_loop_suppression`](../src/neuro/closed_loop_eval.py), which loads the trial's
-`model.npz` and runs the MPC; the rollout NMSE is still recorded alongside it.
+### 10.1 Choosing the objective
+
+`sweep.objective` selects what the study minimises. All four are **recorded as user attributes on
+every trial regardless of which one is chosen**, so a finished study can be re-ranked on any of them
+without re-running it.
+
+| `objective` | is | cost |
+| ----------- | -- | ---- |
+| `log_energy` *(default)* | `result.log_energy.pooled` — the log-energy error of §8.2.1 | free; same rollouts as the NMSE |
+| `val_loss` | `min(result.val_losses)` — the best-epoch validation loss of §7 | free; already computed |
+| `rollout_nmse` | `result.rollout.pooled` — the incumbent waveform NMSE of §8.2 | free |
+| `closed_loop` | the seizure-burden score from [`evaluate_closed_loop_suppression`](../src/neuro/closed_loop_eval.py) | one full simulation per seed per trial |
+
+`log_energy` is the default because it is the only cheap option that scores the functional the
+controller consumes (§8.2.1).
+
+**`val_loss` is only comparable across trials while the loss composition is fixed.** It is the
+honest choice when the sweep varies architecture and optimiser alone — which is what
+[`sweep_nn_predictor.yaml`](../configs/nn_predictor/sweep_nn_predictor.yaml) does. The moment
+`losses.*.weight` or `losses.*.span_s` enters the search space the number stops being comparable and
+the objective actively selects small weights; use `log_energy` for those sweeps.
+
+**`closed_loop` requires a `sweep.closed_loop` section** (enforced at config load) and is best used
+as a *gate on finalists* rather than as the objective, for three reasons: seed variance with a
+handful of seeds means ranking on seed luck; it confounds predictor quality with the MPC's own
+`w_y`/`w_u` tuning, so a predictor that would win under different weights loses; and it costs
+`len(seeds)` full simulations per trial. The recommended flow is to sweep on `log_energy`, then
+re-run the top-$k$ trials with `objective: closed_loop`. Note that the closed-loop evaluation runs
+whenever the section is present, whichever objective is selected, so its stats are recorded
+alongside the others.
+
+The score itself is the **seizure burden**: the fraction of regions seizing, averaged over the run
+and over the seeds, plus `amplitude_weight` (default `0.0`) times the mean stimulation amplitude.
+[`seizure_burden`](../src/neuro/closed_loop_eval.py) is the closed-loop reading of
+[`seizure_state`](../src/neuro/metrics.py) — the same $s(t) \in [0,1]$ the `state_scoring` notebook
+scores every observable against. It replaced a thresholded suppressed-seed count, which was integer
+over `len(seeds)` and so handed the sampler a few wide plateaus with no gradient between them;
+averaging over the run rather than reading the terminal window also rewards suppressing *early*.
+`max_seizing_regions` still defines the reported `suppressed_seeds` diagnostic but no longer drives
+the score.
 
 ---
 
@@ -825,6 +938,14 @@ recorded on the trial as the `nmse_rollout` user attribute. If the sweep config 
 - **Seconds vs epochs units.** All spans, window lengths, hop intervals, and evaluation horizons are
   given in seconds (`span_s`, `eval_horizon_s`, `window_s`, `hop_s`). All schedule checkpoints and
   gates are given in integer epoch numbers (`curr_start`, `curr_end`, `start_epoch`).
+- **Seconds round to samples with banker's rounding.** `round` is Python's, so a duration landing
+  exactly on `.5` samples rounds to **even**: at $f_s = 50$, `hop_s: 0.05` gives $\operatorname{round}(2.5) = 2$
+  samples, i.e. an effective 0.04 s. Write the value the sample grid can represent rather than one
+  the config will silently reinterpret.
+- **`eeg_ms` scores raw units, `psd` scores standardized ones.** `EegMsLoss` calls `ctx.to_raw`
+  before taking the power, so its log-ratio includes the standardizer's offset; `PSDLoss` works on
+  the standardized tensor and Welch detrends each segment anyway. The two log-ratios are not on the
+  same footing, which is one reason their weights are not comparable.
 - **Window and span bounds.** Metric losses enforce $\operatorname{round}(\text{window\_s} \cdot f_s) \ge 1$,
   $\operatorname{round}(\text{hop\_s} \cdot f_s) \ge 1$, and $\text{window\_s} \le \text{span\_s}$ at config
   load. `psd` requires $\operatorname{round}(\text{span\_s} \cdot f_s) \ge 2$.

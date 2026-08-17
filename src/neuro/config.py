@@ -140,6 +140,7 @@ class TrainingConfig(StrictConfig):
     """Optimisation and scaling settings for the NN predictor."""
 
     epochs: int = Field(default=100, ge=1)
+    warmup_epochs: int = Field(default=0, ge=0)
     batch_size: int = Field(default=128, ge=1)
     learning_rate: float = Field(default=1e-3, gt=0)
     weight_decay: float = Field(default=1e-4, ge=0)
@@ -151,6 +152,13 @@ class TrainingConfig(StrictConfig):
     device: Literal["cpu", "cuda"] = "cpu"
     eval_horizon_s: float = Field(gt=0)
     losses: LossSpecs
+
+    @model_validator(mode="after")
+    def _validate_warmup(self) -> Self:
+        if self.warmup_epochs >= self.epochs:
+            msg = f"warmup_epochs ({self.warmup_epochs}) must be < epochs ({self.epochs})."
+            raise ValueError(msg)
+        return self
 
 
 class CategoricalParam(StrictConfig):
@@ -228,6 +236,7 @@ class ClosedLoopEvalConfig(StrictConfig):
     t_end: float = Field(gt=0)
     seizure_ptp_mv: float = Field(gt=0)
     max_seizing_regions: int = Field(ge=0)
+    amplitude_weight: float = Field(default=0.0, ge=0)
 
 
 class NNSweepConfig(StrictConfig):
@@ -235,9 +244,17 @@ class NNSweepConfig(StrictConfig):
 
     n_trials: int = Field(default=20, ge=1)
     artifact: str | None = None
+    objective: Literal["log_energy", "val_loss", "closed_loop", "rollout_nmse"] = "log_energy"
     model: dict[str, ParamSpec] = Field(default_factory=dict)
     training: dict[str, ParamSpec] = Field(default_factory=dict)
     closed_loop: ClosedLoopEvalConfig | None = None
+
+    @model_validator(mode="after")
+    def _validate_objective(self) -> Self:
+        if self.objective == "closed_loop" and self.closed_loop is None:
+            msg = "objective 'closed_loop' requires a 'sweep.closed_loop' section."
+            raise ValueError(msg)
+        return self
 
 
 class NNPredictorConfig(StrictConfig):

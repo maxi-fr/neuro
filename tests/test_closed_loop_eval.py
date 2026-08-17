@@ -9,9 +9,10 @@ import yaml
 from neuro.closed_loop_eval import (
     _spread_profile_from_logs,
     evaluate_closed_loop_suppression,
+    seizure_burden,
 )
 from neuro.config import ClosedLoopEvalConfig
-from neuro.seizure import spread_profile_from_lfp
+from neuro.seizure import SpreadProfile, spread_profile_from_lfp
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -81,6 +82,30 @@ def test_spread_profile_from_lfp() -> None:
     assert profile.ptp.shape[0] == len(ptp_mv)
     assert profile.ptp[:, -1] == pytest.approx(ptp_mv)
     assert int(profile.n_seizing()[-1]) == 2
+
+
+def _profile(ptp: np.ndarray) -> SpreadProfile:
+    """A profile from a hand-written ``(n_regions, n_windows)`` envelope on a 1 s grid."""
+    return SpreadProfile.from_ptp(np.arange(ptp.shape[1], dtype=np.float64), ptp, threshold=5.0, persist_s=1.0)
+
+
+def test_seizure_burden_is_the_time_mean_seizing_fraction() -> None:
+    ptp = np.zeros((4, 8))
+    ptp[0] = 20.0  # seizing throughout
+    ptp[1, 4:] = 20.0  # recruited halfway
+
+    assert seizure_burden(_profile(ptp)) == pytest.approx((8 + 4) / (4 * 8))
+
+
+def test_seizure_burden_separates_runs_the_terminal_count_ties() -> None:
+    """Two runs ending at one seizing region; the one suppressed sooner scores lower."""
+    early, late = np.zeros((2, 8)), np.zeros((2, 8))
+    early[0], late[0] = 20.0, 20.0
+    early[1, :2] = 20.0
+    late[1, :6] = 20.0
+
+    assert int(_profile(early).n_seizing()[-1]) == int(_profile(late).n_seizing()[-1]) == 1
+    assert seizure_burden(_profile(early)) < seizure_burden(_profile(late))
 
 
 def test_spread_profile_rejects_run_shorter_than_window() -> None:

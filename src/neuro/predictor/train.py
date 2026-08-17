@@ -10,7 +10,8 @@ import numpy as np
 import torch
 from tqdm import tqdm
 
-from neuro.artifacts import evaluate_rollouts
+from neuro.artifacts import evaluate_log_energy, evaluate_rollouts
+from neuro.metrics import DEFAULT_HOP_S, METRICS
 from neuro.predictor.data import prepare_datasets
 from neuro.predictor.losses import CurriculumMSE, Loss, LossContext, build_losses, total_loss
 from neuro.predictor.module import AutoregressiveMLP
@@ -21,7 +22,7 @@ if TYPE_CHECKING:
 
     from torch import Tensor, nn
 
-    from neuro.artifacts import RolloutNMSE
+    from neuro.artifacts import LogEnergyError, RolloutNMSE
     from neuro.config import NNPredictorConfig, TrainingConfig
     from neuro.predictor.artifact import MLPArtifact
     from neuro.types import FloatArray, IntArray
@@ -43,6 +44,9 @@ class TrainingResult:
         Per-epoch unweighted loss components and diagnostics.
     rollout : RolloutNMSE
         Free-run rollout NMSE on ``val_trajs``, per horizon step and pooled over the horizon.
+    log_energy : LogEnergyError
+        Free-run windowed-energy log-ratio error on ``val_trajs`` -- the error in the functional
+        the MPC costs, which unlike NMSE keeps separating models past the phase horizon.
     val_trajs : list[tuple[FloatArray, FloatArray]]
         The held-out ``(u, y)`` trajectories, kept whole so the caller can plot free runs.
     du_sensitivity : float
@@ -56,6 +60,7 @@ class TrainingResult:
     train_components: dict[str, list[float]]
     val_components: dict[str, list[float]]
     rollout: RolloutNMSE
+    log_energy: LogEnergyError
     val_trajs: list[tuple[FloatArray, FloatArray]]
     du_sensitivity: float
 
@@ -69,6 +74,8 @@ class TrainingResult:
             "val_components": self.val_components,
             "nmse_rollout": self.rollout.pooled,
             "nmse_rollout_per_step": self.rollout.per_step.tolist(),
+            "log_energy": self.log_energy.pooled,
+            "log_energy_per_position": self.log_energy.per_position.tolist(),
             "du_sensitivity": self.du_sensitivity,
         }
         (artifact_dir / "training_stats.json").write_text(json.dumps(stats, indent=2))
@@ -114,6 +121,24 @@ def _warm_start_linear(
         layer.bias.copy_(torch.as_tensor(weight_bias[-1]))
 
 
+def _lr_schedule(
+    optimizer: torch.optim.Optimizer, *, warmup_steps: int, total_steps: int
+) -> torch.optim.lr_scheduler.LRScheduler:
+    """Linear warm-up over ``warmup_steps`` batches, then cosine anneal to zero over the remainder.
+
+    The rollout is ``max(span_steps)`` deep from the first batch, so a randomly initialised model
+    backpropagates through the full horizon at epoch 0. Ramping in avoids taking that first,
+    badly-conditioned gradient at the peak learning rate.
+    """
+    cosine = torch.optim.lr_scheduler.CosineAnnealingLR(
+        optimizer, T_max=max(total_steps - warmup_steps, 1), eta_min=0.0
+    )
+    if warmup_steps < 1:
+        return cosine
+    warmup = torch.optim.lr_scheduler.LinearLR(optimizer, start_factor=1.0 / warmup_steps, total_iters=warmup_steps)
+    return torch.optim.lr_scheduler.SequentialLR(optimizer, [warmup, cosine], milestones=[warmup_steps])
+
+
 def _shuffled_batches(n_samples: int, batch_size: int, rng: np.random.Generator) -> Iterator[IntArray]:
     """Yield index batches covering one freshly shuffled pass over the training set."""
     indices = rng.permutation(n_samples)
@@ -147,9 +172,12 @@ def _fit(  # noqa: PLR0913, PLR0915
     start_epoch = curr_mse.curr_start if (len(model.layers) == 1 and curr_mse is not None) else 0
     steps_per_epoch = (n_samples + cfg.batch_size - 1) // cfg.batch_size
     total_steps = max(steps_per_epoch * (cfg.epochs - start_epoch), 1)
+    # A warm-started linear model skips ahead to curr_start, which can leave fewer epochs than the
+    # configured warm-up asks for.
+    warmup_steps = min(steps_per_epoch * cfg.warmup_epochs, total_steps - 1)
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=cfg.learning_rate, weight_decay=cfg.weight_decay)
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=total_steps, eta_min=0.0)
+    scheduler = _lr_schedule(optimizer, warmup_steps=warmup_steps, total_steps=total_steps)
 
     val_ctx = LossContext(y_center=tensors.y_center, y_scale=tensors.y_scale, fs=fs, epoch=None)
     best_val_loss = float("inf")
@@ -202,6 +230,7 @@ def _fit(  # noqa: PLR0913, PLR0915
         else:
             epochs_without_improvement += 1
 
+        loss_weights = {loss_obj.name: loss_obj.weight for loss_obj in losses}
         postfix: dict[str, Any] = {
             "train_loss": f"{train_loss:.4f}",
             "val_loss": f"{val_loss:.4f}",
@@ -210,7 +239,8 @@ def _fit(  # noqa: PLR0913, PLR0915
             if key == "L":
                 postfix["L"] = int(val / batches)
             else:
-                postfix[key] = f"{val / batches:.4f}"
+                weight = loss_weights.get(key, 1.0)
+                postfix[key] = f"{(val / batches) * weight:.4f}"
         pbar.set_postfix(**postfix)
 
         if epochs_without_improvement >= cfg.patience:
@@ -311,6 +341,10 @@ def train(cfg: NNPredictorConfig, data_files: list[str], *, seed_offset: int = 0
 
     art = model.to_artifact(sim.dt * sim.downsample, sim.downsample, data.y_std, data.u_std)
     eval_steps = max(1, round(trn.eval_horizon_s * fs))
+    # The energy course follows the metrics layer's own eeg_ms convention rather than a knob of its
+    # own, clamped where the evaluation horizon is too short to hold one window.
+    energy_window = min(max(1, round(METRICS["eeg_ms"].window_s * fs)), eval_steps)
+    energy_hop = max(1, round(DEFAULT_HOP_S * fs))
     return TrainingResult(
         artifact=art,
         train_losses=train_losses,
@@ -318,6 +352,9 @@ def train(cfg: NNPredictorConfig, data_files: list[str], *, seed_offset: int = 0
         train_components=train_comps,
         val_components=val_comps,
         rollout=evaluate_rollouts(art, data.val_trajs, eval_steps),
+        log_energy=evaluate_log_energy(
+            art, data.val_trajs, eval_steps, window_steps=energy_window, hop_steps=energy_hop
+        ),
         val_trajs=data.val_trajs,
         du_sensitivity=_du_sensitivity(model, tensors.X_val),
     )

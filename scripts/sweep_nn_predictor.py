@@ -66,23 +66,34 @@ def objective(
         raise
 
     result.save(trial_dir)
-    nmse_rollout = result.rollout.pooled
-    trial.set_user_attr("nmse_rollout", float(nmse_rollout))
+
+    # Every candidate objective is recorded on every trial, whichever one is being minimized, so a
+    # finished study can be re-ranked on the others without re-running it.
+    candidates = {
+        "log_energy": float(result.log_energy.pooled),
+        "val_loss": float(min(result.val_losses)),
+        "rollout_nmse": float(result.rollout.pooled),
+    }
+    for name, value in candidates.items():
+        trial.set_user_attr(name, value)
 
     if sweep.closed_loop is not None:
         print(f"\nEvaluating closed-loop seizure suppression on trial {trial.number}...")
-        score, summary = evaluate_closed_loop_suppression(trial_dir, sweep.closed_loop)
+        candidates["closed_loop"], summary = evaluate_closed_loop_suppression(trial_dir, sweep.closed_loop)
         for k, v in summary.items():
             trial.set_user_attr(k, v)
         print(
-            f"\nTrial {trial.number} completed with score: {score:.4f} "
-            f"({int(summary['suppressed_seeds'])}/{int(summary['total_seeds'])} seeds suppressed, "
-            f"mean amplitude: {summary['mean_amplitude']:.2%}, rollout NMSE: {nmse_rollout:.4f})"
+            f"  seizure burden: {summary['seizure_burden']:.4f}, "
+            f"{int(summary['suppressed_seeds'])}/{int(summary['total_seeds'])} seeds suppressed, "
+            f"mean amplitude: {summary['mean_amplitude']:.2%}"
         )
-        return score
 
-    print(f"\nTrial {trial.number} completed with rollout NMSE: {nmse_rollout}")
-    return nmse_rollout
+    score = candidates[sweep.objective]
+    print(
+        f"\nTrial {trial.number} completed with {sweep.objective}: {score:.4f} "
+        f"({', '.join(f'{k}: {v:.4f}' for k, v in candidates.items() if k != sweep.objective)})"
+    )
+    return score
 
 
 def main() -> None:

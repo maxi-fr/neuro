@@ -28,6 +28,7 @@ training:
 sweep:
   artifact: "artifacts/sweep_nn_predictor_long"
   n_trials: 30
+  objective: log_energy   # log_energy | val_loss | rollout_nmse | closed_loop
   model:
     hidden_size:
       type: categorical

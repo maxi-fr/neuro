@@ -1,0 +1,54 @@
+# Closed-loop seizure suppression with the 0.2 s-MSE + eeg_ms predictor.
+# Matched pair with mse02_psd_mpc.yaml -- the ONLY difference between the two is
+# controller.artifact, so any divergence is attributable to the auxiliary training loss.
+#
+# The predictor is native 50 Hz (simulation.downsample: 200, dt = 0.02), so estimator.downsample
+# and controller.dt both follow from that and must not be edited independently.
+t_end: 20.0
+
+dynamics:
+  class_path: neuro.jansen_rit.JansenRitDynamics
+  dt: 0.0001
+  seed: 69
+  initial_state: rest
+  log: lfp              # region LFP, so seizure suppression is scorable after the run
+  connectome:
+    speed: 50.0
+    K: 0.60
+  stimulation:
+    model: roast_3d
+    leadfield_path: data/roast_leadfield_3d.npz
+  params:
+    sigma: 280.0
+    A: [3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25,
+      3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25,
+      3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25,
+      3.25, 3.6, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.6, 3.25, 3.25, 3.25, 3.25,
+      3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.6, 3.25, 3.25,
+      3.25, 3.25, 3.25, 3.25, 3.4, 3.25, 3.25, 3.4, 3.25, 3.25, 3.25]
+
+reference: {class_path: simulate.reference.StepReference, dt: 0.0001, step_value: 0.0}
+
+sensors:
+  class_path: simulate.sensor.GaussianSensor
+  dt: 0.0001
+  std_dev: 0.0
+  measurement:
+    class_path: neuro.eeg.EEGMeasurement
+    # Full EEG: no selected_channels -> all 62 channels.
+
+# Causal anti-alias low-pass at the controller's Nyquist -- the identical filter the predictor's
+# training data was decimated with, so the loop feeds the model the signal it was fit on.
+# downsample MUST equal the predictor config's simulation.downsample.
+estimator: {class_path: neuro.filtering.AntiAliasEstimator, dt: 0.0001, downsample: 200}
+
+controller:
+  class_path: neuro.control.MPCController
+  dt: 0.02              # = predictor dt = 0.0001 * 200
+  artifact: artifacts/nonlinear_full_8s_mse02_eeg_ms/model
+  horizon: 20           # 0.4 s at 50 Hz -- past the 0.2 s the MSE trusts, which is the point
+  u_max: 2.0
+  w_y: 1.0
+  w_u: 10.0
+  shooting_depth: 20    # >= horizon -> single shooting (states condensed out; controls-only NLP)
+  max_iter: 100

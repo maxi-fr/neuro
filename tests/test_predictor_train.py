@@ -22,7 +22,7 @@ from neuro.predictor.artifact import MLPArtifact
 from neuro.predictor.data import prepare_datasets
 from neuro.predictor.losses import LossContext, build_losses, total_loss
 from neuro.predictor.module import AutoregressiveMLP
-from neuro.predictor.train import train
+from neuro.predictor.train import _lr_schedule, train
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -124,6 +124,8 @@ def test_training_converges_and_scores_the_rollout(files: list[str]) -> None:
     assert np.isfinite(result.rollout.pooled)
     assert np.all(np.isfinite(result.rollout.per_step))
     assert result.rollout.per_step.shape == (_HORIZON,)
+    assert np.isfinite(result.log_energy.pooled)
+    assert np.all(np.isfinite(result.log_energy.per_position))
     assert np.isfinite(result.du_sensitivity)
     assert result.du_sensitivity > 0.0
     assert len(result.val_trajs) == 1
@@ -144,9 +146,12 @@ def test_save_round_trip_predicts_identically(files: list[str], tmp_path: Path) 
         "val_components",
         "nmse_rollout",
         "nmse_rollout_per_step",
+        "log_energy",
+        "log_energy_per_position",
         "du_sensitivity",
     }
     assert stats["nmse_rollout"] == result.rollout.pooled
+    assert stats["log_energy"] == result.log_energy.pooled
 
     loaded = load_any_artifact(artifact_dir / "model")
     assert isinstance(loaded, MLPArtifact)
@@ -190,6 +195,35 @@ def test_same_seed_reproduces_and_offset_decorrelates(files: list[str]) -> None:
         not np.array_equal(got, want)
         for got, want in zip(_weights(shifted.artifact), _weights(first.artifact), strict=True)
     )
+
+
+@pytest.mark.parametrize("warmup_steps", [0, 4])
+def test_lr_schedule_ramps_in_then_anneals_to_zero(warmup_steps: int) -> None:
+    """Warm-up climbs to the peak at ``warmup_steps``; the cosine still reaches 0 on the last step."""
+    total_steps = 20
+    optimizer = torch.optim.AdamW(torch.nn.Linear(2, 2).parameters(), lr=1.0)
+    scheduler = _lr_schedule(optimizer, warmup_steps=warmup_steps, total_steps=total_steps)
+
+    trace = []
+    for _ in range(total_steps):
+        trace.append(optimizer.param_groups[0]["lr"])
+        optimizer.step()
+        scheduler.step()
+
+    assert np.argmax(trace) == warmup_steps
+    assert trace[warmup_steps] == pytest.approx(1.0)
+    assert trace[: warmup_steps + 1] == sorted(trace[: warmup_steps + 1])
+    assert trace[warmup_steps:] == sorted(trace[warmup_steps:], reverse=True)
+    assert optimizer.param_groups[0]["lr"] == pytest.approx(0.0, abs=1e-12)
+
+
+def test_warmup_shortens_the_first_epochs_without_changing_the_epoch_count(files: list[str]) -> None:
+    """``warmup_epochs`` reshapes the schedule only -- the loop still runs every configured epoch."""
+    plain = train(_config(epochs=4), files)
+    warmed = train(_config(epochs=4, warmup_epochs=2), files)
+
+    assert len(warmed.train_losses) == len(plain.train_losses) == 4
+    assert warmed.train_losses != plain.train_losses
 
 
 def test_linear_model_is_warm_started_and_skips_the_one_step_epochs(files: list[str]) -> None:

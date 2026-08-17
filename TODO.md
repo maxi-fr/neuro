@@ -10,16 +10,16 @@
 
 * move _spread_profile_from_trajectory to seizure
 
+* training 0% CPU usage? (No i think not, 40-50% for the python)
+
+### Efficiency
+
 * possible to remove torch.cat from AutoregressiveMLP.forward? for efficiency?
-
-* Optuna sweep objective - smt with closed loop MPC performance
-
 * training in float32?
 
 ## Other
 
 * write chapter on Jansen-Rit model
-* check out ROAST leadfield matrix: Ex8 is all zeros - that seems weird
 * look into unified vocabulary - matt pocock skills
 
 ## Simulate package
