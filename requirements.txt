@@ -987,9 +987,7 @@ opt-einsum==3.4.0 \
 optax==0.2.8 \
     --hash=sha256:5b225b35066fc3eebaa4d798f1b4173b4d57d1a480610908981f8343b50af0b0 \
     --hash=sha256:e3ca2d36c99daab1800ae9dbc0545034382d6bc780b24d969e1b0df65fa31cb4
-    # via
-    #   neuro
-    #   tvboptim
+    # via tvboptim
 optimistix==0.1.0 \
     --hash=sha256:c8edda7bf7fe48839c93fcd72bce750c950ed9f7033158303150b7ab395add81 \
     --hash=sha256:f05c9104748e87e1dc10a0b4a2be94e427f98c3eab0b1d41ea24a593d76be03d

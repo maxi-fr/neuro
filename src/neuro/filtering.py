@@ -190,7 +190,7 @@ class AntiAliasEstimator(LowPassEstimator):
     """Estimator that causally low-passes the measurement at the controller's Nyquist rate.
 
     Runs at the plant ``dt`` and applies exactly the filter
-    :func:`neuro.nn_training.load_trajectory` applies before striding, so the controller's
+    :func:`neuro.predictor.data.load_trajectory` applies before striding, so the controller's
     zero-order hold picking off every ``downsample``-th estimate reproduces the decimation the
     predictor was identified on. The filter state starts at zero, as it does offline.
     """

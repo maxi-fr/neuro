@@ -379,8 +379,8 @@ def _(mo):
 
     Shown, never predicted. A 62×62 correlation estimated over a window of $W$ samples has rank
     $\leq W-1$, so at a control-relevant window it is rank-deficient and cannot express
-    $\partial FC/\partial u$. `_masked_fc` in `nn_training.py` is the existing instance of that
-    problem. Its scalar reduction — the off-diagonal mean, the `synchronization` metric — is what
+    $\partial FC/\partial u$. That is why the FC training loss was dropped from the predictor.
+    Its scalar reduction — the off-diagonal mean, the `synchronization` metric — is what
     bridges into the predicted tier.
     """)
     return

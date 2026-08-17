@@ -16,7 +16,7 @@ Activation = Literal["relu", "tanh", "softplus"]
 
 
 def _activate(z: FloatArray, activation: Activation) -> FloatArray:
-    """Apply the named activation elementwise (matching ``jax.nn`` and ``_mlp_forward_ca``)."""
+    """Apply the named activation elementwise (matching ``_mlp_forward_ca`` and ``torch.nn.functional``)."""
     if activation == "relu":
         return np.maximum(z, 0.0)
     if activation == "tanh":

@@ -20,10 +20,9 @@ if TYPE_CHECKING:
 def _mlp_forward_ca(
     x: ca.SX | ca.MX, layers: Sequence[tuple[FloatArray, FloatArray]], activation: str
 ) -> ca.SX | ca.MX:
-    """Evaluate an MLP forward pass symbolically, replicating ``eqx.nn.MLP.__call__``.
+    """Evaluate an MLP forward pass symbolically, replicating :meth:`MLPArtifact.forward_1step`.
 
-    ReLU is applied after every layer except the last; the last layer has no activation
-    (matching this project's MLPs, which never override ``final_activation``).
+    The activation is applied after every layer except the last; the last layer is affine.
 
     Parameters
     ----------
