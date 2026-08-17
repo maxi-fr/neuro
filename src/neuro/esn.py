@@ -187,6 +187,11 @@ def solve_ridge(G: FloatArray, P: FloatArray, ridge_lambda: float) -> FloatArray
     return np.ascontiguousarray(w_out_t.T)
 
 
+def _append_bias(x: FloatArray) -> FloatArray:
+    """Concatenate a constant-1 column onto the last axis of ``x`` (batch dims pass through)."""
+    return np.concatenate([x, np.ones((*x.shape[:-1], 1), dtype=np.float64)], axis=-1)
+
+
 @dataclass(frozen=True)
 class ESNPredictor:
     """Numpy ESN: the reservoir recursion and the readout, both in model space."""
@@ -197,13 +202,14 @@ class ESNPredictor:
     leak_rate: float
 
     def readout(self, h: FloatArray) -> FloatArray:
-        """One-step-ahead model-space prediction z_hat from state ``h``."""
-        return self.w_out @ np.r_[h, 1.0]
+        """One-step-ahead model-space prediction z_hat from state ``h`` ``(..., N)`` -> ``(..., C)``."""
+        return _append_bias(h) @ self.w_out.T
 
     def teacher_step(self, h: FloatArray, z: FloatArray, v: FloatArray) -> FloatArray:
-        """Advance ``h`` absorbing the model-space input ``(z, v)``."""
+        """Advance ``h`` ``(..., N)`` absorbing the model-space input ``(z, v)``."""
         alpha = self.leak_rate
-        return (1.0 - alpha) * h + alpha * np.tanh(self.w_res @ h + self.w_in @ np.r_[z, v, 1.0])
+        x_in = _append_bias(np.concatenate([z, v], axis=-1))
+        return (1.0 - alpha) * h + alpha * np.tanh(h @ self.w_res.T + x_in @ self.w_in.T)
 
     def step(self, h: FloatArray, v: FloatArray) -> FloatArray:
         """Advance ``h`` free-running under model-space control ``v``: the readout replaces z."""
@@ -319,6 +325,17 @@ class ESNArtifact:
             h = esn.teacher_step(h, z[t], v[t])
         return h
 
+    def prime_many(self, y_hists: FloatArray, u_hists: FloatArray) -> FloatArray:
+        """Batched :meth:`prime`: ``(B, k, n_eeg_channels)`` and ``(B, k, n_controls)`` -> ``(B, N)``."""
+        z = self.encode(y_hists)
+        v = self.u_pipeline.transform(np.asarray(u_hists, dtype=np.float64))
+        esn = self.predictor
+        h = np.zeros((z.shape[0], self.reservoir_size), dtype=np.float64)
+
+        for t in range(z.shape[1]):
+            h = esn.teacher_step(h, z[:, t], v[:, t])
+        return h
+
     def rollout(self, state: FloatArray, u_future: FloatArray) -> FloatArray:
         """Free-run from state under raw u_future -> (steps, n_eeg_channels).
 
@@ -344,6 +361,24 @@ class ESNArtifact:
             z_hat = esn.readout(h)
             preds_z[t] = z_hat
             h = esn.teacher_step(h, z_hat, v_future[t])
+
+        return self.decode(preds_z)
+
+    def rollout_many(self, states: FloatArray, u_futures: FloatArray) -> FloatArray:
+        """Batched :meth:`rollout`: ``(B, N)`` and raw ``(B, steps, n_controls)``.
+
+        Returns ``(B, steps, n_eeg_channels)``.
+        """
+        v_future = self.u_pipeline.transform(np.asarray(u_futures, dtype=np.float64))
+        esn = self.predictor
+        h = np.array(states, dtype=np.float64)
+
+        n_batch, n_steps = v_future.shape[0], v_future.shape[1]
+        preds_z = np.zeros((n_batch, n_steps, self.n_channels), dtype=np.float64)
+        for t in range(n_steps):
+            z_hat = esn.readout(h)
+            preds_z[:, t] = z_hat
+            h = esn.teacher_step(h, z_hat, v_future[:, t])
 
         return self.decode(preds_z)
 

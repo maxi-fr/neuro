@@ -111,11 +111,20 @@ class MLPArtifact:
         u_past = u_arr[-self.n_u :].reshape(-1)
         return np.concatenate([z_past, u_past])
 
+    def prime_many(self, y_hists: FloatArray, u_hists: FloatArray) -> FloatArray:
+        """Batched :meth:`prime`: ``(B, k, n_eeg_channels)`` and ``(B, k, n_controls)`` -> ``(B, state)``."""
+        y_arr = np.asarray(y_hists, dtype=np.float64)
+        u_arr = np.asarray(u_hists, dtype=np.float64)
+        n_batch = y_arr.shape[0]
+        z_past = self.encode(y_arr)[:, -self.n_y :].reshape(n_batch, -1)
+        u_past = u_arr[:, -self.n_u :].reshape(n_batch, -1)
+        return np.concatenate([z_past, u_past], axis=-1)
+
     def forward_1step(self, y_flat: FloatArray, u_flat: FloatArray) -> FloatArray:
         """One-step MLP forward on the model-space input ``[y_window | u_window]``.
 
-        ``y_flat`` is ``(n_y * n_channels,)`` and ``u_flat`` ``(n_u * n_controls,)``, both
-        flattened row-major with the newest step last; returns ``(n_channels,)``.
+        ``y_flat`` is ``(..., n_y * n_channels)`` and ``u_flat`` ``(..., n_u * n_controls)``, both
+        flattened row-major with the newest step last; returns ``(..., n_channels)``.
         """
         x = np.concatenate([y_flat, u_flat], axis=-1)
         for w, b in self.layers[:-1]:
@@ -141,6 +150,29 @@ class MLPArtifact:
             y_next = self.forward_1step(y_window.reshape(-1), u_window.reshape(-1))
             y_window = np.concatenate([y_window[1:], y_next[None, :]], axis=0)
             preds[t] = y_next
+
+        return self.decode(preds)
+
+    def rollout_many(self, states: FloatArray, u_futures: FloatArray) -> FloatArray:
+        """Batched :meth:`rollout`: ``(B, state)`` and raw ``(B, steps, n_controls)``.
+
+        Returns ``(B, steps, n_eeg_channels)``.
+        """
+        w_future = self.u_pipeline.transform(np.asarray(u_futures, dtype=np.float64))
+        steps = w_future.shape[1]
+
+        states_arr = np.asarray(states, dtype=np.float64)
+        n_batch = states_arr.shape[0]
+        n_z = self.n_y * self.n_channels
+        y_window = states_arr[:, :n_z].reshape(n_batch, self.n_y, self.n_channels)
+        u_window = self.u_pipeline.transform(states_arr[:, n_z:].reshape(n_batch, self.n_u, self.n_controls))
+
+        preds = np.empty((n_batch, steps, self.n_channels), dtype=np.float64)
+        for t in range(steps):
+            u_window = np.concatenate([u_window[:, 1:], w_future[:, t, None, :]], axis=1)
+            y_next = self.forward_1step(y_window.reshape(n_batch, -1), u_window.reshape(n_batch, -1))
+            y_window = np.concatenate([y_window[:, 1:], y_next[:, None, :]], axis=1)
+            preds[:, t] = y_next
 
         return self.decode(preds)
 

@@ -49,21 +49,29 @@ def accumulate_rollout_errors(
     """Accumulate per-step squared error, true power and predicted power over free-run windows.
 
     ``start`` overrides the first window index, so several artifacts can share one t0 grid.
+    The whole t0 grid of a trajectory is rolled out in one batched call.
     """
     grid_start = art.priming_steps if start is None else start
+    k = art.priming_steps
     sq_err = np.zeros(steps, dtype=np.float64)
     power = np.zeros(steps, dtype=np.float64)
     pred_power = np.zeros(steps, dtype=np.float64)
 
     for u, y in trajectories:
-        for t0 in range(grid_start, len(y) - steps, stride):
-            state = art.prime(y[t0 - art.priming_steps : t0], u[t0 - art.priming_steps : t0])
-            y_pred = art.rollout(state, u[t0 : t0 + steps])
-            y_true = y[t0 : t0 + steps]
+        t0s = range(grid_start, len(y) - steps, stride)
+        if not t0s:
+            continue
 
-            sq_err += ((y_pred - y_true) ** 2).sum(axis=1)
-            power += (y_true**2).sum(axis=1)
-            pred_power += (y_pred**2).sum(axis=1)
+        states = art.prime_many(
+            np.stack([y[t0 - k : t0] for t0 in t0s]),
+            np.stack([u[t0 - k : t0] for t0 in t0s]),
+        )
+        y_pred = art.rollout_many(states, np.stack([u[t0 : t0 + steps] for t0 in t0s]))
+        y_true = np.stack([y[t0 : t0 + steps] for t0 in t0s])
+
+        sq_err += ((y_pred - y_true) ** 2).sum(axis=(0, 2))
+        power += (y_true**2).sum(axis=(0, 2))
+        pred_power += (y_pred**2).sum(axis=(0, 2))
 
     return sq_err, power, pred_power
 
