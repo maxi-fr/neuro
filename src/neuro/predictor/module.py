@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import itertools
-from typing import TYPE_CHECKING, Self, cast
+from typing import TYPE_CHECKING, Self
 
 import numpy as np
 import torch
@@ -17,16 +17,13 @@ if TYPE_CHECKING:
     from neuro.types import FloatArray
 
 
-def _activate(z: Tensor, activation: Activation) -> Tensor:
-    """Apply the named activation elementwise (matching :func:`neuro.predictor.artifact._activate`).
-
-    The name is validated once, in :meth:`MLPArtifact.load`, so the softplus branch is the fallthrough.
-    """
+def _activation_module(activation: Activation) -> nn.Module:
+    """Return the torch activation module matching the named activation."""
     if activation == "relu":
-        return torch.relu(z)
+        return nn.ReLU()
     if activation == "tanh":
-        return torch.tanh(z)
-    return torch.nn.functional.softplus(z)
+        return nn.Tanh()
+    return nn.Softplus()
 
 
 def _buffer(a: FloatArray | None) -> Tensor | None:
@@ -49,8 +46,8 @@ class AutoregressiveMLP(nn.Module):
 
     Attributes
     ----------
-    layers : nn.ModuleList
-        The ``nn.Linear`` stack in forward-pass order, all ``float64``.
+    layers : nn.Sequential
+        The ``nn.Linear`` and activation stack in forward-pass order, all ``float64``.
     n_y, n_u : int
         Past EEG and past control steps in the model's history window.
     horizon : int
@@ -91,17 +88,14 @@ class AutoregressiveMLP(nn.Module):
         self.activation = activation
 
         sizes = [n_y * n_channels + n_u * n_controls, *[hidden_size] * depth, n_channels]
-        self.layers = nn.ModuleList(
-            nn.Linear(n_in, n_out, dtype=torch.float64) for n_in, n_out in itertools.pairwise(sizes)
-        )
+        modules: list[nn.Module] = []
+        for i, (n_in, n_out) in enumerate(itertools.pairwise(sizes)):
+            modules.append(nn.Linear(n_in, n_out, dtype=torch.float64))
+            if i < depth:
+                modules.append(_activation_module(activation))
+        self.layers = nn.Sequential(*modules)
         self.register_buffer("decode_basis", _buffer(decode_basis))
         self.register_buffer("decode_mean", _buffer(decode_mean))
-
-    def _forward_1step(self, x: Tensor) -> Tensor:
-        """One-step MLP forward on the model-space input ``[y_window | u_window]``, ``(B, in) -> (B, k)``."""
-        for layer in self.layers[:-1]:
-            x = _activate(layer(x), self.activation)
-        return self.layers[-1](x)
 
     def forward(self, x: Tensor) -> Tensor:
         """Roll out ``horizon`` steps: ``(B, n_y*k + (n_u + horizon)*n_controls) -> (B, horizon*k)``."""
@@ -121,7 +115,7 @@ class AutoregressiveMLP(nn.Module):
             # level -- opposite order, same rule: both windows end at t when y_{t+1} is predicted.
             u_window = torch.cat([u_window[:, 1:], u_future[:, t : t + 1]], dim=1)
             mlp_in = torch.cat([y_window.reshape(batch, -1), u_window.reshape(batch, -1)], dim=1)
-            y_next = self._forward_1step(mlp_in)
+            y_next = self.layers(mlp_in)
             y_window = torch.cat([y_window[:, 1:], y_next[:, None, :]], dim=1)
             preds.append(y_next)
 
@@ -129,8 +123,7 @@ class AutoregressiveMLP(nn.Module):
 
     def to_artifact(self, dt: float, downsample: int, y_pipeline: Pipeline, u_pipeline: Pipeline) -> MLPArtifact:
         """Freeze the trained weights and the given transforms into a framework-free artifact."""
-        # ModuleList iteration is typed as bare Module, so the Linear parameters need a cast.
-        linears = (cast("nn.Linear", layer) for layer in self.layers)
+        linears = (m for m in self.layers if isinstance(m, nn.Linear))
         layers = tuple((_to_numpy(lin.weight), _to_numpy(lin.bias)) for lin in linears)
         return MLPArtifact(
             layers=layers,
@@ -162,9 +155,9 @@ class AutoregressiveMLP(nn.Module):
             decode_basis=None if pca is None else pca.basis,
             decode_mean=None if pca is None else pca.mean,
         )
+        linears = (m for m in model.layers if isinstance(m, nn.Linear))
         with torch.no_grad():
-            for layer, (w, b) in zip(model.layers, art.layers, strict=True):
-                lin = cast("nn.Linear", layer)
+            for lin, (w, b) in zip(linears, art.layers, strict=True):
                 lin.weight.copy_(torch.as_tensor(w, dtype=torch.float64))
                 lin.bias.copy_(torch.as_tensor(b, dtype=torch.float64))
         return model

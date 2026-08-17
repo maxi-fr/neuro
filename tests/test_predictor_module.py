@@ -203,6 +203,27 @@ def test_artifact_round_trip_is_exact(depth: int) -> None:
         np.testing.assert_array_equal(got_b, want_b)
 
 
+def test_module_layers_sequential() -> None:
+    """The 1-step MLP is an nn.Sequential interleaving nn.Linear and activation modules."""
+    model = AutoregressiveMLP(
+        n_y=2,
+        n_u=1,
+        horizon=3,
+        n_channels=4,
+        n_controls=2,
+        hidden_size=8,
+        depth=2,
+        activation="softplus",
+    )
+    assert isinstance(model.layers, torch.nn.Sequential)
+    assert len(model.layers) == 5
+    assert isinstance(model.layers[0], torch.nn.Linear)
+    assert isinstance(model.layers[1], torch.nn.Softplus)
+    assert isinstance(model.layers[2], torch.nn.Linear)
+    assert isinstance(model.layers[3], torch.nn.Softplus)
+    assert isinstance(model.layers[4], torch.nn.Linear)
+
+
 @pytest.mark.parametrize(
     "module",
     [
