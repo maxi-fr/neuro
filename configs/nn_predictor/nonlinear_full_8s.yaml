@@ -23,7 +23,6 @@ training:
   curriculum_end_epoch: 250
   seed: 69
   w_psd: 0.0
-  w_fc: 0.0
   patience: 100
   scaler: "robust"
   global_scaling: true

@@ -70,7 +70,6 @@ class TrainingConfig(StrictConfig):
     curriculum_max_steps: int | None = Field(default=None, ge=1)
     seed: int = Field(default=69, ge=0)
     w_psd: float = Field(default=0.0, ge=0)
-    w_fc: float = Field(default=0.0, ge=0)
     patience: int = Field(default=50, ge=1)
     scaler: Literal["standard", "robust"] = "standard"
     global_scaling: bool = False

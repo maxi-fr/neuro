@@ -713,7 +713,6 @@ def train_and_save_predictor(  # noqa: PLR0915
     curriculum_max_steps = train_cfg.curriculum_max_steps
     seed = train_cfg.seed + seed_offset
     w_psd = train_cfg.w_psd
-    w_fc = train_cfg.w_fc
     patience = train_cfg.patience
     scaler_type = train_cfg.scaler
     global_scaling = train_cfg.global_scaling
@@ -770,7 +769,6 @@ def train_and_save_predictor(  # noqa: PLR0915
         curriculum_end_epoch=curriculum_end_epoch,
         curriculum_max_steps=curriculum_max_steps,
         w_psd=w_psd,
-        w_fc=w_fc,
         patience=patience,
         decode_basis=decode_basis,
         decode_mean=decode_mean,
