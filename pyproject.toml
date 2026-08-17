@@ -14,7 +14,6 @@ dependencies = [
     "simulate",
     "pyyaml>=6.0.3",
     "marimo>=0.23.10",
-    "tvboptim>=0.3.0",
     "optuna>=4.9.0",
     "casadi>=3.7.2",
     "pydantic>=2.13.4",
@@ -147,9 +146,14 @@ line-ending = "auto"
 minversion = "6.0"
 addopts = "-ra -q -v"
 testpaths = ["tests"]
+filterwarnings = [
+    # PyTorch's internal forward-mode AD (torch._decomp.decompositions_for_jvp) still uses torch.jit.script
+    "ignore:`torch.jit.script` is deprecated:DeprecationWarning:torch.jit._script",
+]
 markers = [
     "slow: marks tests as slow (deselected by default, opt-in with --runslow or -m slow)",
 ]
+
 
 [tool.ty]
 
