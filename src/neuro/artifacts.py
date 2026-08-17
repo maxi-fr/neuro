@@ -9,7 +9,7 @@ import numpy as np
 from neuro.esn import ESNArtifact
 from neuro.esn_predictor_casadi import ESNSymbolicModel
 from neuro.nn_predictor_casadi import NNSymbolicModel
-from neuro.prediction import MLPArtifact
+from neuro.predictor.artifact import MLPArtifact
 
 if TYPE_CHECKING:
     from neuro.types import FloatArray, SymbolicModel
@@ -18,14 +18,17 @@ PredictorArtifact = MLPArtifact | ESNArtifact
 
 
 def load_any_artifact(artifact_path: str | Path) -> PredictorArtifact:
-    """Load an artifact from disk, auto-detecting MLP vs ESN via its JSON sidecar."""
+    """Load an artifact from disk: a single ``.npz`` is an MLP, otherwise the ESN's 3-file set."""
     p = Path(artifact_path)
-    json_path = p.with_suffix(".json")
-    if json_path.exists():
-        meta: dict[str, object] = json.loads(json_path.read_text())
-        if meta.get("model_type") == "esn":
-            return ESNArtifact.load(p)
-    return MLPArtifact.load(p)
+    npz_path = p.with_suffix(".npz")
+    if npz_path.exists():
+        with np.load(npz_path) as npz:
+            model_type = json.loads(str(npz["meta"]))["model_type"]
+        if model_type != "mlp":
+            msg = f"unsupported model_type {model_type!r} in {npz_path}"
+            raise ValueError(msg)
+        return MLPArtifact.load(p)
+    return ESNArtifact.load(p)
 
 
 def build_symbolic_model(art: PredictorArtifact) -> SymbolicModel:

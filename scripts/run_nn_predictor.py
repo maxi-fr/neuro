@@ -28,7 +28,7 @@ def main() -> None:
 
     train_and_save_predictor(config, data_files, artifact_dir)
 
-    print(f"Saved NN predictor artifact -> {artifact_dir / 'model.eqx'}")
+    print(f"Saved NN predictor artifact -> {artifact_dir / 'model.npz'}")
     print(f"Plot saved to {artifact_dir / 'comparison.png'}")
 
 

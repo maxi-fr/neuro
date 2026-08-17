@@ -1,16 +1,12 @@
 from __future__ import annotations
 
-import equinox as eqx
-import jax
 import numpy as np
 import pytest
 
-jax.config.update("jax_enable_x64", True)  # noqa: FBT003
-
-from neuro.artifacts import accumulate_rollout_errors, evaluate_rollouts, nmse  # noqa: E402
-from neuro.nn_training import split_data_files  # noqa: E402
-from neuro.prediction import AutoregressivePredictor, MLPArtifact  # noqa: E402
-from neuro.transforms import Pipeline, Standardizer  # noqa: E402
+from neuro.artifacts import accumulate_rollout_errors, evaluate_rollouts, nmse
+from neuro.predictor.artifact import MLPArtifact
+from neuro.predictor.data import split_data_files
+from neuro.transforms import Pipeline, Standardizer
 
 _RNG = np.random.default_rng(0)
 
@@ -48,20 +44,21 @@ def test_nmse_is_infinite_where_the_true_signal_is_silent() -> None:
 
 def _tiny_mlp_artifact(*, n_y: int, n_u: int, horizon: int, n_eeg: int, n_controls: int) -> MLPArtifact:
     """A randomly-initialised MLP artifact, enough to free-run a rollout."""
-    mlp = eqx.nn.MLP(
-        in_size=n_y * n_eeg + n_u * n_controls,
-        out_size=n_eeg,
-        width_size=4,
-        depth=1,
-        activation=jax.nn.relu,
-        key=jax.random.PRNGKey(0),
-    )
-    model = AutoregressivePredictor(
-        model=mlp, n_y=n_y, n_u=n_u, horizon=horizon, n_channels=n_eeg, n_controls=n_controls, activation="relu"
+    in_size = n_y * n_eeg + n_u * n_controls
+    hidden = 4
+    layers = (
+        (_RNG.normal(size=(hidden, in_size)) / np.sqrt(in_size), _RNG.normal(size=hidden)),
+        (_RNG.normal(size=(n_eeg, hidden)) / np.sqrt(hidden), _RNG.normal(size=n_eeg)),
     )
     unit = Pipeline((Standardizer(center=np.zeros(n_eeg), scale=np.ones(n_eeg)),))
     return MLPArtifact(
-        model=model,
+        layers=layers,
+        activation="relu",
+        n_y=n_y,
+        n_u=n_u,
+        horizon=horizon,
+        n_channels=n_eeg,
+        n_controls=n_controls,
         dt=0.01,
         downsample=1,
         y_pipeline=unit,

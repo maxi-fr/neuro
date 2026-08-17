@@ -1,29 +1,18 @@
 from __future__ import annotations
 
+import itertools
 from typing import TYPE_CHECKING
 
-import equinox as eqx
-import jax
 import numpy as np
+
+from neuro.predictor.artifact import MLPArtifact
+from neuro.predictor.data import build_dataset_for_trajectory, load_trajectory, prepare_datasets
+from neuro.transforms import PCAProjection, Pipeline, Standardizer
 
 if TYPE_CHECKING:
     from pathlib import Path
 
     from neuro.types import FloatArray
-
-
-jax.config.update("jax_enable_x64", True)  # noqa: FBT003
-
-from neuro.nn_training import (  # noqa: E402
-    build_dataset_for_trajectory,
-    load_trajectory,
-    prepare_datasets,
-)
-from neuro.prediction import (  # noqa: E402
-    AutoregressivePredictor,
-    MLPArtifact,
-)
-from neuro.transforms import PCAProjection, Pipeline, Standardizer  # noqa: E402
 
 _SEED = 7
 
@@ -50,6 +39,11 @@ def _standardizer(rng: np.random.Generator, dim: int) -> Standardizer:
     return Standardizer(center=rng.standard_normal(dim), scale=rng.uniform(0.5, 2.0, dim))
 
 
+def _random_layers(rng: np.random.Generator, sizes: list[int]) -> tuple[tuple[FloatArray, FloatArray], ...]:
+    """Random ``(weight (out, in), bias (out,))`` pairs for the given layer widths."""
+    return tuple((rng.standard_normal((out, inp)), rng.standard_normal(out)) for inp, out in itertools.pairwise(sizes))
+
+
 def _build_projection_artifact(
     tmp_path: Path,
     *,
@@ -68,18 +62,22 @@ def _build_projection_artifact(
     basis = _orthonormal_basis(rng, k, n_eeg)
     pca_mean = rng.standard_normal(n_eeg)
 
-    in_size = n_y * k + n_u * n_controls
-    mlp = eqx.nn.MLP(
-        in_size=in_size, out_size=k, width_size=4, depth=2, activation=jax.nn.relu, key=jax.random.PRNGKey(0)
-    )
-    wrapped = AutoregressivePredictor(
-        model=mlp, n_y=n_y, n_u=n_u, horizon=horizon, n_channels=k, n_controls=n_controls, activation="relu"
-    )
-
     y_pipeline = Pipeline((_standardizer(rng, n_eeg), PCAProjection(basis=basis, mean=pca_mean)))
     u_pipeline = Pipeline((_standardizer(rng, n_controls),))
     artifact = tmp_path / "art"
-    MLPArtifact(model=wrapped, dt=0.01, downsample=1, y_pipeline=y_pipeline, u_pipeline=u_pipeline).save(artifact)
+    MLPArtifact(
+        layers=_random_layers(rng, [n_y * k + n_u * n_controls, 4, k]),
+        activation="relu",
+        n_y=n_y,
+        n_u=n_u,
+        horizon=horizon,
+        n_channels=k,
+        n_controls=n_controls,
+        dt=0.01,
+        downsample=1,
+        y_pipeline=y_pipeline,
+        u_pipeline=u_pipeline,
+    ).save(artifact)
     return artifact, basis, pca_mean
 
 
@@ -87,32 +85,49 @@ def test_prepare_datasets_builds_raw_windows(tmp_path: Path) -> None:
     """``prepare_datasets`` returns raw windows with ``n_channels == n_eeg`` (no transform applied)."""
     n_eeg, n_controls, n_steps = 6, 2, 250
     n_y, n_u, horizon = 4, 3, 5
-    file = _write_trajectory(tmp_path / "traj.npz", n_steps, n_eeg, n_controls)
+    files = [_write_trajectory(tmp_path / f"traj_{i}.npz", n_steps, n_eeg, n_controls) for i in range(2)]
 
-    x_full, y_full, n_channels = prepare_datasets([file], n_steps, 1, n_y, n_u, horizon, 1e-4)
+    data = prepare_datasets(files, n_steps, 1, n_y, n_u, horizon, 1e-4, 0.5)
 
-    assert n_channels == n_eeg
-    assert x_full.shape[1] == n_y * n_eeg + n_u * n_controls + horizon * n_controls
+    assert data.n_channels == n_eeg
+    assert data.n_controls == n_controls
+    assert data.X_train.shape[1] == n_y * n_eeg + n_u * n_controls + horizon * n_controls
+    assert len(data.val_trajs) == 1
 
-    u, y = load_trajectory(file, n_steps, 1, 1e-4)
+    u, y = load_trajectory(files[0], n_steps, 1, 1e-4)
     x_manual, y_manual = build_dataset_for_trajectory(u, y, n_y, n_u, horizon)
-    np.testing.assert_allclose(x_full, x_manual, atol=1e-12)
-    np.testing.assert_allclose(y_full, y_manual, atol=1e-12)
+    np.testing.assert_allclose(data.X_train, x_manual, atol=1e-12)
+    np.testing.assert_allclose(data.Y_train, y_manual, atol=1e-12)
 
 
 def test_prepare_datasets_supports_optional_n_steps(tmp_path: Path) -> None:
     """``load_trajectory`` and ``prepare_datasets`` read the complete trajectory when ``n_steps`` is None."""
     n_eeg, n_controls, n_steps = 6, 2, 250
     n_y, n_u, horizon = 4, 3, 5
-    file = _write_trajectory(tmp_path / "traj.npz", n_steps, n_eeg, n_controls)
+    files = [_write_trajectory(tmp_path / f"traj_{i}.npz", n_steps, n_eeg, n_controls) for i in range(2)]
 
-    u, y = load_trajectory(file, None, 1, 1e-4)
+    u, y = load_trajectory(files[0], None, 1, 1e-4)
     assert u.shape == (n_steps, n_controls)
     assert y.shape == (n_steps, n_eeg)
 
-    x_full, _y_full, n_channels = prepare_datasets([file], None, 1, n_y, n_u, horizon, 1e-4)
-    assert n_channels == n_eeg
-    assert x_full.shape[0] == n_steps - horizon - max(n_y - 1, n_u)
+    data = prepare_datasets(files, None, 1, n_y, n_u, horizon, 1e-4, 0.5)
+    assert data.n_channels == n_eeg
+    assert data.X_train.shape[0] == n_steps - horizon - max(n_y - 1, n_u)
+
+
+def test_prepare_datasets_holds_out_the_validation_trajectories(tmp_path: Path) -> None:
+    """The validation windows are exactly the ones built from the held-out trajectories."""
+    n_eeg, n_controls, n_steps = 4, 2, 200
+    n_y, n_u, horizon = 3, 2, 4
+    files = [_write_trajectory(tmp_path / f"traj_{i}.npz", n_steps, n_eeg, n_controls) for i in range(3)]
+
+    data = prepare_datasets(files, n_steps, 1, n_y, n_u, horizon, 1e-4, 0.67)
+
+    assert len(data.val_trajs) == 1
+    u_val, y_val = data.val_trajs[0]
+    x_manual, y_manual = build_dataset_for_trajectory(u_val, y_val, n_y, n_u, horizon)
+    np.testing.assert_allclose(data.X_val, x_manual, atol=1e-12)
+    np.testing.assert_allclose(data.Y_val, y_manual, atol=1e-12)
 
 
 def test_artifact_round_trips_latent_projection(tmp_path: Path) -> None:
@@ -131,22 +146,19 @@ def test_artifact_round_trips_latent_projection(tmp_path: Path) -> None:
     assert loaded.n_eeg_channels == n_eeg
 
 
-def test_artifact_without_projection_is_backward_compatible(tmp_path: Path) -> None:
-    """A non-projection artifact loads with ``latent_basis is None`` and ``n_eeg == n_channels``."""
+def test_artifact_without_projection_reports_raw_channels(tmp_path: Path) -> None:
+    """A non-projection artifact loads with ``y_pipeline.pca is None`` and ``n_eeg == n_channels``."""
     n_channels, n_controls = 4, 2
-    mlp = eqx.nn.MLP(
-        in_size=2 * n_channels + 2 * n_controls,
-        out_size=n_channels,
-        width_size=4,
-        depth=1,
-        activation=jax.nn.relu,
-        key=jax.random.PRNGKey(0),
-    )
-    wrapped = AutoregressivePredictor(model=mlp, n_y=2, n_u=2, horizon=3, n_channels=n_channels, n_controls=n_controls)
     rng = np.random.default_rng(_SEED)
     artifact = tmp_path / "art"
     MLPArtifact(
-        model=wrapped,
+        layers=_random_layers(rng, [2 * n_channels + 2 * n_controls, 4, n_channels]),
+        activation="relu",
+        n_y=2,
+        n_u=2,
+        horizon=3,
+        n_channels=n_channels,
+        n_controls=n_controls,
         dt=0.01,
         downsample=1,
         y_pipeline=Pipeline((_standardizer(rng, n_channels),)),
@@ -156,20 +168,21 @@ def test_artifact_without_projection_is_backward_compatible(tmp_path: Path) -> N
     loaded = MLPArtifact.load(artifact)
     assert loaded.y_pipeline.pca is None
     assert loaded.n_eeg_channels == n_channels
+    assert not loaded.is_linear
 
 
 def test_load_trajectory_and_prepare_datasets_with_cutoff_hz(tmp_path: Path) -> None:
     """load_trajectory and prepare_datasets apply custom lowpass cutoff_hz when supplied."""
     n_eeg, n_controls, n_steps = 4, 2, 200
     n_y, n_u, horizon = 3, 2, 4
-    file = _write_trajectory(tmp_path / "traj.npz", n_steps, n_eeg, n_controls)
+    files = [_write_trajectory(tmp_path / f"traj_{i}.npz", n_steps, n_eeg, n_controls) for i in range(2)]
 
-    u, y = load_trajectory(file, n_steps, 2, 1e-4, cutoff_hz=45.0)
+    u, y = load_trajectory(files[0], n_steps, 2, 1e-4, cutoff_hz=45.0)
     assert u.shape == (n_steps // 2, n_controls)
     assert y.shape == (n_steps // 2, n_eeg)
 
-    x_full, y_full, n_channels = prepare_datasets([file], n_steps, 2, n_y, n_u, horizon, 1e-4, cutoff_hz=45.0)
-    assert n_channels == n_eeg
+    data = prepare_datasets(files, n_steps, 2, n_y, n_u, horizon, 1e-4, 0.5, cutoff_hz=45.0)
+    assert data.n_channels == n_eeg
     x_manual, y_manual = build_dataset_for_trajectory(u, y, n_y, n_u, horizon)
-    np.testing.assert_allclose(x_full, x_manual, atol=1e-12)
-    np.testing.assert_allclose(y_full, y_manual, atol=1e-12)
+    np.testing.assert_allclose(data.X_train, x_manual, atol=1e-12)
+    np.testing.assert_allclose(data.Y_train, y_manual, atol=1e-12)

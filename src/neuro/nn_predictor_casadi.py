@@ -5,10 +5,9 @@ from functools import cached_property
 from typing import TYPE_CHECKING, Self
 
 import casadi as ca
-import equinox as eqx
 import numpy as np
 
-from neuro.prediction import MLPArtifact
+from neuro.predictor.artifact import MLPArtifact
 from neuro.transforms import unzscore, zscore
 
 if TYPE_CHECKING:
@@ -16,29 +15,6 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from neuro.types import FloatArray
-
-
-def _extract_mlp_layers(mlp: eqx.nn.MLP) -> list[tuple[FloatArray, FloatArray]]:
-    """Pull plain numpy ``(weight, bias)`` pairs out of every ``Linear`` layer.
-
-    Parameters
-    ----------
-    mlp : eqx.nn.MLP
-        A trained Equinox MLP (any ``depth >= 0``).
-
-    Returns
-    -------
-    list of (FloatArray, FloatArray)
-        Per-layer ``(weight, bias)`` pairs, ``weight`` shaped ``(out, in)`` and ``bias``
-        shaped ``(out,)``, in forward-pass order.
-    """
-    layers = []
-    for layer in mlp.layers:
-        if layer.bias is None:
-            msg = "MLP layers without a bias are not supported"
-            raise ValueError(msg)
-        layers.append((np.asarray(layer.weight, dtype=np.float64), np.asarray(layer.bias, dtype=np.float64)))
-    return layers
 
 
 def _mlp_forward_ca(
@@ -54,7 +30,7 @@ def _mlp_forward_ca(
     x : ca.SX | ca.MX
         Input column vector, shape ``(in_size, 1)``.
     layers : Sequence[(FloatArray, FloatArray)]
-        Per-layer ``(weight, bias)`` pairs as returned by :func:`_extract_mlp_layers`.
+        Per-layer ``(weight, bias)`` pairs, ``weight`` shaped ``(out, in)``, in forward-pass order.
     activation : str
         The activation function name ("relu", "tanh", or "softplus").
 
@@ -80,7 +56,7 @@ def _mlp_forward_ca(
 
 @dataclass(frozen=True)
 class NNSymbolicModel:
-    """CasADi-symbolic, single-step equivalent of the Equinox NN predictor.
+    """CasADi-symbolic, single-step equivalent of the autoregressive MLP predictor.
 
     Attributes
     ----------
@@ -92,7 +68,7 @@ class NNSymbolicModel:
 
     @classmethod
     def from_artifact(cls, artifact: str | Path) -> Self:
-        """Build the model by loading a 3-file artifact from disk."""
+        """Build the model by loading a single-``.npz`` artifact from disk."""
         return cls(MLPArtifact.load(artifact))
 
     @property
@@ -127,7 +103,7 @@ class NNSymbolicModel:
     @property
     def is_linear(self) -> bool:
         """Whether the underlying MLP is linear (0 hidden layers)."""
-        return self.artifact.model.model.depth == 0
+        return self.artifact.is_linear
 
     @property
     def free_syms(self) -> dict[str, ca.MX]:
@@ -162,15 +138,6 @@ class NNSymbolicModel:
         n_y, n_ch = self.artifact.n_y, self.artifact.n_channels
         return not np.isnan(state[: n_y * n_ch]).any()
 
-    @cached_property
-    def _layers(self) -> tuple[tuple[FloatArray, FloatArray], ...]:
-        """Numpy ``(weight, bias)`` pairs extracted from the artifact's inner MLP."""
-        mlp = self.artifact.model.model
-        if not isinstance(mlp, eqx.nn.MLP):
-            msg = f"expected AutoregressivePredictor.model to be an eqx.nn.MLP, got {type(mlp)}"
-            raise TypeError(msg)
-        return tuple(_extract_mlp_layers(mlp))
-
     def predict_output(self, y_flat: ca.SX | ca.MX, new_u_flat: ca.SX | ca.MX) -> ca.SX | ca.MX:
         """Predict the next model-space EEG sample.
 
@@ -198,7 +165,7 @@ class NNSymbolicModel:
 
         new_u_scaled_flat = zscore(new_u_flat, u_mean_tiled, u_scale_tiled)  # ty:ignore[invalid-argument-type]
         mlp_in = ca.vertcat(y_flat, new_u_scaled_flat)
-        return _mlp_forward_ca(mlp_in, self._layers, self.artifact.model.activation)
+        return _mlp_forward_ca(mlp_in, self.artifact.layers, self.artifact.activation)
 
     def step(self, history: Sequence[ca.SX | ca.MX], u: ca.SX | ca.MX) -> ca.SX | ca.MX:
         """Advance one step: ``history == [x]`` (model space), ``u`` raw control -> ``x_next``."""

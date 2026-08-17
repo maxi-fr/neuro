@@ -4,7 +4,7 @@ import argparse
 from pathlib import Path
 
 from neuro.artifacts import accumulate_rollout_errors, load_any_artifact, nmse
-from neuro.nn_training import load_trajectory
+from neuro.predictor.data import load_trajectory
 
 _REPORT_STEPS = (1, 5, 10, 20, 40, 60, 80, 100, 125, 150)
 

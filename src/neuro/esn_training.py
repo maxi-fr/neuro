@@ -5,7 +5,7 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
-from neuro.nn_training import load_trajectory, split_data_files
+from neuro.predictor.data import load_trajectory, split_data_files
 from neuro.transforms import PCAProjection, Pipeline, Standardizer
 
 if TYPE_CHECKING:

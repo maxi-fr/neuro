@@ -58,7 +58,7 @@ def evaluate_closed_loop_suppression(trial_dir: Path, eval_cfg: ClosedLoopEvalCo
         raise FileNotFoundError(msg)
     base_sim_dict = load_sim_config(base_sim_path)
 
-    model_artifact_path = (trial_dir / "model.eqx").resolve()
+    model_artifact_path = (trial_dir / "model.npz").resolve()
     if not model_artifact_path.exists():
         msg = f"Trained predictor artifact not found: {model_artifact_path}"
         raise FileNotFoundError(msg)

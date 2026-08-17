@@ -21,8 +21,8 @@ def imports():
     import seaborn as sns
     import yaml
 
-    from neuro.nn_training import prepare_datasets, reshape_to_trajectory
-    from neuro.prediction import MLPArtifact
+    from neuro.predictor.artifact import MLPArtifact
+    from neuro.predictor.data import prepare_datasets
     from utils.plotting import plot_multistep_predictions
 
     artifact_base = Path(__file__).parent.parent / "artifacts"
@@ -38,7 +38,6 @@ def imports():
         plot_multistep_predictions,
         plt,
         prepare_datasets,
-        reshape_to_trajectory,
         sns,
         sweep_dirs,
         yaml,
@@ -137,11 +136,10 @@ def load_trial_data(
     with config_path.open() as f:
         config = yaml.safe_load(f)
 
-    artifact_path = trial_dir / "model.eqx"
+    artifact_path = trial_dir / "model.npz"
     mo.stop(not artifact_path.exists(), "Model artifact not found for this trial.")
 
     artifact = MLPArtifact.load(artifact_path)
-    model = artifact.model
 
     sim_cfg = config.get("simulation", {})
     downsample = sim_cfg.get("downsample", 1)
@@ -162,31 +160,20 @@ def load_trial_data(
 
     _train_cfg = config.get("training", {})
     train_split = float(_train_cfg.get("train_split", 0.8))
-    _train_cfg.get("global_scaling", True)
 
-    X_full, Y_full, n_channels = prepare_datasets(data_files, n_steps_cfg, downsample, n_y, n_u, horizon, dt_base)
-    n_controls = (X_full.shape[1] - n_y * n_channels) // (n_u + horizon)
+    data = prepare_datasets(data_files, n_steps_cfg, downsample, n_y, n_u, horizon, dt_base, train_split)
+    n_channels = data.n_channels
+    X_val, Y_val = data.X_val, data.Y_val
 
-    split_idx = int(train_split * len(X_full))
-    _X_train, X_val = X_full[:split_idx], X_full[split_idx:]
-    _Y_train, Y_val = Y_full[:split_idx], Y_full[split_idx:]
-
-    n_per_traj = X_full.shape[0] // len(data_files)
-    _val_offset = (-split_idx) % n_per_traj
-    traj_slice = slice(_val_offset, _val_offset + n_per_traj)
-
-    from neuro.nn_training import transform_features
-
-    X_val_s = transform_features(X_val, artifact.y_pipeline, artifact.u_pipeline, n_y, n_channels, n_controls)
+    n_per_traj = X_val.shape[0] // len(data.val_trajs)
+    traj_slice = slice(0, n_per_traj)
     return (
         X_val,
-        X_val_s,
         Y_val,
         artifact,
         config,
         dt_real,
         horizon,
-        model,
         n_channels,
         n_per_traj,
         n_y,
@@ -195,28 +182,23 @@ def load_trial_data(
 
 
 @app.cell
-def eval_and_errors(
-    X_val_s,
-    Y_val,
-    artifact,
-    config,
-    model,
-    n_channels,
-    np,
-    reshape_to_trajectory,
-):
+def eval_and_errors(X_val, Y_val, artifact, config, n_channels, n_y, np):
     """eval_and_errors definition."""
-    import jax.numpy as jnp
-
-    from neuro.nn_training import predict_batch
-
-    Y_pred_s = np.asarray(predict_batch(model, jnp.asarray(X_val_s)))
     _horizon = config.get("model", {}).get("horizon", 5)
+    _n_u = artifact.n_u
+    _n_ctrl = artifact.n_controls
 
-    Y_pred_s_traj = Y_pred_s.reshape(Y_pred_s.shape[0], _horizon, artifact.model.n_channels)
-    Y_pred_traj = artifact.decode(Y_pred_s_traj)
+    # Every validation window is free-run over the horizon from its own primed state.
+    _y_past = X_val[:, : n_y * n_channels].reshape(-1, n_y, n_channels)
+    _u_blocks = X_val[:, n_y * n_channels :].reshape(-1, _n_u + _horizon, _n_ctrl)
+    Y_pred_traj = np.array(
+        [
+            artifact.rollout(artifact.prime(_y_past[i], _u_blocks[i, :_n_u]), _u_blocks[i, _n_u:])
+            for i in range(X_val.shape[0])
+        ]
+    )
 
-    Y_val_traj = reshape_to_trajectory(Y_val, _horizon, n_channels)
+    Y_val_traj = Y_val.reshape(-1, _horizon, n_channels)
 
     mse_per_channel = np.mean((Y_val_traj - Y_pred_traj) ** 2, axis=(0, 1))
     mae_per_channel = np.mean(np.abs(Y_val_traj - Y_pred_traj), axis=(0, 1))

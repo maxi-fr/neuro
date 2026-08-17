@@ -1,23 +1,19 @@
 from __future__ import annotations
 
+import itertools
 from typing import TYPE_CHECKING, Any
 
-import equinox as eqx
-import jax
 import numpy as np
 import pytest
+from simulate.simulation import Simulation
 
-jax.config.update("jax_enable_x64", True)  # noqa: FBT003
-
-from simulate.simulation import Simulation  # noqa: E402
-
-from neuro.control import (  # noqa: E402
+from neuro.control import (
     LinearMPCController,
     MPCController,
 )
-from neuro.nn_predictor_casadi import NNSymbolicModel  # noqa: E402
-from neuro.prediction import AutoregressivePredictor, MLPArtifact  # noqa: E402
-from neuro.transforms import PCAProjection, Pipeline, Standardizer  # noqa: E402
+from neuro.nn_predictor_casadi import NNSymbolicModel
+from neuro.predictor.artifact import MLPArtifact
+from neuro.transforms import PCAProjection, Pipeline, Standardizer
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -30,6 +26,14 @@ _SEED = 7
 def _standardizer_pipeline(center: FloatArray, scale: FloatArray) -> Pipeline:
     """A single-step standardizer pipeline from raw ``center``/``scale`` arrays."""
     return Pipeline((Standardizer(center=np.asarray(center, np.float64), scale=np.asarray(scale, np.float64)),))
+
+
+def _random_layers(rng: np.random.Generator, sizes: list[int]) -> tuple[tuple[FloatArray, FloatArray], ...]:
+    """Random ``(weight (out, in), bias (out,))`` pairs, drawn uniformly from ``+-1/sqrt(fan_in)``."""
+    return tuple(
+        (rng.uniform(-1.0, 1.0, (out, inp)) / np.sqrt(inp), rng.uniform(-1.0, 1.0, out) / np.sqrt(inp))
+        for inp, out in itertools.pairwise(sizes)
+    )
 
 
 def _build_artifact(
@@ -45,17 +49,6 @@ def _build_artifact(
     """Save a tiny synthetic MLP artifact and return its basename path (``depth=0`` is linear)."""
     rng = np.random.default_rng(_SEED)
     in_size = n_y * n_channels + n_u * n_controls
-    mlp = eqx.nn.MLP(
-        in_size=in_size,
-        out_size=n_channels,
-        width_size=5,
-        depth=depth,
-        activation=jax.nn.relu,
-        key=jax.random.PRNGKey(0),
-    )
-    wrapped = AutoregressivePredictor(
-        model=mlp, n_y=n_y, n_u=n_u, horizon=horizon, n_channels=n_channels, n_controls=n_controls, activation="relu"
-    )
     scalers = {
         "u_mean": rng.uniform(-1.0, 1.0, n_controls),
         "u_scale": rng.uniform(0.5, 2.0, n_controls),
@@ -64,7 +57,13 @@ def _build_artifact(
     }
     artifact = tmp_path / "art"
     MLPArtifact(
-        model=wrapped,
+        layers=_random_layers(rng, [in_size, *([5] * depth), n_channels]),
+        activation="relu",
+        n_y=n_y,
+        n_u=n_u,
+        horizon=horizon,
+        n_channels=n_channels,
+        n_controls=n_controls,
         dt=0.01,
         downsample=1,
         y_pipeline=_standardizer_pipeline(scalers["y_mean"], scalers["y_scale"]),
@@ -83,22 +82,11 @@ def _build_projection_artifact(
     n_eeg: int = 6,
     n_controls: int = 2,
 ) -> Path:
-    """Save a tiny linear (depth-0) artifact whose predictor runs in a ``k``-dim PCA latent space."""
+    """Save a tiny linear (single-layer) artifact whose predictor runs in a ``k``-dim PCA latent space."""
     rng = np.random.default_rng(_SEED)
     q, _ = np.linalg.qr(rng.standard_normal((n_eeg, n_eeg)))
     basis = np.ascontiguousarray(q[:, :k].T)
     mean = rng.standard_normal(n_eeg)
-    mlp = eqx.nn.MLP(
-        in_size=n_y * k + n_u * n_controls,
-        out_size=k,
-        width_size=5,
-        depth=0,
-        activation=jax.nn.relu,
-        key=jax.random.PRNGKey(0),
-    )
-    wrapped = AutoregressivePredictor(
-        model=mlp, n_y=n_y, n_u=n_u, horizon=horizon, n_channels=k, n_controls=n_controls, activation="relu"
-    )
     y_pipeline = Pipeline(
         (
             Standardizer(center=rng.uniform(-1.0, 1.0, n_eeg), scale=rng.uniform(0.5, 2.0, n_eeg)),
@@ -107,7 +95,19 @@ def _build_projection_artifact(
     )
     u_pipeline = _standardizer_pipeline(rng.uniform(-1.0, 1.0, n_controls), rng.uniform(0.5, 2.0, n_controls))
     artifact = tmp_path / "art_proj"
-    MLPArtifact(model=wrapped, dt=0.01, downsample=1, y_pipeline=y_pipeline, u_pipeline=u_pipeline).save(artifact)
+    MLPArtifact(
+        layers=_random_layers(rng, [n_y * k + n_u * n_controls, k]),
+        activation="relu",
+        n_y=n_y,
+        n_u=n_u,
+        horizon=horizon,
+        n_channels=k,
+        n_controls=n_controls,
+        dt=0.01,
+        downsample=1,
+        y_pipeline=y_pipeline,
+        u_pipeline=u_pipeline,
+    ).save(artifact)
     return artifact
 
 

@@ -43,7 +43,7 @@ class ModelConfig(StrictConfig):
     horizon: int = Field(default=5, ge=1)
     hidden_size: int = Field(default=128, ge=1)
     depth: int = Field(default=2, ge=0)
-    activation: str = "relu"
+    activation: Literal["relu", "tanh", "softplus"] = "relu"
     latent_dim: int | None = Field(default=None, ge=1)
 
 

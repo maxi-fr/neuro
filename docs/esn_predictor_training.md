@@ -89,7 +89,7 @@ The stimulation sequence is persistently exciting broadband tES satisfying **Kir
 
 ### 2.2 Loading and downsampling
 
-[`load_trajectory`](../src/neuro/nn_training.py) loads up to `n_steps · downsample` raw samples (or the full file if `n_steps` is `null`) and decimates by taking every `downsample`-th sample:
+[`load_trajectory`](../src/neuro/predictor/data.py) loads up to `n_steps · downsample` raw samples (or the full file if `n_steps` is `null`) and decimates by taking every `downsample`-th sample:
 
 $$
 y^{\text{ds}}_k = y^{\text{raw}}_{k\cdot d}, \qquad
@@ -141,7 +141,7 @@ Unlike feedforward neural networks that shuffle sliding windows of inputs, an ES
 
 ### 4.1 Train / validation split
 
-Trajectories are split by file order prior to any harvesting ([`split_data_files`](../src/neuro/nn_training.py)):
+Trajectories are split by file order prior to any harvesting ([`split_data_files`](../src/neuro/predictor/data.py)):
 
 $$
 n_\text{train} = \lfloor \texttt{train\_split} \cdot n_\text{files} \rfloor, \qquad

@@ -8,7 +8,7 @@ import numpy as np
 
 from neuro.artifacts import build_symbolic_model, load_any_artifact
 from neuro.control import build_mpc_nlp
-from neuro.nn_training import load_trajectory
+from neuro.predictor.data import load_trajectory
 
 
 def parse_args() -> argparse.Namespace:

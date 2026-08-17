@@ -2,23 +2,18 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-import equinox as eqx
-import jax
-import jax.numpy as jnp
 import numpy as np
 import pytest
 
-jax.config.update("jax_enable_x64", True)  # noqa: FBT003
-
-from neuro.esn import (  # noqa: E402
+from neuro.esn import (
     ESNArtifact,
     ESNPredictor,
     generate_reservoir,
     harvest_normal_equations,
 )
-from neuro.esn_predictor_casadi import ESNSymbolicModel  # noqa: E402
-from neuro.prediction import AutoregressivePredictor, MLPArtifact  # noqa: E402
-from neuro.transforms import Pipeline, Standardizer  # noqa: E402
+from neuro.esn_predictor_casadi import ESNSymbolicModel
+from neuro.predictor.artifact import MLPArtifact
+from neuro.transforms import Pipeline, Standardizer
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -101,16 +96,9 @@ def _build_tiny_mlp_artifact(
     """Save a tiny synthetic MLP artifact for testing."""
     rng = np.random.default_rng(_SEED)
     in_size = n_y * n_channels + n_u * n_controls
-    mlp = eqx.nn.MLP(
-        in_size=in_size,
-        out_size=n_channels,
-        width_size=5,
-        depth=1,
-        activation=jax.nn.relu,
-        key=jax.random.PRNGKey(0),
-    )
-    wrapped = AutoregressivePredictor(
-        model=mlp, n_y=n_y, n_u=n_u, horizon=horizon, n_channels=n_channels, n_controls=n_controls, activation="relu"
+    layers = (
+        (rng.standard_normal((5, in_size)) / np.sqrt(in_size), rng.standard_normal(5)),
+        (rng.standard_normal((n_channels, 5)) / np.sqrt(5), rng.standard_normal(n_channels)),
     )
     scalers = {
         "u_mean": rng.uniform(-1.0, 1.0, n_controls),
@@ -120,7 +108,13 @@ def _build_tiny_mlp_artifact(
     }
     artifact = tmp_path / "mlp_tiny"
     MLPArtifact(
-        model=wrapped,
+        layers=layers,
+        activation="relu",
+        n_y=n_y,
+        n_u=n_u,
+        horizon=horizon,
+        n_channels=n_channels,
+        n_controls=n_controls,
         dt=0.02,
         downsample=200,
         y_pipeline=_standardizer_pipeline(scalers["y_mean"], scalers["y_scale"]),
@@ -272,8 +266,8 @@ def test_rollout_stays_bounded_over_horizon(tmp_path: Path) -> None:
     assert float(np.abs(preds).max()) < 100.0
 
 
-def test_mlp_prime_rollout_matches_old_probe(tmp_path: Path) -> None:
-    """MLPArtifact.prime/rollout reproduce the pre-refactor probe's rollout bit-for-bit."""
+def test_mlp_prime_rollout_matches_hand_rolled_windows(tmp_path: Path) -> None:
+    """MLPArtifact.prime/rollout match a hand-indexed model-space AR loop bit-for-bit."""
     art_path = _build_tiny_mlp_artifact(tmp_path)
     art = MLPArtifact.load(art_path)
 
@@ -283,34 +277,23 @@ def test_mlp_prime_rollout_matches_old_probe(tmp_path: Path) -> None:
     u_raw = rng.standard_normal((t_len, art.n_controls))
 
     n_y, n_u = art.n_y, art.n_u
-    start = max(n_y, n_u)
     max_steps = 50
-    t0 = start
+    t0 = max(n_y, n_u)
 
-    # Old probe rollout logic
+    # Reference: encode the whole trajectory up front and shift both windows by hand.
     z = art.encode(y_raw)
     w = art.u_pipeline.transform(u_raw)
-    x_old = np.concatenate(
-        [z[t0 - n_y : t0].reshape(-1), w[t0 - n_u : t0].reshape(-1), w[t0 : t0 + max_steps].reshape(-1)]
-    )
-    p = art.model
-    predictor = AutoregressivePredictor(
-        model=p.model,
-        n_y=p.n_y,
-        n_u=p.n_u,
-        horizon=max_steps,
-        n_channels=p.n_channels,
-        n_controls=p.n_controls,
-        activation=p.activation,
-    )
-    pred_old = np.asarray(predictor(jnp.asarray(x_old))).reshape(max_steps, -1)
-    y_pred_old = art.decode(pred_old)
+    y_win, u_win = z[t0 - n_y : t0], w[t0 - n_u : t0]
+    preds = []
+    for t in range(max_steps):
+        u_win = np.vstack([u_win[1:], w[t0 + t]])
+        y_next = art.forward_1step(y_win.reshape(-1), u_win.reshape(-1))
+        y_win = np.vstack([y_win[1:], y_next])
+        preds.append(y_next)
+    y_pred_manual = art.decode(np.array(preds))
 
-    # New prime / rollout seam logic
-    y_hist = y_raw[t0 - art.priming_steps : t0]
-    u_hist = u_raw[t0 - art.priming_steps : t0]
-    state = art.prime(y_hist, u_hist)
-    u_future = u_raw[t0 : t0 + max_steps]
-    y_pred_new = art.rollout(state, u_future)
+    # prime / rollout seam
+    state = art.prime(y_raw[t0 - art.priming_steps : t0], u_raw[t0 - art.priming_steps : t0])
+    y_pred_new = art.rollout(state, u_raw[t0 : t0 + max_steps])
 
-    np.testing.assert_allclose(y_pred_new, y_pred_old, atol=1e-12)
+    np.testing.assert_allclose(y_pred_new, y_pred_manual, atol=1e-12)
