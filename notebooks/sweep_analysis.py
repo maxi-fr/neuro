@@ -161,7 +161,18 @@ def load_trial_data(
     _train_cfg = config.get("training", {})
     train_split = float(_train_cfg.get("train_split", 0.8))
 
-    data = prepare_datasets(data_files, n_steps_cfg, downsample, n_y, n_u, horizon, dt_base, train_split)
+    data = prepare_datasets(
+        data_files,
+        n_steps_cfg,
+        downsample,
+        n_y,
+        n_u,
+        horizon,
+        dt_base,
+        train_split,
+        scaler=_train_cfg.get("scaler", "standard"),
+        global_scaling=bool(_train_cfg.get("global_scaling", False)),
+    )
     n_channels = data.n_channels
     X_val, Y_val = data.X_val, data.Y_val
 

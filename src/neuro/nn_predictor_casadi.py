@@ -88,13 +88,8 @@ class NNSymbolicModel:
 
     @property
     def n_channels(self) -> int:
-        """Number of channels carried in the state per step (latent components with a projection)."""
+        """Number of EEG channels carried in the state per step."""
         return self.artifact.n_channels
-
-    @property
-    def n_eeg_channels(self) -> int:
-        """Number of raw EEG channels at the output boundary (equals ``n_channels`` without a projection)."""
-        return self.artifact.n_eeg_channels
 
     @property
     def native_horizon(self) -> int:
@@ -156,10 +151,7 @@ class NNSymbolicModel:
             The next model-space EEG prediction, shape ``(n_channels, 1)``.
         """
         n_u, n_ctrl = self.artifact.n_u, self.artifact.n_controls
-        u_std = self.artifact.u_pipeline.standardizer
-        if u_std is None:
-            msg = "u-pipeline must carry a standardizer"
-            raise ValueError(msg)
+        u_std = self.artifact.u_std
 
         u_mean_tiled = np.tile(np.broadcast_to(u_std.center, (n_ctrl,)), n_u).reshape(-1, 1)
         u_scale_tiled = np.tile(np.broadcast_to(u_std.scale, (n_ctrl,)), n_u).reshape(-1, 1)
@@ -187,18 +179,10 @@ class NNSymbolicModel:
         """Slice the most-recent model-space sample from the state and decode to raw EEG."""
         n_y, n_ch = self.artifact.n_y, self.artifact.n_channels
         z_last = x[(n_y - 1) * n_ch : n_y * n_ch]
-
-        pca = self.artifact.y_pipeline.pca
-        y_std = ca.mtimes(pca.basis.T, z_last) + pca.mean.reshape(-1, 1) if pca is not None else z_last
-
-        std = self.artifact.y_pipeline.standardizer
-        if std is None:
-            msg = "y-pipeline must carry a standardizer"
-            raise ValueError(msg)
-        n_eeg = self.n_eeg_channels
-        center = np.broadcast_to(std.center, (n_eeg,)).reshape(-1, 1)
-        scale = np.broadcast_to(std.scale, (n_eeg,)).reshape(-1, 1)
-        return unzscore(y_std, center, scale)
+        std = self.artifact.y_std
+        center = np.broadcast_to(std.center, (n_ch,)).reshape(-1, 1)
+        scale = np.broadcast_to(std.scale, (n_ch,)).reshape(-1, 1)
+        return unzscore(z_last, center, scale)
 
     @cached_property
     def f_step(self) -> ca.Function:

@@ -9,7 +9,6 @@ model:
   n_u: 10
   hidden_size: 64
   depth: 2               # nonlinear
-  latent_dim: null       # no PCA -- full 62-channel state
   activation: softplus
 
 training:

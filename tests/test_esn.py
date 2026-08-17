@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 import numpy as np
 import pytest
@@ -9,25 +9,17 @@ import pytest
 from neuro.artifacts import load_any_artifact
 from neuro.esn import (
     ESNArtifact,
-    ESNPredictor,
     generate_reservoir,
     harvest_normal_equations,
 )
 from neuro.esn_predictor_casadi import ESNSymbolicModel
 from neuro.predictor.artifact import MLPArtifact
-from neuro.transforms import Pipeline, Standardizer
+from neuro.transforms import Standardizer
 
 if TYPE_CHECKING:
     from pathlib import Path
 
-    from neuro.types import FloatArray
-
 _SEED = 42
-
-
-def _standardizer_pipeline(center: FloatArray, scale: FloatArray) -> Pipeline:
-    """A single-step standardizer pipeline from raw center/scale arrays."""
-    return Pipeline((Standardizer(center=np.asarray(center, np.float64), scale=np.asarray(scale, np.float64)),))
 
 
 def _build_tiny_esn_artifact(
@@ -58,8 +50,8 @@ def _build_tiny_esn_artifact(
 
     w_out = rng.uniform(-0.1, 0.1, size=(n_channels, reservoir_size + 1))
 
-    y_pipeline = _standardizer_pipeline(rng.uniform(-1.0, 1.0, n_channels), rng.uniform(0.5, 2.0, n_channels))
-    u_pipeline = _standardizer_pipeline(rng.uniform(-1.0, 1.0, n_controls), rng.uniform(0.5, 2.0, n_controls))
+    y_std = Standardizer(center=rng.uniform(-1.0, 1.0, n_channels), scale=rng.uniform(0.5, 2.0, n_channels))
+    u_std = Standardizer(center=rng.uniform(-1.0, 1.0, n_controls), scale=rng.uniform(0.5, 2.0, n_controls))
 
     art = ESNArtifact(
         w_in=w_in,
@@ -77,8 +69,8 @@ def _build_tiny_esn_artifact(
         noise_sigma=0.0,
         ridge_lambda=1e-3,
         seed=_SEED,
-        y_pipeline=y_pipeline,
-        u_pipeline=u_pipeline,
+        y_std=y_std,
+        u_std=u_std,
     )
 
     artifact_path = tmp_path / "esn_tiny"
@@ -119,8 +111,8 @@ def _build_tiny_mlp_artifact(
         n_controls=n_controls,
         dt=0.02,
         downsample=200,
-        y_pipeline=_standardizer_pipeline(scalers["y_mean"], scalers["y_scale"]),
-        u_pipeline=_standardizer_pipeline(scalers["u_mean"], scalers["u_scale"]),
+        y_std=Standardizer(center=scalers["y_mean"], scale=scalers["y_scale"]),
+        u_std=Standardizer(center=scalers["u_mean"], scale=scalers["u_scale"]),
     ).save(artifact)
     return artifact
 
@@ -136,7 +128,7 @@ def test_casadi_step_matches_numpy_step(tmp_path: Path) -> None:
     u = rng.standard_normal(art.n_controls)
 
     h_next_ca = np.asarray(model.f_step(h.reshape(-1, 1), u.reshape(-1, 1))).reshape(-1)
-    h_next_np = art.predictor.step(h, art.u_pipeline.transform(u))
+    h_next_np = art.predictor.step(h, art.u_std.transform(u))
 
     np.testing.assert_allclose(h_next_ca, h_next_np, atol=1e-10)
 
@@ -165,16 +157,13 @@ def test_casadi_rollout_matches_numpy_rollout(tmp_path: Path) -> None:
 
 
 def test_artifact_round_trip_preserves_weights(tmp_path: Path) -> None:
-    """Save/load reproduces W_res (including sparsity pattern), W_in, W_out, pipelines, and metadata exactly."""
+    """Save/load reproduces W_res (including sparsity pattern), W_in, W_out, standardizers, and metadata exactly."""
     art_path = _build_tiny_esn_artifact(tmp_path)
     art_orig = ESNArtifact.load(art_path)
 
     art_save_path = tmp_path / "roundtrip"
     art_orig.save(art_save_path)
     assert (tmp_path / "roundtrip.npz").exists()
-    assert not (tmp_path / "roundtrip.json").exists()
-    assert not (tmp_path / "roundtrip.scalers.npz").exists()
-    assert not (tmp_path / "roundtrip.weights.npz").exists()
 
     art_loaded = ESNArtifact.load(art_save_path)
 
@@ -185,6 +174,10 @@ def test_artifact_round_trip_preserves_weights(tmp_path: Path) -> None:
     np.testing.assert_array_equal(art_orig.w_res.indptr, art_loaded.w_res.indptr)
     assert art_orig.w_res.shape == art_loaded.w_res.shape
     assert art_orig.meta == art_loaded.meta
+    np.testing.assert_allclose(art_orig.y_std.center, art_loaded.y_std.center)
+    np.testing.assert_allclose(art_orig.y_std.scale, art_loaded.y_std.scale)
+    np.testing.assert_allclose(art_orig.u_std.center, art_loaded.u_std.center)
+    np.testing.assert_allclose(art_orig.u_std.scale, art_loaded.u_std.scale)
 
 
 def test_harvest_pairs_pre_update_state_with_target(tmp_path: Path) -> None:
@@ -194,13 +187,13 @@ def test_harvest_pairs_pre_update_state_with_target(tmp_path: Path) -> None:
 
     rng = np.random.default_rng(_SEED + 3)
     t_len = 40
-    y_raw = rng.standard_normal((t_len, art.n_eeg_channels))
+    y_raw = rng.standard_normal((t_len, art.n_channels))
     u_raw = rng.standard_normal((t_len, art.n_controls))
 
     G, P = harvest_normal_equations(
         trajectories=[(u_raw, y_raw)],
-        y_pipeline=art.y_pipeline,
-        u_pipeline=art.u_pipeline,
+        y_std=art.y_std,
+        u_std=art.u_std,
         w_res=art.w_res,
         w_in=art.w_in,
         leak_rate=art.leak_rate,
@@ -210,7 +203,7 @@ def test_harvest_pairs_pre_update_state_with_target(tmp_path: Path) -> None:
     )
 
     z = art.encode(y_raw)
-    v = art.u_pipeline.transform(u_raw)
+    v = art.u_std.transform(u_raw)
     h_aug = np.ones((t_len - art.washout, art.reservoir_size + 1))
     h = np.zeros(art.reservoir_size)
     for t in range(t_len):
@@ -244,14 +237,14 @@ def test_washout_forgets_initial_state(tmp_path: Path) -> None:
     art = ESNArtifact.load(art_path)
 
     rng = np.random.default_rng(_SEED)
-    y_hist = rng.standard_normal((art.washout, art.n_eeg_channels))
+    y_hist = rng.standard_normal((art.washout, art.n_channels))
     u_hist = rng.standard_normal((art.washout, art.n_controls))
 
     h_from_zero = art.prime(y_hist, u_hist)
 
     # The same history driven from a random h0 instead of prime's h0 = 0.
     z = art.encode(y_hist)
-    v = art.u_pipeline.transform(u_hist)
+    v = art.u_std.transform(u_hist)
     h = rng.standard_normal(art.reservoir_size)
     for t in range(art.washout):
         h = art.predictor.teacher_step(h, z[t], v[t])
@@ -280,18 +273,15 @@ def test_mlp_prime_rollout_matches_hand_rolled_windows(tmp_path: Path) -> None:
 
     rng = np.random.default_rng(_SEED + 2)
     t_len = 100
-    y_raw = rng.standard_normal((t_len, art.n_eeg_channels))
+    y_raw = rng.standard_normal((t_len, art.n_channels))
     u_raw = rng.standard_normal((t_len, art.n_controls))
 
     n_y, n_u = art.n_y, art.n_u
     max_steps = 50
     t0 = max(n_y, n_u)
 
-    # Reference: encode the whole trajectory up front and slice each window by absolute index.
-    # y[t0 + t] is predicted from the y- and u-windows both *ending at* t0 + t - 1, so the control
-    # window never runs ahead of the EEG window (Section 1 of docs/nn_predictor_training.md).
     z = art.encode(y_raw)
-    w = art.u_pipeline.transform(u_raw)
+    w = art.u_std.transform(u_raw)
     y_hist = list(z[t0 - n_y : t0])
     for t in range(max_steps):
         y_win = np.array(y_hist[-n_y:])

@@ -197,39 +197,9 @@ $$
 m = \frac{\text{width}(X) - n_y C}{\,n_u + N\,}.
 $$
 
-`prepare_datasets` returns a [`Datasets`](../src/neuro/predictor/data.py) record holding the **raw,
-unscaled** train and validation windows *and* the held-out trajectories whole
-(`val_trajs`), because free-run rollout scoring (§8) and the comparison plot both need the
-un-windowed validation signals, not just their windows.
-
-### 3.1 Optional latent PCA projection
-
-If `model.latent_dim = k` is set (and $k <$ number of EEG channels), the y-transform gains a fixed
-orthonormal PCA step *after* the channel standardizer (see §4.2), so **model space** is
-standardize-then-project. [`PCAProjection.fit`](../src/neuro/transforms.py) fits the basis
-$E \in \mathbb{R}^{k \times C}$ with mean $\mu \in \mathbb{R}^{C}$ on the **standardized training
-EEG** (train split only). With $\tilde{y}$ the standardized channels:
-
-$$
-z_t = (\tilde{y}_t - \mu)\,E^{\top} \in \mathbb{R}^{k}, \qquad
-\tilde{y}_t = z_t E + \mu \quad(\text{decode}).
-$$
-
-The network's *inputs* and *rollout* then live in the $k$-dimensional latent space (so the MPC can
-run in the reduced state), but the **losses are still computed in EEG channel space**: each
-model-space prediction $\hat{z}$ is decoded through the fixed, differentiable inverse projection
-$\hat{z}E + \mu$ before the loss (§6). Because $E$ is orthonormal this leaves the MSE gradient
-unchanged up to a constant (§6.4), while making the PSD term meaningful — it operates on real
-EEG channels rather than the decorrelated latent components. Consequently the PSD loss is **not
-incompatible** with a projection (`w_psd` may be > 0 with `latent_dim` set). At evaluation
-predictions are decoded fully back to raw EEG so the reported NMSE is comparable across
-`latent_dim`. Most shipped configs use `latent_dim = null` (projection disabled); the exceptions are
-`meeting_seven/nonlinear_full_pca.yaml` ($k = 25$) and `meeting_seven/nonlinear_selected.yaml`
-($k = 20$).
-
-The decode basis and mean ride along inside the torch module as **registered buffers**
-(`decode_basis`, `decode_mean`), not as extra arguments — so neither the loss nor the training loop
-threads them through its signature, and they move with `model.to(device)`.
+`prepare_datasets` returns a [`Datasets`](../src/neuro/predictor/data.py) record holding the standardized
+train and validation windows *and* the held-out trajectories whole (`val_trajs`), because free-run rollout
+scoring (§8) and the comparison plot both need the un-windowed validation signals, not just their windows.
 
 ---
 
@@ -252,21 +222,15 @@ leaves the validation trajectories intact so free-run rollouts can be scored on 
 path splits identically — it calls the same helper — so the two model families are validated on the
 same held-out files.
 
-### 4.2 Transforms (standardize, then optionally project)
+### 4.2 Transforms (Standardizers)
 
-The EEG and control transforms are [`Pipeline`](../src/neuro/transforms.py)s of per-timestep-vector
-maps, **fit on the training split only** (so no validation statistics leak in) and reused for
-validation and at inference. Both PCA and the scalers share one `fit` / `transform` /
-`inverse_transform` interface — a [`Standardizer`](../src/neuro/transforms.py) and a
-[`PCAProjection`](../src/neuro/transforms.py) — so the projection is just another pipeline step
-rather than a special case:
+The EEG and control transforms are [`Standardizer`](../src/neuro/transforms.py)s, **fit on the continuous
+training trajectories only** (so no validation statistics leak in) and reused for validation and at inference:
 
-- **y-pipeline** $= [\,\text{Standardizer}\,]$, or $[\,\text{Standardizer},\ \text{PCAProjection}\,]$
-  when `latent_dim` is set (§3.1). Fit on the raw past-EEG channel vectors of $X_\text{train}$; the
-  PCA step is fit on the *standardized* channels.
-- **u-pipeline** $= [\,\text{Standardizer}\,]$, fit on the raw past-control vectors.
+- **`y_std`**: [`Standardizer`](../src/neuro/transforms.py), fit on the full continuous training EEG channels.
+- **`u_std`**: [`Standardizer`](../src/neuro/transforms.py), fit on the continuous training control signals.
 
-The `Standardizer` subsumes the previous sklearn scalers:
+The `Standardizer` supports:
 
 - `scaler = "standard"` → subtract mean, divide by std.
 - `scaler = "robust"` → subtract median, divide by IQR (robust to the large EEG bursts / bistable
@@ -276,12 +240,14 @@ The `Standardizer` subsumes the previous sklearn scalers:
 
 Standardisation (per feature $j$): $\tilde{x} = (x - c_j)/s_j$, with $(c_j, s_j) = (\text{mean},
 \text{std})$ for standard, $(\text{median}, \text{IQR})$ for robust.
-[`transform_features`](../src/neuro/predictor/data.py) pushes the past-EEG block through the y-pipeline
-(→ **model space**: standardized channels, or latent components under a projection) and the
-past/future control blocks through the u-pipeline. The **targets $Y$ are only standardized** (the
-channel `Standardizer`, not the PCA step), because the losses live in standardized-channel space and
-the model's latent output is decoded into that space before scoring (§6). Evaluation is done in raw
-EEG units after the full inverse pipeline (Section 8).
+In [`prepare_datasets`](../src/neuro/predictor/data.py), each continuous trajectory is transformed with
+`y_std` and `u_std` before sliding windows are built. The model operates directly in standardized channel
+space, and evaluation is done in raw EEG units via `y_std.inverse_transform` (Section 8).
+
+The statistics are fitted on the **concatenated raw training trajectories**, so every sample counts
+once. (Before the projection was removed they were fitted on the sliding windows instead, which
+weighted each sample by roughly $n_y$ and dropped the trailing `horizon` samples; under
+`scaler = "robust"` the median/IQR — and therefore every trained model — differ between the two.)
 
 ---
 
@@ -293,19 +259,19 @@ An `nn.ModuleList` of `nn.Linear` layers inside
 [`AutoregressiveMLP`](../src/neuro/predictor/module.py):
 
 $$
-f_\theta : \mathbb{R}^{\,n_y k + n_u m} \;\to\; \mathbb{R}^{k}.
+f_\theta : \mathbb{R}^{\,n_y C + n_u m} \;\to\; \mathbb{R}^{C}.
 $$
 
-Widths are in **model space**: $k$ is the latent dimension under a projection and $C$ without one
-(§3.1), so `n_channels` — not `n_eeg_channels` — sizes every layer.
+Widths are in **standardized channel space**: $C$ is the EEG channel count (§3.1), and `n_channels`
+sizes every layer.
 
-- **Input width** $= n_y k + n_u m$ — the one-step model sees only $n_y$ past EEG steps and $n_u$
+- **Input width** $= n_y C + n_u m$ — the one-step model sees only $n_y$ past EEG steps and $n_u$
   past controls. (The future controls in the feature vector are fed in one at a time by the rollout,
   not all at once.)
-- **Output width** $= k$ — a single next-EEG vector in model space.
-- **Layer sizes** $= [\,n_y k + n_u m,\ \underbrace{\texttt{hidden\_size}, \dots}_{\texttt{depth}},\ k\,]$.
+- **Output width** $= C$ — a single next-EEG vector in standardized channel space.
+- **Layer sizes** $= [\,n_y C + n_u m,\ \underbrace{\texttt{hidden\_size}, \dots}_{\texttt{depth}},\ C\,]$.
   - `depth = 0` ⇒ a single affine layer $f_\theta(v) = Wv + b$ with **no** hidden layer and no
-    activation — i.e. a **linear** predictor (this is what `meeting_seven/linear_full.yaml` trains).
+    activation — i.e. a **linear** predictor.
     The artifact reports this as `is_linear`, which is simply `len(layers) == 1`.
   - `depth = 1` ⇒ one hidden layer: $f_\theta(v) = W_2\,\sigma(W_1 v + b_1) + b_2$.
 - **`activation`** $\sigma$ ∈ {`relu`, `tanh`, `softplus`}, applied after **every layer except the
@@ -316,9 +282,9 @@ Widths are in **model space**: $k$ is the latent dimension under a projection an
 The layers are built with `dtype=torch.float64` and initialised by torch's default `nn.Linear`
 initialiser under `torch.manual_seed(training.seed + seed_offset)`.
 
-Everything the module sees is already in **model space** — the EEG block transformed by the
-y-pipeline, the control blocks by the u-pipeline, exactly as `transform_features` produces them. The
-module itself knows nothing about raw units.
+Everything the module sees is already **standardized** — the EEG block by `y_std`, the control blocks
+by `u_std`, applied to whole trajectories before the windows are built (§3.1). The module itself
+knows nothing about raw units.
 
 ### 5.2 Autoregressive rollout $F_\theta$
 
@@ -356,7 +322,7 @@ The identical recursion exists in three places, and they are pinned to each othe
 | [`NNSymbolicModel`](../src/neuro/nn_predictor_casadi.py) `f_step` / `f_out` | the MPC's symbolic graph for IPOPT | CasADi |
 
 `tests/test_predictor_module.py::test_torch_rollout_matches_casadi` pins torch against the CasADi
-bridge to `1e-10` over `latent_dim ∈ {None, k}`, `depth ∈ {0, 2}` and all three activations;
+bridge to `1e-10` over `depth ∈ {0, 2}` and all three activations;
 `test_prime_rollout_matches_the_training_window_at_the_same_index` pins `MLPArtifact.rollout` against
 torch on the same $t_0$; `tests/test_batched_rollout.py` pins `rollout_many` against a loop over
 `rollout` to `1e-12`.
@@ -386,18 +352,9 @@ $$
 \boxed{\;\mathcal{L} = \sum_i w_i\,\mathcal{L}_i\;}
 $$
 
-The model rolls out in **model space** (the $k$-dimensional latent components under a projection,
-else the $C$ channels), producing $\hat{Z} \in \mathbb{R}^{B \times N \times k}$, where the training
-rollout horizon $N = \max_i (\text{span\_steps}_i)$ is derived from the active losses. Before any loss
-term is evaluated, this is **decoded into standardized-channel space** with the fixed,
-differentiable inverse PCA:
-
-$$
-\hat{Y} = \hat{Z}E + \mu \in \mathbb{R}^{B \times N \times C}
-$$
-
-(the identity map when there is no projection, i.e. $k = C$). The targets $Y \in \mathbb{R}^{B
-\times N \times C}$ are the standardized EEG channels (§4.2). Each loss term receives
+The model rolls out directly in standardized channel space, producing $\hat{Y} \in \mathbb{R}^{B \times N \times C}$,
+where the training rollout horizon $N = \max_i (\text{span\_steps}_i)$ is derived from the active losses.
+The targets $Y \in \mathbb{R}^{B \times N \times C}$ are the standardized EEG channels (§4.2). Each loss term receives
 $(\hat{Y}, Y, \text{ctx})$, where [`LossContext`](../src/neuro/predictor/losses.py) provides unit
 recovery parameters ($y_\text{center}$, $y_\text{scale}$), sample rate $f_s$, and the current epoch
 $e$ ($\text{epoch} = \text{null}$ during validation to evaluate terminal schedules).
@@ -471,24 +428,6 @@ The total loss $\mathcal{L} = \sum_i w_i \mathcal{L}_i$ is used for backpropagat
 individual components $\mathcal{L}_i$ (and diagnostics like current rollout length $L$) are
 recorded per epoch into `TrainingResult.train_components` and `val_components`, saved in
 `training_stats.json`, and displayed in the training progress bar and loss curves.
-
-### 6.5 Why decoding is safe for the MSE (orthonormality)
-
-The PCA basis has orthonormal rows ($EE^\top = I_k$). Split a channel target into its in-subspace
-part and residual, $Y - \mu = ZE + r$ with $rE^\top = 0$. For a latent prediction $\hat{Z}$ decoded
-to $\hat{Y} = \hat{Z}E + \mu$,
-
-$$
-\|\hat{Y} - Y\|^2 = \|(\hat{Z}-Z)E\|^2 + \|r\|^2 = \|\hat{Z} - Z\|^2 + \|r\|^2,
-$$
-
-and $\|r\|^2$ is parameter-independent, so $\nabla_\theta$ of the channel-space (summed) MSE equals
-$\nabla_\theta$ of the latent MSE. Computing the MSE in EEG space therefore does **not** change what
-the model learns for point accuracy — it only makes the reported number honest and, crucially,
-unlocks the PSD and metric terms, which *are* genuinely different in channel space. The two mean-reductions
-divide the same summed error by $B\!N\!C$ vs $B\!N\!k$, so the gradients are parallel with ratio
-$k/C$ — pinned as a `torch.autograd` regression test in
-[`test_predictor_losses.py`](../tests/test_predictor_losses.py).
 
 ---
 
@@ -567,7 +506,7 @@ solution rather than randomly: `_warm_start_linear` solves
 $\min_W \|[\,X_\text{1step}\;\mathbf{1}\,]W - Z_1\|^2$ with `np.linalg.lstsq` and copies the result
 into `layer.weight` / `layer.bias`. $X_\text{1step}$ pairs the past-EEG block with the control window
 shifted forward one step, matching what the rollout feeds the MLP at $j = 0$; $Z_1$ is the first
-target step, projected into latent space if PCA is on.
+standardized target step.
 
 A model that already solves the $L = 1$ problem has nothing to learn from the teacher-forcing phase,
 so a warm-started run **skips straight to epoch `curriculum_mse.curr_start`** (if configured, else 0) — its loss
@@ -609,7 +548,7 @@ it neither writes files nor imports `matplotlib`. It returns a
 
 | field | is |
 | ----- | -- |
-| `artifact` | the best-epoch [`MLPArtifact`](../src/neuro/predictor/artifact.py): NumPy weights + fitted pipelines + native `dt` |
+| `artifact` | the best-epoch [`MLPArtifact`](../src/neuro/predictor/artifact.py): NumPy weights + fitted standardizers + native `dt` |
 | `train_losses`, `val_losses` | per-epoch total loss, one entry per epoch actually run |
 | `train_components`, `val_components` | per-epoch dict of unweighted loss components and diagnostics |
 | `rollout` | a [`RolloutNMSE`](../src/neuro/artifacts.py) — free-run NMSE `pooled` and `per_step` evaluated over `eval_horizon_s` |
@@ -637,9 +576,8 @@ Lowercase $y$ is always a single time step; uppercase $Y$ is always the stacked 
 $[\,y_{k+1},\dots,y_{k+N_\text{eval}}\,]$ of §3, so $Y_{b,i,c} = y_{t_b + i,\,c}$ for the window starting at
 $t_b$. A hat is a prediction. $F_\theta$ is autoregressive, so $\hat{Y}$ is already a free-running
 rollout that feeds each predicted step back into its own history (§1, §5.2); there is no
-teacher-forced evaluation anywhere in this section. Everything is scored in **raw EEG units**: when a
-latent projection is active the model's $\hat{z}$ is decoded through $\hat{z}E + \mu$ and then the
-standardizer's inverse (§3.1, §4.2), so the numbers are comparable across `latent_dim`.
+teacher-forced evaluation anywhere in this section. Everything is scored in **raw EEG units**: the
+model's standardized $\hat{z}$ is mapped back through `y_std.inverse_transform` (§3.1, §4.2).
 
 Every reported NMSE — here and in the ESN path — divides a summed squared error by the **energy** of
 the true signal over the same index set (the uncentred second moment, not the variance) through the
@@ -680,14 +618,13 @@ stimulation entirely. Such a model is useless to the MPC, and the failure is inv
 metric above. `_du_sensitivity` makes it visible in seconds instead of after a closed-loop sweep: it
 takes `torch.autograd.functional.jacobian` of the rollout with respect to the **future-control block
 only** (history held fixed), in forward mode — the cheap direction here, since that block is far
-narrower than the $N k$ rollout it drives — and reports the mean Frobenius norm over a fixed
+narrower than the $N C$ rollout it drives — and reports the mean Frobenius norm over a fixed
 subsample of 8 validation windows. A full Jacobian per window would dominate the training run.
 
-**Read it within one config, never across configs.** The Jacobian is taken in **model space**: the
-output is latent under PCA and standardized either way, and the input is standardized control. So the
-number scales with `latent_dim` and with whatever the `u` standardizer fitted on this dataset. It is
-a "is the model responsive to stimulation at all" signal, not a comparable quantity. The ESN path has
-no equivalent.
+**Read it within one config, never across configs.** The Jacobian is taken in **standardized space**
+on both sides, so the number scales with whatever the `y` and `u` standardizers fitted on this
+dataset. It is a "is the model responsive to stimulation at all" signal, not a comparable quantity.
+The ESN path has no equivalent.
 
 ### 8.4 The artifact: one `.npz`, no framework
 
@@ -698,11 +635,10 @@ imports no deep-learning framework, and it is what everything downstream of trai
 
 | npz key | contents |
 | ------- | -------- |
-| `meta` | 0-d unicode array holding `json.dumps(...)` of `model_type`, `activation`, `n_y`, `n_u`, `horizon`, `n_channels`, `n_controls`, `n_eeg_channels`, `dt`, `downsample`, `n_layers`, and the two pipelines' step tags |
+| `meta` | 0-d unicode array holding `json.dumps(...)` of `model_type`, `activation`, `n_y`, `n_u`, `horizon`, `n_channels`, `n_controls`, `dt`, `downsample`, `n_layers` |
 | `layer.<i>.weight`, `layer.<i>.bias` | the MLP stack in forward order, $(out, in)$ and $(out,)$ |
-| `y.0.center`, `y.0.scale` | the EEG standardizer |
-| `y.1.basis`, `y.1.mean` | the PCA step, present only when `latent_dim` is set |
-| `u.0.center`, `u.0.scale` | the control standardizer |
+| `y_center`, `y_scale` | the EEG standardizer |
+| `u_center`, `u_scale` | the control standardizer |
 
 Storing `meta` as a 0-d `"<U"` array (not an object array) is deliberate: `np.load` reads it back
 without `allow_pickle`, so loading an artifact never executes pickled code.
@@ -779,7 +715,6 @@ out-of-range values raise `ValidationError` rather than silently defaulting.
 | `hidden_size` | `128`   | MLP width (ignored when `depth = 0`)                        |
 | `depth`       | `2`     | hidden layers; `0` ⇒ linear model                           |
 | `activation`  | `relu`  | `relu` / `tanh` / `softplus` (a `Literal`, so typos fail at load) |
-| `latent_dim`  | `null`  | PCA latent components $k$; `null` ⇒ no projection           |
 
 ### `training`
 
@@ -831,17 +766,16 @@ All schedule checkpoints and gates are specified in integer **epochs** (`curr_st
 
 ### Shipped presets
 
-| preset | `depth` | `n_u` | `lr` | `wd` | `batch` | `eval_horizon_s` | `curr.` |
-| ------ | :-----: | :---: | ---- | ---- | :-----: | :--------------: | :-----: |
-| [`meeting_seven/linear_full.yaml`](../configs/nn_predictor/meeting_seven/linear_full.yaml) | 0 (linear) | 7 | $10^{-4}$ | $10^{-3}$ | 512 | 0.2 s | 0.9 |
-| [`meeting_seven/nonlinear_full.yaml`](../configs/nn_predictor/meeting_seven/nonlinear_full.yaml) | 1 | 10 | $10^{-5}$ | $5\!\cdot\!10^{-4}$ | 128 | 0.2 s | 0.8 |
+| preset | `epochs` | `patience` | extra loss | `curr_start` / `curr_end` |
+| ------ | :------: | :--------: | ---------- | :-----------------------: |
+| [`nonlinear_full_8s.yaml`](../configs/nn_predictor/nonlinear_full_8s.yaml) | 300 | 100 | — | 100 / 250 |
+| [`nonlinear_full_8s_eeg_ms.yaml`](../configs/nn_predictor/nonlinear_full_8s_eeg_ms.yaml) | 300 | 100 | `eeg_ms` (weight 0.5) | 100 / 250 |
+| [`nonlinear_full_8s_no_curr.yaml`](../configs/nn_predictor/nonlinear_full_8s_no_curr.yaml) | 200 | 750 | — | 301 / 301 (never fires) |
 
-`curr.` is `curriculum_mse.curr_end` as a fraction of `epochs`. Common to both: `n_y=15`,
-`losses.curriculum_mse.span_s=0.2`, `hidden_size=128`, `activation=softplus`, `latent_dim=null`,
-`epochs=250`, `train_split=0.8`, `seed=69`, `patience=100`, `scaler=robust`, `global_scaling=true`,
-and the 100 Hz / 20 s data described in Section 2.2. The other `meeting_seven/` presets vary the
-montage (`*_selected.yaml`, 25 channels) and the projection (`nonlinear_full_pca.yaml`, $k = 25$);
-`nonlinear_full_8s*.yaml` target the 50 Hz / 8 s ROAST dataset at `eval_horizon_s=1.0`, `span_s=1.0`, `depth=2`.
+All three target the 50 Hz / 8 s ROAST dataset described in Section 2.2 and share `n_y=15`, `n_u=10`,
+`hidden_size=64`, `depth=2`, `activation=softplus`, `batch_size=128`, `learning_rate=1e-5`,
+`weight_decay=5e-4`, `train_split=0.8`, `seed=69`, `scaler=robust`, `global_scaling=true`,
+`eval_horizon_s=1.0`, and `losses.curriculum_mse.span_s=1.0`.
 
 ---
 
@@ -907,9 +841,8 @@ recorded on the trial as the `nmse_rollout` user attribute. If the sweep config 
 - **Reproducibility.** A run is reproducible from `training.seed (+ seed_offset)`: it seeds both
   `torch.manual_seed` and the epoch-shuffle RNG. No `torch.use_deterministic_algorithms` is set — it
   buys nothing on the CPU path.
-- **`n_channels` is model space, `n_eeg_channels` is raw EEG.** Under a projection the first is the
-  latent $k$ and the second is $C$; without one they are equal. Nearly every shape bug in this
-  pipeline is these two swapped.
+- **`n_channels` is the EEG channel count $C$ everywhere.** Model space and raw EEG differ only by
+  the standardizer, which is shape-preserving, so there is a single channel dimension end to end.
 - **The control window shifts before the MLP call — in training.** At rollout step $j$ the newest
   control $u_{k+j}$ is already inside $U^{(j+1)}$ when $\hat{y}_{k+j+1}$ is predicted (§5.2), because
   the feature row's u-window ends one step *behind* its y-window. The linear warm start has to

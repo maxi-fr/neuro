@@ -14,7 +14,7 @@
 
 * Optuna sweep objective - smt with closed loop MPC performance
 
-* remove PCA
+* training in float32?
 
 ## Other
 

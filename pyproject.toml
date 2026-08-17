@@ -13,7 +13,6 @@ dependencies = [
     "tvb-data>=3.0.0",
     "simulate",
     "pyyaml>=6.0.3",
-    "scikit-learn>=1.9.0",
     "marimo>=0.23.10",
     "tvboptim>=0.3.0",
     "optuna>=4.9.0",

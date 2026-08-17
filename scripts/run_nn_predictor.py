@@ -69,7 +69,7 @@ def plot_rollout_comparison(result: TrainingResult, plot_path: Path) -> None:
         y_true=y[priming - 1 : priming - 1 + n_anchors],
         y_pred=y_pred,
         dt=art.dt,
-        channels=list(range(min(MAX_PLOT_CHANNELS, art.n_eeg_channels))),
+        channels=list(range(min(MAX_PLOT_CHANNELS, art.n_channels))),
         stride=art.horizon,
         title=f"EEG {art.horizon}-Step Free-Run Rollout",
     )

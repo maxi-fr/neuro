@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING
 
 import numpy as np
 import pytest
@@ -19,11 +19,10 @@ from neuro.config import (
     TrainingConfig,
 )
 from neuro.predictor.artifact import MLPArtifact
-from neuro.predictor.data import apply_to_blocks, prepare_datasets, transform_features
+from neuro.predictor.data import prepare_datasets
 from neuro.predictor.losses import LossContext, build_losses, total_loss
 from neuro.predictor.module import AutoregressiveMLP
 from neuro.predictor.train import train
-from neuro.transforms import Pipeline, Standardizer
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -85,19 +84,25 @@ def _validation_loss(cfg: NNPredictorConfig, files: list[str], art: MLPArtifact)
     losses = build_losses(cfg.training.losses, fs)
     horizon = max(loss_obj.span_steps for loss_obj in losses)
 
-    data = prepare_datasets(files, None, 1, mdl.n_y, mdl.n_u, horizon, _DT, cfg.training.train_split)
-    X = transform_features(data.X_val, art.y_pipeline, art.u_pipeline, mdl.n_y, data.n_channels, data.n_controls)
-    Y = apply_to_blocks(data.Y_val, Pipeline(art.y_pipeline.steps[:1]), data.n_channels)
+    data = prepare_datasets(
+        files,
+        None,
+        1,
+        mdl.n_y,
+        mdl.n_u,
+        horizon,
+        _DT,
+        cfg.training.train_split,
+        scaler=cfg.training.scaler,
+        global_scaling=cfg.training.global_scaling,
+    )
 
     model = AutoregressiveMLP.from_artifact(art)
-    pred = model(torch.as_tensor(X)).reshape(-1, horizon, art.n_channels)
-    if model.decode_basis is not None:
-        pred = pred @ model.decode_basis + model.decode_mean
-    target = torch.as_tensor(Y).reshape(-1, horizon, data.n_channels)
-    standardizer = cast("Standardizer", art.y_pipeline.steps[0])
+    pred = model(torch.as_tensor(data.X_val)).reshape(-1, horizon, art.n_channels)
+    target = torch.as_tensor(data.Y_val).reshape(-1, horizon, data.n_channels)
     ctx = LossContext(
-        y_center=torch.as_tensor(standardizer.center, dtype=torch.float64),
-        y_scale=torch.as_tensor(standardizer.scale, dtype=torch.float64),
+        y_center=torch.as_tensor(art.y_std.center, dtype=torch.float64),
+        y_scale=torch.as_tensor(art.y_std.scale, dtype=torch.float64),
         fs=fs,
         epoch=None,
     )

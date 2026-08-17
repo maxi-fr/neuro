@@ -2,7 +2,7 @@
 
 A detailed, end-to-end description of how the Echo State Network (ESN) EEG predictor is
 configured, harvested, and trained. The predictor is a recurrent reservoir model with a closed-form
-linear readout solved via ridge regression, designed to operate in raw model space or latent PCA space,
+linear readout solved via ridge regression, operating directly in standardized EEG channel space,
 and integrated into CasADi for model predictive control (MPC).
 
 Source of truth:
@@ -44,11 +44,11 @@ Unlike the MLP predictor ([`nn_predictor_training.md`](nn_predictor_training.md)
    $$
    h_{t+1} = (1 - \alpha)\, h_t + \alpha \tanh\big(W_\text{res} h_t + W_\text{in} [z_t;\, v_t;\, 1]\big)
    $$
-   where $z_t \in \mathbb{R}^{d_y}$ is the model-space target EEG (dimension $d_y = k$ under PCA projection, else $d_y = C$), $v_t \in \mathbb{R}^m$ is the standardized control input, and $\alpha = \texttt{leak\_rate} \in (0, 1]$ is the leak rate.
+   where $z_t \in \mathbb{R}^{C}$ is the standardized target EEG, $v_t \in \mathbb{R}^m$ is the standardized control input, and $\alpha = \texttt{leak\_rate} \in (0, 1]$ is the leak rate.
 
 2. **Readout step (one-step prediction):**
    $$
-   \hat{z}_{t+1} = W_\text{out} \begin{bmatrix} h_{t+1} \\ 1 \end{bmatrix} \in \mathbb{R}^{d_y}
+   \hat{z}_{t+1} = W_\text{out} \begin{bmatrix} h_{t+1} \\ 1 \end{bmatrix} \in \mathbb{R}^{C}
    $$
 
 3. **Free-running step (autoregressive rollout):**
@@ -57,7 +57,7 @@ Unlike the MLP predictor ([`nn_predictor_training.md`](nn_predictor_training.md)
    $$
    where the model's own previous prediction $\hat{z}_t$ replaces ground-truth target $z_t$.
 
-The internal reservoir weights $(W_\text{res}, W_\text{in})$ are generated randomly and kept fixed; only the linear readout matrix $W_\text{out} \in \mathbb{R}^{d_y \times (N_\text{res} + 1)}$ is learned from data.
+The internal reservoir weights $(W_\text{res}, W_\text{in})$ are generated randomly and kept fixed; only the linear readout matrix $W_\text{out} \in \mathbb{R}^{C \times (N_\text{res} + 1)}$ is learned from data.
 
 ### 1.1 Indexing notation conventions
 
@@ -108,31 +108,25 @@ Example configuration (`configs/nn_predictor/esn_8s.yaml`): $\Delta t = 10^{-4}\
 
 ## 3. Trajectory reservoir driving & state harvesting
 
-### 3.1 Model-space dimensions and PCA projection
+### 3.1 Standardization and dimensions
 
-Let $d_y$ denote the dimension of the model-space EEG representation:
+The model operates directly in standardized EEG channel space:
 
-- If `model.latent_dim = k` is set ($k < C$), `y_pipeline` gains a fixed orthonormal PCA projection step after standardization. [`PCAProjection.fit`](../src/neuro/transforms.py) fits basis $E \in \mathbb{R}^{k \times C}$ and mean $\mu \in \mathbb{R}^{C}$ on standardized training EEG ($\tilde{y}_t \in \mathbb{R}^C$):
-  $$
-  z_t = (\tilde{y}_t - \mu) E^\top \in \mathbb{R}^k, \qquad \tilde{y}_t = z_t E + \mu \quad (\text{decode}),
-  $$
-  so $d_y = k$.
-- If `model.latent_dim` is `null` (projection disabled), model space is direct standardized channel space $\tilde{y}_t$, so $z_t \equiv \tilde{y}_t \in \mathbb{R}^C$ and $d_y = C$.
-
-The control inputs $u_t \in \mathbb{R}^m$ are pushed through `u_pipeline` (standardized) yielding $v_t \in \mathbb{R}^m$.
+- The measured EEG signals $y_t \in \mathbb{R}^C$ are standardized via `y_std: Standardizer`, yielding $z_t \in \mathbb{R}^C$.
+- The control inputs $u_t \in \mathbb{R}^m$ are standardized via `u_std: Standardizer`, yielding $v_t \in \mathbb{R}^m$.
 
 ### 3.2 Continuous trajectory driving & target alignment
 
 Unlike feedforward neural networks that shuffle sliding windows of inputs, an ESN is driven **continuously** along full trajectory recordings:
 
-1. For each trajectory $(u_\text{raw}, y_\text{raw})$, compute model-space target sequence $z \in \mathbb{R}^{T \times d_y}$ and standardized control sequence $v \in \mathbb{R}^{T \times m}$.
+1. For each trajectory $(u_\text{raw}, y_\text{raw})$, compute standardized target sequence $z = \texttt{y\_std.transform}(y_\text{raw}) \in \mathbb{R}^{T \times C}$ and standardized control sequence $v = \texttt{u\_std.transform}(u_\text{raw}) \in \mathbb{R}^{T \times m}$.
 2. Initialize reservoir state to zero: $h_0 = 0 \in \mathbb{R}^{N_\text{res}}$.
 3. **Target Alignment & Timing:** At step $t$, state vector $h_t$ is recorded **before** absorbing input $(z_t, v_t)$, and paired with target $z_t$. This timing guarantees that $\hat{z}_t = W_\text{out} [h_t; 1]$ is a genuine **one-step-ahead prediction** of step $t$ rather than a state reconstruction.
 4. **Teacher-Forcing State Update:** The state is advanced to $h_{t+1}$:
    $$
    h_{t+1} = (1 - \alpha)\, h_t + \alpha \tanh\big(W_\text{res} h_t + W_\text{in} [z_{\text{in},t};\, v_t;\, 1]\big),
    $$
-   where $z_{\text{in},t} = z_t + \sigma \cdot \xi_t$ incorporates optional harvesting noise ($\sigma = \texttt{noise\_sigma}$, $\xi_t \sim \mathcal{N}(0, I_{d_y})$).
+   where $z_{\text{in},t} = z_t + \sigma \cdot \xi_t$ incorporates optional harvesting noise ($\sigma = \texttt{noise\_sigma}$, $\xi_t \sim \mathcal{N}(0, I_C)$).
 5. **Washout Period:** Initial $W = \texttt{washout}$ steps of each trajectory are discarded to allow transient dynamics from $h_0 = 0$ to decay. Only states and targets for $t \ge W$ are harvested into normal equation statistics.
 
 ---
@@ -151,12 +145,12 @@ $$
 
 ensuring whole trajectories remain intact and avoiding data leakage.
 
-### 4.2 Transforms (pipelines)
+### 4.2 Transforms (Standardizers)
 
 Feature scalers are fit exclusively on the training split ([`prepare_training_data`](../src/neuro/esn_training.py)):
 
-- **`y_pipeline`**: Contains a [`Standardizer`](../src/neuro/transforms.py) (and optionally a [`PCAProjection`](../src/neuro/transforms.py) if `latent_dim` is specified).
-- **`u_pipeline`**: Contains a [`Standardizer`](../src/neuro/transforms.py) for control inputs.
+- **`y_std`**: [`Standardizer`](../src/neuro/transforms.py) for EEG channels.
+- **`u_std`**: [`Standardizer`](../src/neuro/transforms.py) for control inputs.
 
 Supported scaling methods:
 
@@ -181,9 +175,9 @@ Function [`generate_reservoir`](../src/neuro/esn.py) constructs the static weigh
      W_\text{res} = W_\text{res,raw} \cdot \frac{\rho}{\lambda_\text{max}}.
      $$
 
-2. **Input weight matrix $W_\text{in} \in \mathbb{R}^{N_\text{res} \times (d_y + m + 1)}$:**
+2. **Input weight matrix $W_\text{in} \in \mathbb{R}^{N_\text{res} \times (C + m + 1)}$:**
    - Dense matrix with elements sampled independently from $\mathcal{U}(-\gamma, \gamma)$, where $\gamma = \texttt{input\_scaling}$.
-   - Input vector block structure: $[z_t;\, v_t;\, 1] \in \mathbb{R}^{d_y + m + 1}$, representing current model-space EEG, model-space control, and constant unit bias.
+   - Input vector block structure: $[z_t;\, v_t;\, 1] \in \mathbb{R}^{C + m + 1}$, representing current model-space EEG, model-space control, and constant unit bias.
 
 ### 5.2 Priming & rollout interface
 
@@ -201,13 +195,13 @@ Function [`generate_reservoir`](../src/neuro/esn.py) constructs the static weigh
   For step $j = 0, \dots, N-1$:
   1. Compute model-space readout prediction:
      $$
-     \hat{z}_{j} = W_\text{out} \begin{bmatrix} h_j \\ 1 \end{bmatrix} \in \mathbb{R}^{d_y}
+     \hat{z}_{j} = W_\text{out} \begin{bmatrix} h_j \\ 1 \end{bmatrix} \in \mathbb{R}^{C}
      $$
   2. Advance reservoir state with self-fed prediction:
      $$
      h_{j+1} = (1 - \alpha) h_j + \alpha \tanh\big(W_\text{res} h_j + W_\text{in} [\hat{z}_j;\, v_{j};\, 1]\big)
      $$
-  3. Reconstruct raw EEG predictions $\hat{y}_{1:N}$ via `y_pipeline.inverse_transform(preds_z)`.
+  3. Reconstruct raw EEG predictions $\hat{y}_{1:N}$ via `y_std.inverse_transform(preds_z)`.
 
 ### 5.3 CasADi symbolic integration
 
@@ -230,16 +224,16 @@ Instead of storing giant concatenated state matrices in memory, [`harvest_normal
   $$
   G = \sum_{\text{traj}} \sum_{t=W}^{T-1} \begin{bmatrix} h_t \\ 1 \end{bmatrix} \begin{bmatrix} h_t \\ 1 \end{bmatrix}^\top
   $$
-- Cross-covariance matrix sum $P \in \mathbb{R}^{(N_\text{res}+1) \times d_y}$:
+- Cross-covariance matrix sum $P \in \mathbb{R}^{(N_\text{res}+1) \times C}$:
   $$
   P = \sum_{\text{traj}} \sum_{t=W}^{T-1} \begin{bmatrix} h_t \\ 1 \end{bmatrix} z_t^\top
   $$
 
-This accumulation runs in $O(T_\text{total} \cdot N_\text{res}^2)$ time and requires constant $O(N_\text{res}^2 + N_\text{res} d_y)$ memory.
+This accumulation runs in $O(T_\text{total} \cdot N_\text{res}^2)$ time and requires constant $O(N_\text{res}^2 + N_\text{res} C)$ memory.
 
 ### 6.2 Solving ridge regression
 
-[`solve_ridge`](../src/neuro/esn.py) computes the optimal linear readout matrix $W_\text{out} \in \mathbb{R}^{d_y \times (N_\text{res}+1)}$ in closed form:
+[`solve_ridge`](../src/neuro/esn.py) computes the optimal linear readout matrix $W_\text{out} \in \mathbb{R}^{C \times (N_\text{res}+1)}$ in closed form:
 
 $$
 W_\text{out}^\top = \big(G + \lambda I_\text{unreg}\big)^{-1} P
@@ -247,7 +241,7 @@ $$
 
 where $\lambda = \texttt{ridge\_lambda}$ is the $L_2$ regularization parameter, and $I_\text{unreg} = \operatorname{diag}(1, 1, \dots, 1, 0) \in \mathbb{R}^{(N_\text{res}+1) \times (N_\text{res}+1)}$ is the identity matrix with the **last entry zeroed out** so the bias term is **unregularized**.
 
-The linear system is solved via `np.linalg.solve(G + reg, P)`, yielding $W_\text{out} \in \mathbb{R}^{d_y \times (N_\text{res}+1)}$.
+The linear system is solved via `np.linalg.solve(G + reg, P)`, yielding $W_\text{out} \in \mathbb{R}^{C \times (N_\text{res}+1)}$.
 
 ---
 
@@ -284,7 +278,7 @@ An $\text{NMSE} = 1.0$ corresponds to a zero-output baseline.
 
 | file                  | contents                                                                                    |
 | --------------------- | ------------------------------------------------------------------------------------------- |
-| `model.npz`           | Single NPZ artifact containing metadata, weight matrices (`W_in`, `W_out`), CSR sparse components (`W_res.data`, `W_res.indices`, `W_res.indptr`, `W_res.shape`), and pipeline parameters (`y` and `u`) |
+| `model.npz`           | Single NPZ artifact containing metadata, weight matrices (`W_in`, `W_out`), CSR sparse components (`W_res.data`, `W_res.indices`, `W_res.indptr`, `W_res.shape`), and standardizer parameters (`y_center`/`y_scale`, `u_center`/`u_scale`) |
 | `training_stats.json` | Execution timings (`harvest_seconds`, `fit_seconds`), pooled `nmse_rollout`, and per-step `nmse_rollout_per_step` |
 | `config.yaml`         | Copy of resolved configuration YAML for full provenance                                     |
 
@@ -319,7 +313,6 @@ Configurations are declared in YAML files and validated using Pydantic ([`ESNPre
 | `ridge_lambda`    | float  | `1e-3`  | $L_2$ regularization $\lambda$ for readout solve         |
 | `noise_sigma`     | float  | `0.0`   | Std dev $\sigma$ of Gaussian noise added during harvesting |
 | `horizon`         | int    | `50`    | Direct forecasting rollout horizon $N$                  |
-| `latent_dim`      | int    | `null`  | PCA component count $k$ (`null` $\Rightarrow$ full channels) |
 
 ### `training`
 

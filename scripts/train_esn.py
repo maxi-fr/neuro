@@ -42,7 +42,7 @@ def main() -> None:
 
     data_files = resolve_data_files(cfg, args.data_path)
 
-    print("Loading trajectories and fitting feature pipelines...", flush=True)
+    print("Loading trajectories and fitting standardizers...", flush=True)
     data = prepare_training_data(cfg, data_files)
     print(
         f"Loaded {len(data.train_trajs)} training trajectories and {len(data.val_trajs)} validation trajectories.",
@@ -66,8 +66,8 @@ def main() -> None:
     t0_harvest = time.perf_counter()
     G, P = harvest_normal_equations(
         trajectories=data.train_trajs,
-        y_pipeline=data.y_pipeline,
-        u_pipeline=data.u_pipeline,
+        y_std=data.y_std,
+        u_std=data.u_std,
         w_res=w_res,
         w_in=w_in,
         leak_rate=cfg.model.leak_rate,
@@ -100,8 +100,8 @@ def main() -> None:
         noise_sigma=cfg.model.noise_sigma,
         ridge_lambda=cfg.model.ridge_lambda,
         seed=cfg.training.seed,
-        y_pipeline=data.y_pipeline,
-        u_pipeline=data.u_pipeline,
+        y_std=data.y_std,
+        u_std=data.u_std,
     )
 
     print("Evaluating validation rollout NMSE...", flush=True)

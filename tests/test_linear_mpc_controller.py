@@ -13,7 +13,7 @@ from neuro.control import (
 )
 from neuro.nn_predictor_casadi import NNSymbolicModel
 from neuro.predictor.artifact import MLPArtifact
-from neuro.transforms import PCAProjection, Pipeline, Standardizer
+from neuro.transforms import Standardizer
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -21,11 +21,6 @@ if TYPE_CHECKING:
     from neuro.types import FloatArray
 
 _SEED = 7
-
-
-def _standardizer_pipeline(center: FloatArray, scale: FloatArray) -> Pipeline:
-    """A single-step standardizer pipeline from raw ``center``/``scale`` arrays."""
-    return Pipeline((Standardizer(center=np.asarray(center, np.float64), scale=np.asarray(scale, np.float64)),))
 
 
 def _random_layers(rng: np.random.Generator, sizes: list[int]) -> tuple[tuple[FloatArray, FloatArray], ...]:
@@ -66,47 +61,8 @@ def _build_artifact(
         n_controls=n_controls,
         dt=0.01,
         downsample=1,
-        y_pipeline=_standardizer_pipeline(scalers["y_mean"], scalers["y_scale"]),
-        u_pipeline=_standardizer_pipeline(scalers["u_mean"], scalers["u_scale"]),
-    ).save(artifact)
-    return artifact
-
-
-def _build_projection_artifact(
-    tmp_path: Path,
-    *,
-    n_y: int = 4,
-    n_u: int = 3,
-    horizon: int = 4,
-    k: int = 2,
-    n_eeg: int = 6,
-    n_controls: int = 2,
-) -> Path:
-    """Save a tiny linear (single-layer) artifact whose predictor runs in a ``k``-dim PCA latent space."""
-    rng = np.random.default_rng(_SEED)
-    q, _ = np.linalg.qr(rng.standard_normal((n_eeg, n_eeg)))
-    basis = np.ascontiguousarray(q[:, :k].T)
-    mean = rng.standard_normal(n_eeg)
-    y_pipeline = Pipeline(
-        (
-            Standardizer(center=rng.uniform(-1.0, 1.0, n_eeg), scale=rng.uniform(0.5, 2.0, n_eeg)),
-            PCAProjection(basis=basis, mean=mean),
-        )
-    )
-    u_pipeline = _standardizer_pipeline(rng.uniform(-1.0, 1.0, n_controls), rng.uniform(0.5, 2.0, n_controls))
-    artifact = tmp_path / "art_proj"
-    MLPArtifact(
-        layers=_random_layers(rng, [n_y * k + n_u * n_controls, k]),
-        activation="relu",
-        n_y=n_y,
-        n_u=n_u,
-        horizon=horizon,
-        n_channels=k,
-        n_controls=n_controls,
-        dt=0.01,
-        downsample=1,
-        y_pipeline=y_pipeline,
-        u_pipeline=u_pipeline,
+        y_std=Standardizer(center=scalers["y_mean"], scale=scalers["y_scale"]),
+        u_std=Standardizer(center=scalers["u_mean"], scale=scalers["u_scale"]),
     ).save(artifact)
     return artifact
 
@@ -276,28 +232,6 @@ def test_invalid_formulation_rejected(tmp_path: Path) -> None:
     model = NNSymbolicModel.from_artifact(_build_artifact(tmp_path))
     with pytest.raises(ValueError, match="formulation must be"):
         LinearMPCController(dt=0.01, model=model, u_max=1.0, horizon=4, formulation="banded")
-
-
-@pytest.mark.parametrize("formulation", ["sparse", "dense"])
-def test_projection_runs_and_respects_bounds(tmp_path: Path, formulation: str) -> None:
-    """With a PCA-projection artifact the linear MPC runs in latent space and stays in bounds."""
-    n_y, n_u, k, n_eeg, n_controls = 4, 3, 2, 6, 2
-    u_max = 0.5
-    model = NNSymbolicModel.from_artifact(
-        _build_projection_artifact(tmp_path, n_y=n_y, n_u=n_u, k=k, n_eeg=n_eeg, n_controls=n_controls)
-    )
-    controller = LinearMPCController(
-        dt=0.01, model=model, u_max=u_max, horizon=4, w_y=1.0, w_u=0.0, formulation=formulation
-    )
-
-    assert model.n_channels == k
-    assert model.state_shape[0] == n_y * k + n_u * n_controls
-
-    u, log = _drive(controller, n_steps=n_y + 2, n_channels=n_eeg)[-1]
-    assert not log.warmup
-    assert u.shape == (n_controls,)
-    assert np.isfinite(u).all()
-    assert np.all(np.abs(u) <= u_max + 1e-6)
 
 
 @pytest.mark.parametrize("formulation", ["sparse", "dense"])

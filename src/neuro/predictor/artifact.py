@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, Any, Literal, get_args
 
 import numpy as np
 
-from neuro.transforms import Pipeline
+from neuro.transforms import Standardizer
 
 if TYPE_CHECKING:
     from neuro.types import FloatArray
@@ -45,19 +45,17 @@ class MLPArtifact:
     horizon : int
         Direct-prediction horizon the model was trained on.
     n_channels : int
-        Model-space channel count: the latent dimension ``k`` under PCA, else the raw EEG count.
+        Physical EEG channel count.
     n_controls : int
         Number of control (input) channels.
     dt : float
         The model's native time step, seconds.
     downsample : int
         Downsampling factor relative to the simulation's base ``dt``.
-    y_pipeline : Pipeline
-        Raw EEG -> model space map: a channel-space :class:`~neuro.transforms.Standardizer`
-        followed by an optional :class:`~neuro.transforms.PCAProjection`. Encodes measured EEG
-        the model consumes and decodes its predictions back to raw EEG channels.
-    u_pipeline : Pipeline
-        Raw control -> model space map (a single standardizer).
+    y_std : Standardizer
+        Channel standardizer mapping raw EEG to standardized model space and back.
+    u_std : Standardizer
+        Control standardizer mapping raw controls to standardized model space.
     """
 
     layers: tuple[tuple[FloatArray, FloatArray], ...]
@@ -69,19 +67,13 @@ class MLPArtifact:
     n_controls: int
     dt: float
     downsample: int
-    y_pipeline: Pipeline
-    u_pipeline: Pipeline
+    y_std: Standardizer
+    u_std: Standardizer
 
     @property
     def model_type(self) -> str:
         """Model architecture type string ('mlp')."""
         return "mlp"
-
-    @property
-    def n_eeg_channels(self) -> int:
-        """Number of raw EEG channels (the PCA basis' input dimension, else ``n_channels``)."""
-        pca = self.y_pipeline.pca
-        return pca.basis.shape[1] if pca is not None else self.n_channels
 
     @property
     def priming_steps(self) -> int:
@@ -94,17 +86,17 @@ class MLPArtifact:
         return len(self.layers) == 1
 
     def encode(self, y: FloatArray) -> FloatArray:
-        """Map raw EEG ``(..., n_eeg_channels)`` into model space (standardize, then project)."""
-        return self.y_pipeline.transform(np.asarray(y, dtype=np.float64))
+        """Map raw EEG ``(..., n_channels)`` into standardized space."""
+        return self.y_std.transform(np.asarray(y, dtype=np.float64))
 
     def decode(self, z: FloatArray) -> FloatArray:
-        """Reconstruct raw EEG ``(..., n_eeg_channels)`` from model-space values."""
-        return self.y_pipeline.inverse_transform(np.asarray(z, dtype=np.float64))
+        """Reconstruct raw EEG ``(..., n_channels)`` from standardized space."""
+        return self.y_std.inverse_transform(np.asarray(z, dtype=np.float64))
 
     def prime(self, y_hist: FloatArray, u_hist: FloatArray) -> FloatArray:
         """Absorb raw history into an initial state (model-space y, **raw** u tail).
 
-        y_hist (k, n_eeg_channels), u_hist (k, n_controls), both ending at the same step ``t-1``,
+        y_hist (k, n_channels), u_hist (k, n_controls), both ending at the same step ``t-1``,
         so :meth:`rollout` predicts from ``t`` onwards.
         """
         y_arr = np.asarray(y_hist, dtype=np.float64)
@@ -114,7 +106,7 @@ class MLPArtifact:
         return np.concatenate([z_past, u_past])
 
     def prime_many(self, y_hists: FloatArray, u_hists: FloatArray) -> FloatArray:
-        """Batched :meth:`prime`: ``(B, k, n_eeg_channels)`` and ``(B, k, n_controls)`` -> ``(B, state)``."""
+        """Batched :meth:`prime`: ``(B, k, n_channels)`` and ``(B, k, n_controls)`` -> ``(B, state)``."""
         y_arr = np.asarray(y_hists, dtype=np.float64)
         u_arr = np.asarray(u_hists, dtype=np.float64)
         n_batch = y_arr.shape[0]
@@ -135,20 +127,20 @@ class MLPArtifact:
         return x @ w_last.T + b_last
 
     def rollout(self, state: FloatArray, u_future: FloatArray) -> FloatArray:
-        """Free-run from ``state`` under raw ``u_future`` (steps, n_controls) -> (steps, n_eeg_channels).
+        """Free-run from ``state`` under raw ``u_future`` (steps, n_controls) -> (steps, n_channels).
 
         ``u_future[t]`` is the control applied *at* prediction step ``t``, so it first enters the
         window for step ``t + 1`` and the last entry is never consumed. Both windows of a
         :meth:`prime` state already end at the same step, so shifting a control in ahead of the
         first prediction would run the model one control step past its training alignment.
         """
-        w_future = self.u_pipeline.transform(np.asarray(u_future, dtype=np.float64))
+        w_future = self.u_std.transform(np.asarray(u_future, dtype=np.float64))
         steps = len(w_future)
 
         state_arr = np.asarray(state, dtype=np.float64)
         n_z = self.n_y * self.n_channels
         y_window = state_arr[:n_z].reshape(self.n_y, self.n_channels)
-        u_window = self.u_pipeline.transform(state_arr[n_z:].reshape(self.n_u, self.n_controls))
+        u_window = self.u_std.transform(state_arr[n_z:].reshape(self.n_u, self.n_controls))
 
         preds = np.empty((steps, self.n_channels), dtype=np.float64)
         for t in range(steps):
@@ -162,16 +154,16 @@ class MLPArtifact:
     def rollout_many(self, states: FloatArray, u_futures: FloatArray) -> FloatArray:
         """Batched :meth:`rollout`: ``(B, state)`` and raw ``(B, steps, n_controls)``.
 
-        Returns ``(B, steps, n_eeg_channels)``.
+        Returns ``(B, steps, n_channels)``.
         """
-        w_future = self.u_pipeline.transform(np.asarray(u_futures, dtype=np.float64))
+        w_future = self.u_std.transform(np.asarray(u_futures, dtype=np.float64))
         steps = w_future.shape[1]
 
         states_arr = np.asarray(states, dtype=np.float64)
         n_batch = states_arr.shape[0]
         n_z = self.n_y * self.n_channels
         y_window = states_arr[:, :n_z].reshape(n_batch, self.n_y, self.n_channels)
-        u_window = self.u_pipeline.transform(states_arr[:, n_z:].reshape(n_batch, self.n_u, self.n_controls))
+        u_window = self.u_std.transform(states_arr[:, n_z:].reshape(n_batch, self.n_u, self.n_controls))
 
         preds = np.empty((n_batch, steps, self.n_channels), dtype=np.float64)
         for t in range(steps):
@@ -193,12 +185,9 @@ class MLPArtifact:
             "horizon": self.horizon,
             "n_channels": self.n_channels,
             "n_controls": self.n_controls,
-            "n_eeg_channels": self.n_eeg_channels,
             "dt": self.dt,
             "downsample": self.downsample,
             "n_layers": len(self.layers),
-            "y_pipeline": self.y_pipeline.step_tags(),
-            "u_pipeline": self.u_pipeline.step_tags(),
         }
 
     @classmethod
@@ -217,7 +206,8 @@ class MLPArtifact:
                 )
                 for i in range(int(meta["n_layers"]))
             )
-            arrays = {k: np.asarray(npz[k], dtype=np.float64) for k in npz.files if k.startswith(("y.", "u."))}
+            y_std = Standardizer.from_arrays(npz, "y")
+            u_std = Standardizer.from_arrays(npz, "u")
 
         return cls(
             layers=layers,
@@ -229,8 +219,8 @@ class MLPArtifact:
             n_controls=int(meta["n_controls"]),
             dt=float(meta["dt"]),
             downsample=int(meta["downsample"]),
-            y_pipeline=Pipeline.from_serialized("y", meta["y_pipeline"], arrays),
-            u_pipeline=Pipeline.from_serialized("u", meta["u_pipeline"], arrays),
+            y_std=y_std,
+            u_std=u_std,
         )
 
     def save(self, artifact: str | Path) -> None:
@@ -245,7 +235,7 @@ class MLPArtifact:
         for i, (w, b) in enumerate(self.layers):
             arrays[f"layer.{i}.weight"] = w
             arrays[f"layer.{i}.bias"] = b
-        arrays.update(self.y_pipeline.array_dict("y"))
-        arrays.update(self.u_pipeline.array_dict("u"))
+        arrays.update(self.y_std.arrays("y"))
+        arrays.update(self.u_std.arrays("u"))
 
         np.savez(path, **arrays)  # ty: ignore[invalid-argument-type]

@@ -66,7 +66,7 @@ def main() -> None:  # noqa: PLR0915
 
     data_files = resolve_data_files(cfg, args.data_path)
 
-    print("Loading trajectories and fitting feature pipelines...")
+    print("Loading trajectories and fitting standardizers...")
     data = prepare_training_data(cfg, data_files)
     print(f"Loaded {len(data.train_trajs)} train trajectories and {len(data.val_trajs)} val trajectories.")
 
@@ -134,8 +134,8 @@ def main() -> None:  # noqa: PLR0915
                 t0_h = time.perf_counter()
                 G, P = harvest_normal_equations(
                     trajectories=data.train_trajs,
-                    y_pipeline=data.y_pipeline,
-                    u_pipeline=data.u_pipeline,
+                    y_std=data.y_std,
+                    u_std=data.u_std,
                     w_res=w_res,
                     w_in=w_in,
                     leak_rate=leak,
@@ -170,8 +170,8 @@ def main() -> None:  # noqa: PLR0915
                         noise_sigma=noise,
                         ridge_lambda=lam,
                         seed=cfg.training.seed,
-                        y_pipeline=data.y_pipeline,
-                        u_pipeline=data.u_pipeline,
+                        y_std=data.y_std,
+                        u_std=data.u_std,
                     )
 
                     val_nmse = evaluate_rollouts(art, data.val_trajs, cfg.model.horizon).pooled
@@ -203,8 +203,8 @@ def main() -> None:  # noqa: PLR0915
             w_res, w_in = generate_reservoir(N, spec_rad, dens, inp_scale, data.in_dim, cfg.training.seed)
             G, P = harvest_normal_equations(
                 data.train_trajs,
-                data.y_pipeline,
-                data.u_pipeline,
+                data.y_std,
+                data.u_std,
                 w_res,
                 w_in,
                 leak,
@@ -230,8 +230,8 @@ def main() -> None:  # noqa: PLR0915
                 noise_sigma=noise,
                 ridge_lambda=best_lam,
                 seed=cfg.training.seed,
-                y_pipeline=data.y_pipeline,
-                u_pipeline=data.u_pipeline,
+                y_std=data.y_std,
+                u_std=data.u_std,
             )
             sym_model = ESNSymbolicModel(winning_art)
             n_nodes = sym_model.f_step.n_nodes()

@@ -11,10 +11,9 @@ import torch
 from tqdm import tqdm
 
 from neuro.artifacts import evaluate_rollouts
-from neuro.predictor.data import apply_to_blocks, prepare_datasets, transform_features
+from neuro.predictor.data import prepare_datasets
 from neuro.predictor.losses import CurriculumMSE, Loss, LossContext, build_losses, total_loss
 from neuro.predictor.module import AutoregressiveMLP
-from neuro.transforms import PCAProjection, Pipeline, Standardizer
 
 if TYPE_CHECKING:
     from collections.abc import Iterator, Sequence
@@ -23,9 +22,8 @@ if TYPE_CHECKING:
     from torch import Tensor, nn
 
     from neuro.artifacts import RolloutNMSE
-    from neuro.config import ModelConfig, NNPredictorConfig, TrainingConfig
+    from neuro.config import NNPredictorConfig, TrainingConfig
     from neuro.predictor.artifact import MLPArtifact
-    from neuro.predictor.data import Datasets
     from neuro.types import FloatArray, IntArray
 
 _DU_WINDOWS = 8
@@ -78,7 +76,7 @@ class TrainingResult:
 
 @dataclass(frozen=True)
 class _Tensors:
-    """Model-space inputs and standardized-channel targets ``(samples, horizon, n_eeg_channels)``."""
+    """Model-space inputs and standardized-channel targets ``(samples, horizon, n_channels)``."""
 
     X_train: Tensor
     Y_train: Tensor
@@ -93,46 +91,22 @@ def _tensor(a: FloatArray, device: torch.device) -> Tensor:
     return torch.as_tensor(np.ascontiguousarray(a), dtype=torch.float64, device=device)
 
 
-def _fit_pipelines(data: Datasets, model_cfg: ModelConfig, training_cfg: TrainingConfig) -> tuple[Pipeline, Pipeline]:
-    """Fit the raw -> model-space EEG and control transforms on the training history blocks."""
-    n_channels, n_controls = data.n_channels, data.n_controls
-    y_len = model_cfg.n_y * n_channels
-
-    y_past = data.X_train[:, :y_len].reshape(-1, n_channels)
-    u_past = data.X_train[:, y_len : y_len + model_cfg.n_u * n_controls].reshape(-1, n_controls)
-
-    kind, global_scaling = training_cfg.scaler, training_cfg.global_scaling
-    y_standardizer = Standardizer.fit(y_past, kind=kind, global_scaling=global_scaling)
-    u_standardizer = Standardizer.fit(u_past, kind=kind, global_scaling=global_scaling)
-
-    pca = (
-        None
-        if model_cfg.latent_dim is None
-        else PCAProjection.fit(y_standardizer.transform(y_past), model_cfg.latent_dim)
-    )
-    y_steps = (y_standardizer,) if pca is None else (y_standardizer, pca)
-    return Pipeline(y_steps), Pipeline((u_standardizer,))
-
-
 def _warm_start_linear(
     model: AutoregressiveMLP,
-    X_train_m: FloatArray,
-    Y_train_s: FloatArray,
-    n_eeg_channels: int,
-    pca: PCAProjection | None,
+    X_train: FloatArray,
+    Y_train: FloatArray,
+    n_channels: int,
 ) -> None:
     """Overwrite a depth-0 model's single layer with the exact 1-step least-squares solution."""
-    Y_step1 = Y_train_s[:, :n_eeg_channels]
-    Y_latent = Y_step1 if pca is None else pca.transform(Y_step1)
-
-    y_len = model.n_y * Y_latent.shape[1]
+    Y_step1 = Y_train[:, :n_channels]
+    y_len = model.n_y * n_channels
     m = model.n_controls
     # The rollout shifts the control window before the first MLP call, so the 1-step input pairs
     # the past-EEG block with the control window starting one step later.
-    X_1step = np.hstack([X_train_m[:, :y_len], X_train_m[:, y_len + m : y_len + (model.n_u + 1) * m]])
+    X_1step = np.hstack([X_train[:, :y_len], X_train[:, y_len + m : y_len + (model.n_u + 1) * m]])
 
     features = np.hstack([X_1step, np.ones((X_1step.shape[0], 1))])
-    weight_bias, *_ = np.linalg.lstsq(features, Y_latent, rcond=None)
+    weight_bias, *_ = np.linalg.lstsq(features, Y_step1, rcond=None)
 
     layer = cast("nn.Linear", model.layers[0])
     with torch.no_grad():
@@ -151,7 +125,7 @@ def _batch_loss(
     model: AutoregressiveMLP, x: Tensor, y: Tensor, losses: Sequence[Loss], ctx: LossContext
 ) -> tuple[Tensor, dict[str, float]]:
     """Roll ``x`` out and score it against the standardized-channel targets ``y``."""
-    pred_traj = model.decode(model(x).reshape(x.shape[0], model.horizon, model.n_channels))
+    pred_traj = model(x).reshape(x.shape[0], model.horizon, model.n_channels)
     return total_loss(losses, pred_traj, y, ctx)
 
 
@@ -270,10 +244,6 @@ def _du_sensitivity(model: AutoregressiveMLP, X_val: Tensor) -> float:
 def train(cfg: NNPredictorConfig, data_files: list[str], *, seed_offset: int = 0) -> TrainingResult:
     """Train the autoregressive MLP for one config and return everything the run produced.
 
-    Performs no I/O: the caller decides what to persist (:meth:`TrainingResult.save`) and plot.
-    ``training.seed + seed_offset`` drives both the weight initialisation and the epoch shuffle,
-    so a run reproduces exactly; ``seed_offset`` decorrelates otherwise-identical sweep trials.
-
     Parameters
     ----------
     cfg : NNPredictorConfig
@@ -307,49 +277,39 @@ def train(cfg: NNPredictorConfig, data_files: list[str], *, seed_offset: int = 0
         horizon,
         sim.dt,
         trn.train_split,
+        scaler=trn.scaler,
+        global_scaling=trn.global_scaling,
         cutoff_hz=sim.cutoff_hz,
     )
-    y_pipeline, u_pipeline = _fit_pipelines(data, mdl, trn)
-    pca = y_pipeline.pca
-
-    # Inputs go to model space; targets stay in standardized-channel space, where the loss lives.
-    X_train_m = transform_features(data.X_train, y_pipeline, u_pipeline, mdl.n_y, data.n_channels, data.n_controls)
-    X_val_m = transform_features(data.X_val, y_pipeline, u_pipeline, mdl.n_y, data.n_channels, data.n_controls)
-    y_scale = Pipeline(y_pipeline.steps[:1])
-    Y_train_s = apply_to_blocks(data.Y_train, y_scale, data.n_channels)
-    Y_val_s = apply_to_blocks(data.Y_val, y_scale, data.n_channels)
 
     model = AutoregressiveMLP(
         n_y=mdl.n_y,
         n_u=mdl.n_u,
         horizon=horizon,
-        n_channels=data.n_channels if pca is None else pca.basis.shape[0],
+        n_channels=data.n_channels,
         n_controls=data.n_controls,
         hidden_size=mdl.hidden_size,
         depth=mdl.depth,
         activation=mdl.activation,
-        decode_basis=None if pca is None else pca.basis,
-        decode_mean=None if pca is None else pca.mean,
     )
     if mdl.depth == 0:
-        _warm_start_linear(model, X_train_m, Y_train_s, data.n_channels, pca)
+        _warm_start_linear(model, data.X_train, data.Y_train, data.n_channels)
 
     model = model.to(device)
-    y_standardizer = cast("Standardizer", y_pipeline.steps[0])
 
     target_shape = (-1, horizon, data.n_channels)
     tensors = _Tensors(
-        X_train=_tensor(X_train_m, device),
-        Y_train=_tensor(Y_train_s, device).reshape(target_shape),
-        X_val=_tensor(X_val_m, device),
-        Y_val=_tensor(Y_val_s, device).reshape(target_shape),
-        y_center=_tensor(y_standardizer.center, device),
-        y_scale=_tensor(y_standardizer.scale, device),
+        X_train=_tensor(data.X_train, device),
+        Y_train=_tensor(data.Y_train, device).reshape(target_shape),
+        X_val=_tensor(data.X_val, device),
+        Y_val=_tensor(data.Y_val, device).reshape(target_shape),
+        y_center=_tensor(data.y_std.center, device),
+        y_scale=_tensor(data.y_std.scale, device),
     )
 
     train_losses, val_losses, train_comps, val_comps = _fit(model, tensors, trn, losses, fs=fs, seed=seed)
 
-    art = model.to_artifact(sim.dt * sim.downsample, sim.downsample, y_pipeline, u_pipeline)
+    art = model.to_artifact(sim.dt * sim.downsample, sim.downsample, data.y_std, data.u_std)
     eval_steps = max(1, round(trn.eval_horizon_s * fs))
     return TrainingResult(
         artifact=art,

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import itertools
-from typing import TYPE_CHECKING, Self, cast
+from typing import TYPE_CHECKING, Self
 
 import numpy as np
 import torch
@@ -13,7 +13,7 @@ if TYPE_CHECKING:
     from torch import Tensor
 
     from neuro.predictor.artifact import Activation
-    from neuro.transforms import Pipeline
+    from neuro.transforms import Standardizer
     from neuro.types import FloatArray
 
 
@@ -26,23 +26,13 @@ def _activation_module(activation: Activation) -> nn.Module:
     return nn.Softplus()
 
 
-def _buffer(a: FloatArray | None) -> Tensor | None:
-    """Copy an optional NumPy array into a float64 tensor."""
-    return None if a is None else torch.tensor(np.asarray(a, dtype=np.float64))
-
-
 def _to_numpy(t: Tensor) -> FloatArray:
     """Detach a parameter into an owned float64 NumPy array."""
     return t.detach().cpu().numpy().astype(np.float64, copy=True)
 
 
 class AutoregressiveMLP(nn.Module):
-    """One-step MLP unrolled autoregressively over ``horizon`` steps, entirely in model space.
-
-    Both the EEG and the control blocks of the input are expected already transformed
-    (as :func:`neuro.predictor.data.transform_features` produces them); the module itself
-    knows nothing about raw units. The PCA decode arrays ride along as buffers so the loss
-    and the training loop can reach channel space without threading them through signatures.
+    """One-step MLP unrolled autoregressively over ``horizon`` steps in standardized channel space.
 
     Attributes
     ----------
@@ -53,19 +43,12 @@ class AutoregressiveMLP(nn.Module):
     horizon : int
         Number of autoregressive steps per forward pass; BPTT depth equals it.
     n_channels : int
-        Model-space channel count: the latent dimension ``k`` under PCA, else the raw EEG count.
+        Physical EEG channel count.
     n_controls : int
         Number of control channels.
     activation : Activation
         Activation applied after every layer except the last.
-    decode_basis : Tensor | None
-        PCA basis buffer ``(k, n_eeg_channels)``, or ``None`` without a projection.
-    decode_mean : Tensor | None
-        PCA per-channel mean buffer ``(n_eeg_channels,)``, paired with ``decode_basis``.
     """
-
-    decode_basis: Tensor | None
-    decode_mean: Tensor | None
 
     def __init__(  # noqa: PLR0913
         self,
@@ -78,10 +61,8 @@ class AutoregressiveMLP(nn.Module):
         hidden_size: int,
         depth: int,
         activation: Activation = "relu",
-        decode_basis: FloatArray | None = None,
-        decode_mean: FloatArray | None = None,
     ) -> None:
-        """Build the ``depth``-hidden-layer MLP and register the optional PCA decode buffers."""
+        """Build the ``depth``-hidden-layer MLP."""
         super().__init__()
         self.n_y = n_y
         self.n_u = n_u
@@ -97,11 +78,9 @@ class AutoregressiveMLP(nn.Module):
             if i < depth:
                 modules.append(_activation_module(activation))
         self.layers = nn.Sequential(*modules)
-        self.register_buffer("decode_basis", _buffer(decode_basis))
-        self.register_buffer("decode_mean", _buffer(decode_mean))
 
     def forward(self, x: Tensor) -> Tensor:
-        """Roll out ``horizon`` steps: ``(B, n_y*k + (n_u + horizon)*n_controls) -> (B, horizon*k)``."""
+        """Roll out ``horizon`` steps: ``(B, n_y*C + (n_u + horizon)*m) -> (B, horizon*C)``."""
         batch = x.shape[0]
         n_z = self.n_y * self.n_channels
         n_u_past = self.n_u * self.n_controls
@@ -124,14 +103,8 @@ class AutoregressiveMLP(nn.Module):
 
         return torch.cat(preds, dim=1)
 
-    def decode(self, y: Tensor) -> Tensor:
-        """Map model-space channels ``(..., n_channels)`` back to EEG channel space."""
-        if self.decode_basis is None:
-            return y
-        return y @ self.decode_basis + cast("Tensor", self.decode_mean)  # registered as a pair
-
-    def to_artifact(self, dt: float, downsample: int, y_pipeline: Pipeline, u_pipeline: Pipeline) -> MLPArtifact:
-        """Freeze the trained weights and the given transforms into a framework-free artifact."""
+    def to_artifact(self, dt: float, downsample: int, y_std: Standardizer, u_std: Standardizer) -> MLPArtifact:
+        """Freeze the trained weights and standardizers into a framework-free artifact."""
         linears = (m for m in self.layers if isinstance(m, nn.Linear))
         layers = tuple((_to_numpy(lin.weight), _to_numpy(lin.bias)) for lin in linears)
         return MLPArtifact(
@@ -144,14 +117,13 @@ class AutoregressiveMLP(nn.Module):
             n_controls=self.n_controls,
             dt=dt,
             downsample=downsample,
-            y_pipeline=y_pipeline,
-            u_pipeline=u_pipeline,
+            y_std=y_std,
+            u_std=u_std,
         )
 
     @classmethod
     def from_artifact(cls, art: MLPArtifact) -> Self:
-        """Rebuild the module carrying the artifact's weights and PCA decode arrays."""
-        pca = art.y_pipeline.pca
+        """Rebuild the module carrying the artifact's weights."""
         model = cls(
             n_y=art.n_y,
             n_u=art.n_u,
@@ -161,8 +133,6 @@ class AutoregressiveMLP(nn.Module):
             hidden_size=art.layers[0][0].shape[0],
             depth=len(art.layers) - 1,
             activation=art.activation,
-            decode_basis=None if pca is None else pca.basis,
-            decode_mean=None if pca is None else pca.mean,
         )
         linears = (m for m in model.layers if isinstance(m, nn.Linear))
         with torch.no_grad():

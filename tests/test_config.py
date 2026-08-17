@@ -41,7 +41,6 @@ def test_defaults_applied_for_missing_sections() -> None:
     assert cfg.simulation.n_steps is None
     assert cfg.model.n_y == 5
     assert cfg.training.epochs == 100
-    assert cfg.model.latent_dim is None
     assert cfg.sweep is None
 
 
@@ -49,7 +48,7 @@ def test_known_keys_parsed() -> None:
     """Test Known keys parsed."""
     raw = {
         "simulation": {"dt": 1e-4, "downsample": 100, "n_steps": 50000, "data_path": "data/x", "cutoff_hz": 45.0},
-        "model": {"n_y": 14, "latent_dim": 16},
+        "model": {"n_y": 14, "hidden_size": 64},
         "training": {
             **_VALID_TRAINING,
             "epochs": 5,
@@ -61,7 +60,7 @@ def test_known_keys_parsed() -> None:
     assert cfg.simulation.n_steps == 50000
     assert cfg.simulation.cutoff_hz == 45.0
     assert cfg.model.n_y == 14
-    assert cfg.model.latent_dim == 16
+    assert cfg.model.hidden_size == 64
     assert cfg.training.scaler == "robust"
 
 
@@ -79,6 +78,7 @@ def test_known_keys_parsed() -> None:
         {"training": {**_VALID_TRAINING, "curriculum_max_steps": 10}},
         {"training": {**_VALID_TRAINING, "curriculum_alpha_min": 1.0}},
         {"training": {**_VALID_TRAINING, "curriculum_decay_fraction": 0.5}},
+        {"model": {"latent_dim": 20}},
         {"training": {"eval_horizon_s": 0.2, "losses": {"unknown_loss": {"weight": 1.0, "span_s": 0.2}}}},
     ],
 )
@@ -137,7 +137,6 @@ def test_sweep_unknown_param_type_rejected() -> None:
         {"training": {**_VALID_TRAINING, "learning_rate": 0}},
         {"training": {**_VALID_TRAINING, "train_split": 1.0}},
         {"training": {**_VALID_TRAINING, "scaler": "standrd"}},
-        {"training": _VALID_TRAINING, "model": {"latent_dim": 0}},
         {"training": {"eval_horizon_s": 0.0, "losses": _VALID_TRAINING["losses"]}},
         {"training": {"eval_horizon_s": 0.2, "losses": {}}},
         {

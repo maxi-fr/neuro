@@ -10,7 +10,7 @@ import numpy as np
 import scipy.sparse
 import scipy.sparse.linalg
 
-from neuro.transforms import Pipeline
+from neuro.transforms import Standardizer
 
 if TYPE_CHECKING:
     from neuro.types import FloatArray
@@ -80,8 +80,8 @@ def generate_reservoir(  # noqa: PLR0913, PLR0917
 
 def harvest_normal_equations(  # noqa: PLR0913, PLR0917
     trajectories: list[tuple[FloatArray, FloatArray]],
-    y_pipeline: Pipeline,
-    u_pipeline: Pipeline,
+    y_std: Standardizer,
+    u_std: Standardizer,
     w_res: scipy.sparse.csr_matrix,
     w_in: FloatArray,
     leak_rate: float,
@@ -94,10 +94,10 @@ def harvest_normal_equations(  # noqa: PLR0913, PLR0917
     Parameters
     ----------
     trajectories : list[tuple[FloatArray, FloatArray]]
-        List of (u, y) trajectories where y is raw EEG (T, n_eeg_channels) and u is raw control (T, n_controls).
-    y_pipeline : Pipeline
+        List of (u, y) trajectories where y is raw EEG (T, n_channels) and u is raw control (T, n_controls).
+    y_std : Standardizer
         Encoder for y -> z.
-    u_pipeline : Pipeline
+    u_std : Standardizer
         Encoder for u -> v.
     w_res : scipy.sparse.csr_matrix
         Reservoir matrix (N, N).
@@ -121,7 +121,7 @@ def harvest_normal_equations(  # noqa: PLR0913, PLR0917
     """
     rng = np.random.default_rng(seed)
     N = w_res.shape[0]
-    C = y_pipeline.transform(np.asarray(trajectories[0][1][:1], dtype=np.float64)).shape[1]
+    C = y_std.transform(np.asarray(trajectories[0][1][:1], dtype=np.float64)).shape[1]
 
     G = np.zeros((N + 1, N + 1), dtype=np.float64)
     P = np.zeros((N + 1, C), dtype=np.float64)
@@ -130,8 +130,8 @@ def harvest_normal_equations(  # noqa: PLR0913, PLR0917
     w_in_bias = w_in[:, -1]
 
     for u_raw, y_raw in trajectories:
-        z = y_pipeline.transform(np.asarray(y_raw, dtype=np.float64))
-        v = u_pipeline.transform(np.asarray(u_raw, dtype=np.float64))
+        z = y_std.transform(np.asarray(y_raw, dtype=np.float64))
+        v = u_std.transform(np.asarray(u_raw, dtype=np.float64))
         T = len(z)
         h = np.zeros(N, dtype=np.float64)
 
@@ -177,7 +177,7 @@ def solve_ridge(G: FloatArray, P: FloatArray, ridge_lambda: float) -> FloatArray
     Returns
     -------
     W_out : FloatArray
-        Readout weight matrix (C, N+1).
+        Readout weight matrix (C, N+1) mapping [h; 1] -> z.
     """
     N_plus_1 = G.shape[0]
     reg = ridge_lambda * np.eye(N_plus_1, dtype=np.float64)
@@ -194,7 +194,19 @@ def _append_bias(x: FloatArray) -> FloatArray:
 
 @dataclass(frozen=True)
 class ESNPredictor:
-    """Numpy ESN: the reservoir recursion and the readout, both in model space."""
+    """Core NumPy ESN execution engine for teacher-forcing and autonomous prediction.
+
+    Attributes
+    ----------
+    w_in : FloatArray
+        Input weight matrix (N, C + m + 1).
+    w_out : FloatArray
+        Readout weight matrix (C, N + 1).
+    w_res : scipy.sparse.csr_matrix
+        Reservoir recurrent weight matrix (N, N).
+    leak_rate : float
+        Leakage rate alpha in (0, 1].
+    """
 
     w_in: FloatArray
     w_out: FloatArray
@@ -218,7 +230,45 @@ class ESNPredictor:
 
 @dataclass(frozen=True)
 class ESNArtifact:
-    """Loaded ESN artifact containing weight matrices, pipeline transforms, and metadata."""
+    """Complete serialized ESN predictor artifact.
+
+    Attributes
+    ----------
+    w_in : FloatArray
+        Dense input weight matrix (N, C + m + 1).
+    w_out : FloatArray
+        Dense readout weight matrix (C, N + 1).
+    w_res : scipy.sparse.csr_matrix
+        Sparse reservoir weight matrix (N, N).
+    dt : float
+        Effective sampling time in seconds (simulation dt * downsample).
+    downsample : int
+        Downsampling factor applied to raw trajectory data.
+    horizon : int
+        Nominal prediction horizon (number of steps).
+    reservoir_size : int
+        Number of reservoir units (N).
+    leak_rate : float
+        Leakage rate alpha in (0, 1].
+    spectral_radius : float
+        Target spectral radius of reservoir matrix.
+    washout : int
+        Number of initial washout steps to discard.
+    input_scaling : float
+        Uniform input weight scale gamma.
+    density : float
+        Sparsity density of reservoir matrix.
+    noise_sigma : float
+        Noise injection standard deviation on input during state harvesting.
+    ridge_lambda : float
+        Tikhonov regularization parameter.
+    seed : int
+        Random seed used for reservoir generation and noise injection.
+    y_std : Standardizer
+        Channel standardizer for EEG outputs.
+    u_std : Standardizer
+        Control standardizer for inputs.
+    """
 
     w_in: FloatArray
     w_out: FloatArray
@@ -235,8 +285,8 @@ class ESNArtifact:
     noise_sigma: float
     ridge_lambda: float
     seed: int
-    y_pipeline: Pipeline
-    u_pipeline: Pipeline
+    y_std: Standardizer
+    u_std: Standardizer
 
     @cached_property
     def predictor(self) -> ESNPredictor:
@@ -255,19 +305,13 @@ class ESNArtifact:
 
     @property
     def n_channels(self) -> int:
-        """Number of model-space y output channels C."""
+        """Number of EEG channels C."""
         return self.w_out.shape[0]
 
     @property
     def n_controls(self) -> int:
         """Number of control input channels m, read off W_in's ``[z; v; 1]`` input width."""
         return self.w_in.shape[1] - self.n_channels - 1
-
-    @property
-    def n_eeg_channels(self) -> int:
-        """Number of raw EEG channels."""
-        pca = self.y_pipeline.pca
-        return pca.basis.shape[1] if pca is not None else self.n_channels
 
     @property
     def meta(self) -> dict[str, Any]:
@@ -288,18 +332,15 @@ class ESNArtifact:
             "seed": self.seed,
             "n_channels": self.n_channels,
             "n_controls": self.n_controls,
-            "n_eeg_channels": self.n_eeg_channels,
-            "y_pipeline": self.y_pipeline.step_tags(),
-            "u_pipeline": self.u_pipeline.step_tags(),
         }
 
     def encode(self, y: FloatArray) -> FloatArray:
-        """Map raw EEG (..., n_eeg_channels) into model space."""
-        return self.y_pipeline.transform(np.asarray(y, dtype=np.float64))
+        """Map raw EEG (..., n_channels) into standardized model space."""
+        return self.y_std.transform(np.asarray(y, dtype=np.float64))
 
     def decode(self, z: FloatArray) -> FloatArray:
-        """Reconstruct raw EEG (..., n_eeg_channels) from model space."""
-        return self.y_pipeline.inverse_transform(np.asarray(z, dtype=np.float64))
+        """Reconstruct raw EEG (..., n_channels) from standardized model space."""
+        return self.y_std.inverse_transform(np.asarray(z, dtype=np.float64))
 
     def prime(self, y_hist: FloatArray, u_hist: FloatArray) -> FloatArray:
         """Absorb raw history into initial reservoir state h0 = 0.
@@ -307,7 +348,7 @@ class ESNArtifact:
         Parameters
         ----------
         y_hist : FloatArray
-            Raw EEG history (k, n_eeg_channels).
+            Raw EEG history (k, n_channels).
         u_hist : FloatArray
             Raw control history (k, n_controls).
 
@@ -317,7 +358,7 @@ class ESNArtifact:
             Primed reservoir state (N,).
         """
         z = self.encode(y_hist)
-        v = self.u_pipeline.transform(np.asarray(u_hist, dtype=np.float64))
+        v = self.u_std.transform(np.asarray(u_hist, dtype=np.float64))
         esn = self.predictor
         h = np.zeros(self.reservoir_size, dtype=np.float64)
 
@@ -326,9 +367,9 @@ class ESNArtifact:
         return h
 
     def prime_many(self, y_hists: FloatArray, u_hists: FloatArray) -> FloatArray:
-        """Batched :meth:`prime`: ``(B, k, n_eeg_channels)`` and ``(B, k, n_controls)`` -> ``(B, N)``."""
+        """Batched :meth:`prime`: ``(B, k, n_channels)`` and ``(B, k, n_controls)`` -> ``(B, N)``."""
         z = self.encode(y_hists)
-        v = self.u_pipeline.transform(np.asarray(u_hists, dtype=np.float64))
+        v = self.u_std.transform(np.asarray(u_hists, dtype=np.float64))
         esn = self.predictor
         h = np.zeros((z.shape[0], self.reservoir_size), dtype=np.float64)
 
@@ -337,7 +378,7 @@ class ESNArtifact:
         return h
 
     def rollout(self, state: FloatArray, u_future: FloatArray) -> FloatArray:
-        """Free-run from state under raw u_future -> (steps, n_eeg_channels).
+        """Free-run from state under raw u_future -> (steps, n_channels).
 
         Parameters
         ----------
@@ -349,9 +390,9 @@ class ESNArtifact:
         Returns
         -------
         y_preds : FloatArray
-            Predicted raw EEG trajectories (steps, n_eeg_channels).
+            Predicted raw EEG trajectories (steps, n_channels).
         """
-        v_future = self.u_pipeline.transform(np.asarray(u_future, dtype=np.float64))
+        v_future = self.u_std.transform(np.asarray(u_future, dtype=np.float64))
         esn = self.predictor
         h = np.asarray(state, dtype=np.float64).copy()
 
@@ -367,9 +408,9 @@ class ESNArtifact:
     def rollout_many(self, states: FloatArray, u_futures: FloatArray) -> FloatArray:
         """Batched :meth:`rollout`: ``(B, N)`` and raw ``(B, steps, n_controls)``.
 
-        Returns ``(B, steps, n_eeg_channels)``.
+        Returns ``(B, steps, n_channels)``.
         """
-        v_future = self.u_pipeline.transform(np.asarray(u_futures, dtype=np.float64))
+        v_future = self.u_std.transform(np.asarray(u_futures, dtype=np.float64))
         esn = self.predictor
         h = np.array(states, dtype=np.float64)
 
@@ -395,7 +436,8 @@ class ESNArtifact:
             w_res_indptr = np.asarray(npz["W_res.indptr"], dtype=np.int32)
             w_res_shape = tuple(npz["W_res.shape"])
             w_res = scipy.sparse.csr_matrix((w_res_data, w_res_indices, w_res_indptr), shape=w_res_shape)
-            arrays = {k: np.asarray(npz[k], dtype=np.float64) for k in npz.files if k.startswith(("y.", "u."))}
+            y_std = Standardizer.from_arrays(npz, "y")
+            u_std = Standardizer.from_arrays(npz, "u")
 
         return cls(
             w_in=w_in,
@@ -413,8 +455,8 @@ class ESNArtifact:
             noise_sigma=float(meta["noise_sigma"]),
             ridge_lambda=float(meta["ridge_lambda"]),
             seed=int(meta["seed"]),
-            y_pipeline=Pipeline.from_serialized("y", meta["y_pipeline"], arrays),
-            u_pipeline=Pipeline.from_serialized("u", meta["u_pipeline"], arrays),
+            y_std=y_std,
+            u_std=u_std,
         )
 
     def save(self, artifact: str | Path) -> None:
@@ -434,7 +476,7 @@ class ESNArtifact:
             "W_res.indptr": self.w_res.indptr,
             "W_res.shape": np.array(self.w_res.shape),
         }
-        arrays.update(self.y_pipeline.array_dict("y"))
-        arrays.update(self.u_pipeline.array_dict("u"))
+        arrays.update(self.y_std.arrays("y"))
+        arrays.update(self.u_std.arrays("u"))
 
         np.savez(path, **arrays)  # ty: ignore[invalid-argument-type]

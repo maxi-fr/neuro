@@ -1,14 +1,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 import numpy as np
 
 from neuro.filtering import antialias_filter, lowpass_filter
+from neuro.transforms import Standardizer
 
 if TYPE_CHECKING:
-    from neuro.transforms import Pipeline
     from neuro.types import FloatArray
 
 
@@ -92,27 +92,6 @@ def extract_windows_flattened(data: FloatArray, window_size: int) -> FloatArray:
     return view.reshape(-1, window_size * channels)
 
 
-def apply_to_blocks(block_flat: FloatArray, pipeline: Pipeline, in_channels: int) -> FloatArray:
-    """Apply a Pipeline to a flattened multi-step block.
-
-    Parameters
-    ----------
-    block_flat : FloatArray
-        Flattened block of shape ``(samples, steps * in_channels)``.
-    pipeline : Pipeline
-        The fitted transform to apply along the channel axis.
-    in_channels : int
-        Number of raw channels per timestep in ``block_flat``.
-
-    Returns
-    -------
-    FloatArray
-        Transformed block of shape ``(samples, steps * out_channels)``.
-    """
-    samples = block_flat.shape[0]
-    return np.asarray(pipeline.transform(block_flat.reshape(-1, in_channels))).reshape(samples, -1)
-
-
 def build_dataset_for_trajectory(
     u_data: FloatArray, y_data: FloatArray, n_y: int, n_u: int, N: int
 ) -> tuple[FloatArray, FloatArray]:
@@ -156,58 +135,79 @@ def build_dataset_for_trajectory(
     return X, Y
 
 
-def transform_features(  # noqa: PLR0913, PLR0917
-    X: FloatArray,
-    y_pipeline: Pipeline,
-    u_pipeline: Pipeline,
-    n_y: int,
-    n_channels: int,
-    n_controls: int,
-) -> FloatArray:
-    """Map a raw feature matrix into model space.
+@dataclass(frozen=True)
+class TrajectorySplit:
+    """Loaded train/validation trajectories in raw units, plus the standardizers fitted on the training split.
 
-    The past-EEG block is pushed through ``y_pipeline`` (standardize, then optionally project),
-    and the past/future control blocks through ``u_pipeline`` (standardize). The past-EEG block's
-    width shrinks from ``n_y * n_channels`` to ``n_y * k`` when the y-pipeline projects.
-
-    Parameters
+    Attributes
     ----------
-    X : FloatArray
-        Raw input features, shape ``(samples, n_y * n_channels + (n_u + horizon) * n_controls)``.
-    y_pipeline, u_pipeline : Pipeline
-        Fitted transforms for the EEG and control blocks.
-    n_y : int
-        History length of the EEG block.
-    n_channels, n_controls : int
-        Raw EEG and control channel counts.
-
-    Returns
-    -------
-    FloatArray
-        Model-space features, shape ``(samples, n_y * k + (n_u + horizon) * n_controls)``.
+    train_trajs, val_trajs : list[tuple[FloatArray, FloatArray]]
+        The ``(u, y)`` trajectories on each side of the split, kept whole.
+    y_std, u_std : Standardizer
+        Channel and control standardizers, fitted on the concatenated training trajectories.
     """
-    y_past = X[:, : n_y * n_channels]
-    u_blocks = X[:, n_y * n_channels :]
 
-    y_past_m = apply_to_blocks(y_past, y_pipeline, n_channels)
-    u_blocks_m = apply_to_blocks(u_blocks, u_pipeline, n_controls)
-    return np.concatenate([y_past_m, u_blocks_m], axis=1)
+    train_trajs: list[tuple[FloatArray, FloatArray]]
+    val_trajs: list[tuple[FloatArray, FloatArray]]
+    y_std: Standardizer
+    u_std: Standardizer
+
+    @property
+    def n_channels(self) -> int:
+        """Number of raw EEG channels."""
+        return self.train_trajs[0][1].shape[1]
+
+    @property
+    def n_controls(self) -> int:
+        """Number of control input channels."""
+        return self.train_trajs[0][0].shape[1]
+
+
+def fit_standardizers(  # noqa: PLR0913
+    data_files: list[str],
+    *,
+    n_steps_cfg: int | None,
+    downsample: int,
+    dt: float,
+    train_split: float,
+    scaler: Literal["standard", "robust"],
+    global_scaling: bool,
+    cutoff_hz: float | None = None,
+) -> TrajectorySplit:
+    """Split ``data_files`` by trajectory, load both sides, and fit the y/u standardizers on the training split."""
+    train_files, val_files = split_data_files(data_files, train_split)
+
+    def load(files: list[str]) -> list[tuple[FloatArray, FloatArray]]:
+        return [load_trajectory(f, n_steps_cfg, downsample, dt, cutoff_hz=cutoff_hz) for f in files]
+
+    train_trajs = load(train_files)
+    all_y_train = np.concatenate([y for _, y in train_trajs], axis=0)
+    all_u_train = np.concatenate([u for u, _ in train_trajs], axis=0)
+
+    return TrajectorySplit(
+        train_trajs=train_trajs,
+        val_trajs=load(val_files),
+        y_std=Standardizer.fit(all_y_train, kind=scaler, global_scaling=global_scaling),
+        u_std=Standardizer.fit(all_u_train, kind=scaler, global_scaling=global_scaling),
+    )
 
 
 @dataclass(frozen=True)
 class Datasets:
-    """Raw (unscaled) train/validation windows plus the validation trajectories they came from.
+    """Standardized train/validation windows, fitted standardizers, and raw validation trajectories.
 
     Attributes
     ----------
     X_train, X_val : FloatArray
-        Raw input features, shape ``(samples, n_y * n_channels + (n_u + horizon) * n_controls)``.
+        Standardized input features, shape ``(samples, n_y * n_channels + (n_u + horizon) * n_controls)``.
     Y_train, Y_val : FloatArray
-        Raw target labels, shape ``(samples, horizon * n_channels)``.
+        Standardized target labels, shape ``(samples, horizon * n_channels)``.
+    y_std, u_std : Standardizer
+        Fitted channel and control standardizers.
     val_trajs : list[tuple[FloatArray, FloatArray]]
-        The held-out ``(u, y)`` trajectories, kept whole so free-run rollouts can be scored on them.
+        The held-out ``(u, y)`` trajectories in raw units, kept whole so free-run rollouts can be scored on them.
     n_channels : int
-        Number of **raw** EEG output channels (the windows carry no projection yet).
+        Number of raw EEG output channels.
     n_controls : int
         Number of control input channels.
     """
@@ -216,6 +216,8 @@ class Datasets:
     Y_train: FloatArray
     X_val: FloatArray
     Y_val: FloatArray
+    y_std: Standardizer
+    u_std: Standardizer
     val_trajs: list[tuple[FloatArray, FloatArray]]
     n_channels: int
     n_controls: int
@@ -230,50 +232,34 @@ def prepare_datasets(  # noqa: PLR0913, PLR0917
     horizon: int,
     dt: float,
     train_split: float,
+    *,
+    scaler: Literal["standard", "robust"],
+    global_scaling: bool,
     cutoff_hz: float | None = None,
 ) -> Datasets:
-    """Split ``data_files`` by trajectory and build the raw (unscaled) windows on both sides.
+    """Split ``data_files`` by trajectory, standardize, and build sliding windows."""
+    split = fit_standardizers(
+        data_files,
+        n_steps_cfg=n_steps_cfg,
+        downsample=downsample,
+        dt=dt,
+        train_split=train_split,
+        scaler=scaler,
+        global_scaling=global_scaling,
+        cutoff_hz=cutoff_hz,
+    )
+    y_std, u_std = split.y_std, split.u_std
 
-    Windows are built in raw EEG/control units; the standardizer and optional PCA projection
-    are fitted on the training split and applied downstream, so no transform is applied here.
+    def windows(trajs: list[tuple[FloatArray, FloatArray]]) -> tuple[FloatArray, FloatArray]:
+        pairs = [
+            build_dataset_for_trajectory(u_std.transform(u), y_std.transform(y), n_y, n_u, horizon) for u, y in trajs
+        ]
+        return np.concatenate([x for x, _ in pairs], axis=0), np.concatenate([y for _, y in pairs], axis=0)
 
-    Parameters
-    ----------
-    data_files : list[str]
-        List of paths to data files.
-    n_steps_cfg : int | None
-        Number of steps to load per trajectory, or ``None`` to load the entire trajectory.
-    downsample : int
-        Downsampling factor.
-    n_y : int
-        Number of past output steps to include.
-    n_u : int
-        Number of past input steps to include.
-    horizon : int
-        Prediction horizon.
-    dt : float
-        Sample time of the stored trajectories (the filter is designed at ``1 / dt``).
-    train_split : float
-        Fraction of ``data_files`` held for training; the tail is validation.
-    cutoff_hz : float | None, optional
-        Explicit -3 dB cutoff frequency in Hz. If ``None``, defaults to the decimated Nyquist rate.
+    X_train, Y_train = windows(split.train_trajs)
+    X_val, Y_val = windows(split.val_trajs)
 
-    Returns
-    -------
-    Datasets
-        Raw train/validation windows, the held-out trajectories, and the raw channel counts.
-    """
-    train_files, val_files = split_data_files(data_files, train_split)
-
-    def windows(files: list[str]) -> tuple[list[tuple[FloatArray, FloatArray]], FloatArray, FloatArray]:
-        trajs = [load_trajectory(f, n_steps_cfg, downsample, dt, cutoff_hz=cutoff_hz) for f in files]
-        pairs = [build_dataset_for_trajectory(u, y, n_y, n_u, horizon) for u, y in trajs]
-        return trajs, np.concatenate([x for x, _ in pairs], axis=0), np.concatenate([y for _, y in pairs], axis=0)
-
-    train_trajs, X_train, Y_train = windows(train_files)
-    val_trajs, X_val, Y_val = windows(val_files)
-
-    n_channels = train_trajs[0][1].shape[1]
+    n_channels = split.n_channels
     n_controls = (X_train.shape[1] - n_y * n_channels) // (n_u + horizon)
 
     return Datasets(
@@ -281,7 +267,9 @@ def prepare_datasets(  # noqa: PLR0913, PLR0917
         Y_train=Y_train,
         X_val=X_val,
         Y_val=Y_val,
-        val_trajs=val_trajs,
+        y_std=y_std,
+        u_std=u_std,
+        val_trajs=split.val_trajs,
         n_channels=n_channels,
         n_controls=n_controls,
     )

@@ -49,7 +49,6 @@ class ModelConfig(StrictConfig):
     hidden_size: int = Field(default=128, ge=1)
     depth: int = Field(default=2, ge=0)
     activation: Literal["relu", "tanh", "softplus"] = "relu"
-    latent_dim: int | None = Field(default=None, ge=1)
 
 
 class SimulationConfig(StrictConfig):
@@ -385,7 +384,6 @@ class ESNModelConfig(StrictConfig):
     ridge_lambda: float = Field(default=1e-3, ge=0)
     noise_sigma: float = Field(default=0.0, ge=0)
     horizon: int = Field(default=50, ge=1)
-    latent_dim: int | None = Field(default=None, ge=1)
 
 
 class ESNTrainingConfig(StrictConfig):

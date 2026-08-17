@@ -1,4 +1,4 @@
-"""Pin the torch losses: the Welch replica against SciPy and the PCA-decode gradient property."""
+"""Pin the torch losses: the Welch replica against SciPy and curriculum MSE scheduling."""
 
 from __future__ import annotations
 
@@ -25,19 +25,12 @@ from neuro.predictor.module import AutoregressiveMLP
 _SEED = 3
 
 
-def _orthonormal_basis(rng: np.random.Generator, k: int, c: int) -> np.ndarray:
-    q, _ = np.linalg.qr(rng.standard_normal((c, c)))
-    return np.ascontiguousarray(q[:, :k].T)  # (k, c), orthonormal rows
-
-
 def _model(
     n_y: int,
     n_u: int,
     horizon: int,
     k: int,
     n_controls: int,
-    basis: np.ndarray | None = None,
-    mean: np.ndarray | None = None,
 ) -> AutoregressiveMLP:
     torch.manual_seed(_SEED)
     return AutoregressiveMLP(
@@ -49,13 +42,7 @@ def _model(
         hidden_size=8,
         depth=1,
         activation="tanh",
-        decode_basis=basis,
-        decode_mean=mean,
     )
-
-
-def _flat_grad(model: AutoregressiveMLP) -> np.ndarray:
-    return np.concatenate([p.grad.reshape(-1).numpy() for p in model.parameters() if p.grad is not None])
 
 
 @pytest.mark.parametrize("fs", [1.0, 250.0])
@@ -73,45 +60,6 @@ def test_welch_psd_matches_scipy(nperseg: int, fs: float) -> None:
 
     assert got.shape == (4, nperseg // 2 + 1)
     np.testing.assert_allclose(got, want, rtol=1e-10, atol=0.0)
-
-
-def test_decoded_mse_gradient_is_scalar_multiple_of_latent_gradient() -> None:
-    """With an orthonormal basis, ``grad(channel MSE) == (k/C) * grad(latent MSE)``.
-
-    Channel-space and latent-space MSE differ only by the mean's element count (``B*N*C`` vs
-    ``B*N*k``); orthonormality makes the summed squared errors identical, so the gradients are
-    parallel with ratio ``k/C``. This is what justifies rolling out in latent space while
-    scoring in channel space.
-    """
-    rng = np.random.default_rng(_SEED)
-    n_y, n_u, horizon, k, c, n_controls, batch = 2, 2, 1, 3, 6, 2, 8
-    basis = _orthonormal_basis(rng, k, c)
-    mean = rng.standard_normal(c)
-
-    x = torch.as_tensor(rng.standard_normal((batch, n_y * k + n_u * n_controls + horizon * n_controls)))
-    z = rng.standard_normal((batch, horizon, k))  # latent target
-
-    loss_fn = CurriculumMSE(weight=1.0, span_steps=horizon, start_epoch=0, curr_start=0, curr_end=1)
-    ctx = LossContext(
-        y_center=torch.zeros(c, dtype=torch.float64),
-        y_scale=torch.ones(c, dtype=torch.float64),
-        fs=1.0,
-        epoch=None,
-    )
-
-    channel = _model(n_y, n_u, horizon, k, n_controls, basis, mean)
-    pred_latent = channel(x).reshape(batch, horizon, k)
-    pred_channel = pred_latent @ torch.as_tensor(basis) + torch.as_tensor(mean)
-    y_channel = torch.as_tensor(z @ basis + mean)
-    loss_channel, _ = loss_fn(pred_channel, y_channel, ctx)
-    loss_channel.backward()
-
-    latent = _model(n_y, n_u, horizon, k, n_controls)
-    pred_latent_model = latent(x).reshape(batch, horizon, k)
-    loss_latent, _ = loss_fn(pred_latent_model, torch.as_tensor(z), ctx)
-    loss_latent.backward()
-
-    np.testing.assert_allclose(_flat_grad(channel), (k / c) * _flat_grad(latent), rtol=1e-8, atol=1e-10)
 
 
 def test_curriculum_ramps_the_trusted_prefix_then_holds() -> None:

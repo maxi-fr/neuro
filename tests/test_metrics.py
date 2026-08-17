@@ -6,7 +6,7 @@ import pytest
 from neuro.artifacts import accumulate_rollout_errors, evaluate_rollouts, nmse
 from neuro.predictor.artifact import MLPArtifact
 from neuro.predictor.data import split_data_files
-from neuro.transforms import Pipeline, Standardizer
+from neuro.transforms import Standardizer
 
 _RNG = np.random.default_rng(0)
 
@@ -50,7 +50,7 @@ def _tiny_mlp_artifact(*, n_y: int, n_u: int, horizon: int, n_eeg: int, n_contro
         (_RNG.normal(size=(hidden, in_size)) / np.sqrt(in_size), _RNG.normal(size=hidden)),
         (_RNG.normal(size=(n_eeg, hidden)) / np.sqrt(hidden), _RNG.normal(size=n_eeg)),
     )
-    unit = Pipeline((Standardizer(center=np.zeros(n_eeg), scale=np.ones(n_eeg)),))
+    unit = Standardizer(center=np.zeros(n_eeg), scale=np.ones(n_eeg))
     return MLPArtifact(
         layers=layers,
         activation="relu",
@@ -61,8 +61,8 @@ def _tiny_mlp_artifact(*, n_y: int, n_u: int, horizon: int, n_eeg: int, n_contro
         n_controls=n_controls,
         dt=0.01,
         downsample=1,
-        y_pipeline=unit,
-        u_pipeline=Pipeline((Standardizer(center=np.zeros(n_controls), scale=np.ones(n_controls)),)),
+        y_std=unit,
+        u_std=Standardizer(center=np.zeros(n_controls), scale=np.ones(n_controls)),
     )
 
 

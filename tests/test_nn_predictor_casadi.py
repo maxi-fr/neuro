@@ -11,17 +11,12 @@ import pytest
 
 from neuro.nn_predictor_casadi import NNSymbolicModel, _mlp_forward_ca
 from neuro.predictor.artifact import Activation, MLPArtifact
-from neuro.transforms import PCAProjection, Pipeline, Standardizer
+from neuro.transforms import Standardizer
 
 if TYPE_CHECKING:
     from pathlib import Path
 
     from neuro.types import FloatArray
-
-
-def _standardizer_pipeline(center: FloatArray, scale: FloatArray) -> Pipeline:
-    """A single-step standardizer pipeline from raw ``center``/``scale`` arrays."""
-    return Pipeline((Standardizer(center=np.asarray(center, np.float64), scale=np.asarray(scale, np.float64)),))
 
 
 def _random_layers(
@@ -57,7 +52,7 @@ def _artifact_horizon_rollout(
 
     Mirrors what the CasADi ``f_step``/``f_out`` chain must reproduce: absorb the raw EEG/control
     context into a model-space state, free-run on raw future controls, and decode back to raw
-    EEG. ``y_ctx`` is ``(n_eeg_channels, ctx)``; returns shape ``(n_eeg_channels, horizon)``.
+    EEG. ``y_ctx`` is ``(n_channels, ctx)``; returns shape ``(n_channels, horizon)``.
     """
     return art.rollout(art.prime(y_ctx.T, u_ctx), u_future[: art.horizon]).T
 
@@ -65,7 +60,7 @@ def _artifact_horizon_rollout(
 def _casadi_horizon_rollout(
     model: NNSymbolicModel, z_ctx: FloatArray, u_ctx: FloatArray, u_future: FloatArray
 ) -> FloatArray:
-    """Chain ``f_step``/``f_out`` over one ``horizon``, returning raw EEG ``(n_eeg_channels, horizon)``.
+    """Chain ``f_step``/``f_out`` over one ``horizon``, returning raw EEG ``(n_channels, horizon)``.
 
     The two sides carry the *same* trajectory in two state conventions. ``f_step`` shifts the newest
     control in before predicting, so its state pairs a y-window ending at step ``t`` with a u-window
@@ -115,59 +110,11 @@ def _build_artifact(
         n_controls=n_controls,
         dt=0.01,
         downsample=1,
-        y_pipeline=_standardizer_pipeline(scalers["y_mean"], scalers["y_scale"]),
-        u_pipeline=_standardizer_pipeline(scalers["u_mean"], scalers["u_scale"]),
+        y_std=Standardizer(center=scalers["y_mean"], scale=scalers["y_scale"]),
+        u_std=Standardizer(center=scalers["u_mean"], scale=scalers["u_scale"]),
     ).save(artifact)
 
     return artifact, layers, scalers
-
-
-def _build_projection_artifact(
-    tmp_path: Path,
-    n_y: int,
-    n_u: int,
-    horizon: int,
-    hidden_size: int,
-    depth: int,
-    k: int,
-    n_eeg: int,
-    n_controls: int,
-    activation: Activation = "relu",
-) -> Path:
-    """Save a tiny artifact whose model runs in a ``k``-dim PCA latent space and return its path.
-
-    The y-pipeline standardizes the ``n_eeg`` raw EEG channels, then projects onto ``k`` latent
-    components via a fixed orthonormal basis ``(k, n_eeg)`` plus mean (standardize-then-project),
-    so model space is the ``k``-dimensional latent.
-    """
-    rng = np.random.default_rng(_SEED + 5)
-    q, _ = np.linalg.qr(rng.standard_normal((n_eeg, n_eeg)))
-    basis = np.ascontiguousarray(q[:, :k].T)  # orthonormal rows
-    mean = rng.standard_normal(n_eeg)
-
-    layers = _random_layers(rng, n_y * k + n_u * n_controls, k, hidden_size, depth)
-    y_pipeline = Pipeline(
-        (
-            Standardizer(center=rng.uniform(-1.0, 1.0, n_eeg), scale=rng.uniform(0.5, 2.0, n_eeg)),
-            PCAProjection(basis=basis, mean=mean),
-        )
-    )
-    u_pipeline = _standardizer_pipeline(rng.uniform(-1.0, 1.0, n_controls), rng.uniform(0.5, 2.0, n_controls))
-    artifact = tmp_path / "art_proj"
-    MLPArtifact(
-        layers=layers,
-        activation=activation,
-        n_y=n_y,
-        n_u=n_u,
-        horizon=horizon,
-        n_channels=k,
-        n_controls=n_controls,
-        dt=0.01,
-        downsample=1,
-        y_pipeline=y_pipeline,
-        u_pipeline=u_pipeline,
-    ).save(artifact)
-    return artifact
 
 
 @pytest.mark.parametrize(
@@ -224,7 +171,7 @@ def test_single_step_matches_manual_scan_iteration(
     art = MLPArtifact.load(artifact)
 
     rng = np.random.default_rng(_SEED + 2)
-    y_w = rng.standard_normal((n_y, n_channels))  # model-space y-window (no projection -> standardized channels)
+    y_w = rng.standard_normal((n_y, n_channels))
     u_w_raw = rng.standard_normal((n_u, n_controls))
     u_curr = rng.standard_normal(n_controls)
 
@@ -234,11 +181,9 @@ def test_single_step_matches_manual_scan_iteration(
 
     new_u_w = np.concatenate([u_w_raw[1:], u_curr[None, :]], axis=0)
     new_u_w_scaled = (new_u_w - scalers["u_mean"]) / scalers["u_scale"]
-    # The y-window is already model space, so it feeds the MLP unscaled; only controls are standardized.
     y_next_model = art.forward_1step(y_w.flatten(), new_u_w_scaled.flatten())
     new_y_w_want = np.concatenate([y_w[1:], y_next_model[None, :]], axis=0)
     x_next_want = np.concatenate([new_y_w_want.flatten(), new_u_w.flatten()])
-    # f_out decodes model space to raw EEG (no projection -> inverse standardization).
     y_next_raw_want = y_next_model * scalers["y_scale"] + scalers["y_mean"]
 
     np.testing.assert_allclose(x_next, x_next_want, rtol=1e-10, atol=1e-12)
@@ -272,14 +217,14 @@ def test_single_step_with_global_scalar_scalers(tmp_path: Path) -> None:
         n_controls=n_controls,
         dt=0.01,
         downsample=1,
-        y_pipeline=_standardizer_pipeline(scalers["y_mean"], scalers["y_scale"]),
-        u_pipeline=_standardizer_pipeline(scalers["u_mean"], scalers["u_scale"]),
+        y_std=Standardizer(center=scalers["y_mean"], scale=scalers["y_scale"]),
+        u_std=Standardizer(center=scalers["u_mean"], scale=scalers["u_scale"]),
     ).save(artifact)
     model = NNSymbolicModel.from_artifact(artifact)
     art = MLPArtifact.load(artifact)
 
     rng = np.random.default_rng(_SEED + 9)
-    y_w = rng.standard_normal((n_y, n_channels))  # model-space y-window
+    y_w = rng.standard_normal((n_y, n_channels))
     u_w_raw = rng.standard_normal((n_u, n_controls))
     u_curr = rng.standard_normal(n_controls)
 
@@ -288,7 +233,6 @@ def test_single_step_with_global_scalar_scalers(tmp_path: Path) -> None:
     y_next_ca = _np2(model.f_out(x_next)).flatten()
 
     new_u_w = np.concatenate([u_w_raw[1:], u_curr[None, :]], axis=0)
-    # The y-window is already model space; the global scalar broadcasts across all channels for u and the decode.
     u_w_scaled = (new_u_w - scalers["u_mean"]) / scalers["u_scale"]
     y_next_raw_want = art.forward_1step(y_w.flatten(), u_w_scaled.flatten()) * scalers["y_scale"] + scalers["y_mean"]
     np.testing.assert_allclose(y_next_ca, y_next_raw_want, rtol=1e-10, atol=1e-12)
@@ -309,8 +253,6 @@ def test_output_slices_most_recent_row_not_oldest(tmp_path: Path) -> None:
     u_w = np.zeros((n_u, n_controls))
     x = np.concatenate([y_w.flatten(), u_w.flatten()])
 
-    # f_out decodes the LAST model-space row to raw EEG; distinguishable per-row values catch a
-    # reversed slice (which would decode y_w[0] instead).
     got = _np2(model.f_out(x)).flatten()
     np.testing.assert_allclose(got, art.decode(y_w[-1]), rtol=1e-10, atol=1e-12)
 
@@ -338,24 +280,19 @@ def test_multistep_rollout_matches_artifact_rollout(
 
     rng = np.random.default_rng(_SEED + 3)
     ctx = max(n_y, n_u) + 2
-    y_ctx = rng.standard_normal((n_channels, ctx))  # raw EEG context (no projection -> standardized channels)
+    y_ctx = rng.standard_normal((n_channels, ctx))
     u_ctx = rng.standard_normal((ctx, n_controls))
     u_future = rng.standard_normal((horizon, n_controls))
 
-    y_pred_np = _artifact_horizon_rollout(art, y_ctx, u_ctx, u_future)  # (n_eeg, horizon)
+    y_pred_np = _artifact_horizon_rollout(art, y_ctx, u_ctx, u_future)
 
-    # The shooting state is in model space: encode the raw EEG window (standardize) before the roll.
     y_pred_ca_arr = _casadi_horizon_rollout(model, art.encode(y_ctx.T), u_ctx, u_future)
 
     np.testing.assert_allclose(y_pred_ca_arr, y_pred_np, rtol=1e-10, atol=1e-12)
 
 
 def test_casadi_softplus_stays_finite_past_the_exp_overflow() -> None:
-    """The CasADi softplus is the stable ``logaddexp`` form: finite and exact well past ``z = 709``.
-
-    The rollout tests keep pre-activations O(1), where ``log(1 + exp(z))`` and ``logaddexp`` agree
-    to roundoff; only large ``z`` separates them, and there the naive form hands IPOPT a NaN.
-    """
+    """The CasADi softplus is the stable ``logaddexp`` form: finite and exact well past ``z = 709``."""
     z = np.array([-800.0, -20.0, 0.0, 20.0, 800.0, 5000.0])
     identity = ((np.ones((1, 1)), np.zeros(1)), (np.ones((1, 1)), np.zeros(1)))
 
@@ -388,61 +325,9 @@ def test_mlp_artifact_round_trip_preserves_exact_weights_and_meta(tmp_path: Path
     assert mlp_artifact.n_controls == n_controls
     assert mlp_artifact.dt == pytest.approx(0.01)
     assert mlp_artifact.downsample == 1
-    u_std = mlp_artifact.u_pipeline.standardizer
-    y_std = mlp_artifact.y_pipeline.standardizer
-    assert u_std is not None
-    assert y_std is not None
+    u_std = mlp_artifact.u_std
+    y_std = mlp_artifact.y_std
     np.testing.assert_array_equal(u_std.center, scalers["u_mean"])
     np.testing.assert_array_equal(u_std.scale, scalers["u_scale"])
     np.testing.assert_array_equal(y_std.center, scalers["y_mean"])
     np.testing.assert_array_equal(y_std.scale, scalers["y_scale"])
-
-
-def test_f_out_decodes_latent_state_to_eeg(tmp_path: Path) -> None:
-    """With a projection, f_out decodes the last latent row to raw EEG (mirrors MLPArtifact.decode)."""
-    n_y, n_u, k, n_eeg, n_controls = 3, 2, 2, 5, 2
-    artifact = _build_projection_artifact(tmp_path, n_y, n_u, 3, 4, 2, k, n_eeg, n_controls)
-    model = NNSymbolicModel.from_artifact(artifact)
-    art = MLPArtifact.load(artifact)
-
-    assert model.n_channels == k  # the state carries latent components
-    assert model.n_eeg_channels == n_eeg  # but the output is raw EEG
-    assert model.state_shape[0] == n_y * k + n_u * n_controls  # shooting state is latent-sized
-
-    rng = np.random.default_rng(_SEED + 6)
-    z_w = rng.standard_normal((n_y, k))
-    u_w = rng.standard_normal((n_u, n_controls))
-    x = np.concatenate([z_w.flatten(), u_w.flatten()])
-
-    got = _np2(model.f_out(x)).flatten()
-    assert got.shape == (n_eeg,)
-    np.testing.assert_allclose(got, art.decode(z_w[-1]), rtol=1e-10, atol=1e-12)
-
-
-@pytest.mark.parametrize("activation", ["relu", "tanh", "softplus"])
-def test_multistep_rollout_matches_artifact_rollout_with_projection(tmp_path: Path, activation: Activation) -> None:
-    """Chaining f_step/f_out over a latent-projection model matches ``MLPArtifact.rollout``.
-
-    The CasADi rollout runs entirely in latent space (encoded initial window, latent f_step)
-    and f_out decodes each step to EEG; the NumPy AR loop does the same, so the decoded EEG
-    trajectories must agree bit-for-bit.
-    """
-    n_y, n_u, horizon = 2, 2, 3
-    k, n_eeg, n_controls, hidden, depth = 2, 5, 2, 4, 2
-    artifact = _build_projection_artifact(tmp_path, n_y, n_u, horizon, hidden, depth, k, n_eeg, n_controls, activation)
-    model = NNSymbolicModel.from_artifact(artifact)
-    art = MLPArtifact.load(artifact)
-
-    rng = np.random.default_rng(_SEED + 7)
-    ctx = max(n_y, n_u) + 2
-    y_ctx = rng.standard_normal((n_eeg, ctx))  # raw EEG context
-    u_ctx = rng.standard_normal((ctx, n_controls))
-    u_future = rng.standard_normal((horizon, n_controls))
-
-    y_pred_np = _artifact_horizon_rollout(art, y_ctx, u_ctx, u_future)  # (n_eeg, horizon), decoded
-
-    # Encode the raw EEG window to latent for the initial state; controls stay raw, f_out decodes.
-    y_pred_ca_arr = _casadi_horizon_rollout(model, art.encode(y_ctx.T), u_ctx, u_future)
-
-    assert y_pred_ca_arr.shape == (n_eeg, horizon)
-    np.testing.assert_allclose(y_pred_ca_arr, y_pred_np, rtol=1e-10, atol=1e-12)

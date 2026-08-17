@@ -13,7 +13,7 @@ from neuro.esn import ESNArtifact, generate_reservoir
 from neuro.esn_predictor_casadi import ESNSymbolicModel
 from neuro.nn_predictor_casadi import NNSymbolicModel
 from neuro.predictor.artifact import MLPArtifact
-from neuro.transforms import PCAProjection, Pipeline, Standardizer
+from neuro.transforms import Standardizer
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -21,11 +21,6 @@ if TYPE_CHECKING:
     from neuro.types import FloatArray
 
 _SEED = 7
-
-
-def _standardizer_pipeline(center: FloatArray, scale: FloatArray) -> Pipeline:
-    """A single-step standardizer pipeline from raw ``center``/``scale`` arrays."""
-    return Pipeline((Standardizer(center=np.asarray(center, np.float64), scale=np.asarray(scale, np.float64)),))
 
 
 def _random_layers(rng: np.random.Generator, sizes: list[int]) -> tuple[tuple[FloatArray, FloatArray], ...]:
@@ -65,47 +60,8 @@ def _build_artifact(
         n_controls=n_controls,
         dt=0.01,
         downsample=1,
-        y_pipeline=_standardizer_pipeline(scalers["y_mean"], scalers["y_scale"]),
-        u_pipeline=_standardizer_pipeline(scalers["u_mean"], scalers["u_scale"]),
-    ).save(artifact)
-    return artifact
-
-
-def _build_projection_artifact(
-    tmp_path: Path,
-    *,
-    n_y: int = 4,
-    n_u: int = 3,
-    horizon: int = 3,
-    k: int = 2,
-    n_eeg: int = 6,
-    n_controls: int = 2,
-) -> Path:
-    """Save a tiny artifact whose predictor runs in a ``k``-dim PCA latent space."""
-    rng = np.random.default_rng(_SEED)
-    q, _ = np.linalg.qr(rng.standard_normal((n_eeg, n_eeg)))
-    basis = np.ascontiguousarray(q[:, :k].T)
-    mean = rng.standard_normal(n_eeg)
-    y_pipeline = Pipeline(
-        (
-            Standardizer(center=rng.uniform(-1.0, 1.0, n_eeg), scale=rng.uniform(0.5, 2.0, n_eeg)),
-            PCAProjection(basis=basis, mean=mean),
-        )
-    )
-    u_pipeline = _standardizer_pipeline(rng.uniform(-1.0, 1.0, n_controls), rng.uniform(0.5, 2.0, n_controls))
-    artifact = tmp_path / "art_proj"
-    MLPArtifact(
-        layers=_random_layers(rng, [n_y * k + n_u * n_controls, 5, 5, k]),
-        activation="relu",
-        n_y=n_y,
-        n_u=n_u,
-        horizon=horizon,
-        n_channels=k,
-        n_controls=n_controls,
-        dt=0.01,
-        downsample=1,
-        y_pipeline=y_pipeline,
-        u_pipeline=u_pipeline,
+        y_std=Standardizer(center=scalers["y_mean"], scale=scalers["y_scale"]),
+        u_std=Standardizer(center=scalers["u_mean"], scale=scalers["u_scale"]),
     ).save(artifact)
     return artifact
 
@@ -296,31 +252,6 @@ def test_closed_loop_simulation_runs(tmp_path: Path) -> None:
     assert np.all(np.abs(us) <= u_max + 1e-6)
 
 
-def test_projection_shrinks_shooting_state_and_respects_bounds(tmp_path: Path) -> None:
-    """With a PCA-projection artifact the MPC's shooting state is latent-sized and the loop runs.
-
-    The controller is fed raw ``n_eeg``-channel measurements and encodes them to the ``k``
-    latent components internally, so the NLP state is ``n_y*k + n_u*n_controls`` rather than
-    ``n_y*n_eeg + ...`` -- the whole point of the projection for solve time.
-    """
-    n_y, n_u, k, n_eeg, n_controls = 4, 3, 2, 6, 2
-    u_max = 0.5
-    model = NNSymbolicModel.from_artifact(
-        _build_projection_artifact(tmp_path, n_y=n_y, n_u=n_u, k=k, n_eeg=n_eeg, n_controls=n_controls)
-    )
-    controller = MPCController(dt=0.01, model=model, u_max=u_max, horizon=3, w_y=1.0, w_u=0.0)
-
-    assert model.n_channels == k
-    assert model.n_eeg_channels == n_eeg
-    assert model.state_shape[0] == n_y * k + n_u * n_controls
-
-    u, log = _drive(controller, n_steps=n_y + 2, n_channels=n_eeg)[-1]
-    assert not log.warmup
-    assert u.shape == (n_controls,)
-    assert np.isfinite(u).all()
-    assert np.all(np.abs(u) <= u_max + 1e-6)
-
-
 def _build_tiny_esn_artifact(
     tmp_path: Path,
     *,
@@ -342,8 +273,8 @@ def _build_tiny_esn_artifact(
         seed=_SEED,
     )
     w_out = rng.uniform(-0.1, 0.1, size=(n_channels, reservoir_size + 1))
-    y_pipeline = _standardizer_pipeline(rng.uniform(-1.0, 1.0, n_channels), rng.uniform(0.5, 2.0, n_channels))
-    u_pipeline = _standardizer_pipeline(rng.uniform(-1.0, 1.0, n_controls), rng.uniform(0.5, 2.0, n_controls))
+    y_std = Standardizer(center=rng.uniform(-1.0, 1.0, n_channels), scale=rng.uniform(0.5, 2.0, n_channels))
+    u_std = Standardizer(center=rng.uniform(-1.0, 1.0, n_controls), scale=rng.uniform(0.5, 2.0, n_controls))
     artifact = tmp_path / "esn_art"
     ESNArtifact(
         w_in=w_in,
@@ -361,8 +292,8 @@ def _build_tiny_esn_artifact(
         noise_sigma=0.0,
         ridge_lambda=1e-3,
         seed=_SEED,
-        y_pipeline=y_pipeline,
-        u_pipeline=u_pipeline,
+        y_std=y_std,
+        u_std=u_std,
     ).save(artifact)
     return artifact
 

@@ -50,7 +50,7 @@ class ESNSymbolicModel:
     Attributes
     ----------
     artifact : ESNArtifact
-        The loaded ESN artifact containing weight matrices, pipelines, and metadata.
+        The loaded ESN artifact containing weight matrices, standardizers, and metadata.
     """
 
     artifact: ESNArtifact
@@ -74,13 +74,8 @@ class ESNSymbolicModel:
 
     @property
     def n_channels(self) -> int:
-        """Number of model-space y output channels C."""
+        """Number of EEG channels C."""
         return self.artifact.n_channels
-
-    @property
-    def n_eeg_channels(self) -> int:
-        """Number of raw EEG output channels."""
-        return self.artifact.n_eeg_channels
 
     @property
     def native_horizon(self) -> int:
@@ -105,7 +100,7 @@ class ESNSymbolicModel:
         """Absorb raw measurement y and control u via ESN teacher step."""
         assert isinstance(state, ReservoirState)  # noqa: S101
         z = self.artifact.encode(np.asarray(y, dtype=np.float64).reshape(-1))
-        v = self.artifact.u_pipeline.transform(np.asarray(u, dtype=np.float64).reshape(1, -1)).reshape(-1)
+        v = self.artifact.u_std.transform(np.asarray(u, dtype=np.float64).reshape(1, -1)).reshape(-1)
         h_arr = np.asarray(state, dtype=np.float64).reshape(-1)
         h_next = self.artifact.predictor.teacher_step(h_arr, z, v)
         return ReservoirState(h_next, steps_seen=state.steps_seen + 1)
@@ -146,10 +141,7 @@ class ESNSymbolicModel:
             Next reservoir state, shape (N, 1).
         """
         (h,) = history
-        u_std = self.artifact.u_pipeline.standardizer
-        if u_std is None:
-            msg = "u-pipeline must carry a standardizer"
-            raise ValueError(msg)
+        u_std = self.artifact.u_std
 
         n_ctrl = self.n_controls
         u_center = np.broadcast_to(u_std.center, (n_ctrl,)).reshape(-1, 1)
@@ -168,18 +160,11 @@ class ESNSymbolicModel:
         """Decode readout prediction from reservoir state to raw EEG space."""
         h_aug = ca.vertcat(x, 1.0)
         z_hat = ca.mtimes(self._w_out_dm, h_aug)
-
-        pca = self.artifact.y_pipeline.pca
-        y_std = ca.mtimes(pca.basis.T, z_hat) + pca.mean.reshape(-1, 1) if pca is not None else z_hat
-
-        std = self.artifact.y_pipeline.standardizer
-        if std is None:
-            msg = "y-pipeline must carry a standardizer"
-            raise ValueError(msg)
-        n_eeg = self.n_eeg_channels
-        center = np.broadcast_to(std.center, (n_eeg,)).reshape(-1, 1)
-        scale = np.broadcast_to(std.scale, (n_eeg,)).reshape(-1, 1)
-        return unzscore(y_std, center, scale)
+        std = self.artifact.y_std
+        n_ch = self.artifact.n_channels
+        center = np.broadcast_to(std.center, (n_ch,)).reshape(-1, 1)
+        scale = np.broadcast_to(std.scale, (n_ch,)).reshape(-1, 1)
+        return unzscore(z_hat, center, scale)
 
     @cached_property
     def f_step(self) -> ca.Function:
