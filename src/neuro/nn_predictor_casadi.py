@@ -14,15 +14,17 @@ if TYPE_CHECKING:
     from collections.abc import Sequence
     from pathlib import Path
 
+    from neuro.predictor.artifact import Activation
     from neuro.types import FloatArray
 
 
 def _mlp_forward_ca(
-    x: ca.SX | ca.MX, layers: Sequence[tuple[FloatArray, FloatArray]], activation: str
+    x: ca.SX | ca.MX, layers: Sequence[tuple[FloatArray, FloatArray]], activation: Activation
 ) -> ca.SX | ca.MX:
     """Evaluate an MLP forward pass symbolically, replicating :meth:`MLPArtifact.forward_1step`.
 
-    The activation is applied after every layer except the last; the last layer is affine.
+    The activation is applied after every layer except the last; the last layer is affine. The
+    name is validated once, in :meth:`MLPArtifact.load`, so the softplus branch is the fallthrough.
 
     Parameters
     ----------
@@ -30,7 +32,7 @@ def _mlp_forward_ca(
         Input column vector, shape ``(in_size, 1)``.
     layers : Sequence[(FloatArray, FloatArray)]
         Per-layer ``(weight, bias)`` pairs, ``weight`` shaped ``(out, in)``, in forward-pass order.
-    activation : str
+    activation : Activation
         The activation function name ("relu", "tanh", or "softplus").
 
     Returns
@@ -44,11 +46,11 @@ def _mlp_forward_ca(
             x = ca.fmax(z, 0.0)
         elif activation == "tanh":
             x = ca.tanh(z)
-        elif activation == "softplus":
-            x = ca.log(1 + ca.exp(z))
         else:
-            msg = f"Unsupported activation: {activation}"
-            raise ValueError(msg)
+            # log(1 + exp(z)) overflows to inf for z > 709 and hands IPOPT a NaN gradient; this is
+            # the shifted form np.logaddexp uses, exact for the same inputs and finite for all z.
+            m = ca.fmax(z, 0.0)
+            x = m + ca.log(ca.exp(-m) + ca.exp(z - m))
     w_last, b_last = layers[-1]
     return ca.mtimes(w_last, x) + b_last.reshape(-1, 1)
 

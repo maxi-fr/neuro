@@ -62,6 +62,26 @@ def _artifact_horizon_rollout(
     return art.rollout(art.prime(y_ctx.T, u_ctx), u_future[: art.horizon]).T
 
 
+def _casadi_horizon_rollout(
+    model: NNSymbolicModel, z_ctx: FloatArray, u_ctx: FloatArray, u_future: FloatArray
+) -> FloatArray:
+    """Chain ``f_step``/``f_out`` over one ``horizon``, returning raw EEG ``(n_eeg_channels, horizon)``.
+
+    The two sides carry the *same* trajectory in two state conventions. ``f_step`` shifts the newest
+    control in before predicting, so its state pairs a y-window ending at step ``t`` with a u-window
+    ending at ``t - 1`` -- what ``absorb`` builds in the MPC. ``prime`` instead ends both windows at
+    ``t - 1``. Lagging the u-window and prepending ``u_ctx``'s last entry converts one to the other.
+    """
+    art = model.artifact
+    x = np.concatenate([z_ctx[-art.n_y :].flatten(), u_ctx[-art.n_u - 1 : -1].flatten()])
+    u_seq = np.concatenate([u_ctx[-1:], u_future[: art.horizon - 1]])
+    preds = []
+    for u in u_seq:
+        x = _np2(model.f_step(x, u)).flatten()
+        preds.append(_np2(model.f_out(x)).flatten())
+    return np.stack(preds, axis=1)
+
+
 def _build_artifact(
     tmp_path: Path,
     n_y: int,
@@ -325,14 +345,26 @@ def test_multistep_rollout_matches_artifact_rollout(
     y_pred_np = _artifact_horizon_rollout(art, y_ctx, u_ctx, u_future)  # (n_eeg, horizon)
 
     # The shooting state is in model space: encode the raw EEG window (standardize) before the roll.
-    x = np.concatenate([art.encode(y_ctx.T[-n_y:]).flatten(), u_ctx[-n_u:].flatten()])
-    y_pred_ca = []
-    for k in range(horizon):
-        x = _np2(model.f_step(x, u_future[k])).flatten()
-        y_pred_ca.append(_np2(model.f_out(x)).flatten())
-    y_pred_ca_arr = np.stack(y_pred_ca, axis=1)
+    y_pred_ca_arr = _casadi_horizon_rollout(model, art.encode(y_ctx.T), u_ctx, u_future)
 
     np.testing.assert_allclose(y_pred_ca_arr, y_pred_np, rtol=1e-10, atol=1e-12)
+
+
+def test_casadi_softplus_stays_finite_past_the_exp_overflow() -> None:
+    """The CasADi softplus is the stable ``logaddexp`` form: finite and exact well past ``z = 709``.
+
+    The rollout tests keep pre-activations O(1), where ``log(1 + exp(z))`` and ``logaddexp`` agree
+    to roundoff; only large ``z`` separates them, and there the naive form hands IPOPT a NaN.
+    """
+    z = np.array([-800.0, -20.0, 0.0, 20.0, 800.0, 5000.0])
+    identity = ((np.ones((1, 1)), np.zeros(1)), (np.ones((1, 1)), np.zeros(1)))
+
+    z_sym = ca.MX.sym("z", 1, 1)
+    softplus = ca.Function("softplus", [z_sym], [_mlp_forward_ca(z_sym, identity, "softplus")])
+    got = np.array([_np2(softplus(zi)).item() for zi in z])
+
+    assert np.isfinite(got).all()
+    np.testing.assert_allclose(got, np.logaddexp(z, 0.0), rtol=1e-12, atol=1e-12)
 
 
 def test_mlp_artifact_round_trip_preserves_exact_weights_and_meta(tmp_path: Path) -> None:
@@ -409,14 +441,8 @@ def test_multistep_rollout_matches_artifact_rollout_with_projection(tmp_path: Pa
 
     y_pred_np = _artifact_horizon_rollout(art, y_ctx, u_ctx, u_future)  # (n_eeg, horizon), decoded
 
-    # Encode the raw EEG window to latent for the initial state; controls stay raw.
-    z_w = art.encode(y_ctx.T[-n_y:])
-    x = np.concatenate([z_w.flatten(), u_ctx[-n_u:].flatten()])
-    y_pred_ca = []
-    for step in range(horizon):
-        x = _np2(model.f_step(x, u_future[step])).flatten()
-        y_pred_ca.append(_np2(model.f_out(x)).flatten())  # f_out decodes back to EEG
-    y_pred_ca_arr = np.stack(y_pred_ca, axis=1)
+    # Encode the raw EEG window to latent for the initial state; controls stay raw, f_out decodes.
+    y_pred_ca_arr = _casadi_horizon_rollout(model, art.encode(y_ctx.T), u_ctx, u_future)
 
     assert y_pred_ca_arr.shape == (n_eeg, horizon)
     np.testing.assert_allclose(y_pred_ca_arr, y_pred_np, rtol=1e-10, atol=1e-12)

@@ -18,15 +18,15 @@ if TYPE_CHECKING:
 
 
 def _activate(z: Tensor, activation: Activation) -> Tensor:
-    """Apply the named activation elementwise (matching :func:`neuro.predictor.artifact._activate`)."""
+    """Apply the named activation elementwise (matching :func:`neuro.predictor.artifact._activate`).
+
+    The name is validated once, in :meth:`MLPArtifact.load`, so the softplus branch is the fallthrough.
+    """
     if activation == "relu":
         return torch.relu(z)
     if activation == "tanh":
         return torch.tanh(z)
-    if activation == "softplus":
-        return torch.nn.functional.softplus(z)
-    msg = f"Unsupported activation: {activation}"
-    raise ValueError(msg)
+    return torch.nn.functional.softplus(z)
 
 
 def _buffer(a: FloatArray | None) -> Tensor | None:

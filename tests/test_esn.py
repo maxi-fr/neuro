@@ -280,17 +280,17 @@ def test_mlp_prime_rollout_matches_hand_rolled_windows(tmp_path: Path) -> None:
     max_steps = 50
     t0 = max(n_y, n_u)
 
-    # Reference: encode the whole trajectory up front and shift both windows by hand.
+    # Reference: encode the whole trajectory up front and slice each window by absolute index.
+    # y[t0 + t] is predicted from the y- and u-windows both *ending at* t0 + t - 1, so the control
+    # window never runs ahead of the EEG window (Section 1 of docs/nn_predictor_training.md).
     z = art.encode(y_raw)
     w = art.u_pipeline.transform(u_raw)
-    y_win, u_win = z[t0 - n_y : t0], w[t0 - n_u : t0]
-    preds = []
+    y_hist = list(z[t0 - n_y : t0])
     for t in range(max_steps):
-        u_win = np.vstack([u_win[1:], w[t0 + t]])
-        y_next = art.forward_1step(y_win.reshape(-1), u_win.reshape(-1))
-        y_win = np.vstack([y_win[1:], y_next])
-        preds.append(y_next)
-    y_pred_manual = art.decode(np.array(preds))
+        y_win = np.array(y_hist[-n_y:])
+        u_win = w[t0 + t - n_u : t0 + t]
+        y_hist.append(art.forward_1step(y_win.reshape(-1), u_win.reshape(-1)))
+    y_pred_manual = art.decode(np.array(y_hist[n_y:]))
 
     # prime / rollout seam
     state = art.prime(y_raw[t0 - art.priming_steps : t0], u_raw[t0 - art.priming_steps : t0])

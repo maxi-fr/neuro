@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, get_args
 
 import numpy as np
 
@@ -13,18 +13,19 @@ if TYPE_CHECKING:
     from neuro.types import FloatArray
 
 Activation = Literal["relu", "tanh", "softplus"]
+ACTIVATIONS: frozenset[str] = frozenset(get_args(Activation))
 
 
 def _activate(z: FloatArray, activation: Activation) -> FloatArray:
-    """Apply the named activation elementwise (matching ``_mlp_forward_ca`` and ``torch.nn.functional``)."""
+    """Apply the named activation elementwise (matching ``_mlp_forward_ca`` and ``torch.nn.functional``).
+
+    The name is validated once, in :meth:`MLPArtifact.load`, so the softplus branch is the fallthrough.
+    """
     if activation == "relu":
         return np.maximum(z, 0.0)
     if activation == "tanh":
         return np.tanh(z)
-    if activation == "softplus":
-        return np.logaddexp(z, 0.0)
-    msg = f"Unsupported activation: {activation}"
-    raise ValueError(msg)
+    return np.logaddexp(z, 0.0)
 
 
 @dataclass(frozen=True)
@@ -103,7 +104,8 @@ class MLPArtifact:
     def prime(self, y_hist: FloatArray, u_hist: FloatArray) -> FloatArray:
         """Absorb raw history into an initial state (model-space y, **raw** u tail).
 
-        y_hist (k, n_eeg_channels), u_hist (k, n_controls).
+        y_hist (k, n_eeg_channels), u_hist (k, n_controls), both ending at the same step ``t-1``,
+        so :meth:`rollout` predicts from ``t`` onwards.
         """
         y_arr = np.asarray(y_hist, dtype=np.float64)
         u_arr = np.asarray(u_hist, dtype=np.float64)
@@ -133,7 +135,13 @@ class MLPArtifact:
         return x @ w_last.T + b_last
 
     def rollout(self, state: FloatArray, u_future: FloatArray) -> FloatArray:
-        """Free-run from ``state`` under raw ``u_future`` (steps, n_controls) -> (steps, n_eeg_channels)."""
+        """Free-run from ``state`` under raw ``u_future`` (steps, n_controls) -> (steps, n_eeg_channels).
+
+        ``u_future[t]`` is the control applied *at* prediction step ``t``, so it first enters the
+        window for step ``t + 1`` and the last entry is never consumed. Both windows of a
+        :meth:`prime` state already end at the same step, so shifting a control in ahead of the
+        first prediction would run the model one control step past its training alignment.
+        """
         w_future = self.u_pipeline.transform(np.asarray(u_future, dtype=np.float64))
         steps = len(w_future)
 
@@ -144,11 +152,9 @@ class MLPArtifact:
 
         preds = np.empty((steps, self.n_channels), dtype=np.float64)
         for t in range(steps):
-            # The control window shifts *before* the MLP call, so the newest control is already
-            # in the window when y_next is predicted.
-            u_window = np.concatenate([u_window[1:], w_future[t][None, :]], axis=0)
             y_next = self.forward_1step(y_window.reshape(-1), u_window.reshape(-1))
             y_window = np.concatenate([y_window[1:], y_next[None, :]], axis=0)
+            u_window = np.concatenate([u_window[1:], w_future[t][None, :]], axis=0)
             preds[t] = y_next
 
         return self.decode(preds)
@@ -169,9 +175,9 @@ class MLPArtifact:
 
         preds = np.empty((n_batch, steps, self.n_channels), dtype=np.float64)
         for t in range(steps):
-            u_window = np.concatenate([u_window[:, 1:], w_future[:, t, None, :]], axis=1)
             y_next = self.forward_1step(y_window.reshape(n_batch, -1), u_window.reshape(n_batch, -1))
             y_window = np.concatenate([y_window[:, 1:], y_next[:, None, :]], axis=1)
+            u_window = np.concatenate([u_window[:, 1:], w_future[:, t, None, :]], axis=1)
             preds[:, t] = y_next
 
         return self.decode(preds)
@@ -201,6 +207,9 @@ class MLPArtifact:
         path = Path(artifact).with_suffix(".npz")
         with np.load(path) as npz:
             meta: dict[str, Any] = json.loads(str(npz["meta"]))
+            if meta["activation"] not in ACTIVATIONS:
+                msg = f"Unsupported activation: {meta['activation']!r}"
+                raise ValueError(msg)
             layers = tuple(
                 (
                     np.asarray(npz[f"layer.{i}.weight"], dtype=np.float64),

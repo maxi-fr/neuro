@@ -293,14 +293,17 @@ An `nn.ModuleList` of `nn.Linear` layers inside
 [`AutoregressiveMLP`](../src/neuro/predictor/module.py):
 
 $$
-f_\theta : \mathbb{R}^{\,n_y C + n_u m} \;\to\; \mathbb{R}^{C}.
+f_\theta : \mathbb{R}^{\,n_y k + n_u m} \;\to\; \mathbb{R}^{k}.
 $$
 
-- **Input width** $= n_y C + n_u m$ — the one-step model sees only $n_y$ past EEG steps and $n_u$
+Widths are in **model space**: $k$ is the latent dimension under a projection and $C$ without one
+(§3.1), so `n_channels` — not `n_eeg_channels` — sizes every layer.
+
+- **Input width** $= n_y k + n_u m$ — the one-step model sees only $n_y$ past EEG steps and $n_u$
   past controls. (The future controls in the feature vector are fed in one at a time by the rollout,
   not all at once.)
-- **Output width** $= C$ — a single next-EEG vector.
-- **Layer sizes** $= [\,n_y C + n_u m,\ \underbrace{\texttt{hidden\_size}, \dots}_{\texttt{depth}},\ C\,]$.
+- **Output width** $= k$ — a single next-EEG vector in model space.
+- **Layer sizes** $= [\,n_y k + n_u m,\ \underbrace{\texttt{hidden\_size}, \dots}_{\texttt{depth}},\ k\,]$.
   - `depth = 0` ⇒ a single affine layer $f_\theta(v) = Wv + b$ with **no** hidden layer and no
     activation — i.e. a **linear** predictor (this is what `meeting_seven/linear_full.yaml` trains).
     The artifact reports this as `is_linear`, which is simply `len(layers) == 1`.
@@ -354,9 +357,23 @@ The identical recursion exists in three places, and they are pinned to each othe
 
 `tests/test_predictor_module.py::test_torch_rollout_matches_casadi` pins torch against the CasADi
 bridge to `1e-10` over `latent_dim ∈ {None, k}`, `depth ∈ {0, 2}` and all three activations;
-`tests/test_batched_rollout.py` pins `rollout_many` against a loop over `rollout` to `1e-12`. One
-convention trap is worth remembering: `NNSymbolicModel` standardizes raw $u$ *internally*, while the
-torch module and `MLPArtifact.rollout`'s `state` expect the control already in model space.
+`test_prime_rollout_matches_the_training_window_at_the_same_index` pins `MLPArtifact.rollout` against
+torch on the same $t_0$; `tests/test_batched_rollout.py` pins `rollout_many` against a loop over
+`rollout` to `1e-12`.
+
+Two convention traps are worth remembering. `NNSymbolicModel` standardizes raw $u$ *internally*,
+while the torch module and `MLPArtifact.rollout`'s `state` expect the control already in model space.
+And the three carry the recursion in **two state conventions**, which differ only in where the
+control window sits:
+
+| state built by | y-window ends | u-window ends | shift relative to the prediction |
+| -------------- | ------------- | ------------- | -------------------------------- |
+| `absorb` (MPC, fed the *previous* control) and the training feature row | $t$ | $t - 1$ | control shifts in **before** |
+| `MLPArtifact.prime` | $t$ | $t$ | control shifts in **after** |
+
+Both predict $\hat{y}_{t+1}$ from a $u$-window ending at $t$ — the rule of §1 — and the two are
+interconvertible by lagging the u-window one step (see `_casadi_horizon_rollout` in
+`tests/test_nn_predictor_casadi.py`, which does exactly that to compare them).
 
 ---
 
@@ -616,8 +633,9 @@ Every reported NMSE — here and in the ESN path — divides a summed squared er
 the true signal over the same index set (the uncentred second moment, not the variance) through the
 single definition in [`nmse`](../src/neuro/artifacts.py), so $1.0$ is always the score of the zero
 predictor. [`evaluate_rollouts`](../src/neuro/artifacts.py) computes it over windows started on a
-stride-25 grid, through the saved artifact's `prime_many`/`rollout_many` interface — the same code
-path the MPC calls, one step at a time — resolved per horizon step $i$ and then pooled:
+stride-25 grid, through the saved artifact's `prime_many`/`rollout_many` interface — the NumPy
+rollout of §5.3, *not* the CasADi graph the MPC actually solves against, though the two are pinned to
+each other by test — resolved per horizon step $i$ and then pooled:
 
 $$
 \text{NMSE}_i = \frac{\sum_{b,c}\big(Y_{b,i,c} - \hat{Y}_{b,i,c}\big)^2}{\sum_{b,c} Y_{b,i,c}^2},
@@ -632,8 +650,8 @@ informative half: it shows *where* along the horizon the model stops beating sil
 
 [`accumulate_rollout_errors`](../src/neuro/artifacts.py) stacks a trajectory's **whole** $t_0$ grid
 and issues one batched `prime_many` + `rollout_many` call per trajectory rather than one pair per
-window, which is worth roughly 2–3× at the default `stride = 25`. Both artifact families implement
-the batched pair.
+window, which is worth 2–4× at the default `stride = 25` depending on model size (3.7× measured on
+`nonlinear_full`'s dimensions). Both artifact families implement the batched pair.
 
 The pooled NMSE is the **Optuna objective** (minimised) in the sweep — the same quantity `sweep_esn`
 minimises, so the two model families rank on one metric. Rolling out *past* the trained horizon $N$
@@ -839,7 +857,13 @@ instead returns the closed-loop suppression score from
 - **`n_channels` is model space, `n_eeg_channels` is raw EEG.** Under a projection the first is the
   latent $k$ and the second is $C$; without one they are equal. Nearly every shape bug in this
   pipeline is these two swapped.
-- **The control window shifts before the MLP call.** At rollout step $j$ the newest control
-  $u_{k+j}$ is already inside $U^{(j+1)}$ when $\hat{y}_{k+j+1}$ is predicted (§5.2). The linear
-  warm start has to reproduce that offset, and so does anything else that hand-builds a one-step
-  input.
+- **The control window shifts before the MLP call — in training.** At rollout step $j$ the newest
+  control $u_{k+j}$ is already inside $U^{(j+1)}$ when $\hat{y}_{k+j+1}$ is predicted (§5.2), because
+  the feature row's u-window ends one step *behind* its y-window. The linear warm start has to
+  reproduce that offset, and so does anything else that hand-builds a one-step input.
+- **`MLPArtifact.rollout` shifts after, because `prime` aligns the windows.** A `prime` state ends
+  both windows at the same step, so the first prediction is made before any future control enters
+  and `u_future`'s last entry is never consumed — matching `ESNArtifact` exactly, so
+  `accumulate_rollout_errors` can stay polymorphic over both families. Shifting first would score
+  the sweep's objective on a model given one step of control lookahead it never had in training
+  (§5.3).

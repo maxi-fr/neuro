@@ -417,15 +417,16 @@ def test_symbolic_model_priming_seam(tmp_path: Path) -> None:
     state = nn_model.initial_state()
     assert not nn_model.is_ready(state)
 
+    # Nonzero controls: with a zeroed u buffer the two paths agree whatever their u alignment.
     y_seq = rng.standard_normal((n_y, n_ch))
-    u_zeros = np.zeros(n_ctrl)
+    u_seq = rng.standard_normal((n_y, n_ctrl))
     for t in range(n_y - 1):
-        state = nn_model.absorb(state, y_seq[t], u_zeros)
+        state = nn_model.absorb(state, y_seq[t], u_seq[t])
         assert not nn_model.is_ready(state)
 
-    state = nn_model.absorb(state, y_seq[n_y - 1], u_zeros)
+    state = nn_model.absorb(state, y_seq[n_y - 1], u_seq[n_y - 1])
     assert nn_model.is_ready(state)
-    expected_nn = nn_art.prime(y_seq, np.zeros((n_y, n_ctrl)))
+    expected_nn = nn_art.prime(y_seq, u_seq)
     np.testing.assert_allclose(state, expected_nn, atol=1e-12)
 
     # ESN model priming

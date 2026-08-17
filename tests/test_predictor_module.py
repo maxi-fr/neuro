@@ -100,6 +100,41 @@ def _context(art: MLPArtifact, seed: int) -> tuple[FloatArray, FloatArray, Float
     )
 
 
+@pytest.mark.parametrize("latent_dim", [None, _LATENT])
+def test_prime_rollout_matches_the_training_window_at_the_same_index(latent_dim: int | None) -> None:
+    """``prime`` + ``rollout`` reproduce the torch rollout of the training window over the same targets.
+
+    Regression: a ``prime`` state ends its y- and u-windows at the same step, so ``rollout`` must
+    predict once *before* shifting a future control in. Shifting first ran evaluation one control
+    step ahead of the alignment ``build_dataset_for_trajectory`` trains on, which silently changed
+    the rollout NMSE that the sweep optimises.
+    """
+    art = _build_artifact(latent_dim, 2, "softplus")
+    n_y, n_u, horizon = art.n_y, art.n_u, art.horizon
+    rng = np.random.default_rng(_SEED + 9)
+    t0 = max(n_y, n_u) + 3
+    y_raw = rng.standard_normal((t0 + horizon, art.n_eeg_channels))
+    u_raw = rng.standard_normal((t0 + horizon, art.n_controls))
+
+    # build_dataset_for_trajectory pairs the window at index k with targets y[k+1 : k+1+horizon],
+    # so the window predicting y[t0 : t0+horizon] is the one at k = t0 - 1.
+    k = t0 - 1
+    x = np.concatenate(
+        [
+            art.encode(y_raw[k - n_y + 1 : k + 1]).flatten(),
+            art.u_pipeline.transform(u_raw[k - n_u : k]).flatten(),
+            art.u_pipeline.transform(u_raw[k : k + horizon]).flatten(),
+        ]
+    )
+    model = AutoregressiveMLP.from_artifact(art)
+    pred = model(torch.as_tensor(x)[None, :]).detach().numpy().reshape(horizon, art.n_channels)
+    want = art.decode(pred)
+
+    got = art.rollout(art.prime(y_raw[:t0], u_raw[:t0]), u_raw[t0 : t0 + horizon])
+
+    np.testing.assert_allclose(got, want, rtol=1e-12, atol=1e-14)
+
+
 @pytest.mark.parametrize("activation", ["relu", "tanh", "softplus"])
 @pytest.mark.parametrize("depth", [0, 2])
 @pytest.mark.parametrize("latent_dim", [None, _LATENT])
