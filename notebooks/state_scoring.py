@@ -34,6 +34,7 @@ def _():
         separability,
         sigma_ens,
         state_predictability_r2,
+        state_predictability_snr_db,
         state_readout_r2,
         variance_ratio,
     )
@@ -66,6 +67,7 @@ def _():
         separability,
         sigma_ens,
         state_predictability_r2,
+        state_predictability_snr_db,
         state_readout_r2,
         variance_ratio,
         welch,
@@ -86,7 +88,7 @@ def _(mo):
     | axis | question |
     | --- | --- |
     | $R^2_{\text{read}}$ | does the observable see the seizure state? |
-    | $R^2_{\text{pred}}$ | can it be forecast to the precision control needs? |
+    | $R^2_{\text{pred}}$ / $\text{SNR}_{\text{dB}}$ | can it be forecast to the precision control needs? |
     | $d_{\text{ctrl}}$ | does the command move the observable? |
     | $d_{\text{state}}$ | does the command move the seizure? |
     | $\rho$ | does moving the observable move the seizure? |
@@ -221,12 +223,13 @@ def _(METRICS, Path, RAW_SERIES, load_manifest, mo, score_ensemble_dir):
 def _(OBSERVABLES, mo):
     metric_pick = mo.ui.multiselect(options=list(OBSERVABLES), value=list(OBSERVABLES), label="observables shown")
     channel_metric = mo.ui.dropdown(options=list(OBSERVABLES), value="eeg_ms", label="per-channel map of")
+    pred_unit = mo.ui.radio(options=["R²", "SNR (dB)"], value="R²", label="predictability unit")
     h_slider = mo.ui.slider(start=0.1, stop=3.0, step=0.05, value=1.5, label="$h_{eval}$ (s)", show_value=True)
     n_bins = mo.ui.slider(start=4, stop=20, step=1, value=10, label="state bins", show_value=True)
     cut = mo.ui.slider(start=2, stop=30, step=1, value=12, label="recruited above (regions)", show_value=True)
 
-    mo.vstack([metric_pick, mo.hstack([channel_metric, h_slider, n_bins, cut])])
-    return channel_metric, cut, h_slider, metric_pick, n_bins
+    mo.vstack([metric_pick, mo.hstack([channel_metric, pred_unit, h_slider, n_bins, cut])])
+    return channel_metric, cut, h_slider, metric_pick, n_bins, pred_unit
 
 
 @app.cell
@@ -753,16 +756,18 @@ def _(mo):
     mo.md(r"""
     ## 5 Axis 2 — can it be predicted, to the precision control needs?
 
-    $$R^2_{\text{pred}}(h) \;=\; 1 - \frac{V_{\text{rep}}(h)}{V_{\text{state}}}$$
+    $$R^2_{\text{pred}}(h) \;=\; 1 - \frac{V_{\text{rep}}(h)}{V_{\text{state}}}, \qquad \text{SNR}_{\text{dB}}(h) \;=\; 10 \log_{10}\!\left(\frac{V_{\text{state}}}{V_{\text{rep}}(h)}\right) \;=\; -10 \log_{10}\!\big(1 - R^2_{\text{pred}}(h)\big)$$
 
     The numerator is the spread that survives fixing $x_0$ — the irreducible forecast error —
     against a **stated** denominator instead of an incidental one. It reads as: *is my forecast
     error small compared to the state difference I am trying to steer between?*
 
-    It is **unbounded below**, and that is not a defect. $R^2_{\text{pred}} < 0$ says the
-    observable's irreducible noise at lookahead $h$ is wider than the span it traverses across the
-    seizure states — so at that horizon it cannot distinguish the states the controller exists to
-    move between, however smooth its curve looks.
+    It is **unbounded below**, and that is not a defect. $R^2_{\text{pred}} < 0$ (or equivalently
+    $\text{SNR} < 0\text{ dB}$) says the observable's irreducible noise at lookahead $h$ is wider than the span it
+    traverses across the seizure states — so at that horizon it cannot distinguish the states the
+    controller exists to move between, however smooth its curve looks. $0\text{ dB}$ ($R^2_{\text{pred}} = 0$)
+    marks the break-even threshold where forecast noise equals the state range; $+10\text{ dB}$ corresponds to
+    $R^2_{\text{pred}} = 0.90$.
 
     One curve per stratum, because $V_{\text{rep}}$ is a within-state quantity and the two strata
     are different plants in every respect but the parameter vector: a focal trajectory has 3–8
@@ -778,8 +783,8 @@ def _(mo):
 
     Curves run over the whole grid. Within-state variance genuinely collapses as $h \to 0$ —
     every replicate branches from one $x_0$ and has not had time to diverge — so
-    $R^2_{\text{pred}} \to 1$ there is the plant being deterministic at short range, not an
-    artefact. Only each observable's own latency is masked.
+    $R^2_{\text{pred}} \to 1$ ($\text{SNR} \to +\infty$) there is the plant being deterministic at
+    short range, not an artefact. Only each observable's own latency is masked.
     """)
     return
 
@@ -795,12 +800,15 @@ def _(
     observations,
     plt,
     populated,
+    pred_unit,
     seizure_branches,
     shown,
     state_predictability_r2,
+    state_predictability_snr_db,
     state_readout_r2,
     stratum_metric,
 ):
+    _is_db = pred_unit.value == "SNR (dB)"
     _cols = min(3, max(1, len(shown)))
     _rows = int(np.ceil(len(shown) / _cols))
     _fig, _axes = plt.subplots(_rows, _cols, figsize=(4 * _cols, 3 * _rows), sharex=True, squeeze=False)
@@ -813,19 +821,23 @@ def _(
 
         for _stratum in populated(seizure_branches):
             _ens = stratum_metric(_stratum, "zero", _name, "all62", seizure_branches)
-            _ax.plot(_t[_valid], state_predictability_r2(_ens, _v_state)[_valid], lw=2, label=STRATA[_stratum])
+            _score = state_predictability_snr_db(_ens, _v_state) if _is_db else state_predictability_r2(_ens, _v_state)
+            _ax.plot(_t[_valid], _score[_valid], lw=2, label=STRATA[_stratum])
 
         _ax.axhline(0.0, color="k", lw=0.6)
-        _ax.set_ylim(-1.5, 1.05)
+        if _is_db:
+            _ax.set_ylim(-15.0, 25.0)
+        else:
+            _ax.set_ylim(-1.5, 1.05)
         _ax.set_title(f"{_name}  (latency {latency_s(_name, fs):.3g} s)", fontsize=9)
         _ax.set_xlabel("$h$ (s)")
 
     for _ax in _axes.ravel()[len(shown) :]:
         _ax.set_visible(False)
     for _ax in _axes[:, 0]:
-        _ax.set_ylabel("$R^2$")
+        _ax.set_ylabel("SNR (dB)" if _is_db else "$R^2$")
     _axes[0, 0].legend(fontsize=7)
-    _fig.suptitle("$R^2_{pred}$ against $V_{state}$, per stratum", fontsize=10)
+    _fig.suptitle(f"{'SNR (dB)' if _is_db else '$R^2_{pred}$'} against $V_{{state}}$, per stratum", fontsize=10)
     _fig.tight_layout()
     _fig
     return
@@ -1097,6 +1109,7 @@ def _(
     separability,
     shown,
     state_predictability_r2,
+    state_predictability_snr_db,
     state_readout_r2,
     stratum_metric,
     stratum_state,
@@ -1124,6 +1137,7 @@ def _(
                     "stratum": STRATA[stratum],
                     "R2_read": read.loc[name, "R2_read all62"],
                     "R2_pred": state_predictability_r2(zero, v_state)[idx],
+                    "SNR_pred_dB": state_predictability_snr_db(zero, v_state)[idx],
                     "d_ctrl": np.nan,
                     "rho": np.nan,
                     # the observable's own latency: what R2_pred and d_ctrl need

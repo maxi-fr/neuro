@@ -18,6 +18,7 @@ from neuro.metrics import (
     separability,
     sigma_ens,
     state_predictability_r2,
+    state_predictability_snr_db,
     state_readout_r2,
     variance_ratio,
 )
@@ -289,6 +290,16 @@ def test_state_predictability_scores_a_per_channel_metric_against_its_own_state_
     assert score.shape == (2, 3)
     assert score[0] == pytest.approx(state_predictability_r2(_ensemble(ens.by_state[:, :, 0, :]), 4.0))
     assert score[1] == pytest.approx(state_predictability_r2(_ensemble(ens.by_state[:, :, 1, :]), 1.0))
+
+
+def test_state_predictability_snr_db_matches_expected_relationship_with_r2() -> None:
+    ens = _ensemble(_RNG.normal(scale=1.0, size=(4, 500, 3)))
+    explained_var = 4.0
+
+    r2 = state_predictability_r2(ens, explained_var)
+    snr_db = state_predictability_snr_db(ens, explained_var)
+
+    assert snr_db == pytest.approx(-10.0 * np.log10(1.0 - r2))
 
 
 # --- coupling: does moving the metric move the seizure? --------------------------------------

@@ -490,6 +490,18 @@ def state_predictability_r2(ens: Ensemble, explained_var: FloatArray | float) ->
     )
 
 
+def state_predictability_snr_db(ens: Ensemble, explained_var: FloatArray | float) -> FloatArray:
+    """Predictability signal-to-noise ratio in dB, referenced to seizure-state range.
+
+    ``10 * log10(explained_var / Var_replicate(h))``
+    """
+    var_rep = sigma_ens(ens) ** 2
+    denominator = np.asarray(explained_var)[..., np.newaxis]
+    valid = (var_rep > 0) & (denominator > 0)
+    ratio = np.divide(denominator, var_rep, out=np.full_like(var_rep, np.nan), where=valid)
+    return np.multiply(10.0, np.log10(ratio, out=np.full_like(ratio, np.nan), where=valid & (ratio > 0)))
+
+
 def coupling(zero_metric: Ensemble, stim_metric: Ensemble, zero_state: Ensemble, stim_state: Ensemble) -> FloatArray:
     """Correlate the per-rollout metric shift against the per-rollout seizure-state shift.
 
