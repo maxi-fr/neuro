@@ -30,3 +30,7 @@
 * investigate what parts could maybe be simplified, etc.
 * make fully yaml configurable - also cost functions, constraints, etc.
 * compare to MPC implementation here
+
+## python-project-template
+
+* Needs updating with the stuff from here

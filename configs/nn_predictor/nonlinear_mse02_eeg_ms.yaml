@@ -2,17 +2,18 @@ simulation:
   dt: 0.0001
   downsample: 200
   n_steps: null
-  data_path: "data/experiment_excited_roast_8s/train"
+  data_path: "data/experiment_excited_roast/train"
 
 model:
   n_y: 15
   n_u: 10
-  hidden_size: 64
-  depth: 2               # nonlinear
+  hidden_size: 128
+  depth: 2
   activation: softplus
 
 training:
   epochs: 300
+  warmup_epochs: 10
   batch_size: 128
   learning_rate: 0.00001
   weight_decay: 0.0005
@@ -25,13 +26,14 @@ training:
   losses:
     curriculum_mse:
       weight: 1.0
-      span_s: 1.0
-      curr_start: 100
-      curr_end: 250
+      span_s: 0.2
+      curr_start: 20
+      curr_end: 80
     eeg_ms:
-      weight: 0.5
+      weight: 0.08
       span_s: 1.0
       window_s: 0.1
-      hop_s: 0.05
+      hop_s: 0.04       # 2 samples at 50 Hz; 0.05 rounds to 2 as well
+      start_epoch: 80   # the rollout must survive 1 s before its power is scored
 
-artifact: "artifacts/nonlinear_full_8s_eeg_ms"
+artifact: "artifacts/nonlinear_mse02_eeg_ms"

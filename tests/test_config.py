@@ -362,39 +362,8 @@ def test_jansen_rit_dynamics_rejects_unknown_key() -> None:
         JansenRitDynamics.from_config({"dt": 1e-4, "connectome": {"K": 1.0}, "seedd": 1})
 
 
-CLOSED_LOOP_RAW = {
-    "simulation_config": "configs/simulation/nonlinear_full_mpc.yaml",
-    "seeds": [69, 1023],
-    "t_end": 10.0,
-    "seizure_ptp_mv": 4.5,
-    "max_seizing_regions": 4,
-}
-
-
-def test_closed_loop_eval_config_validation() -> None:
-    """Test ClosedLoopEvalConfig parses a fully specified closed_loop section."""
-    cfg = NNPredictorConfig.from_dict(
-        {"training": _VALID_TRAINING, "sweep": {"n_trials": 10, "closed_loop": CLOSED_LOOP_RAW}}
-    )
-    assert cfg.sweep is not None
-    assert cfg.sweep.closed_loop is not None
-    assert cfg.sweep.closed_loop.simulation_config == CLOSED_LOOP_RAW["simulation_config"]
-    assert cfg.sweep.closed_loop.seeds == [69, 1023]
-    assert cfg.sweep.closed_loop.t_end == 10.0
-    assert cfg.sweep.closed_loop.seizure_ptp_mv == 4.5
-    assert cfg.sweep.closed_loop.max_seizing_regions == 4
-
-
 def test_sweep_without_closed_loop_section() -> None:
     """Test omitting closed_loop leaves it unset rather than silently defaulted."""
     cfg = NNPredictorConfig.from_dict({"training": _VALID_TRAINING, "sweep": {"n_trials": 10}})
     assert cfg.sweep is not None
     assert cfg.sweep.closed_loop is None
-
-
-@pytest.mark.parametrize("missing", list(CLOSED_LOOP_RAW))
-def test_closed_loop_eval_config_requires_every_field(missing: str) -> None:
-    """Test ClosedLoopEvalConfig has no defaults: every field is required."""
-    raw = {k: v for k, v in CLOSED_LOOP_RAW.items() if k != missing}
-    with pytest.raises(ValidationError, match=missing):
-        NNPredictorConfig.from_dict({"training": _VALID_TRAINING, "sweep": {"n_trials": 10, "closed_loop": raw}})

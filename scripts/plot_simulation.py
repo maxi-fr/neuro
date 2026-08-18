@@ -2,12 +2,11 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import matplotlib as mpl
 
 mpl.use("Agg")
-
-from typing import TYPE_CHECKING
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -32,7 +31,7 @@ def parse_args() -> argparse.Namespace:
         "--dir",
         type=Path,
         required=True,
-        help="Path to the simulation output directory containing logs.npz and config.yaml.",
+        help="Path to the simulation output directory.",
     )
     parser.add_argument(
         "--transient-ms",
@@ -48,14 +47,15 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
     args = parse_args()
     dir_path: Path = args.dir
 
-    config_path = dir_path / "config.yaml"
-    if not config_path.exists():
-        msg = f"Configuration file not found: {config_path}"
+    config_files = list(dir_path.glob("*.yaml")) + list(dir_path.glob("*.yml"))
+    if not config_files:
+        msg = f"No YAML configuration file found in {dir_path}"
         raise FileNotFoundError(msg)
+    config_path = config_files[0]
 
-    npz_path = dir_path / "logs.npz"
+    npz_path = dir_path / "log.npz" if (dir_path / "log.npz").exists() else dir_path / "logs.npz"
     if not npz_path.exists():
-        msg = f"Simulation log file not found: {npz_path}"
+        msg = f"Simulation log not found (checked log.npz and logs.npz in {dir_path})"
         raise FileNotFoundError(msg)
 
     config = load_config(config_path)
@@ -64,24 +64,22 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
 
     activity = None
     with np.load(npz_path) as data:
-        eeg: FloatArray = data["sensor_0.y_mea"].T
-        u: FloatArray = data["controller.u"]
+        eeg: FloatArray = np.asarray(data["sensor_0.y_mea"]).T
+        u_raw = data.get("controller.u", None)
+        u: FloatArray | None = np.asarray(u_raw) if u_raw is not None else None
 
         r_sync = None
-        is_jansen_rit = "JansenRit" in config["dynamics"]["class_path"]
-        if is_jansen_rit and "dynamics.x" in data:
+        if "JansenRit" in config["dynamics"]["class_path"] and "dynamics.x" in data:
             try:
                 x_flat = data["dynamics.x"].squeeze()
                 if x_flat.ndim == 1:
                     x_flat = x_flat[np.newaxis, :]
-                n_samples_logged = x_flat.shape[0]
-                x_grid = x_flat.reshape((n_samples_logged, 6, -1))
+                x_grid = x_flat.reshape((x_flat.shape[0], 6, -1))
                 activity = (x_grid[:, 1, :] - x_grid[:, 2, :]).T
 
-                activity_steady = activity
-                if args.transient_ms > 0.0:
-                    activity_steady = steady_window(activity, dt_ms, args.transient_ms)
-
+                activity_steady = (
+                    steady_window(activity, dt_ms, args.transient_ms) if args.transient_ms > 0.0 else activity
+                )
                 r_sync = synchronization(activity_steady)
             except Exception as e:  # noqa: BLE001
                 print(f"Could not calculate network synchronization: {e}")
@@ -90,7 +88,8 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
         print(f"Discarding leading {args.transient_ms} ms transient for metrics and plotting...")
         eeg = steady_window(eeg, dt_ms, args.transient_ms)
         n_drop = round(args.transient_ms / dt_ms)
-        u = u[n_drop:]
+        if u is not None:
+            u = u[n_drop:]
         if activity is not None:
             activity = steady_window(activity, dt_ms, args.transient_ms)
 
@@ -100,7 +99,8 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
     )
     if r_sync is not None:
         print(f"  network synchronization R = {r_sync:.3f}")
-    print(f"  control |u| max={np.abs(u).max():.3e}")
+    if u is not None:
+        print(f"  control |u| max={np.abs(u).max():.3e}")
 
     metadata = {
         "config": str(config_path),
@@ -135,19 +135,20 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
         nperseg=nperseg,
     )
 
-    fig_nodes = None
+    figs: dict[str, plt.Figure] = {
+        "signals": fig_signals,
+        "spectrum": fig_freq,
+    }
+
     if activity is not None:
         try:
-            connectome = Connectome.from_config({})
-            ez_node = "lHC"
-            pz_node = "lTCI"
-            healthy_node = "rHC"
-            ez_idx = connectome.region_index[ez_node]
-            pz_idx = connectome.region_index[pz_node]
-            healthy_idx = connectome.region_index[healthy_node]
+            connectome = Connectome.from_config(config["dynamics"].get("connectome", {}))
+            ez_idx = connectome.region_index["lHC"]
+            pz_idx = connectome.region_index["lTCI"]
+            healthy_idx = connectome.region_index["rHC"]
 
             node_signals = activity[[ez_idx, pz_idx, healthy_idx], :]
-            node_names = [f"{ez_node} (EZ)", f"{pz_node} (PZ)", f"{healthy_node} (Healthy)"]
+            node_names = ["lHC (EZ)", "lTCI (PZ)", "rHC (Healthy)"]
             node_colors = ["#d62728", "#ff7f0e", "#1f77b4"]
 
             fig_nodes, _ = plot_signals(
@@ -159,27 +160,23 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
                 title="Representative Node Outputs",
                 color=node_colors,
             )
+            figs["nodes"] = fig_nodes
         except Exception as e:  # noqa: BLE001
             print(f"Could not plot select nodes: {e}")
 
-    figs = {
-        "signals": fig_signals,
-        "spectrum": fig_freq,
-    }
-    if fig_nodes is not None:
-        figs["nodes"] = fig_nodes
+    data_to_save: dict[str, FloatArray] = {"eeg": eeg}
+    if u is not None:
+        data_to_save["u"] = u
 
     saver.save(
         figs,
         name=dir_path.name,
         metadata=metadata,
-        data={"eeg": eeg, "u": u},
+        data=data_to_save,
         overwrite=True,
     )
-    plt.close(fig_signals)
-    plt.close(fig_freq)
-    if fig_nodes is not None:
-        plt.close(fig_nodes)
+    for fig in figs.values():
+        plt.close(fig)
 
     print(f"Saved EEG plots and data folder to {dir_path}")
 

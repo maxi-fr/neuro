@@ -26,7 +26,6 @@ SEEDS = (69, 1023, 1024, 1025, 1026)
 LOOKAHEADS_S = (0.2, 0.4, 0.6, 0.8, 1.0, 1.5, 2.0)
 SETTLE_S = 12.0
 GOOD_COMMAND = (2.0, 0.0, -2.0)
-PLANT_CONFIG = Path("configs/simulation/nonlinear_full_mpc.yaml")
 
 
 def _run_arm(base_sim_dict: dict, seed: int, command: tuple[float, float, float]) -> FloatArray:
@@ -66,7 +65,7 @@ def _eeg_ms(y_branch: FloatArray, lookahead_s: float, dt: float) -> float:
 def main() -> None:
     """Run the probe over ``SEEDS`` and print the per-seed and median ratio tables."""
     parser = argparse.ArgumentParser(description=_DESCRIPTION)
-    parser.add_argument("--config", type=Path, default=PLANT_CONFIG)
+    parser.add_argument("--config", type=Path)
     args = parser.parse_args()
 
     base_sim_dict = load_sim_config(args.config)

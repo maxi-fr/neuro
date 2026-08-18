@@ -28,7 +28,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--config",
         type=Path,
-        default=Path("configs/nn_predictor/esn_8s.yaml"),
+        default=Path("configs/nn_predictor/esn.yaml"),
         help="Path to ESN predictor config file.",
     )
     parser.add_argument("--data-path", type=str, default=None, help="Optional data directory override.")

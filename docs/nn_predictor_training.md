@@ -620,7 +620,7 @@ informative half: it shows *where* along the horizon the model stops beating sil
 [`accumulate_rollout_errors`](../src/neuro/artifacts.py) stacks a trajectory's **whole** $t_0$ grid
 and issues one batched `prime_many` + `rollout_many` call per trajectory rather than one pair per
 window, which is worth 2–4× at the default `stride = 25` depending on model size (3.7× measured on
-`nonlinear_full`'s dimensions). Both artifact families implement the batched pair.
+`nonlinear`'s dimensions). Both artifact families implement the batched pair.
 
 The pooled NMSE remains the quantity `sweep_esn` minimises, and is available to the NN sweep as
 `objective: rollout_nmse` — but it is **no longer the default objective**, for the reason §8.2.1
@@ -833,11 +833,11 @@ All schedule checkpoints and gates are specified in integer **epochs** (`curr_st
 
 | preset | `epochs` | `patience` | `curriculum_mse.span_s` | extra loss | `curr_start` / `curr_end` |
 | ------ | :------: | :--------: | :---------------------: | ---------- | :-----------------------: |
-| [`nonlinear_full_8s.yaml`](../configs/nn_predictor/nonlinear_full_8s.yaml) | 300 | 100 | 1.0 | — | 100 / 250 |
-| [`nonlinear_full_8s_eeg_ms.yaml`](../configs/nn_predictor/nonlinear_full_8s_eeg_ms.yaml) | 300 | 100 | 1.0 | `eeg_ms` (weight 0.5) | 100 / 250 |
-| [`nonlinear_full_8s_no_curr.yaml`](../configs/nn_predictor/nonlinear_full_8s_no_curr.yaml) | 200 | 750 | 1.0 | — | 301 / 301 (never fires) |
-| [`nonlinear_full_8s_mse02_eeg_ms.yaml`](../configs/nn_predictor/nonlinear_full_8s_mse02_eeg_ms.yaml) | 300 | 100 | 0.2 | `eeg_ms` (weight 0.08, from epoch 80) | 20 / 80 |
-| [`nonlinear_full_8s_mse02_psd.yaml`](../configs/nn_predictor/nonlinear_full_8s_mse02_psd.yaml) | 300 | 100 | 0.2 | `psd` (weight 1.0, from epoch 80) | 20 / 80 |
+| [`nonlinear.yaml`](../configs/nn_predictor/nonlinear.yaml) | 300 | 100 | 1.0 | — | 100 / 250 |
+| [`nonlinear_eeg_ms.yaml`](../configs/nn_predictor/nonlinear_eeg_ms.yaml) | 300 | 100 | 1.0 | `eeg_ms` (weight 0.5) | 100 / 250 |
+| [`nonlinear_no_curr.yaml`](../configs/nn_predictor/nonlinear_no_curr.yaml) | 200 | 750 | 1.0 | — | 301 / 301 (never fires) |
+| [`nonlinear_mse02_eeg_ms.yaml`](../configs/nn_predictor/nonlinear_mse02_eeg_ms.yaml) | 300 | 100 | 0.2 | `eeg_ms` (weight 0.08, from epoch 80) | 20 / 80 |
+| [`nonlinear_mse02_psd.yaml`](../configs/nn_predictor/nonlinear_mse02_psd.yaml) | 300 | 100 | 0.2 | `psd` (weight 1.0, from epoch 80) | 20 / 80 |
 
 All five target the 50 Hz / 8 s ROAST dataset described in Section 2.2 and share `n_y=15`, `n_u=10`,
 `hidden_size=64`, `depth=2`, `activation=softplus`, `batch_size=128`, `learning_rate=1e-5`,

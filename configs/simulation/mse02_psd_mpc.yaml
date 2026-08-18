@@ -45,10 +45,10 @@ estimator: {class_path: neuro.filtering.AntiAliasEstimator, dt: 0.0001, downsamp
 controller:
   class_path: neuro.control.MPCController
   dt: 0.02              # = predictor dt = 0.0001 * 200
-  artifact: artifacts/nonlinear_full_8s_mse02_psd/model
-  horizon: 20           # 0.4 s at 50 Hz -- past the 0.2 s the MSE trusts, which is the point
+  artifact: artifacts/nonlinear_mse02_psd/model
+  horizon: 50           # 1s horizon
   u_max: 2.0
   w_y: 1.0
   w_u: 10.0
-  shooting_depth: 20    # >= horizon -> single shooting (states condensed out; controls-only NLP)
+  shooting_depth: 50    # >= horizon -> single shooting (states condensed out; controls-only NLP)
   max_iter: 100

@@ -13,7 +13,7 @@ Source of truth:
 - Config schema: [`src/neuro/config.py`](../src/neuro/config.py)
 - Entry points: [`scripts/train_esn.py`](../scripts/train_esn.py),
   [`scripts/sweep_esn.py`](../scripts/sweep_esn.py)
-- Example config: [`configs/nn_predictor/esn_8s.yaml`](../configs/nn_predictor/esn_8s.yaml)
+- Example config: [`configs/nn_predictor/esn.yaml`](../configs/nn_predictor/esn.yaml)
 - Neural network predictor reference: [`docs/nn_predictor_training.md`](nn_predictor_training.md)
 
 > All array computations run in **float64** precision (`np.float64`).
@@ -78,7 +78,7 @@ To avoid ambiguity between global time-series progression, dataset windowing, an
 
 ### 2.1 Where it comes from
 
-Each trajectory is an `.npz` file produced by the tES simulation experiments (e.g. `data/experiment_excited_roast_8s/train/` or `data/experiment_excited/train/`). Files are discovered and sorted alphabetically by [`resolve_data_files`](../src/neuro/config.py). Each file contains two key arrays:
+Each trajectory is an `.npz` file produced by the tES simulation experiments (e.g. `data/experiment_excited_roast/train/` or `data/experiment_excited/train/`). Files are discovered and sorted alphabetically by [`resolve_data_files`](../src/neuro/config.py). Each file contains two key arrays:
 
 | key     | meaning             | shape    |
 | ------- | ------------------- | -------- |
@@ -102,7 +102,7 @@ $$
 \Delta t_\text{real} = \Delta t \cdot d.
 $$
 
-Example configuration (`configs/nn_predictor/esn_8s.yaml`): $\Delta t = 10^{-4}\,\text{s}$, $d = 200 \Rightarrow \Delta t_\text{real} = 2 \cdot 10^{-2}\,\text{s}$ (50 Hz), $n_\text{steps} = \texttt{null}$ (full 8 s trajectory = 400 downsampled steps). This $\Delta t_\text{real}$ is stored in the artifact metadata and used during inference.
+Example configuration (`configs/nn_predictor/esn.yaml`): $\Delta t = 10^{-4}\,\text{s}$, $d = 200 \Rightarrow \Delta t_\text{real} = 2 \cdot 10^{-2}\,\text{s}$ (50 Hz), $n_\text{steps} = \texttt{null}$ (full 8 s trajectory = 400 downsampled steps). This $\Delta t_\text{real}$ is stored in the artifact metadata and used during inference.
 
 ---
 
@@ -274,7 +274,7 @@ An $\text{NMSE} = 1.0$ corresponds to a zero-output baseline.
 
 ## 8. Artifacts & serialization
 
-[`train_esn.py`](../scripts/train_esn.py) writes the trained model into the designated artifact directory (e.g. `artifacts/esn_8s/`):
+[`train_esn.py`](../scripts/train_esn.py) writes the trained model into the designated artifact directory (e.g. `artifacts/esn/`):
 
 | file                  | contents                                                                                    |
 | --------------------- | ------------------------------------------------------------------------------------------- |
@@ -332,13 +332,13 @@ Configurations are declared in YAML files and validated using Pydantic ([`ESNPre
 | `n_trials`        | int        | `50`                            | Number of Optuna hyperparameter trials per $N_\text{res}$ |
 | `model`           | dict       | `{}`                            | Optuna search space specification              |
 
-### Shipped preset (`configs/nn_predictor/esn_8s.yaml`)
+### Shipped preset (`configs/nn_predictor/esn.yaml`)
 
 ```yaml
 simulation:
   dt: 1.0e-4
   downsample: 200
-  data_path: data/experiment_excited_roast_8s/train
+  data_path: data/experiment_excited_roast/train
 
 model:
   reservoir_size: 500
@@ -357,7 +357,7 @@ training:
   scaler: robust
   global_scaling: true
 
-artifact: artifacts/esn_8s
+artifact: artifacts/esn
 
 sweep:
   reservoir_sizes: [250, 500, 1000, 2000]

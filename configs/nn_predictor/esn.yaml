@@ -1,7 +1,7 @@
 simulation:
   dt: 1.0e-4
   downsample: 200
-  data_path: data/experiment_excited_roast_8s/train
+  data_path: data/experiment_excited_roast/train
 
 model:
   reservoir_size: 500
@@ -20,7 +20,7 @@ training:
   scaler: robust
   global_scaling: true
 
-artifact: artifacts/esn_8s
+artifact: artifacts/esn
 
 sweep:
   reservoir_sizes: [250, 500, 1000, 2000]

@@ -40,10 +40,8 @@ nothing better exists with these three electrodes.
 
 | path | what |
 | --- | --- |
-| `data/experiment_excited_roast/{train,test}` | 22 + 3 x 20 s, RAS `[10,50,200]` ms holds — **gone from this machine** |
-| `data/experiment_excited_roast_8s/{train,test}` | 200 + 41 x 8 s, `[10,100,200,400,1000]` ms holds, has `controller.u` |
-| `configs/nn_predictor/nonlinear_full_8s.yaml` | identification against the 8 s set |
-| `configs/simulation/nonlinear_full_mpc.yaml` | the closed-loop config |
+| `data/experiment_excited_roast/{train,test}` | 200 + 41 x 8 s, `[10,100,200,400,1000]` ms holds, has `controller.u` |
+| `configs/nn_predictor/nonlinear.yaml` | identification against the 8 s set |
 | `configs/simulation/threshold_control.yaml` | the working 6/7 result |
 
 The `configs/{nn_predictor,simulation}/roast/` subfolders were deleted on 2026-08-11: every config
