@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import collections
 import copy
+import dataclasses
 import json
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, cast
@@ -15,6 +16,7 @@ from neuro.metrics import DEFAULT_HOP_S, METRICS
 from neuro.predictor.data import prepare_datasets
 from neuro.predictor.losses import CurriculumMSE, Loss, LossContext, build_losses, total_loss
 from neuro.predictor.module import AutoregressiveMLP
+from neuro.provenance import training_provenance
 
 if TYPE_CHECKING:
     from collections.abc import Iterator, Sequence
@@ -339,7 +341,10 @@ def train(cfg: NNPredictorConfig, data_files: list[str], *, seed_offset: int = 0
 
     train_losses, val_losses, train_comps, val_comps = _fit(model, tensors, trn, losses, fs=fs, seed=seed)
 
-    art = model.to_artifact(sim.dt * sim.downsample, sim.downsample, data.y_std, data.u_std)
+    art = dataclasses.replace(
+        model.to_artifact(sim.dt * sim.downsample, sim.downsample, data.y_std, data.u_std),
+        provenance=training_provenance(data_files, sim.cutoff_hz),
+    )
     eval_steps = max(1, round(trn.eval_horizon_s * fs))
     # The energy course follows the metrics layer's own eeg_ms convention rather than a knob of its
     # own, clamped where the evaluation horizon is too short to hold one window.

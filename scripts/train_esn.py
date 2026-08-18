@@ -20,6 +20,7 @@ from neuro.esn import (
     solve_ridge,
 )
 from neuro.esn_training import prepare_training_data
+from neuro.provenance import training_provenance
 
 
 def parse_args() -> argparse.Namespace:
@@ -44,6 +45,7 @@ def main() -> None:
 
     print("Loading trajectories and fitting standardizers...", flush=True)
     data = prepare_training_data(cfg, data_files)
+    provenance = training_provenance(data_files, cfg.simulation.cutoff_hz)
     print(
         f"Loaded {len(data.train_trajs)} training trajectories and {len(data.val_trajs)} validation trajectories.",
         flush=True,
@@ -102,6 +104,7 @@ def main() -> None:
         seed=cfg.training.seed,
         y_std=data.y_std,
         u_std=data.u_std,
+        provenance=provenance,
     )
 
     print("Evaluating validation rollout NMSE...", flush=True)

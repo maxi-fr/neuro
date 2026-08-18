@@ -210,6 +210,8 @@ class Datasets:
         Number of raw EEG output channels.
     n_controls : int
         Number of control input channels.
+    u_max : float
+        Largest absolute current the training split holds, per electrode.
     """
 
     X_train: FloatArray

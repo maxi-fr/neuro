@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, get_args
 
 import numpy as np
 
+from neuro.provenance import TrainingProvenance
 from neuro.transforms import Standardizer
 
 if TYPE_CHECKING:
@@ -56,6 +57,8 @@ class MLPArtifact:
         Channel standardizer mapping raw EEG to standardized model space and back.
     u_std : Standardizer
         Control standardizer mapping raw controls to standardized model space.
+    provenance : TrainingProvenance
+        What the training data was made of; empty on artifacts written before it was recorded.
     """
 
     layers: tuple[tuple[FloatArray, FloatArray], ...]
@@ -69,6 +72,7 @@ class MLPArtifact:
     downsample: int
     y_std: Standardizer
     u_std: Standardizer
+    provenance: TrainingProvenance = field(default_factory=TrainingProvenance)
 
     @property
     def model_type(self) -> str:
@@ -188,6 +192,7 @@ class MLPArtifact:
             "dt": self.dt,
             "downsample": self.downsample,
             "n_layers": len(self.layers),
+            **self.provenance.meta,
         }
 
     @classmethod
@@ -221,6 +226,7 @@ class MLPArtifact:
             downsample=int(meta["downsample"]),
             y_std=y_std,
             u_std=u_std,
+            provenance=TrainingProvenance.from_meta(meta),
         )
 
     def save(self, artifact: str | Path) -> None:

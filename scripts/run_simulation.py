@@ -9,6 +9,8 @@ from simulate.config import deep_merge, load_config
 from simulate.experiment import ExperimentManager
 from simulate.simulation import Simulation
 
+from neuro.validation import validate_simulation_config
+
 
 def _redundant_keys(data: dict[str, np.ndarray]) -> set[str]:
     """Name the logged channels that carry no information.
@@ -85,9 +87,12 @@ def main() -> None:
         configs = [raw_configs[0]]
         for override in raw_configs[1:]:
             configs.append(deep_merge(configs[-1], override))
+        for merged in configs:
+            validate_simulation_config(merged)
 
         manager.run_batch(configs, max_num_processes=args.workers, use_mmap=args.mmap, compress=args.compress)
     else:
+        validate_simulation_config(config)
         sim = Simulation.from_config(config)
         sim.run(output_dir, prefix="log", use_mmap=args.mmap)
         sim.export_results(output_dir, prefix="log", compress=args.compress)

@@ -11,6 +11,7 @@ import yaml
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from neuro.metrics import DEFAULT_HOP_S, METRICS
+from neuro.provenance import check_excitation_alignment
 
 if TYPE_CHECKING:
     from typing import Self
@@ -479,6 +480,7 @@ def resolve_data_files(
     if not data_files:
         msg = f"No .npz data files found in: {data_path}"
         raise ValueError(msg)
+    check_excitation_alignment(data_path, config.simulation.downsample)
     return data_files
 
 

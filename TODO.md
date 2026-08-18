@@ -16,6 +16,7 @@
 
 * possible to remove torch.cat from AutoregressiveMLP.forward? for efficiency?
 * training in float32?
+* multiple shooting doesnt work, single shooting does - but takes many solver iterations. Maybe there is a middle ground. Investigate
 
 ## Other
 

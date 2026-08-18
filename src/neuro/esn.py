@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import cached_property
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -10,6 +10,7 @@ import numpy as np
 import scipy.sparse
 import scipy.sparse.linalg
 
+from neuro.provenance import TrainingProvenance
 from neuro.transforms import Standardizer
 
 if TYPE_CHECKING:
@@ -268,6 +269,8 @@ class ESNArtifact:
         Channel standardizer for EEG outputs.
     u_std : Standardizer
         Control standardizer for inputs.
+    provenance : TrainingProvenance
+        What the training data was made of; empty on artifacts written before it was recorded.
     """
 
     w_in: FloatArray
@@ -287,6 +290,7 @@ class ESNArtifact:
     seed: int
     y_std: Standardizer
     u_std: Standardizer
+    provenance: TrainingProvenance = field(default_factory=TrainingProvenance)
 
     @cached_property
     def predictor(self) -> ESNPredictor:
@@ -332,6 +336,7 @@ class ESNArtifact:
             "seed": self.seed,
             "n_channels": self.n_channels,
             "n_controls": self.n_controls,
+            **self.provenance.meta,
         }
 
     def encode(self, y: FloatArray) -> FloatArray:
@@ -457,6 +462,7 @@ class ESNArtifact:
             seed=int(meta["seed"]),
             y_std=y_std,
             u_std=u_std,
+            provenance=TrainingProvenance.from_meta(meta),
         )
 
     def save(self, artifact: str | Path) -> None:

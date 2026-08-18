@@ -11,6 +11,7 @@ from simulate.simulation import Simulation
 
 from neuro.jansen_rit import lfp
 from neuro.seizure import SPREAD_HOP_S, SPREAD_WINDOW_S, SpreadProfile, spread_profile_from_lfp
+from neuro.validation import validate_simulation_config
 
 if TYPE_CHECKING:
     from neuro.config import ClosedLoopEvalConfig
@@ -81,6 +82,13 @@ def evaluate_closed_loop_suppression(trial_dir: Path, eval_cfg: ClosedLoopEvalCo
         msg = f"Trained predictor artifact not found: {model_artifact_path}"
         raise FileNotFoundError(msg)
 
+    base_sim_dict["t_end"] = eval_cfg.t_end
+    base_sim_dict["controller"]["artifact"] = str(model_artifact_path)
+    if base_sim_dict["dynamics"].get("log", "none") == "none":
+        base_sim_dict["dynamics"]["log"] = "lfp"
+    # The seeds differ only in the plant realisation, so the wiring is the same for all of them.
+    validate_simulation_config(base_sim_dict)
+
     suppressed_count = 0
     amplitudes: list[float] = []
     seizing_counts: list[int] = []
@@ -88,11 +96,7 @@ def evaluate_closed_loop_suppression(trial_dir: Path, eval_cfg: ClosedLoopEvalCo
 
     for seed in eval_cfg.seeds:
         sim_dict = deepcopy(base_sim_dict)
-        sim_dict["t_end"] = eval_cfg.t_end
         sim_dict["dynamics"]["seed"] = seed
-        sim_dict["controller"]["artifact"] = str(model_artifact_path)
-        if sim_dict["dynamics"].get("log", "none") == "none":
-            sim_dict["dynamics"]["log"] = "lfp"
 
         sim = Simulation.from_config(sim_dict)
         # Log to a scratch directory so the full state trajectory never becomes resident, and

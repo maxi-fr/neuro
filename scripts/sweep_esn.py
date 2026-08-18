@@ -22,6 +22,7 @@ from neuro.esn import (
 )
 from neuro.esn_predictor_casadi import ESNSymbolicModel
 from neuro.esn_training import prepare_training_data
+from neuro.provenance import training_provenance
 
 optuna.logging.set_verbosity(optuna.logging.WARNING)
 
@@ -68,6 +69,7 @@ def main() -> None:  # noqa: PLR0915
 
     print("Loading trajectories and fitting standardizers...")
     data = prepare_training_data(cfg, data_files)
+    provenance = training_provenance(data_files, cfg.simulation.cutoff_hz)
     print(f"Loaded {len(data.train_trajs)} train trajectories and {len(data.val_trajs)} val trajectories.")
 
     reservoir_sizes = (
@@ -172,6 +174,7 @@ def main() -> None:  # noqa: PLR0915
                         seed=cfg.training.seed,
                         y_std=data.y_std,
                         u_std=data.u_std,
+                        provenance=provenance,
                     )
 
                     val_nmse = evaluate_rollouts(art, data.val_trajs, cfg.model.horizon).pooled
@@ -232,6 +235,7 @@ def main() -> None:  # noqa: PLR0915
                 seed=cfg.training.seed,
                 y_std=data.y_std,
                 u_std=data.u_std,
+                provenance=provenance,
             )
             sym_model = ESNSymbolicModel(winning_art)
             n_nodes = sym_model.f_step.n_nodes()
