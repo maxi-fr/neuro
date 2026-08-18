@@ -1,0 +1,43 @@
+# Unstimulated reference for the closed-loop MPC runs: the same seizure, left to spread.
+# Matched pair with mse02_eeg_ms_mpc.yaml -- the plant block (dt, seed, initial_state,
+# connectome, params) is identical, so the difference in seizure burden is attributable to
+# the stimulation alone. Only the drive is removed:
+#   - no dynamics.stimulation -> NullStim, a single electrode that projects nothing (n_u = 1);
+#   - IdentityEstimator, since there is no predictor to feed an anti-alias filter;
+#   - ZeroController.
+t_end: 20.0
+
+dynamics:
+  class_path: neuro.jansen_rit.JansenRitDynamics
+  dt: 0.0001
+  seed: 69
+  initial_state: rest
+  log: lfp              # region LFP, so seizure spread is scorable after the run
+  connectome:
+    speed: 50.0
+    K: 0.60
+  params:
+    sigma: 280.0
+    A: [3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25,
+      3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25,
+      3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25,
+      3.25, 3.6, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.6, 3.25, 3.25, 3.25, 3.25,
+      3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.6, 3.25, 3.25,
+      3.25, 3.25, 3.25, 3.25, 3.4, 3.25, 3.25, 3.4, 3.25, 3.25, 3.25]
+
+reference: {class_path: simulate.reference.StepReference, dt: 0.0001, step_value: 0.0}
+
+sensors:
+  class_path: simulate.sensor.GaussianSensor
+  dt: 0.0001
+  std_dev: 0.0
+  measurement:
+    class_path: neuro.eeg.EEGMeasurement
+    # Full EEG: no selected_channels -> all 62 channels, as in the MPC runs.
+
+estimator: {class_path: simulate.estimator.IdentityEstimator, dt: 0.0001}
+
+controller:
+  class_path: neuro.control.ZeroController
+  dt: 0.02              # matches the MPC control period; the output is zero regardless
+  n_u: 1                # NullStim exposes exactly one nominal electrode

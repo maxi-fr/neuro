@@ -3,59 +3,17 @@ from __future__ import annotations
 import tempfile
 from copy import deepcopy
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 import numpy as np
 from simulate.config import load_config as load_sim_config
 from simulate.simulation import Simulation
 
-from neuro.jansen_rit import lfp
-from neuro.seizure import SPREAD_HOP_S, SPREAD_WINDOW_S, SpreadProfile, spread_profile_from_lfp
+from neuro.seizure import spread_profile_from_lfp, spread_profile_from_states
 from neuro.validation import validate_simulation_config
 
 if TYPE_CHECKING:
     from neuro.config import ClosedLoopEvalConfig
-
-
-def _spread_profile_from_trajectory(x_traj: np.ndarray, dt: float, threshold: float) -> SpreadProfile:
-    """Build the PTP envelope of a logged closed-loop run, one window at a time."""
-    n_samples = x_traj.shape[0]
-    window = round(SPREAD_WINDOW_S / dt)
-    hop = round(SPREAD_HOP_S / dt)
-    if n_samples < window:
-        msg = f"Run is shorter than the {SPREAD_WINDOW_S} s spread window ({n_samples} of {window} samples)."
-        raise ValueError(msg)
-
-    ptp_cols: list[np.ndarray] = []
-    times: list[float] = []
-    for start in range(0, n_samples - window + 1, hop):
-        # Move step axis to end -> (6, N, window) so lfp returns (N, window)
-        x_win = np.moveaxis(x_traj[start : start + window], 0, -1)
-        y = lfp(x_win)
-        ptp_cols.append(np.ptp(y, axis=1))
-        times.append((start + window) * dt - SPREAD_WINDOW_S / 2.0)
-
-    return SpreadProfile.from_ptp(np.asarray(times, dtype=np.float64), np.stack(ptp_cols, axis=1), threshold=threshold)
-
-
-def _spread_profile_from_logs(logs: list[dict[str, Any]], dt: float, threshold: float) -> SpreadProfile:
-    """Build the PTP envelope of a logged closed-loop run from a list of per-step dict logs."""
-    if not logs:
-        msg = f"Run is shorter than the {SPREAD_WINDOW_S} s spread window (0 samples)."
-        raise ValueError(msg)
-    x_traj = np.stack([entry["x"] for entry in logs], axis=0)
-    return _spread_profile_from_trajectory(x_traj, dt, threshold)
-
-
-def seizure_burden(profile: SpreadProfile) -> float:
-    """Time-mean fraction of regions seizing over a run -- the continuous suppression score.
-
-    The closed-loop reading of :func:`neuro.metrics.seizure_state`, and the run-averaged
-    counterpart of ``SpreadProfile.n_seizing()[-1]``. Continuous in ``[0, 1]``, so it separates
-    controllers the terminal count ties, and lower for a seizure ended sooner rather than one
-    merely ended by the last window.
-    """
-    return float(np.mean(profile.n_seizing() / profile.ptp.shape[0]))
 
 
 def evaluate_closed_loop_suppression(trial_dir: Path, eval_cfg: ClosedLoopEvalConfig) -> tuple[float, dict[str, float]]:
@@ -125,9 +83,9 @@ def evaluate_closed_loop_suppression(trial_dir: Path, eval_cfg: ClosedLoopEvalCo
                 profile = spread_profile_from_lfp(y_reg.T, sim.dt, threshold=eval_cfg.seizure_ptp_mv)
             else:
                 x_traj = sim.logger.signal("dynamics", "x")
-                profile = _spread_profile_from_trajectory(x_traj, sim.dt, eval_cfg.seizure_ptp_mv)
+                profile = spread_profile_from_states(x_traj, sim.dt, threshold=eval_cfg.seizure_ptp_mv)
 
-        burdens.append(seizure_burden(profile))
+        burdens.append(profile.burden())
         n_seizing_final = int(profile.n_seizing()[-1])
         seizing_counts.append(n_seizing_final)
         if n_seizing_final <= eval_cfg.max_seizing_regions:

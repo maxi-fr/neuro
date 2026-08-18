@@ -1,6 +1,6 @@
 import marimo
 
-__generated_with = "0.23.13"
+__generated_with = "0.23.16"
 app = marimo.App(width="medium", app_title="Stage 8 Closed Loop MPC Analysis")
 
 
@@ -13,10 +13,28 @@ def _():
     import numpy as np
     import yaml
 
+    from neuro.jansen_rit import lfp
+    from neuro.metrics import seizure_state
+    from neuro.seizure import SEIZURE_PTP_MV, SPREAD_WINDOW_S, spread_profile_from_lfp
+    from neuro.stimulation.base import select_rows
     from utils.plotting import plot_signals
     from utils.processing import steady_window
 
-    return Path, mo, np, plot_signals, plt, steady_window, yaml
+    return (
+        Path,
+        SEIZURE_PTP_MV,
+        SPREAD_WINDOW_S,
+        lfp,
+        mo,
+        np,
+        plot_signals,
+        plt,
+        seizure_state,
+        select_rows,
+        spread_profile_from_lfp,
+        steady_window,
+        yaml,
+    )
 
 
 @app.cell
@@ -31,6 +49,8 @@ def _(mo):
     Views:
     - **Run summary**: MPC weights + aggregate metrics (EEG energy, control $L_1$/$L_2$, cost).
     - **Time-series**: EEG output and control inputs.
+    - **Seizure state $s(t)$**: the fraction of regions seizing, optionally against an
+      uncontrolled run of the same plant.
     - **L1 stimulation** (`w_u_l1` test): per-electrode traces, sparsity (off-fraction +
       active-electrode count), per-electrode $L_1$, Kirchhoff residual, and suppression.
     """)
@@ -39,56 +59,91 @@ def _(mo):
 
 @app.cell
 def _(mo):
-    run_dir_input = mo.ui.text(
-        value="artifacts/l1_before_after/after", label="Simulation Run Directory", full_width=True
+    run_dir_input = mo.ui.text(value="data/mpc_mse02_eeg_ms", label="Simulation Run Directory", full_width=True)
+    baseline_dir_input = mo.ui.text(
+        value="data/uncontrolled", label="Uncontrolled Reference (optional)", full_width=True
     )
-    mo.md(f"**Run directory:** {run_dir_input}")
-    return (run_dir_input,)
+    mo.md(f"**Run directory:** {run_dir_input}\n\n**Uncontrolled reference:** {baseline_dir_input}")
+    return baseline_dir_input, run_dir_input
 
 
 @app.cell
-def _(Path, mo, np, run_dir_input, yaml):
+def _(Path, lfp, np, select_rows, yaml):
+    def find_run(directory):
+        """The log archive path and parsed config of a run directory, or ``None`` if it holds neither."""
 
-    def _find(directory, names, patterns):
-        """Files in *directory* matching an exact name, then any glob pattern (a possibly-empty list)."""
-        _hits = [directory / _n for _n in names if (directory / _n).exists()]
-        for _pat in patterns:
-            _hits += sorted(directory.glob(_pat))
-        return _hits
+        def hits(names, patterns):
+            found = [directory / name for name in names if (directory / name).exists()]
+            for pattern in patterns:
+                found += sorted(directory.glob(pattern))
+            return found
 
+        npz_hits = hits(["log.npz", "logs.npz"], ["*.npz"])
+        config_hits = hits(["config.yaml"], ["*.yaml", "*.yml"])
+        if not npz_hits or not config_hits:
+            return None
+        with config_hits[0].open() as f:
+            return npz_hits[0], yaml.safe_load(f)
+
+    def region_lfp(data):
+        """Region LFP ``(n_regions, n_samples)``, or ``None`` if the run logged no region signal."""
+        if "dynamics.lfp" in data.files:
+            return data["dynamics.lfp"].T
+        if "dynamics.x" in data.files:
+            return lfp(np.moveaxis(data["dynamics.x"], 0, -1))
+        return None
+
+    def electrode_labels(config, n_u):
+        """Montage labels for an ``n_u``-wide control, read off the leadfield the config points at."""
+        stim = config.get("dynamics", {}).get("stimulation", {})
+        path = stim.get("leadfield_path")
+        if path is not None and Path(path).exists():
+            with np.load(path) as leadfield:
+                labels = leadfield["channel_labels"]
+            wanted = stim.get("electrodes")
+            rows = select_rows(labels, wanted) if wanted else slice(None)
+            selected = [str(label) for label in labels[rows]]
+            if len(selected) == n_u:
+                return selected
+        return [f"E{i}" for i in range(n_u)]
+
+    def plant_block(config):
+        """The config entries that define the plant, so two runs can be checked for comparability."""
+        dynamics = config.get("dynamics", {})
+        return {key: dynamics.get(key) for key in ("dt", "seed", "initial_state", "connectome", "params")}
+
+    return electrode_labels, find_run, plant_block, region_lfp
+
+
+@app.cell
+def _(Path, electrode_labels, find_run, mo, np, region_lfp, run_dir_input):
     _dir = Path(run_dir_input.value)
-    _npz_hits = _find(_dir, ["log.npz", "logs.npz"], ["*.npz"])
-    _config_hits = _find(_dir, ["config.yaml"], ["*.yaml", "*.yml"])
+    _found = find_run(_dir)
     mo.stop(
-        not _npz_hits or not _config_hits,
+        _found is None,
         mo.md(f"⚠️ **No simulation found in** `{_dir}` — expected a `log.npz`/`logs.npz` and a `*.yaml`."),
     )
-    _npz_path, _config_path = _npz_hits[0], _config_hits[0]
-
-    with _config_path.open() as f:
-        _config = yaml.safe_load(f)
+    _npz_path, _config = _found
 
     with np.load(_npz_path) as data:
         _y_mea = data["sensor_0.y_mea"]
         _u = data["controller.u"]
         _u = _u.reshape(_u.shape[0], -1)
         _nan = np.full(_u.shape[0], np.nan)
-        _cost = data.get("controller_cost", _nan)
+        _cost = data["controller.cost"] if "controller.cost" in data.files else _nan
+        _y_reg = region_lfp(data)
 
     _ctrl = _config.get("controller", {})
-    _electrodes = _config.get("dynamics", {}).get("stimulation", {}).get("electrodes")
-    if not (isinstance(_electrodes, list) and len(_electrodes) == _u.shape[1]):
-        _electrodes = [f"E{_i}" for _i in range(_u.shape[1])]
-
     _near_zero = np.abs(_u) < 1e-6
     run = {
         "dir": _dir,
         "label": f"w_u_l1={float(_ctrl.get('w_u_l1', 0.0)):g}",
         "config": _config,
         "controller": _ctrl,
-        "electrodes": [str(_e) for _e in _electrodes],
+        "electrodes": electrode_labels(_config, _u.shape[1]),
         "dt": float(_config.get("dynamics", {}).get("dt", 1e-4)),
         "y_mea": _y_mea,
+        "y_reg": _y_reg,
         "u": _u,
         "cost": _cost,
         "eeg_energy": float(np.mean(_y_mea**2)),
@@ -101,6 +156,28 @@ def _(Path, mo, np, run_dir_input, yaml):
         "kcl": _u.sum(axis=1),
     }
     return (run,)
+
+
+@app.cell
+def _(Path, baseline_dir_input, find_run, np, region_lfp):
+    _value = baseline_dir_input.value.strip()
+    _found = find_run(Path(_value)) if _value else None
+
+    baseline = None
+    if _found is not None:
+        _npz_path, _config = _found
+        with np.load(_npz_path) as _data:
+            _y_reg = region_lfp(_data)
+        baseline = {
+            "dir": Path(_value),
+            "config": _config,
+            "dt": float(_config.get("dynamics", {}).get("dt", 1e-4)),
+            "y_reg": _y_reg,
+        }
+
+    # Distinguishes "left blank" from "pointed somewhere that holds no run", which needs saying.
+    baseline_missing = bool(_value) and _found is None
+    return baseline, baseline_missing
 
 
 @app.cell
@@ -167,6 +244,130 @@ def _(np, plt, run):
     _axes_ts[1].grid(visible=True, linestyle="--", alpha=0.5)
     _axes_ts[1].spines[["top", "right"]].set_visible(False)
     _fig_ts
+    return
+
+
+@app.cell
+def _(mo):
+    mo.md(r"""
+    ## 🌊 Seizure State $s(t)$
+
+    $s(t)$ is the fraction of the 76 regions whose peak-to-peak LFP over a
+    $W = 1$ s window exceeds the calibrated $5$ mV seizing threshold — the region-space ground
+    truth the scalp EEG objective is only a proxy for. Its time mean is the **seizure burden**,
+    the score `sweep_nn_predictor` minimises.
+
+    Each run is drawn twice, from the same criterion on two window grids:
+
+    - **solid** — `SpreadProfile`, stamped at the window *centre* (hop $0.25$ s);
+    - **dashed** — `metrics.seizure_state`, stamped at the window *end* (hop $0.05$ s), the
+      earliest instant a real-time controller could know the value.
+
+    The offset between them is the $W/2 = 0.5$ s lag causality costs.
+    """)
+    return
+
+
+@app.cell
+def _(
+    SEIZURE_PTP_MV,
+    SPREAD_WINDOW_S,
+    baseline,
+    run,
+    seizure_state,
+    spread_profile_from_lfp,
+):
+    def _curves(y_reg, dt):
+        """The centred profile and the causal reading of s(t), both on the run's own clock."""
+        profile = spread_profile_from_lfp(y_reg, dt, threshold=SEIZURE_PTP_MV)
+        times, state = seizure_state(y_reg, 1.0 / dt, threshold=SEIZURE_PTP_MV)
+        return {"profile": profile, "t_causal": times + SPREAD_WINDOW_S, "s_causal": state}
+
+    seizure = [
+        {"name": _name, "colour": _colour, "dir": _entry["dir"], **_curves(_entry["y_reg"], _entry["dt"])}
+        for _name, _entry, _colour in (("controlled", run, "#1f77b4"), ("uncontrolled", baseline, "#d62728"))
+        if _entry is not None and _entry["y_reg"] is not None
+    ]
+    return (seizure,)
+
+
+@app.cell
+def _(baseline, baseline_missing, mo, plant_block, run, seizure):
+    _warnings = []
+    if not seizure:
+        _warnings.append(
+            "⚠️ This run logged no region signal, so $s(t)$ is undefined. Re-run it with "
+            "`dynamics.log: lfp` (or `state`)."
+        )
+    if baseline_missing:
+        _warnings.append("⚠️ **No simulation found** in the uncontrolled reference directory.")
+    if baseline is not None and plant_block(baseline["config"]) != plant_block(run["config"]):
+        _warnings.append(
+            "⚠️ The two runs do **not** share a plant (`dt`, `seed`, `initial_state`, `connectome` "
+            "or `params` differ), so the difference between them is not attributable to the stimulation."
+        )
+    mo.md("\n\n".join(_warnings)) if _warnings else None
+    return
+
+
+@app.cell
+def _(plt, seizure):
+    _fig_s, _ax_s = plt.subplots(figsize=(11, 4.2), layout="constrained")
+    for _c in seizure:
+        _ax_s.plot(
+            _c["profile"].times,
+            _c["profile"].fraction_seizing(),
+            color=_c["colour"],
+            linewidth=1.6,
+            label=f"{_c['name']} — centred",
+        )
+        _ax_s.plot(
+            _c["t_causal"],
+            _c["s_causal"],
+            color=_c["colour"],
+            linewidth=1.0,
+            linestyle="--",
+            alpha=0.8,
+            label=f"{_c['name']} — causal",
+        )
+    _ax_s.set_xlabel("Time (s)")
+    _ax_s.set_ylabel(r"$s(t)$   fraction of regions seizing")
+    _ax_s.set_ylim(0, 1)
+    _ax_s.set_title(r"Seizure state $s(t)$ — solid = window-centred, dashed = causal")
+    _ax_s.grid(visible=True, linestyle="--", alpha=0.5)
+    _ax_s.spines[["top", "right"]].set_visible(False)
+    if seizure:
+        _ax_s.legend(loc="upper left", fontsize=8, ncols=len(seizure))
+    _fig_s
+    return
+
+
+@app.cell
+def _(mo, np, seizure):
+    def _stats(profile):
+        """The four onset/burden numbers a run is compared on; NaN where nothing was recruited."""
+        onsets = profile.onsets
+        recruited = onsets[np.isfinite(onsets)]
+        return {
+            "Seizure burden  mean s(t)  (lower = better)": profile.burden(),
+            "Final fraction seizing": float(profile.fraction_seizing()[-1]),
+            "First onset (s)": float(recruited.min()) if recruited.size else float("nan"),
+            "Median onset of recruited regions (s)": float(np.median(recruited)) if recruited.size else float("nan"),
+        }
+
+    _by_name = {_c["name"]: _stats(_c["profile"]) for _c in seizure}
+    _controlled = _by_name.get("controlled", {})
+    _uncontrolled = _by_name.get("uncontrolled")
+
+    _rows = []
+    for _metric, _value in _controlled.items():
+        _row = {"Metric": _metric, "controlled": round(_value, 4)}
+        if _uncontrolled is not None:
+            _row["uncontrolled"] = round(_uncontrolled[_metric], 4)
+            _row["Δ"] = round(_value - _uncontrolled[_metric], 4)
+        _rows.append(_row)
+
+    mo.ui.table(_rows, selection=None) if _rows else mo.md("_No seizure statistics for this run._")
     return
 
 
