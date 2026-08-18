@@ -5,12 +5,13 @@
 * MPC metric: solver iterations, pred error along horizon
 
 * MPC solver: SQP with IPOPT as a fallback
+  > see [[sqp_ipopt_fallback_benchmark]]
+  * Follow-up: Bring back the narx version and see if partial MS works better
 
 * EEG sensors shouldnt run at 10kHz, find realistic value (maybe just same as MPC)
 
-* move _spread_profile_from_trajectory to seizure
-
-* training 0% CPU usage? (No i think not, 40-50% for the python)
+* investigate running controller slower than predictor model. Less decision variables but still prediction model with high resolution
+  * Idea: dynamics faster than input can affect
 
 ### Efficiency
 

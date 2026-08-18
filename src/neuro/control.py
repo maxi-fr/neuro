@@ -316,17 +316,17 @@ class MPCControllerLog:
 
 
 def _l1_epigraph(u_vars: list[ca.MX], w_l1: float) -> tuple[list[ca.MX], ca.MX, ca.MX]:
-    """Epigraph pieces encoding ``w_l1 * sum_k ||u_k||_1`` without breaking quadraticity.
+    """Epigraph reformulation of the horizon-mean L1 penalty ``(w_l1 / H) * sum(|u_k|)`` into linear terms.
 
     A slack ``t_k`` is added per control node so the non-smooth L1 penalty becomes a *linear*
-    cost ``w_l1 * sum(t_k)`` plus the linear inequalities ``t_k >= |u_k|`` (i.e. ``t_k - u_k >= 0``
-    and ``t_k + u_k >= 0``). Keeping the objective quadratic lets ``ca.qpsol`` extract a constant
-    Hessian (OSQP/qpOASES) and keeps the IPOPT graph smooth; the active-set QP can then drive
-    controls to exact zero. Returns the slack variables, the (linear) cost term, and the stacked
-    ``>= 0`` inequalities ``[t_k - u_k, t_k + u_k]``.
+    cost ``(w_l1 / len(u_vars)) * sum(t_k)`` plus the linear inequalities ``t_k >= |u_k|`` (i.e.
+    ``t_k - u_k >= 0`` and ``t_k + u_k >= 0``). Keeping the objective quadratic lets ``ca.qpsol``
+    extract a constant Hessian (OSQP/qpOASES) and keeps the IPOPT graph smooth; the active-set QP
+    can then drive controls to exact zero. Returns the slack variables, the (linear) cost term,
+    and the stacked ``>= 0`` inequalities ``[t_k - u_k, t_k + u_k]``.
     """
     slacks = [ca.MX.sym(f"t_{k}", u.numel()) for k, u in enumerate(u_vars)]
-    cost = w_l1 * ca.sum1(ca.vertcat(*slacks))
+    cost = (w_l1 / len(u_vars)) * ca.sum1(ca.vertcat(*slacks))
     g = []
     for t, u in zip(slacks, u_vars, strict=True):
         g += [t - u, t + u]
@@ -398,7 +398,7 @@ def _rollout_cost(  # noqa: PLR0913
     w_y_terminal: float | None,
     w_u: float,
 ) -> tuple[ca.MX, list[ca.MX], list[ca.MX]]:
-    """Roll the model over the horizon; returns the stagewise cost, the shooting defects and the outputs."""
+    """Roll the model over the horizon; returns the horizon-mean stagewise cost, defects and outputs."""
     cost: ca.MX = ca.MX(0)
     defects: list[ca.MX] = []
     y_nodes: list[ca.MX] = []
@@ -417,7 +417,7 @@ def _rollout_cost(  # noqa: PLR0913
 
         if k < n_segments:
             defects.append(x_curr - get_phi(k + 1))
-    return cost, defects, y_nodes
+    return cost / horizon, defects, y_nodes
 
 
 def build_mpc_nlp(  # noqa: PLR0913
@@ -889,6 +889,8 @@ class LinearMPCController(Controller[MPCControllerLog]):
             ubx = np.concatenate([np.tile(self.u_max, h), np.full(n_x_vars, np.inf)])
             lbg = np.zeros(h * n_state + h)  # continuity defects + sum-to-zero (equalities)
             ubg = np.zeros(h * n_state + h)
+
+        cost = cost / h
 
         if self.w_u_l1 > 0:
             slacks, l1_cost, l1_g = _l1_epigraph(u_vars, self.w_u_l1)
