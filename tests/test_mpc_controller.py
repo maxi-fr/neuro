@@ -1,23 +1,26 @@
 from __future__ import annotations
 
 import itertools
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import casadi as ca
 import numpy as np
 import pytest
+import scipy.signal as sps
+from scipy.signal.windows import hann
 from simulate.simulation import Simulation
 
-from neuro.control import MPCController, MPCControllerLog
+from neuro.control import MPCController, MPCControllerLog, build_mpc_nlp
 from neuro.esn import ESNArtifact, generate_reservoir
 from neuro.esn_predictor_casadi import ESNSymbolicModel
 from neuro.nn_predictor_casadi import NNSymbolicModel
 from neuro.predictor.artifact import MLPArtifact
+from neuro.predictor.data import load_trajectory
+from neuro.spectral import PsdEnvelope, compute_periodograms, hinge_penalty
 from neuro.transforms import Standardizer
 
 if TYPE_CHECKING:
-    from pathlib import Path
-
     from neuro.types import FloatArray
 
 _SEED = 7
@@ -380,3 +383,146 @@ def test_symbolic_model_priming_seam(tmp_path: Path) -> None:
     assert esn_model.is_ready(esn_state)
     expected_esn = esn_art.prime(y_esn, u_esn)
     np.testing.assert_allclose(esn_state, expected_esn, atol=1e-12)
+
+
+@pytest.mark.parametrize(
+    ("horizon", "length", "hop", "n_channels"),
+    [(6, 4, 2, 2), (75, 50, 25, 8)],
+    ids=["toy", "production-geometry"],
+)
+def test_spectral_cost_matches_numpy_periodogram(
+    tmp_path: Path, horizon: int, length: int, hop: int, n_channels: int
+) -> None:
+    """CasADi spectral cost matches the numpy/scipy periodogram reference the envelope is built with."""
+    n_controls, fs = 2, 50.0
+    n_bins = length // 2 + 1
+
+    artifact = _build_artifact(tmp_path, n_y=2, n_u=2, horizon=horizon, n_channels=n_channels, n_controls=n_controls)
+    model = NNSymbolicModel.from_artifact(artifact)
+
+    rng = np.random.default_rng(_SEED + 10)
+    envelope = PsdEnvelope(power=np.abs(rng.normal(size=(n_channels, n_bins))) + 0.1, fs=fs, window=length, hop=hop)
+    x0 = rng.standard_normal(model.state_shape[0])
+    u_fixed = np.zeros((horizon, n_controls))
+
+    x = x0
+    y_steps = []
+    for step in range(horizon):
+        x = np.asarray(model.f_step(x, u_fixed[step])).reshape(-1)
+        y_steps.append(np.asarray(model.f_out(x)).reshape(-1))
+    y_traj = np.array(y_steps)  # (horizon, n_channels)
+
+    expected_cost = hinge_penalty(compute_periodograms(y_traj, fs=fs, window=length, hop=hop), envelope.power)
+
+    solver, lbx, ubx, lbg, ubg = build_mpc_nlp(
+        model,
+        horizon=horizon,
+        shooting_depth=horizon,
+        n_controls=n_controls,
+        u_max=np.array([5.0, 5.0]),
+        w_y=0.0,
+        w_y_terminal=None,
+        w_u=0.0,
+        w_u_l1=0.0,
+        w_psd=1.0,
+        psd_envelope=envelope,
+        max_iter=0,  # 0 iterations -> evaluates initial guess
+        max_cpu_time=None,
+        expand=False,
+        ipopt_options={"max_iter": 0},
+    )
+
+    sol = solver(x0=u_fixed.reshape(-1), lbx=lbx, ubx=ubx, lbg=lbg, ubg=ubg, p=x0)
+    np.testing.assert_allclose(float(sol["f"]), expected_cost, rtol=1e-6, atol=1e-8)
+
+
+def test_spectral_cost_is_zero_when_under_envelope(tmp_path: Path) -> None:
+    """When the predicted spectrum is everywhere under the reference envelope, cost is exactly 0."""
+    n_y, n_u, n_channels, n_controls = 2, 2, 2, 2
+    horizon, L, R = 6, 4, 2
+    n_bins = L // 2 + 1
+
+    artifact = _build_artifact(
+        tmp_path, n_y=n_y, n_u=n_u, horizon=horizon, n_channels=n_channels, n_controls=n_controls
+    )
+    model = NNSymbolicModel.from_artifact(artifact)
+
+    rng = np.random.default_rng(_SEED + 11)
+    envelope = PsdEnvelope(power=np.full((n_channels, n_bins), 1e8), fs=50.0, window=L, hop=R)
+    x0 = rng.standard_normal(model.state_shape[0])
+
+    solver, lbx, ubx, lbg, ubg = build_mpc_nlp(
+        model,
+        horizon=horizon,
+        shooting_depth=horizon,
+        n_controls=n_controls,
+        u_max=np.array([5.0, 5.0]),
+        w_y=0.0,
+        w_y_terminal=None,
+        w_u=0.0,
+        w_u_l1=0.0,
+        w_psd=100.0,
+        psd_envelope=envelope,
+        max_iter=0,
+        max_cpu_time=None,
+        expand=False,
+        ipopt_options={"max_iter": 0},
+    )
+
+    sol = solver(x0=np.zeros(horizon * n_controls), lbx=lbx, ubx=ubx, lbg=lbg, ubg=ubg, p=x0)
+    assert float(sol["f"]) == 0.0
+
+
+def test_spectral_mpc_controller_from_config(tmp_path: Path) -> None:
+    """MPCController.from_config loads psd_ref npz and configures spectral cost."""
+    artifact = _build_artifact(tmp_path, horizon=6, n_channels=2, n_controls=2)
+    psd_npz_path = tmp_path / "psd.npz"
+    np.savez(
+        psd_npz_path,
+        Pref=np.ones((2, 3)),
+        freqs=np.array([0.0, 12.5, 25.0]),
+        fs=50.0,
+        L=4,
+        R=2,
+        quantile=0.9,
+        n_windows=10,
+        plant_fingerprint="test",
+    )
+
+    controller = MPCController.from_config(
+        {
+            "dt": 0.02,
+            "artifact": str(artifact),
+            "u_max": 2.0,
+            "horizon": 6,
+            "w_y": 0.0,
+            "w_u": 1.0,
+            "w_psd": 500.0,
+            "psd_ref": str(psd_npz_path),
+            "psd_window_s": 0.08,
+            "psd_hop_s": 0.04,
+        }
+    )
+
+    assert controller.w_psd == 500.0
+    assert controller.psd_envelope is not None
+    assert controller.psd_envelope.window == 4
+    assert controller.psd_envelope.hop == 2
+    assert controller.psd_envelope.power.shape == (2, 3)
+
+
+def test_healthy_plant_scores_near_zero_on_envelope() -> None:
+    """The healthy plant scores ~0 on its own p90 reference envelope."""
+    psd_path = Path("data/healthy_psd.npz")
+    if not psd_path.exists():
+        pytest.skip("data/healthy_psd.npz not generated yet")
+
+    envelope = PsdEnvelope.load(psd_path)
+
+    data_files = sorted(Path("data/healthy_reference").glob("sim_*.npz"))
+    if not data_files:
+        pytest.skip("data/healthy_reference trajectories not present")
+
+    _, y = load_trajectory(str(data_files[0]), n_steps=None, downsample=200, dt=1e-4)
+    power = compute_periodograms(y, fs=envelope.fs, window=envelope.window, hop=envelope.hop)
+    assert hinge_penalty(power, envelope.power) < 0.05

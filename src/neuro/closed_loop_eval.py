@@ -16,7 +16,9 @@ if TYPE_CHECKING:
     from neuro.config import ClosedLoopEvalConfig
 
 
-def evaluate_closed_loop_suppression(trial_dir: Path, eval_cfg: ClosedLoopEvalConfig) -> tuple[float, dict[str, float]]:
+def evaluate_closed_loop_suppression(  # noqa: PLR0915
+    trial_dir: Path, eval_cfg: ClosedLoopEvalConfig
+) -> tuple[float, dict[str, float]]:
     """Run closed-loop simulations across ``eval_cfg.seeds`` and score seizure suppression proficiency.
 
     Returns the Optuna score to minimize and the summary stats. The score is the **seizure
@@ -49,6 +51,7 @@ def evaluate_closed_loop_suppression(trial_dir: Path, eval_cfg: ClosedLoopEvalCo
 
     suppressed_count = 0
     amplitudes: list[float] = []
+    delivered_charges: list[float] = []
     seizing_counts: list[int] = []
     burdens: list[float] = []
 
@@ -59,7 +62,7 @@ def evaluate_closed_loop_suppression(trial_dir: Path, eval_cfg: ClosedLoopEvalCo
         sim = Simulation.from_config(sim_dict)
         # Log to a scratch directory so the full state trajectory never becomes resident, and
         # is discarded with the directory rather than kept around.
-        with tempfile.TemporaryDirectory(prefix="closed_loop_eval_") as log_dir:
+        with tempfile.TemporaryDirectory(prefix="closed_loop_eval_", ignore_cleanup_errors=True) as log_dir:
             sim.run(output_dir=log_dir, use_mmap=True)
 
             if sim.logger is None:
@@ -75,6 +78,7 @@ def evaluate_closed_loop_suppression(trial_dir: Path, eval_cfg: ClosedLoopEvalCo
 
             us = sim.logger.signal("controller", "u")
             amplitudes.append(float(np.mean(np.abs(us) / np.asarray(u_max, dtype=np.float64))))
+            delivered_charges.append(float(np.sum(np.abs(us)) * sim.dt))
 
             # One of the two region-space logs is always present: the config is coerced to "lfp"
             # above unless it already asked for "state".
@@ -92,6 +96,7 @@ def evaluate_closed_loop_suppression(trial_dir: Path, eval_cfg: ClosedLoopEvalCo
             suppressed_count += 1
 
     mean_amplitude = float(np.mean(amplitudes))
+    mean_delivered_charge = float(np.mean(delivered_charges))
     mean_burden = float(np.mean(burdens))
     score = mean_burden + eval_cfg.amplitude_weight * mean_amplitude
 
@@ -101,6 +106,7 @@ def evaluate_closed_loop_suppression(trial_dir: Path, eval_cfg: ClosedLoopEvalCo
         "suppressed_seeds": float(suppressed_count),
         "total_seeds": float(len(eval_cfg.seeds)),
         "mean_amplitude": mean_amplitude,
+        "mean_delivered_charge": mean_delivered_charge,
         "mean_seizing_regions": float(np.mean(seizing_counts)),
     }
     return score, summary

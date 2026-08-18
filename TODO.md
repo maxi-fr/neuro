@@ -26,6 +26,8 @@
 
 ## Simulate package
 
+* allow for cross component config validation (like i've done here)
+
 ## MPC package
 
 * investigate if it could be used well here

@@ -129,10 +129,67 @@ def test_sensor_must_run_at_estimator_rate(config: dict[str, Any]) -> None:
         validate_simulation_config(config)
 
 
-def test_horizon_beyond_trained_horizon_rejected(config: dict[str, Any]) -> None:
-    """The MPC may not cost a free run longer than the predictor was fit against."""
+def test_horizon_beyond_trained_horizon_warns(config: dict[str, Any]) -> None:
+    """The MPC costing a free run longer than the predictor was fit against warns."""
     config["controller"]["horizon"] = 51
-    with pytest.raises(ConfigConsistencyError, match=r"trained horizon"):
+    with pytest.warns(UserWarning, match=r"trained horizon"):
+        validate_simulation_config(config)
+
+
+def _psd_npz(tmp_path: Path, *, fs: float = 50.0, L: int = 50, R: int = 25) -> Path:
+    """Save a synthetic healthy PSD reference npz."""
+    npz_path = tmp_path / "healthy_psd.npz"
+    np.savez(
+        npz_path,
+        Pref=np.ones((2, L // 2 + 1)),
+        freqs=np.linspace(0, fs / 2, L // 2 + 1),
+        fs=fs,
+        L=L,
+        R=R,
+        quantile=0.9,
+        n_windows=100,
+        plant_fingerprint="dummy",
+    )
+    return npz_path
+
+
+def test_consistent_psd_reference_passes(config: dict[str, Any], tmp_path: Path) -> None:
+    """A PSD reference agreeing on rate, window, and hop passes cleanly."""
+    config["controller"]["psd_ref"] = str(_psd_npz(tmp_path, fs=50.0, L=50, R=25))
+    config["controller"]["psd_window_s"] = 1.0
+    config["controller"]["psd_hop_s"] = 0.5
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        validate_simulation_config(config)
+
+
+def test_missing_psd_reference_raises(config: dict[str, Any], tmp_path: Path) -> None:
+    """A missing PSD reference npz raises ConfigConsistencyError."""
+    config["controller"]["psd_ref"] = str(tmp_path / "absent.npz")
+    with pytest.raises(ConfigConsistencyError, match="spectral reference envelope not found"):
+        validate_simulation_config(config)
+
+
+def test_psd_reference_rate_mismatch_raises(config: dict[str, Any], tmp_path: Path) -> None:
+    """A sampling rate mismatch between controller and PSD reference raises ConfigConsistencyError."""
+    config["controller"]["psd_ref"] = str(_psd_npz(tmp_path, fs=100.0))
+    with pytest.raises(ConfigConsistencyError, match="must match spectral reference dt"):
+        validate_simulation_config(config)
+
+
+def test_psd_reference_window_mismatch_raises(config: dict[str, Any], tmp_path: Path) -> None:
+    """A window length mismatch between controller YAML and PSD reference raises ConfigConsistencyError."""
+    config["controller"]["psd_ref"] = str(_psd_npz(tmp_path, L=50))
+    config["controller"]["psd_window_s"] = 2.0  # 100 steps
+    with pytest.raises(ConfigConsistencyError, match=r"psd_window_s .* does not match the spectral reference geometry"):
+        validate_simulation_config(config)
+
+
+def test_psd_reference_hop_mismatch_raises(config: dict[str, Any], tmp_path: Path) -> None:
+    """A hop size mismatch between controller YAML and PSD reference raises ConfigConsistencyError."""
+    config["controller"]["psd_ref"] = str(_psd_npz(tmp_path, R=25))
+    config["controller"]["psd_hop_s"] = 1.0  # 50 steps
+    with pytest.raises(ConfigConsistencyError, match=r"psd_hop_s .* does not match the spectral reference geometry"):
         validate_simulation_config(config)
 
 

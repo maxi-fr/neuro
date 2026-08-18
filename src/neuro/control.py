@@ -6,13 +6,16 @@ from typing import TYPE_CHECKING, Any, Literal, Self
 import casadi as ca
 import numpy as np
 from pydantic import Field, PositiveFloat
+from scipy.signal.windows import hann
 from simulate.controller import Controller
 
 from neuro.artifacts import build_symbolic_model, load_any_artifact
 from neuro.config import StrictConfig
+from neuro.spectral import LOG_FLOOR, PsdEnvelope
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Callable, Sequence
+    from pathlib import Path
 
     from numpy.typing import ArrayLike
 
@@ -335,6 +338,88 @@ def _sum_to_zero(u_vars: list[ca.MX]) -> ca.MX:
     return ca.vertcat(*[ca.sum1(u) for u in u_vars])
 
 
+def _spectral_hinge_cost(y_nodes: list[ca.MX], envelope: PsdEnvelope, horizon: int) -> ca.MX:
+    """Mean squared one-sided log excess of the predicted spectrum over ``envelope``.
+
+    CasADi has no FFT, so the periodogram is an explicit DFT matrix product. The reduction is a mean
+    over ``(window, channel, bin)`` -- never over windows alone -- so a hot sub-window cannot be
+    cancelled by a cold one and ``w_psd`` stays independent of the window count.
+    """
+    n_ch, n_bins = envelope.power.shape
+    length, hop = envelope.window, envelope.hop
+    if horizon < length:
+        msg = f"horizon ({horizon}) is shorter than the envelope window ({length})"
+        raise ValueError(msg)
+    n_model_ch = y_nodes[0].shape[0]
+    if n_ch != n_model_ch:
+        msg = f"envelope has {n_ch} channels but the model outputs {n_model_ch}; the cost must not subset channels"
+        raise ValueError(msg)
+    n_windows = (horizon - length) // hop + 1
+
+    w_hann = hann(length, sym=False)
+    bins = np.arange(n_bins)[:, None]
+    samples = np.arange(length)
+    dft_cos = np.cos(2 * np.pi * bins * samples / length).T  # (length, n_bins)
+    dft_sin = -np.sin(2 * np.pi * bins * samples / length).T
+
+    # One-sided: every bin carries its negative-frequency twin, except DC and (even length) Nyquist.
+    fold = np.full(n_bins, 2.0)
+    fold[0] = 1.0
+    if length % 2 == 0:
+        fold[-1] = 1.0
+    scale = fold / (envelope.fs * np.sum(w_hann**2))
+
+    log_ref = ca.MX(np.log(envelope.power))
+    taper = ca.repmat(ca.MX(w_hann.reshape(1, length)), n_ch, 1)
+    scale_row = ca.repmat(ca.MX(scale.reshape(1, n_bins)), n_ch, 1)
+
+    y_all = ca.horzcat(*y_nodes)  # (n_ch, horizon)
+    total_hinge = ca.MX(0)
+    for m in range(n_windows):
+        y_win = y_all[:, m * hop : m * hop + length]
+        y_detrended = y_win - ca.repmat(ca.sum2(y_win) / length, 1, length)
+        y_tapered = y_detrended * taper
+        power = ((y_tapered @ ca.MX(dft_cos)) ** 2 + (y_tapered @ ca.MX(dft_sin)) ** 2) * scale_row
+        hinge = ca.fmax(0.0, ca.log(power + LOG_FLOOR) - log_ref)
+        total_hinge = total_hinge + ca.sum1(ca.sum2(hinge**2))
+
+    return total_hinge / (n_windows * n_ch * n_bins)
+
+
+def _rollout_cost(  # noqa: PLR0913
+    model: SymbolicModel,
+    *,
+    get_phi: Callable[[int], ca.MX],
+    u_vars: list[ca.MX],
+    n_segments: int,
+    horizon: int,
+    shooting_depth: int,
+    w_y: float,
+    w_y_terminal: float | None,
+    w_u: float,
+) -> tuple[ca.MX, list[ca.MX], list[ca.MX]]:
+    """Roll the model over the horizon; returns the stagewise cost, the shooting defects and the outputs."""
+    cost: ca.MX = ca.MX(0)
+    defects: list[ca.MX] = []
+    y_nodes: list[ca.MX] = []
+    for k in range(n_segments + 1):
+        x_curr = get_phi(k)
+        for step in range(k * shooting_depth, min((k + 1) * shooting_depth, horizon)):
+            u_curr = u_vars[step]
+            x_next = model.f_step(x_curr, u_curr)
+            y_next = model.f_out(x_next)
+            y_nodes.append(y_next)
+
+            is_terminal = step == horizon - 1 and w_y_terminal is not None
+            w_y_step = w_y_terminal if is_terminal else w_y
+            cost = cost + w_y_step * ca.sumsqr(y_next) + w_u * ca.sumsqr(u_curr)
+            x_curr = x_next
+
+        if k < n_segments:
+            defects.append(x_curr - get_phi(k + 1))
+    return cost, defects, y_nodes
+
+
 def build_mpc_nlp(  # noqa: PLR0913
     model: SymbolicModel,
     *,
@@ -346,6 +431,8 @@ def build_mpc_nlp(  # noqa: PLR0913
     w_y_terminal: float | None,
     w_u: float,
     w_u_l1: float,
+    w_psd: float = 0.0,
+    psd_envelope: PsdEnvelope | None = None,
     max_iter: int,
     max_cpu_time: float | None,
     expand: bool,
@@ -365,24 +452,23 @@ def build_mpc_nlp(  # noqa: PLR0913
     def get_phi(idx: int) -> ca.MX:
         return x0_p if idx == 0 else phi_vars[idx - 1]
 
-    defects, cost = [], ca.MX(0)
-    for k in range(n_segments + 1):
-        x_curr = get_phi(k)
-        start_step = k * D
-        end_step = min((k + 1) * D, h)
+    cost, defects, y_nodes = _rollout_cost(
+        model,
+        get_phi=get_phi,
+        u_vars=u_vars,
+        n_segments=n_segments,
+        horizon=h,
+        shooting_depth=D,
+        w_y=w_y,
+        w_y_terminal=w_y_terminal,
+        w_u=w_u,
+    )
 
-        for step in range(start_step, end_step):
-            u_curr = u_vars[step]
-            x_next = model.f_step(x_curr, u_curr)
-            y_next = model.f_out(x_next)
-
-            is_terminal = step == h - 1 and w_y_terminal is not None
-            w_y_step = w_y_terminal if is_terminal else w_y
-            cost = cost + w_y_step * ca.sumsqr(y_next) + w_u * ca.sumsqr(u_curr)
-            x_curr = x_next
-
-        if k < n_segments:
-            defects.append(x_curr - get_phi(k + 1))
+    if w_psd > 0:
+        if psd_envelope is None:
+            msg = "psd_envelope must be provided when w_psd > 0"
+            raise ValueError(msg)
+        cost = cost + w_psd * _spectral_hinge_cost(y_nodes, psd_envelope, h)
 
     x_parts = [*u_vars, *phi_vars]
     g_parts = [*defects, _sum_to_zero(u_vars)]
@@ -437,6 +523,12 @@ class _MPCControllerConfig(StrictConfig):
     w_y_terminal: float | None = Field(default=None, ge=0)
     w_u: float = Field(default=0.0, ge=0)
     w_u_l1: float = Field(default=0.0, ge=0)
+    w_psd: float = Field(default=0.0, ge=0)
+    psd_ref: str | None = Field(default=None)
+    # Declared so the YAML states the geometry it expects; the envelope npz is the single source of
+    # truth for the cost, and neuro.validation raises when the two disagree.
+    psd_window_s: float | None = Field(default=None, gt=0)
+    psd_hop_s: float | None = Field(default=None, gt=0)
     shooting_depth: int | None = Field(default=None, ge=1)
     max_iter: int = Field(default=100, ge=1)
     max_cpu_time: float | None = Field(default=None, gt=0)
@@ -456,7 +548,9 @@ class MPCController(Controller[MPCControllerLog]):
         w_y: float = 1.0,
         w_u: float = 0.0,
         w_u_l1: float = 0.0,
+        w_psd: float = 0.0,
         *,
+        psd_ref: str | Path | None = None,
         w_y_terminal: float | None = None,
         shooting_depth: int | None = None,
         max_iter: int = 100,
@@ -481,6 +575,15 @@ class MPCController(Controller[MPCControllerLog]):
             Weight on predicted EEG power in the cost.
         w_u
             Weight on control effort (quadratic) in the cost.
+        w_psd
+            Weight on the spectral cost: the mean squared amount by which the predicted EEG
+            spectrum exceeds ``psd_ref``'s healthy envelope, in log power. One-sided, so it is
+            exactly ``0`` once the spectrum is under the envelope everywhere, leaving ``w_u``
+            alone to ask for the least stimulation that keeps it there. ``0`` (default) disables
+            it; any nonzero ``w_y`` destroys that "done" point.
+        psd_ref
+            Path to the healthy reference envelope npz written by ``scripts/build_healthy_psd.py``.
+            Required when ``w_psd > 0``; its stored window geometry drives the cost.
         w_y_terminal
             Weight on predicted EEG power at the *final* horizon step, replacing ``w_y`` there;
             ``None`` (default) keeps ``w_y`` uniform over the horizon.
@@ -509,6 +612,9 @@ class MPCController(Controller[MPCControllerLog]):
         self.w_y_terminal = float(w_y_terminal) if w_y_terminal is not None else None
         self.w_u = float(w_u)
         self.w_u_l1 = float(w_u_l1)
+        self.w_psd = float(w_psd)
+        self.psd_ref = psd_ref
+        self.psd_envelope = PsdEnvelope.load(psd_ref) if psd_ref is not None else None
         self.shooting_depth = int(shooting_depth) if shooting_depth is not None else self.horizon
         self.max_iter = int(max_iter)
         self.max_cpu_time = float(max_cpu_time) if max_cpu_time is not None else None
@@ -543,6 +649,8 @@ class MPCController(Controller[MPCControllerLog]):
             w_y=cfg.w_y,
             w_u=cfg.w_u,
             w_u_l1=cfg.w_u_l1,
+            w_psd=cfg.w_psd,
+            psd_ref=cfg.psd_ref,
             w_y_terminal=cfg.w_y_terminal,
             shooting_depth=cfg.shooting_depth,
             max_iter=cfg.max_iter,
@@ -563,6 +671,8 @@ class MPCController(Controller[MPCControllerLog]):
             w_y_terminal=self.w_y_terminal,
             w_u=self.w_u,
             w_u_l1=self.w_u_l1,
+            w_psd=self.w_psd,
+            psd_envelope=self.psd_envelope,
             max_iter=self.max_iter,
             max_cpu_time=self.max_cpu_time,
             expand=self.expand,

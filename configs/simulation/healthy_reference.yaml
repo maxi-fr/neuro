@@ -1,0 +1,49 @@
+# Healthy reference runs for building the spectral MPC healthy-envelope cost.
+# Matched twin of mse02_psd_mpc.yaml:
+#   - uniform A = 3.25 (A_HEALTHY) across all 76 regions;
+#   - stimulation off (ZeroController);
+#   - identical connectome / K / sigma / leadfield / sensors / estimator.
+# 10 seeds x 60 s via the experiments: batch form.
+experiments:
+  - t_end: 60.0
+    dynamics:
+      class_path: neuro.jansen_rit.JansenRitDynamics
+      dt: 0.0001
+      seed: 69
+      initial_state: rest
+      log: lfp
+      connectome:
+        speed: 50.0
+        K: 0.60
+      stimulation:
+        model: roast_3d
+        leadfield_path: data/roast_leadfield_3d.npz
+      params:
+        sigma: 280.0
+        A: [3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25,
+          3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25,
+          3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25,
+          3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25,
+          3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25,
+          3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25]
+    reference: {class_path: simulate.reference.StepReference, dt: 0.0001, step_value: 0.0}
+    sensors:
+      class_path: simulate.sensor.GaussianSensor
+      dt: 0.0001
+      std_dev: 0.0
+      measurement:
+        class_path: neuro.eeg.EEGMeasurement
+    estimator: {class_path: neuro.filtering.AntiAliasEstimator, dt: 0.0001, downsample: 200}
+    controller:
+      class_path: neuro.control.ZeroController
+      dt: 0.02
+      n_u: 3
+  - dynamics: {seed: 70}
+  - dynamics: {seed: 71}
+  - dynamics: {seed: 72}
+  - dynamics: {seed: 73}
+  - dynamics: {seed: 74}
+  - dynamics: {seed: 75}
+  - dynamics: {seed: 76}
+  - dynamics: {seed: 77}
+  - dynamics: {seed: 78}

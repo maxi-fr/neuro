@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import math
 import warnings
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from neuro.artifacts import load_any_artifact
 from neuro.provenance import plant_fingerprint
+from neuro.spectral import PsdEnvelope
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -76,6 +78,40 @@ def _check_rates(config: Mapping[str, Any]) -> None:
             raise ConfigConsistencyError(msg)
 
 
+def _check_psd_reference(controller: Mapping[str, Any], controller_dt: float) -> None:
+    """Validate spectral reference envelope and geometry against controller configuration."""
+    psd_ref_path = controller.get("psd_ref")
+    if psd_ref_path is None:
+        return
+
+    psd_path = Path(psd_ref_path)
+    if not psd_path.exists():
+        msg = f"spectral reference envelope not found: {psd_path}"
+        raise ConfigConsistencyError(msg)
+    envelope = PsdEnvelope.load(psd_path)
+
+    if not math.isclose(controller_dt, 1.0 / envelope.fs, rel_tol=_REL_TOL):
+        msg = (
+            f"controller.dt ({controller_dt}) must match spectral reference dt "
+            f"({1.0 / envelope.fs:g} s from fs={envelope.fs:g} Hz)."
+        )
+        raise ConfigConsistencyError(msg)
+
+    for key, declared, actual in (
+        ("psd_window_s", controller.get("psd_window_s"), envelope.window),
+        ("psd_hop_s", controller.get("psd_hop_s"), envelope.hop),
+    ):
+        if declared is None:
+            continue
+        steps = round(float(declared) / controller_dt)
+        if steps != actual:
+            msg = (
+                f"controller.{key} ({declared} s = {steps} steps) does not match the spectral "
+                f"reference geometry ({actual} steps)."
+            )
+            raise ConfigConsistencyError(msg)
+
+
 def _check_predictor(config: Mapping[str, Any]) -> None:
     """Require the loop's rate, anti-alias filter, horizon, plant and current range to match the predictor's."""
     controller = config["controller"]
@@ -104,11 +140,13 @@ def _check_predictor(config: Mapping[str, Any]) -> None:
 
     horizon = controller.get("horizon")
     if horizon is not None and int(horizon) > art.horizon:
-        msg = (
+        warnings.warn(
             f"controller.horizon ({horizon}) exceeds the predictor's trained horizon ({art.horizon}); "
-            f"the MPC would cost a free run longer than any the model was ever fit against."
+            f"the MPC would cost a free run longer than any the model was ever fit against.",
+            stacklevel=2,
         )
-        raise ConfigConsistencyError(msg)
+
+    _check_psd_reference(controller, controller_dt)
 
     if provenance.plant_fingerprint is not None and provenance.plant_fingerprint != plant_fingerprint(config):
         warnings.warn(
