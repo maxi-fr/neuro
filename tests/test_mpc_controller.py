@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import itertools
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 import casadi as ca
 import numpy as np
@@ -11,7 +11,15 @@ import scipy.signal as sps
 from scipy.signal.windows import hann
 from simulate.simulation import Simulation
 
-from neuro.control import MPCController, MPCControllerLog, build_mpc_nlp
+from neuro.control import (
+    IpoptMPCSolver,
+    MPCController,
+    MPCControllerLog,
+    MPCNlp,
+    MPCSolveResult,
+    SqpFallbackMPCSolver,
+    SqpMPCSolver,
+)
 from neuro.esn import ESNArtifact, generate_reservoir
 from neuro.esn_predictor_casadi import ESNSymbolicModel
 from neuro.nn_predictor_casadi import NNSymbolicModel
@@ -414,7 +422,7 @@ def test_spectral_cost_matches_numpy_periodogram(
 
     expected_cost = hinge_penalty(compute_periodograms(y_traj, fs=fs, window=length, hop=hop), envelope.power)
 
-    solver, lbx, ubx, lbg, ubg = build_mpc_nlp(
+    mpc_nlp = MPCNlp.build(
         model,
         horizon=horizon,
         shooting_depth=horizon,
@@ -426,13 +434,12 @@ def test_spectral_cost_matches_numpy_periodogram(
         w_u_l1=0.0,
         w_psd=1.0,
         psd_envelope=envelope,
-        max_iter=0,  # 0 iterations -> evaluates initial guess
-        max_cpu_time=None,
-        expand=False,
-        ipopt_options={"max_iter": 0},
     )
+    solver = IpoptMPCSolver.build(mpc_nlp, max_iter=0, ipopt_options={"max_iter": 0})
 
-    sol = solver(x0=u_fixed.reshape(-1), lbx=lbx, ubx=ubx, lbg=lbg, ubg=ubg, p=x0)
+    sol = solver.function(
+        x0=u_fixed.reshape(-1), lbx=mpc_nlp.lbx, ubx=mpc_nlp.ubx, lbg=mpc_nlp.lbg, ubg=mpc_nlp.ubg, p=x0
+    )
     np.testing.assert_allclose(float(sol["f"]), expected_cost, rtol=1e-6, atol=1e-8)
 
 
@@ -451,7 +458,7 @@ def test_spectral_cost_is_zero_when_under_envelope(tmp_path: Path) -> None:
     envelope = PsdEnvelope(power=np.full((n_channels, n_bins), 1e8), fs=50.0, window=L, hop=R)
     x0 = rng.standard_normal(model.state_shape[0])
 
-    solver, lbx, ubx, lbg, ubg = build_mpc_nlp(
+    mpc_nlp = MPCNlp.build(
         model,
         horizon=horizon,
         shooting_depth=horizon,
@@ -463,13 +470,17 @@ def test_spectral_cost_is_zero_when_under_envelope(tmp_path: Path) -> None:
         w_u_l1=0.0,
         w_psd=100.0,
         psd_envelope=envelope,
-        max_iter=0,
-        max_cpu_time=None,
-        expand=False,
-        ipopt_options={"max_iter": 0},
     )
+    solver = IpoptMPCSolver.build(mpc_nlp, max_iter=0, ipopt_options={"max_iter": 0})
 
-    sol = solver(x0=np.zeros(horizon * n_controls), lbx=lbx, ubx=ubx, lbg=lbg, ubg=ubg, p=x0)
+    sol = solver.function(
+        x0=np.zeros(horizon * n_controls),
+        lbx=mpc_nlp.lbx,
+        ubx=mpc_nlp.ubx,
+        lbg=mpc_nlp.lbg,
+        ubg=mpc_nlp.ubg,
+        p=x0,
+    )
     assert float(sol["f"]) == 0.0
 
 
@@ -526,3 +537,156 @@ def test_healthy_plant_scores_near_zero_on_envelope() -> None:
     _, y = load_trajectory(str(data_files[0]), n_steps=None, downsample=200, dt=1e-4)
     power = compute_periodograms(y, fs=envelope.fs, window=envelope.window, hop=envelope.hop)
     assert hinge_penalty(power, envelope.power) < 0.05
+
+
+@pytest.mark.parametrize("qpsol", ["qpoases", "qrqp", "osqp"])
+def test_mpc_controller_sqp_standalone(tmp_path: Path, qpsol: Literal["qpoases", "qrqp", "osqp"]) -> None:
+    """MPCController operates with standalone SQP solver using various QP subsolvers."""
+    model = NNSymbolicModel.from_artifact(_build_artifact(tmp_path, n_y=4))
+    u_max = 2.0
+    controller = MPCController(
+        dt=0.01,
+        model=model,
+        u_max=u_max,
+        horizon=3,
+        w_y=1.0,
+        w_u=0.1,
+        solver="sqp",
+        sqp_qpsol=qpsol,
+        sqp_max_iter=15,
+    )
+    assert controller.solver == "sqp"
+    assert controller.sqp_qpsol == qpsol
+    results = _drive(controller, n_steps=6, n_channels=model.n_channels)
+    u_last, log_last = results[-1]
+    assert not log_last.warmup
+    assert not log_last.fallback
+    assert u_last.shape == (model.n_controls,)
+    assert np.isfinite(u_last).all()
+    assert np.all(np.abs(u_last) <= u_max + 1e-6)
+
+
+def test_mpc_controller_sqp_fallback_on_failure(tmp_path: Path) -> None:
+    """When SQP fails to converge, IPOPT fallback is invoked and produces valid control."""
+    model = NNSymbolicModel.from_artifact(_build_artifact(tmp_path, n_y=4))
+    u_max = 2.0
+    controller = MPCController(
+        dt=0.01,
+        model=model,
+        u_max=u_max,
+        horizon=3,
+        w_y=1.0,
+        w_u=0.0,
+        solver="sqp_fallback",
+        sqp_max_iter=1,  # Strict 1-iteration cap forces SQP fallback on cold initial solve
+        max_iter=100,
+    )
+    assert controller.solver == "sqp_fallback"
+    results = _drive(controller, n_steps=6, n_channels=model.n_channels)
+    # The first active step (index 3) is cold and fails 1-iter SQP, triggering IPOPT fallback
+    u_cold, log_cold = results[3]
+    assert not log_cold.warmup
+    assert log_cold.fallback
+    assert log_cold.success
+    assert np.isfinite(u_cold).all()
+    assert np.all(np.abs(u_cold) <= u_max + 1e-6)
+
+    # Subsequent warm-started steps also produce valid bounded control
+    for u, log in results[3:]:
+        assert log.success
+        assert np.isfinite(u).all()
+        assert np.all(np.abs(u) <= u_max + 1e-6)
+
+
+def test_mpc_controller_sqp_fallback_on_exception(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """When SQP raises an unexpected exception, IPOPT fallback is invoked smoothly."""
+    model = NNSymbolicModel.from_artifact(_build_artifact(tmp_path, n_y=4))
+    u_max = 2.0
+    controller = MPCController(
+        dt=0.01,
+        model=model,
+        u_max=u_max,
+        horizon=3,
+        w_y=1.0,
+        w_u=0.0,
+        solver="sqp_fallback",
+    )
+
+    def _broken_sqp(*_args: object, **_kwargs: object) -> MPCSolveResult:
+        msg = "Simulated QP crash"
+        raise RuntimeError(msg)
+
+    assert isinstance(controller._solver_obj, SqpFallbackMPCSolver)  # noqa: SLF001
+    monkeypatch.setattr(controller._solver_obj._sqp_solver, "solve", _broken_sqp)  # noqa: SLF001
+
+    results = _drive(controller, n_steps=5, n_channels=model.n_channels)
+    u_active, log_active = results[3]
+    assert not log_active.warmup
+    assert log_active.fallback
+    assert log_active.success
+    assert np.isfinite(u_active).all()
+    assert np.all(np.abs(u_active) <= u_max + 1e-6)
+
+
+def test_mpc_controller_from_config_sqp_fallback(tmp_path: Path) -> None:
+    """from_config properly passes SQP and fallback configuration options."""
+    artifact = _build_artifact(tmp_path, horizon=5)
+    controller = MPCController.from_config(
+        {
+            "dt": 0.01,
+            "artifact": str(artifact),
+            "u_max": 3.0,
+            "solver": "sqp_fallback",
+            "sqp_qpsol": "osqp",
+            "sqp_hessian": "limited-memory",
+            "sqp_max_iter": 20,
+            "sqp_lbfgs_memory": 5,
+        }
+    )
+    assert controller.solver == "sqp_fallback"
+    assert controller.sqp_qpsol == "osqp"
+    assert controller.sqp_hessian == "limited-memory"
+    assert controller.sqp_max_iter == 20
+    assert controller.sqp_lbfgs_memory == 5
+
+
+def test_mpc_controller_invalid_solver_raises(tmp_path: Path) -> None:
+    """Invalid solver mode raises a ValueError."""
+    model = NNSymbolicModel.from_artifact(_build_artifact(tmp_path, n_y=4))
+    with pytest.raises(ValueError, match="solver must be 'ipopt', 'sqp', or 'sqp_fallback'"):
+        MPCController(dt=0.01, model=model, u_max=1.0, solver="bad_solver")  # ty: ignore[invalid-argument-type]
+
+
+def test_mpc_nlp_and_solver_builders(tmp_path: Path) -> None:
+    """MPCNlp.build builds MPCNlp and solver builders instantiate correct solver wrappers."""
+    model = NNSymbolicModel.from_artifact(_build_artifact(tmp_path, n_y=4))
+    u_max = np.full(model.n_controls, 2.0)
+
+    mpc_nlp = MPCNlp.build(
+        model,
+        horizon=3,
+        shooting_depth=3,
+        n_controls=model.n_controls,
+        u_max=u_max,
+        w_y=1.0,
+        w_u=0.0,
+        w_u_l1=0.0,
+    )
+    assert isinstance(mpc_nlp, MPCNlp)
+    assert "x" in mpc_nlp.nlp
+    assert "f" in mpc_nlp.nlp
+    assert "g" in mpc_nlp.nlp
+    assert "p" in mpc_nlp.nlp
+
+    s_ipopt = IpoptMPCSolver.build(mpc_nlp)
+    assert isinstance(s_ipopt, IpoptMPCSolver)
+    assert isinstance(s_ipopt.function, ca.Function)
+
+    s_sqp = SqpMPCSolver.build(mpc_nlp)
+    assert isinstance(s_sqp, SqpMPCSolver)
+    assert isinstance(s_sqp.function, ca.Function)
+
+    s_fallback = SqpFallbackMPCSolver.build(mpc_nlp)
+    assert isinstance(s_fallback, SqpFallbackMPCSolver)
+    assert isinstance(s_fallback.sqp_function, ca.Function)
+    assert isinstance(s_fallback.ipopt_function, ca.Function)

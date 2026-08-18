@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import dataclasses
-from typing import TYPE_CHECKING, Any, Literal, Self
+from typing import TYPE_CHECKING, Any, Literal, Protocol, Self
 
 import casadi as ca
 import numpy as np
@@ -305,7 +305,7 @@ class WaveformController(Controller[WaveformControllerLog]):
 
 @dataclasses.dataclass(frozen=True)
 class MPCControllerLog:
-    """Per-step diagnostics for any MPC controller: the applied control, optimal cost, solver success, iteration count, iteration-cap flag, and a warm-up flag."""
+    """Per-step diagnostics for any MPC controller: the applied control, optimal cost, solver success, iteration count, iteration-cap flag, warm-up flag, and fallback flag."""
 
     u: FloatArray
     cost: float
@@ -313,6 +313,7 @@ class MPCControllerLog:
     warmup: bool
     n_iter: int = 0
     capped: bool = False
+    fallback: bool = False
 
 
 def _l1_epigraph(u_vars: list[ca.MX], w_l1: float) -> tuple[list[ca.MX], ca.MX, ca.MX]:
@@ -420,96 +421,334 @@ def _rollout_cost(  # noqa: PLR0913
     return cost / horizon, defects, y_nodes
 
 
-def build_mpc_nlp(  # noqa: PLR0913
-    model: SymbolicModel,
-    *,
-    horizon: int,
-    shooting_depth: int,
-    n_controls: int,
-    u_max: FloatArray,
-    w_y: float,
-    w_y_terminal: float | None,
-    w_u: float,
-    w_u_l1: float,
-    w_psd: float = 0.0,
-    psd_envelope: PsdEnvelope | None = None,
-    max_iter: int,
-    max_cpu_time: float | None,
-    expand: bool,
-    ipopt_options: dict[str, Any],
-) -> tuple[ca.Function, FloatArray, FloatArray, FloatArray | float, FloatArray | float]:
-    """Build the PCMS shooting NLP and its IPOPT solver; returns (solver, lbx, ubx, lbg, ubg)."""
-    n_state = model.state_shape[0]
-    n_ctrl, h = n_controls, horizon
-    D = shooting_depth
+@dataclasses.dataclass(frozen=True)
+class MPCNlp:
+    """Symbolic NLP formulation and decision variable / constraint bounds."""
 
-    x0_p = ca.MX.sym("x0", n_state)
-    u_vars = [ca.MX.sym(f"u_{k}", n_ctrl) for k in range(h)]
+    nlp: dict[str, ca.MX]
+    lbx: FloatArray
+    ubx: FloatArray
+    lbg: FloatArray | float
+    ubg: FloatArray | float
 
-    n_segments = (h - 1) // D
-    phi_vars = [ca.MX.sym(f"phi_{k}", n_state) for k in range(1, n_segments + 1)]
+    @classmethod
+    def build(  # noqa: PLR0913
+        cls,
+        model: SymbolicModel,
+        *,
+        horizon: int,
+        shooting_depth: int,
+        n_controls: int,
+        u_max: FloatArray,
+        w_y: float,
+        w_y_terminal: float | None = None,
+        w_u: float = 0.0,
+        w_u_l1: float = 0.0,
+        w_psd: float = 0.0,
+        psd_envelope: PsdEnvelope | None = None,
+    ) -> Self:
+        """Build the PCMS multiple-shooting symbolic NLP graph and bounds."""
+        n_state = model.state_shape[0]
+        n_ctrl, h = n_controls, horizon
+        D = shooting_depth
 
-    def get_phi(idx: int) -> ca.MX:
-        return x0_p if idx == 0 else phi_vars[idx - 1]
+        x0_p = ca.MX.sym("x0", n_state)
+        u_vars = [ca.MX.sym(f"u_{k}", n_ctrl) for k in range(h)]
 
-    cost, defects, y_nodes = _rollout_cost(
-        model,
-        get_phi=get_phi,
-        u_vars=u_vars,
-        n_segments=n_segments,
-        horizon=h,
-        shooting_depth=D,
-        w_y=w_y,
-        w_y_terminal=w_y_terminal,
-        w_u=w_u,
-    )
+        n_segments = (h - 1) // D
+        phi_vars = [ca.MX.sym(f"phi_{k}", n_state) for k in range(1, n_segments + 1)]
 
-    if w_psd > 0:
-        if psd_envelope is None:
-            msg = "psd_envelope must be provided when w_psd > 0"
-            raise ValueError(msg)
-        cost = cost + w_psd * _spectral_hinge_cost(y_nodes, psd_envelope, h)
+        def get_phi(idx: int) -> ca.MX:
+            return x0_p if idx == 0 else phi_vars[idx - 1]
 
-    x_parts = [*u_vars, *phi_vars]
-    g_parts = [*defects, _sum_to_zero(u_vars)]
-    n_eq = len(defects) * n_state + h
-    n_phi_vars = len(phi_vars) * n_state
-    lbx = np.concatenate([np.tile(-u_max, h), np.full(n_phi_vars, -np.inf)])
-    ubx = np.concatenate([np.tile(u_max, h), np.full(n_phi_vars, np.inf)])
+        cost, defects, y_nodes = _rollout_cost(
+            model,
+            get_phi=get_phi,
+            u_vars=u_vars,
+            n_segments=n_segments,
+            horizon=h,
+            shooting_depth=D,
+            w_y=w_y,
+            w_y_terminal=w_y_terminal,
+            w_u=w_u,
+        )
 
-    if w_u_l1 > 0:
-        slacks, l1_cost, l1_g = _l1_epigraph(u_vars, w_u_l1)
-        cost = cost + l1_cost
-        x_parts += slacks
-        g_parts.append(l1_g)
-        n_l1 = l1_g.numel()
-        lbg = np.concatenate([np.zeros(n_eq), np.zeros(n_l1)])
-        ubg = np.concatenate([np.zeros(n_eq), np.full(n_l1, np.inf)])
-        lbx = np.concatenate([lbx, np.zeros(h * n_ctrl)])
-        ubx = np.concatenate([ubx, np.full(h * n_ctrl, np.inf)])
-    else:
-        lbg = ubg = 0.0
+        if w_psd > 0:
+            if psd_envelope is None:
+                msg = "psd_envelope must be provided when w_psd > 0"
+                raise ValueError(msg)
+            cost = cost + w_psd * _spectral_hinge_cost(y_nodes, psd_envelope, h)
 
-    x_nlp = ca.vertcat(*x_parts)
-    g_nlp = ca.vertcat(*g_parts) if g_parts else ca.MX(0)
-    nlp = {"x": x_nlp, "f": cost, "g": g_nlp, "p": x0_p}
-    opts = {
-        "print_time": False,
-        "expand": expand,
-        "ipopt.print_level": 0,
-        "ipopt.sb": "yes",
-        "ipopt.max_iter": max_iter,
-        "ipopt.hessian_approximation": "limited-memory",
-    }
-    if max_cpu_time is not None:
-        opts["ipopt.max_cpu_time"] = max_cpu_time
+        x_parts = [*u_vars, *phi_vars]
+        g_parts = [*defects, _sum_to_zero(u_vars)]
+        n_eq = len(defects) * n_state + h
+        n_phi_vars = len(phi_vars) * n_state
+        lbx = np.concatenate([np.tile(-u_max, h), np.full(n_phi_vars, -np.inf)])
+        ubx = np.concatenate([np.tile(u_max, h), np.full(n_phi_vars, np.inf)])
 
-    if ipopt_options:
-        for k, v in ipopt_options.items():
-            opts[f"ipopt.{k}" if not k.startswith("ipopt.") else k] = v
+        if w_u_l1 > 0:
+            slacks, l1_cost, l1_g = _l1_epigraph(u_vars, w_u_l1)
+            cost = cost + l1_cost
+            x_parts += slacks
+            g_parts.append(l1_g)
+            n_l1 = l1_g.numel()
+            lbg = np.concatenate([np.zeros(n_eq), np.zeros(n_l1)])
+            ubg = np.concatenate([np.zeros(n_eq), np.full(n_l1, np.inf)])
+            lbx = np.concatenate([lbx, np.zeros(h * n_ctrl)])
+            ubx = np.concatenate([ubx, np.full(h * n_ctrl, np.inf)])
+        else:
+            lbg = ubg = 0.0
 
-    solver = ca.nlpsol("mpc", "ipopt", nlp, opts)
-    return solver, lbx, ubx, lbg, ubg
+        x_nlp = ca.vertcat(*x_parts)
+        g_nlp = ca.vertcat(*g_parts) if g_parts else ca.MX(0)
+        nlp = {"x": x_nlp, "f": cost, "g": g_nlp, "p": x0_p}
+        return cls(nlp=nlp, lbx=lbx, ubx=ubx, lbg=lbg, ubg=ubg)
+
+
+@dataclasses.dataclass(frozen=True)
+class MPCSolveResult:
+    """Numerical result and diagnostics of an MPC NLP solve."""
+
+    u_opt: FloatArray
+    cost: float
+    success: bool
+    n_iter: int
+    capped: bool
+    fallback: bool
+
+
+class MPCSolver(Protocol):
+    """Protocol for MPC NLP numerical solvers."""
+
+    def solve(self, x0: FloatArray, w0: FloatArray) -> MPCSolveResult:
+        """Solve the NLP for parameter ``x0`` and initial guess ``w0``."""
+        ...
+
+
+class IpoptMPCSolver:
+    """IPOPT solver for MPC."""
+
+    def __init__(self, solver: ca.Function, mpc_nlp: MPCNlp) -> None:
+        """Initialize with a compiled IPOPT nlpsol function and the MPCNlp."""
+        self._solver = solver
+        self.mpc_nlp = mpc_nlp
+
+    @property
+    def function(self) -> ca.Function:
+        """Underlying compiled CasADi nlpsol function."""
+        return self._solver
+
+    @classmethod
+    def build(
+        cls,
+        mpc_nlp: MPCNlp,
+        *,
+        max_iter: int = 100,
+        max_cpu_time: float | None = None,
+        expand: bool = False,
+        ipopt_options: dict[str, Any] | None = None,
+    ) -> Self:
+        """Build a CasADi IPOPT solver from an MPCNlp."""
+        opts: dict[str, Any] = {
+            "print_time": False,
+            "expand": expand,
+            "ipopt.print_level": 0,
+            "ipopt.sb": "yes",
+            "ipopt.max_iter": max_iter,
+            "ipopt.hessian_approximation": "limited-memory",
+        }
+        if max_cpu_time is not None:
+            opts["ipopt.max_cpu_time"] = max_cpu_time
+        if ipopt_options:
+            for k, v in ipopt_options.items():
+                opts[f"ipopt.{k}" if not k.startswith("ipopt.") else k] = v
+        solver = ca.nlpsol("mpc_ipopt", "ipopt", mpc_nlp.nlp, opts)
+        return cls(solver, mpc_nlp)
+
+    def solve(self, x0: FloatArray, w0: FloatArray) -> MPCSolveResult:
+        """Solve using IPOPT."""
+        sol = self._solver(
+            x0=w0,
+            lbx=self.mpc_nlp.lbx,
+            ubx=self.mpc_nlp.ubx,
+            lbg=self.mpc_nlp.lbg,
+            ubg=self.mpc_nlp.ubg,
+            p=x0,
+        )
+        stats = self._solver.stats()
+        status = stats["return_status"]
+        success = status in {"Solve_Succeeded", "Solved_To_Acceptable_Level"}
+        return MPCSolveResult(
+            u_opt=np.asarray(sol["x"]).reshape(-1),
+            cost=float(sol["f"]),
+            success=success,
+            n_iter=int(stats.get("iter_count", 0)),
+            capped=status == "Maximum_Iterations_Exceeded",
+            fallback=False,
+        )
+
+
+class SqpMPCSolver:
+    """Standalone SQP solver for MPC."""
+
+    def __init__(self, solver: ca.Function, mpc_nlp: MPCNlp) -> None:
+        """Initialize with a compiled SQP nlpsol function and the MPCNlp."""
+        self._solver = solver
+        self.mpc_nlp = mpc_nlp
+
+    @property
+    def function(self) -> ca.Function:
+        """Underlying compiled CasADi nlpsol function."""
+        return self._solver
+
+    @classmethod
+    def build(  # noqa: PLR0913
+        cls,
+        mpc_nlp: MPCNlp,
+        *,
+        qpsol: Literal["qpoases", "osqp", "qrqp"] = "qpoases",
+        hessian_approximation: Literal["limited-memory", "exact"] = "limited-memory",
+        max_iter: int = 15,
+        lbfgs_memory: int = 10,
+        expand: bool = False,
+        sqp_options: dict[str, Any] | None = None,
+    ) -> Self:
+        """Build a CasADi SQP solver from an MPCNlp."""
+        qpsol_opts: dict[str, Any] = {"print_time": False}
+        if qpsol == "osqp":
+            qpsol_opts["osqp"] = {"verbose": False, "eps_abs": 1e-4, "eps_rel": 1e-4}
+        elif qpsol == "qpoases":
+            qpsol_opts["printLevel"] = "none"
+        elif qpsol == "qrqp":
+            qpsol_opts.update({"print_header": False, "print_iter": False, "print_info": False})
+
+        opts: dict[str, Any] = {
+            "print_time": False,
+            "print_header": False,
+            "print_iteration": False,
+            "print_status": False,
+            "expand": expand,
+            "qpsol": qpsol,
+            "qpsol_options": qpsol_opts,
+            "hessian_approximation": hessian_approximation,
+            "max_iter": max_iter,
+        }
+        if hessian_approximation == "limited-memory":
+            opts["lbfgs_memory"] = lbfgs_memory
+        if sqp_options:
+            opts.update(sqp_options)
+        solver = ca.nlpsol("mpc_sqp", "sqpmethod", mpc_nlp.nlp, opts)
+        return cls(solver, mpc_nlp)
+
+    def solve(self, x0: FloatArray, w0: FloatArray) -> MPCSolveResult:
+        """Solve using standalone SQP."""
+        try:
+            sol = self._solver(
+                x0=w0,
+                lbx=self.mpc_nlp.lbx,
+                ubx=self.mpc_nlp.ubx,
+                lbg=self.mpc_nlp.lbg,
+                ubg=self.mpc_nlp.ubg,
+                p=x0,
+            )
+            stats = self._solver.stats()
+            status = stats["return_status"]
+            success = status == "Solve_Succeeded"
+            return MPCSolveResult(
+                u_opt=np.asarray(sol["x"]).reshape(-1),
+                cost=float(sol["f"]),
+                success=success,
+                n_iter=int(stats.get("iter_count", 0)),
+                capped=status == "Maximum_Iterations_Exceeded",
+                fallback=False,
+            )
+        except Exception:  # noqa: BLE001
+            return MPCSolveResult(
+                u_opt=np.zeros(w0.size, dtype=np.float64),
+                cost=float("nan"),
+                success=False,
+                n_iter=0,
+                capped=False,
+                fallback=False,
+            )
+
+
+class SqpFallbackMPCSolver:
+    """SQP solver with warm-started IPOPT fallback on non-convergence or exception."""
+
+    def __init__(self, sqp_solver: SqpMPCSolver, ipopt_solver: IpoptMPCSolver) -> None:
+        """Initialize with SQP and IPOPT solver objects."""
+        self._sqp_solver = sqp_solver
+        self._ipopt_solver = ipopt_solver
+
+    @property
+    def sqp_function(self) -> ca.Function:
+        """Underlying compiled CasADi SQP nlpsol function."""
+        return self._sqp_solver.function
+
+    @property
+    def ipopt_function(self) -> ca.Function:
+        """Underlying compiled CasADi IPOPT nlpsol function."""
+        return self._ipopt_solver.function
+
+    @classmethod
+    def build(  # noqa: PLR0913
+        cls,
+        mpc_nlp: MPCNlp,
+        *,
+        max_iter: int = 100,
+        max_cpu_time: float | None = None,
+        expand: bool = False,
+        ipopt_options: dict[str, Any] | None = None,
+        sqp_qpsol: Literal["qpoases", "osqp", "qrqp"] = "qpoases",
+        sqp_hessian: Literal["limited-memory", "exact"] = "limited-memory",
+        sqp_max_iter: int = 15,
+        sqp_lbfgs_memory: int = 10,
+        sqp_options: dict[str, Any] | None = None,
+    ) -> Self:
+        """Build both SQP and IPOPT solvers from an MPCNlp."""
+        sqp_obj = SqpMPCSolver.build(
+            mpc_nlp,
+            qpsol=sqp_qpsol,
+            hessian_approximation=sqp_hessian,
+            max_iter=sqp_max_iter,
+            lbfgs_memory=sqp_lbfgs_memory,
+            expand=expand,
+            sqp_options=sqp_options,
+        )
+        ipopt_obj = IpoptMPCSolver.build(
+            mpc_nlp,
+            max_iter=max_iter,
+            max_cpu_time=max_cpu_time,
+            expand=expand,
+            ipopt_options=ipopt_options,
+        )
+        return cls(sqp_obj, ipopt_obj)
+
+    def solve(self, x0: FloatArray, w0: FloatArray) -> MPCSolveResult:
+        """Attempt SQP, falling back to IPOPT warm-started from the SQP iterate if SQP fails."""
+        try:
+            res_sqp = self._sqp_solver.solve(x0, w0)
+        except Exception:  # noqa: BLE001
+            res_sqp = MPCSolveResult(
+                u_opt=w0,
+                cost=float("nan"),
+                success=False,
+                n_iter=0,
+                capped=False,
+                fallback=False,
+            )
+
+        if res_sqp.success:
+            return res_sqp
+
+        warm_w0 = res_sqp.u_opt if np.isfinite(res_sqp.u_opt).all() else w0
+        res_ipopt = self._ipopt_solver.solve(x0, warm_w0)
+        return dataclasses.replace(
+            res_ipopt,
+            n_iter=res_sqp.n_iter + res_ipopt.n_iter,
+            fallback=True,
+        )
 
 
 class _MPCControllerConfig(StrictConfig):
@@ -530,10 +769,16 @@ class _MPCControllerConfig(StrictConfig):
     psd_window_s: float | None = Field(default=None, gt=0)
     psd_hop_s: float | None = Field(default=None, gt=0)
     shooting_depth: int | None = Field(default=None, ge=1)
+    solver: Literal["ipopt", "sqp", "sqp_fallback"] = "sqp_fallback"
     max_iter: int = Field(default=100, ge=1)
     max_cpu_time: float | None = Field(default=None, gt=0)
     expand: bool = False
     ipopt_options: dict[str, Any] | None = None
+    sqp_qpsol: Literal["qpoases", "osqp", "qrqp"] = "qpoases"
+    sqp_hessian: Literal["limited-memory", "exact"] = "limited-memory"
+    sqp_max_iter: int = Field(default=15, ge=1)
+    sqp_lbfgs_memory: int = Field(default=10, ge=1)
+    sqp_options: dict[str, Any] | None = None
 
 
 class MPCController(Controller[MPCControllerLog]):
@@ -553,12 +798,18 @@ class MPCController(Controller[MPCControllerLog]):
         psd_ref: str | Path | None = None,
         w_y_terminal: float | None = None,
         shooting_depth: int | None = None,
+        solver: Literal["ipopt", "sqp", "sqp_fallback"] = "sqp_fallback",
         max_iter: int = 100,
         max_cpu_time: float | None = None,
         expand: bool = False,
         ipopt_options: dict[str, Any] | None = None,
+        sqp_qpsol: Literal["qpoases", "osqp", "qrqp"] = "qpoases",
+        sqp_hessian: Literal["limited-memory", "exact"] = "limited-memory",
+        sqp_max_iter: int = 15,
+        sqp_lbfgs_memory: int = 10,
+        sqp_options: dict[str, Any] | None = None,
     ) -> None:
-        """Initialize the MPC and build its (re-used) IPOPT solver.
+        """Initialize the MPC and build its CasADi solver(s).
 
         Parameters
         ----------
@@ -595,17 +846,33 @@ class MPCController(Controller[MPCControllerLog]):
             steps. ``D = 1`` is full multiple shooting (a root at every step), ``D >= horizon``
             is single shooting (no roots; the states are condensed out and the NLP is over the
             controls alone). Defaults to ``horizon``, i.e. single shooting
+        solver
+            Solver mode: ``"sqp_fallback"`` (default, SQP with warm-started IPOPT fallback),
+            ``"sqp"`` (standalone SQP), or ``"ipopt"`` (pure IPOPT).
         max_iter
-            Hard cap on IPOPT iterations per solve. When the cap is hit the best warm-started iterate is applied
-            and ``success`` is ``False`` (capped, not failed).
+            Hard cap on IPOPT iterations per solve.
         max_cpu_time
             Optional per-solve wall-time budget in seconds (IPOPT ``max_cpu_time``); ``None``
             leaves it unbounded.
         expand
-            Expand the NLP from MX to SX before building the solver. Off by default: (for this
-            MLP-heavy graphthe SX expansion is huge).
+            Expand the NLP from MX to SX before building the solver.
+        ipopt_options
+            Optional dictionary of extra IPOPT solver options.
+        sqp_qpsol
+            QP subsolver plugin for SQP: ``"qpoases"`` (default), ``"osqp"``, or ``"qrqp"``.
+        sqp_hessian
+            Hessian approximation for SQP: ``"limited-memory"`` (default L-BFGS) or ``"exact"``.
+        sqp_max_iter
+            Maximum number of SQP iterations per solve before fallback.
+        sqp_lbfgs_memory
+            L-BFGS history memory size for SQP quasi-Newton Hessian updates.
+        sqp_options
+            Optional dictionary of extra options passed to the SQP solver.
         """
         super().__init__(dt)
+        if solver not in ("ipopt", "sqp", "sqp_fallback"):
+            msg = f"solver must be 'ipopt', 'sqp', or 'sqp_fallback', got {solver!r}"
+            raise ValueError(msg)
         self.model = model
         self.horizon = int(horizon) if horizon is not None else model.native_horizon
         self.w_y = float(w_y)
@@ -616,10 +883,16 @@ class MPCController(Controller[MPCControllerLog]):
         self.psd_ref = psd_ref
         self.psd_envelope = PsdEnvelope.load(psd_ref) if psd_ref is not None else None
         self.shooting_depth = int(shooting_depth) if shooting_depth is not None else self.horizon
+        self.solver = solver
         self.max_iter = int(max_iter)
         self.max_cpu_time = float(max_cpu_time) if max_cpu_time is not None else None
         self.expand = bool(expand)
         self.ipopt_options = dict(ipopt_options) if ipopt_options is not None else {}
+        self.sqp_qpsol = sqp_qpsol
+        self.sqp_hessian = sqp_hessian
+        self.sqp_max_iter = int(sqp_max_iter)
+        self.sqp_lbfgs_memory = int(sqp_lbfgs_memory)
+        self.sqp_options = dict(sqp_options) if sqp_options is not None else {}
 
         self.n_controls = model.n_controls
 
@@ -653,15 +926,21 @@ class MPCController(Controller[MPCControllerLog]):
             psd_ref=cfg.psd_ref,
             w_y_terminal=cfg.w_y_terminal,
             shooting_depth=cfg.shooting_depth,
+            solver=cfg.solver,
             max_iter=cfg.max_iter,
             max_cpu_time=cfg.max_cpu_time,
             expand=cfg.expand,
             ipopt_options=cfg.ipopt_options,
+            sqp_qpsol=cfg.sqp_qpsol,
+            sqp_hessian=cfg.sqp_hessian,
+            sqp_max_iter=cfg.sqp_max_iter,
+            sqp_lbfgs_memory=cfg.sqp_lbfgs_memory,
+            sqp_options=cfg.sqp_options,
         )
 
     def _build_solver(self) -> None:
-        """Build the PCMS multiple-shooting NLP and its IPOPT solver, once."""
-        self._solver, self._lbx, self._ubx, self._lbg, self._ubg = build_mpc_nlp(
+        """Build the PCMS multiple-shooting NLP graph and its solver object, once."""
+        self._mpc_nlp = MPCNlp.build(
             self.model,
             horizon=self.horizon,
             shooting_depth=self.shooting_depth,
@@ -673,14 +952,41 @@ class MPCController(Controller[MPCControllerLog]):
             w_u_l1=self.w_u_l1,
             w_psd=self.w_psd,
             psd_envelope=self.psd_envelope,
-            max_iter=self.max_iter,
-            max_cpu_time=self.max_cpu_time,
-            expand=self.expand,
-            ipopt_options=self.ipopt_options,
         )
+        if self.solver == "sqp_fallback":
+            self._solver_obj: MPCSolver = SqpFallbackMPCSolver.build(
+                self._mpc_nlp,
+                max_iter=self.max_iter,
+                max_cpu_time=self.max_cpu_time,
+                expand=self.expand,
+                ipopt_options=self.ipopt_options,
+                sqp_qpsol=self.sqp_qpsol,
+                sqp_hessian=self.sqp_hessian,
+                sqp_max_iter=self.sqp_max_iter,
+                sqp_lbfgs_memory=self.sqp_lbfgs_memory,
+                sqp_options=self.sqp_options,
+            )
+        elif self.solver == "sqp":
+            self._solver_obj = SqpMPCSolver.build(
+                self._mpc_nlp,
+                qpsol=self.sqp_qpsol,
+                hessian_approximation=self.sqp_hessian,
+                max_iter=self.sqp_max_iter,
+                lbfgs_memory=self.sqp_lbfgs_memory,
+                expand=self.expand,
+                sqp_options=self.sqp_options,
+            )
+        else:
+            self._solver_obj = IpoptMPCSolver.build(
+                self._mpc_nlp,
+                max_iter=self.max_iter,
+                max_cpu_time=self.max_cpu_time,
+                expand=self.expand,
+                ipopt_options=self.ipopt_options,
+            )
 
-    def _solve(self, x0: FloatArray) -> tuple[FloatArray, float, bool, int, bool]:
-        """Solve the NLP for window-state ``x0``; return ``(u_0*, cost, success, n_iter, capped)``."""
+    def _solve(self, x0: FloatArray) -> tuple[FloatArray, float, bool, int, bool, bool]:
+        """Solve the NLP for window-state ``x0``; return ``(u_0*, cost, success, n_iter, capped, fallback)``."""
         m, h = self.n_controls, self.horizon
         D = self.shooting_depth
         u_guess = self._u_prev if self._u_prev is not None else np.zeros((h, m))
@@ -697,20 +1003,10 @@ class MPCController(Controller[MPCControllerLog]):
             seed.append(np.abs(u_guess).reshape(-1))
         w0 = np.concatenate(seed)
 
-        sol = self._solver(x0=w0, lbx=self._lbx, ubx=self._ubx, lbg=self._lbg, ubg=self._ubg, p=x0)
-        u_opt = np.asarray(sol["x"]).reshape(-1)[: h * m].reshape(h, m)
+        res = self._solver_obj.solve(x0, w0)
+        u_opt = res.u_opt[: h * m].reshape(h, m)
         self._u_prev = np.vstack([u_opt[1:], u_opt[-1:]])
-
-        stats = self._solver.stats()
-        status = stats["return_status"]
-        success = status in {"Solve_Succeeded", "Solved_To_Acceptable_Level"}
-        return (
-            u_opt[0],
-            float(sol["f"]),
-            success,
-            int(stats.get("iter_count", 0)),
-            status == "Maximum_Iterations_Exceeded",
-        )
+        return u_opt[0], res.cost, res.success, res.n_iter, res.capped, res.fallback
 
     def update(
         self,
@@ -726,9 +1022,17 @@ class MPCController(Controller[MPCControllerLog]):
             self._u_last = u_zero
             return u_zero, MPCControllerLog(u=u_zero, cost=0.0, success=True, warmup=True)
 
-        u0, cost, success, n_iter, capped = self._solve(self._state)
+        u0, cost, success, n_iter, capped, fallback = self._solve(self._state)
         self._u_last = u0
-        return u0, MPCControllerLog(u=u0.copy(), cost=cost, success=success, warmup=False, n_iter=n_iter, capped=capped)
+        return u0, MPCControllerLog(
+            u=u0.copy(),
+            cost=cost,
+            success=success,
+            warmup=False,
+            n_iter=n_iter,
+            capped=capped,
+            fallback=fallback,
+        )
 
 
 class _LinearMPCControllerConfig(StrictConfig):
