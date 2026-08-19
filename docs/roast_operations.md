@@ -3,7 +3,6 @@
 **Date:** 2026-08-10
 **Scope:** the montage, the artifacts and commands, the traps, and what is still not done.
 Physics and benchmark results: [`tes_field_geometry.md`](tes_field_geometry.md).
-Why the MPC fails and what to change: [`mpc_next_steps.md`](mpc_next_steps.md).
 
 ## The montage
 
