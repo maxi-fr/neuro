@@ -75,18 +75,23 @@ Source of truth:
 
 ## 3. Theoretical and Biophysical Hazards
 
-### 3.1 The Phase Ambiguity & Cross-Term Dilemma ($2 y^T \Delta y$)
+### 3.1 Biophysical Plant Coupling & Excitability Suppression vs. Phase Dependence
 
-When an external electrical current $u$ is delivered through scalp electrodes, the resulting electric field perturbs the neural membrane potential by $\Delta y$.
+In this codebase, stimulation does **not** enter as an instantaneous additive voltage overlay on the sensor signals ($\mathbf{y}_{\text{EEG}} = \mathbf{L}(x_2 - x_3)$, with no direct feedthrough $D = 0$ in [`EEGMeasurement`](../src/neuro/eeg.py)).
 
-In raw EEG space, the perturbed signal is additive:
-$$y_{\text{perturbed}} = y + \Delta y$$
+Instead, electrode currents $\mathbf{u}$ project through the cortical-normal matrix $\boldsymbol{\gamma}$ to induce somatic polarization drives $U_{\text{stim}} = \boldsymbol{\gamma}^T \mathbf{u}$ that enter **inside the firing-rate sigmoid** of the pyramidal neural population in [`JansenRitDynamics`](../src/neuro/jansen_rit.py):
 
-The resulting signal power contains an explicit cross-term:
-$$\|y + \Delta y\|^2 = \|y\|^2 + \underbrace{2 y^T \Delta y}_{\text{phase-dependent interference}} + \|\Delta y\|^2$$
+$$S(x_2 - x_3 + \boldsymbol{\gamma}^T \mathbf{u}) = \frac{2 e_0}{1 + \exp\left(r \left(v_0 - (x_2 - x_3 + \boldsymbol{\gamma}^T \mathbf{u})\right)\right)}$$
 
-- **The issue:** If the model only observes past power $\|y\|^2$, but **lacks the instantaneous phase of $y$**, it cannot determine whether an instantaneous control pulse $u$ will constructively interfere (increase power) or destructively interfere (quench power).
-- **When direct power prediction holds:** Direct observable prediction is valid when stimulation acts on **slow excitability / gain dynamics** (e.g., shifting neural population firing thresholds and quenching seizure recruitment over several oscillation cycles) rather than cycle-by-cycle phase cancellation.
+This distinguishes two operational regimes:
+
+1. **State-Dependent Derivative Sensitivity:**
+   Expanding the sigmoid around the instantaneous LFP $v = x_2 - x_3$:
+   $$S(v + \boldsymbol{\gamma}^T \mathbf{u}) \approx S(v) + S'(v)(\boldsymbol{\gamma}^T \mathbf{u}) + \frac{1}{2}S''(v)(\boldsymbol{\gamma}^T \mathbf{u})^2$$
+   The instantaneous derivative sensitivity $\frac{\partial \dot{x}_4}{\partial \mathbf{u}} = A a S'(x_2 - x_3) \boldsymbol{\gamma}^T$ depends on the slope of the sigmoid at the current membrane potential. On a limit cycle, the effect of an intra-cycle pulse depends on the instantaneous phase $\theta$.
+2. **Envelope / Excitability Suppression (The MPC Operating Regime):**
+   In this repo, the controller operates at $\Delta t = 0.02\text{ s}$ ($50\text{ Hz}$) over a $1.0\text{ s}$ horizon ($H=50$). Seizure suppression is achieved primarily by **hyperpolarizing the pyramidal population** ($\boldsymbol{\gamma}^T \mathbf{u} < 0$), which shifts the regional operating point $(v_0 - \boldsymbol{\gamma}^T \mathbf{u})$ across the supercritical Hopf bifurcation, collapsing the limit cycle into a stable quiescent fixed point.
+   Because suppression operates via excitability damping rather than cycle-by-cycle phase cancellation, the power envelope (`eeg_ms` or hopped STFT power $\hat{P}$) decays smoothly and monotonically with sustained control current. This makes direct observable forecasting well-conditioned.
 
 ### 3.2 Non-Markovianity of the Observable Space
 
