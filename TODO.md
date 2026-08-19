@@ -19,6 +19,8 @@
 
 * reservoir computer w. hopf nodes
 
+* is mpc hinge spectral cost function tested?
+
 ### Efficiency
 
 * possible to remove torch.cat from AutoregressiveMLP.forward? for efficiency?

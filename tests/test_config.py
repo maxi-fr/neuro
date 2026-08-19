@@ -13,6 +13,7 @@ from neuro.config import (
     ModelConfig,
     NNPredictorConfig,
     SimulationConfig,
+    StftSpec,
     TrainingConfig,
     expand_dotted_dict,
     resolve_data_files,
@@ -183,7 +184,64 @@ def test_sweep_unknown_param_type_rejected() -> None:
                 "eval_horizon_s": 0.2,
                 "losses": {
                     "curriculum_mse": {"weight": 1.0, "span_s": 0.2, "curr_start": 0, "curr_end": 10},
-                    "psd": {"weight": 1.0, "span_s": 0.01},
+                    "stft": {"weight": 1.0, "n_span": 20, "n_segment": 40, "n_hop": 10},
+                },
+            },
+        },
+        {
+            "simulation": {"dt": 0.01, "downsample": 1},
+            "training": {
+                "eval_horizon_s": 0.2,
+                "losses": {
+                    "curriculum_mse": {"weight": 1.0, "span_s": 0.2, "curr_start": 0, "curr_end": 10},
+                    "stft": {"weight": 1.0, "n_span": 20, "n_segment": 10, "n_hop": 5, "kernel_width": 4},
+                },
+            },
+        },
+        {
+            "simulation": {"dt": 0.01, "downsample": 1},
+            "training": {
+                "eval_horizon_s": 0.2,
+                "losses": {
+                    "curriculum_mse": {"weight": 1.0, "span_s": 0.2, "curr_start": 0, "curr_end": 10},
+                    "stft": {"weight": 1.0, "n_span": 20, "n_segment": 10, "n_hop": 5, "kernel_width": 3},
+                },
+            },
+        },
+        {
+            "simulation": {"dt": 0.01, "downsample": 1},
+            "training": {
+                "eval_horizon_s": 0.2,
+                "losses": {
+                    "curriculum_mse": {"weight": 1.0, "span_s": 0.2, "curr_start": 0, "curr_end": 10},
+                    "stft": {"weight": 1.0, "n_span": 20, "n_segment": 10, "n_hop": 10, "band_hz": [60.0, 80.0]},
+                },
+            },
+        },
+        {
+            "simulation": {"dt": 0.01, "downsample": 1},
+            "training": {
+                "eval_horizon_s": 0.2,
+                "losses": {
+                    "curriculum_mse": {"weight": 1.0, "span_s": 0.2, "curr_start": 0, "curr_end": 10},
+                    "stft": {"weight": 1.0, "n_span": 20, "n_segment": 10, "n_hop": 10, "band_hz": [12.0, 3.0]},
+                },
+            },
+        },
+        {
+            "simulation": {"dt": 0.01, "downsample": 1},
+            "training": {
+                "eval_horizon_s": 0.2,
+                "losses": {
+                    "curriculum_mse": {"weight": 1.0, "span_s": 0.2, "curr_start": 0, "curr_end": 10},
+                    "stft": {
+                        "weight": 1.0,
+                        "n_span": 20,
+                        "n_segment": 10,
+                        "n_hop": 10,
+                        "band_hz": [10.0, 20.0],
+                        "n_bin_pool": 4,
+                    },
                 },
             },
         },
@@ -209,6 +267,20 @@ def test_value_constraints_rejected(raw: dict) -> None:
     """Test Value constraints rejected."""
     with pytest.raises(ValidationError):
         NNPredictorConfig.from_dict(raw)
+
+
+def test_stft_bin_range_excludes_dc_and_clips_to_the_band() -> None:
+    """bin_range drops the DC bin and keeps only rfft bins inside band_hz."""
+    fs = 50.0
+    full = StftSpec(weight=1.0, n_span=50, n_segment=50, n_hop=25)
+    assert full.bin_range(fs) == (1, 26)
+    assert full.n_frames() == 1  # segment == span: the Welch endpoint
+
+    hopped = StftSpec(weight=1.0, n_span=50, n_segment=25, n_hop=12)
+    assert hopped.n_frames() == 3
+
+    banded = StftSpec(weight=1.0, n_span=50, n_segment=50, n_hop=25, band_hz=(3.0, 12.0))
+    assert banded.bin_range(fs) == (3, 13)  # 1 Hz per bin at n_segment = 50
 
 
 def test_valid_boundaries_accepted() -> None:

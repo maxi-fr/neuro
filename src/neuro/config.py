@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import datetime
+import math
 import types
 import typing
 from pathlib import Path
@@ -18,7 +19,7 @@ if TYPE_CHECKING:
 
     import optuna
 
-_MIN_PSD_SPAN_STEPS = 2
+_MIN_SMOOTHED_FRAMES = 2
 
 
 def parse_array(val: Any) -> Any:  # noqa: ANN401
@@ -63,18 +64,27 @@ class SimulationConfig(StrictConfig):
 
 
 class LossSpec(StrictConfig):
-    """Base for one additive loss term: its weight, its epoch gate and its rollout span."""
+    """Base for one additive loss term: its weight and its epoch gate."""
 
     weight: float = Field(ge=0)
-    span_s: float = Field(gt=0)
     start_epoch: int = Field(default=0, ge=0)
+
+    def span_steps(self, fs: float) -> int:
+        """Rollout length in steps this term scores at ``fs``."""
+        raise NotImplementedError
+
+
+class SecondsSpanSpec(LossSpec):
+    """A loss term whose rollout span is declared in seconds and rounded at ``fs``."""
+
+    span_s: float = Field(gt=0)
 
     def span_steps(self, fs: float) -> int:
         """Rollout length in steps implied by span_s at fs, >= 1."""
         return max(1, round(self.span_s * fs))
 
 
-class CurriculumMSESpec(LossSpec):
+class CurriculumMSESpec(SecondsSpanSpec):
     """Curriculum MSE loss spec: ramps trusted rollout length over curr_start -> curr_end."""
 
     curr_start: int = Field(ge=0)
@@ -88,11 +98,62 @@ class CurriculumMSESpec(LossSpec):
         return self
 
 
-class PSDSpec(LossSpec):
-    """Welch PSD matching loss spec."""
+class StftSpec(LossSpec):
+    """Spectrogram matching loss spec: geometry in samples, since at fs = 50 Hz seconds do not resolve it.
+
+    ``kernel_width = 1`` and ``n_bin_pool = 1`` mean "no pooling"; the Welch endpoint is
+    ``n_segment = n_span``, which yields a single frame.
+    """
+
+    n_span: int = Field(gt=0)
+    n_segment: int = Field(gt=0)
+    n_hop: int = Field(gt=0)
+    band_hz: tuple[float, float] | None = None
+    n_bin_pool: int = Field(default=1, ge=1)
+    kernel: Literal["boxcar", "triangular", "hann"] = "boxcar"
+    kernel_width: int = Field(default=1, ge=1)
+
+    def span_steps(self, fs: float) -> int:  # noqa: ARG002 -- geometry is already in samples
+        """Rollout length in steps, declared directly."""
+        return self.n_span
+
+    def bin_range(self, fs: float) -> tuple[int, int]:
+        """Half-open rfft bin index range scored at ``fs``; DC is always excluded."""
+        n_bins = self.n_segment // 2 + 1
+        if self.band_hz is None:
+            return 1, n_bins
+        lo_hz, hi_hz = self.band_hz
+        lo = max(1, math.ceil(lo_hz * self.n_segment / fs))
+        hi = min(n_bins, math.floor(hi_hz * self.n_segment / fs) + 1)
+        return lo, max(lo, hi)
+
+    def n_frames(self) -> int:
+        """Count the frames the segment grid extracts from the span."""
+        return (self.n_span - self.n_segment) // self.n_hop + 1
+
+    @model_validator(mode="after")
+    def _validate_geometry(self) -> Self:
+        if self.n_segment > self.n_span:
+            msg = f"stft.n_segment ({self.n_segment}) must be <= n_span ({self.n_span})."
+            raise ValueError(msg)
+        n_frames = self.n_frames()
+        if self.kernel_width > n_frames:
+            msg = f"stft.kernel_width ({self.kernel_width}) must be <= the frame count ({n_frames})."
+            raise ValueError(msg)
+        # A kernel that collapses the frame axis to one output is Welch with fewer effective dof.
+        if self.kernel_width > 1 and n_frames - self.kernel_width + 1 < _MIN_SMOOTHED_FRAMES:
+            msg = (
+                f"stft frame kernel leaves {n_frames - self.kernel_width + 1} frame(s); "
+                f"a kernel must leave >= {_MIN_SMOOTHED_FRAMES}."
+            )
+            raise ValueError(msg)
+        if self.band_hz is not None and self.band_hz[0] >= self.band_hz[1]:
+            msg = f"stft.band_hz must be increasing, got {self.band_hz}."
+            raise ValueError(msg)
+        return self
 
 
-class MetricLossSpec(LossSpec):
+class MetricLossSpec(SecondsSpanSpec):
     """Base for a metric twin: window geometry in seconds, as metrics.py defines it.
 
     Both geometry fields default to ``None``, meaning "whatever grid ``metrics.py`` scores
@@ -122,7 +183,7 @@ class LossSpecs(StrictConfig):
     """Config-declared set of additive loss terms."""
 
     curriculum_mse: CurriculumMSESpec | None = None
-    psd: PSDSpec | None = None
+    stft: StftSpec | None = None
     eeg_ms: EegMsSpec | None = None
 
     def active(self) -> dict[str, LossSpec]:
@@ -285,10 +346,15 @@ class NNPredictorConfig(StrictConfig):
             msg = "At least one loss must have start_epoch = 0; otherwise epoch 0 has no gradient."
             raise ValueError(msg)
 
-        if self.training.losses.psd is not None:
-            psd_steps = self.training.losses.psd.span_steps(fs)
-            if psd_steps < _MIN_PSD_SPAN_STEPS:
-                msg = f"psd.span_steps ({psd_steps}) must be >= {_MIN_PSD_SPAN_STEPS} at fs={fs} Hz."
+        stft = self.training.losses.stft
+        if stft is not None:
+            bin_lo, bin_hi = stft.bin_range(fs)
+            n_bins = bin_hi - bin_lo
+            if n_bins < 1:
+                msg = f"stft leaves no frequency bins at fs={fs} Hz for band_hz={stft.band_hz}."
+                raise ValueError(msg)
+            if stft.n_bin_pool > n_bins:
+                msg = f"stft.n_bin_pool ({stft.n_bin_pool}) exceeds the {n_bins} in-band bin(s) at fs={fs} Hz."
                 raise ValueError(msg)
 
         for name, spec in active.items():

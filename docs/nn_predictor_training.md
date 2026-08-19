@@ -382,25 +382,44 @@ $L$ is grown from 1 to $\text{span\_steps}$ over training epochs $[e_0, e_1]$ = 
 (Section 7.3). Note that the full model horizon $N$ is always rolled out; the loss simply slices the
 prefix $[:L]$ it scores, so the untrusted tail contributes no gradient.
 
-### 6.2 Auxiliary spectral loss (`psd`)
+### 6.2 Auxiliary spectral loss (`stft`)
 
-Pushes the *statistics* of the rollout toward the data, not just point accuracy. Active when `psd` is
-configured in `training.losses` and $e \ge \text{start\_epoch}$ (requires $\text{span\_steps} \ge 2$).
+Pushes the *statistics* of the rollout toward the data, not just point accuracy. Active when `stft`
+is configured in `training.losses` and $e \ge \text{start\_epoch}$.
 
-**PSD loss (log-spectral distance, Welch).** The PSD is a batch-of-snippets estimate over the loss's
-span: per channel $c$, all $B$ windows are concatenated into one length-$B \cdot \text{span\_steps}$
-series and Welch's method is applied with `nperseg = span_steps`, `noverlap = 0`:
+**STFT loss (log-spectral distance, per sample).** The rollout span is cut into hopped
+**segments** of `n_segment` samples, each transformed into one **frame** of the spectrogram. Power
+is in raw units; the DC bin is always dropped and `band_hz` optionally restricts the rest. With
+$m$ over frames, $c$ over channels and $f$ over (optionally pooled) bins,
 
 $$
-\mathcal{L}_\text{PSD} = \frac{1}{C\,F}\sum_{c,f}\Big(\log\big(\hat{P}_{c,f} + \varepsilon\big)
-- \log\big(P_{c,f} + \varepsilon\big)\Big)^2, \qquad \varepsilon = 10^{-8}.
+\mathcal{L}_\text{STFT} = \frac{1}{M\,C\,F}\sum_{m,c,f}\Big(\log\Big(\hat{P}_{m,c,f} + \varepsilon\Big) - \log \Big(P_{m,c,f} + \varepsilon \Big)\Big)^2, \qquad \varepsilon =  \texttt{LOG\_FLOOR} = 10^{-8},
 $$
 
-[`welch_psd`](../src/neuro/predictor/losses.py) is a differentiable, bit-faithful replica of
-`scipy.signal.welch(x, nperseg=span_steps, noverlap=0, axis=-1)` under that call's defaults —
-`detrend="constant"`, a periodic Hann window, `scaling="density"`, one-sided folding, and mean
-averaging over segments. It is pinned against SciPy to `1e-10` in
-[`test_predictor_losses.py`](../tests/test_predictor_losses.py).
+averaged over the batch afterwards. Each rollout is scored on its own spectrum: unlike the Welch
+term this replaced, an over-predicted trajectory cannot offset an under-predicted one inside the
+log.
+
+Two poolings are available, both strictly **before** the log, where they trade estimator bias for
+degrees of freedom rather than cancelling errors: `n_bin_pool` averages consecutive frequency bins,
+and `kernel`/`kernel_width` (`boxcar`, `triangular`, `hann`) smooth power along the frame axis.
+Nothing sits between the log and the square, so a signed log residual is never pooled. Config
+rejects any kernel that would collapse the frame axis to a single output — that is Welch with fewer
+effective degrees of freedom, not a midpoint. `M_out` and `K_eff` are reported per step.
+
+Geometry is declared in **samples** (`n_span`, `n_segment`, `n_hop`), not seconds: at $f_s = 50$ Hz
+a seconds-valued config cannot address most of the useful grid, and rounding would silently move
+between geometries. There is no per-segment detrend, so a sweep over `n_segment` is not also a
+sweep over an implicit high-pass.
+
+[`spectrogram`](../src/neuro/predictor/losses.py) is pinned against
+`scipy.signal.spectrogram(..., detrend=False)` to `1e-10` in
+[`test_predictor_losses.py`](../tests/test_predictor_losses.py). Setting `n_segment = n_span`
+recovers Welch's geometry as the single-frame endpoint.
+
+[`spectral_objectives.md`](spectral_objectives.md) takes this term and the MPC's spectral cost apart
+dimension by dimension; [`spectrogram_loss_guide.md`](spectrogram_loss_guide.md) covers why the frame
+axis is worth keeping and what it costs.
 
 ### 6.3 Metric-twin losses (`eeg_ms`, etc.)
 
@@ -415,8 +434,7 @@ Metric-twin losses align training objectives with evaluation metrics defined in
   and scored via log-space MSE:
 
 $$
-\mathcal{L}_\text{ms} = \frac{1}{B\,C\,K}\sum_{b,c,k}\Big(\log\big(\hat{M}_{b,c,k} + \varepsilon\big)
-- \log\big(M_{b,c,k} + \varepsilon\big)\Big)^2.
+\mathcal{L}_\text{ms} = \frac{1}{B\,C\,K}\sum_{b,c,k}\Big(\log\big(\hat{M}_{b,c,k} + \varepsilon\big) - \log\big(M_{b,c,k} + \varepsilon\big)\Big)^2.
 $$
 
 `EegMsLoss` is bit-pinned against `METRICS["eeg_ms"]` to $< 10^{-12}$ across sample rates and hop
@@ -814,9 +832,15 @@ where $\text{span\_steps} = \operatorname{round}(\text{span\_s} \cdot f_s)$. At 
   - `curr_start: int` *(required)* — epoch where rollout starts expanding ($L = 1$ before it)
   - `curr_end: int` *(required)* — epoch where rollout reaches full span (held after; requires `curr_end >= curr_start`)
   - `start_epoch: int = 0` — epoch where this loss begins contributing to the gradient
-- **`psd`**:
+- **`stft`** (geometry in samples, not seconds):
   - `weight: float` *(required)*
-  - `span_s: float` *(required)* — requires $\operatorname{round}(\text{span\_s} \cdot f_s) \ge 2$
+  - `n_span: int` *(required)* — rollout steps scored
+  - `n_segment: int` *(required)* — segment length; `n_segment = n_span` is the Welch endpoint
+  - `n_hop: int` *(required)* — segment spacing
+  - `band_hz: tuple[float, float] | None = None` — bins kept; DC is dropped regardless
+  - `n_bin_pool: int = 1` — bins averaged pre-log
+  - `kernel: "boxcar" | "triangular" | "hann" = "boxcar"`, `kernel_width: int = 1` — frame-axis
+    smoothing pre-log; must leave more than one frame
   - `start_epoch: int = 0`
 - **`eeg_ms`** (and future metric twins):
   - `weight: float` *(required)*
@@ -837,7 +861,7 @@ All schedule checkpoints and gates are specified in integer **epochs** (`curr_st
 | [`nonlinear_eeg_ms.yaml`](../configs/nn_predictor/nonlinear_eeg_ms.yaml) | 300 | 100 | 1.0 | `eeg_ms` (weight 0.5) | 100 / 250 |
 | [`nonlinear_no_curr.yaml`](../configs/nn_predictor/nonlinear_no_curr.yaml) | 200 | 750 | 1.0 | — | 301 / 301 (never fires) |
 | [`nonlinear_mse02_eeg_ms.yaml`](../configs/nn_predictor/nonlinear_mse02_eeg_ms.yaml) | 300 | 100 | 0.2 | `eeg_ms` (weight 0.08, from epoch 80) | 20 / 80 |
-| [`nonlinear_mse02_psd.yaml`](../configs/nn_predictor/nonlinear_mse02_psd.yaml) | 300 | 100 | 0.2 | `psd` (weight 1.0, from epoch 80) | 20 / 80 |
+| [`nonlinear_mse02_psd.yaml`](../configs/nn_predictor/nonlinear_mse02_psd.yaml) | 300 | 100 | 0.2 | `stft` (weight 1.0, from epoch 80) | 20 / 80 |
 
 All five target the 50 Hz / 8 s ROAST dataset described in Section 2.2 and share `n_y=15`, `n_u=10`,
 `hidden_size=64`, `depth=2`, `activation=softplus`, `batch_size=128`, `learning_rate=1e-5`,
@@ -848,11 +872,13 @@ The last two are a matched pair: the MSE is trusted only out to **0.2 s** and ev
 to 1 s is shaped by the auxiliary term alone, so they isolate what each auxiliary loss contributes
 past the point where the waveform is predictable. They are the only presets that set
 `warmup_epochs` (10). Their weights are anchored on measured magnitudes: over a 1 s span at 50 Hz a
-prediction that is merely a *different* EEG window scores `eeg_ms` ≈ 4.5 but `psd` ≈ 0.014, because
-[`PSDLoss`](../src/neuro/predictor/losses.py) pools the batch into one spectrum per channel and so
-compares batch-mean spectra rather than per-window ones. `eeg_ms` is therefore a per-window
-objective that has to be scaled *down* to sit alongside the MSE, while `psd` acts as a barrier —
-negligible when the spectrum matches, $O(10^2)$ when the rollout drifts to DC — and is weighted up.
+prediction that is merely a *different* EEG window scored `eeg_ms` ≈ 4.5 but `psd` ≈ 0.014, because
+the superseded `PSDLoss` pooled the batch into one spectrum per channel and so compared batch-mean
+spectra rather than per-rollout ones. `eeg_ms` is therefore a per-window objective that has to be
+scaled *down* to sit alongside the MSE, while `stft` acts as a barrier — negligible when the
+spectrum matches, $O(10^2)$ when the rollout drifts to DC — and is weighted up. The `stft` term
+scores each rollout separately, so its magnitude on a mismatched prediction is larger than the
+pooled `psd` figure quoted above; treat that number as historical.
 
 ---
 
@@ -942,13 +968,14 @@ the score.
   exactly on `.5` samples rounds to **even**: at $f_s = 50$, `hop_s: 0.05` gives $\operatorname{round}(2.5) = 2$
   samples, i.e. an effective 0.04 s. Write the value the sample grid can represent rather than one
   the config will silently reinterpret.
-- **`eeg_ms` scores raw units, `psd` scores standardized ones.** `EegMsLoss` calls `ctx.to_raw`
-  before taking the power, so its log-ratio includes the standardizer's offset; `PSDLoss` works on
-  the standardized tensor and Welch detrends each segment anyway. The two log-ratios are not on the
-  same footing, which is one reason their weights are not comparable.
+- **Both `eeg_ms` and `stft` score raw units.** Each calls `ctx.to_raw` before taking the power, and
+  both floor the log with `LOG_FLOOR` — the same constant the MPC's spectral hinge uses, so the
+  training loss and the controller cost apply it at the same effective threshold.
 - **Window and span bounds.** Metric losses enforce $\operatorname{round}(\text{window\_s} \cdot f_s) \ge 1$,
   $\operatorname{round}(\text{hop\_s} \cdot f_s) \ge 1$, and $\text{window\_s} \le \text{span\_s}$ at config
-  load. `psd` requires $\operatorname{round}(\text{span\_s} \cdot f_s) \ge 2$.
+  load. `stft` is declared in samples and enforces $\text{n\_segment} \le \text{n\_span}$, a frame
+  kernel no wider than the frame count that still leaves more than one frame, an increasing
+  `band_hz` keeping at least one bin below Nyquist, and `n_bin_pool` no larger than that bin count.
 - **Units.** EEG is in arbitrary units (see the project *uncalibrated units* note), so absolute MSE
   values are not physically meaningful; training happens in standardised space, and the reported
   NMSE is normalised by the true signal's energy so that it is scale-invariant.

@@ -7,13 +7,40 @@ constraints that bound it and the experiment that should decide it, not the valu
 
 Source of truth:
 
-- Current Welch loss and the differentiable Welch replica: [`PSDLoss`, `welch_psd`](../src/neuro/predictor/losses.py)
+- The implemented STFT loss: [`StftLoss`, `spectrogram`](../src/neuro/predictor/losses.py)
 - Windowed power loss already in place: [`EegMsLoss`](../src/neuro/predictor/losses.py)
-- MPC spectral stage cost: [`_spectral_hinge_cost`](../src/neuro/control.py)
+- MPC spectral stage cost: [`_spectral_hinge_cost`](../src/neuro/control/nlp.py)
+- Both objectives dimension by dimension: [`spectral_objectives.md`](spectral_objectives.md)
 - Analysis-side periodograms and the healthy envelope: [`src/neuro/spectral.py`](../src/neuro/spectral.py)
 - Envelope construction: [`scripts/build_healthy_psd.py`](../scripts/build_healthy_psd.py)
 - Live configs: [`nonlinear_mse02_psd.yaml`](../configs/nn_predictor/nonlinear_mse02_psd.yaml),
   [`mse02_psd_mpc_spectral.yaml`](../configs/simulation/mse02_psd_mpc_spectral.yaml)
+
+---
+
+## 0. Status
+
+The instrument is built; the experiment is not run.
+
+| item | status |
+| :--- | :--- |
+| §2.1 batch pooling inside the log | **fixed** — `StftLoss` scores each rollout separately |
+| §2.2 no time resolution inside the span | **available** — `n_segment`/`n_hop` expose the frame axis |
+| §5.1 four knobs | `n_segment`, `n_hop`, frame kernel and `n_bin_pool` are configurable; tapers are not |
+| §5.2 frame kernel | **implemented** — boxcar, triangular, Hann; config refuses a kernel that collapses the frame axis |
+| §5.3 preference weights | not implemented |
+| §5.4 multitaper | not implemented |
+| §6 geometry in samples | **enforced** — `StftSpec` takes `n_span`, `n_segment`, `n_hop`; seconds are not accepted |
+| open question 6 (`_EPS` vs `LOG_FLOOR`) | **settled** — one constant, `LOG_FLOOR`, in raw units on both sides |
+| detrend / DC across the two objectives | **unified** — no detrend, DC dropped on both sides; envelope rebuilt, 3–12 Hz unchanged |
+| §7 open questions 1–5, 7 | open; nothing has been trained against the new term |
+| §8 the deciding measurement | **not started** — no correlation width, no floor, no discriminability |
+
+`PSDLoss` and `welch_psd` no longer exist. Welch is now the `n_segment = n_span` endpoint of
+`StftLoss`, which is what the migrated `nonlinear_mse02_psd.yaml` config sets — so the live config
+differs from the old one by exactly the §2.1 fix.
+
+What follows is unchanged reasoning, and still describes decisions that are open.
 
 ---
 
@@ -50,14 +77,16 @@ $$\log \mathbb{E}_b[\hat{P}] - \log \mathbb{E}_b[P]$$
 An over-predicted trajectory can offset an under-predicted one before the log is ever taken. The
 model can reach a low loss while being wrong on every individual rollout.
 
-This is a property of the pooling, not of Welch. It is fixable in place.
+This is a property of the pooling, not of Welch. **Fixed:** `StftLoss` keeps the batch axis
+separate all the way to the square, and pools it only afterwards.
 
 ### 2.2 There is no time resolution inside the span
 
 With `span_s: 1.0` at `fs = 50 Hz`, `span_steps = 50` and `nperseg = 50`, so each trajectory
 contributes exactly **one** periodogram. The `K` in Welch's segment average is the batch size, not a
 time index. Within a rollout the spectral term sees a single phase-blind magnitude spectrum over the
-full second.
+full second. That is still the geometry the live config runs — `n_segment = n_span = 50` — but it is
+now a choice rather than a constraint of the call.
 
 ### 2.3 What is *not* a defect
 
@@ -167,9 +196,12 @@ Two constraints on the kernel:
 
 - **Power or squared residual only.** Smoothing the signed log residual along `m` reintroduces
   cancellation, on the time axis instead of the batch axis.
-- **Centred is fine here, but not everywhere.** A training loss sees the whole rollout offline, so a
-  symmetric kernel is legitimate. Anything the controller consumes must be trailing — which is why
-  `EegMsLoss` uses causal trailing windows.
+- **Centred is fine wherever the trajectory is held in full.** A training loss sees the whole
+  rollout offline, and the MPC sees its whole predicted horizon before it evaluates the cost, so a
+  symmetric kernel is legitimate in both. Causality binds only on reductions over *measured* signal
+  consumed as it arrives — the metrics layer, the seizure-threshold window, the `eeg_ms` observable
+  — where samples after `t` do not yet exist. `EegMsLoss` uses that trailing geometry to mirror its
+  observable, not because the loss itself needs it.
 
 The kernel must also keep `M_out > 1`. A weighted mean that still collapses the frame axis to a
 single output is not a midpoint between Welch and a spectrogram — it is Welch with fewer effective
@@ -253,9 +285,8 @@ The table is the shape of the problem, not a recommendation.
 5. Must training geometry match the envelope's, or is alignment with the controller worth less than
    a better-conditioned training geometry? The envelope's own geometry is equally open and can be
    re-derived.
-6. `_EPS` is applied in standardised units in the training loss while `LOG_FLOOR` is the same
-   constant in raw units in the MPC. Same number, different effective threshold. Pick one
-   convention.
+6. ~~`_EPS` in standardised units versus `LOG_FLOOR` in raw units.~~ **Settled:** every training
+   loss now scores raw units and floors with `LOG_FLOOR`, the constant the MPC hinge uses.
 7. Should the predictor stay two-sided, or be weighted toward the regime where the controller's
    hinge is active? A symmetric loss over all bins does not prioritise the bins that drive control.
 

@@ -1,4 +1,4 @@
-"""Pin the torch losses: the Welch replica against SciPy and curriculum MSE scheduling."""
+"""Pin the torch losses: the spectrogram against SciPy, and curriculum MSE scheduling."""
 
 from __future__ import annotations
 
@@ -7,18 +7,20 @@ import itertools
 import numpy as np
 import pytest
 import torch
-from scipy.signal import welch
+from scipy.signal import spectrogram as scipy_spectrogram
+from scipy.signal.windows import hann
 
-from neuro.config import CurriculumMSESpec, EegMsSpec, LossSpec, LossSpecs, PSDSpec
+from neuro.config import CurriculumMSESpec, EegMsSpec, LossSpecs, SecondsSpanSpec, StftSpec
 from neuro.predictor.losses import (
     CurriculumMSE,
     EegMsLoss,
     Loss,
     LossContext,
-    PSDLoss,
+    StftLoss,
     build_losses,
+    frame_kernel,
+    spectrogram,
     total_loss,
-    welch_psd,
 )
 from neuro.predictor.module import AutoregressiveMLP
 
@@ -46,20 +48,106 @@ def _model(
 
 
 @pytest.mark.parametrize("fs", [1.0, 250.0])
-@pytest.mark.parametrize("nperseg", [8, 9])
-def test_welch_psd_matches_scipy(nperseg: int, fs: float) -> None:
-    """The replica reproduces ``scipy.signal.welch`` under the call the trainer makes.
+@pytest.mark.parametrize("n_segment", [8, 9])
+def test_spectrogram_matches_scipy(n_segment: int, fs: float) -> None:
+    """The primitive reproduces ``scipy.signal.spectrogram`` under the geometry the loss uses.
 
-    Both parities matter: the Nyquist bin is only left undoubled when ``nperseg`` is even.
+    Both parities matter: the Nyquist bin is only left undoubled when ``n_segment`` is even.
     """
     rng = np.random.default_rng(_SEED)
-    x = rng.standard_normal((4, 5 * nperseg))
+    n_hop = 3
+    x = rng.standard_normal((4, 5 * n_segment))
 
-    _, want = welch(x, fs=fs, nperseg=nperseg, noverlap=0, axis=-1)
-    got = welch_psd(torch.as_tensor(x), nperseg, fs=fs).numpy()
+    _, _, want = scipy_spectrogram(
+        x,
+        fs=fs,
+        window=hann(n_segment, sym=False),
+        nperseg=n_segment,
+        noverlap=n_segment - n_hop,
+        detrend=False,
+        scaling="density",
+        mode="psd",
+        axis=-1,
+    )
+    got = spectrogram(torch.as_tensor(x), n_segment, n_hop, fs=fs).numpy()
 
-    assert got.shape == (4, nperseg // 2 + 1)
-    np.testing.assert_allclose(got, want, rtol=1e-10, atol=0.0)
+    assert got.shape == (4, want.shape[-1], n_segment // 2 + 1)
+    np.testing.assert_allclose(got, np.moveaxis(want, -2, -1), rtol=1e-10, atol=0.0)
+
+
+def _stft_ctx(c: int, fs: float = 1.0, epoch: int | None = 0) -> LossContext:
+    return LossContext(
+        y_center=torch.zeros(c, dtype=torch.float64),
+        y_scale=torch.ones(c, dtype=torch.float64),
+        fs=fs,
+        epoch=epoch,
+    )
+
+
+def test_stft_welch_endpoint_scores_each_sample_separately() -> None:
+    """With one frame per rollout the loss is Welch's geometry, but never pooled over the batch.
+
+    Two rollouts whose spectra err in opposite directions must not cancel -- the defect the old
+    batch-pooled PSD term had.
+    """
+    n_span, c = 32, 2
+    t = torch.arange(n_span, dtype=torch.float64)
+    tone = torch.sin(2 * torch.pi * 0.2 * t).reshape(1, n_span, 1).repeat(1, 1, c)
+    true = torch.cat([tone, tone], dim=0)
+    pred = torch.cat([tone * 2.0, tone * 0.5], dim=0)  # +6 dB and -6 dB: exact cancellation if pooled
+
+    loss_fn = StftLoss(
+        weight=1.0,
+        span_steps=n_span,
+        start_epoch=0,
+        n_segment=n_span,
+        n_hop=n_span,
+        bin_lo=1,
+        bin_hi=n_span // 2 + 1,
+        n_bin_pool=1,
+        kernel="boxcar",
+        kernel_width=1,
+    )
+    value, diag = loss_fn(pred, true, _stft_ctx(c))
+
+    assert diag["M_out"] == 1.0
+    assert float(value) > 1.0  # a pooled loss would report ~0 here
+
+
+@pytest.mark.parametrize(("kernel", "want"), [("boxcar", 1.0), ("triangular", 0.75), ("hann", 0.667)])
+def test_frame_kernel_effective_dof(kernel: str, want: float) -> None:
+    """K_eff / n follows the shape table: boxcar keeps every degree of freedom, Hann two thirds."""
+    width = 200
+    weights = frame_kernel(kernel, width, torch.zeros(1, dtype=torch.float64))
+    k_eff = float(weights.sum() ** 2 / (weights**2).sum())
+    assert k_eff / width == pytest.approx(want, abs=0.01)
+
+
+def test_stft_frame_kernel_pools_before_the_log() -> None:
+    """A frame kernel shortens the frame axis and is reported through M_out and K_eff."""
+    n_span, c, n_segment, n_hop, width = 40, 2, 8, 4, 3
+    rng = np.random.default_rng(_SEED + 7)
+    pred = torch.as_tensor(rng.standard_normal((3, n_span, c)))
+    true = torch.as_tensor(rng.standard_normal((3, n_span, c)))
+
+    loss_fn = StftLoss(
+        weight=1.0,
+        span_steps=n_span,
+        start_epoch=0,
+        n_segment=n_segment,
+        n_hop=n_hop,
+        bin_lo=1,
+        bin_hi=n_segment // 2 + 1,
+        n_bin_pool=1,
+        kernel="hann",
+        kernel_width=width,
+    )
+    n_frames = (n_span - n_segment) // n_hop + 1
+    assert loss_fn.log_spectrogram(pred, _stft_ctx(c)).shape == (3, c, n_frames - width + 1, n_segment // 2)
+
+    _, diag = loss_fn(pred, true, _stft_ctx(c))
+    assert diag["M_out"] == float(n_frames - width + 1)
+    assert diag["K_eff"] == pytest.approx(8 / 3)  # [0.5, 1, 0.5] weights
 
 
 def test_curriculum_ramps_the_trusted_prefix_then_holds() -> None:
@@ -105,10 +193,10 @@ def test_curriculum_scores_only_the_trusted_prefix() -> None:
     torch.testing.assert_close(value, expected)
 
 
-def test_psd_is_gated_off_until_start_epoch() -> None:
-    """total_loss gates off the PSD term when ctx.epoch < psd.start_epoch."""
+def test_stft_is_gated_off_until_start_epoch() -> None:
+    """total_loss gates off the spectral term when ctx.epoch < stft.start_epoch."""
     rng = np.random.default_rng(_SEED + 1)
-    n_y, n_u, horizon, c, n_controls, batch, w_psd = 2, 2, 6, 5, 2, 32, 0.1
+    n_y, n_u, horizon, c, n_controls, batch, w_stft = 2, 2, 6, 5, 2, 32, 0.1
     model = _model(n_y, n_u, horizon, c, n_controls)
 
     x = torch.as_tensor(rng.standard_normal((batch, n_y * c + n_u * n_controls + horizon * n_controls)))
@@ -117,7 +205,18 @@ def test_psd_is_gated_off_until_start_epoch() -> None:
 
     losses: list[Loss] = [
         CurriculumMSE(weight=1.0, span_steps=horizon, start_epoch=0, curr_start=0, curr_end=0),
-        PSDLoss(weight=w_psd, span_steps=horizon, start_epoch=10),
+        StftLoss(
+            weight=w_stft,
+            span_steps=horizon,
+            start_epoch=10,
+            n_segment=horizon,
+            n_hop=horizon,
+            bin_lo=1,
+            bin_hi=horizon // 2 + 1,
+            n_bin_pool=1,
+            kernel="boxcar",
+            kernel_width=1,
+        ),
     ]
 
     ctx_gated = LossContext(
@@ -136,10 +235,10 @@ def test_psd_is_gated_off_until_start_epoch() -> None:
     total_gated, comps_gated = total_loss(losses, pred_traj, true_traj, ctx_gated)
     total_active, comps_active = total_loss(losses, pred_traj, true_traj, ctx_active)
 
-    assert comps_gated["psd"] == 0.0
+    assert comps_gated["stft"] == 0.0
     assert float(total_gated.detach()) == pytest.approx(comps_gated["curriculum_mse"])
-    assert comps_active["psd"] > 0.0
-    assert float(total_active.detach()) == pytest.approx(comps_active["curriculum_mse"] + w_psd * comps_active["psd"])
+    assert comps_active["stft"] > 0.0
+    assert float(total_active.detach()) == pytest.approx(comps_active["curriculum_mse"] + w_stft * comps_active["stft"])
 
 
 def test_build_losses_instantiates_from_specs() -> None:
@@ -147,7 +246,7 @@ def test_build_losses_instantiates_from_specs() -> None:
     fs = 100.0
     specs = LossSpecs(
         curriculum_mse=CurriculumMSESpec(weight=1.0, span_s=0.2, curr_start=0, curr_end=10, start_epoch=0),
-        psd=PSDSpec(weight=0.1, span_s=0.2, start_epoch=5),
+        stft=StftSpec(weight=0.1, n_span=20, n_segment=20, n_hop=20, start_epoch=5),
         eeg_ms=EegMsSpec(weight=0.5, span_s=0.2, window_s=0.1, hop_s=0.01, start_epoch=2),
     )
 
@@ -157,7 +256,7 @@ def test_build_losses_instantiates_from_specs() -> None:
     assert losses[0].span_steps == 20
     assert losses[0].curr_end == 10
 
-    assert isinstance(losses[1], PSDLoss)
+    assert isinstance(losses[1], StftLoss)
     assert losses[1].span_steps == 20
     assert losses[1].start_epoch == 5
 
@@ -174,7 +273,7 @@ def test_build_losses_instantiates_from_specs() -> None:
 def test_build_losses_unknown_spec_raises() -> None:
     """build_losses raises TypeError when encountering an unrecognized LossSpec subclass."""
 
-    class DummySpec(LossSpec):
+    class DummySpec(SecondsSpanSpec):
         pass
 
     with pytest.raises(TypeError, match="Unknown loss spec type"):

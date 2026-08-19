@@ -16,7 +16,7 @@ _SEED = 11
 
 
 def test_periodograms_match_scipy_per_window() -> None:
-    """Each returned window equals scipy.signal.periodogram applied to that slice alone."""
+    """Each returned window equals an undetrended scipy.signal.periodogram of that slice alone."""
     rng = np.random.default_rng(_SEED)
     y = rng.standard_normal((200, 3))
     fs, window, hop = 50.0, 50, 25
@@ -27,9 +27,27 @@ def test_periodograms_match_scipy_per_window() -> None:
     w_hann = hann(window, sym=False)
     for m in range(power.shape[0]):
         _, expected = sps.periodogram(
-            y[m * hop : m * hop + window, :], fs=fs, window=w_hann, detrend="constant", axis=0, scaling="density"
+            y[m * hop : m * hop + window, :], fs=fs, window=w_hann, detrend=False, axis=0, scaling="density"
         )
         np.testing.assert_allclose(power[m], expected.T, rtol=1e-12, atol=1e-15)
+
+
+def test_dc_offset_is_retained_rather_than_detrended() -> None:
+    """No per-segment detrend: a constant offset lands in the DC bin at its full analytic power.
+
+    A detrended periodogram would put ~0 there. The MPC cost drops bin 0 at the use site instead,
+    so the high-pass corner never moves with the segment length.
+    """
+    fs, window = 50.0, 50
+    offset = 3.0
+    y = np.full((window, 1), offset)
+
+    power = compute_periodograms(y, fs=fs, window=window, hop=window)
+
+    w_hann = hann(window, sym=False)
+    expected_dc = (offset * w_hann.sum()) ** 2 / (fs * np.sum(w_hann**2))
+    np.testing.assert_allclose(power[0, 0, 0], expected_dc, rtol=1e-12)
+    assert power[0, 0, 0] > 1.0
 
 
 def test_periodograms_are_not_averaged_over_windows() -> None:

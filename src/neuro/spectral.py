@@ -19,10 +19,12 @@ LOG_FLOOR = 1e-8
 def compute_periodograms(y: FloatArray, *, fs: float, window: int, hop: int) -> FloatArray:
     """Periodograms of every length-``window`` slice of ``y`` ``(n_samples, n_channels)``, hopped by ``hop``.
 
-    One-sided, density-scaled, periodic Hann, ``detrend="constant"`` -- the geometry
-    :meth:`neuro.control.nlp.MPCNlp.build` replicates symbolically. Returns ``(n_windows, n_channels,
-    window // 2 + 1)``; segments are never averaged over, so a hot slice cannot be cancelled by a
-    cold one.
+    One-sided, density-scaled, periodic Hann, no per-segment detrend -- the geometry
+    :meth:`neuro.control.nlp.MPCNlp.build` replicates symbolically, and the same convention the
+    training loss uses, so that a segment-length change is not also a change of implicit high-pass.
+    Returns ``(n_windows, n_channels, window // 2 + 1)`` including the DC bin (the MPC cost drops it
+    at the use site); segments are never averaged over, so a hot slice cannot be cancelled by a cold
+    one.
     """
     n_samples, n_channels = y.shape
     n_bins = window // 2 + 1
@@ -32,7 +34,7 @@ def compute_periodograms(y: FloatArray, *, fs: float, window: int, hop: int) -> 
     n_windows = (n_samples - window) // hop + 1
     w_hann = hann(window, sym=False)
     segments = np.stack([y[m * hop : m * hop + window, :] for m in range(n_windows)], axis=0)
-    _, power = sps.periodogram(segments, fs=fs, window=w_hann, detrend="constant", axis=1, scaling="density")
+    _, power = sps.periodogram(segments, fs=fs, window=w_hann, detrend=False, axis=1, scaling="density")
     return np.asarray(power, dtype=np.float64).transpose(0, 2, 1)
 
 

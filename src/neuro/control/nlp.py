@@ -41,9 +41,12 @@ def _sum_to_zero(u_vars: list[ca.MX]) -> ca.MX:
 def _spectral_hinge_cost(y_nodes: list[ca.MX], envelope: PsdEnvelope, horizon: int) -> ca.MX:
     """Mean squared one-sided log excess of the predicted spectrum over ``envelope``.
 
-    CasADi has no FFT, so the periodogram is an explicit DFT matrix product. The reduction is a mean
-    over ``(window, channel, bin)`` -- never over windows alone -- so a hot sub-window cannot be
-    cancelled by a cold one and ``w_psd`` stays independent of the window count.
+    CasADi has no FFT, so the periodogram is an explicit DFT matrix product. Periodic Hann, no
+    per-segment detrend, one-sided and density-scaled -- the convention of
+    :func:`neuro.spectral.compute_periodograms` and of the training loss. The DC bin is not scored
+    (the envelope still stores it), since without a detrend it is dominated by the offset. The
+    reduction is a mean over ``(window, channel, bin)`` -- never over windows alone -- so a hot
+    sub-window cannot be cancelled by a cold one and ``w_psd`` stays independent of the window count.
     """
     n_ch, n_bins = envelope.power.shape
     length, hop = envelope.window, envelope.hop
@@ -69,21 +72,20 @@ def _spectral_hinge_cost(y_nodes: list[ca.MX], envelope: PsdEnvelope, horizon: i
         fold[-1] = 1.0
     scale = fold / (envelope.fs * np.sum(w_hann**2))
 
-    log_ref = ca.MX(np.log(envelope.power))
+    log_ref = ca.MX(np.log(envelope.power[:, 1:]))
+    n_scored_bins = n_bins - 1
     taper = ca.repmat(ca.MX(w_hann.reshape(1, length)), n_ch, 1)
     scale_row = ca.repmat(ca.MX(scale.reshape(1, n_bins)), n_ch, 1)
 
     y_all = ca.horzcat(*y_nodes)  # (n_ch, horizon)
     total_hinge = ca.MX(0)
     for m in range(n_windows):
-        y_win = y_all[:, m * hop : m * hop + length]
-        y_detrended = y_win - ca.repmat(ca.sum2(y_win) / length, 1, length)
-        y_tapered = y_detrended * taper
+        y_tapered = y_all[:, m * hop : m * hop + length] * taper
         power = ((y_tapered @ ca.MX(dft_cos)) ** 2 + (y_tapered @ ca.MX(dft_sin)) ** 2) * scale_row
-        hinge = ca.fmax(0.0, ca.log(power + LOG_FLOOR) - log_ref)
+        hinge = ca.fmax(0.0, ca.log(power[:, 1:] + LOG_FLOOR) - log_ref)
         total_hinge = total_hinge + ca.sum1(ca.sum2(hinge**2))
 
-    return total_hinge / (n_windows * n_ch * n_bins)
+    return total_hinge / (n_windows * n_ch * n_scored_bins)
 
 
 def _rollout_cost(  # noqa: PLR0913

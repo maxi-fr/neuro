@@ -104,6 +104,18 @@ _Avoid_: Cost, Training Cost
 The mathematical objective minimized over the control horizon by the receding-horizon controller at each decision step.
 _Avoid_: Loss, Predictor Objective, Optimization Metric
 
+**Segment**:
+The fixed-length slice of a trajectory fed to a single Fourier transform, used identically by the spectral training loss and the receding-horizon controller's spectral cost.
+_Avoid_: Window, Analysis Window, nperseg, Block
+
+**Frame**:
+The spectrum a single segment produces, indexed by its position on the hop grid.
+_Avoid_: Segment, Slice, Bin, Column
+
+**Frame Kernel**:
+The non-negative smoother applied to power along the frame axis before the log. Buys estimator degrees of freedom, not frequency resolution, and is therefore distinct from lengthening a segment.
+_Avoid_: Smoothing Window, Averaging Window, Filter
+
 **Closed-Loop Evaluation Score**:
 A scalar performance criterion computed post hoc over simulation runs to rank controller configurations.
 _Avoid_: Controller Cost, Run Loss, Evaluation Loss, Benchmark Metric

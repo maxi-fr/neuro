@@ -402,7 +402,12 @@ def test_symbolic_model_priming_seam(tmp_path: Path) -> None:
 def test_spectral_cost_matches_numpy_periodogram(
     tmp_path: Path, horizon: int, length: int, hop: int, n_channels: int
 ) -> None:
-    """CasADi spectral cost matches the numpy/scipy periodogram reference the envelope is built with."""
+    """CasADi spectral cost matches the numpy/scipy periodogram reference, scored above DC.
+
+    The envelope stores every bin; the cost scores bins 1.. only, so the numpy reference is sliced
+    the same way. Slicing both sides is what makes the parity check pin the DC exclusion rather
+    than hide it.
+    """
     n_controls, fs = 2, 50.0
     n_bins = length // 2 + 1
 
@@ -410,7 +415,6 @@ def test_spectral_cost_matches_numpy_periodogram(
     model = NNSymbolicModel.from_artifact(artifact)
 
     rng = np.random.default_rng(_SEED + 10)
-    envelope = PsdEnvelope(power=np.abs(rng.normal(size=(n_channels, n_bins))) + 0.1, fs=fs, window=length, hop=hop)
     x0 = rng.standard_normal(model.state_shape[0])
     u_fixed = np.zeros((horizon, n_controls))
 
@@ -421,7 +425,15 @@ def test_spectral_cost_matches_numpy_periodogram(
         y_steps.append(np.asarray(model.f_out(x)).reshape(-1))
     y_traj = np.array(y_steps)  # (horizon, n_channels)
 
-    expected_cost = hinge_penalty(compute_periodograms(y_traj, fs=fs, window=length, hop=hop), envelope.power)
+    # Envelope at the median of the trajectory's own power, so roughly half of every (c, f) cell is
+    # over it: an envelope the rollout sits entirely under would make the comparison below vacuous.
+    windows = compute_periodograms(y_traj, fs=fs, window=length, hop=hop)
+    envelope = PsdEnvelope(power=np.median(windows, axis=0), fs=fs, window=length, hop=hop)
+    assert envelope.power.shape == (n_channels, n_bins)
+
+    expected_cost = hinge_penalty(windows[..., 1:], envelope.power[:, 1:])
+    assert expected_cost > 0.0, "the envelope must actually bite for the parity check to mean anything"
+    assert expected_cost != hinge_penalty(windows, envelope.power), "the DC bin must change the score"
 
     mpc_nlp = MPCNlp.build(
         model,
