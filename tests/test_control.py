@@ -3,12 +3,9 @@ from typing import Literal
 import numpy as np
 import pytest
 
-from neuro.control import (
-    AmplitudeThresholdController,
-    WaveformController,
-    ZeroController,
-    build_input_schedule,
-)
+from neuro.control.threshold import AmplitudeThresholdController
+from neuro.control.waveform import WaveformController, build_input_schedule
+from neuro.control.zero import ZeroController
 
 _DT = 0.1
 

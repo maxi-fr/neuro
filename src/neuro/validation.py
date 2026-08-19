@@ -15,7 +15,9 @@ if TYPE_CHECKING:
     from neuro.provenance import TrainingProvenance
 
 _FILTERING_ESTIMATORS = frozenset({"neuro.filtering.AntiAliasEstimator", "neuro.filtering.LowPassEstimator"})
-_PREDICTIVE_CONTROLLERS = frozenset({"neuro.control.MPCController", "neuro.control.LinearMPCController"})
+_PREDICTIVE_CONTROLLERS = frozenset(
+    {"neuro.control.nonlinear_mpc.MPCController", "neuro.control.linear_mpc.LinearMPCController"}
+)
 _REL_TOL = 1e-9
 
 

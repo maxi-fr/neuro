@@ -11,11 +11,10 @@ import scipy.signal as sps
 from scipy.signal.windows import hann
 from simulate.simulation import Simulation
 
-from neuro.control import (
+from neuro.control.nlp import MPCNlp
+from neuro.control.nonlinear_mpc import MPCController, MPCControllerLog
+from neuro.control.solvers import (
     IpoptMPCSolver,
-    MPCController,
-    MPCControllerLog,
-    MPCNlp,
     MPCSolveResult,
     SqpFallbackMPCSolver,
     SqpMPCSolver,
@@ -244,7 +243,7 @@ def test_closed_loop_simulation_runs(tmp_path: Path) -> None:
         },
         "estimator": {"class_path": "simulate.estimator.IdentityEstimator", "dt": 1e-4},
         "controller": {
-            "class_path": "neuro.control.MPCController",
+            "class_path": "neuro.control.nonlinear_mpc.MPCController",
             "dt": 0.01,
             "artifact": str(artifact),
             "horizon": 3,

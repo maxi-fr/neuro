@@ -8,9 +8,9 @@ from pathlib import Path
 import numpy as np
 
 from neuro.artifacts import build_symbolic_model, load_any_artifact
-from neuro.control import (
+from neuro.control.nlp import MPCNlp
+from neuro.control.solvers import (
     IpoptMPCSolver,
-    MPCNlp,
     MPCSolver,
     SqpFallbackMPCSolver,
     SqpMPCSolver,

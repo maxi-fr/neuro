@@ -8,7 +8,7 @@ from simulate.sensor import GaussianSensor, full_state_measurement
 from simulate.simulation import Simulation
 
 from neuro.connectome import Connectome
-from neuro.control import ZeroController
+from neuro.control.zero import ZeroController
 from neuro.eeg import EEGMeasurement, build_eeg_leadfield
 from neuro.jansen_rit import (
     JansenRitDynamics,

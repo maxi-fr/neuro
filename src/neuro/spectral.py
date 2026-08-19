@@ -20,7 +20,7 @@ def compute_periodograms(y: FloatArray, *, fs: float, window: int, hop: int) -> 
     """Periodograms of every length-``window`` slice of ``y`` ``(n_samples, n_channels)``, hopped by ``hop``.
 
     One-sided, density-scaled, periodic Hann, ``detrend="constant"`` -- the geometry
-    :meth:`neuro.control.MPCNlp.build` replicates symbolically. Returns ``(n_windows, n_channels,
+    :meth:`neuro.control.nlp.MPCNlp.build` replicates symbolically. Returns ``(n_windows, n_channels,
     window // 2 + 1)``; segments are never averaged over, so a hot slice cannot be cancelled by a
     cold one.
     """

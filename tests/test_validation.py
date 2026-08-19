@@ -71,7 +71,7 @@ def config(tmp_path: Path) -> dict[str, Any]:
             "downsample": _DOWNSAMPLE,
         },
         "controller": {
-            "class_path": "neuro.control.MPCController",
+            "class_path": "neuro.control.nonlinear_mpc.MPCController",
             "dt": _PLANT_DT * _DOWNSAMPLE,
             "artifact": str(_artifact(tmp_path, provenance)),
             "horizon": 50,
@@ -249,7 +249,7 @@ def _excitation(hold_ms: list[float]) -> dict[str, Any]:
     return {
         **_plant(),
         "controller": {
-            "class_path": "neuro.control.WaveformController",
+            "class_path": "neuro.control.waveform.WaveformController",
             "dt": _PLANT_DT,
             "input_type": "ras",
             "hold_ms": hold_ms,

@@ -7,10 +7,8 @@ import numpy as np
 import pytest
 from simulate.simulation import Simulation
 
-from neuro.control import (
-    LinearMPCController,
-    MPCController,
-)
+from neuro.control.linear_mpc import LinearMPCController
+from neuro.control.nonlinear_mpc import MPCController
 from neuro.nn_predictor_casadi import NNSymbolicModel
 from neuro.predictor.artifact import MLPArtifact
 from neuro.transforms import Standardizer
@@ -262,7 +260,7 @@ def test_closed_loop_simulation_runs(tmp_path: Path, formulation: str) -> None:
         },
         "estimator": {"class_path": "simulate.estimator.IdentityEstimator", "dt": 1e-4},
         "controller": {
-            "class_path": "neuro.control.LinearMPCController",
+            "class_path": "neuro.control.linear_mpc.LinearMPCController",
             "dt": 0.01,
             "artifact": str(artifact),
             "horizon": 4,

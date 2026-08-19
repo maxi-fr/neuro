@@ -187,6 +187,13 @@ def test_module_layers_sequential() -> None:
         "neuro.predictor.data",
         "neuro.nn_predictor_casadi",
         "neuro.control",
+        "neuro.control.zero",
+        "neuro.control.threshold",
+        "neuro.control.waveform",
+        "neuro.control.nlp",
+        "neuro.control.solvers",
+        "neuro.control.nonlinear_mpc",
+        "neuro.control.linear_mpc",
         "neuro.artifacts",
     ],
 )

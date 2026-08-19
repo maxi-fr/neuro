@@ -43,7 +43,7 @@ sensors:
 estimator: {class_path: simulate.estimator.IdentityEstimator, dt: 0.0001}
 
 controller:
-  class_path: neuro.control.WaveformController
+  class_path: neuro.control.waveform.WaveformController
   dt: 0.0001
   n_u: 3              # one per stimulation electrode (TP9, CP5 cathodes + EX8 return)
   input_type: ras

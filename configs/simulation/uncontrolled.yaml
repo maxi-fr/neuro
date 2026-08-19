@@ -38,6 +38,6 @@ sensors:
 estimator: {class_path: simulate.estimator.IdentityEstimator, dt: 0.0001}
 
 controller:
-  class_path: neuro.control.ZeroController
+  class_path: neuro.control.zero.ZeroController
   dt: 0.02              # matches the MPC control period; the output is zero regardless
   n_u: 1                # NullStim exposes exactly one nominal electrode

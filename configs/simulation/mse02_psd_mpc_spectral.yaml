@@ -42,7 +42,7 @@ sensors:
 estimator: {class_path: neuro.filtering.AntiAliasEstimator, dt: 0.0001, downsample: 200}
 
 controller:
-  class_path: neuro.control.MPCController
+  class_path: neuro.control.nonlinear_mpc.MPCController
   dt: 0.02              # = predictor dt = 0.0001 * 200
   artifact: artifacts/nonlinear_mse02_psd/model
   horizon: 75           # 1.5 s horizon (M=2 windows of L=50, R=25)

@@ -11,7 +11,7 @@ import numpy as np
 from simulate.config import load_config as load_sim_config
 from simulate.simulation import Simulation
 
-from neuro.control import WaveformController
+from neuro.control.waveform import WaveformController
 
 if TYPE_CHECKING:
     from neuro.types import FloatArray
@@ -39,7 +39,7 @@ def _run_arm(base_sim_dict: dict, seed: int, command: tuple[float, float, float]
     # A zero controller of the right shape keeps Simulation.from_config's dt/width checks honest;
     # the fixed schedule is installed straight after, since WaveformController.from_config only
     # builds *random* excitation schedules.
-    sim_dict["controller"] = {"class_path": "neuro.control.ZeroController", "dt": dt_u, "n_u": len(command)}
+    sim_dict["controller"] = {"class_path": "neuro.control.zero.ZeroController", "dt": dt_u, "n_u": len(command)}
 
     sim = Simulation.from_config(sim_dict)
     schedule = np.zeros((round(t_end / dt_u), len(command)), dtype=np.float64)

@@ -8,8 +8,6 @@
   > see [sqp ipopt investigation](knowledge-base/Notes/sqp_ipopt_fallback_benchmark.md)
   * Follow-up: Bring back the narx version and see if partial MS works better
 
-* split up control.py into multiple files (make it a subpackage or smt)
-
 * EEG sensors shouldnt run at 10kHz, find realistic value (maybe just same as MPC)
 
 * investigate running controller slower than predictor model. Less decision variables but still prediction model with high resolution
@@ -18,6 +16,8 @@
 * what about the effect of filter on spectrum losses/cost
 
 * what about predicting the metric directly?
+
+* reservoir computer w. hopf nodes
 
 ### Efficiency
 

@@ -18,7 +18,7 @@ from neuro.config import (
     resolve_data_files,
 )
 from neuro.connectome import Connectome
-from neuro.control import ZeroController
+from neuro.control.zero import ZeroController
 from neuro.eeg import EEGMeasurement
 from neuro.jansen_rit import JansenRitDynamics
 

@@ -37,7 +37,7 @@ sensors:
 estimator: {class_path: simulate.estimator.IdentityEstimator, dt: 0.0001}
 
 controller:
-  class_path: neuro.control.AmplitudeThresholdController
+  class_path: neuro.control.threshold.AmplitudeThresholdController
   dt: 0.01
   # TP9 (channel 27) sits over the focus: ~12 mV ptp before spread, ~45 mV once established.
   channel: 27
