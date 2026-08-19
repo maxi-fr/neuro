@@ -37,7 +37,7 @@ class AutoregressiveMLP(nn.Module):
     Attributes
     ----------
     layers : nn.Sequential
-        The ``nn.Linear`` and activation stack in forward-pass order, all ``float64``.
+        The ``nn.Linear`` and activation stack in forward-pass order, all ``float32``.
     n_y, n_u : int
         Past EEG and past control steps in the model's history window.
     horizon : int
@@ -74,7 +74,7 @@ class AutoregressiveMLP(nn.Module):
         sizes = [n_y * n_channels + n_u * n_controls, *[hidden_size] * depth, n_channels]
         modules: list[nn.Module] = []
         for i, (n_in, n_out) in enumerate(itertools.pairwise(sizes)):
-            modules.append(nn.Linear(n_in, n_out, dtype=torch.float64))
+            modules.append(nn.Linear(n_in, n_out, dtype=torch.float32))
             if i < depth:
                 modules.append(_activation_module(activation))
         self.layers = nn.Sequential(*modules)
@@ -137,6 +137,6 @@ class AutoregressiveMLP(nn.Module):
         linears = (m for m in model.layers if isinstance(m, nn.Linear))
         with torch.no_grad():
             for lin, (w, b) in zip(linears, art.layers, strict=True):
-                lin.weight.copy_(torch.as_tensor(w, dtype=torch.float64))
-                lin.bias.copy_(torch.as_tensor(b, dtype=torch.float64))
+                lin.weight.copy_(torch.as_tensor(w, dtype=torch.float32))
+                lin.bias.copy_(torch.as_tensor(b, dtype=torch.float32))
         return model

@@ -18,10 +18,11 @@ Source of truth:
   [`scripts/sweep_nn_predictor.py`](../scripts/sweep_nn_predictor.py)
 - Example configs: [`configs/nn_predictor/`](../configs/nn_predictor/)
 
-> All computation runs in **float64**, requested explicitly: every `nn.Linear` is built with
-> `dtype=torch.float64` and every array crossing into torch goes through
-> `torch.as_tensor(..., dtype=torch.float64)`. The global default dtype is never changed, so
-> importing `neuro` cannot alter dtype behaviour for anything else in the process.
+> Model training runs in **float32** for computational and memory efficiency: every `nn.Linear`
+> is built with `dtype=torch.float32` and batches crossing into torch go through
+> `torch.as_tensor(..., dtype=torch.float32)`. The exported `MLPArtifact` and downstream CasADi
+> MPC optimization run in double precision (**float64**). The global default dtype is never changed,
+> so importing `neuro` cannot alter dtype behaviour for anything else in the process.
 
 ---
 
@@ -279,7 +280,7 @@ sizes every layer.
   enforced by the config schema, so a typo fails at config load rather than hours into a sweep at
   MPC construction time.
 
-The layers are built with `dtype=torch.float64` and initialised by torch's default `nn.Linear`
+The layers are built with `dtype=torch.float32` and initialised by torch's default `nn.Linear`
 initialiser under `torch.manual_seed(training.seed + seed_offset)`.
 
 Everything the module sees is already **standardized** — the EEG block by `y_std`, the control blocks
@@ -317,12 +318,12 @@ The identical recursion exists in three places, and they are pinned to each othe
 
 | where | used for | dtype/engine |
 | ----- | -------- | ------------ |
-| [`AutoregressiveMLP.forward`](../src/neuro/predictor/module.py) | training (differentiable) | torch, float64 |
+| [`AutoregressiveMLP.forward`](../src/neuro/predictor/module.py) | training (differentiable) | torch, float32 |
 | [`MLPArtifact.rollout`](../src/neuro/predictor/artifact.py) / `rollout_many` | evaluation, plotting, closed-loop simulation | NumPy, float64 |
 | [`NNSymbolicModel`](../src/neuro/nn_predictor_casadi.py) `f_step` / `f_out` | the MPC's symbolic graph for IPOPT | CasADi |
 
 `tests/test_predictor_module.py::test_torch_rollout_matches_casadi` pins torch against the CasADi
-bridge to `1e-10` over `depth ∈ {0, 2}` and all three activations;
+bridge to `1e-5` over `depth ∈ {0, 2}` and all three activations;
 `test_prime_rollout_matches_the_training_window_at_the_same_index` pins `MLPArtifact.rollout` against
 torch on the same $t_0$; `tests/test_batched_rollout.py` pins `rollout_many` against a loop over
 `rollout` to `1e-12`.
@@ -511,7 +512,7 @@ $$
 $$
 
 the final batch being smaller when $M_\text{train}$ is not a multiple of the batch size. There is no
-`torch.utils.data.DataLoader`: the whole dataset is one resident float64 tensor on the target device,
+`torch.utils.data.DataLoader`: the whole dataset is one resident float32 tensor on the target device,
 so a batch is a single fancy-index gather. Validation is evaluated on the **whole** validation set in
 a single `torch.no_grad()` call (not batched).
 
@@ -817,8 +818,8 @@ out-of-range values raise `ValidationError` rather than silently defaulting.
 | `losses`                     | *(required)* | composable loss terms (at least one must be active)           |
 
 > **`device: cuda` is untested.** Only the CPU path has been exercised. The code moves the model and
-> both resident dataset tensors onto `torch.device(training.device)` and is float64 throughout, which
-> is a poor fit for consumer GPUs; treat CUDA as unvalidated rather than supported.
+> both resident dataset tensors onto `torch.device(training.device)` in float32; treat CUDA as
+> unvalidated rather than supported.
 
 #### Loss specifications (`training.losses`)
 

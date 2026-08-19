@@ -199,8 +199,10 @@ def test_stft_is_gated_off_until_start_epoch() -> None:
     n_y, n_u, horizon, c, n_controls, batch, w_stft = 2, 2, 6, 5, 2, 32, 0.1
     model = _model(n_y, n_u, horizon, c, n_controls)
 
-    x = torch.as_tensor(rng.standard_normal((batch, n_y * c + n_u * n_controls + horizon * n_controls)))
-    true_traj = torch.as_tensor(rng.standard_normal((batch, horizon, c)))
+    x = torch.as_tensor(
+        rng.standard_normal((batch, n_y * c + n_u * n_controls + horizon * n_controls)), dtype=torch.float32
+    )
+    true_traj = torch.as_tensor(rng.standard_normal((batch, horizon, c)), dtype=torch.float32)
     pred_traj = model(x).reshape(batch, horizon, c)
 
     losses: list[Loss] = [
@@ -220,14 +222,14 @@ def test_stft_is_gated_off_until_start_epoch() -> None:
     ]
 
     ctx_gated = LossContext(
-        y_center=torch.zeros(c, dtype=torch.float64),
-        y_scale=torch.ones(c, dtype=torch.float64),
+        y_center=torch.zeros(c, dtype=torch.float32),
+        y_scale=torch.ones(c, dtype=torch.float32),
         fs=1.0,
         epoch=5,
     )
     ctx_active = LossContext(
-        y_center=torch.zeros(c, dtype=torch.float64),
-        y_scale=torch.ones(c, dtype=torch.float64),
+        y_center=torch.zeros(c, dtype=torch.float32),
+        y_scale=torch.ones(c, dtype=torch.float32),
         fs=1.0,
         epoch=10,
     )

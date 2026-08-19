@@ -98,11 +98,11 @@ def _validation_loss(cfg: NNPredictorConfig, files: list[str], art: MLPArtifact)
     )
 
     model = AutoregressiveMLP.from_artifact(art)
-    pred = model(torch.as_tensor(data.X_val)).reshape(-1, horizon, art.n_channels)
-    target = torch.as_tensor(data.Y_val).reshape(-1, horizon, data.n_channels)
+    pred = model(torch.as_tensor(data.X_val, dtype=torch.float32)).reshape(-1, horizon, art.n_channels)
+    target = torch.as_tensor(data.Y_val, dtype=torch.float32).reshape(-1, horizon, data.n_channels)
     ctx = LossContext(
-        y_center=torch.as_tensor(art.y_std.center, dtype=torch.float64),
-        y_scale=torch.as_tensor(art.y_std.scale, dtype=torch.float64),
+        y_center=torch.as_tensor(art.y_std.center, dtype=torch.float32),
+        y_scale=torch.as_tensor(art.y_std.scale, dtype=torch.float32),
         fs=fs,
         epoch=None,
     )

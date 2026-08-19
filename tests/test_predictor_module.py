@@ -32,7 +32,10 @@ def _random_layers(
     """Random ``(W, b)`` pairs for a ``depth``-hidden-layer MLP, scaled so activations stay O(1)."""
     sizes = [in_size, *[hidden_size] * depth, out_size]
     return tuple(
-        (rng.standard_normal((n_out, n_in)) / np.sqrt(n_in), rng.standard_normal(n_out) * 0.1)
+        (
+            (rng.standard_normal((n_out, n_in), dtype=np.float32) / np.float32(np.sqrt(n_in))).astype(np.float64),
+            (rng.standard_normal(n_out, dtype=np.float32) * np.float32(0.1)).astype(np.float64),
+        )
         for n_in, n_out in itertools.pairwise(sizes)
     )
 
@@ -108,12 +111,12 @@ def test_prime_rollout_matches_the_training_window_at_the_same_index() -> None:
         ]
     )
     model = AutoregressiveMLP.from_artifact(art)
-    pred = model(torch.as_tensor(x)[None, :]).detach().numpy().reshape(horizon, art.n_channels)
+    pred = model(torch.as_tensor(x, dtype=torch.float32)[None, :]).detach().numpy().reshape(horizon, art.n_channels)
     want = art.decode(pred)
 
     got = art.rollout(art.prime(y_raw[:t0], u_raw[:t0]), u_raw[t0 : t0 + horizon])
 
-    np.testing.assert_allclose(got, want, rtol=1e-12, atol=1e-14)
+    np.testing.assert_allclose(got, want, rtol=1e-5, atol=1e-6)
 
 
 @pytest.mark.parametrize("activation", ["relu", "tanh", "softplus"])
@@ -126,12 +129,12 @@ def test_torch_rollout_matches_casadi(depth: int, activation: Activation) -> Non
     want = _casadi_rollout(art, y_hist, u_hist, u_future)
 
     model = AutoregressiveMLP.from_artifact(art)
-    x = torch.as_tensor(_model_space_inputs(art, y_hist, u_hist, u_future))[None, :]
+    x = torch.as_tensor(_model_space_inputs(art, y_hist, u_hist, u_future), dtype=torch.float32)[None, :]
     pred = model(x).detach().numpy().reshape(art.horizon, art.n_channels)
     got = art.decode(pred)
 
     assert got.shape == (art.horizon, art.n_channels)
-    np.testing.assert_allclose(got, want, rtol=1e-10, atol=1e-12)
+    np.testing.assert_allclose(got, want, rtol=1e-5, atol=1e-6)
 
 
 def test_forward_is_row_independent() -> None:
@@ -140,11 +143,13 @@ def test_forward_is_row_independent() -> None:
     model = AutoregressiveMLP.from_artifact(art)
 
     rows = [_model_space_inputs(art, *_context(art, _SEED + offset)) for offset in (2, 3)]
-    batched = model(torch.as_tensor(np.stack(rows))).detach().numpy()
-    singles = np.concatenate([model(torch.as_tensor(row)[None, :]).detach().numpy() for row in rows])
+    batched = model(torch.as_tensor(np.stack(rows), dtype=torch.float32)).detach().numpy()
+    singles = np.concatenate(
+        [model(torch.as_tensor(row, dtype=torch.float32)[None, :]).detach().numpy() for row in rows]
+    )
 
     assert batched.shape == (2, art.horizon * art.n_channels)
-    np.testing.assert_array_equal(batched, singles)
+    np.testing.assert_allclose(batched, singles, rtol=1e-5, atol=1e-6)
 
 
 @pytest.mark.parametrize("depth", [0, 2])

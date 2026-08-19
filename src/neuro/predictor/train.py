@@ -96,8 +96,8 @@ class _Tensors:
 
 
 def _tensor(a: FloatArray, device: torch.device) -> Tensor:
-    """Move a NumPy array onto ``device`` as a float64 tensor."""
-    return torch.as_tensor(np.ascontiguousarray(a), dtype=torch.float64, device=device)
+    """Move a NumPy array onto ``device`` as a float32 tensor."""
+    return torch.as_tensor(np.ascontiguousarray(a), dtype=torch.float32, device=device)
 
 
 def _warm_start_linear(
@@ -119,8 +119,8 @@ def _warm_start_linear(
 
     layer = cast("nn.Linear", model.layers[0])
     with torch.no_grad():
-        layer.weight.copy_(torch.as_tensor(np.ascontiguousarray(weight_bias[:-1].T)))
-        layer.bias.copy_(torch.as_tensor(weight_bias[-1]))
+        layer.weight.copy_(torch.as_tensor(np.ascontiguousarray(weight_bias[:-1].T), dtype=torch.float32))
+        layer.bias.copy_(torch.as_tensor(weight_bias[-1], dtype=torch.float32))
 
 
 def _lr_schedule(
