@@ -114,8 +114,8 @@ def _warm_start_linear(
     # the past-EEG block with the control window starting one step later.
     X_1step = np.hstack([X_train[:, :y_len], X_train[:, y_len + m : y_len + (model.n_u + 1) * m]])
 
-    features = np.hstack([X_1step, np.ones((X_1step.shape[0], 1))])
-    weight_bias, *_ = np.linalg.lstsq(features, Y_step1, rcond=None)
+    X_design = np.hstack([X_1step, np.ones((X_1step.shape[0], 1))])
+    weight_bias, *_ = np.linalg.lstsq(X_design, Y_step1, rcond=None)
 
     layer = cast("nn.Linear", model.layers[0])
     with torch.no_grad():

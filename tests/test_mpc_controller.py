@@ -267,7 +267,7 @@ def _build_tiny_esn_artifact(
     tmp_path: Path,
     *,
     reservoir_size: int = 30,
-    washout: int = 5,
+    priming_steps: int = 5,
     horizon: int = 3,
     n_channels: int = 2,
     n_controls: int = 2,
@@ -297,7 +297,7 @@ def _build_tiny_esn_artifact(
         reservoir_size=reservoir_size,
         leak_rate=0.1,
         spectral_radius=0.9,
-        washout=washout,
+        priming_steps=priming_steps,
         input_scaling=0.1,
         density=0.2,
         noise_sigma=0.0,
@@ -311,18 +311,18 @@ def _build_tiny_esn_artifact(
 
 def test_mpc_controller_with_esn_model(tmp_path: Path) -> None:
     """MPCController runs end-to-end with an ESNSymbolicModel across warmup and active steps."""
-    washout = 5
-    art_path = _build_tiny_esn_artifact(tmp_path, washout=washout)
+    priming_steps = 5
+    art_path = _build_tiny_esn_artifact(tmp_path, priming_steps=priming_steps)
     model = ESNSymbolicModel.from_artifact(art_path)
     u_max = 0.5
     controller = MPCController(dt=0.01, model=model, u_max=u_max, horizon=3, w_y=1.0, w_u=0.0)
 
-    results = _drive(controller, n_steps=washout + 3, n_channels=model.n_channels)
-    for u, log in results[: washout - 1]:
+    results = _drive(controller, n_steps=priming_steps + 3, n_channels=model.n_channels)
+    for u, log in results[: priming_steps - 1]:
         assert log.warmup
         np.testing.assert_array_equal(u, np.zeros(model.n_controls))
 
-    for u, log in results[washout - 1 :]:
+    for u, log in results[priming_steps - 1 :]:
         assert not log.warmup
         assert u.shape == (model.n_controls,)
         assert np.isfinite(u).all()
@@ -331,7 +331,7 @@ def test_mpc_controller_with_esn_model(tmp_path: Path) -> None:
 
 def test_mpc_from_config_loads_esn_artifact(tmp_path: Path) -> None:
     """MPCController.from_config routes through build_symbolic_model for ESN artifacts."""
-    art_path = _build_tiny_esn_artifact(tmp_path, washout=3)
+    art_path = _build_tiny_esn_artifact(tmp_path, priming_steps=3)
     controller = MPCController.from_config(
         {
             "dt": 0.01,
@@ -372,8 +372,10 @@ def test_symbolic_model_priming_seam(tmp_path: Path) -> None:
     np.testing.assert_allclose(state, expected_nn, atol=1e-12)
 
     # ESN model priming
-    washout, res_size = 6, 20
-    esn_art_path = _build_tiny_esn_artifact(tmp_path, reservoir_size=res_size, washout=washout, n_channels=n_ch)
+    priming_steps, res_size = 6, 20
+    esn_art_path = _build_tiny_esn_artifact(
+        tmp_path, reservoir_size=res_size, priming_steps=priming_steps, n_channels=n_ch
+    )
     esn_art = ESNArtifact.load(esn_art_path)
     esn_model = ESNSymbolicModel(esn_art)
 
@@ -381,13 +383,13 @@ def test_symbolic_model_priming_seam(tmp_path: Path) -> None:
     esn_state = esn_model.initial_state()
     assert not esn_model.is_ready(esn_state)
 
-    y_esn = rng.standard_normal((washout, n_ch))
-    u_esn = rng.standard_normal((washout, n_ctrl))
-    for t in range(washout - 1):
+    y_esn = rng.standard_normal((priming_steps, n_ch))
+    u_esn = rng.standard_normal((priming_steps, n_ctrl))
+    for t in range(priming_steps - 1):
         esn_state = esn_model.absorb(esn_state, y_esn[t], u_esn[t])
         assert not esn_model.is_ready(esn_state)
 
-    esn_state = esn_model.absorb(esn_state, y_esn[washout - 1], u_esn[washout - 1])
+    esn_state = esn_model.absorb(esn_state, y_esn[priming_steps - 1], u_esn[priming_steps - 1])
     assert esn_model.is_ready(esn_state)
     expected_esn = esn_art.prime(y_esn, u_esn)
     np.testing.assert_allclose(esn_state, expected_esn, atol=1e-12)

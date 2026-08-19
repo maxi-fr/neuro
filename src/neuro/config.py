@@ -398,7 +398,7 @@ class ESNModelConfig(StrictConfig):
     leak_rate: float = Field(default=0.1, gt=0, le=1)
     density: float = Field(default=0.1, gt=0, le=1)
     input_scaling: float = Field(default=0.1, gt=0)
-    washout: int = Field(default=100, ge=0)
+    priming_steps: int = Field(default=100, ge=0)
     ridge_lambda: float = Field(default=1e-3, ge=0)
     noise_sigma: float = Field(default=0.0, ge=0)
     horizon: int = Field(default=50, ge=1)

@@ -73,7 +73,7 @@ def main() -> None:
         w_res=w_res,
         w_in=w_in,
         leak_rate=cfg.model.leak_rate,
-        washout=cfg.model.washout,
+        priming_steps=cfg.model.priming_steps,
         noise_sigma=cfg.model.noise_sigma,
         seed=cfg.training.seed,
     )
@@ -96,7 +96,7 @@ def main() -> None:
         reservoir_size=cfg.model.reservoir_size,
         leak_rate=cfg.model.leak_rate,
         spectral_radius=cfg.model.spectral_radius,
-        washout=cfg.model.washout,
+        priming_steps=cfg.model.priming_steps,
         input_scaling=cfg.model.input_scaling,
         density=cfg.model.density,
         noise_sigma=cfg.model.noise_sigma,

@@ -68,7 +68,7 @@ def _casadi_rollout(art: MLPArtifact, y_hist: FloatArray, u_hist: FloatArray, u_
     return np.stack(preds)
 
 
-def _model_space_features(art: MLPArtifact, y_hist: FloatArray, u_hist: FloatArray, u_future: FloatArray) -> FloatArray:
+def _model_space_inputs(art: MLPArtifact, y_hist: FloatArray, u_hist: FloatArray, u_future: FloatArray) -> FloatArray:
     """Assemble the torch input row, controls transformed as standardizer does."""
     return np.concatenate(
         [
@@ -126,7 +126,7 @@ def test_torch_rollout_matches_casadi(depth: int, activation: Activation) -> Non
     want = _casadi_rollout(art, y_hist, u_hist, u_future)
 
     model = AutoregressiveMLP.from_artifact(art)
-    x = torch.as_tensor(_model_space_features(art, y_hist, u_hist, u_future))[None, :]
+    x = torch.as_tensor(_model_space_inputs(art, y_hist, u_hist, u_future))[None, :]
     pred = model(x).detach().numpy().reshape(art.horizon, art.n_channels)
     got = art.decode(pred)
 
@@ -139,7 +139,7 @@ def test_forward_is_row_independent() -> None:
     art = _build_artifact(2, "tanh")
     model = AutoregressiveMLP.from_artifact(art)
 
-    rows = [_model_space_features(art, *_context(art, _SEED + offset)) for offset in (2, 3)]
+    rows = [_model_space_inputs(art, *_context(art, _SEED + offset)) for offset in (2, 3)]
     batched = model(torch.as_tensor(np.stack(rows))).detach().numpy()
     singles = np.concatenate([model(torch.as_tensor(row)[None, :]).detach().numpy() for row in rows])
 

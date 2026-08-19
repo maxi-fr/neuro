@@ -137,12 +137,12 @@ dynamics:
   connectome: {speed: 50.0, K: 0.60}
   stimulation:
     model: roast_3d
-    leadfield_path: data/roast_leadfield_3d.npz
+    field_projection_path: data/roast_field_projection_3d.npz
     electrodes: [TP9, CP5, EX8]   # omit for all 63 rows in the file
 ```
 
 The models are `none`, `analytical` (Coulomb point source, `electrodes` + `spread`),
-`roast_3d` (above) and `yu_dynamic` (`leadfield_path` + `electrodes` + `alpha`); each rejects the others' keys rather
+`roast_3d` (above) and `yu_dynamic` (`field_projection_path` + `electrodes` + `alpha`); each rejects the others' keys rather
 than ignoring them. `electrodes` selects and orders the montage on every model, so swapping
 `model:` swaps the physics while holding the control problem fixed.
 

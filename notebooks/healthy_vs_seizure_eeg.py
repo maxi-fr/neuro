@@ -16,7 +16,7 @@ def _():
     from matplotlib import pyplot as plt
 
     from neuro.connectome import Connectome
-    from neuro.eeg import build_eeg_gain
+    from neuro.eeg import build_eeg_leadfield
     from neuro.jansen_rit import JansenRitDynamics, JansenRitParams, lfp, simulate_network
     from utils.plotting import plot_psd
     from utils.processing import band_energy, steady_window
@@ -26,7 +26,7 @@ def _():
         JansenRitDynamics,
         JansenRitParams,
         band_energy,
-        build_eeg_gain,
+        build_eeg_leadfield,
         lfp,
         mo,
         np,
@@ -52,7 +52,7 @@ def _(mo):
        - **Healthy ($A = 3.25$)**: Normal background activity (stable fixed point).
        - **Seizure Zone (EZ, $A = 3.6$)**: Sustained spike-wave limit-cycle oscillations (~3 Hz).
        - **Propagation Zone (PZ, $A = 3.4$)**: Susceptible to seizure recruitment from network coupling.
-    3. **EEG Leadfield Projection**: The regional LFP $Y$ (shape $76 \times N_{samples}$) is projected to the scalp EEG sensors via the gain/leadfield matrix $L$ (shape $62 \times 76$):
+    3. **EEG Leadfield Projection**: The regional LFP $Y$ (shape $76 \times N_{samples}$) is projected to the EEG sensors via the leadfield matrix $L$ (shape $62 \times 76$):
        $$\text{EEG} = L\,Y$$
     4. **States Compared**:
        - **Healthy Brain**: Excitatory gain $A = 3.25$ uniformly for all 76 regions.
@@ -111,7 +111,7 @@ def _(connectome, mo):
 def _(
     JansenRitDynamics,
     JansenRitParams,
-    build_eeg_gain,
+    build_eeg_leadfield,
     connectome,
     deterministic_toggle,
     duration_slider,
@@ -160,9 +160,9 @@ def _(
     y_healthy_steady = steady_window(y_healthy, dt_ms, transient_ms)
     y_seizure_steady = steady_window(y_seizure, dt_ms, transient_ms)
 
-    gain, _ = build_eeg_gain()
-    eeg_healthy = gain @ y_healthy_steady
-    eeg_seizure = gain @ y_seizure_steady
+    leadfield, _ = build_eeg_leadfield()
+    eeg_healthy = leadfield @ y_healthy_steady
+    eeg_seizure = leadfield @ y_seizure_steady
 
     t[round(transient_ms / dt_ms) :]
     return dt_ms, eeg_healthy, eeg_seizure
@@ -347,7 +347,7 @@ def _(mo):
 
     1. **Amplitude Differences**: In the time-domain traces, the **Epileptic Brain** shows large amplitude, rhythmic oscillations (exceeding $10\text{ mV}$ peak-to-peak). The **Healthy Brain** shows desynchronized, low-amplitude noise (peak-to-peak $\approx 1\text{--}2\text{ mV}$).
     2. **Frequency Fingerprint**: The power spectral density (PSD) of the healthy brain is broad and lacks strong resonant peaks. In contrast, the epileptic brain exhibits a sharp, dominant peak around **$3\text{--}4\text{ Hz}$** (the seizure rhythm of the model) along with higher harmonics.
-    3. **Spatial Lateralization**: The seizure energy ranking shows that channels on the left hemisphere (such as **CP5, P3, P5, CP3**) exhibit the highest relative energy. This aligns perfectly with the fact that the Epileptogenic Zone (EZ) is located in the left hemisphere (specifically `lHC`, `lPHC`, and `lAMYG`), showing that the scalp EEG lateralization correctly localized the underlying source pathology.
+    3. **Spatial Lateralization**: The seizure energy ranking shows that channels on the left hemisphere (such as **CP5, P3, P5, CP3**) exhibit the highest relative energy. This aligns perfectly with the fact that the Epileptogenic Zone (EZ) is located in the left hemisphere (specifically `lHC`, `lPHC`, and `lAMYG`), showing that the EEG lateralization correctly localized the underlying source pathology.
     """)
     return
 

@@ -21,7 +21,7 @@ dynamics:
     K: 0.60
   stimulation:
     model: roast_3d
-    leadfield_path: data/roast_leadfield_3d.npz
+    field_projection_path: data/roast_field_projection_3d.npz
   params:
     sigma: 280.0
     A: [3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25,

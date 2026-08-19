@@ -36,11 +36,11 @@ $$
 \underbrace{u_{t:t+N-1}}_{\text{future control commands}}\,\big),
 $$
 
-where $W = \texttt{washout}$ is the length of the history window used to prime the reservoir state.
+where $W = \texttt{priming\_steps}$ is the length of the history window used to prime the reservoir state.
 
 Unlike the MLP predictor ([`nn_predictor_training.md`](nn_predictor_training.md)), which relies on an explicit sliding-window concatenation of $n_y$ past EEG steps and $n_u$ past controls fed into a feedforward network $f_\theta$, the Echo State Network maintains a high-dimensional internal reservoir state $h_t \in \mathbb{R}^{N_\text{res}}$ ($N_\text{res} \gg C$, typically $500 \text{--} 2000$ units) that updates recursively over time:
 
-1. **Teacher-forcing step (history priming):**
+1. **State absorption step (history priming):**
    $$
    h_{t+1} = (1 - \alpha)\, h_t + \alpha \tanh\big(W_\text{res} h_t + W_\text{in} [z_t;\, v_t;\, 1]\big)
    $$
@@ -122,12 +122,12 @@ Unlike feedforward neural networks that shuffle sliding windows of inputs, an ES
 1. For each trajectory $(u_\text{raw}, y_\text{raw})$, compute standardized target sequence $z = \texttt{y\_std.transform}(y_\text{raw}) \in \mathbb{R}^{T \times C}$ and standardized control sequence $v = \texttt{u\_std.transform}(u_\text{raw}) \in \mathbb{R}^{T \times m}$.
 2. Initialize reservoir state to zero: $h_0 = 0 \in \mathbb{R}^{N_\text{res}}$.
 3. **Target Alignment & Timing:** At step $t$, state vector $h_t$ is recorded **before** absorbing input $(z_t, v_t)$, and paired with target $z_t$. This timing guarantees that $\hat{z}_t = W_\text{out} [h_t; 1]$ is a genuine **one-step-ahead prediction** of step $t$ rather than a state reconstruction.
-4. **Teacher-Forcing State Update:** The state is advanced to $h_{t+1}$:
+4. **State Absorption Step:** The state is advanced to $h_{t+1}$:
    $$
    h_{t+1} = (1 - \alpha)\, h_t + \alpha \tanh\big(W_\text{res} h_t + W_\text{in} [z_{\text{in},t};\, v_t;\, 1]\big),
    $$
    where $z_{\text{in},t} = z_t + \sigma \cdot \xi_t$ incorporates optional harvesting noise ($\sigma = \texttt{noise\_sigma}$, $\xi_t \sim \mathcal{N}(0, I_C)$).
-5. **Washout Period:** Initial $W = \texttt{washout}$ steps of each trajectory are discarded to allow transient dynamics from $h_0 = 0$ to decay. Only states and targets for $t \ge W$ are harvested into normal equation statistics.
+5. **Priming Steps Discard:** Initial $W = \texttt{priming\_steps}$ steps of each trajectory are discarded to allow transient dynamics from $h_0 = 0$ to decay. Only states and targets for $t \ge W$ are harvested into normal equation statistics.
 
 ---
 
@@ -258,7 +258,7 @@ Carrying notation through in **raw EEG units**:
 Evaluation is performed on held-out validation trajectories using [`evaluate_rollouts`](../src/neuro/artifacts.py):
 
 1. Validation trajectories are windowed on a stride-25 grid.
-2. A trajectory's whole grid of past histories, each of length $W = \texttt{washout}$, is passed to `art.prime_many(y_hists, u_hists)` in one call to obtain the states $h_b$.
+2. A trajectory's whole grid of past histories, each of length $W = \texttt{priming\_steps}$, is passed to `art.prime_many(y_hists, u_hists)` in one call to obtain the states $h_b$.
 3. `art.rollout_many(states, u_futures)` computes the free-running forecasts $\hat{Y}_b \in \mathbb{R}^{N \times C}$, again one call per trajectory. The scalar `prime` / `rollout` pair is still what the MPC drives step by step; the batched pair only vectorises the evaluation loop. Batching changes the order of float summation inside the reservoir update, so ESN rollout numbers can shift at roundoff level (order $10^{-9}$ relative on a poorly-conditioned fit) against the pre-batching values.
 4. **Normalized Mean Squared Error (NMSE)** is computed using the energy of the true signal over the index set:
 
@@ -309,7 +309,7 @@ Configurations are declared in YAML files and validated using Pydantic ([`ESNPre
 | `leak_rate`       | float  | `0.1`   | Reservoir leakage rate $\alpha \in (0, 1]$              |
 | `density`         | float  | `0.1`   | Sparsity density $d_\text{res} \in (0, 1]$ of $W_\text{res}$ |
 | `input_scaling`   | float  | `0.1`   | Input weight scaling $\gamma$ for $W_\text{in}$         |
-| `washout`         | int    | `100`   | Washout step count $W$                                  |
+| `priming_steps`   | int    | `100`   | Priming step count $W$                                  |
 | `ridge_lambda`    | float  | `1e-3`  | $L_2$ regularization $\lambda$ for readout solve         |
 | `noise_sigma`     | float  | `0.0`   | Std dev $\sigma$ of Gaussian noise added during harvesting |
 | `horizon`         | int    | `50`    | Direct forecasting rollout horizon $N$                  |
@@ -346,7 +346,7 @@ model:
   leak_rate: 0.1
   density: 0.1
   input_scaling: 0.1
-  washout: 100
+  priming_steps: 100
   ridge_lambda: 1.0e-3
   noise_sigma: 0.0
   horizon: 50
@@ -387,5 +387,5 @@ sweep:
 - **Memory vs. Window Lag:** Unlike the MLP, which relies on an explicit finite history window ($n_y, n_u$), the ESN stores dynamic history implicitly in its state vector $h_t \in \mathbb{R}^{N_\text{res}}$.
 - **One-Shot Closed Form vs. Iterative Gradient Descent:** ESN training evaluates state dynamics in a single pass and computes readout weights $W_\text{out}$ via a direct linear matrix solve ($O(N_\text{res}^3)$), taking seconds to train compared to the MLP's multi-epoch AdamW backpropagation. Nothing on the ESN path imports torch.
 - **Bias Term Unregularized:** In `solve_ridge`, $I_\text{unreg}[-1, -1] = 0.0$ ensures the constant bias offset is not shrunk toward zero, preventing systematic state offsets.
-- **Washout Priming Requirement:** During deployment or evaluation, an ESN requires $W = \texttt{washout}$ initial steps of consecutive history to warm up state $h_t$ before issuing valid rollout predictions.
+- **Priming Steps Requirement:** During deployment or evaluation, an ESN requires $W = \texttt{priming\_steps}$ initial steps of consecutive history to warm up state $h_t$ before issuing valid rollout predictions.
 - **Determinism & Seeding:** Reservoir generation ($W_\text{res}, W_\text{in}$) is strictly deterministic given `training.seed`.

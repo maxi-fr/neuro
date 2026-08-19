@@ -30,7 +30,7 @@ def _build_tiny_esn_artifact(
     leak_rate: float = 0.1,
     density: float = 0.1,
     input_scaling: float = 0.1,
-    washout: int = 10,
+    priming_steps: int = 10,
     horizon: int = 50,
     n_channels: int = 2,
     n_controls: int = 2,
@@ -63,7 +63,7 @@ def _build_tiny_esn_artifact(
         reservoir_size=reservoir_size,
         leak_rate=leak_rate,
         spectral_radius=spectral_radius,
-        washout=washout,
+        priming_steps=priming_steps,
         input_scaling=input_scaling,
         density=density,
         noise_sigma=0.0,
@@ -182,7 +182,7 @@ def test_artifact_round_trip_preserves_weights(tmp_path: Path) -> None:
 
 def test_harvest_pairs_pre_update_state_with_target(tmp_path: Path) -> None:
     """Harvested rows hold h_t *before* it absorbs z[t], so the readout is one-step-ahead."""
-    art_path = _build_tiny_esn_artifact(tmp_path, washout=5)
+    art_path = _build_tiny_esn_artifact(tmp_path, priming_steps=5)
     art = ESNArtifact.load(art_path)
 
     rng = np.random.default_rng(_SEED + 3)
@@ -197,22 +197,22 @@ def test_harvest_pairs_pre_update_state_with_target(tmp_path: Path) -> None:
         w_res=art.w_res,
         w_in=art.w_in,
         leak_rate=art.leak_rate,
-        washout=art.washout,
+        priming_steps=art.priming_steps,
         noise_sigma=0.0,
         seed=_SEED,
     )
 
     z = art.encode(y_raw)
     v = art.u_std.transform(u_raw)
-    h_aug = np.ones((t_len - art.washout, art.reservoir_size + 1))
+    h_aug = np.ones((t_len - art.priming_steps, art.reservoir_size + 1))
     h = np.zeros(art.reservoir_size)
     for t in range(t_len):
-        if t >= art.washout:
-            h_aug[t - art.washout, : art.reservoir_size] = h
-        h = art.predictor.teacher_step(h, z[t], v[t])
+        if t >= art.priming_steps:
+            h_aug[t - art.priming_steps, : art.reservoir_size] = h
+        h = art.predictor.absorb(h, z[t], v[t])
 
     np.testing.assert_allclose(G, h_aug.T @ h_aug, atol=1e-10)
-    np.testing.assert_allclose(P, h_aug.T @ z[art.washout :], atol=1e-10)
+    np.testing.assert_allclose(P, h_aug.T @ z[art.priming_steps :], atol=1e-10)
 
 
 def test_spectral_radius_is_scaled_to_rho() -> None:
@@ -231,14 +231,14 @@ def test_spectral_radius_is_scaled_to_rho() -> None:
     np.testing.assert_allclose(abs_max, target_rho, atol=1e-8)
 
 
-def test_washout_forgets_initial_state(tmp_path: Path) -> None:
-    """Two different h0 primed on identical history converge after washout (echo state property)."""
-    art_path = _build_tiny_esn_artifact(tmp_path, spectral_radius=0.5, leak_rate=0.3, washout=200)
+def test_priming_forgets_initial_state(tmp_path: Path) -> None:
+    """Two different h0 primed on identical history converge after priming steps (echo state property)."""
+    art_path = _build_tiny_esn_artifact(tmp_path, spectral_radius=0.5, leak_rate=0.3, priming_steps=200)
     art = ESNArtifact.load(art_path)
 
     rng = np.random.default_rng(_SEED)
-    y_hist = rng.standard_normal((art.washout, art.n_channels))
-    u_hist = rng.standard_normal((art.washout, art.n_controls))
+    y_hist = rng.standard_normal((art.priming_steps, art.n_channels))
+    u_hist = rng.standard_normal((art.priming_steps, art.n_controls))
 
     h_from_zero = art.prime(y_hist, u_hist)
 
@@ -246,8 +246,8 @@ def test_washout_forgets_initial_state(tmp_path: Path) -> None:
     z = art.encode(y_hist)
     v = art.u_std.transform(u_hist)
     h = rng.standard_normal(art.reservoir_size)
-    for t in range(art.washout):
-        h = art.predictor.teacher_step(h, z[t], v[t])
+    for t in range(art.priming_steps):
+        h = art.predictor.absorb(h, z[t], v[t])
 
     assert float(np.linalg.norm(h - h_from_zero)) < 1e-5
 

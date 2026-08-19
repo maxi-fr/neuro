@@ -8,7 +8,7 @@ import numpy as np
 from scipy.io import savemat
 
 from neuro.connectome import Connectome
-from neuro.eeg import build_eeg_gain
+from neuro.eeg import build_eeg_leadfield
 from neuro.geometry import centres_to_mni_ras, sensor_positions_mm
 
 with warnings.catch_warnings():
@@ -34,11 +34,11 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> None:
-    """Write region centres, the cortical surface and the EEG gain in MNI RAS millimetres."""
+    """Write region centres, the cortical surface and the EEG leadfield matrix L in MNI RAS millimetres."""
     args = parse_args()
 
     conn = Connectome.from_config({})
-    gain, channel_labels = build_eeg_gain()
+    leadfield, channel_labels = build_eeg_leadfield()
     surface = CorticalSurface.from_file()
     region_of_vertex = np.asarray(RegionMapping.from_file(_REGION_MAPPING_FILE).array_data, dtype=np.int64)
 
@@ -80,7 +80,7 @@ def main() -> None:
         region_normals_conn=region_normals_conn,
         channel_labels=channel_labels,
         channel_positions_mni_ras=channel_positions_ras,
-        gain=gain,
+        leadfield=leadfield,
     )
     mat_out = args.out.with_suffix(".mat")
     savemat(
@@ -94,11 +94,11 @@ def main() -> None:
             "region_normals_conn": region_normals_conn,
             "channel_labels": np.asarray(channel_labels, dtype=object),
             "channel_positions_mni_ras": channel_positions_ras,
-            "gain": gain,
+            "leadfield": leadfield,
         },
     )
     print(
-        f"Wrote {args.out} and {mat_out}: {len(conn.region_labels)} regions, {len(vertices)} vertices, {gain.shape} gain"
+        f"Wrote {args.out} and {mat_out}: {len(conn.region_labels)} regions, {len(vertices)} vertices, {leadfield.shape} leadfield"
     )
 
 

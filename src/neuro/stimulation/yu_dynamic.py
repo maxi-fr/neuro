@@ -29,44 +29,49 @@ class DynamicYuStim(StimulationModel):
     """
 
     def __init__(self, cfg: _DynamicYuConfig, region_labels: StrArray) -> None:
-        """Load 3D electric field and potential leadfields, filter rows, and check region labels."""
-        path = Path(cfg.leadfield_path)
+        """Load 3D electric field and potential field projections, filter rows, and check region labels."""
+        path = Path(cfg.field_projection_path)
         if not path.exists():
-            msg = f"Leadfield file not found at {path}"
+            msg = f"Field projection file not found at {path}"
             raise FileNotFoundError(msg)
 
         with np.load(path) as data:
-            if "leadfield_V" not in data:
+            if "projection_V" in data:
+                projection_v = np.asarray(data["projection_V"], dtype=np.float64)
+            elif "leadfield_V" in data:
+                projection_v = np.asarray(data["leadfield_V"], dtype=np.float64)
+            else:
                 msg = (
-                    f"Leadfield file at {path} does not carry 'leadfield_V'; regenerate it "
-                    "using convert_roast_leadfield_to_npz to enable dynamic Yu stimulation."
+                    f"Field projection file at {path} does not carry 'projection_V' or 'leadfield_V'; regenerate it "
+                    "using convert_roast_field_projection_to_npz to enable dynamic Yu stimulation."
                 )
                 raise ValueError(msg)
 
-            if "leadfield_E" in data:
-                leadfield_E = np.asarray(data["leadfield_E"], dtype=np.float64)
+            if "projection_E" in data:
+                projection_E = np.asarray(data["projection_E"], dtype=np.float64)
+            elif "leadfield_E" in data:
+                projection_E = np.asarray(data["leadfield_E"], dtype=np.float64)
             elif "leadfield_3d" in data:  # TODO: delete fallback for legacy 'leadfield_3d' key soon
-                leadfield_E = np.asarray(data["leadfield_3d"], dtype=np.float64)
+                projection_E = np.asarray(data["leadfield_3d"], dtype=np.float64)
             else:
-                msg = f"NPZ file at {path} carries neither 'leadfield_E' nor legacy 'leadfield_3d'"
+                msg = f"NPZ file at {path} carries neither 'projection_E', 'leadfield_E' nor legacy 'leadfield_3d'"
                 raise KeyError(msg)
 
-            leadfield_v = np.asarray(data["leadfield_V"], dtype=np.float64)
             channel_labels = np.asarray(data["channel_labels"], dtype=np.str_)
             file_regions = np.asarray(data["region_labels"], dtype=np.str_)
 
         assert_region_order(file_regions, region_labels)
         n_nodes = len(region_labels)
-        if leadfield_E.shape != (len(channel_labels), n_nodes, _NDIM_3D):
-            msg = f"leadfield_E shape {leadfield_E.shape} does not match ({len(channel_labels)}, {n_nodes}, 3)"
+        if projection_E.shape != (len(channel_labels), n_nodes, _NDIM_3D):
+            msg = f"projection_E shape {projection_E.shape} does not match ({len(channel_labels)}, {n_nodes}, 3)"
             raise ValueError(msg)
-        if leadfield_v.shape != (len(channel_labels), n_nodes):
-            msg = f"leadfield_V shape {leadfield_v.shape} does not match ({len(channel_labels)}, {n_nodes})"
+        if projection_v.shape != (len(channel_labels), n_nodes):
+            msg = f"projection_V shape {projection_v.shape} does not match ({len(channel_labels)}, {n_nodes})"
             raise ValueError(msg)
 
         rows = select_rows(channel_labels, cfg.electrodes) if cfg.electrodes is not None else slice(None)
-        self.leadfield_E = leadfield_E[rows]
-        self.leadfield_V = leadfield_v[rows]
+        self.projection_E = projection_E[rows]
+        self.projection_V = projection_v[rows]
         self.control_labels = channel_labels[rows]
         self.n_controls = len(self.control_labels)
         self.alpha = float(cfg.alpha)
@@ -77,11 +82,11 @@ class DynamicYuStim(StimulationModel):
         check_n_controls(u, self.n_controls)
 
         # 1. Superpose 3D electric field vector: E_net shape (n_nodes, 3)
-        e_net = np.einsum("k,kid->id", u, self.leadfield_E)
+        e_net = np.einsum("k,kid->id", u, self.projection_E)
         e_mag = np.linalg.norm(e_net, axis=-1)
 
         # 2. Superpose electrostatic potential: V_net shape (n_nodes,)
-        v_net = u @ self.leadfield_V
+        v_net = u @ self.projection_V
         v_min, v_max = np.min(v_net), np.max(v_net)
         v_med = 0.5 * (v_max + v_min)
         sigma_v = max(float(np.std(v_net)), _EPSILON)

@@ -62,7 +62,7 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
     dt_s = float(config["dynamics"]["dt"])
     dt_ms = dt_s * 1000.0
 
-    activity = None
+    regional_lfp = None
     with np.load(npz_path) as data:
         eeg: FloatArray = np.asarray(data["sensor_0.y_mea"]).T
         u_raw = data.get("controller.u", None)
@@ -75,12 +75,12 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
                 if x_flat.ndim == 1:
                     x_flat = x_flat[np.newaxis, :]
                 x_grid = x_flat.reshape((x_flat.shape[0], 6, -1))
-                activity = (x_grid[:, 1, :] - x_grid[:, 2, :]).T
+                regional_lfp = (x_grid[:, 1, :] - x_grid[:, 2, :]).T
 
-                activity_steady = (
-                    steady_window(activity, dt_ms, args.transient_ms) if args.transient_ms > 0.0 else activity
+                lfp_steady = (
+                    steady_window(regional_lfp, dt_ms, args.transient_ms) if args.transient_ms > 0.0 else regional_lfp
                 )
-                r_sync = synchronization(activity_steady)
+                r_sync = synchronization(lfp_steady)
             except Exception as e:  # noqa: BLE001
                 print(f"Could not calculate network synchronization: {e}")
 
@@ -90,8 +90,8 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
         n_drop = round(args.transient_ms / dt_ms)
         if u is not None:
             u = u[n_drop:]
-        if activity is not None:
-            activity = steady_window(activity, dt_ms, args.transient_ms)
+        if regional_lfp is not None:
+            regional_lfp = steady_window(regional_lfp, dt_ms, args.transient_ms)
 
     print(f"Loaded simulation logs from {npz_path}")
     print(
@@ -140,14 +140,14 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
         "spectrum": fig_freq,
     }
 
-    if activity is not None:
+    if regional_lfp is not None:
         try:
             connectome = Connectome.from_config(config["dynamics"].get("connectome", {}))
             ez_idx = connectome.region_index["lHC"]
             pz_idx = connectome.region_index["lTCI"]
             healthy_idx = connectome.region_index["rHC"]
 
-            node_signals = activity[[ez_idx, pz_idx, healthy_idx], :]
+            node_signals = regional_lfp[[ez_idx, pz_idx, healthy_idx], :]
             node_names = ["lHC (EZ)", "lTCI (PZ)", "rHC (Healthy)"]
             node_colors = ["#d62728", "#ff7f0e", "#1f77b4"]
 
@@ -157,7 +157,7 @@ def main() -> None:  # noqa: C901, PLR0912, PLR0915
                 channel_names=node_names,
                 channels_to_plot=[0, 1, 2],
                 stacked=True,
-                title="Representative Node Outputs",
+                title="Representative Regional LFPs",
                 color=node_colors,
             )
             figs["nodes"] = fig_nodes

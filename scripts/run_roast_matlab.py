@@ -9,16 +9,16 @@ MATLAB_SCRIPT_DIR = Path(__file__).parent.parent / "matlab"
 
 _DEFAULT_ZERO_PADDING = 60
 _DEFAULT_RETURN_ELECTRODE = "Ex8"
-_DEFAULT_OUTPUT_FILE = "data/roast_leadfield_3d.mat"
+_DEFAULT_OUTPUT_FILE = "data/roast_field_projection_3d.mat"
 
 
-def run_roast_leadfield_3d(
+def run_roast_field_projection_3d(
     electrodes: list[str] | None = None,
     zero_padding: int = _DEFAULT_ZERO_PADDING,
     return_electrode: str = _DEFAULT_RETURN_ELECTRODE,
     output_file: str | Path = _DEFAULT_OUTPUT_FILE,
 ) -> None:
-    """Execute the MATLAB ROAST 3D leadfield generator script."""
+    """Execute the MATLAB ROAST 3D field projection generator script."""
     if not MATLAB_EXE.exists():
         msg = f"MATLAB executable not found at: {MATLAB_EXE}"
         raise FileNotFoundError(msg)
@@ -35,7 +35,7 @@ def run_roast_leadfield_3d(
         args_list.append(f"'outputFile', '{Path(output_file).as_posix()}'")
 
     args_str = ", ".join(args_list)
-    call_str = f"generate_roast_leadfield_3d({args_str});" if args_str else "generate_roast_leadfield_3d;"
+    call_str = f"generate_roast_field_projection_3d({args_str});" if args_str else "generate_roast_field_projection_3d;"
 
     matlab_cmd = f"addpath('{MATLAB_SCRIPT_DIR.as_posix()}'); {call_str}"
     cmd = [
@@ -60,7 +60,7 @@ def run_roast_leadfield_3d(
 if __name__ == "__main__":
     import argparse
 
-    parser = argparse.ArgumentParser(description="Run MATLAB ROAST 3D leadfield generation.")
+    parser = argparse.ArgumentParser(description="Run MATLAB ROAST 3D field projection generation.")
     parser.add_argument("--electrodes", nargs="+", help="Specific scalp electrodes (e.g. TP9 CP5)")
     parser.add_argument(
         "--zero-padding",
@@ -80,7 +80,7 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
 
-    run_roast_leadfield_3d(
+    run_roast_field_projection_3d(
         electrodes=args.electrodes,
         zero_padding=args.zero_padding,
         return_electrode=args.return_electrode,

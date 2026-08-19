@@ -9,7 +9,7 @@ from simulate.simulation import Simulation
 
 from neuro.connectome import Connectome
 from neuro.control import ZeroController
-from neuro.eeg import EEGMeasurement, build_eeg_gain
+from neuro.eeg import EEGMeasurement, build_eeg_leadfield
 from neuro.jansen_rit import (
     JansenRitDynamics,
     JansenRitLFPLog,
@@ -180,12 +180,12 @@ def test_from_config_can_disable_zero_sum_check() -> None:
     assert dyn.enforce_zero_sum_current is False
 
 
-def test_eeg_measurement_applies_gain() -> None:
-    """EEGMeasurement maps the network state to eeg = gain @ (x2 - x3)."""
+def test_eeg_measurement_applies_leadfield() -> None:
+    """EEGMeasurement maps the network state to eeg = leadfield @ (x2 - x3)."""
     m = EEGMeasurement()
     x_flat = np.arange(6 * m.n_nodes, dtype=np.float64)
     x_grid = x_flat.reshape(6, m.n_nodes)
-    expected = m.gain @ (x_grid[1] - x_grid[2])
+    expected = m.leadfield @ (x_grid[1] - x_grid[2])
 
     eeg = m(0.0, x_flat, np.array([0.0]))
     np.testing.assert_allclose(eeg, expected)
@@ -193,15 +193,15 @@ def test_eeg_measurement_applies_gain() -> None:
 
 
 def test_eeg_measurement_full_forward_operator() -> None:
-    """The forward operator is the (62, 76) TVB lead field."""
+    """The forward operator is the (62, 76) TVB leadfield matrix L."""
     m = EEGMeasurement()
-    assert m.gain.shape == (_N_CHANNELS_TVB, _N_REGIONS_TVB)
+    assert m.leadfield.shape == (_N_CHANNELS_TVB, _N_REGIONS_TVB)
 
 
-def test_eeg_measurement_n_nodes_slices_gain() -> None:
+def test_eeg_measurement_n_nodes_slices_leadfield() -> None:
     """n_nodes restricts the operator to the leading regions but keeps all 62 channels."""
     m = EEGMeasurement(n_nodes=2)
-    assert m.gain.shape == (_N_CHANNELS_TVB, 2)
+    assert m.leadfield.shape == (_N_CHANNELS_TVB, 2)
 
     x_flat = np.arange(6 * 2, dtype=np.float64)
     eeg = m(0.0, x_flat, np.array([0.0]))
@@ -213,7 +213,7 @@ def test_eeg_measurement_selected_channels() -> None:
     m = EEGMeasurement(selected_channels=[1, 3])
     x_flat = np.arange(6 * m.n_nodes, dtype=np.float64)
     x_grid = x_flat.reshape(6, m.n_nodes)
-    expected = (m.gain @ (x_grid[1] - x_grid[2]))[[1, 3]]
+    expected = (m.leadfield @ (x_grid[1] - x_grid[2]))[[1, 3]]
 
     eeg = m(0.0, x_flat, np.array([0.0]))
     np.testing.assert_allclose(eeg, expected)
@@ -223,7 +223,7 @@ def test_eeg_measurement_selected_channels() -> None:
 def test_eeg_measurement_selected_channels_by_name() -> None:
     """Channel names resolve to the channel indices."""
     m = EEGMeasurement(selected_channels=["F3", "P3"])
-    _, channel_labels = build_eeg_gain()
+    _, channel_labels = build_eeg_leadfield()
     channel_index = {label: idx for idx, label in enumerate(channel_labels)}
     assert m.selected_channels is not None
     np.testing.assert_array_equal(

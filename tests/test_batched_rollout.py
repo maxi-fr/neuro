@@ -77,7 +77,7 @@ def _esn_artifact() -> ESNArtifact:
         reservoir_size=reservoir_size,
         leak_rate=0.3,
         spectral_radius=0.9,
-        washout=8,
+        priming_steps=8,
         input_scaling=0.5,
         density=0.1,
         noise_sigma=0.0,

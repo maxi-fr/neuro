@@ -86,7 +86,7 @@ def harvest_normal_equations(  # noqa: PLR0913, PLR0917
     w_res: scipy.sparse.csr_matrix,
     w_in: FloatArray,
     leak_rate: float,
-    washout: int,
+    priming_steps: int,
     noise_sigma: float,
     seed: int,
 ) -> tuple[FloatArray, FloatArray]:
@@ -106,7 +106,7 @@ def harvest_normal_equations(  # noqa: PLR0913, PLR0917
         Input weight matrix (N, C + m + 1).
     leak_rate : float
         Leakage rate alpha.
-    washout : int
+    priming_steps : int
         Number of initial steps to discard per trajectory.
     noise_sigma : float
         Noise injection standard deviation sigma on model-space input z_in.
@@ -141,17 +141,17 @@ def harvest_normal_equations(  # noqa: PLR0913, PLR0917
         inputs = np.hstack([z_in, v])
         w_in_seq = inputs @ w_in_input_weights.T + w_in_bias
 
-        n_harvest = max(0, T - washout)
+        n_harvest = max(0, T - priming_steps)
         if n_harvest > 0:
             H_mat = np.empty((n_harvest, N + 1), dtype=np.float64)
             H_mat[:, -1] = 1.0
-            Z_mat = z[washout:]
+            Z_mat = z[priming_steps:]
 
             for t in range(T):
                 # h enters the row *before* absorbing (z[t], v[t]), so the target z[t] it is
                 # paired with is a genuine one-step-ahead prediction rather than a reconstruction.
-                if t >= washout:
-                    H_mat[t - washout, :N] = h
+                if t >= priming_steps:
+                    H_mat[t - priming_steps, :N] = h
                 h = (1.0 - leak_rate) * h + leak_rate * np.tanh(w_res @ h + w_in_seq[t])
 
             G += H_mat.T @ H_mat
@@ -195,7 +195,7 @@ def _append_bias(x: FloatArray) -> FloatArray:
 
 @dataclass(frozen=True)
 class ESNPredictor:
-    """Core NumPy ESN execution engine for teacher-forcing and autonomous prediction.
+    """Core NumPy ESN execution engine for state absorption and autonomous prediction.
 
     Attributes
     ----------
@@ -218,7 +218,7 @@ class ESNPredictor:
         """One-step-ahead model-space prediction z_hat from state ``h`` ``(..., N)`` -> ``(..., C)``."""
         return _append_bias(h) @ self.w_out.T
 
-    def teacher_step(self, h: FloatArray, z: FloatArray, v: FloatArray) -> FloatArray:
+    def absorb(self, h: FloatArray, z: FloatArray, v: FloatArray) -> FloatArray:
         """Advance ``h`` ``(..., N)`` absorbing the model-space input ``(z, v)``."""
         alpha = self.leak_rate
         x_in = _append_bias(np.concatenate([z, v], axis=-1))
@@ -226,7 +226,7 @@ class ESNPredictor:
 
     def step(self, h: FloatArray, v: FloatArray) -> FloatArray:
         """Advance ``h`` free-running under model-space control ``v``: the readout replaces z."""
-        return self.teacher_step(h, self.readout(h), v)
+        return self.absorb(h, self.readout(h), v)
 
 
 @dataclass(frozen=True)
@@ -253,8 +253,8 @@ class ESNArtifact:
         Leakage rate alpha in (0, 1].
     spectral_radius : float
         Target spectral radius of reservoir matrix.
-    washout : int
-        Number of initial washout steps to discard.
+    priming_steps : int
+        Number of initial priming steps to discard.
     input_scaling : float
         Uniform input weight scale gamma.
     density : float
@@ -282,7 +282,7 @@ class ESNArtifact:
     reservoir_size: int
     leak_rate: float
     spectral_radius: float
-    washout: int
+    priming_steps: int
     input_scaling: float
     density: float
     noise_sigma: float
@@ -301,11 +301,6 @@ class ESNArtifact:
     def model_type(self) -> str:
         """Model architecture type string ('esn')."""
         return "esn"
-
-    @property
-    def priming_steps(self) -> int:
-        """Priming steps needed for history absorption (washout)."""
-        return self.washout
 
     @property
     def n_channels(self) -> int:
@@ -328,7 +323,7 @@ class ESNArtifact:
             "reservoir_size": self.reservoir_size,
             "leak_rate": self.leak_rate,
             "spectral_radius": self.spectral_radius,
-            "washout": self.washout,
+            "priming_steps": self.priming_steps,
             "input_scaling": self.input_scaling,
             "density": self.density,
             "noise_sigma": self.noise_sigma,
@@ -368,7 +363,7 @@ class ESNArtifact:
         h = np.zeros(self.reservoir_size, dtype=np.float64)
 
         for t in range(len(z)):
-            h = esn.teacher_step(h, z[t], v[t])
+            h = esn.absorb(h, z[t], v[t])
         return h
 
     def prime_many(self, y_hists: FloatArray, u_hists: FloatArray) -> FloatArray:
@@ -379,7 +374,7 @@ class ESNArtifact:
         h = np.zeros((z.shape[0], self.reservoir_size), dtype=np.float64)
 
         for t in range(z.shape[1]):
-            h = esn.teacher_step(h, z[:, t], v[:, t])
+            h = esn.absorb(h, z[:, t], v[:, t])
         return h
 
     def rollout(self, state: FloatArray, u_future: FloatArray) -> FloatArray:
@@ -406,7 +401,7 @@ class ESNArtifact:
         for t in range(n_steps):
             z_hat = esn.readout(h)
             preds_z[t] = z_hat
-            h = esn.teacher_step(h, z_hat, v_future[t])
+            h = esn.absorb(h, z_hat, v_future[t])
 
         return self.decode(preds_z)
 
@@ -424,7 +419,7 @@ class ESNArtifact:
         for t in range(n_steps):
             z_hat = esn.readout(h)
             preds_z[:, t] = z_hat
-            h = esn.teacher_step(h, z_hat, v_future[:, t])
+            h = esn.absorb(h, z_hat, v_future[:, t])
 
         return self.decode(preds_z)
 
@@ -444,6 +439,8 @@ class ESNArtifact:
             y_std = Standardizer.from_arrays(npz, "y")
             u_std = Standardizer.from_arrays(npz, "u")
 
+        priming_steps = int(meta["priming_steps"])
+
         return cls(
             w_in=w_in,
             w_out=w_out,
@@ -454,7 +451,7 @@ class ESNArtifact:
             reservoir_size=int(meta["reservoir_size"]),
             leak_rate=float(meta["leak_rate"]),
             spectral_radius=float(meta["spectral_radius"]),
-            washout=int(meta["washout"]),
+            priming_steps=priming_steps,
             input_scaling=float(meta["input_scaling"]),
             density=float(meta["density"]),
             noise_sigma=float(meta["noise_sigma"]),

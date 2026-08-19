@@ -86,7 +86,7 @@ def test_n_seizing_and_recruited_by() -> None:
     assert profile.recruited_by(times[-1], [2]) == 0
 
 
-def test_burden_is_the_time_mean_seizing_fraction() -> None:
+def test_burden_is_the_time_mean_seizure_state() -> None:
     """s(t) is the count over the region total, and the burden is its time mean."""
     ptp = np.zeros((4, 8))
     ptp[0] = 20.0  # seizing throughout
@@ -94,7 +94,7 @@ def test_burden_is_the_time_mean_seizing_fraction() -> None:
 
     profile = SpreadProfile.from_ptp(_times(8), ptp, threshold=5.0)
 
-    assert profile.fraction_seizing().tolist() == [0.25] * 4 + [0.5] * 4
+    assert profile.seizure_state().tolist() == [0.25] * 4 + [0.5] * 4
     assert profile.burden() == pytest.approx((8 + 4) / (4 * 8))
 
 

@@ -14,7 +14,7 @@ def _():
 
     from neuro.connectome import Connectome
     from neuro.jansen_rit import JansenRitDynamics, JansenRitParams, lfp, simulate_network
-    from neuro.tvb_reference import build_reference_simulator, reference_eeg_gain, run_reference
+    from neuro.tvb_reference import build_reference_simulator, reference_eeg_leadfield, run_reference
     from utils.processing import band_energy, compute_psd, steady_window
 
     return (
@@ -28,7 +28,7 @@ def _():
         mo,
         np,
         plt,
-        reference_eeg_gain,
+        reference_eeg_leadfield,
         replace,
         run_reference,
         simulate_network,
@@ -60,7 +60,7 @@ def _(mo):
     | noise on $x_5'$, std `sigma`   | `HeunStochastic(Additive(nsig))`, `nsig` on index 4  |
 
     Both engines run on **bit-identical** connectivity (same weights / delays / speed) and the
-    same EEG projection files, so TVB's region gain equals $L$ up to a sagittal-mirror row swap.
+    same EEG projection files, so TVB's region leadfield equals $L$ up to a sagittal-mirror row swap.
     """)
     return
 
@@ -116,7 +116,7 @@ def _(
     JansenRitDynamics,
     JansenRitParams,
     a_gains,
-    build_eeg_gain,
+    build_eeg_leadfield,
     build_reference_simulator,
     conn,
     deterministic_toggle,
@@ -152,8 +152,8 @@ def _(
     )
     (hr_t, _x) = simulate_network(dyn=hr_dyn, duration=float(duration_slider.value))
     hr_y = lfp(_x)
-    _gain, _ = build_eeg_gain()
-    hr_eeg = _gain @ hr_y
+    _leadfield, _ = build_eeg_leadfield()
+    hr_eeg = _leadfield @ hr_y
     return hr_eeg, hr_t, hr_y, tvb
 
 
@@ -260,29 +260,29 @@ def _(band_energy, conn, hr_eeg, np, plt, steady_window, tvb):
 
 
 @app.cell
-def _(build_reference_simulator, conn, mo, np, plt, reference_eeg_gain):
+def _(build_reference_simulator, conn, mo, np, plt, reference_eeg_leadfield):
     from tvb.datatypes.sensors import SensorsEEG
 
-    from neuro.eeg import _mirror_partner_permutation, build_eeg_gain
+    from neuro.eeg import _mirror_partner_permutation, build_eeg_leadfield
 
     _sim = build_reference_simulator(conn, with_eeg=True)
-    _tvb_gain = reference_eeg_gain(_sim)
+    _tvb_leadfield = reference_eeg_leadfield(_sim)
     _partner = _mirror_partner_permutation(
         np.asarray(SensorsEEG.from_file("eeg_unitvector_62.txt.bz2").locations, dtype=float)
     )
-    _aligned = _tvb_gain[_partner]
-    _our_gain, _ = build_eeg_gain()
-    _max_diff = float(np.max(np.abs(_aligned - _our_gain)))
+    _aligned = _tvb_leadfield[_partner]
+    _our_leadfield, _ = build_eeg_leadfield()
+    _max_diff = float(np.max(np.abs(_aligned - _our_leadfield)))
 
     _fig, _ax = plt.subplots(figsize=(5, 5), layout="constrained")
-    _ax.scatter(_our_gain.ravel(), _aligned.ravel(), s=2, alpha=0.3, color="#2ca02c")
-    _lim = [_our_gain.min(), _our_gain.max()]
+    _ax.scatter(_our_leadfield.ravel(), _aligned.ravel(), s=2, alpha=0.3, color="#2ca02c")
+    _lim = [_our_leadfield.min(), _our_leadfield.max()]
     _ax.plot(_lim, _lim, "k--", lw=0.8)
-    _ax.set_title(f"L validation: TVB gain vs build_eeg_gain()\nmax |Δ| = {_max_diff:.2e}")
-    _ax.set_xlabel("build_eeg_gain()")
-    _ax.set_ylabel("TVB gain (mirror-aligned)")
+    _ax.set_title(f"L validation: TVB leadfield vs build_eeg_leadfield()\nmax |Δ| = {_max_diff:.2e}")
+    _ax.set_xlabel("build_eeg_leadfield()")
+    _ax.set_ylabel("TVB leadfield (mirror-aligned)")
     mo.vstack([_fig, mo.md(f"**max |Δ| = {_max_diff:.2e}** — the two forward operators are identical.")])
-    return (build_eeg_gain,)
+    return (build_eeg_leadfield,)
 
 
 if __name__ == "__main__":

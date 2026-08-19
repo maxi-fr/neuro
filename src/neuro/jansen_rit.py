@@ -69,8 +69,8 @@ class JansenRitParams:
         Standard deviation of the additive Gaussian white noise ``zeta`` on the
         ``x5'`` equation; ``sigma = 0`` gives a noiseless (deterministic) run.
 
-    The network structure (weights, delays, EEG gain, global coupling ``K``) lives on
-    :class:`~neuro.connectome.Connectome`, and the tES projection on a
+    The network structure (weights, delays, EEG leadfield, global coupling ``K``) lives on
+    :class:`~neuro.connectome.Connectome`, and the stimulation drive / control current projection on a
     :class:`~neuro.stimulation.base.StimulationModel`, not here.
     """
 
@@ -132,12 +132,14 @@ def sigmoid_jit(v: FloatArray, e0: float, v0: float, r: float) -> FloatArray:
 
 
 @numba.njit(fastmath=True, cache=True)
-def _jr_rhs_jit(x: FloatArray, params_tuple: tuple[Any, ...], coupling: FloatArray, u_tes: FloatArray) -> FloatArray:
+def _jr_rhs_jit(
+    x: FloatArray, params_tuple: tuple[Any, ...], coupling: FloatArray, stim_drive: FloatArray
+) -> FloatArray:
     A, B, a, b, C1, C2, C3, C4, e0, v0, r, mean_input, _ = params_tuple
 
     x1, x2, x3, x4, x5, x6 = x
 
-    out = sigmoid_jit(x2 - x3 + u_tes, e0, v0, r)
+    out = sigmoid_jit(x2 - x3 + stim_drive, e0, v0, r)
     exc = sigmoid_jit(C1 * x1, e0, v0, r)
     inh = sigmoid_jit(C3 * x1, e0, v0, r)
 
@@ -154,7 +156,7 @@ def _jr_rhs_jit(x: FloatArray, params_tuple: tuple[Any, ...], coupling: FloatArr
 @numba.njit(fastmath=True, cache=True)
 def _heun_step_jit(  # noqa: PLR0913, PLR0917
     x: FloatArray,
-    u_tes: FloatArray,
+    stim_drive: FloatArray,
     params_tuple: tuple[Any, ...],
     dt: float,
     xi: FloatArray,
@@ -165,9 +167,9 @@ def _heun_step_jit(  # noqa: PLR0913, PLR0917
     dw = np.zeros_like(x)
     dw[4, :] = sigma * np.sqrt(dt) * xi
 
-    f0 = _jr_rhs_jit(x, params_tuple, coupling, u_tes)
+    f0 = _jr_rhs_jit(x, params_tuple, coupling, stim_drive)
     x_pred = x + dt * f0 + dw
-    f1 = _jr_rhs_jit(x_pred, params_tuple, coupling, u_tes)
+    f1 = _jr_rhs_jit(x_pred, params_tuple, coupling, stim_drive)
     return x + 0.5 * dt * (f0 + f1) + dw
 
 
@@ -199,7 +201,7 @@ def simulate_network(
     *,
     dyn: JansenRitDynamics,
     duration: float,
-    u_hat_tES: float | FloatArray = 0.0,
+    control_current: float | FloatArray = 0.0,
     stim_window: tuple[float, float] | None = None,
     t0: float = 0.0,
 ) -> tuple[FloatArray, FloatArray]:
@@ -214,11 +216,12 @@ def simulate_network(
         The Jansen-Rit plant to integrate; stepped ``round(duration / dyn.dt)`` times.
     duration
         Simulated time in seconds.
-    u_hat_tES
-        Constant tES current applied during ``stim_window``. A scalar (shared by
+    control_current
+        Constant control current applied during ``stim_window``. A scalar (shared by
         every electrode) or shape ``(n_electrodes,)`` for per-electrode currents.
+        Defaults to zero (no stimulation).
     stim_window
-        Time window (start_s, end_s) during which tES stimulation is active, on the
+        Time window (start_s, end_s) during which stimulation is active, on the
         same absolute clock as ``t0``.
     t0
         Absolute start time of this segment in seconds. Components hold their own
@@ -238,11 +241,11 @@ def simulate_network(
     n_nodes = dyn.x.shape[1]
 
     n_controls = dyn.n_controls
-    u_amp = np.atleast_1d(np.asarray(u_hat_tES, dtype=np.float64))
+    u_amp = np.atleast_1d(np.asarray(control_current, dtype=np.float64))
     if u_amp.shape[0] == 1:
         u_amp = np.broadcast_to(u_amp, (n_controls,))
     elif u_amp.shape[0] != n_controls:
-        msg = f"u_hat_tES has {u_amp.shape[0]} electrodes but the plant has {n_controls}"
+        msg = f"control_current has {u_amp.shape[0]} electrodes but the plant has {n_controls}"
         raise ValueError(msg)
 
     u_sched = np.zeros((n_steps, n_controls), dtype=np.float64)

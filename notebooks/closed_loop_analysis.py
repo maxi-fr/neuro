@@ -94,12 +94,12 @@ def _(Path, lfp, np, select_rows, yaml):
         return None
 
     def electrode_labels(config, n_u):
-        """Montage labels for an ``n_u``-wide control, read off the leadfield the config points at."""
+        """Montage labels for an ``n_u``-wide control, read off the field projection the config points at."""
         stim = config.get("dynamics", {}).get("stimulation", {})
-        path = stim.get("leadfield_path")
+        path = stim.get("field_projection_path")
         if path is not None and Path(path).exists():
-            with np.load(path) as leadfield:
-                labels = leadfield["channel_labels"]
+            with np.load(path) as projection:
+                labels = projection["channel_labels"]
             wanted = stim.get("electrodes")
             rows = select_rows(labels, wanted) if wanted else slice(None)
             selected = [str(label) for label in labels[rows]]
@@ -214,7 +214,7 @@ def _(mo, np, run):
 @app.cell
 def _(mo):
     mo.md("""
-    ## 📉 EEG Output & Control Inputs
+    ## 📉 EEG Output & Control Currents
     """)
     return
 
@@ -238,7 +238,7 @@ def _(np, plt, run):
 
     _axes_ts[1].step(_t_u, _u, where="post", linewidth=1.2)
     _axes_ts[1].legend(run["electrodes"], loc="upper right")
-    _axes_ts[1].set_title("Control Inputs (per electrode)")
+    _axes_ts[1].set_title("Control Currents (per electrode)")
     _axes_ts[1].set_ylabel("Current")
     _axes_ts[1].set_xlabel("Time (s)")
     _axes_ts[1].grid(visible=True, linestyle="--", alpha=0.5)
@@ -254,7 +254,7 @@ def _(mo):
 
     $s(t)$ is the fraction of the 76 regions whose peak-to-peak LFP over a
     $W = 1$ s window exceeds the calibrated $5$ mV seizing threshold — the region-space ground
-    truth the scalp EEG objective is only a proxy for. Its time mean is the **seizure burden**,
+    truth the EEG objective is only a proxy for. Its time mean is the **seizure burden**,
     the score `sweep_nn_predictor` minimises.
 
     Each run is drawn twice, from the same criterion on two window grids:
@@ -316,7 +316,7 @@ def _(plt, seizure):
     for _c in seizure:
         _ax_s.plot(
             _c["profile"].times,
-            _c["profile"].fraction_seizing(),
+            _c["profile"].seizure_state(),
             color=_c["colour"],
             linewidth=1.6,
             label=f"{_c['name']} — centred",
@@ -350,7 +350,7 @@ def _(mo, np, seizure):
         recruited = onsets[np.isfinite(onsets)]
         return {
             "Seizure burden  mean s(t)  (lower = better)": profile.burden(),
-            "Final fraction seizing": float(profile.fraction_seizing()[-1]),
+            "Final seizure state": float(profile.seizure_state()[-1]),
             "First onset (s)": float(recruited.min()) if recruited.size else float("nan"),
             "Median onset of recruited regions (s)": float(np.median(recruited)) if recruited.size else float("nan"),
         }

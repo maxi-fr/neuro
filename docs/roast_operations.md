@@ -64,7 +64,7 @@ all trials finish, so the run is not done when the last file appears.
   viable: ~20 h, ~21 GB, ~53 electrodes left with 9 already cached.
 
   ```bash
-  uv run python scripts/run_roast_matlab.py --output-file data/roast_leadfield_3d_full.mat
+  uv run python scripts/run_roast_matlab.py --output-file data/roast_field_projection_3d_full.mat
   ```
 
   It would not change the depth conclusion — no scalp montage exceeds ~0.2 V/m at mesial temporal

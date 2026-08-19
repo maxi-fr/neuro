@@ -1,6 +1,6 @@
 # tES Field Geometry & Closed-Loop Control (`roast_3d`)
 
-**Status:** `roast_3d` is the canonical stimulation model across all configs (`data/roast_leadfield_3d.npz`). Under `roast_3d`, mesial focus polarization is physically unreachable; stimulation functions as a network propagation block at `lTCI`. The predictor-free threshold controller achieves 6/7 seed suppression (95% duty cycle), while both linear and nonlinear MPC fail because 62-channel EEG power variance is not a proxy for single-region propagation control.
+**Status:** `roast_3d` is the canonical stimulation model across all configs (`data/roast_field_projection_3d.npz`). Under `roast_3d`, mesial focus polarization is physically unreachable; stimulation functions as a network propagation block at `lTCI`. The predictor-free threshold controller achieves 6/7 seed suppression (95% duty cycle), while both linear and nonlinear MPC fail because 62-channel EEG power variance is not a proxy for single-region propagation control.
 
 ---
 
@@ -8,7 +8,7 @@
 
 ### 1.1 Unreachability of the Mesial Focus
 
-The FEM leadfield (`data/roast_leadfield_3d.npz`, referenced to Ex8 return) gives scalp electrode TP9:
+The FEM field projection (`data/roast_field_projection_3d.npz`, referenced to Ex8 return) gives scalp electrode TP9:
 
 - **1.36 V/m per mA** at the superficial temporal hub (`lTCI`)
 - **0.04–0.17 V/m per mA** at the mesial focus (`lHC`, `lPHC`, `lAMYG`)
@@ -48,19 +48,19 @@ The predictor-free `AmplitudeThresholdController` monitors feedback channel TP9 
 
 ### 2.2 Linear MPC Failure (Under-Identified Control Map)
 
-Linear MPC fails (0/7 seeds suppressed across all penalty weights $w_u$). Under `roast_3d`, control input explains only **$1.4 \times 10^{-4}$** of single-step EEG variance and **$5.0 \times 10^{-3}$** of 20-step variance. The control signature on scalp EEG is too weak relative to autoregressive dynamics, leaving the linear input map $B$ under-identified.
+Linear MPC fails (0/7 seeds suppressed across all penalty weights $w_u$). Under `roast_3d`, control input explains only **$1.4 \times 10^{-4}$** of single-step EEG variance and **$5.0 \times 10^{-3}$** of 20-step variance. The control signature on EEG is too weak relative to autoregressive dynamics, leaving the linear input map $B$ under-identified.
 
 ### 2.3 Nonlinear MPC Failure (Objective Mismatch)
 
-The nonlinear predictor (`hidden_size: 128`, depth 1 softplus) fits the multi-step rollout cleanly (validation loss 0.1796). Under MPC ($w_u = 10$), it successfully reduces 62-channel scalp EEG power to **59.2** (57% below the unstimulated 139.3 baseline) using half the control effort (0.67 mA).
+The nonlinear predictor (`hidden_size: 128`, depth 1 softplus) fits the multi-step rollout cleanly (validation loss 0.1796). Under MPC ($w_u = 10$), it successfully reduces 62-channel EEG power to **59.2** (57% below the unstimulated 139.3 baseline) using half the control effort (0.67 mA).
 
-However, **regional seizure count remains at 31/34 (0/7 seeds suppressed)**. Minimizing global 62-channel scalp EEG power is not a proxy for regional propagation control at `lTCI`.
+However, **regional seizure count remains at 31/34 (0/7 seeds suppressed)**. Minimizing global 62-channel EEG power is not a proxy for regional propagation control at `lTCI`.
 
 ---
 
 ## 3. Summary & Takeaways for Closed-Loop Control
 
 1. **Always evaluate on 7-seed ensembles:** Single-seed evaluations are noise due to plant bimodality.
-2. **Target state-space gatekeeping, not global scalp power:** Suppression is a single-region propagation block at `lTCI`. Controllers minimizing total scalp EEG variance achieve lower cost without stopping the seizure.
-3. **Check control variance share before training:** Low input authority on scalp EEG ($<10^{-3}$) predicts linear MPC identification failure.
+2. **Target state-space gatekeeping, not global EEG power:** Suppression is a single-region propagation block at `lTCI`. Controllers minimizing total EEG variance achieve lower cost without stopping the seizure.
+3. **Check control variance share before training:** Low input authority on EEG ($<10^{-3}$) predicts linear MPC identification failure.
 4. **Trigger early and hold:** Intermittent bursts after seizure spread fail; effective control requires early intervention to keep `lTCI` closed.

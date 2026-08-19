@@ -100,7 +100,7 @@ def nmse(sq_err: FloatArray | float, power: FloatArray | float) -> FloatArray:
 
     The reference is the uncentered second moment ``sum(y_true ** 2)``, not the variance, so
     ``1.0`` is the score of the zero predictor. This is the repo's single NMSE definition; every
-    reported NMSE -- per horizon step, pooled, teacher-forced or free-running -- goes through here.
+    reported NMSE -- per horizon step, pooled, one-step state-absorbed or free-running -- goes through here.
     """
     err = np.asarray(sq_err, dtype=np.float64)
     ref = np.asarray(power, dtype=np.float64)

@@ -11,9 +11,9 @@ def _():
     from matplotlib import pyplot as plt
 
     from neuro.connectome import Connectome
-    from neuro.eeg import build_eeg_gain
+    from neuro.eeg import build_eeg_leadfield
 
-    return Connectome, build_eeg_gain, mo, np, plt
+    return Connectome, build_eeg_leadfield, mo, np, plt
 
 
 @app.cell
@@ -23,7 +23,7 @@ def _(mo):
 
     Loads the structural backbone for the Yu et al. 2024 closed-loop tES model
     from **The Virtual Brain**: region connectivity, conduction delays, and the
-    hand-rolled region → sensor EEG gain matrix **L**.
+    hand-rolled region → sensor EEG leadfield matrix **L**.
 
     All **76** TVB regions are kept (the paper's 74 = 76 minus {`lCC`, `rCC`}). **L**
     collapses the surface projection to regions by **summing** vertex columns,
@@ -33,15 +33,15 @@ def _(mo):
 
 
 @app.cell
-def _(Connectome, build_eeg_gain):
+def _(Connectome, build_eeg_leadfield):
     connectome = Connectome.from_config({})
-    gain, channel_labels = build_eeg_gain()
+    leadfield, channel_labels = build_eeg_leadfield()
     channel_index = {label: idx for idx, label in enumerate(channel_labels)}
-    return channel_index, connectome, gain
+    return channel_index, connectome, leadfield
 
 
 @app.cell
-def _(channel_index, connectome, gain, mo, np):
+def _(channel_index, connectome, leadfield, mo, np):
     _ez_pz = ("lHC", "lPHC", "lAMYG", "lTCI", "lTCV")
     _named_channels = ("CP5", "CP6", "PO3", "P1", "P3", "F3", "F5", "AF3", "O1")
     _off_diag = connectome.delays[~np.eye(connectome.delays.shape[0], dtype=bool)]
@@ -55,8 +55,10 @@ def _(channel_index, connectome, gain, mo, np):
         _badge(
             ok=connectome.weights.shape == (76, 76), label=f"Region count = 76 (weights {connectome.weights.shape})"
         ),
-        _badge(ok=gain.shape == (62, 76), label=f"EEG gain L shape = (62, 76) (got {gain.shape})"),
-        _badge(ok=np.isfinite(gain).all(), label="L is finite (no NaN/inf)"),
+        _badge(
+            ok=leadfield.shape == (62, 76), label=f"EEG leadfield matrix L shape = (62, 76) (got {leadfield.shape})"
+        ),
+        _badge(ok=np.isfinite(leadfield).all(), label="L is finite (no NaN/inf)"),
         _badge(
             ok=all(r in connectome.region_index for r in _ez_pz),
             label=f"EZ/PZ regions present: {', '.join(_ez_pz)}",
@@ -107,10 +109,10 @@ def _(connectome, plt):
 
 
 @app.cell
-def _(gain, np, plt):
+def _(leadfield, np, plt):
     _fig, _ax = plt.subplots(figsize=(9, 4))
-    _vmax = float(np.abs(gain).max())
-    _im = _ax.imshow(gain, cmap="RdBu_r", aspect="auto", vmin=-_vmax, vmax=_vmax)
+    _vmax = float(np.abs(leadfield).max())
+    _im = _ax.imshow(leadfield, cmap="RdBu_r", aspect="auto", vmin=-_vmax, vmax=_vmax)
     _ax.set_title("EEG leadfield matrix L (62 channels x 76 regions)")
     _ax.set_xlabel("region")
     _ax.set_ylabel("channel")

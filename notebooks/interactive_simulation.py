@@ -16,7 +16,7 @@ def _():
     from matplotlib import pyplot as plt
 
     from neuro.connectome import Connectome
-    from neuro.eeg import build_eeg_gain
+    from neuro.eeg import build_eeg_leadfield
     from neuro.jansen_rit import JansenRitDynamics, JansenRitParams, lfp, simulate_network
     from utils.processing import band_energy, compute_psd, steady_window
 
@@ -25,7 +25,7 @@ def _():
         JansenRitDynamics,
         JansenRitParams,
         band_energy,
-        build_eeg_gain,
+        build_eeg_leadfield,
         compute_psd,
         lfp,
         mo,
@@ -115,7 +115,7 @@ def _(mo):
 def _(
     JansenRitDynamics,
     JansenRitParams,
-    build_eeg_gain,
+    build_eeg_leadfield,
     conn,
     connectome,
     deterministic_toggle,
@@ -149,8 +149,8 @@ def _(
     (t, _x_traj) = simulate_network(dyn=dyn__params, duration=float(duration_slider.value))
     y = lfp(_x_traj)
 
-    _gain, _ = build_eeg_gain()
-    eeg = _gain @ y
+    _leadfield, _ = build_eeg_leadfield()
+    eeg = _leadfield @ y
     return eeg, t, y
 
 

@@ -34,9 +34,9 @@ def simulated_seconds(cfg: EnsembleConfig) -> float:
 
 
 def stored_bytes(cfg: EnsembleConfig, plants: PlantPair) -> int:
-    """Bytes the stores will occupy: full-rate scalp EEG plus decimated region LFP."""
+    """Bytes the stores will occupy: full-rate EEG plus decimated region LFP."""
     n_pairs = sum(len(b.arms) for b in cfg.branches)
-    n_channels, n_nodes = plants.eeg_gain.shape
+    n_channels, n_nodes = plants.leadfield.shape
     eeg = cfg.n_rollouts * n_channels * round(cfg.rollout_s / plants.seizure.dt) * 8
     region = cfg.n_rollouts * n_nodes * round((SPREAD_WINDOW_S + cfg.rollout_s) * cfg.region_fs) * 4
     return n_pairs * (eeg + region)

@@ -1,10 +1,10 @@
-function [leadfield_E, metadata] = generate_roast_leadfield_3d(varargin)
-% GENERATE_ROAST_LEADFIELD_3D Computes the 3D electric field leadfield matrix (leadfield_E)
+function [projection_E, metadata] = generate_roast_field_projection_3d(varargin)
+% GENERATE_ROAST_FIELD_PROJECTION_3D Computes the 3D electric field projection matrix (projection_E)
 % and potential matrix (leadfield_V) for 63 input channels (62 scalp electrodes + Ex8 return)
 % to 76 output Jansen-Rit node positions using the ROAST library.
 %
 % Outputs:
-%   leadfield_E - Array of shape (63, 76, 3) containing (Ex, Ey, Ez) at each JR node
+%   projection_E - Array of shape (63, 76, 3) containing (Ex, Ey, Ez) at each JR node
 %                 per +1 mA stimulation channel relative to Ex8 reference return.
 %                 Row 63 (Ex8 anode) is defined as zeros (reference ground).
 %   metadata    - Struct containing channel labels, region labels, coordinates, and options.
@@ -13,7 +13,7 @@ function [leadfield_E, metadata] = generate_roast_leadfield_3d(varargin)
 %                 cosine between the two positions.
 %
 % Usage:
-%   [L, meta] = generate_roast_leadfield_3d('outputFile', 'data/roast_leadfield_3d.mat');
+%   [L, meta] = generate_roast_field_projection_3d('outputFile', 'data/roast_field_projection_3d.mat');
 
     % 1. Add ROAST to MATLAB path
     matlabDir = fileparts(mfilename('fullpath'));
@@ -38,7 +38,7 @@ function [leadfield_E, metadata] = generate_roast_leadfield_3d(varargin)
     addParameter(p, 'mniCoords', [], @isnumeric);
     addParameter(p, 'regionLabels', {}, @iscell);
     addParameter(p, 'channelLabels', {}, @iscell);
-    addParameter(p, 'outputFile', 'data/roast_leadfield_3d.mat', @ischar);
+    addParameter(p, 'outputFile', 'data/roast_field_projection_3d.mat', @ischar);
     parse(p, varargin{:});
 
     subj = p.Results.subj;
@@ -85,7 +85,7 @@ function [leadfield_E, metadata] = generate_roast_leadfield_3d(varargin)
         allChannelLabels, channelPositions, returnElec, roastDir, capType, minLabelDot);
 
     fprintf('\n=======================================================\n');
-    fprintf(' Generating ROAST 3D Leadfield Matrix (%d channels x %d regions x 3)\n', nChannels, nRegions);
+    fprintf(' Generating ROAST 3D Field Projection Matrix (%d channels x %d regions x 3)\n', nChannels, nRegions);
     fprintf(' Return electrode: %s | zeropadding: %d\n', returnElec, zeroPadding);
     substituted = find(~strcmpi(allChannelLabels(:), roastLabels(:)));
     for s = substituted(:)'
@@ -93,8 +93,8 @@ function [leadfield_E, metadata] = generate_roast_leadfield_3d(varargin)
     end
     fprintf('=======================================================\n\n');
 
-    leadfield_E = zeros(nChannels, nRegions, 3);
-    leadfield_V = zeros(nChannels, nRegions);
+    projection_E = zeros(nChannels, nRegions, 3);
+    projection_V = zeros(nChannels, nRegions);
 
     % Enter the ROAST directory once. Re-creating the onCleanup inside the loop would destroy
     % the previous one and cd back out, leaving every iteration after the first in the wrong cwd.
@@ -163,15 +163,15 @@ function [leadfield_E, metadata] = generate_roast_leadfield_3d(varargin)
         Ez_regions = interp3(Y, X, Z, Ez_grid, voxCoords(:,2), voxCoords(:,1), voxCoords(:,3), 'linear', 0);
         V_regions = interp3(Y, X, Z, vol_all, voxCoords(:,2), voxCoords(:,1), voxCoords(:,3), 'linear', 0);
 
-        leadfield_E(k, :, 1) = Ex_regions;
-        leadfield_E(k, :, 2) = Ey_regions;
-        leadfield_E(k, :, 3) = Ez_regions;
-        leadfield_V(k, :) = V_regions;
+        projection_E(k, :, 1) = Ex_regions;
+        projection_E(k, :, 2) = Ey_regions;
+        projection_E(k, :, 3) = Ez_regions;
+        projection_V(k, :) = V_regions;
     end
 
     % Row 63 (return electrode) is the zero reference
-    leadfield_E(nChannels, :, :) = 0;
-    leadfield_V(nChannels, :) = 0;
+    projection_E(nChannels, :, :) = 0;
+    projection_V(nChannels, :) = 0;
 
     % Build metadata
     metadata = struct();
@@ -193,8 +193,8 @@ function [leadfield_E, metadata] = generate_roast_leadfield_3d(varargin)
         if ~isempty(outDir) && ~exist(outDir, 'dir')
             mkdir(outDir);
         end
-        save(outputFile, 'leadfield_E', 'leadfield_V', 'metadata', '-v7.3');
-        fprintf('\nSaved ROAST 3D Electric Field Leadfield matrix (%d x %d x 3) and Potential matrix (%d x %d) to %s\n', ...
+        save(outputFile, 'projection_E', 'projection_V', 'metadata', '-v7.3');
+        fprintf('\nSaved ROAST 3D Field Projection matrix (%d x %d x 3) and Potential matrix (%d x %d) to %s\n', ...
                 nChannels, nRegions, nChannels, nRegions, outputFile);
     end
 
@@ -253,7 +253,7 @@ function [roastLabels, dots] = resolve_electrodes(requested, positions, returnEl
     counts = accumarray(groupIdx, 1);
     if any(counts > 1)
         dup = uniqueLabels{find(counts > 1, 1)};
-        error('Electrode %s was selected for more than one channel; leadfield rows would be identical.', dup);
+        error('Electrode %s was selected for more than one channel; field projection rows would be identical.', dup);
     end
 end
 

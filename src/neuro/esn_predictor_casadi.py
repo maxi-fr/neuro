@@ -97,18 +97,18 @@ class ESNSymbolicModel:
         return ReservoirState(np.zeros(self.artifact.reservoir_size, dtype=np.float64), steps_seen=0)
 
     def absorb(self, state: FloatArray, y: FloatArray, u: FloatArray) -> FloatArray:
-        """Absorb raw measurement y and control u via ESN teacher step."""
+        """Absorb raw measurement y and control u via state absorption step."""
         assert isinstance(state, ReservoirState)  # noqa: S101
         z = self.artifact.encode(np.asarray(y, dtype=np.float64).reshape(-1))
         v = self.artifact.u_std.transform(np.asarray(u, dtype=np.float64).reshape(1, -1)).reshape(-1)
         h_arr = np.asarray(state, dtype=np.float64).reshape(-1)
-        h_next = self.artifact.predictor.teacher_step(h_arr, z, v)
+        h_next = self.artifact.predictor.absorb(h_arr, z, v)
         return ReservoirState(h_next, steps_seen=state.steps_seen + 1)
 
     def is_ready(self, state: FloatArray) -> bool:
-        """Return True if reservoir has absorbed at least washout priming steps."""
+        """Return True if reservoir has absorbed at least priming_steps steps."""
         assert isinstance(state, ReservoirState)  # noqa: S101
-        return state.steps_seen >= self.artifact.washout
+        return state.steps_seen >= self.artifact.priming_steps
 
     @cached_property
     def _w_res_dm(self) -> ca.DM:

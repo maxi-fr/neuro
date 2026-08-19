@@ -45,7 +45,7 @@ def plot_signals(  # noqa: PLR0913
     color: str | list[str] = "#1f77b4",
     ax: Axes | None = None,
 ) -> tuple[Figure, Axes]:
-    """Plot multi-channel signals (EEG or activity) over time.
+    """Plot multi-channel signals (EEG or regional LFP) over time.
 
     Parameters
     ----------

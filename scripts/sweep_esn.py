@@ -93,7 +93,7 @@ def main() -> None:  # noqa: PLR0915
         "density",
         "input_scaling",
         "noise_sigma",
-        "washout",
+        "priming_steps",
         "f_step_n_nodes",
         "harvest_seconds",
         "fit_seconds",
@@ -119,7 +119,7 @@ def main() -> None:  # noqa: PLR0915
                 dens = float(params.get("density", cfg.model.density))
                 inp_scale = float(params.get("input_scaling", cfg.model.input_scaling))
                 noise = float(params.get("noise_sigma", cfg.model.noise_sigma))
-                wash = int(params.get("washout", cfg.model.washout))
+                prime_steps = int(params.get("priming_steps", cfg.model.priming_steps))
 
                 try:
                     w_res, w_in = generate_reservoir(
@@ -141,7 +141,7 @@ def main() -> None:  # noqa: PLR0915
                     w_res=w_res,
                     w_in=w_in,
                     leak_rate=leak,
-                    washout=wash,
+                    priming_steps=prime_steps,
                     noise_sigma=noise,
                     seed=cfg.training.seed,
                 )
@@ -166,7 +166,7 @@ def main() -> None:  # noqa: PLR0915
                         reservoir_size=res_size,
                         leak_rate=leak,
                         spectral_radius=spec_rad,
-                        washout=wash,
+                        priming_steps=prime_steps,
                         input_scaling=inp_scale,
                         density=dens,
                         noise_sigma=noise,
@@ -201,7 +201,7 @@ def main() -> None:  # noqa: PLR0915
             dens = float(b_params.get("density", cfg.model.density))
             inp_scale = float(b_params.get("input_scaling", cfg.model.input_scaling))
             noise = float(b_params.get("noise_sigma", cfg.model.noise_sigma))
-            wash = int(b_params.get("washout", cfg.model.washout))
+            prime_steps = int(b_params.get("priming_steps", cfg.model.priming_steps))
 
             w_res, w_in = generate_reservoir(N, spec_rad, dens, inp_scale, data.in_dim, cfg.training.seed)
             G, P = harvest_normal_equations(
@@ -211,7 +211,7 @@ def main() -> None:  # noqa: PLR0915
                 w_res,
                 w_in,
                 leak,
-                wash,
+                prime_steps,
                 noise,
                 cfg.training.seed,
             )
@@ -227,7 +227,7 @@ def main() -> None:  # noqa: PLR0915
                 reservoir_size=N,
                 leak_rate=leak,
                 spectral_radius=spec_rad,
-                washout=wash,
+                priming_steps=prime_steps,
                 input_scaling=inp_scale,
                 density=dens,
                 noise_sigma=noise,
@@ -249,7 +249,7 @@ def main() -> None:  # noqa: PLR0915
                 "density": f"{dens:.4f}",
                 "input_scaling": f"{inp_scale:.4f}",
                 "noise_sigma": f"{noise:.4f}",
-                "washout": wash,
+                "priming_steps": prime_steps,
                 "f_step_n_nodes": n_nodes,
                 "harvest_seconds": f"{h_time:.2f}",
                 "fit_seconds": f"{f_time:.2f}",

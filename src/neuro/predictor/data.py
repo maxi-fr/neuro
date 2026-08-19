@@ -40,7 +40,7 @@ def load_trajectory(
     Returns
     -------
     u_data : FloatArray
-        The stimulation input trajectory, shape ``(T, n_controls)``.
+        The control current trajectory, shape ``(T, n_controls)``.
     y_data : FloatArray
         The measured output (EEG) trajectory, shape ``(T, n_channels)``.
     """
@@ -100,13 +100,13 @@ def build_dataset_for_trajectory(
     Parameters
     ----------
     u_data : FloatArray
-        The stimulation input trajectory of shape (T, n_controls).
+        The Control Current trajectory of shape (T, n_controls).
     y_data : FloatArray
         The measured output (EEG) trajectory of shape (T, n_channels).
     n_y : int
-        Number of past output steps to include in the input feature.
+        Number of past output steps to include in the input regression window.
     n_u : int
-        Number of past input steps to include in the input feature.
+        Number of past input steps to include in the input regression window.
     N : int
         Prediction horizon (number of future steps to predict).
 

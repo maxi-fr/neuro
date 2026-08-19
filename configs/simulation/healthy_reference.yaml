@@ -2,7 +2,7 @@
 # Matched twin of mse02_psd_mpc.yaml:
 #   - uniform A = 3.25 (A_HEALTHY) across all 76 regions;
 #   - stimulation off (ZeroController);
-#   - identical connectome / K / sigma / leadfield / sensors / estimator.
+#   - identical connectome / K / sigma / field projection / sensors / estimator.
 # 10 seeds x 60 s via the experiments: batch form.
 experiments:
   - t_end: 60.0
@@ -17,7 +17,7 @@ experiments:
         K: 0.60
       stimulation:
         model: roast_3d
-        leadfield_path: data/roast_leadfield_3d.npz
+        field_projection_path: data/roast_field_projection_3d.npz
       params:
         sigma: 280.0
         A: [3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25,

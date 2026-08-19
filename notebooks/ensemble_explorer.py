@@ -200,7 +200,7 @@ def _(
     _t = np.arange(_eeg.shape[1]) / scalp_fs
     for _c in _focal:
         _axes[0].plot(_t, _eeg[_c], lw=0.7, label=manifest["channel_labels"][_c])
-    _axes[0].set_ylabel("scalp EEG [mV]")
+    _axes[0].set_ylabel("EEG [mV]")
     _axes[0].legend(frameon=False, ncol=len(_focal), fontsize=8)
     _axes[0].set_title(f"rollout {rollout_slider.value} — focal channels and the seizure focus")
 

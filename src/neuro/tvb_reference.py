@@ -45,7 +45,7 @@ class ReferenceResult:
         Per-region output ``y = y1 - y2`` (paper ``x2 - x3``), shape
         ``(n_regions, n_samples)``.
     eeg
-        62-channel scalp EEG ``L @ region_y`` in ``connectome.channel_labels`` order
+        62-channel EEG ``L @ region_y`` in ``connectome.channel_labels`` order
         (the TVB monitor gain, mirror-corrected to own-hemisphere channels), or
         ``None`` when the simulator has no EEG monitor. Shape ``(62, n_samples)``.
     """
@@ -177,8 +177,8 @@ def _eeg_monitor(sim: simulator.Simulator) -> monitors.EEG | None:
     return None
 
 
-def reference_eeg_gain(sim: simulator.Simulator) -> FloatArray:
-    """Return the EEG monitor's region-level gain ``(62, n_regions)``."""
+def reference_eeg_leadfield(sim: simulator.Simulator) -> FloatArray:
+    """Return the EEG monitor's region-level EEG leadfield matrix L ``(62, n_regions)``."""
     mon = _eeg_monitor(sim)
     if mon is None:
         msg = "Simulator has no EEG monitor; build it with with_eeg=True."
@@ -209,11 +209,11 @@ def run_reference(sim: simulator.Simulator, duration_s: float) -> ReferenceResul
 
     eeg = None
     if _eeg_monitor(sim) is not None:
-        # Mirror-correct the monitor's gain to own-hemisphere channels (same fix as
+        # Mirror-correct the monitor's leadfield to own-hemisphere channels (same fix as
         # the hand-rolled L), then project: EEG = L @ Y, comparable to EEGMeasurement.
-        raw_gain = reference_eeg_gain(sim)
+        raw_leadfield = reference_eeg_leadfield(sim)
         sensors = SensorsEEG.from_file(SENSORS_FILE)
         partner = _mirror_partner_permutation(np.asarray(sensors.locations, dtype=np.float64))
-        eeg = raw_gain[partner] @ region_y
+        eeg = raw_leadfield[partner] @ region_y
 
     return ReferenceResult(t=t, region_y=region_y, eeg=eeg)

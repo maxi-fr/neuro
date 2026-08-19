@@ -73,10 +73,10 @@ class _AnalyticalConfig(StrictConfig):
 
 
 class _Roast3DConfig(StrictConfig):
-    """ROAST 3D FEM electric-field leadfield, reduced along the cortical normal."""
+    """ROAST 3D FEM electric-field projection, reduced along the cortical normal."""
 
     model: Literal["roast_3d"]
-    leadfield_path: str | Path = "data/roast_leadfield_3d.npz"
+    field_projection_path: str | Path = "data/roast_field_projection_3d.npz"
     electrodes: list[str] | None = None
 
 
@@ -84,7 +84,7 @@ class _DynamicYuConfig(StrictConfig):
     """Dynamic Yu stimulation model: ||L_E u|| * smooth_sign(L_V u - V_med)."""
 
     model: Literal["yu_dynamic"]
-    leadfield_path: str | Path = "data/roast_leadfield_3d.npz"
+    field_projection_path: str | Path = "data/roast_field_projection_3d.npz"
     electrodes: list[str] | None = None
     alpha: float = Field(default=3.0, gt=0.0)
     scale_factor: float = Field(default=1.0, gt=0.0)

@@ -12,7 +12,7 @@ from scipy.signal import decimate
 from simulate.config import load_config as load_sim_config
 
 from neuro.connectome import Connectome
-from neuro.eeg import build_eeg_gain, focal_channels
+from neuro.eeg import build_eeg_leadfield, focal_channels
 from neuro.jansen_rit import JansenRitDynamics, lfp, simulate_network
 from neuro.metrics import (
     DEFAULT_HOP_S,
@@ -119,7 +119,7 @@ class EnsembleConfig:
         Roots of the two seed sequences; child seeds are shared across arms by construction.
     region_fs
         Sampling rate the region LFP is decimated to before storage, in Hz.
-    focus_region
+    target_region
         Region whose hardest-loading channels form the focal channel set.
     n_focal_channels
         Size of that focal channel set.
@@ -134,7 +134,7 @@ class EnsembleConfig:
     parent_seed_base: int = 69
     child_seed_base: int = 1_000_000
     region_fs: float = 1000.0
-    focus_region: str = "lTCI"
+    target_region: str = "lTCI"
     n_focal_channels: int = 4
     chunk_s: float = 1.0
 
@@ -178,7 +178,7 @@ class PlantPair:
     healthy: JansenRitDynamics
     seizure: JansenRitDynamics
     connectome: Connectome
-    eeg_gain: FloatArray
+    leadfield: FloatArray
     channel_labels: list[str]
 
     def of(self, plant: PlantKind) -> JansenRitDynamics:
@@ -209,12 +209,12 @@ def build_plants(config_path: Path = PLANT_CONFIG) -> PlantPair:
     healthy.net_params = replace(seizure.net_params, A=np.full(len(expected), A_HEALTHY))
     healthy.params_tuple = healthy.net_params.to_numba_tuple(len(expected))
 
-    gain, channel_labels = build_eeg_gain()
+    leadfield, channel_labels = build_eeg_leadfield()
     return PlantPair(
         healthy=healthy,
         seizure=seizure,
         connectome=conn,
-        eeg_gain=np.asarray(gain[:, : len(conn.region_labels)], dtype=np.float64),
+        leadfield=np.asarray(leadfield[:, : len(conn.region_labels)], dtype=np.float64),
         channel_labels=[str(label) for label in channel_labels],
     )
 
@@ -253,7 +253,7 @@ def run_segment(dyn: JansenRitDynamics, n_steps: int, current: tuple[float, ...]
     _, x_traj = simulate_network(
         dyn=dyn,
         duration=n_steps * dyn.dt,
-        u_hat_tES=np.asarray(current, dtype=np.float64),
+        control_current=np.asarray(current, dtype=np.float64),
         stim_window=(t0, t0 + n_steps * dyn.dt),
         t0=t0,
     )
@@ -390,7 +390,7 @@ def run_child(  # noqa: PLR0913, PLR0917
     y = run_segment(dyn, round(cfg.rollout_s / dyn.dt), arm.current)
 
     region = _to_region_fs(np.concatenate([pre_region, y], axis=1), dyn.dt, cfg.region_fs)
-    return plants.eeg_gain @ y, region
+    return plants.leadfield @ y, region
 
 
 def _open_store(path: Path, shape: tuple[int, ...], dtype: type[np.floating]) -> np.memmap:
@@ -415,7 +415,7 @@ class _Stores:
 
 
 def eeg_path(out_dir: Path, branch: str, arm: str) -> Path:
-    """Path of the full-rate scalp EEG store for one branch and arm."""
+    """Path of the full-rate EEG store for one branch and arm."""
     return out_dir / "eeg" / f"{branch}_{arm}.npy"
 
 
@@ -429,8 +429,8 @@ def _build_stores(out_dir: Path, cfg: EnsembleConfig, plants: PlantPair) -> _Sto
     dt = plants.seizure.dt
     n_eeg = round(cfg.rollout_s / dt)
     n_region = round((SPREAD_WINDOW_S + cfg.rollout_s) * cfg.region_fs)
-    n_channels = plants.eeg_gain.shape[0]
-    n_nodes = plants.eeg_gain.shape[1]
+    n_channels = plants.leadfield.shape[0]
+    n_nodes = plants.leadfield.shape[1]
 
     stores = _Stores()
     for branch in cfg.branches:
@@ -485,8 +485,8 @@ def generate_iter(out_dir: Path, cfg: EnsembleConfig, plants: PlantPair) -> Iter
 
 def _manifest(out_dir: Path, cfg: EnsembleConfig, plants: PlantPair, parents: list[Parent]) -> dict[str, Any]:
     """Assemble and write the run manifest, and return it."""
-    focus = plants.connectome.region_index[cfg.focus_region]
-    focal = focal_channels(plants.eeg_gain, focus, cfg.n_focal_channels)
+    target_idx = plants.connectome.region_index[cfg.target_region]
+    focal = focal_channels(plants.leadfield, target_idx, cfg.n_focal_channels)
 
     manifest: dict[str, Any] = {
         "dt": plants.seizure.dt,
@@ -512,8 +512,8 @@ def _manifest(out_dir: Path, cfg: EnsembleConfig, plants: PlantPair, parents: li
         "channel_labels": plants.channel_labels,
         "region_labels": [str(label) for label in plants.connectome.region_labels],
         "channel_sets": {
-            "all62": list(range(plants.eeg_gain.shape[0])),
-            cfg.focus_region: [int(i) for i in focal],
+            "all62": list(range(plants.leadfield.shape[0])),
+            cfg.target_region: [int(i) for i in focal],
         },
         "parents": [
             {

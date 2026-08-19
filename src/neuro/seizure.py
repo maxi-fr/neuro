@@ -42,8 +42,8 @@ def build_seizure_a_gains(connectome: Connectome) -> FloatArray:
     return a_gains
 
 
-def focus_indices(connectome: Connectome) -> list[int]:
-    """Return the region indices of the EZ then PZ focus nodes."""
+def ez_pz_indices(connectome: Connectome) -> list[int]:
+    """Return the region indices of the EZ then PZ regions."""
     return [connectome.region_index[name] for name in (*EZ_REGIONS, *PZ_REGIONS)]
 
 
@@ -115,7 +115,7 @@ class SpreadProfile:
         onsets = self.onsets if nodes is None else self.onsets[nodes]
         return int(np.count_nonzero(onsets <= t))
 
-    def fraction_seizing(self) -> FloatArray:
+    def seizure_state(self) -> FloatArray:
         """Fraction of regions seizing in each window, in ``[0, 1]``, shape ``(n_windows,)``.
 
         The seizure state ``s(t)`` this repo controls against: the window-centred reading of
@@ -124,12 +124,12 @@ class SpreadProfile:
         return self.n_seizing() / self.ptp.shape[0]
 
     def burden(self) -> float:
-        """Time-mean of :meth:`fraction_seizing` -- the continuous suppression score.
+        """Time-mean of :meth:`seizure_state` -- the continuous suppression score.
 
         Continuous in ``[0, 1]``, so it separates controllers that ``n_seizing()[-1]`` ties, and
         lower for a seizure ended sooner rather than one merely ended by the last window.
         """
-        return float(np.mean(self.fraction_seizing()))
+        return float(np.mean(self.seizure_state()))
 
 
 def spread_profile_from_lfp(
@@ -264,7 +264,7 @@ class SpreadSummary:
     ----------
     t_ez
         Time in s at which the *last* EZ region is recruited (the seizure has fully
-        ignited at the focus). ``NaN`` if some EZ region never seizes.
+        ignited in the epileptogenic zone). ``NaN`` if some EZ region never seizes.
     t_pz
         Time in s at which the last PZ region is recruited; ``NaN`` if one never seizes.
     t_left_half
@@ -298,7 +298,7 @@ class SpreadSummary:
 
 
 def spread_summary(profile: SpreadProfile, connectome: Connectome) -> SpreadSummary:
-    """Reduce a :class:`SpreadProfile` to the EZ -> PZ -> hemisphere propagation schedule."""
+    """Reduce a :class:`SpreadProfile` to the EZ -> PZ -> hemisphere spread schedule."""
     onsets = profile.onsets
     left = ~connectome.hemispheres
 
