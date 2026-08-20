@@ -33,7 +33,8 @@ training:
       weight: 1.0       # near-zero when the spectrum matches, ~10^2 when the rollout drifts
       n_span: 50        # 1.0 s at fs = 50 Hz
       n_segment: 50     # one frame per rollout: the Welch endpoint, scored per sample
-      n_hop: 50
+      n_hop: 50         # n_segment 25 / n_hop 12 separates spectra better but controls worse:
+                        # docs/spectrogram_loss_guide.md section 8.5
       start_epoch: 80   # the rollout must survive 1 s before its spectrum is scored
 
 artifact: "artifacts/nonlinear_mse02_psd"

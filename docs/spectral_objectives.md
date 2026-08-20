@@ -20,16 +20,19 @@ Source of truth:
 
 ## 1. Vocabulary and the rate
 
-Four terms, as [`CONTEXT.md`](../CONTEXT.md) defines them:
+Five terms, as [`CONTEXT.md`](../CONTEXT.md) defines them:
 
+- **Rollout** — one trajectory run forward under a fixed control sequence, uncorrected by
+  measurement. The offline training rollout and the controller's predicted horizon are both rollouts.
+- **Span** — the leading portion of a rollout one loss term scores. Only the training loss has one;
+  the MPC cost scores the whole horizon.
 - **Segment** — the fixed-length slice of a trajectory fed to one Fourier transform. Both objectives
   use segments; the word *window* is avoided because it already means three other things.
 - **Frame** — the spectrum one segment produces, indexed $m$ by its position on the hop grid.
 - **Frame Kernel** — the non-negative smoother applied to *power* along $m$, before the log. It buys
-  estimator degrees of freedom, not frequency resolution.
-- **Trailing Power Window** — a reduction over *measured* signal, assigned to the time of its last
-  sample. Neither objective here uses one: both reduce over a trajectory held in full (the offline
-  rollout, the predicted horizon), so a centred frame kernel is legitimate in both.
+  estimator degrees of freedom, not frequency resolution. Both objectives reduce over a rollout held
+  in full rather than over measured signal arriving sample by sample, so a *centred* kernel, which
+  reads frames on both sides of its output, is legitimate in both.
 
 The rate fixes everything else. The plant runs at $\Delta t = 10^{-4}$ s and is decimated by 200, so
 
@@ -45,17 +48,59 @@ cannot address most of the useful grid.
 
 ## 2. The training loss (`stft`)
 
-### 2.1 Every dimension, in order
+### 2.1 Parameters
+
+The nine `StftSpec` fields, with the symbol each carries in the formulas below:
+
+| field | symbol | type | default | meaning |
+| :--- | :--- | :--- | :--- | :--- |
+| `weight` | $\lambda$ | `float ≥ 0` | required | multiplier in the total loss |
+| `start_epoch` | — | `int ≥ 0` | `0` | first epoch the term contributes a gradient |
+| `n_span` | $S$ | `int > 0` | required | rollout steps scored, in samples |
+| `n_segment` | $W$ | `int > 0` | required | segment length; $W = S$ is the Welch endpoint |
+| `n_hop` | $H$ | `int > 0` | required | segment spacing; $H < W$ overlaps, $H = W$ tiles |
+| `band_hz` | $[f_\text{lo}, f_\text{hi}]$ | tuple or `None` | `None` | frequency range kept; `None` keeps everything above DC |
+| `n_bin_pool` | $K_f$ | `int ≥ 1` | `1` | bins averaged pre-log; `1` is no pooling |
+| `kernel` | $w_m$ | `boxcar`, `triangular`, `hann` | `boxcar` | frame-kernel shape |
+| `kernel_width` | $N_w$ | `int ≥ 1` | `1` | frames pooled; `1` is no smoothing |
+
+Everything else follows from those nine and the rate:
+
+| symbol | code | value |
+| :--- | :--- | :--- |
+| $\Delta f$ | — | $f_s / W$ |
+| $M$ | `StftSpec.n_frames()` | $\lfloor (S - W)/H \rfloor + 1$ — frames the segment grid cuts |
+| $F$ | `bin_hi - bin_lo` | in-band bins, DC already excluded |
+| $F'$ | — | $\lfloor F / K_f \rfloor$ — bins left after pooling |
+| $M_\text{out}$ | `M_out` | $M - N_w + 1$ — frames left after the valid-support convolution |
+| $K_\text{eff}$ | `K_eff` | frames the kernel effectively pools, §2.4 |
+
+`bin_range(fs)` turns `band_hz` into a half-open rfft index range. DC is dropped unconditionally —
+there is no per-segment detrend to protect it, and a floored log of near-zero power is noise. The
+band edges are inclusive in frequency: at $f_s = 50$, $W = 50$, `band_hz: [3.0, 12.0]` gives bins
+3…12, i.e. `(3, 13)`.
+
+**Rejected at config load**, not at runtime: $W > S$; a kernel wider than $M$; any kernel leaving
+$M_\text{out} < 2$ (a kernel that collapses the frame axis is Welch with *fewer* effective dof,
+since $\operatorname{Var}[\sum_m w_m P_m] = \sigma^2 \sum_m w_m^2$ is minimised by uniform
+weights); a non-increasing `band_hz`; a band leaving no bins below Nyquist; $K_f$ larger than the
+in-band bin count.
+
+Every field is on a slider in
+[`stft_loss_walkthrough.py`](../notebooks/stft_loss_walkthrough.py), which plots one channel of one
+rollout through each step of §2.2.
+
+### 2.2 Every dimension, in order
 
 `StftLoss.__call__` receives `pred` and `true`, both `(B, n_span, C)` in **standardised** units, and
 returns a scalar. Each is pushed through `log_spectrogram` independently:
 
 | step | operation | shape after |
 | :--- | :--- | :--- |
-| 0 | input rollout, standardised | `(B, n_span, C)` |
-| 1 | `ctx.to_raw`, truncate to `span_steps`, transpose | `(B, C, n_span)` |
-| 2 | `unfold(n_segment, n_hop)` — cut into segments | `(B, C, M, n_segment)` |
-| 3 | periodic Hann taper, `rfft`, magnitude², density scaling, one-sided fold | `(B, C, M, n_segment//2 + 1)` |
+| 0 | input rollout, standardised | `(B, S, C)` |
+| 1 | `ctx.to_raw`, truncate to `span_steps`, transpose | `(B, C, S)` |
+| 2 | `unfold(n_segment, n_hop)` — cut into segments | `(B, C, M, W)` |
+| 3 | periodic Hann taper, `rfft`, magnitude², density scaling, one-sided fold | `(B, C, M, W//2 + 1)` |
 | 4 | drop DC, apply `band_hz` | `(B, C, M, F)` |
 | 5 | `pool_bins(n_bin_pool)` — mean over bin groups | `(B, C, M, F')` |
 | 6 | `smooth_frames(frame_kernel(...))` — valid-support convolution along $m$ | `(B, C, M_out, F')` |
@@ -63,22 +108,18 @@ returns a scalar. Each is pushed through `log_spectrogram` independently:
 | 8 | `pred − true`, square | `(B, C, M_out, F')` |
 | 9 | `torch.mean` over every axis | `()` |
 
-with
-
-$$M = \left\lfloor \frac{n_\text{span} - n_\text{segment}}{n_\text{hop}} \right\rfloor + 1, \quad M_\text{out} = M - \text{kernel\_width} + 1, \quad F' = \left\lfloor \frac{F}{n_\text{bin\_pool}} \right\rfloor .$$
-
 Written out, with $b$ over the batch, $c$ over channels, $m$ over frames and $f$ over pooled bins:
 
 $$\mathcal{L}_\text{STFT} = \frac{1}{B\,C\,M_\text{out}\,F'}\sum_{b,c,m,f} \Big(\log(\hat{P}\_{b,c,m,f} + \varepsilon) - \log(P_{b,c,m,f} + \varepsilon)\Big)^2, \qquad \varepsilon = \texttt{LOG\_FLOOR} = 10^{-8}.$$
 
-### 2.2 Where the reductions sit, and why the order is fixed
+### 2.3 Where the reductions sit, and why the order is fixed
 
 Three reductions happen at three different places, and the placement is the whole design:
 
 | reduction | axis | position | what it does |
 | :--- | :--- | :--- | :--- |
-| `n_bin_pool` | $f$ | **pre-log** | buys estimator dof, costs $\Delta f$ |
-| frame kernel | $m$ | **pre-log** | buys estimator dof, costs time localisation |
+| $K_f$ (`n_bin_pool`) | $f$ | **pre-log** | buys estimator dof, costs $\Delta f$ |
+| $w_m$ (frame kernel) | $m$ | **pre-log** | buys estimator dof, costs time localisation |
 | final `mean` | $b, c, m, f$ | **post-square** | reduces gradient noise, changes nothing about the estimand |
 
 The rule they implement: *pool power across cells whose underlying spectrum is smooth relative to
@@ -93,7 +134,7 @@ square, so no config can express the illegal pooling. The order of steps 5–9 i
 Two axes are never pooled pre-log: the batch, because distinct trajectories are not draws of one
 spectrum, and the channels, because 62 channels have genuinely different spectra.
 
-### 2.3 What pre-log pooling costs
+### 2.4 What pre-log pooling costs
 
 A periodogram cell is $\chi^2_2$ around the underlying spectrum however long the segment is —
 lengthening $W$ buys resolution and *no* variance reduction. Taking the log of a single cell
@@ -106,38 +147,13 @@ The frame kernel's effective count is
 
 $$K_\text{eff} = \frac{\left(\sum_m w_m\right)^2}{\sum_m w_m^2},$$
 
-reported per step as `K_eff`. Endpoints are kept strictly positive, so a width-$n$ taper really pools
-$n$ frames. Asymptotically $K_\text{eff}/n$ is 1.00 for `boxcar`, 0.75 for `triangular`, 0.67 for
-`hann`; at small widths the exact value differs (width 3 Hann is $[0.5, 1, 0.5]$, so
+reported per step as `K_eff`. Endpoints are kept strictly positive, so a width-$N_w$ taper really
+pools $N_w$ frames. Asymptotically $K_\text{eff}/N_w$ is 1.00 for `boxcar`, 0.75 for `triangular`,
+0.67 for `hann`; at small widths the exact value differs (width 3 Hann is $[0.5, 1, 0.5]$, so
 $K_\text{eff} = 8/3$, not 2). Boxcar maximises dof, Hann maximises localisation.
 
-Note that overlapping frames ($n_\text{hop} < n_\text{segment}$) share samples, so $M$ overstates the
-independent frame count and $K_\text{eff}$ overstates the dof actually bought.
-
-### 2.4 Parameters
-
-| field | type | default | meaning |
-| :--- | :--- | :--- | :--- |
-| `weight` | `float ≥ 0` | required | multiplier in the total loss |
-| `start_epoch` | `int ≥ 0` | `0` | first epoch the term contributes a gradient |
-| `n_span` | `int > 0` | required | rollout steps scored, in samples |
-| `n_segment` | `int > 0` | required | segment length $W$; `n_segment = n_span` is the Welch endpoint |
-| `n_hop` | `int > 0` | required | segment spacing $H$; $H < W$ overlaps, $H = W$ tiles |
-| `band_hz` | tuple or `None` | `None` | frequency range kept; `None` keeps everything above DC |
-| `n_bin_pool` | `int ≥ 1` | `1` | bins averaged pre-log; `1` is no pooling |
-| `kernel` | `boxcar`, `triangular`, `hann` | `boxcar` | frame-kernel shape |
-| `kernel_width` | `int ≥ 1` | `1` | frames pooled; `1` is no smoothing |
-
-`bin_range(fs)` turns `band_hz` into a half-open rfft index range. DC is dropped unconditionally —
-there is no per-segment detrend to protect it, and a floored log of near-zero power is noise. The
-band edges are inclusive in frequency: at $f_s = 50$, $W = 50$, `band_hz: [3.0, 12.0]` gives bins
-3…12, i.e. `(3, 13)`.
-
-**Rejected at config load**, not at runtime: `n_segment > n_span`; a kernel wider than $M$; any
-kernel leaving $M_\text{out} < 2$ (a kernel that collapses the frame axis is Welch with *fewer*
-effective dof, since $\operatorname{Var}[\sum_m w_m P_m] = \sigma^2 \sum_m w_m^2$ is minimised by
-uniform weights); a non-increasing `band_hz`; a band leaving no bins below Nyquist; `n_bin_pool`
-larger than the in-band bin count.
+Note that overlapping frames ($H < W$) share samples, so $M$ overstates the independent frame count
+and $K_\text{eff}$ overstates the dof actually bought.
 
 ### 2.5 Diagnostics
 
@@ -152,10 +168,11 @@ from the YAML.
 
 $$M = 1, \quad M_\text{out} = 1, \quad \Delta f = 1\ \text{Hz}, \quad F = 25\ \text{bins (DC dropped)}, \quad K_\text{eff} = 1.$$
 
-One frame per rollout: Welch's geometry, scored per sample. This is the deliberate control arm — it
-differs from the superseded `PSDLoss` by the batch-pooling fix and nothing else. Any time-resolved
-geometry (§6 of the guide tabulates the candidates) is reached by lowering `n_segment` and `n_hop`,
-and none has been trained yet.
+One frame per rollout: Welch's geometry, scored per sample. It differs from the superseded
+`PSDLoss` by the batch-pooling fix and nothing else. §8 of the guide measured a time-resolved
+replacement (`n_segment: 25, n_hop: 12`) that separates a predicted spectrum from a perfect one
+far better, trained it, and found it suppresses seizures worse. The Welch endpoint stays until
+that gap is understood.
 
 ---
 
@@ -227,7 +244,7 @@ power for analysis code that wants it.
 
 Because the reference is a fixed quantile of measured healthy power, it is deterministic — and the
 predicted rollout is deterministic given $u$. There is no $\chi^2$ noise on either side of the hinge,
-so none of §2.3's variance-reduction machinery belongs here.
+so none of §2.4's variance-reduction machinery belongs here.
 
 ### 3.5 Normalisation
 

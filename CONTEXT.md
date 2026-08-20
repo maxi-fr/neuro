@@ -62,6 +62,10 @@ _Avoid_: Washout Steps, History Lag, Delay Buffer Size, Burn-in Steps
 The initial closed-loop simulation phase during which the controller outputs zero control while the surrogate predictor primes its state.
 _Avoid_: Burn-in Period, Transient Phase, Settling Time
 
+**Rollout**:
+One trajectory produced by running a dynamical system forward from a fixed starting condition under a given control sequence, with no correction from measurement along the way. Covers both a plant simulation held at one stimulation condition and a surrogate predictor free-running from a primed state.
+_Avoid_: Trajectory, Forecast, Free Run, Simulation, Horizon
+
 ## Seizure Dynamics & Ground Truth
 
 **(Regional) Seizure Threshhold**:
@@ -103,6 +107,10 @@ _Avoid_: Cost, Training Cost
 **Cost**:
 The mathematical objective minimized over the control horizon by the receding-horizon controller at each decision step.
 _Avoid_: Loss, Predictor Objective, Optimization Metric
+
+**Span**:
+The leading portion of a rollout that one loss term scores, in samples. Terms with different spans share a single rollout, whose depth is the largest span among them, so a span is a property of the loss term rather than of the rollout.
+_Avoid_: Rollout, Horizon, Window, Length
 
 **Segment**:
 The fixed-length slice of a trajectory fed to a single Fourier transform, used identically by the spectral training loss and the receding-horizon controller's spectral cost.
