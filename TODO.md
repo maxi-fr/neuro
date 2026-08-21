@@ -1,12 +1,10 @@
 # TODO list
 
+* **Monday 24.08** Start predictor sweeps: Papa in München
+
 ## Refactors
 
 * MPC metric: solver iterations, pred error along horizon
-
-* MPC solver: SQP with IPOPT as a fallback
-  > see [sqp ipopt investigation](knowledge-base/Notes/sqp_ipopt_fallback_benchmark.md)
-  * Follow-up: Bring back the narx version and see if partial MS works better
 
 * EEG sensors shouldnt run at 10kHz, find realistic value (maybe just same as MPC)
 
@@ -21,17 +19,17 @@
 
 * is mpc hinge spectral cost function tested?
 
+* check again if curriculum is actually helpful in closed loop performance
+
 ### Efficiency
 
 * possible to remove torch.cat from AutoregressiveMLP.forward? for efficiency?
-* training in float32?
-* multiple shooting doesnt work, single shooting does - but takes many solver iterations. Maybe there is a middle ground. Investigate [Done]
-* multiple welch spectrums after another can surely be optimized [in_progress]
+  > in other branch: perf/predictor-rollout-optimization
 
 ## Other
 
 * write chapter on Jansen-Rit model
-* look into unified vocabulary - matt pocock skills
+* figure out GPU training
 
 ## Simulate package
 
