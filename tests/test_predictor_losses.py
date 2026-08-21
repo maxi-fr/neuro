@@ -10,7 +10,7 @@ import torch
 from scipy.signal import spectrogram as scipy_spectrogram
 from scipy.signal.windows import hann
 
-from neuro.config import CurriculumMSESpec, EegMsSpec, LossSpecs, SecondsSpanSpec, StftSpec
+from neuro.config import CurriculumMSESpec, EegMsSpec, LossSpecs, SecondsSpanSpec, StftGeometry, StftSpec
 from neuro.predictor.losses import (
     CurriculumMSE,
     EegMsLoss,
@@ -100,13 +100,13 @@ def test_stft_welch_endpoint_scores_each_sample_separately() -> None:
         weight=1.0,
         span_steps=n_span,
         start_epoch=0,
-        n_segment=n_span,
-        n_hop=n_span,
-        bin_lo=1,
-        bin_hi=n_span // 2 + 1,
-        n_bin_pool=1,
-        kernel="boxcar",
-        kernel_width=1,
+        geometry=StftGeometry(
+            n_segment=n_span,
+            n_hop=n_span,
+            n_bin_pool=1,
+            kernel="boxcar",
+            kernel_width=1,
+        ),
     )
     value, diag = loss_fn(pred, true, _stft_ctx(c))
 
@@ -134,13 +134,13 @@ def test_stft_frame_kernel_pools_before_the_log() -> None:
         weight=1.0,
         span_steps=n_span,
         start_epoch=0,
-        n_segment=n_segment,
-        n_hop=n_hop,
-        bin_lo=1,
-        bin_hi=n_segment // 2 + 1,
-        n_bin_pool=1,
-        kernel="hann",
-        kernel_width=width,
+        geometry=StftGeometry(
+            n_segment=n_segment,
+            n_hop=n_hop,
+            n_bin_pool=1,
+            kernel="hann",
+            kernel_width=width,
+        ),
     )
     n_frames = (n_span - n_segment) // n_hop + 1
     assert loss_fn.log_spectrogram(pred, _stft_ctx(c)).shape == (3, c, n_frames - width + 1, n_segment // 2)
@@ -211,13 +211,7 @@ def test_stft_is_gated_off_until_start_epoch() -> None:
             weight=w_stft,
             span_steps=horizon,
             start_epoch=10,
-            n_segment=horizon,
-            n_hop=horizon,
-            bin_lo=1,
-            bin_hi=horizon // 2 + 1,
-            n_bin_pool=1,
-            kernel="boxcar",
-            kernel_width=1,
+            geometry=StftGeometry(n_segment=horizon, n_hop=horizon),
         ),
     ]
 
@@ -264,8 +258,8 @@ def test_build_losses_instantiates_from_specs() -> None:
 
     assert isinstance(losses[2], EegMsLoss)
     assert losses[2].span_steps == 20
-    assert losses[2].n_window == 10
-    assert losses[2].n_hop == 1
+    assert losses[2].geometry.window_steps(fs) == 10
+    assert losses[2].geometry.hop_steps(fs) == 1
 
     # Also test passing a plain dict
     losses_dict = build_losses(specs.active(), fs)

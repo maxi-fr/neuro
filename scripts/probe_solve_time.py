@@ -4,7 +4,9 @@ from __future__ import annotations
 import argparse
 import time
 from pathlib import Path
+from typing import TYPE_CHECKING, cast
 
+import casadi as ca
 import numpy as np
 
 from neuro.artifacts import build_symbolic_model, load_any_artifact
@@ -15,7 +17,13 @@ from neuro.control.solvers import (
     SqpFallbackMPCSolver,
     SqpMPCSolver,
 )
+from neuro.observable import load_log_reference
+from neuro.observable_casadi import ObservableSymbolicModel
 from neuro.predictor.data import load_trajectory
+from neuro.spectral import PsdEnvelope
+
+if TYPE_CHECKING:
+    from neuro.types import FloatArray, SymbolicModel
 
 
 def parse_args() -> argparse.Namespace:
@@ -61,7 +69,36 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--sqp-max-iter", type=int, default=15, help="SQP max iterations before fallback.")
     parser.add_argument("--max-iter", type=int, default=100, help="IPOPT max iterations per solve.")
+    parser.add_argument("--w-psd", type=float, default=0.0, help="Weight on the spectral / observable hinge.")
+    parser.add_argument(
+        "--psd-ref",
+        type=Path,
+        default=None,
+        help="Healthy envelope npz; required for an observable artifact and whenever --w-psd > 0.",
+    )
     return parser.parse_args()
+
+
+def time_objective_and_jacobian(mpc_nlp: MPCNlp, x0: FloatArray, n_reps: int) -> tuple[float, float]:
+    """Median milliseconds for one objective evaluation and one objective-Jacobian evaluation.
+
+    One evaluation is not a solve, so the solve loop below is timed as well.
+    """
+    x_sym, p_sym, f_sym = mpc_nlp.nlp["x"], mpc_nlp.nlp["p"], mpc_nlp.nlp["f"]
+    objective = ca.Function("f_obj", [x_sym, p_sym], [f_sym])
+    jacobian = ca.Function("f_jac", [x_sym, p_sym], [ca.jacobian(f_sym, x_sym)])
+    w0 = np.zeros(x_sym.numel())
+
+    times = []
+    for fn in (objective, jacobian):
+        fn(w0, x0)  # warm the graph, so the first call's allocation is not timed
+        samples = []
+        for _ in range(n_reps):
+            t0 = time.perf_counter()
+            fn(w0, x0)
+            samples.append((time.perf_counter() - t0) * 1000.0)
+        times.append(float(np.median(samples)))
+    return times[0], times[1]
 
 
 def main() -> None:
@@ -72,8 +109,16 @@ def main() -> None:
     shooting_depth = args.shooting_depth if args.shooting_depth is not None else horizon
 
     model = build_symbolic_model(art)
+    observable = isinstance(model, ObservableSymbolicModel)
+    if observable:
+        if args.psd_ref is None:
+            msg = "an observable artifact costs a hinge against --psd-ref; pass one."
+            raise SystemExit(msg)
+        shooting_depth = horizon
 
-    f_step_nodes = model.f_step.n_nodes()
+    graph_nodes = model.f_forecast.n_nodes() if observable else cast("SymbolicModel", model).f_step.n_nodes()
+    log_reference = load_log_reference(args.psd_ref, model.geometry, model.fs) if observable and args.psd_ref else None
+    psd_envelope = PsdEnvelope.load(args.psd_ref) if not observable and args.psd_ref is not None else None
     u_max_arr = np.full(model.n_controls, args.u_max, dtype=np.float64)
 
     shooting_label = "single shooting" if shooting_depth >= horizon else f"multiple shooting (D={shooting_depth})"
@@ -88,10 +133,13 @@ def main() -> None:
         shooting_depth=shooting_depth,
         n_controls=model.n_controls,
         u_max=u_max_arr,
-        w_y=args.w_y,
+        w_y=0.0 if observable else args.w_y,
         w_y_terminal=None,
         w_u=args.w_u,
         w_u_l1=0.0,
+        w_psd=args.w_psd,
+        psd_envelope=psd_envelope,
+        log_reference=log_reference,
     )
     solver_obj: MPCSolver
     if args.solver == "sqp_fallback":
@@ -135,6 +183,8 @@ def main() -> None:
         msg = "Could not sample any initial states from test data."
         raise SystemExit(msg)
 
+    obj_ms, jac_ms = time_objective_and_jacobian(mpc_nlp, x0_samples[0], n_reps=20)
+
     solve_times = []
     iter_counts = []
     num_capped = 0
@@ -169,7 +219,8 @@ def main() -> None:
     print("\n================ BENCHMARK RESULTS ================", flush=True)
     print(f"Artifact:          {args.artifact} ({model_name})", flush=True)
     print(f"Solver mode:       {args.solver} (QP: {args.sqp_qpsol})", flush=True)
-    print(f"f_step graph size: {f_step_nodes} nodes", flush=True)
+    print(f"Prediction graph:  {graph_nodes} nodes ({'f_forecast' if observable else 'f_step'})", flush=True)
+    print(f"Objective / Jacobian: {obj_ms:.2f} ms | {jac_ms:.2f} ms (median of 20)", flush=True)
     print(f"NLP build time:    {build_seconds:.4f} s", flush=True)
     print(f"Solves evaluated:  {len(x0_samples)}", flush=True)
     print(f"Solve wall time:   median {med_time:.2f} ms | p90 {p90_time:.2f} ms", flush=True)

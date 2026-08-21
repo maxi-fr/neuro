@@ -1,13 +1,13 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any, Literal, Self
+from typing import TYPE_CHECKING, Any, Literal, Self, cast
 
 import casadi as ca
 import numpy as np
 from pydantic import Field
 from simulate.controller import Controller
 
-from neuro.artifacts import build_symbolic_model, load_any_artifact
+from neuro.artifacts import build_symbolic_model, load_rollout_artifact
 from neuro.config import StrictConfig
 from neuro.control.nlp import _l1_epigraph, _sum_to_zero
 from neuro.control.nonlinear_mpc import MPCControllerLog
@@ -118,7 +118,7 @@ class LinearMPCController(Controller[MPCControllerLog]):
         cfg = _LinearMPCControllerConfig.model_validate(config)
         return cls(
             dt=cfg.dt,
-            model=build_symbolic_model(load_any_artifact(cfg.artifact)),
+            model=cast("SymbolicModel", build_symbolic_model(load_rollout_artifact(cfg.artifact))),
             u_max=cfg.u_max,
             horizon=cfg.horizon,
             w_y=cfg.w_y,

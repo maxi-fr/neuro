@@ -18,7 +18,7 @@ if TYPE_CHECKING:
     from neuro.types import FloatArray
 
 
-def _mlp_forward_ca(
+def mlp_forward_ca(
     x: ca.SX | ca.MX, layers: Sequence[tuple[FloatArray, FloatArray]], activation: Activation
 ) -> ca.SX | ca.MX:
     """Evaluate an MLP forward pass symbolically, replicating :meth:`MLPArtifact.forward_1step`.
@@ -158,7 +158,7 @@ class NNSymbolicModel:
 
         new_u_scaled_flat = zscore(new_u_flat, u_mean_tiled, u_scale_tiled)  # ty:ignore[invalid-argument-type]
         mlp_in = ca.vertcat(y_flat, new_u_scaled_flat)
-        return _mlp_forward_ca(mlp_in, self.artifact.layers, self.artifact.activation)
+        return mlp_forward_ca(mlp_in, self.artifact.layers, self.artifact.activation)
 
     def step(self, history: Sequence[ca.SX | ca.MX], u: ca.SX | ca.MX) -> ca.SX | ca.MX:
         """Advance one step: ``history == [x]`` (model space), ``u`` raw control -> ``x_next``."""

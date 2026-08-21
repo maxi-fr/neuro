@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import dataclasses
-from typing import TYPE_CHECKING, Any, Literal, Self
+from typing import TYPE_CHECKING, Any, Literal, Self, cast
 
 import numpy as np
 from pydantic import Field
@@ -11,6 +11,8 @@ from neuro.artifacts import build_symbolic_model, load_any_artifact
 from neuro.config import StrictConfig
 from neuro.control.nlp import MPCNlp
 from neuro.control.solvers import IpoptMPCSolver, MPCSolver, SqpFallbackMPCSolver, SqpMPCSolver
+from neuro.observable import load_log_reference
+from neuro.observable_casadi import ObservableSymbolicModel
 from neuro.spectral import PsdEnvelope
 
 if TYPE_CHECKING:
@@ -18,7 +20,7 @@ if TYPE_CHECKING:
 
     from numpy.typing import ArrayLike
 
-    from neuro.types import FloatArray, SymbolicModel
+    from neuro.types import FloatArray, ObservableModel, SymbolicModel
 
 
 @dataclasses.dataclass(frozen=True)
@@ -70,7 +72,7 @@ class MPCController(Controller[MPCControllerLog]):
     def __init__(  # noqa: PLR0913, PLR0917
         self,
         dt: float,
-        model: SymbolicModel,
+        model: SymbolicModel | ObservableModel,
         u_max: ArrayLike,
         horizon: int | None = None,
         w_y: float = 1.0,
@@ -164,7 +166,15 @@ class MPCController(Controller[MPCControllerLog]):
         self.w_u_l1 = float(w_u_l1)
         self.w_psd = float(w_psd)
         self.psd_ref = psd_ref
-        self.psd_envelope = PsdEnvelope.load(psd_ref) if psd_ref is not None else None
+        # An observable model forecasts the Observable directly, so it hinges against the envelope
+        # reduced onto its own Frame value grid rather than against a per-(channel, bin) spectrum.
+        self.is_observable = isinstance(model, ObservableSymbolicModel)
+        self.psd_envelope = PsdEnvelope.load(psd_ref) if psd_ref is not None and not self.is_observable else None
+        self.log_reference = (
+            load_log_reference(psd_ref, model.geometry, model.fs)
+            if psd_ref is not None and isinstance(model, ObservableSymbolicModel)
+            else None
+        )
         self.shooting_depth = int(shooting_depth) if shooting_depth is not None else self.horizon
         self.solver = solver
         self.max_iter = int(max_iter)
@@ -235,6 +245,7 @@ class MPCController(Controller[MPCControllerLog]):
             w_u_l1=self.w_u_l1,
             w_psd=self.w_psd,
             psd_envelope=self.psd_envelope,
+            log_reference=self.log_reference,
         )
         if self.solver == "sqp_fallback":
             self._solver_obj: MPCSolver = SqpFallbackMPCSolver.build(
@@ -271,15 +282,10 @@ class MPCController(Controller[MPCControllerLog]):
     def _solve(self, x0: FloatArray) -> tuple[FloatArray, float, bool, int, bool, bool]:
         """Solve the NLP for window-state ``x0``; return ``(u_0*, cost, success, n_iter, capped, fallback)``."""
         m, h = self.n_controls, self.horizon
-        D = self.shooting_depth
         u_guess = self._u_prev if self._u_prev is not None else np.zeros((h, m))
 
-        x = x0
-        phi_guess = []
-        for step in range(h):
-            x = np.asarray(self.model.f_step(x, u_guess[step])).reshape(-1)
-            if (step + 1) % D == 0 and (step + 1) < h:
-                phi_guess.append(x)
+        # With no shooting roots the seed collapses to the shifted controls plus their L1 slacks.
+        phi_guess = [] if self.is_observable else self._shooting_roots(x0, u_guess)
 
         seed = [u_guess.reshape(-1), *phi_guess]
         if self.w_u_l1 > 0:
@@ -290,6 +296,17 @@ class MPCController(Controller[MPCControllerLog]):
         u_opt = res.u_opt[: h * m].reshape(h, m)
         self._u_prev = np.vstack([u_opt[1:], u_opt[-1:]])
         return u_opt[0], res.cost, res.success, res.n_iter, res.capped, res.fallback
+
+    def _shooting_roots(self, x0: FloatArray, u_guess: FloatArray) -> list[FloatArray]:
+        """Roll ``f_step`` forward under ``u_guess`` to seed the multiple-shooting state variables."""
+        model = cast("SymbolicModel", self.model)
+        x = x0
+        roots = []
+        for step in range(self.horizon):
+            x = np.asarray(model.f_step(x, u_guess[step])).reshape(-1)
+            if (step + 1) % self.shooting_depth == 0 and (step + 1) < self.horizon:
+                roots.append(x)
+        return roots
 
     def update(
         self,

@@ -274,10 +274,10 @@ def test_stft_bin_range_excludes_dc_and_clips_to_the_band() -> None:
     fs = 50.0
     full = StftSpec(weight=1.0, n_span=50, n_segment=50, n_hop=25)
     assert full.bin_range(fs) == (1, 26)
-    assert full.n_frames() == 1  # segment == span: the Welch endpoint
+    assert full.n_segment_frames(full.n_span) == 1  # segment == span: the Welch endpoint
 
     hopped = StftSpec(weight=1.0, n_span=50, n_segment=25, n_hop=12)
-    assert hopped.n_frames() == 3
+    assert hopped.n_segment_frames(hopped.n_span) == 3
 
     banded = StftSpec(weight=1.0, n_span=50, n_segment=50, n_hop=25, band_hz=(3.0, 12.0))
     assert banded.bin_range(fs) == (3, 13)  # 1 Hz per bin at n_segment = 50
@@ -297,6 +297,7 @@ def test_valid_boundaries_accepted() -> None:
         }
     )
     assert cfg.model.depth == 0
+    assert cfg.training.losses is not None
     assert cfg.training.losses.curriculum_mse is not None
     assert cfg.training.losses.curriculum_mse.curr_start == 5
     assert cfg.training.losses.curriculum_mse.curr_end == 5

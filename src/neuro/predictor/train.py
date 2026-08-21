@@ -95,7 +95,7 @@ class _Tensors:
     y_scale: Tensor
 
 
-def _tensor(a: FloatArray, device: torch.device) -> Tensor:
+def float32_tensor(a: FloatArray, device: torch.device) -> Tensor:
     """Move a NumPy array onto ``device`` as a float32 tensor."""
     return torch.as_tensor(np.ascontiguousarray(a), dtype=torch.float32, device=device)
 
@@ -123,7 +123,7 @@ def _warm_start_linear(
         layer.bias.copy_(torch.as_tensor(weight_bias[-1], dtype=torch.float32))
 
 
-def _lr_schedule(
+def lr_schedule(
     optimizer: torch.optim.Optimizer, *, warmup_steps: int, total_steps: int
 ) -> torch.optim.lr_scheduler.LRScheduler:
     """Linear warm-up over ``warmup_steps`` batches, then cosine anneal to zero over the remainder.
@@ -141,7 +141,7 @@ def _lr_schedule(
     return torch.optim.lr_scheduler.SequentialLR(optimizer, [warmup, cosine], milestones=[warmup_steps])
 
 
-def _shuffled_batches(n_samples: int, batch_size: int, rng: np.random.Generator) -> Iterator[IntArray]:
+def shuffled_batches(n_samples: int, batch_size: int, rng: np.random.Generator) -> Iterator[IntArray]:
     """Yield index batches covering one freshly shuffled pass over the training set."""
     indices = rng.permutation(n_samples)
     for start in range(0, n_samples, batch_size):
@@ -179,7 +179,7 @@ def _fit(  # noqa: PLR0913, PLR0915
     warmup_steps = min(steps_per_epoch * cfg.warmup_epochs, total_steps - 1)
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=cfg.learning_rate, weight_decay=cfg.weight_decay)
-    scheduler = _lr_schedule(optimizer, warmup_steps=warmup_steps, total_steps=total_steps)
+    scheduler = lr_schedule(optimizer, warmup_steps=warmup_steps, total_steps=total_steps)
 
     val_ctx = LossContext(y_center=tensors.y_center, y_scale=tensors.y_scale, fs=fs, epoch=None)
     best_val_loss = float("inf")
@@ -197,7 +197,7 @@ def _fit(  # noqa: PLR0913, PLR0915
 
         epoch_loss, batches = 0.0, 0
         comps_sum: dict[str, float] = collections.defaultdict(float)
-        for idx in _shuffled_batches(n_samples, cfg.batch_size, rng):
+        for idx in shuffled_batches(n_samples, cfg.batch_size, rng):
             loss, parts = _batch_loss(model, tensors.X_train[idx], tensors.Y_train[idx], losses, train_ctx)
             optimizer.zero_grad()
             loss.backward()
@@ -292,6 +292,9 @@ def train(cfg: NNPredictorConfig, data_files: list[str], *, seed_offset: int = 0
         trajectories and the control sensitivity.
     """
     sim, mdl, trn = cfg.simulation, cfg.model, cfg.training
+    if trn.losses is None:
+        msg = "train requires 'training.losses'; a config with an 'observable' block goes through train_observable."
+        raise ValueError(msg)
     seed = trn.seed + seed_offset
     torch.manual_seed(seed)
     device = torch.device(trn.device)
@@ -331,12 +334,12 @@ def train(cfg: NNPredictorConfig, data_files: list[str], *, seed_offset: int = 0
 
     target_shape = (-1, horizon, data.n_channels)
     tensors = _Tensors(
-        X_train=_tensor(data.X_train, device),
-        Y_train=_tensor(data.Y_train, device).reshape(target_shape),
-        X_val=_tensor(data.X_val, device),
-        Y_val=_tensor(data.Y_val, device).reshape(target_shape),
-        y_center=_tensor(data.y_std.center, device),
-        y_scale=_tensor(data.y_std.scale, device),
+        X_train=float32_tensor(data.X_train, device),
+        Y_train=float32_tensor(data.Y_train, device).reshape(target_shape),
+        X_val=float32_tensor(data.X_val, device),
+        Y_val=float32_tensor(data.Y_val, device).reshape(target_shape),
+        y_center=float32_tensor(data.y_std.center, device),
+        y_scale=float32_tensor(data.y_std.scale, device),
     )
 
     train_losses, val_losses, train_comps, val_comps = _fit(model, tensors, trn, losses, fs=fs, seed=seed)

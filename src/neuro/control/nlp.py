@@ -1,18 +1,19 @@
 from __future__ import annotations
 
 import dataclasses
-from typing import TYPE_CHECKING, Self
+from typing import TYPE_CHECKING, Self, cast
 
 import casadi as ca
 import numpy as np
 from scipy.signal.windows import hann
 
+from neuro.observable_casadi import ObservableSymbolicModel
 from neuro.spectral import LOG_FLOOR, PsdEnvelope
 
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-    from neuro.types import FloatArray, SymbolicModel
+    from neuro.types import FloatArray, ObservableModel, SymbolicModel
 
 
 def _l1_epigraph(u_vars: list[ca.MX], w_l1: float) -> tuple[list[ca.MX], ca.MX, ca.MX]:
@@ -88,6 +89,26 @@ def _spectral_hinge_cost(y_nodes: list[ca.MX], envelope: PsdEnvelope, horizon: i
     return total_hinge / (n_windows * n_ch * n_scored_bins)
 
 
+def _observable_hinge_cost(l_hat: ca.SX | ca.MX, log_reference: FloatArray) -> ca.MX:
+    """Mean squared one-sided log excess of a forecast Observable over ``log_reference``.
+
+    ``l_hat`` is ``(n_channels * n_values, n_frames)`` in raw log units and ``log_reference`` the
+    ``(n_channels, n_values)`` healthy envelope in the same units. The reduction is a mean over
+    ``(frame, channel, value)`` -- never over frames alone -- so ``w_psd`` keeps exactly the meaning
+    it has in :func:`_spectral_hinge_cost` and a hot Frame cannot be cancelled by a cold one.
+    """
+    n_values, n_frames = l_hat.shape
+    if log_reference.size != n_values:
+        msg = (
+            f"the reference envelope holds {log_reference.size} value(s) per frame but the model "
+            f"forecasts {n_values}; the cost must not subset the observable."
+        )
+        raise ValueError(msg)
+    log_ref = ca.repmat(ca.MX(log_reference.reshape(-1, 1)), 1, n_frames)
+    hinge = ca.fmax(0.0, l_hat - log_ref)
+    return ca.sum1(ca.sum2(hinge**2)) / (n_frames * n_values)
+
+
 def _rollout_cost(  # noqa: PLR0913
     model: SymbolicModel,
     *,
@@ -135,7 +156,7 @@ class MPCNlp:
     @classmethod
     def build(  # noqa: PLR0913
         cls,
-        model: SymbolicModel,
+        model: SymbolicModel | ObservableModel,
         *,
         horizon: int,
         shooting_depth: int,
@@ -147,8 +168,14 @@ class MPCNlp:
         w_u_l1: float = 0.0,
         w_psd: float = 0.0,
         psd_envelope: PsdEnvelope | None = None,
+        log_reference: FloatArray | None = None,
     ) -> Self:
-        """Build the PCMS multiple-shooting symbolic NLP graph and bounds."""
+        """Build the symbolic NLP graph and bounds for either prediction path.
+
+        Observable models take the ``log_reference`` branch: no rollout, no per-step outputs, no
+        defects and no shooting roots. The controls, their bounds and the Kirchhoff equality are
+        identical on both paths.
+        """
         n_state = model.state_shape[0]
         n_ctrl, h = n_controls, horizon
         D = shooting_depth
@@ -156,29 +183,45 @@ class MPCNlp:
         x0_p = ca.MX.sym("x0", n_state)
         u_vars = [ca.MX.sym(f"u_{k}", n_ctrl) for k in range(h)]
 
-        n_segments = (h - 1) // D
-        phi_vars = [ca.MX.sym(f"phi_{k}", n_state) for k in range(1, n_segments + 1)]
+        if isinstance(model, ObservableSymbolicModel):
+            cost = _observable_cost(
+                model,
+                u_vars=u_vars,
+                x0_p=x0_p,
+                horizon=h,
+                shooting_depth=D,
+                w_y=w_y,
+                w_y_terminal=w_y_terminal,
+                w_u=w_u,
+                w_psd=w_psd,
+                log_reference=log_reference,
+            )
+            phi_vars: list[ca.MX] = []
+            defects: list[ca.MX] = []
+        else:
+            n_segments = (h - 1) // D
+            phi_vars = [ca.MX.sym(f"phi_{k}", n_state) for k in range(1, n_segments + 1)]
 
-        def get_phi(idx: int) -> ca.MX:
-            return x0_p if idx == 0 else phi_vars[idx - 1]
+            def get_phi(idx: int) -> ca.MX:
+                return x0_p if idx == 0 else phi_vars[idx - 1]
 
-        cost, defects, y_nodes = _rollout_cost(
-            model,
-            get_phi=get_phi,
-            u_vars=u_vars,
-            n_segments=n_segments,
-            horizon=h,
-            shooting_depth=D,
-            w_y=w_y,
-            w_y_terminal=w_y_terminal,
-            w_u=w_u,
-        )
+            cost, defects, y_nodes = _rollout_cost(
+                cast("SymbolicModel", model),
+                get_phi=get_phi,
+                u_vars=u_vars,
+                n_segments=n_segments,
+                horizon=h,
+                shooting_depth=D,
+                w_y=w_y,
+                w_y_terminal=w_y_terminal,
+                w_u=w_u,
+            )
 
-        if w_psd > 0:
-            if psd_envelope is None:
-                msg = "psd_envelope must be provided when w_psd > 0"
-                raise ValueError(msg)
-            cost = cost + w_psd * _spectral_hinge_cost(y_nodes, psd_envelope, h)
+            if w_psd > 0:
+                if psd_envelope is None:
+                    msg = "psd_envelope must be provided when w_psd > 0"
+                    raise ValueError(msg)
+                cost = cost + w_psd * _spectral_hinge_cost(y_nodes, psd_envelope, h)
 
         x_parts = [*u_vars, *phi_vars]
         g_parts = [*defects, _sum_to_zero(u_vars)]
@@ -204,3 +247,49 @@ class MPCNlp:
         g_nlp = ca.vertcat(*g_parts) if g_parts else ca.MX(0)
         nlp = {"x": x_nlp, "f": cost, "g": g_nlp, "p": x0_p}
         return cls(nlp=nlp, lbx=lbx, ubx=ubx, lbg=lbg, ubg=ubg)
+
+
+def _observable_cost(  # noqa: PLR0913
+    model: ObservableSymbolicModel,
+    *,
+    u_vars: list[ca.MX],
+    x0_p: ca.MX,
+    horizon: int,
+    shooting_depth: int,
+    w_y: float,
+    w_y_terminal: float | None,
+    w_u: float,
+    w_psd: float,
+    log_reference: FloatArray | None,
+) -> ca.MX:
+    """Hinge the one-shot Observable forecast against ``log_reference`` and add the effort term.
+
+    ``w_y``, ``w_y_terminal`` and a ``shooting_depth`` below the horizon are rejected, not ignored.
+    """
+    if w_y > 0 or w_y_terminal is not None:
+        msg = (
+            f"w_y ({w_y}) and w_y_terminal ({w_y_terminal}) have no meaning on the observable path: "
+            f"it forecasts the Observable directly and produces no per-step EEG outputs."
+        )
+        raise ValueError(msg)
+    if shooting_depth < horizon:
+        msg = (
+            f"shooting_depth ({shooting_depth}) below the horizon ({horizon}) has no meaning on the "
+            f"observable path: the forecast has no per-sample state to introduce shooting roots on."
+        )
+        raise ValueError(msg)
+    if w_psd <= 0 or log_reference is None:
+        msg = "the observable path requires w_psd > 0 and a log_reference; it has no other output term."
+        raise ValueError(msg)
+
+    n_frames = model.n_frames(horizon)
+    if n_frames < 1:
+        msg = (
+            f"horizon ({horizon}) holds no {model.geometry.kind} frame at the artifact's geometry; "
+            f"it must cover at least one Segment."
+        )
+        raise ValueError(msg)
+
+    l_hat = model.forecast(x0_p, ca.horzcat(*u_vars).T)
+    effort = w_u * sum(ca.sumsqr(u) for u in u_vars) / horizon
+    return w_psd * _observable_hinge_cost(l_hat, log_reference) + effort

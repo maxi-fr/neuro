@@ -69,10 +69,10 @@ Everything else follows from those nine and the rate:
 | symbol | code | value |
 | :--- | :--- | :--- |
 | $\Delta f$ | — | $f_s / W$ |
-| $M$ | `StftSpec.n_frames()` | $\lfloor (S - W)/H \rfloor + 1$ — frames the segment grid cuts |
+| $M$ | `StftGeometry.n_segment_frames(S)` | $\lfloor (S - W)/H \rfloor + 1$ — frames the segment grid cuts |
 | $F$ | `bin_hi - bin_lo` | in-band bins, DC already excluded |
 | $F'$ | — | $\lfloor F / K_f \rfloor$ — bins left after pooling |
-| $M_\text{out}$ | `M_out` | $M - N_w + 1$ — frames left after the valid-support convolution |
+| $M_\text{out}$ | `StftGeometry.n_frames(S, fs)` | $M - N_w + 1$ — frames left after the valid-support convolution |
 | $K_\text{eff}$ | `K_eff` | frames the kernel effectively pools, §2.4 |
 
 `bin_range(fs)` turns `band_hz` into a half-open rfft index range. DC is dropped unconditionally —

@@ -22,7 +22,7 @@ from neuro.predictor.artifact import MLPArtifact
 from neuro.predictor.data import prepare_datasets
 from neuro.predictor.losses import LossContext, build_losses, total_loss
 from neuro.predictor.module import AutoregressiveMLP
-from neuro.predictor.train import _lr_schedule, train
+from neuro.predictor.train import lr_schedule, train
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -81,6 +81,7 @@ def _validation_loss(cfg: NNPredictorConfig, files: list[str], art: MLPArtifact)
     """Re-score ``art`` on the validation windows exactly as the training loop does."""
     mdl = cfg.model
     fs = cfg.fs
+    assert cfg.training.losses is not None
     losses = build_losses(cfg.training.losses, fs)
     horizon = max(loss_obj.span_steps for loss_obj in losses)
 
@@ -202,7 +203,7 @@ def test_lr_schedule_ramps_in_then_anneals_to_zero(warmup_steps: int) -> None:
     """Warm-up climbs to the peak at ``warmup_steps``; the cosine still reaches 0 on the last step."""
     total_steps = 20
     optimizer = torch.optim.AdamW(torch.nn.Linear(2, 2).parameters(), lr=1.0)
-    scheduler = _lr_schedule(optimizer, warmup_steps=warmup_steps, total_steps=total_steps)
+    scheduler = lr_schedule(optimizer, warmup_steps=warmup_steps, total_steps=total_steps)
 
     trace = []
     for _ in range(total_steps):

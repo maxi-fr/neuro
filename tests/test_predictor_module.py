@@ -191,6 +191,8 @@ def test_module_layers_sequential() -> None:
         "neuro.predictor.artifact",
         "neuro.predictor.data",
         "neuro.nn_predictor_casadi",
+        "neuro.observable",
+        "neuro.observable_casadi",
         "neuro.control",
         "neuro.control.zero",
         "neuro.control.threshold",

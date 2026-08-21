@@ -14,7 +14,7 @@ from neuro.predictor.artifact import MLPArtifact
 from neuro.transforms import Standardizer
 
 if TYPE_CHECKING:
-    from neuro.artifacts import PredictorArtifact
+    from neuro.artifacts import RolloutArtifact
     from neuro.types import FloatArray
 
 _SEED = 31
@@ -88,12 +88,12 @@ def _esn_artifact() -> ESNArtifact:
     )
 
 
-def _artifact(family: str) -> PredictorArtifact:
+def _artifact(family: str) -> RolloutArtifact:
     """Build the requested artifact family."""
     return _mlp_artifact() if family == "mlp" else _esn_artifact()
 
 
-def _batch(art: PredictorArtifact, n_batch: int) -> tuple[FloatArray, FloatArray, FloatArray]:
+def _batch(art: RolloutArtifact, n_batch: int) -> tuple[FloatArray, FloatArray, FloatArray]:
     """Independently drawn ``(y_hists, u_hists, u_futures)`` -- no two batch members share a history."""
     rng = np.random.default_rng(_SEED + 100)
     k = art.priming_steps

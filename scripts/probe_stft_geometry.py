@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 import torch
 
-from neuro.artifacts import load_any_artifact
+from neuro.artifacts import load_rollout_artifact
 from neuro.config import EegMsSpec, StftSpec
 from neuro.filtering import antialias_filter
 from neuro.predictor.data import load_trajectory
@@ -17,7 +17,7 @@ from neuro.predictor.losses import EegMsLoss, LossContext, StftLoss, spectrogram
 from neuro.spectral import LOG_FLOOR, PsdEnvelope
 
 if TYPE_CHECKING:
-    from neuro.artifacts import PredictorArtifact
+    from neuro.artifacts import RolloutArtifact
     from neuro.types import FloatArray
 
 # Seizure branches only: the healthy branch runs a different A vector than the predictor's
@@ -141,7 +141,7 @@ def decay_lag(acf: FloatArray) -> float:
     return lo + (acf[lo] - _DECAY) / (acf[lo] - acf[hi])
 
 
-def report_correlation_width(data_dir: Path, art: PredictorArtifact, max_lag: int, seed: int) -> None:
+def report_correlation_width(data_dir: Path, art: RolloutArtifact, max_lag: int, seed: int) -> None:
     """Print the frame-axis correlation width of the log-power trajectory, against a stationary surrogate."""
     fs = 1.0 / art.dt
     rng = np.random.default_rng(seed)
@@ -160,7 +160,7 @@ def report_correlation_width(data_dir: Path, art: PredictorArtifact, max_lag: in
         print(f"{n_segment:>4} {w_meas:>10.1f} {w_surr:>10.1f} {w_meas / fs:>10.3f} {w_surr / fs:>10.3f}")
 
 
-def load_children(ensemble_dir: Path, arm: str, art: PredictorArtifact) -> dict[str, FloatArray]:
+def load_children(ensemble_dir: Path, arm: str, art: RolloutArtifact) -> dict[str, FloatArray]:
     """Decimated children per seizure branch, shaped ``(parent, child, sample, channel)``."""
     manifest = json.loads((ensemble_dir / "manifest.json").read_text(encoding="utf-8"))
     n_children = int(manifest["n_children"])
@@ -191,7 +191,7 @@ class Triplet:
 
 
 def build_triplets(
-    children: dict[str, FloatArray], art: PredictorArtifact, arm_current: FloatArray, span: int, stride: int
+    children: dict[str, FloatArray], art: RolloutArtifact, arm_current: FloatArray, span: int, stride: int
 ) -> list[Triplet]:
     """Roll the predictor out on every child and pair each rollout with a sibling and a stranger.
 
@@ -329,7 +329,7 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     """Run the section 8 measurement: correlation width, then floor and signal per geometry."""
     args = parse_args()
-    art = load_any_artifact(args.artifact)
+    art = load_rollout_artifact(args.artifact)
     fs = 1.0 / art.dt
 
     report_correlation_width(args.data, art, args.max_lag, args.seed)

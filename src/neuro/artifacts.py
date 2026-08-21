@@ -9,14 +9,18 @@ import numpy as np
 from neuro.esn import ESNArtifact
 from neuro.esn_predictor_casadi import ESNSymbolicModel
 from neuro.nn_predictor_casadi import NNSymbolicModel
+from neuro.observable import ObservableArtifact
+from neuro.observable_casadi import ObservableSymbolicModel
 from neuro.predictor.artifact import MLPArtifact
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
-    from neuro.types import FloatArray, SymbolicModel
+    from neuro.types import FloatArray, ObservableModel, SymbolicModel
 
-PredictorArtifact = MLPArtifact | ESNArtifact
+RolloutArtifact = MLPArtifact | ESNArtifact
+"""Artifacts that free-run on the sample grid; the free-run scores below only accept these."""
+PredictorArtifact = RolloutArtifact | ObservableArtifact
 
 # Energies are mean squares in mV**2, so this floors the log of a prediction that has collapsed
 # to silence rather than of a genuinely quiet one.
@@ -24,7 +28,7 @@ _ENERGY_EPS = 1e-12
 
 
 def load_any_artifact(artifact_path: str | Path) -> PredictorArtifact:
-    """Load a single-``.npz`` predictor artifact (MLP or ESN) from disk."""
+    """Load a single-``.npz`` predictor artifact (MLP, ESN or observable) from disk."""
     p = Path(artifact_path)
     npz_path = p.with_suffix(".npz")
     with np.load(npz_path) as npz:
@@ -33,19 +37,32 @@ def load_any_artifact(artifact_path: str | Path) -> PredictorArtifact:
         return MLPArtifact.load(p)
     if model_type == "esn":
         return ESNArtifact.load(p)
+    if model_type == "observable":
+        return ObservableArtifact.load(p)
     msg = f"unsupported model_type {model_type!r} in {npz_path}"
     raise ValueError(msg)
 
 
-def build_symbolic_model(art: PredictorArtifact) -> SymbolicModel:
-    """Build the appropriate symbolic model bridge for a predictor artifact."""
+def load_rollout_artifact(artifact_path: str | Path) -> RolloutArtifact:
+    """Load an artifact that free-runs on the sample grid, rejecting an observable one."""
+    art = load_any_artifact(artifact_path)
+    if isinstance(art, ObservableArtifact):
+        msg = f"{artifact_path} is an observable artifact; it forecasts the Observable and never a waveform."
+        raise TypeError(msg)
+    return art
+
+
+def build_symbolic_model(art: PredictorArtifact) -> SymbolicModel | ObservableModel:
+    """Build the appropriate symbolic model bridge; the MPC branches on which of the two it gets."""
     if isinstance(art, ESNArtifact):
         return ESNSymbolicModel(art)
+    if isinstance(art, ObservableArtifact):
+        return ObservableSymbolicModel(art)
     return NNSymbolicModel(art)
 
 
 def rollout_batches(
-    art: PredictorArtifact,
+    art: RolloutArtifact,
     trajectories: list[tuple[FloatArray, FloatArray]],
     steps: int,
     *,
@@ -75,7 +92,7 @@ def rollout_batches(
 
 
 def accumulate_rollout_errors(
-    art: PredictorArtifact,
+    art: RolloutArtifact,
     trajectories: list[tuple[FloatArray, FloatArray]],
     steps: int,
     *,
@@ -115,7 +132,7 @@ class RolloutNMSE(NamedTuple):
 
 
 def evaluate_rollouts(
-    art: PredictorArtifact,
+    art: RolloutArtifact,
     val_trajs: list[tuple[FloatArray, FloatArray]],
     horizon: int,
     step_stride: int = 25,
@@ -142,7 +159,7 @@ class LogEnergyError(NamedTuple):
 
 
 def evaluate_log_energy(  # noqa: PLR0913
-    art: PredictorArtifact,
+    art: RolloutArtifact,
     val_trajs: list[tuple[FloatArray, FloatArray]],
     horizon: int,
     *,

@@ -246,7 +246,7 @@ def _(fs, np, pred_full, spec, stages, true_full):
     n_pooled = freqs_band.size // spec.n_bin_pool
     freqs_pooled = freqs_band[: n_pooled * spec.n_bin_pool].reshape(n_pooled, spec.n_bin_pool).mean(axis=1)
 
-    m_in = spec.n_frames()
+    m_in = spec.n_segment_frames(spec.n_span)
     m_out = stage_pred["log"].shape[1]
     frame_times = (np.arange(m_in) * spec.n_hop + spec.n_segment / 2) / fs
     out_times = frame_times[(spec.kernel_width - 1) // 2 :][:m_out]

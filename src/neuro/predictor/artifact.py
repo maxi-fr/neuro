@@ -15,18 +15,28 @@ if TYPE_CHECKING:
 
 Activation = Literal["relu", "tanh", "softplus"]
 ACTIVATIONS: frozenset[str] = frozenset(get_args(Activation))
+Layers = tuple[tuple["FloatArray", "FloatArray"], ...]
+"""Per-layer ``(weight (out, in), bias (out,))`` pairs in forward-pass order."""
 
 
-def _activate(z: FloatArray, activation: Activation) -> FloatArray:
-    """Apply the named activation elementwise (matching ``_mlp_forward_ca`` and ``torch.nn.functional``).
+def activate(z: FloatArray, activation: Activation) -> FloatArray:
+    """Apply the named activation elementwise (matching ``mlp_forward_ca`` and ``torch.nn.functional``).
 
-    The name is validated once, in :meth:`MLPArtifact.load`, so the softplus branch is the fallthrough.
+    The name is validated once, on artifact load, so the softplus branch is the fallthrough.
     """
     if activation == "relu":
         return np.maximum(z, 0.0)
     if activation == "tanh":
         return np.tanh(z)
     return np.logaddexp(z, 0.0)
+
+
+def mlp_forward(x: FloatArray, layers: Layers, activation: Activation) -> FloatArray:
+    """Evaluate an MLP forward pass on ``(..., in_size)``; the activation follows all but the last layer."""
+    for w, b in layers[:-1]:
+        x = activate(x @ w.T + b, activation)
+    w_last, b_last = layers[-1]
+    return x @ w_last.T + b_last
 
 
 @dataclass(frozen=True)
@@ -61,7 +71,7 @@ class MLPArtifact:
         What the training data was made of; empty on artifacts written before it was recorded.
     """
 
-    layers: tuple[tuple[FloatArray, FloatArray], ...]
+    layers: Layers
     activation: Activation
     n_y: int
     n_u: int
@@ -124,11 +134,7 @@ class MLPArtifact:
         ``y_flat`` is ``(..., n_y * n_channels)`` and ``u_flat`` ``(..., n_u * n_controls)``, both
         flattened row-major with the newest step last; returns ``(..., n_channels)``.
         """
-        x = np.concatenate([y_flat, u_flat], axis=-1)
-        for w, b in self.layers[:-1]:
-            x = _activate(x @ w.T + b, self.activation)
-        w_last, b_last = self.layers[-1]
-        return x @ w_last.T + b_last
+        return mlp_forward(np.concatenate([y_flat, u_flat], axis=-1), self.layers, self.activation)
 
     def rollout(self, state: FloatArray, u_future: FloatArray) -> FloatArray:
         """Free-run from ``state`` under raw ``u_future`` (steps, n_controls) -> (steps, n_channels).

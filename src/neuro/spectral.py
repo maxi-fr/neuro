@@ -44,6 +44,48 @@ def hinge_penalty(power: FloatArray, reference: FloatArray) -> float:
     return float(np.mean(np.maximum(0.0, excess) ** 2))
 
 
+def windowed_mean_square(y: FloatArray, *, window: int, hop: int) -> FloatArray:
+    """Mean-square power of every length-``window`` slice of ``y`` ``(n_samples, n_channels)``, hopped by ``hop``.
+
+    The time-domain twin of :func:`compute_periodograms` on the same segment grid: what the
+    ``eeg_ms`` Observable reduces a Segment to. Returns ``(n_windows, n_channels)``.
+    """
+    n_samples, n_channels = y.shape
+    if n_samples < window:
+        return np.empty((0, n_channels), dtype=np.float64)
+    n_windows = (n_samples - window) // hop + 1
+    return np.stack([(y[m * hop : m * hop + window, :] ** 2).mean(axis=0) for m in range(n_windows)], axis=0)
+
+
+@dataclasses.dataclass(frozen=True)
+class MsEnvelope:
+    """Healthy per-channel mean-square power envelope plus the window geometry it was measured with.
+
+    Stored alongside :class:`PsdEnvelope` in the same npz. It is measured in the time domain rather
+    than derived from the PSD envelope by Parseval: the spectral cost leaves DC unscored while a
+    time-domain mean square includes the offset, so the two are not the same quantity.
+    """
+
+    power: FloatArray
+    fs: float
+    window: int
+    hop: int
+
+    @classmethod
+    def load(cls, path: str | Path) -> MsEnvelope:
+        """Read the mean-square envelope written by ``scripts/build_healthy_psd.py``."""
+        with np.load(path) as data:
+            if "Pref_ms" not in data:
+                msg = f"envelope at {path} carries no 'Pref_ms' array; rebuild it with scripts/build_healthy_psd.py."
+                raise ValueError(msg)
+            return cls(
+                power=np.asarray(data["Pref_ms"], dtype=np.float64),
+                fs=float(data["fs"]),
+                window=int(data["L"]),
+                hop=int(data["R"]),
+            )
+
+
 @dataclasses.dataclass(frozen=True)
 class PsdEnvelope:
     """Healthy per-``(channel, bin)`` power envelope plus the window geometry it was measured with."""

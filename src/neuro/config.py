@@ -5,7 +5,7 @@ import math
 import types
 import typing
 from pathlib import Path
-from typing import TYPE_CHECKING, Annotated, Any, Literal
+from typing import TYPE_CHECKING, Annotated, Any, ClassVar, Literal
 
 import numpy as np
 import yaml
@@ -98,24 +98,55 @@ class CurriculumMSESpec(SecondsSpanSpec):
         return self
 
 
-class StftSpec(LossSpec):
-    """Spectrogram matching loss spec: geometry in samples, since at fs = 50 Hz seconds do not resolve it.
+class ObservableGeometry(StrictConfig):
+    """Base for the grid an Observable is reduced onto: segment support, hop and per-channel width.
 
-    ``kernel_width = 1`` and ``n_bin_pool = 1`` mean "no pooling"; the Welch endpoint is
-    ``n_segment = n_span``, which yields a single frame.
+    The single source of truth shared by the offline target, the training Loss and the MPC Cost.
+    ``span_steps`` is passed in rather than stored, so one geometry serves any Control Horizon.
     """
 
-    n_span: int = Field(gt=0)
+    kind: ClassVar[str]
+
+    def segment_steps(self, fs: float) -> int:
+        """Length in samples of the Segment one Frame reduces."""
+        raise NotImplementedError
+
+    def hop_steps(self, fs: float) -> int:
+        """Spacing in samples between consecutive Segments."""
+        raise NotImplementedError
+
+    def n_frames(self, span_steps: int, fs: float) -> int:
+        """Count the Observable Frames a length-``span_steps`` span holds at ``fs``."""
+        raise NotImplementedError
+
+    def frame_supports(self, span_steps: int, fs: float) -> tuple[tuple[int, int], ...]:
+        """Half-open ``[start, end)`` sample support of every Frame, in span-relative indices."""
+        raise NotImplementedError
+
+    def n_values(self, fs: float) -> int:
+        """Count the scored values a Frame carries per channel."""
+        raise NotImplementedError
+
+    def check_span(self, span_steps: int, fs: float) -> None:
+        """Raise ``ValueError`` if ``span_steps`` cannot hold at least one Frame at ``fs``."""
+        raise NotImplementedError
+
+
+class StftGeometry(ObservableGeometry):
+    """Spectrogram geometry in samples, since at fs = 50 Hz seconds do not resolve it.
+
+    ``kernel_width = 1`` and ``n_bin_pool = 1`` mean "no pooling"; the Welch endpoint is
+    ``n_segment = span_steps``, which yields a single frame.
+    """
+
+    kind: ClassVar[str] = "stft"
+
     n_segment: int = Field(gt=0)
     n_hop: int = Field(gt=0)
     band_hz: tuple[float, float] | None = None
     n_bin_pool: int = Field(default=1, ge=1)
     kernel: Literal["boxcar", "triangular", "hann"] = "boxcar"
     kernel_width: int = Field(default=1, ge=1)
-
-    def span_steps(self, fs: float) -> int:  # noqa: ARG002 -- geometry is already in samples
-        """Rollout length in steps, declared directly."""
-        return self.n_span
 
     def bin_range(self, fs: float) -> tuple[int, int]:
         """Half-open rfft bin index range scored at ``fs``; DC is always excluded."""
@@ -127,56 +158,184 @@ class StftSpec(LossSpec):
         hi = min(n_bins, math.floor(hi_hz * self.n_segment / fs) + 1)
         return lo, max(lo, hi)
 
-    def n_frames(self) -> int:
-        """Count the frames the segment grid extracts from the span."""
-        return (self.n_span - self.n_segment) // self.n_hop + 1
+    def segment_steps(self, fs: float) -> int:  # noqa: ARG002 -- geometry is already in samples
+        """Length in samples of the Segment one Frame reduces."""
+        return self.n_segment
 
-    @model_validator(mode="after")
-    def _validate_geometry(self) -> Self:
-        if self.n_segment > self.n_span:
-            msg = f"stft.n_segment ({self.n_segment}) must be <= n_span ({self.n_span})."
+    def hop_steps(self, fs: float) -> int:  # noqa: ARG002 -- geometry is already in samples
+        """Spacing in samples between consecutive Segments."""
+        return self.n_hop
+
+    def n_segment_frames(self, span_steps: int) -> int:
+        """Count the frames the segment grid extracts from the span, before the Frame Kernel."""
+        return (span_steps - self.n_segment) // self.n_hop + 1
+
+    def n_frames(self, span_steps: int, fs: float) -> int:  # noqa: ARG002 -- geometry is already in samples
+        """Count the frames left after the Frame Kernel has consumed its valid support."""
+        return self.n_segment_frames(span_steps) - self.kernel_width + 1
+
+    def frame_supports(self, span_steps: int, fs: float) -> tuple[tuple[int, int], ...]:
+        """Sample support of every smoothed Frame: the ``kernel_width`` segments it pools."""
+        return tuple(
+            (m * self.n_hop, (m + self.kernel_width - 1) * self.n_hop + self.n_segment)
+            for m in range(self.n_frames(span_steps, fs))
+        )
+
+    def n_values(self, fs: float) -> int:
+        """Pooled in-band bin count per channel; ``pool_bins`` drops the trailing remainder."""
+        bin_lo, bin_hi = self.bin_range(fs)
+        return (bin_hi - bin_lo) // self.n_bin_pool
+
+    def check_span(self, span_steps: int, fs: float) -> None:
+        """Raise if the span is too short for the segment grid or for the Frame Kernel."""
+        if self.n_segment > span_steps:
+            msg = f"stft.n_segment ({self.n_segment}) must be <= the span ({span_steps} steps)."
             raise ValueError(msg)
-        n_frames = self.n_frames()
+        n_frames = self.n_segment_frames(span_steps)
         if self.kernel_width > n_frames:
             msg = f"stft.kernel_width ({self.kernel_width}) must be <= the frame count ({n_frames})."
             raise ValueError(msg)
         # A kernel that collapses the frame axis to one output is Welch with fewer effective dof.
-        if self.kernel_width > 1 and n_frames - self.kernel_width + 1 < _MIN_SMOOTHED_FRAMES:
-            msg = (
-                f"stft frame kernel leaves {n_frames - self.kernel_width + 1} frame(s); "
-                f"a kernel must leave >= {_MIN_SMOOTHED_FRAMES}."
-            )
+        n_out = self.n_frames(span_steps, fs)
+        if self.kernel_width > 1 and n_out < _MIN_SMOOTHED_FRAMES:
+            msg = f"stft frame kernel leaves {n_out} frame(s); a kernel must leave >= {_MIN_SMOOTHED_FRAMES}."
             raise ValueError(msg)
+
+    @model_validator(mode="after")
+    def _validate_band(self) -> Self:
         if self.band_hz is not None and self.band_hz[0] >= self.band_hz[1]:
             msg = f"stft.band_hz must be increasing, got {self.band_hz}."
             raise ValueError(msg)
         return self
 
 
-class MetricLossSpec(SecondsSpanSpec):
-    """Base for a metric twin: window geometry in seconds, as metrics.py defines it.
+class EegMsGeometry(ObservableGeometry):
+    """Trailing mean-square window geometry in seconds, as metrics.py defines it.
 
-    Both geometry fields default to ``None``, meaning "whatever grid ``metrics.py`` scores
-    ``name`` on"; the resolution happens in the ``*_steps`` methods, so the defaults live in
-    exactly one place -- :mod:`neuro.metrics` -- rather than being copied here.
+    Both fields default to ``None``, meaning "whatever grid ``metrics.py`` scores ``eeg_ms`` on";
+    the resolution happens in the ``*_steps`` methods, so the defaults live in exactly one place --
+    :mod:`neuro.metrics` -- rather than being copied here.
     """
+
+    kind: ClassVar[str] = "eeg_ms"
 
     window_s: float | None = Field(default=None, gt=0)
     hop_s: float | None = Field(default=None, gt=0)
 
-    def window_steps(self, fs: float, name: str) -> int:
-        """Trailing-window length in steps at ``fs``, defaulting to ``METRICS[name]``'s window."""
-        window_s = self.window_s if self.window_s is not None else METRICS[name].window_s
+    def window_steps(self, fs: float) -> int:
+        """Trailing-window length in steps at ``fs``, defaulting to the ``eeg_ms`` metric's window."""
+        window_s = self.window_s if self.window_s is not None else METRICS["eeg_ms"].window_s
         return round(window_s * fs)
+
+    def segment_steps(self, fs: float) -> int:
+        """Length in samples of the Segment one Frame reduces."""
+        return self.window_steps(fs)
 
     def hop_steps(self, fs: float) -> int:
         """Window spacing in steps at ``fs``, defaulting to the metrics layer's own hop."""
         hop_s = self.hop_s if self.hop_s is not None else DEFAULT_HOP_S
         return round(hop_s * fs)
 
+    def n_frames(self, span_steps: int, fs: float) -> int:
+        """Count the trailing windows the hop grid extracts from the span."""
+        return (span_steps - self.window_steps(fs)) // self.hop_steps(fs) + 1
 
-class EegMsSpec(MetricLossSpec):
-    """EEG mean square metric loss spec."""
+    def frame_supports(self, span_steps: int, fs: float) -> tuple[tuple[int, int], ...]:
+        """Sample support of every trailing window, in span-relative indices."""
+        n_window, n_hop = self.window_steps(fs), self.hop_steps(fs)
+        return tuple((m * n_hop, m * n_hop + n_window) for m in range(self.n_frames(span_steps, fs)))
+
+    def n_values(self, fs: float) -> int:  # noqa: ARG002 -- one mean square per channel, at any rate
+        """One mean-square value per channel."""
+        return 1
+
+    def check_span(self, span_steps: int, fs: float) -> None:
+        """Raise if the span cannot hold one trailing window, or the hop resolves below a sample."""
+        n_window, n_hop = self.window_steps(fs), self.hop_steps(fs)
+        if not 1 <= n_window <= span_steps:
+            msg = (
+                f"eeg_ms requires 1 <= round(window_s * fs) <= the span, got window_steps={n_window}, "
+                f"span={span_steps} at fs={fs} Hz."
+            )
+            raise ValueError(msg)
+        if n_hop < 1:
+            msg = f"eeg_ms hop_s resolves to < 1 sample at fs={fs} Hz."
+            raise ValueError(msg)
+
+
+class StftSpec(StftGeometry, LossSpec):
+    """Spectrogram matching loss spec: the shared :class:`StftGeometry`, scored over ``n_span`` steps."""
+
+    n_span: int = Field(gt=0)
+
+    def span_steps(self, fs: float) -> int:  # noqa: ARG002 -- geometry is already in samples
+        """Rollout length in steps, declared directly."""
+        return self.n_span
+
+    def geometry(self) -> StftGeometry:
+        """Return the Observable geometry this loss scores, without its weight and epoch gate."""
+        return StftGeometry(**{name: getattr(self, name) for name in StftGeometry.model_fields})
+
+    @model_validator(mode="after")
+    def _validate_span(self) -> Self:
+        # The sample-rate-dependent checks are the band and pooling ones, which
+        # NNPredictorConfig runs once it knows fs; the span itself is pure sample arithmetic.
+        if self.n_segment > self.n_span:
+            msg = f"stft.n_segment ({self.n_segment}) must be <= n_span ({self.n_span})."
+            raise ValueError(msg)
+        n_frames = self.n_segment_frames(self.n_span)
+        if self.kernel_width > n_frames:
+            msg = f"stft.kernel_width ({self.kernel_width}) must be <= the frame count ({n_frames})."
+            raise ValueError(msg)
+        if self.kernel_width > 1 and n_frames - self.kernel_width + 1 < _MIN_SMOOTHED_FRAMES:
+            msg = (
+                f"stft frame kernel leaves {n_frames - self.kernel_width + 1} frame(s); "
+                f"a kernel must leave >= {_MIN_SMOOTHED_FRAMES}."
+            )
+            raise ValueError(msg)
+        return self
+
+
+class EegMsSpec(EegMsGeometry, SecondsSpanSpec):
+    """EEG mean square metric loss spec: the shared :class:`EegMsGeometry` over a span in seconds."""
+
+    def geometry(self) -> EegMsGeometry:
+        """Return the Observable geometry this loss scores, without its weight and epoch gate."""
+        return EegMsGeometry(**{name: getattr(self, name) for name in EegMsGeometry.model_fields})
+
+
+class ObservableSpec(StrictConfig):
+    """Which Observable an observable-space predictor forecasts, on what grid, with what architecture.
+
+    Exactly one geometry is configured, dispatched the way :meth:`LossSpecs.active` dispatches on
+    which loss spec is non-``None``.
+    """
+
+    horizon: int = Field(ge=1)
+    stft: StftGeometry | None = None
+    eeg_ms: EegMsGeometry | None = None
+    z_dim: int = Field(default=32, ge=1)
+    lift_hidden: int = Field(default=128, ge=1)
+    lift_depth: int = Field(default=2, ge=0)
+    transition_hidden: int = Field(default=128, ge=1)
+    transition_depth: int = Field(default=2, ge=0)
+    activation: Literal["relu", "tanh", "softplus"] = "softplus"
+    control_blind: bool = False
+
+    def geometry(self) -> ObservableGeometry:
+        """Return the single configured Observable geometry."""
+        geom = self.stft if self.stft is not None else self.eeg_ms
+        if geom is None:  # pragma: no cover -- the validator below rules this out
+            msg = "'observable' must configure exactly one of 'stft' or 'eeg_ms'."
+            raise ValueError(msg)
+        return geom
+
+    @model_validator(mode="after")
+    def _validate_single_kind(self) -> Self:
+        if (self.stft is None) == (self.eeg_ms is None):
+            msg = "'observable' must configure exactly one of 'stft' or 'eeg_ms'."
+            raise ValueError(msg)
+        return self
 
 
 class LossSpecs(StrictConfig):
@@ -213,7 +372,9 @@ class TrainingConfig(StrictConfig):
     global_scaling: bool = False
     device: Literal["cpu", "cuda"] = "cpu"
     eval_horizon_s: float = Field(gt=0)
-    losses: LossSpecs
+    # ``None`` only on the observable path, whose loss is a fixed MSE on the frame grid rather
+    # than a configured set of terms; NNPredictorConfig requires one of the two.
+    losses: LossSpecs | None = None
 
     @model_validator(mode="after")
     def _validate_warmup(self) -> Self:
@@ -325,6 +486,7 @@ class NNPredictorConfig(StrictConfig):
     simulation: SimulationConfig = Field(default_factory=SimulationConfig)
     model: ModelConfig = Field(default_factory=ModelConfig)
     training: TrainingConfig
+    observable: ObservableSpec | None = None
     artifact: str | None = None
     sweep: NNSweepConfig | None = None
 
@@ -339,8 +501,19 @@ class NNPredictorConfig(StrictConfig):
         return cls.model_validate({} if data is None else data)
 
     @model_validator(mode="after")
+    def _validate_observable_exclusivity(self) -> Self:
+        if (self.training.losses is None) == (self.observable is None):
+            msg = "Configure exactly one of 'training.losses' (rollout path) or 'observable' (frame-grid path)."
+            raise ValueError(msg)
+        if self.observable is not None:
+            self.observable.geometry().check_span(self.observable.horizon, self.fs)
+        return self
+
+    @model_validator(mode="after")
     def _validate_losses_and_horizon(self) -> Self:
         fs = self.fs
+        if self.training.losses is None:
+            return self
         active = self.training.losses.active()
         if all(spec.start_epoch > 0 for spec in active.values()):
             msg = "At least one loss must have start_epoch = 0; otherwise epoch 0 has no gradient."
@@ -357,20 +530,9 @@ class NNPredictorConfig(StrictConfig):
                 msg = f"stft.n_bin_pool ({stft.n_bin_pool}) exceeds the {n_bins} in-band bin(s) at fs={fs} Hz."
                 raise ValueError(msg)
 
-        for name, spec in active.items():
-            if isinstance(spec, MetricLossSpec):
-                n_window = spec.window_steps(fs, name)
-                n_hop = spec.hop_steps(fs)
-                span_steps = spec.span_steps(fs)
-                if not (1 <= n_window <= span_steps):
-                    msg = (
-                        f"Metric loss '{name}' requires 1 <= round(window_s * fs) <= span_steps, "
-                        f"got window_steps={n_window}, span_steps={span_steps} at fs={fs} Hz."
-                    )
-                    raise ValueError(msg)
-                if n_hop < 1:
-                    msg = f"Metric loss '{name}' hop_s resolves to < 1 sample at fs={fs} Hz."
-                    raise ValueError(msg)
+        for spec in active.values():
+            if isinstance(spec, ObservableGeometry):
+                spec.check_span(spec.span_steps(fs), fs)
         return self
 
     @model_validator(mode="after")

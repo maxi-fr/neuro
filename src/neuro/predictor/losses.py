@@ -5,7 +5,15 @@ from typing import TYPE_CHECKING, Any, Protocol
 
 import torch
 
-from neuro.config import CurriculumMSESpec, EegMsSpec, LossSpec, LossSpecs, StftSpec
+from neuro.config import (
+    CurriculumMSESpec,
+    EegMsGeometry,
+    EegMsSpec,
+    LossSpec,
+    LossSpecs,
+    StftGeometry,
+    StftSpec,
+)
 from neuro.spectral import LOG_FLOOR
 
 if TYPE_CHECKING:
@@ -108,48 +116,36 @@ class StftLoss:
     weight: float
     span_steps: int
     start_epoch: int
-    n_segment: int
-    n_hop: int
-    bin_lo: int
-    bin_hi: int
-    n_bin_pool: int
-    kernel: str
-    kernel_width: int
+    geometry: StftGeometry
     name: str = "stft"
 
     @classmethod
     def from_spec(cls, spec: StftSpec, fs: float, name: str = "stft") -> StftLoss:
         """Instantiate from a StftSpec at sampling rate ``fs``."""
-        bin_lo, bin_hi = spec.bin_range(fs)
         return cls(
             weight=spec.weight,
             span_steps=spec.span_steps(fs),
             start_epoch=spec.start_epoch,
-            n_segment=spec.n_segment,
-            n_hop=spec.n_hop,
-            bin_lo=bin_lo,
-            bin_hi=bin_hi,
-            n_bin_pool=spec.n_bin_pool,
-            kernel=spec.kernel,
-            kernel_width=spec.kernel_width,
+            geometry=spec.geometry(),
             name=name,
         )
 
     def log_spectrogram(self, x: Tensor, ctx: LossContext) -> Tensor:
         """Pooled log power per ``(batch, channel, frame, bin)`` in raw units."""
+        geom = self.geometry
+        bin_lo, bin_hi = geom.bin_range(ctx.fs)
         raw = ctx.to_raw(x[:, : self.span_steps]).transpose(1, 2)
-        power = spectrogram(raw, self.n_segment, self.n_hop, fs=ctx.fs)[..., self.bin_lo : self.bin_hi]
-        power = pool_bins(power, self.n_bin_pool)
-        power = smooth_frames(power, frame_kernel(self.kernel, self.kernel_width, power))
+        power = spectrogram(raw, geom.n_segment, geom.n_hop, fs=ctx.fs)[..., bin_lo:bin_hi]
+        power = pool_bins(power, geom.n_bin_pool)
+        power = smooth_frames(power, frame_kernel(geom.kernel, geom.kernel_width, power))
         return torch.log(power + LOG_FLOOR)
 
     def __call__(self, pred: Tensor, true: Tensor, ctx: LossContext) -> tuple[Tensor, dict[str, float]]:
         """Compute mean squared log-power difference over frames, channels and bins."""
         residual = self.log_spectrogram(pred, ctx) - self.log_spectrogram(true, ctx)
-        weights = frame_kernel(self.kernel, self.kernel_width, residual)
-        n_frames = (self.span_steps - self.n_segment) // self.n_hop + 1
+        weights = frame_kernel(self.geometry.kernel, self.geometry.kernel_width, residual)
         diag = {
-            "M_out": float(n_frames - self.kernel_width + 1),
+            "M_out": float(self.geometry.n_frames(self.span_steps, ctx.fs)),
             "K_eff": float(weights.sum() ** 2 / (weights**2).sum()),
         }
         return torch.mean(residual**2), diag
@@ -166,8 +162,7 @@ class EegMsLoss:
     weight: float
     span_steps: int
     start_epoch: int
-    n_window: int
-    n_hop: int
+    geometry: EegMsGeometry
     name: str = "eeg_ms"
 
     @classmethod
@@ -177,15 +172,18 @@ class EegMsLoss:
             weight=spec.weight,
             span_steps=spec.span_steps(fs),
             start_epoch=spec.start_epoch,
-            n_window=spec.window_steps(fs, name),
-            n_hop=spec.hop_steps(fs),
+            geometry=spec.geometry(),
             name=name,
         )
 
     def windowed_power(self, x: Tensor, ctx: LossContext) -> Tensor:
         """Mean-square power per trailing window in raw units: ``(B, span, C) -> (B, C, n_windows)``."""
         raw = ctx.to_raw(x[:, : self.span_steps]).transpose(1, 2)
-        return raw.unfold(dimension=-1, size=self.n_window, step=self.n_hop).pow(2).mean(dim=-1)
+        return (
+            raw.unfold(dimension=-1, size=self.geometry.window_steps(ctx.fs), step=self.geometry.hop_steps(ctx.fs))
+            .pow(2)
+            .mean(dim=-1)
+        )
 
     def __call__(self, pred: Tensor, true: Tensor, ctx: LossContext) -> tuple[Tensor, dict[str, float]]:
         """Compute log-space MSE between windowed mean-square power courses."""

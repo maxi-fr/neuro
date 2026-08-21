@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from neuro.artifacts import load_any_artifact
+from neuro.observable import ObservableArtifact, envelope_log_reference, load_envelope
 from neuro.provenance import plant_fingerprint
 from neuro.spectral import PsdEnvelope
 
@@ -114,6 +115,51 @@ def _check_psd_reference(controller: Mapping[str, Any], controller_dt: float) ->
             raise ConfigConsistencyError(msg)
 
 
+def _check_observable_geometry(art: ObservableArtifact, controller: Mapping[str, Any]) -> None:
+    """Require the geometry recorded in an observable artifact to match the reference envelope's.
+
+    :func:`_check_psd_reference` only sees what the YAML declares, not what the predictor was fit on.
+    """
+    psd_ref_path = controller.get("psd_ref")
+    if psd_ref_path is None:
+        return
+
+    geometry, fs = art.geometry, art.fs
+    try:
+        envelope = load_envelope(psd_ref_path, geometry)
+    except (ValueError, TypeError) as exc:
+        msg = f"the envelope at {psd_ref_path} does not carry a {geometry.kind} reference: {exc}"
+        raise ConfigConsistencyError(msg) from exc
+
+    for field, recorded, measured in (
+        ("fs", fs, envelope.fs),
+        ("segment length", geometry.segment_steps(fs), envelope.window),
+        ("hop", geometry.hop_steps(fs), envelope.hop),
+        ("channel count", art.n_channels, envelope.power.shape[0]),
+    ):
+        if not math.isclose(recorded, measured, rel_tol=_REL_TOL):
+            msg = (
+                f"the observable predictor was trained at {field} {recorded} but the reference "
+                f"envelope at {psd_ref_path} was measured at {measured}; the Cost would score a "
+                f"forecast against a reference built on another grid."
+            )
+            raise ConfigConsistencyError(msg)
+
+    # The envelope records no bin range, pooling or Frame Kernel width, so those are checked
+    # indirectly: reducing it onto the artifact's grid must yield exactly the readout's width.
+    try:
+        reference = envelope_log_reference(envelope, geometry, fs)
+    except (IndexError, TypeError) as exc:
+        msg = f"the envelope at {psd_ref_path} cannot be reduced onto the artifact's frame grid: {exc}"
+        raise ConfigConsistencyError(msg) from exc
+    if reference.shape != (art.n_channels, art.n_values):
+        msg = (
+            f"the artifact's scored bin range and pooling leave {reference.shape} reference values "
+            f"but its readout emits {(art.n_channels, art.n_values)}."
+        )
+        raise ConfigConsistencyError(msg)
+
+
 def _check_predictor(config: Mapping[str, Any]) -> None:
     """Require the loop's rate, anti-alias filter, horizon, plant and current range to match the predictor's."""
     controller = config["controller"]
@@ -149,6 +195,8 @@ def _check_predictor(config: Mapping[str, Any]) -> None:
         )
 
     _check_psd_reference(controller, controller_dt)
+    if isinstance(art, ObservableArtifact):
+        _check_observable_geometry(art, controller)
 
     if provenance.plant_fingerprint is not None and provenance.plant_fingerprint != plant_fingerprint(config):
         warnings.warn(

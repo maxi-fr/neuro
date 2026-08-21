@@ -11,7 +11,7 @@ from simulate.experiment import ExperimentManager
 
 from neuro.predictor.data import load_trajectory
 from neuro.provenance import data_plant_fingerprint, plant_fingerprint
-from neuro.spectral import compute_periodograms
+from neuro.spectral import compute_periodograms, windowed_mean_square
 from neuro.validation import validate_simulation_config
 
 
@@ -47,6 +47,9 @@ def build_healthy_psd(  # noqa: PLR0913
 ) -> Path:
     """Pool healthy periodograms into a per-``(channel, bin)`` quantile envelope and save it to npz.
 
+    The same npz also carries ``Pref_ms``, the per-channel mean-square envelope the ``eeg_ms``
+    observable hinges against, measured on the same segment grid.
+
     The decimation is read from ``config_path`` rather than passed in, so the envelope is always
     measured at the rate the closed loop runs the cost at.
     """
@@ -67,23 +70,28 @@ def build_healthy_psd(  # noqa: PLR0913
         raise RuntimeError(msg)
 
     all_windows = []
+    all_ms_windows = []
     for f in data_files:
         _, y = load_trajectory(str(f), n_steps=None, downsample=downsample, dt=dt_plant)
         p_windows = compute_periodograms(y, fs=fs, window=window, hop=hop)
         if len(p_windows) > 0:
             all_windows.append(p_windows)
+            all_ms_windows.append(windowed_mean_square(y, window=window, hop=hop))
     if not all_windows:
         msg = "No valid windows extracted from trajectory files."
         raise RuntimeError(msg)
 
     stacked = np.concatenate(all_windows, axis=0)  # (total_windows, n_channels, n_bins)
     reference = np.quantile(stacked, quantile, axis=0)  # (n_channels, n_bins)
+    # The eeg_ms observable's reference; see MsEnvelope for why it is measured rather than derived.
+    reference_ms = np.quantile(np.concatenate(all_ms_windows, axis=0), quantile, axis=0)  # (n_channels,)
 
     fp = data_plant_fingerprint(data_dir) or plant_fingerprint(first_cfg)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     np.savez_compressed(
         output_path,
         Pref=reference,
+        Pref_ms=reference_ms,
         freqs=np.fft.rfftfreq(window, 1.0 / fs),
         fs=fs,
         L=window,

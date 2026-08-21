@@ -17,7 +17,7 @@ if TYPE_CHECKING:
     from neuro.types import FloatArray
 
 
-def _activation_module(activation: Activation) -> nn.Module:
+def activation_module(activation: Activation) -> nn.Module:
     """Return the torch activation module matching the named activation."""
     if activation == "relu":
         return nn.ReLU()
@@ -26,7 +26,7 @@ def _activation_module(activation: Activation) -> nn.Module:
     return nn.Softplus()
 
 
-def _to_numpy(t: Tensor) -> FloatArray:
+def to_numpy(t: Tensor) -> FloatArray:
     """Detach a parameter into an owned float64 NumPy array."""
     return t.detach().cpu().numpy().astype(np.float64, copy=True)
 
@@ -76,7 +76,7 @@ class AutoregressiveMLP(nn.Module):
         for i, (n_in, n_out) in enumerate(itertools.pairwise(sizes)):
             modules.append(nn.Linear(n_in, n_out, dtype=torch.float32))
             if i < depth:
-                modules.append(_activation_module(activation))
+                modules.append(activation_module(activation))
         self.layers = nn.Sequential(*modules)
 
     def forward(self, x: Tensor) -> Tensor:
@@ -106,7 +106,7 @@ class AutoregressiveMLP(nn.Module):
     def to_artifact(self, dt: float, downsample: int, y_std: Standardizer, u_std: Standardizer) -> MLPArtifact:
         """Freeze the trained weights and standardizers into a framework-free artifact."""
         linears = (m for m in self.layers if isinstance(m, nn.Linear))
-        layers = tuple((_to_numpy(lin.weight), _to_numpy(lin.bias)) for lin in linears)
+        layers = tuple((to_numpy(lin.weight), to_numpy(lin.bias)) for lin in linears)
         return MLPArtifact(
             layers=layers,
             activation=self.activation,

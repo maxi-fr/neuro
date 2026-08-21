@@ -3,7 +3,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from neuro.artifacts import accumulate_rollout_errors, load_any_artifact, nmse
+from neuro.artifacts import accumulate_rollout_errors, load_rollout_artifact, nmse
 from neuro.predictor.data import load_trajectory
 
 _REPORT_STEPS = (1, 5, 10, 20, 40, 60, 80, 100, 125, 150)
@@ -31,7 +31,7 @@ def main() -> None:
     """Roll artifact(s) out to --max-steps on held-out data and print per-step NMSE and power_ratio."""
     args = parse_args()
     artifact_paths: list[Path] = args.artifact
-    artifacts = [load_any_artifact(p) for p in artifact_paths]
+    artifacts = [load_rollout_artifact(p) for p in artifact_paths]
 
     files = sorted(str(p) for p in args.data.glob("*.npz"))
     if not files:

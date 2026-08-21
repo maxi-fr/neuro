@@ -9,7 +9,7 @@ import casadi as ca
 import numpy as np
 import pytest
 
-from neuro.nn_predictor_casadi import NNSymbolicModel, _mlp_forward_ca
+from neuro.nn_predictor_casadi import NNSymbolicModel, mlp_forward_ca
 from neuro.predictor.artifact import Activation, MLPArtifact
 from neuro.transforms import Standardizer
 
@@ -139,7 +139,7 @@ def test_mlp_forward_matches_artifact(
 
     in_size = n_y * n_channels + n_u * n_controls
     x_sym = ca.SX.sym("x", in_size, 1)
-    fn = ca.Function("f", [x_sym], [_mlp_forward_ca(x_sym, art.layers, activation)])
+    fn = ca.Function("f", [x_sym], [mlp_forward_ca(x_sym, art.layers, activation)])
 
     rng = np.random.default_rng(_SEED + 1)
     for _ in range(5):
@@ -297,7 +297,7 @@ def test_casadi_softplus_stays_finite_past_the_exp_overflow() -> None:
     identity = ((np.ones((1, 1)), np.zeros(1)), (np.ones((1, 1)), np.zeros(1)))
 
     z_sym = ca.MX.sym("z", 1, 1)
-    softplus = ca.Function("softplus", [z_sym], [_mlp_forward_ca(z_sym, identity, "softplus")])
+    softplus = ca.Function("softplus", [z_sym], [mlp_forward_ca(z_sym, identity, "softplus")])
     got = np.array([_np2(softplus(zi)).item() for zi in z])
 
     assert np.isfinite(got).all()

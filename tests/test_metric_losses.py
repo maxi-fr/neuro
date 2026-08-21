@@ -4,6 +4,7 @@ import numpy as np
 import pytest
 import torch
 
+from neuro.config import EegMsGeometry
 from neuro.metrics import DEFAULT_HOP_S, METRICS
 from neuro.predictor.losses import EegMsLoss, LossContext
 
@@ -19,8 +20,6 @@ def test_eeg_ms_windows_pin_against_numpy_metrics(fs: float, hop_s: float) -> No
     span_s = 1.0
     span_steps = round(span_s * fs)
     window_s = METRICS["eeg_ms"].window_s
-    n_window = round(window_s * fs)
-    n_hop = round(hop_s * fs)
 
     # 1. Test identity standardizer: x is already in raw units
     x_raw = rng.standard_normal((n_channels, span_steps))
@@ -30,8 +29,7 @@ def test_eeg_ms_windows_pin_against_numpy_metrics(fs: float, hop_s: float) -> No
         weight=1.0,
         span_steps=span_steps,
         start_epoch=0,
-        n_window=n_window,
-        n_hop=n_hop,
+        geometry=EegMsGeometry(window_s=window_s, hop_s=hop_s),
     )
 
     x_tensor = torch.as_tensor(x_raw.T[np.newaxis, ...], dtype=torch.float64)  # (1, span_steps, n_channels)
@@ -80,8 +78,7 @@ def test_eeg_ms_loss_identical_inputs_give_zero() -> None:
         weight=1.0,
         span_steps=span_steps,
         start_epoch=0,
-        n_window=5,
-        n_hop=2,
+        geometry=EegMsGeometry(window_s=5 / 50.0, hop_s=2 / 50.0),
     )
 
     loss, diag = loss_fn(x, x, ctx)
@@ -106,8 +103,7 @@ def test_eeg_ms_loss_gradient_finite_and_nonzero() -> None:
         weight=1.0,
         span_steps=span_steps,
         start_epoch=0,
-        n_window=5,
-        n_hop=2,
+        geometry=EegMsGeometry(window_s=5 / 50.0, hop_s=2 / 50.0),
     )
 
     loss, _ = loss_fn(pred, true, ctx)
