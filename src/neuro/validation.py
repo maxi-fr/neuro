@@ -16,7 +16,11 @@ if TYPE_CHECKING:
 
 _FILTERING_ESTIMATORS = frozenset({"neuro.filtering.AntiAliasEstimator", "neuro.filtering.LowPassEstimator"})
 _PREDICTIVE_CONTROLLERS = frozenset(
-    {"neuro.control.nonlinear_mpc.MPCController", "neuro.control.linear_mpc.LinearMPCController"}
+    {
+        "neuro.control.nonlinear_mpc.MPCController",
+        "neuro.control.linear_mpc.LinearMPCController",
+        "neuro.control.narx_mpc.NarxMPCController",
+    }
 )
 _REL_TOL = 1e-9
 

@@ -86,6 +86,14 @@ def test_consistent_config_passes(config: dict[str, Any]) -> None:
         validate_simulation_config(config)
 
 
+def test_narx_mpc_consistent_config_passes(config: dict[str, Any]) -> None:
+    """A config matching its predictor on NarxMPCController validates cleanly."""
+    config["controller"]["class_path"] = "neuro.control.narx_mpc.NarxMPCController"
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        validate_simulation_config(config)
+
+
 def test_controller_dt_must_match_predictor(config: dict[str, Any]) -> None:
     """A controller stepping at a rate other than the predictor's native dt is rejected."""
     config["controller"]["dt"] = _PLANT_DT * 100
