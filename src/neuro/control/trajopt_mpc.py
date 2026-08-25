@@ -12,7 +12,7 @@ from simulate.controller import Controller
 from trajopt.cones import ZeroCone
 from trajopt.constraints.bounds import ControlBound
 from trajopt.constraints.constraint_list import ConstraintList
-from trajopt.constraints.linear import LinearConstraint
+from trajopt.constraints.linear import GoalConstraint, LinearConstraint
 from trajopt.costs.objective import Objective
 from trajopt.costs.quadratic import DiagonalCost
 from trajopt.dynamics.base import DiscreteDynamics
@@ -534,6 +534,47 @@ def _native_expansion_only(solver: Solver) -> bool:
     return type(solver).__module__.startswith("trajopt.solvers")
 
 
+def _has_non_goal_knot_constraint(problem: Problem) -> bool:
+    """Whether a knot constraint beyond box bounds remains, which single shooting rejects.
+
+    Box bounds are hoisted into primal limits, so the knot evaluators hold only non-box
+    constraints; any that is not a ``GoalConstraint`` (the Kirchhoff linear equality, say) is
+    exactly what ``SingleShooting._validate_supported_constraints`` refuses at solve time.
+    """
+    return any(
+        not isinstance(con, GoalConstraint)
+        for evaluator in problem.constraints.knot_evaluators
+        for con in evaluator.constraints
+    )
+
+
+def _default_solver(problem: Problem) -> Ipopt | SingleShooting:
+    """Select the default solver: general Ipopt for non-box knots, single shooting otherwise.
+
+    ``SingleShooting`` expresses only ``ControlBound`` and ``GoalConstraint``, so a problem
+    carrying the Kirchhoff linear equality must use the general Ipopt transcription -- the
+    incumbent's ``solver="ipopt"`` choice, reproduced here with its limited-memory Hessian.
+    """
+    ipopt = Ipopt(options={"print_level": 0, "hessian_approximation": "limited-memory"})
+    if _has_non_goal_knot_constraint(problem):
+        return ipopt
+    return SingleShooting(solver=ipopt)
+
+
+def ensure_solver_supports_constraints(problem: Problem, solver: Solver) -> None:
+    """Raise when an injected solver cannot carry the problem's knot constraints.
+
+    ``SingleShooting`` rejects any non-box knot constraint beyond a ``GoalConstraint`` at solve
+    time; fail at construction instead, under the same criterion.
+    """
+    if isinstance(solver, SingleShooting) and _has_non_goal_knot_constraint(problem):
+        msg = (
+            "SingleShooting supports only ControlBound and GoalConstraint; this problem carries "
+            "a knot constraint it cannot express. Use the general Ipopt transcription instead."
+        )
+        raise ValueError(msg)
+
+
 def ensure_solver_supports_objective(problem: Problem, solver: Solver) -> None:
     """Raise when a native expansion-only solver would silently drop a whole-horizon cost."""
     if not _native_expansion_only(solver):
@@ -815,8 +856,10 @@ class TrajOptMPCController(Controller[TrajOptMPCLog]):
         problem
             The trajopt optimal-control problem: model adapter + objective + constraint list.
         solver
-            Solver backend (e.g. ``SingleShooting``); defaults to Ipopt single shooting with
-            printing off.
+            Solver backend (e.g. ``SingleShooting(Ipopt(...))``); overrides the default. When
+            omitted, the default is the general Ipopt transcription if the constraint list
+            carries a non-box knot constraint (the Kirchhoff linear equality), else
+            single-shooting Ipopt -- both with printing off.
         initial_state
             Initial MPC warm-start state; defaults to one built from the unprimed model state,
             with the NaN padding of the unprimed EEG window replaced by zeros so the seed is
@@ -830,7 +873,8 @@ class TrajOptMPCController(Controller[TrajOptMPCLog]):
             msg = f"problem.model ({type(model).__name__}) does not implement the Predictor priming seam"
             raise TypeError(msg)
         self.model = model
-        self.solver = solver if solver is not None else SingleShooting(solver=Ipopt(options={"print_level": 0}))
+        self.solver = solver if solver is not None else _default_solver(problem)
+        ensure_solver_supports_constraints(problem, self.solver)
         ensure_solver_supports_objective(problem, self.solver)
         unprimed = jnp.nan_to_num(jnp.asarray(self.model.initial_state()), nan=0.0)
         self.state = initial_state if initial_state is not None else MPCState.initial(problem, x0=unprimed, dt=dt)
@@ -844,7 +888,9 @@ class TrajOptMPCController(Controller[TrajOptMPCLog]):
         Follows ``TrajOptMPC.from_config``'s pattern: ``problem`` is either a Problem instance
         or a ``{class_path, ...}`` dict naming a Problem-building factory (e.g.
         ``neuro.control.trajopt_mpc.build_waveform_problem``); ``solver`` and ``initial_state``
-        are optional.
+        are optional. When ``solver`` is omitted the default is chosen from the problem's
+        constraints (see ``__init__``), so a migrated ``kirchhoff: true`` config needs no
+        injected solver.
         """
         problem, initial_state = _build_problem(config["problem"])
         return cls(

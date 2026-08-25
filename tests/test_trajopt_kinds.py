@@ -531,3 +531,31 @@ def test_observable_problem_rejects_native_solver_with_hinge(
     problem = build_observable_problem(artifact, horizon=16, u_max=2.0, w_u=0.1, w_psd=10.0, psd_ref=envelope)
     with pytest.raises(ValueError, match="whole-horizon"):
         TrajOptMPCController(dt=ckpt.dt, problem=problem, solver=ALTRO())
+
+
+def test_observable_config_defaults_to_general_ipopt_with_kirchhoff(
+    tmp_path: Path, make_observable_checkpoint: Callable[..., ObservableCheckpoint]
+) -> None:
+    """The migrated observable config with ``kirchhoff: true`` and no solver picks the general Ipopt.
+
+    The ObservableRolloutHinge is whole-horizon, but the general Ipopt transcription is not a
+    native expansion-only backend, so ``ensure_solver_supports_objective`` must not reject it;
+    the default selection chooses it over single shooting because of the Kirchhoff equality.
+    """
+    with Path("configs/simulation/observable_psd_mpc.yaml").open() as file:
+        sim_config = safe_load(file)
+    controller_cfg = sim_config["controller"]
+    assert controller_cfg["problem"]["kirchhoff"] is True
+
+    ckpt = make_observable_checkpoint(StftGeometry(n_segment=_L, n_hop=_R), horizon=75, n_y=4, dt=0.02)
+    artifact = tmp_path / "observable"
+    ckpt.save(artifact)
+    envelope = _envelope_npz(tmp_path, np.full((ckpt.n_channels, _L // 2 + 1), 1e-3))
+
+    problem_cfg = {
+        **controller_cfg["problem"],
+        "artifact": str(artifact),
+        "psd_ref": str(envelope),
+    }
+    controller = TrajOptMPCController.from_config({"dt": controller_cfg["dt"], "problem": problem_cfg})
+    assert type(controller.solver) is Ipopt

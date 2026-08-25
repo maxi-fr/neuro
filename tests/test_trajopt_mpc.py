@@ -9,6 +9,7 @@ import numpy as np
 import pytest
 import torch
 from trajopt.transcription.ipopt import Ipopt
+from trajopt.transcription.single_shooting import SingleShooting
 from yaml import safe_load
 
 from neuro.checkpoint import load_mlp
@@ -363,3 +364,41 @@ def test_migrated_config_reproduces_incumbent_end_to_end(tmp_path: Path) -> None
     controls, costs = _drive_golden(controller, n_steps=8, n_channels=controller.model.n_channels)
     np.testing.assert_allclose(controls, _WAVEFORM_PARITY_CONTROLS, atol=1e-4)
     np.testing.assert_allclose(costs, _WAVEFORM_PARITY_COSTS, atol=1e-4)
+
+
+def test_migrated_config_reproduces_incumbent_with_default_solver(tmp_path: Path) -> None:
+    """A migrated ``kirchhoff: true`` config runs through ``from_config`` with no injected solver.
+
+    The default selection must pick the general Ipopt transcription (the incumbent's
+    ``solver="ipopt"``) when the Kirchhoff linear equality is present, so the config-driven
+    closed loop reproduces the incumbent control sequence and reported cost.
+    """
+    with Path("configs/simulation/mse02_psd_mpc.yaml").open() as file:
+        sim_config = safe_load(file)
+    controller_cfg = sim_config["controller"]
+    problem_cfg = {
+        **controller_cfg["problem"],
+        "artifact": str(_build_checkpoint(tmp_path, depth=0)),
+        "horizon": 3,
+        "u_max": 0.5,
+        "w_y": 1.0,
+        "w_u": 0.0,
+    }
+    controller = TrajOptMPCController.from_config({"dt": controller_cfg["dt"], "problem": problem_cfg})
+    assert type(controller.solver) is Ipopt  # the general transcription, not SingleShooting
+
+    controls, costs = _drive_golden(controller, n_steps=8, n_channels=controller.model.n_channels)
+    np.testing.assert_allclose(controls, _WAVEFORM_PARITY_CONTROLS, atol=1e-4)
+    np.testing.assert_allclose(costs, _WAVEFORM_PARITY_COSTS, atol=1e-4)
+
+
+def test_single_shooting_solver_rejected_when_kirchhoff(tmp_path: Path) -> None:
+    """An injected single-shooting solver on a Kirchhoff problem fails at construction, not solve."""
+    artifact = _build_checkpoint(tmp_path, depth=0)
+    problem = build_waveform_problem(artifact, horizon=3, u_max=0.5, w_y=1.0, kirchhoff=True)
+    with pytest.raises(ValueError, match="SingleShooting supports only ControlBound and GoalConstraint"):
+        TrajOptMPCController(
+            dt=0.01,
+            problem=problem,
+            solver=SingleShooting(solver=Ipopt(options={"print_level": 0})),
+        )
