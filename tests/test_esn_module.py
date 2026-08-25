@@ -10,8 +10,9 @@ import torch
 
 from neuro.esn import ESNArtifact, generate_reservoir, harvest_normal_equations, solve_ridge
 from neuro.predictor.esn_module import ESNModule
+from neuro.predictor.ridge import RidgeTrainer
 from neuro.transforms import Standardizer
-from neuro.types import Predictor
+from neuro.types import Predictor, RidgeFittable
 
 if TYPE_CHECKING:
     from neuro.types import FloatArray
@@ -298,6 +299,54 @@ def test_solve_ridge_reproduces_the_incumbent() -> None:
     np.testing.assert_allclose(
         model.solve_ridge(G, P, 1e-3), solve_ridge(G, P, 1e-3), rtol=_RIDGE_RTOL, atol=_RIDGE_ATOL
     )
+
+
+def test_design_normal_equations_reproduces_the_incumbent_harvest() -> None:
+    """Streaming G/P equals the incumbent numpy harvest at noise_sigma = 0, to float32 tolerance."""
+    art = _artifact()
+    model = _module()
+    rng = np.random.default_rng(_SEED + 7)
+    y = rng.standard_normal((60, _N_EEG))
+    u = rng.standard_normal((60, _N_CONTROLS))
+
+    G, P = model.design_normal_equations([(u, y)])
+    G_want, P_want = harvest_normal_equations(
+        trajectories=[(u, y)],
+        y_std=art.y_std,
+        u_std=art.u_std,
+        w_res=art.w_res,
+        w_in=art.w_in,
+        leak_rate=art.leak_rate,
+        priming_steps=art.priming_steps,
+        noise_sigma=0.0,
+        seed=_SEED,
+    )
+    np.testing.assert_allclose(G, G_want, rtol=_RTOL, atol=_ATOL)
+    np.testing.assert_allclose(P, P_want, rtol=_RTOL, atol=_ATOL)
+
+
+def test_install_readout_writes_w_out() -> None:
+    """``install_readout`` overwrites the ``w_out`` buffer with the fitted readout, bias column last."""
+    model = _module()
+    rng = np.random.default_rng(_SEED + 9)
+    A = rng.standard_normal((_N_EEG, _N_RES + 1))
+    model.install_readout(A)
+    np.testing.assert_array_equal(model.w_out.numpy(), A.astype(np.float32))
+
+
+def test_ridge_trainer_fits_the_esn_end_to_end() -> None:
+    """The Ridge Trainer on the ESN reproduces the incumbent design -> solve -> install pipeline."""
+    _artifact()
+    model = _module()
+    assert isinstance(model, RidgeFittable)
+    rng = np.random.default_rng(_SEED + 10)
+    y = rng.standard_normal((80, _N_EEG))
+    u = rng.standard_normal((80, _N_CONTROLS))
+
+    RidgeTrainer(ridge_lambda=1e-3).fit(model, [(u, y)])
+    G, P = model.design_normal_equations([(u, y)])
+    w_want = solve_ridge(G, P, 1e-3)
+    np.testing.assert_allclose(model.w_out.numpy(), w_want.astype(np.float32), rtol=_RTOL, atol=_ATOL)
 
 
 def test_bias_column_is_unregularized() -> None:

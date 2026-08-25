@@ -134,11 +134,11 @@ class ESNModule(nn.Module):
         """Reconstruct raw EEG ``(..., n_channels)`` from standardized model space."""
         return self.y_std.inverse_transform(np.asarray(z, dtype=np.float64))
 
-    def _apply_w_res(self, h: Tensor) -> Tensor:
-        """Apply the reservoir ``W_res @ h`` for ``h (..., N)`` -> ``(..., N)`` (``h @ W_res.T``)."""
+    def _apply_w_res(self, w_res: Tensor, h: Tensor) -> Tensor:
+        """Apply the sparse reservoir ``w_res @ h`` for ``h (..., N)`` -> ``(..., N)`` (``h @ w_res.T``)."""
         if h.ndim == 1:
-            return torch.sparse.mm(self.w_res, h.unsqueeze(-1)).squeeze(-1)
-        return torch.sparse.mm(self.w_res, h.T).T
+            return torch.sparse.mm(w_res, h.unsqueeze(-1)).squeeze(-1)
+        return torch.sparse.mm(w_res, h.T).T
 
     def _readout(self, h: Tensor) -> Tensor:
         """One-step-ahead standardized prediction ``z_hat`` from ``h (..., N)`` -> ``(..., C)``."""
@@ -149,7 +149,7 @@ class ESNModule(nn.Module):
         """Advance ``h (..., N)`` one step, absorbing the standardized input ``(z, v)``."""
         x_in = torch.cat([z, v, v.new_ones((*v.shape[:-1], 1))], dim=-1)
         alpha = self.leak_rate
-        return (1.0 - alpha) * h + alpha * torch.tanh(self._apply_w_res(h) + x_in @ self.w_in.T)
+        return (1.0 - alpha) * h + alpha * torch.tanh(self._apply_w_res(self.w_res, h) + x_in @ self.w_in.T)
 
     def _split(self, state: FloatArray) -> tuple[FloatArray, float]:
         """Split an opaque state into the reservoir vector ``(N,)`` and the absorbed-step counter."""
@@ -243,6 +243,51 @@ class ESNModule(nn.Module):
             preds[:, t] = self.decode(to_numpy(z_hat))
             h_t = self._absorb(h_t, z_hat, v[:, t])
         return preds
+
+    def design_normal_equations(
+        self, trajectories: list[tuple[FloatArray, FloatArray]]
+    ) -> tuple[FloatArray, FloatArray]:
+        """Stream the reservoir states ``[h; 1]`` and one-step-ahead targets into ``(G, P)``.
+
+        Reproduces the incumbent :func:`neuro.esn.harvest_normal_equations` at ``noise_sigma = 0``:
+        the row holds ``h`` *before* it absorbs the paired sample, so the target is a genuine
+        one-step-ahead prediction rather than a reconstruction. The recurrence runs in float64 on
+        the float32 buffers, so the accumulated ``G``/``P`` match the incumbent numpy harvest to
+        LAPACK precision.
+        """
+        N = self.reservoir_size
+        n = N + 1
+        c = self.n_channels
+        G = np.zeros((n, n), dtype=np.float64)
+        P = np.zeros((n, c), dtype=np.float64)
+        w_res = self.w_res.double()
+        w_in = self.w_in.double()
+        alpha = self.leak_rate
+
+        for u_raw, y_raw in trajectories:
+            y_arr = np.asarray(y_raw, dtype=np.float64)
+            z = torch.as_tensor(self.encode(y_arr), dtype=torch.float64)
+            v = torch.as_tensor(self.u_std.transform(np.asarray(u_raw, dtype=np.float64)), dtype=torch.float64)
+            T = z.shape[0]
+            h = torch.zeros(N, dtype=torch.float64)
+
+            n_harvest = max(0, T - self.priming_steps)
+            H_mat = np.empty((n_harvest, n), dtype=np.float64) if n_harvest > 0 else None
+            if H_mat is not None:
+                H_mat[:, -1] = 1.0
+            for t in range(T):
+                if H_mat is not None and t >= self.priming_steps:
+                    H_mat[t - self.priming_steps, :N] = to_numpy(h)
+                x_in = torch.cat([z[t], v[t], h.new_ones(1)])
+                h = (1.0 - alpha) * h + alpha * torch.tanh(self._apply_w_res(w_res, h) + x_in @ w_in.T)
+            if H_mat is not None:
+                G += H_mat.T @ H_mat
+                P += H_mat.T @ z.numpy()[self.priming_steps :]
+        return G, P
+
+    def install_readout(self, A: FloatArray) -> None:
+        """Write the ridge-fitted readout ``A (n_channels, reservoir_size + 1)`` into ``w_out``."""
+        self.w_out.copy_(torch.as_tensor(A, dtype=torch.float32))
 
     def solve_ridge(self, G: FloatArray, P: FloatArray, ridge_lambda: float) -> FloatArray:
         """Solve the ridge readout ``W_out = (G + lambda I)^-1 P`` in torch, bias column unregularized.

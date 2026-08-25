@@ -10,11 +10,13 @@ import torch
 from torch import nn
 
 from neuro.config import EegMsGeometry, ObservableGeometry, StftGeometry
-from neuro.observable import control_means
-from neuro.predictor.module import AutoregressiveMLP
+from neuro.observable import control_means, log_observable
+from neuro.predictor.data import build_dataset_for_trajectory, extract_future_windows
+from neuro.predictor.module import AutoregressiveMLP, to_numpy
 from neuro.predictor.observable_module import StepwiseObservableMLP
+from neuro.predictor.ridge import RidgeTrainer
 from neuro.transforms import Standardizer
-from neuro.types import Predictor
+from neuro.types import Predictor, RidgeFittable
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -287,6 +289,61 @@ def test_rollout_accepts_any_length_not_just_the_native_horizon() -> None:
     long = model.rollout(state, np.zeros((_HORIZON + 3, _N_CONTROLS)))
 
     assert long.shape == (model.geometry.n_frames(_HORIZON + 3, _FS), model.n_outputs)
+
+
+def test_depth0_ridge_fits_the_shared_readout_on_harvested_z_m() -> None:
+    """A depth-0 observable ridge fit solves the harvested ``(z_m, target)`` pairs exactly.
+
+    The pairs are re-derived through the module's own blocks, so the normal equations, the
+    streaming and the write-back are all pinned against an explicit lstsq at once.
+    """
+    rng = np.random.default_rng(_SEED + 9)
+    t_len = 200
+    y = rng.standard_normal((t_len, _N_EEG))
+    u = rng.standard_normal((t_len, _N_CONTROLS))
+    model = StepwiseObservableMLP(
+        n_y=_N_Y,
+        n_u=_N_U,
+        horizon=_HORIZON,
+        n_channels=_N_EEG,
+        n_controls=_N_CONTROLS,
+        geometry=StftGeometry(n_segment=3, n_hop=2),
+        fs=_FS,
+        z_dim=_Z_DIM,
+        lift_hidden=_HIDDEN,
+        lift_depth=0,
+        transition_hidden=_HIDDEN,
+        transition_depth=0,
+    )
+    assert isinstance(model, RidgeFittable)
+
+    RidgeTrainer(ridge_lambda=0.0).fit(model, [(u, y)])
+
+    # Re-derive the harvested pairs through the module's own blocks.
+    n_hist = _N_Y * _N_EEG + _N_U * _N_CONTROLS
+    n_frames = model.n_frames()
+    X, _ = build_dataset_for_trajectory(model.u_std.transform(u), model.encode(y), _N_Y, _N_U, _HORIZON)
+    y_fut = extract_future_windows(y, _N_Y, _N_U, _HORIZON)
+    targets = model.l_std.transform(
+        log_observable(y_fut.reshape(-1, _HORIZON, _N_EEG), model.geometry, _FS).reshape(-1, n_frames, model.n_outputs)
+    )
+    n_samples = X.shape[0]
+    z = model.lift(torch.as_tensor(X[:, :n_hist], dtype=torch.float32))
+    u_bar = torch.einsum(
+        "mt,btc->bmc",
+        model.aggregate,
+        torch.as_tensor(X[:, n_hist:].reshape(n_samples, _HORIZON, _N_CONTROLS), dtype=torch.float32),
+    )
+    H = np.empty((n_samples * n_frames, _Z_DIM + 1))
+    H[:, -1] = 1.0
+    for m in range(n_frames):
+        z = model.transition(torch.cat([z, u_bar[:, m]], dim=1))
+        H[m * n_samples : (m + 1) * n_samples, :_Z_DIM] = to_numpy(z)
+    T = targets.transpose(1, 0, 2).reshape(-1, model.n_outputs)
+
+    A_want = np.linalg.lstsq(H, T, rcond=None)[0].T
+    installed = np.hstack([model.readout.weight.detach().numpy(), model.readout.bias.detach().numpy()[:, None]])
+    np.testing.assert_allclose(installed, A_want, rtol=_RTOL, atol=_ATOL)
 
 
 def test_frame_m_is_invariant_to_controls_after_its_segment() -> None:

@@ -19,9 +19,10 @@ from neuro.config import (
     TrainingConfig,
 )
 from neuro.predictor.artifact import MLPArtifact
-from neuro.predictor.data import prepare_datasets
+from neuro.predictor.data import fit_standardizers, prepare_datasets
 from neuro.predictor.losses import LossContext, build_losses, total_loss
 from neuro.predictor.module import AutoregressiveMLP
+from neuro.predictor.ridge import RidgeTrainer
 from neuro.predictor.train import lr_schedule, train
 
 if TYPE_CHECKING:
@@ -179,6 +180,71 @@ def test_returned_artifact_is_the_best_epoch_not_the_last(files: list[str]) -> N
     assert min(result.val_losses) < result.val_losses[-1]
 
     assert _validation_loss(cfg, files, result.artifact) == pytest.approx(min(result.val_losses))
+
+
+def test_depth0_ridge_fit_reproduces_the_warm_start(files: list[str]) -> None:
+    """The Ridge Trainer on a depth-0 MLP reproduces the incumbent warm-start least-squares.
+
+    The incumbent warm start is the exact 1-step ``lstsq`` over the standardized windows; the
+    ridge fit folds the same features and targets into normal equations from the raw trajectories
+    and must land on the same single layer at lambda = 0.
+    """
+    cfg = _config(depth=0)
+    mdl, trn = cfg.model, cfg.training
+    horizon = _HORIZON
+    data = prepare_datasets(
+        files,
+        None,
+        1,
+        mdl.n_y,
+        mdl.n_u,
+        horizon,
+        _DT,
+        trn.train_split,
+        scaler=trn.scaler,
+        global_scaling=trn.global_scaling,
+    )
+    split = fit_standardizers(
+        files,
+        n_steps_cfg=None,
+        downsample=1,
+        dt=_DT,
+        train_split=trn.train_split,
+        scaler=trn.scaler,
+        global_scaling=trn.global_scaling,
+    )
+
+    def build() -> AutoregressiveMLP:
+        return AutoregressiveMLP(
+            n_y=mdl.n_y,
+            n_u=mdl.n_u,
+            horizon=horizon,
+            n_channels=data.n_channels,
+            n_controls=data.n_controls,
+            hidden_size=mdl.hidden_size,
+            depth=0,
+            activation=mdl.activation,
+            dt=_DT,
+            y_std=data.y_std,
+            u_std=data.u_std,
+        )
+
+    model = build()
+    RidgeTrainer(ridge_lambda=0.0).fit(model, split.train_trajs)
+
+    # The incumbent warm-start solution, re-derived on the same standardized windows.
+    y_len = mdl.n_y * data.n_channels
+    m = data.n_controls
+    X_1step = np.hstack([data.X_train[:, :y_len], data.X_train[:, y_len + m : y_len + (mdl.n_u + 1) * m]])
+    weight_bias, *_ = np.linalg.lstsq(
+        np.hstack([X_1step, np.ones((X_1step.shape[0], 1))]), data.Y_train[:, : data.n_channels], rcond=None
+    )
+    layer = model.layers[0]
+    assert isinstance(layer, torch.nn.Linear)
+    # The module's standardizers live in float32 buffers, so the ridge features differ from the
+    # pipeline's float64 windows at ~1e-7; the single layer must match at float32 precision.
+    np.testing.assert_allclose(layer.weight.detach().numpy(), weight_bias[:-1].T, rtol=1e-5, atol=1e-6)
+    np.testing.assert_allclose(layer.bias.detach().numpy(), weight_bias[-1], rtol=1e-5, atol=1e-6)
 
 
 def test_same_seed_reproduces_and_offset_decorrelates(files: list[str]) -> None:

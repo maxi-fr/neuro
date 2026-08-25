@@ -1,16 +1,19 @@
 from __future__ import annotations
 
 import itertools
-from typing import TYPE_CHECKING, Self
+from typing import TYPE_CHECKING, Self, cast
 
 import numpy as np
 import torch
 from torch import nn
 
 from neuro.predictor.artifact import MLPArtifact
+from neuro.predictor.data import build_dataset_for_trajectory
 from neuro.transforms import Standardizer
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from torch import Tensor
 
     from neuro.predictor.artifact import Activation
@@ -29,6 +32,45 @@ def activation_module(activation: Activation) -> nn.Module:
 def to_numpy(t: Tensor) -> FloatArray:
     """Detach a parameter into an owned float64 NumPy array."""
     return t.detach().cpu().numpy().astype(np.float64, copy=True)
+
+
+def design_normal_equations(
+    self: AutoregressiveMLP,
+    trajectories: list[tuple[FloatArray, FloatArray]],
+) -> tuple[FloatArray, FloatArray]:
+    """Fold one-step input features and next-step targets into ``(G, P)``, bias column last.
+
+    Reproduces the incumbent warm-start least-squares: for every window on the shared grid the
+    feature row pairs the past-EEG block with the control window shifted in by one step (the
+    alignment ``forward``/``step`` use), and the target is the next standardized sample.
+    """
+    c = self.n_channels
+    m = self.n_controls
+    y_len = self.n_y * c
+    f = y_len + self.n_u * m + 1
+    G = np.zeros((f, f), dtype=np.float64)
+    P = np.zeros((f, c), dtype=np.float64)
+    for u_raw, y_raw in trajectories:
+        X, Y = build_dataset_for_trajectory(
+            self.u_std.transform(np.asarray(u_raw, dtype=np.float64)),
+            self.encode(np.asarray(y_raw, dtype=np.float64)),
+            self.n_y,
+            self.n_u,
+            self.horizon,
+        )
+        X_1step = np.hstack([X[:, :y_len], X[:, y_len + m : y_len + (self.n_u + 1) * m]])
+        X_design = np.hstack([X_1step, np.ones((X_1step.shape[0], 1))])
+        G += X_design.T @ X_design
+        P += X_design.T @ Y[:, :c]
+    return G, P
+
+
+def install_readout(self: AutoregressiveMLP, A: FloatArray) -> None:
+    """Write the ridge-fitted single layer ``A (n_channels, f)``, bias column last."""
+    layer = cast("nn.Linear", self.layers[0])
+    with torch.no_grad():
+        layer.weight.copy_(torch.as_tensor(np.ascontiguousarray(A[:, :-1]), dtype=torch.float32))
+        layer.bias.copy_(torch.as_tensor(A[:, -1], dtype=torch.float32))
 
 
 class AutoregressiveMLP(nn.Module):
@@ -64,6 +106,11 @@ class AutoregressiveMLP(nn.Module):
     y_scale: Tensor
     u_center: Tensor
     u_scale: Tensor
+    # The Ridge-Fittable capability is attached per-instance on depth-0 models only (see
+    # __init__); the declarations keep the bound methods visible to static checks while hidden-
+    # layer instances still lack them at runtime, so the build-time capability check fails.
+    design_normal_equations: Callable[..., tuple[FloatArray, FloatArray]]
+    install_readout: Callable[..., None]
 
     def __init__(  # noqa: PLR0913
         self,
@@ -102,6 +149,15 @@ class AutoregressiveMLP(nn.Module):
             if i < depth:
                 modules.append(activation_module(activation))
         self.layers = nn.Sequential(*modules)
+
+        if depth == 0:
+            # The readout is the whole model, so the closed-form fit exists exactly here; a model
+            # with hidden layers is nonlinear end-to-end and must fail the Ridge-Fittable
+            # capability check at build time rather than carry a method that raises mid-fit.
+            self.design_normal_equations = cast(
+                "Callable[..., tuple[FloatArray, FloatArray]]", design_normal_equations.__get__(self)
+            )
+            self.install_readout = cast("Callable[..., None]", install_readout.__get__(self))
 
         y_std = y_std or Standardizer(center=np.zeros(n_channels), scale=np.ones(n_channels))
         u_std = u_std or Standardizer(center=np.zeros(n_controls), scale=np.ones(n_controls))

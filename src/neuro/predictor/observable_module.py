@@ -7,7 +7,8 @@ import numpy as np
 import torch
 from torch import nn
 
-from neuro.observable import ObservableArtifact, control_means
+from neuro.observable import ObservableArtifact, control_means, log_observable
+from neuro.predictor.data import build_dataset_for_trajectory, extract_future_windows
 from neuro.predictor.module import activation_module, to_numpy
 from neuro.transforms import Standardizer
 
@@ -358,6 +359,59 @@ class StepwiseObservableMLP(nn.Module):
             z_next = self.transition(torch.as_tensor(np.concatenate([z, u_std], axis=-1), dtype=torch.float32))
             l_std = self.readout(z_next)
         return to_numpy(z_next), self.l_std.inverse_transform(to_numpy(l_std))
+
+    def design_normal_equations(
+        self, trajectories: list[tuple[FloatArray, FloatArray]]
+    ) -> tuple[FloatArray, FloatArray]:
+        """Harvest the per-Frame lifted states ``z_m`` and their Frame targets into ``(G, P)``.
+
+        Every window on the shared grid lifts once and recurses through the shared transition;
+        each post-transition state pairs with its Frame's standardized log-Observable target, so
+        the readout -- shared across Frames -- is fitted on every ``(z_m, target)`` pair of every
+        window. The bias column (last) is the constant-1 feature.
+        """
+        f = self.z_dim + 1
+        c = self.n_outputs
+        n_hist = self._n_hist
+        n_frames = self.n_frames()
+        G = np.zeros((f, f), dtype=np.float64)
+        P = np.zeros((f, c), dtype=np.float64)
+
+        for u_raw, y_raw in trajectories:
+            u_arr = np.asarray(u_raw, dtype=np.float64)
+            y_arr = np.asarray(y_raw, dtype=np.float64)
+            X, _ = build_dataset_for_trajectory(
+                self.u_std.transform(u_arr), self.encode(y_arr), self.n_y, self.n_u, self.horizon
+            )
+            y_fut = extract_future_windows(y_arr, self.n_y, self.n_u, self.horizon)
+            targets = self.l_std.transform(
+                log_observable(y_fut.reshape(-1, self.horizon, self.n_channels), self.geometry, self.fs).reshape(
+                    -1, n_frames, c
+                )
+            )
+            n_samples = X.shape[0]
+            H_mat = np.empty((n_samples * n_frames, f), dtype=np.float64)
+            H_mat[:, -1] = 1.0
+            z = self.lift(torch.as_tensor(X[:, :n_hist], dtype=torch.float32))
+            u_bar = torch.einsum(
+                "mt,btc->bmc",
+                self.aggregate,
+                torch.as_tensor(X[:, n_hist:].reshape(n_samples, self.horizon, self.n_controls), dtype=torch.float32),
+            )
+            for m in range(n_frames):
+                z = self.transition(torch.cat([z, u_bar[:, m]], dim=1))
+                H_mat[m * n_samples : (m + 1) * n_samples, : self.z_dim] = to_numpy(z)
+            # Frame-major rows, paired with the frame-major targets below.
+            T_mat = targets.transpose(1, 0, 2).reshape(-1, c)
+            G += H_mat.T @ H_mat
+            P += H_mat.T @ T_mat
+        return G, P
+
+    def install_readout(self, A: FloatArray) -> None:
+        """Write the ridge-fitted shared readout ``A (n_outputs, z_dim + 1)``, bias column last."""
+        with torch.no_grad():
+            self.readout.weight.copy_(torch.as_tensor(np.ascontiguousarray(A[:, :-1]), dtype=torch.float32))
+            self.readout.bias.copy_(torch.as_tensor(A[:, -1], dtype=torch.float32))
 
     def prime(self, y_hist: FloatArray, u_hist: FloatArray) -> FloatArray:
         """Absorb raw history into an initial state: the register plus the lifted Frame state.

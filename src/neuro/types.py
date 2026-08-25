@@ -155,6 +155,33 @@ class Predictor(Protocol):
         ...
 
 
+@runtime_checkable
+class RidgeFittable(Protocol):
+    """Capability of a Predictor whose readout is linear in a feature vector it produces itself.
+
+    A capability protocol, not a base-protocol member: it names the closed-form fit around the
+    readout, so it stays independent of how the features are produced -- a depth-0 MLP is linear
+    end-to-end, the ESN is nonlinear end-to-end with only a linear readout, and a depth-0
+    observable MLP is linear end-to-end. ``is_linear`` would not express that, and a bare boolean
+    would still leave the Ridge Trainer needing per-kind knowledge of how to extract features and
+    where to write the result. The Trainer checks this capability at build time.
+    """
+
+    def design_normal_equations(
+        self, trajectories: list[tuple[FloatArray, FloatArray]]
+    ) -> tuple[FloatArray, FloatArray]:
+        """Accumulate the normal equations from raw ``(u, y)`` trajectories: ``(G (f, f), P (f, c))``.
+
+        The last feature column is the constant-1 bias, so the Ridge Trainer can leave it
+        unregularized without knowing which feature it is.
+        """
+        ...
+
+    def install_readout(self, A: FloatArray) -> None:
+        """Write the closed-form-fitted readout ``A (c, f)``, bias column last, into the module."""
+        ...
+
+
 class ObservableModel(Protocol):
     """Protocol for models that forecast an Observable over the Control Horizon in one shot.
 
