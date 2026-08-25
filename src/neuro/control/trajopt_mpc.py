@@ -9,8 +9,10 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 from simulate.controller import Controller
+from trajopt.cones import ZeroCone
 from trajopt.constraints.bounds import ControlBound
 from trajopt.constraints.constraint_list import ConstraintList
+from trajopt.constraints.linear import LinearConstraint
 from trajopt.costs.objective import Objective
 from trajopt.costs.quadratic import DiagonalCost
 from trajopt.dynamics.base import DiscreteDynamics
@@ -19,11 +21,14 @@ from trajopt.transcription.ipopt import Ipopt
 from trajopt.transcription.single_shooting import SingleShooting
 
 from neuro.checkpoint import MLPCheckpoint, load_mlp
+from neuro.control.trajopt_costs import L1ControlCost, SpectralHingeCost, SumCost
+from neuro.spectral import PsdEnvelope
 
 if TYPE_CHECKING:
     from pathlib import Path
 
     from numpy.typing import ArrayLike
+    from trajopt.costs.base import CostFunction
     from trajopt.transcription.result import Solver
 
     from neuro.types import Activation, FloatArray
@@ -193,7 +198,24 @@ class TrajOptMPCLog:
     warmup: bool
 
 
-def build_waveform_problem(  # noqa: PLR0913 -- checkpoint plus the six MPC cost/bound knobs
+def kirchhoff_constraint(n: int, m: int) -> LinearConstraint:
+    """Kirchhoff current-law equality: the per-electrode currents sum to zero at each step.
+
+    The incumbent NLP's ``_sum_to_zero`` equality, expressed with
+    ``trajopt.constraints.linear``: ``A @ u - b = 0`` with ``A = ones(1, m)`` and ``b = 0``
+    on the control block of ``z = [x; u]`` at every non-terminal knot.
+    """
+    return LinearConstraint(
+        n=n,
+        m=m,
+        A=jnp.ones((1, m)),
+        b=jnp.zeros(1),
+        sense=ZeroCone(),
+        inds=range(n, n + m),
+    )
+
+
+def build_waveform_problem(  # noqa: PLR0913 -- checkpoint plus the nine MPC cost/bound knobs
     artifact: str | Path,
     *,
     horizon: int,
@@ -201,14 +223,25 @@ def build_waveform_problem(  # noqa: PLR0913 -- checkpoint plus the six MPC cost
     w_y: float = 1.0,
     w_u: float = 0.0,
     w_y_terminal: float | None = None,
+    w_u_l1: float = 0.0,
+    w_psd: float = 0.0,
+    psd_ref: str | Path | None = None,
+    kirchhoff: bool = False,
 ) -> Problem:
-    """Assemble the waveform MPC problem: model adapter, quadratic tracking objective, box bounds.
+    """Assemble the waveform MPC problem: model adapter, objective, box and Kirchhoff bounds.
 
     The state cost encodes ``w_y * ||decode(z_last)||^2`` -- the incumbent's EEG-power term,
     a quadratic in the newest standardized y-window row ``z_last`` -- plus ``w_u * ||u||^2`` on
     every control; ``w_y_terminal`` (when given) replaces ``w_y`` on the final knot, exactly as
-    the incumbent's horizon-mean stage cost does. The constraints are the control box bounds
-    ``-u_max <= u <= u_max`` alone; the Kirchhoff equality and hinge/L1 costs arrive in ticket 02.
+    the incumbent's horizon-mean stage cost does. All three are scaled by ``1 / horizon``,
+    reproducing the incumbent's ``cost / horizon`` reduction so that the spectral hinge (which
+    is not horizon-meaned) trades against them exactly as it does in the CasADi graph. The
+    L1 sparsity penalty ``(w_u_l1 / horizon) * sum(|u|)`` and the spectral PSD hinge
+    (``w_psd`` against ``psd_ref``'s healthy envelope) join the quadratic as custom
+    ``CostFunction`` subclasses. The constraints are the control box bounds
+    ``-u_max <= u <= u_max``, plus the Kirchhoff sum-to-zero equality when ``kirchhoff`` is
+    set -- ticket 01's quadratic/box subset leaves the equality out, because the single-shooting
+    transcription cannot carry it; the full set is solved with the general Ipopt transcription.
 
     Parameters
     ----------
@@ -226,6 +259,20 @@ def build_waveform_problem(  # noqa: PLR0913 -- checkpoint plus the six MPC cost
     w_y_terminal
         Weight on predicted EEG power at the final horizon step, replacing ``w_y`` there;
         ``None`` (default) keeps ``w_y`` uniform over the horizon.
+    w_u_l1
+        Weight on the L1 norm of the control effort (a sparse-stimulation penalty); ``0``
+        disables it (default), leaving the pure-quadratic problem unchanged.
+    w_psd
+        Weight on the spectral cost: the mean squared amount by which the predicted EEG
+        spectrum exceeds ``psd_ref``'s healthy envelope, in log power. ``0`` (default)
+        disables it.
+    psd_ref
+        Path to the healthy reference envelope npz written by ``scripts/build_healthy_psd.py``.
+        Required when ``w_psd > 0``; its stored window geometry drives the cost.
+    kirchhoff
+        Add the Kirchhoff sum-to-zero equality on the controls. Off by default, matching
+        ticket 01's quadratic/box subset; the incumbent applies it unconditionally, so the
+        full parity test sets it.
     """
     model = WaveformMLPModel.from_checkpoint(artifact)
     n, m = model.n, model.m
@@ -233,18 +280,39 @@ def build_waveform_problem(  # noqa: PLR0913 -- checkpoint plus the six MPC cost
     u_max_arr = np.broadcast_to(np.atleast_1d(np.asarray(u_max, dtype=np.float64)), (m,))
 
     z_last = slice((model.n_y - 1) * model.n_channels, model.n_y * model.n_channels)
-    Q = jnp.zeros(n).at[z_last].set(2.0 * w_y * model.y_scale**2)
+    Q = jnp.zeros(n).at[z_last].set(2.0 * w_y * model.y_scale**2 / horizon)
     xf = jnp.zeros(n).at[z_last].set(-model.y_center / model.y_scale)
-    stage = DiagonalCost.tracking(Q, jnp.full(m, 2.0 * w_u), xf, jnp.zeros(m))
-    if w_y_terminal is None:
-        terminal = None
-    else:
-        Q_f = jnp.zeros(n).at[z_last].set(2.0 * w_y_terminal * model.y_scale**2)
-        terminal = DiagonalCost.terminal_tracking(Q_f, xf, m)
-    objective = Objective(stage_cost=stage, terminal_cost=terminal, N=N)
+    stage = DiagonalCost.tracking(Q, jnp.full(m, 2.0 * w_u / horizon), xf, jnp.zeros(m))
+    costs: list[CostFunction] = [stage]
+    if w_u_l1 > 0:
+        costs.append(L1ControlCost(n=n, m=m, w_l1=w_u_l1, horizon=horizon))
+    if w_psd > 0:
+        if psd_ref is None:
+            msg = "psd_ref must be provided when w_psd > 0"
+            raise ValueError(msg)
+        envelope = PsdEnvelope.load(psd_ref)
+        costs.append(
+            SpectralHingeCost(
+                model=model,
+                envelope=envelope,
+                w_psd=w_psd,
+                horizon=horizon,
+            )
+        )
+    stage_cost: CostFunction = SumCost(costs) if len(costs) > 1 else costs[0]
+    # The terminal knot carries the horizon's final output, weighted by ``w_y_terminal`` when
+    # given else ``w_y`` -- the incumbent's last-step stage cost. Always explicit, because the
+    # composite's derived terminal (``SumCost.as_terminal``) would otherwise carry the
+    # control-only L1 and whole-horizon hinge into a knot that has no control.
+    w_y_final = w_y_terminal if w_y_terminal is not None else w_y
+    Q_f = jnp.zeros(n).at[z_last].set(2.0 * w_y_final * model.y_scale**2 / horizon)
+    terminal = DiagonalCost.terminal_tracking(Q_f, xf, m)
+    objective = Objective(stage_cost=stage_cost, terminal_cost=terminal, N=N)
 
     constraints = ConstraintList(n=n, m=m, N=N)
     constraints.add_constraint(ControlBound(n=n, m=m, u_min=-u_max_arr, u_max=u_max_arr), range(N - 1))
+    if kirchhoff:
+        constraints.add_constraint(kirchhoff_constraint(n, m), range(N - 1))
     return Problem(model=model, obj=objective, constraints=constraints, N=N)
 
 
@@ -277,17 +345,17 @@ class TrajOptMPCController(Controller[TrajOptMPCLog]):
             Solver backend (e.g. ``SingleShooting``); defaults to Ipopt single shooting with
             printing off.
         initial_state
-            Initial MPC warm-start state; defaults to one built from the unprimed model state.
+            Initial MPC warm-start state; defaults to one built from the unprimed model state,
+            with the NaN padding of the unprimed EEG window replaced by zeros so the seed is
+            finite for every solver (the multiple-shooting transcription starts from the full
+            state trajectory, not just the controls).
         """
         super().__init__(dt)
         self.problem = problem
         self.model = cast("PredictorModel", problem.model)
         self.solver = solver if solver is not None else SingleShooting(solver=Ipopt(options={"print_level": 0}))
-        self.state = (
-            initial_state
-            if initial_state is not None
-            else MPCState.initial(problem, x0=jnp.asarray(self.model.initial_state()), dt=dt)
-        )
+        unprimed = jnp.nan_to_num(jnp.asarray(self.model.initial_state()), nan=0.0)
+        self.state = initial_state if initial_state is not None else MPCState.initial(problem, x0=unprimed, dt=dt)
         self._state = np.asarray(self.model.initial_state(), dtype=np.float64)
         self._u_last = np.zeros(problem.model.m, dtype=np.float64)
 
