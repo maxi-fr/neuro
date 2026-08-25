@@ -2,99 +2,13 @@ import argparse
 import shutil
 from pathlib import Path
 
-import optuna
-import yaml
-from simulate.config import deep_merge
-
-from neuro.closed_loop_eval import evaluate_closed_loop_suppression
-from neuro.config import (
-    ModelConfig,
-    NNPredictorConfig,
-    TrainingConfig,
-    expand_dotted_dict,
-    load_config,
-    resolve_artifact_dir,
-    resolve_data_files,
-)
-from neuro.predictor.train import train
-
-
-def objective(
-    trial: optuna.Trial,
-    base_config: NNPredictorConfig,
-    data_files: list[str],
-    base_artifact_dir: Path,
-) -> float:
-    """Optuna objective: apply the trial's suggested params, train predictor, and compute metric."""
-    sweep = base_config.sweep
-    if sweep is None:
-        msg = "objective requires a config with a 'sweep' section."
-        raise RuntimeError(msg)
-
-    model_overrides = {name: spec.suggest(trial, name) for name, spec in sweep.model.items()}
-    training_overrides = {name: spec.suggest(trial, name) for name, spec in sweep.training.items()}
-    merged_model = deep_merge(base_config.model.model_dump(), expand_dotted_dict(model_overrides))
-    merged_training = deep_merge(base_config.training.model_dump(), expand_dotted_dict(training_overrides))
-    config = base_config.model_copy(
-        update={
-            "model": ModelConfig.model_validate(merged_model),
-            "training": TrainingConfig.model_validate(merged_training),
-        }
-    )
-
-    print(f"\n{'=' * 40}")
-    print(f"Starting Trial {trial.number}")
-    print(f"{'=' * 40}")
-    print("Suggested hyperparameters:")
-    for k, v in trial.params.items():
-        print(f"  {k}: {v}")
-    print("-" * 40)
-
-    trial_dir = base_artifact_dir / f"trial_{trial.number}"
-    trial_dir.mkdir(parents=True, exist_ok=True)
-
-    trial_config = config.model_dump(exclude={"sweep"})
-    with (trial_dir / "trial_config.yaml").open("w") as f:
-        yaml.dump(trial_config, f)
-
-    try:
-        result = train(config, data_files, seed_offset=trial.number)
-    except ValueError as e:
-        if "NaN" in str(e):
-            print(f"Trial {trial.number} pruned: {e}")
-            raise optuna.TrialPruned from e
-        raise
-
-    result.save(trial_dir)
-
-    # Every candidate objective is recorded on every trial, whichever one is being minimized, so a
-    # finished study can be re-ranked on the others without re-running it.
-    candidates = dict(result.candidates)
-    for name, value in candidates.items():
-        trial.set_user_attr(name, value)
-
-    if sweep.closed_loop is not None:
-        print(f"\nEvaluating closed-loop seizure suppression on trial {trial.number}...")
-        candidates["closed_loop"], summary = evaluate_closed_loop_suppression(trial_dir, sweep.closed_loop)
-        for k, v in summary.items():
-            trial.set_user_attr(k, v)
-        print(
-            f"  seizure burden: {summary['seizure_burden']:.4f}, "
-            f"{int(summary['suppressed_seeds'])}/{int(summary['total_seeds'])} seeds suppressed, "
-            f"mean amplitude: {summary['mean_amplitude']:.2%}"
-        )
-
-    score = candidates[sweep.objective]
-    print(
-        f"\nTrial {trial.number} completed with {sweep.objective}: {score:.4f} "
-        f"({', '.join(f'{k}: {v:.4f}' for k, v in candidates.items() if k != sweep.objective)})"
-    )
-    return score
+from neuro.config import load_config, resolve_artifact_dir, resolve_data_files
+from neuro.predictor.sweep import OptunaSweep
 
 
 def main() -> None:
-    """Execute the hyperparameter sweep script."""
-    parser = argparse.ArgumentParser(description="Run Optuna Sweep for the torch NN Predictor.")
+    """Execute the Optuna hyperparameter sweep for the NN predictors."""
+    parser = argparse.ArgumentParser(description="Run Optuna Sweep for the NN Predictors.")
     parser.add_argument("--config", type=str, required=True, help="Path to sweep config YAML.")
     parser.add_argument("--data-path", type=str, help="Override config data path.")
     args = parser.parse_args()
@@ -107,18 +21,10 @@ def main() -> None:
         msg = f"No 'sweep' section found in config: {config_path}"
         raise ValueError(msg)
 
-    base_artifact_dir = resolve_artifact_dir(config.sweep.artifact, "sweep_nn_predictor")
-    shutil.copy2(config_path, base_artifact_dir / config_path.name)
+    artifact_dir = resolve_artifact_dir(config.sweep.artifact, "sweep_nn_predictor")
+    shutil.copy2(config_path, artifact_dir / config_path.name)
 
-    study_name = "nn_predictor_sweep"
-    db_path = base_artifact_dir / f"{study_name}.db"
-    storage_url = f"sqlite:///{db_path.resolve()}"
-
-    study = optuna.create_study(study_name=study_name, storage=storage_url, direction="minimize", load_if_exists=True)
-    study.optimize(
-        lambda trial: objective(trial, config, data_files, base_artifact_dir),
-        n_trials=config.sweep.n_trials,
-    )
+    study = OptunaSweep(config, data_files, artifact_dir).run()
 
     print("\n================== SWEEP COMPLETED ==================")
     print("Best trial:")
@@ -127,8 +33,7 @@ def main() -> None:
     print("  Params: ")
     for key, value in best_trial.params.items():
         print(f"    {key}: {value}")
-
-    print(f"\nArtifacts saved in: {base_artifact_dir.resolve()}")
+    print(f"\nArtifacts saved in: {artifact_dir.resolve()}")
 
 
 if __name__ == "__main__":

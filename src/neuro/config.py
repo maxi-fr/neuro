@@ -398,7 +398,7 @@ class CategoricalParam(StrictConfig):
     type: Literal["categorical"]
     choices: list[Any]
 
-    def suggest(self, trial: optuna.Trial, name: str) -> Any:  # noqa: ANN401
+    def suggest(self, trial: optuna.trial.BaseTrial, name: str) -> Any:  # noqa: ANN401
         """Suggest a value for ``name`` from the fixed set of choices."""
         return trial.suggest_categorical(name, self.choices)
 
@@ -425,7 +425,7 @@ class IntParam(_RangeParam):
     high: int
     log: bool = False
 
-    def suggest(self, trial: optuna.Trial, name: str) -> int:
+    def suggest(self, trial: optuna.trial.BaseTrial, name: str) -> int:
         """Suggest an integer for ``name`` within ``[low, high]``."""
         return trial.suggest_int(name, self.low, self.high, log=self.log)
 
@@ -436,7 +436,7 @@ class FloatParam(_RangeParam):
     type: Literal["float"]
     log: bool = False
 
-    def suggest(self, trial: optuna.Trial, name: str) -> float:
+    def suggest(self, trial: optuna.trial.BaseTrial, name: str) -> float:
         """Suggest a float for ``name`` within ``[low, high]``."""
         return trial.suggest_float(name, self.low, self.high, log=self.log)
 
@@ -448,7 +448,7 @@ class LogUniformParam(_RangeParam):
     low: float = Field(gt=0)
     high: float = Field(gt=0)
 
-    def suggest(self, trial: optuna.Trial, name: str) -> float:
+    def suggest(self, trial: optuna.trial.BaseTrial, name: str) -> float:
         """Suggest a float for ``name`` within ``[low, high]``, sampled log-uniformly."""
         return trial.suggest_float(name, self.low, self.high, log=True)
 
@@ -457,6 +457,14 @@ ParamSpec = Annotated[
     CategoricalParam | IntParam | FloatParam | LogUniformParam,
     Field(discriminator="type"),
 ]
+
+
+# Per-model candidate sets the sweep objective is validated against; ``closed_loop`` is the
+# sweep-level candidate every kind can rank on too.
+WAVEFORM_TRAINER_CANDIDATES = frozenset({"log_energy", "val_loss", "rollout_nmse"})
+OBSERVABLE_TRAINER_CANDIDATES = frozenset({"val_loss", "val_log_mse"})
+ESN_TRAINER_CANDIDATES = frozenset({"rollout_nmse", "log_energy"})
+CLOSED_LOOP_OBJECTIVE = "closed_loop"
 
 
 class ClosedLoopEvalConfig(StrictConfig):
@@ -471,11 +479,17 @@ class ClosedLoopEvalConfig(StrictConfig):
 
 
 class NNSweepConfig(StrictConfig):
-    """Optuna sweep settings for the NN predictor: trial count, output dir and per-group search spaces."""
+    """Optuna sweep settings for the two NN predictors: trial count, output dir and search spaces.
+
+    ``objective`` names the Trainer candidate the study minimizes. It is a plain string here
+    because the sweep alone does not know the model kind; :class:`NNPredictorConfig` validates it
+    against the waveform/observable candidate sets (plus the sweep-level ``closed_loop``), so a
+    mismatched name fails at build time.
+    """
 
     n_trials: int = Field(default=20, ge=1)
     artifact: str | None = None
-    objective: Literal["log_energy", "val_loss", "closed_loop", "rollout_nmse"] = "log_energy"
+    objective: str = "log_energy"
     model: dict[str, ParamSpec] = Field(default_factory=dict)
     training: dict[str, ParamSpec] = Field(default_factory=dict)
     closed_loop: ClosedLoopEvalConfig | None = None
@@ -550,6 +564,8 @@ class NNPredictorConfig(StrictConfig):
 
         _validate_sweep_overlap_and_keys(self.sweep.model, self.model, "model")
         _validate_sweep_overlap_and_keys(self.sweep.training, self.training, "training")
+        candidates = OBSERVABLE_TRAINER_CANDIDATES if self.observable is not None else WAVEFORM_TRAINER_CANDIDATES
+        _validate_sweep_objective(self.sweep.objective, candidates)
         return self
 
 
@@ -614,6 +630,23 @@ def _validate_sweep_overlap_and_keys(
         raise ValueError(msg)
 
 
+def _validate_sweep_objective(objective: str, candidates: frozenset[str]) -> None:
+    """Raise unless the named sweep objective is one the configured model's Trainer can report.
+
+    The Trainer candidates are per-model kind -- waveform ``{log_energy, val_loss, rollout_nmse}``,
+    observable ``{val_loss, val_log_mse}``, ESN ``{rollout_nmse, log_energy}`` -- and ``closed_loop``
+    is the sweep-level candidate every kind can rank on. Failing here catches a mismatched
+    objective at build time instead of on the first trial.
+    """
+    if objective in candidates or objective == CLOSED_LOOP_OBJECTIVE:
+        return
+    msg = (
+        f"sweep.objective {objective!r} is not a candidate the configured Trainer reports "
+        f"({sorted(candidates)}), nor the sweep-level 'closed_loop'."
+    )
+    raise ValueError(msg)
+
+
 def expand_dotted_dict(flat: dict[str, Any]) -> dict[str, Any]:
     """Expand flat dotted keys like ``{'losses.eeg_ms.weight': 0.3}`` into nested mappings."""
     nested: dict[str, Any] = {}
@@ -656,12 +689,27 @@ class ESNTrainingConfig(StrictConfig):
 
 
 class ESNSweepConfig(StrictConfig):
-    """Optuna sweep settings for ESN predictor."""
+    """Sweep settings for the ESN predictor: the outer reservoir-size x ridge-lambda grid, the per-cell trial count and the continuous search space.
+
+    ``objective`` names the Trainer candidate each per-cell study minimizes; :class:`ESNPredictorConfig`
+    validates it against the ESN candidate set (plus the sweep-level ``closed_loop``), so a
+    mismatched name fails at build time.
+    """
 
     reservoir_sizes: list[int] = Field(default_factory=lambda: [100, 250, 500, 1000])
     lambdas: list[float] = Field(default_factory=lambda: [1e-5, 1e-4, 1e-3, 1e-2, 1e-1, 1.0, 10.0])
     n_trials: int = Field(default=50, ge=1)
+    artifact: str | None = None
+    objective: str = "rollout_nmse"
     model: dict[str, ParamSpec] = Field(default_factory=dict)
+    closed_loop: ClosedLoopEvalConfig | None = None
+
+    @model_validator(mode="after")
+    def _validate_objective(self) -> Self:
+        if self.objective == CLOSED_LOOP_OBJECTIVE and self.closed_loop is None:
+            msg = "objective 'closed_loop' requires a 'sweep.closed_loop' section."
+            raise ValueError(msg)
+        return self
 
 
 class ESNPredictorConfig(StrictConfig):
@@ -683,6 +731,7 @@ class ESNPredictorConfig(StrictConfig):
         if self.sweep is None:
             return self
         _validate_sweep_overlap_and_keys(self.sweep.model, self.model, "model")
+        _validate_sweep_objective(self.sweep.objective, ESN_TRAINER_CANDIDATES)
         return self
 
 
