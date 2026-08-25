@@ -58,6 +58,15 @@ class ESNModule(nn.Module):
         The native/trained horizon, identity metadata only, not a bound on ``rollout``.
     dt : float
         The model's native time step, seconds.
+    spectral_radius, density, input_scaling : float
+        Reservoir generation hyperparameters, recorded metadata for the torch-free checkpoint.
+    noise_sigma : float
+        Harvest noise-injection sigma, recorded metadata; ``design_normal_equations`` streams
+        the noise-free harvest.
+    ridge_lambda : float
+        Readout-fit ridge regularization, recorded metadata for the torch-free checkpoint.
+    seed : int
+        Reservoir generation seed, recorded metadata for the torch-free checkpoint.
     y_center, y_scale, u_center, u_scale : Tensor
         Float32 standardizer buffers mapping raw units to the standardized model space.
     """
@@ -84,12 +93,20 @@ class ESNModule(nn.Module):
         dt: float = 0.0,
         y_std: Standardizer | None = None,
         u_std: Standardizer | None = None,
+        spectral_radius: float = 0.0,
+        density: float = 0.0,
+        input_scaling: float = 0.0,
+        noise_sigma: float = 0.0,
+        ridge_lambda: float = 0.0,
+        seed: int = 0,
     ) -> None:
         """Build the module from the scipy-generated reservoir and the fitted readout.
 
         ``w_res``, ``w_in`` and ``w_out`` are the one-time scipy preprocessing outputs
         (:func:`neuro.esn.generate_reservoir` and the ridge fit) copied into float32 buffers;
         ``y_std``/``u_std`` become the module's float32 buffers, defaulting to the identity map.
+        The six generation/fit hyperparameters are recorded metadata: ``save`` writes them so
+        the torch-free :class:`neuro.esn.ESNArtifact` loader can consume the checkpoint.
         """
         super().__init__()
         self.reservoir_size = w_res.shape[0]
@@ -101,6 +118,12 @@ class ESNModule(nn.Module):
         self.dt = float(dt)
         # Recorded metadata the checkpoint persists and ``load`` restores; training sets them.
         self.downsample = 1
+        self.spectral_radius = float(spectral_radius)
+        self.density = float(density)
+        self.input_scaling = float(input_scaling)
+        self.noise_sigma = float(noise_sigma)
+        self.ridge_lambda = float(ridge_lambda)
+        self.seed = int(seed)
         self.provenance = TrainingProvenance()
 
         self.register_buffer("w_res", _coo_buffer(w_res))
@@ -261,8 +284,8 @@ class ESNModule(nn.Module):
         Reproduces the incumbent :func:`neuro.esn.harvest_normal_equations` at ``noise_sigma = 0``:
         the row holds ``h`` *before* it absorbs the paired sample, so the target is a genuine
         one-step-ahead prediction rather than a reconstruction. The recurrence runs in float64 on
-        the float32 buffers, so the accumulated ``G``/``P`` match the incumbent numpy harvest to
-        LAPACK precision.
+        the float32 buffers, so the accumulated ``G``/``P`` match the incumbent numpy harvest up
+        to the float32 buffer rounding -- not to LAPACK precision.
         """
         N = self.reservoir_size
         n = N + 1
@@ -331,7 +354,13 @@ class ESNModule(nn.Module):
             "horizon": self.horizon,
             "reservoir_size": self.reservoir_size,
             "leak_rate": self.leak_rate,
+            "spectral_radius": self.spectral_radius,
             "priming_steps": self.priming_steps,
+            "input_scaling": self.input_scaling,
+            "density": self.density,
+            "noise_sigma": self.noise_sigma,
+            "ridge_lambda": self.ridge_lambda,
+            "seed": self.seed,
             **self.provenance.meta,
         }
         arrays: dict[str, FloatArray] = {
@@ -365,6 +394,12 @@ class ESNModule(nn.Module):
             priming_steps=int(meta["priming_steps"]),
             horizon=int(meta["horizon"]),
             dt=float(meta["dt"]),
+            spectral_radius=float(meta["spectral_radius"]),
+            density=float(meta["density"]),
+            input_scaling=float(meta["input_scaling"]),
+            noise_sigma=float(meta["noise_sigma"]),
+            ridge_lambda=float(meta["ridge_lambda"]),
+            seed=int(meta["seed"]),
             y_std=Standardizer.from_arrays(arrays, "y"),
             u_std=Standardizer.from_arrays(arrays, "u"),
         )

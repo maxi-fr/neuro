@@ -43,9 +43,9 @@ def design_normal_equations(
 ) -> tuple[FloatArray, FloatArray]:
     """Fold one-step input features and next-step targets into ``(G, P)``, bias column last.
 
-    Reproduces the incumbent warm-start least-squares: for every window on the shared grid the
-    feature row pairs the past-EEG block with the control window shifted in by one step (the
-    alignment ``forward``/``step`` use), and the target is the next standardized sample.
+    For every window on the shared grid the feature row pairs the past-EEG block with the control
+    window shifted in by one step (the alignment ``forward``/``step`` use), and the target is the
+    next standardized sample.
     """
     c = self.n_channels
     m = self.n_controls

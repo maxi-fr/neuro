@@ -6,9 +6,8 @@ import numpy as np
 
 from neuro.esn import generate_reservoir
 from neuro.esn_training import prepare_training_data
-from neuro.metrics import DEFAULT_HOP_S, METRICS
 from neuro.predictor.esn_module import ESNModule
-from neuro.predictor.evaluation import evaluate_log_energy, evaluate_rollouts
+from neuro.predictor.evaluation import evaluate_free_run
 from neuro.predictor.ridge import RidgeTrainer, RidgeTrainingResult
 from neuro.provenance import training_provenance
 
@@ -80,21 +79,19 @@ def _train_esn(cfg: ESNPredictorConfig, data_files: list[str], *, seed_offset: i
         priming_steps=cfg.model.priming_steps,
         horizon=cfg.model.horizon,
         dt=cfg.simulation.dt * cfg.simulation.downsample,
+        spectral_radius=cfg.model.spectral_radius,
+        density=cfg.model.density,
+        input_scaling=cfg.model.input_scaling,
+        noise_sigma=cfg.model.noise_sigma,
+        ridge_lambda=cfg.model.ridge_lambda,
+        seed=seed,
         y_std=data.y_std,
         u_std=data.u_std,
     )
     RidgeTrainer(ridge_lambda=cfg.model.ridge_lambda).fit(model, data.train_trajs)
 
     fs = 1.0 / (cfg.simulation.dt * cfg.simulation.downsample)
-    eval_steps = cfg.model.horizon
-    # The energy course follows the metrics layer's own eeg_ms convention rather than a knob of its
-    # own, clamped where the evaluation horizon is too short to hold one window.
-    energy_window = min(max(1, round(METRICS["eeg_ms"].window_s * fs)), eval_steps)
-    energy_hop = max(1, round(DEFAULT_HOP_S * fs))
-    rollout = evaluate_rollouts(model, data.val_trajs, eval_steps)
-    log_energy = evaluate_log_energy(
-        model, data.val_trajs, eval_steps, window_steps=energy_window, hop_steps=energy_hop
-    )
+    rollout, log_energy = evaluate_free_run(model, data.val_trajs, cfg.model.horizon, fs)
     model.provenance = training_provenance(data_files, cfg.simulation.cutoff_hz)
     model.downsample = cfg.simulation.downsample
     return RidgeTrainingResult(

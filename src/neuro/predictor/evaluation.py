@@ -4,6 +4,8 @@ from typing import TYPE_CHECKING, NamedTuple
 
 import numpy as np
 
+from neuro.metrics import DEFAULT_HOP_S, METRICS
+
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
@@ -78,6 +80,26 @@ def nmse(sq_err: FloatArray | float, power: FloatArray | float) -> FloatArray:
     err = np.asarray(sq_err, dtype=np.float64)
     ref = np.asarray(power, dtype=np.float64)
     return np.divide(err, ref, out=np.full_like(err, np.inf), where=ref > 0)
+
+
+def evaluate_free_run(
+    predictor: Predictor,
+    val_trajs: list[tuple[FloatArray, FloatArray]],
+    eval_steps: int,
+    fs: float,
+) -> tuple[RolloutNMSE, LogEnergyError]:
+    """Score free-run rollouts and the windowed-energy course over the held-out trajectories.
+
+    Every training arm runs the same evaluation: waveform NMSE via :func:`evaluate_rollouts` and
+    the windowed-energy course the MPC costs via :func:`evaluate_log_energy`. The energy course
+    follows the metrics layer's own eeg_ms convention rather than a knob of its own, clamped
+    where the evaluation horizon is too short to hold one window.
+    """
+    energy_window = min(max(1, round(METRICS["eeg_ms"].window_s * fs)), eval_steps)
+    energy_hop = max(1, round(DEFAULT_HOP_S * fs))
+    rollout = evaluate_rollouts(predictor, val_trajs, eval_steps)
+    log_energy = evaluate_log_energy(predictor, val_trajs, eval_steps, window_steps=energy_window, hop_steps=energy_hop)
+    return rollout, log_energy
 
 
 class RolloutNMSE(NamedTuple):

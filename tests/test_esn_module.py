@@ -15,6 +15,8 @@ from neuro.transforms import Standardizer
 from neuro.types import Predictor, RidgeFittable
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from neuro.types import FloatArray
 
 _SEED = 17
@@ -63,7 +65,7 @@ def _artifact() -> ESNArtifact:
 
 
 def _module() -> ESNModule:
-    """The torch ESN module carrying the artifact's weights and standardizer buffers."""
+    """The torch ESN module carrying the artifact's weights, buffers and generation metadata."""
     art = _artifact()
     return ESNModule(
         w_res=art.w_res,
@@ -73,6 +75,12 @@ def _module() -> ESNModule:
         priming_steps=art.priming_steps,
         horizon=art.horizon,
         dt=art.dt,
+        spectral_radius=art.spectral_radius,
+        density=art.density,
+        input_scaling=art.input_scaling,
+        noise_sigma=art.noise_sigma,
+        ridge_lambda=art.ridge_lambda,
+        seed=art.seed,
         y_std=art.y_std,
         u_std=art.u_std,
     )
@@ -375,3 +383,28 @@ def test_rollout_accepts_any_length_not_just_the_native_horizon() -> None:
     long = model.rollout(state, np.zeros((_HORIZON + 3, _N_CONTROLS)))
 
     assert long.shape == (_HORIZON + 3, _N_EEG)
+
+
+def test_save_checkpoint_is_readable_by_the_torch_free_loader(tmp_path: Path) -> None:
+    """``ESNModule.save`` writes the six generation/fit metadata keys, so the torch-free
+    :class:`neuro.esn.ESNArtifact` loader reads the checkpoint and its runtime matches the module."""
+    model = _module()
+    path = tmp_path / "esn_module"
+    model.save(path)
+
+    loaded = ESNArtifact.load(path)
+    assert loaded.spectral_radius == pytest.approx(_RHO)
+    assert loaded.density == pytest.approx(_DENSITY)
+    assert loaded.input_scaling == pytest.approx(_IN_SCALE)
+    assert loaded.noise_sigma == pytest.approx(0.0)
+    assert loaded.ridge_lambda == pytest.approx(1e-3)
+    assert loaded.seed == _SEED
+    assert loaded.reservoir_size == _N_RES
+    assert loaded.leak_rate == pytest.approx(_LEAK)
+    assert loaded.priming_steps == _PRIMING
+
+    y_hist, u_hist, u_future = _context()
+    want = model.rollout(model.prime(y_hist, u_hist), u_future)
+    got = loaded.rollout(loaded.prime(y_hist, u_hist), u_future)
+    assert got.shape == want.shape
+    np.testing.assert_allclose(got, want, rtol=_RTOL, atol=_ATOL)

@@ -8,12 +8,11 @@ import numpy as np
 import torch
 
 from neuro.config import ESNPredictorConfig
-from neuro.metrics import DEFAULT_HOP_S, METRICS
 from neuro.predictor.data import prepare_datasets
 from neuro.predictor.esn_train import _train_esn
-from neuro.predictor.evaluation import evaluate_log_energy, evaluate_rollouts
+from neuro.predictor.evaluation import evaluate_free_run
 from neuro.predictor.gradient import fit_gradient_descent, float32_tensor
-from neuro.predictor.losses import CurriculumMSE, LossContext, build_losses, total_loss
+from neuro.predictor.losses import LossContext, build_losses, total_loss
 from neuro.predictor.module import AutoregressiveMLP
 from neuro.predictor.observable_train import (
     ObservableTrainingResult,
@@ -101,29 +100,6 @@ class _Tensors:
     Y_val: Tensor
     y_center: Tensor
     y_scale: Tensor
-
-
-def _warm_start_linear(
-    model: AutoregressiveMLP,
-    X_train: FloatArray,
-    Y_train: FloatArray,
-    n_channels: int,
-) -> None:
-    """Overwrite a depth-0 model's single layer with the exact 1-step least-squares solution."""
-    Y_step1 = Y_train[:, :n_channels]
-    y_len = model.n_y * n_channels
-    m = model.n_controls
-    # The rollout shifts the control window before the first MLP call, so the 1-step input pairs
-    # the past-EEG block with the control window starting one step later.
-    X_1step = np.hstack([X_train[:, :y_len], X_train[:, y_len + m : y_len + (model.n_u + 1) * m]])
-
-    X_design = np.hstack([X_1step, np.ones((X_1step.shape[0], 1))])
-    weight_bias, *_ = np.linalg.lstsq(X_design, Y_step1, rcond=None)
-
-    layer = cast("nn.Linear", model.layers[0])
-    with torch.no_grad():
-        layer.weight.copy_(torch.as_tensor(np.ascontiguousarray(weight_bias[:-1].T), dtype=torch.float32))
-        layer.bias.copy_(torch.as_tensor(weight_bias[-1], dtype=torch.float32))
 
 
 def _du_sensitivity(model: AutoregressiveMLP, X_val: Tensor) -> float:
@@ -218,10 +194,10 @@ def _train_ridge(
 def _train_waveform_ridge(cfg: NNPredictorConfig, data_files: list[str]) -> RidgeTrainingResult:
     """Fit the single layer of a depth-0 waveform MLP by closed-form ridge.
 
-    The exact 1-step least-squares the gradient-descent arm uses as its warm start, extracted as
-    a standalone fit: the Ridge Trainer folds the same features and targets into normal equations
-    from the raw training trajectories and installs the result as the single layer. The native
-    horizon comes from ``training.losses``, as on the gradient-descent arm.
+    The exact 1-step least-squares fit the gradient-descent arm no longer runs: the Ridge
+    Trainer folds the same features and targets into normal equations from the raw training
+    trajectories and installs the result as the single layer, the only closed form left. The
+    native horizon comes from ``training.losses``, as on the gradient-descent arm.
     """
     sim, mdl, trn = cfg.simulation, cfg.model, cfg.training
     if trn.losses is None:
@@ -260,14 +236,7 @@ def _train_waveform_ridge(cfg: NNPredictorConfig, data_files: list[str]) -> Ridg
     RidgeTrainer(ridge_lambda=trn.ridge_lambda).fit(model, data.train_trajs)
 
     eval_steps = max(1, round(trn.eval_horizon_s * fs))
-    # The energy course follows the metrics layer's own eeg_ms convention rather than a knob of its
-    # own, clamped where the evaluation horizon is too short to hold one window.
-    energy_window = min(max(1, round(METRICS["eeg_ms"].window_s * fs)), eval_steps)
-    energy_hop = max(1, round(DEFAULT_HOP_S * fs))
-    rollout = evaluate_rollouts(model, data.val_trajs, eval_steps)
-    log_energy = evaluate_log_energy(
-        model, data.val_trajs, eval_steps, window_steps=energy_window, hop_steps=energy_hop
-    )
+    rollout, log_energy = evaluate_free_run(model, data.val_trajs, eval_steps, fs)
     model.provenance = training_provenance(data_files, sim.cutoff_hz)
     model.downsample = sim.downsample
     return RidgeTrainingResult(
@@ -323,9 +292,6 @@ def _train_waveform(cfg: NNPredictorConfig, data_files: list[str], *, seed_offse
         y_std=data.y_std,
         u_std=data.u_std,
     )
-    if mdl.depth == 0:
-        _warm_start_linear(model, data.X_train, data.Y_train, data.n_channels)
-
     model = model.to(device)
 
     tensors = _Tensors(
@@ -343,9 +309,6 @@ def _train_waveform(cfg: NNPredictorConfig, data_files: list[str], *, seed_offse
         pred_traj = model(x).reshape(x.shape[0], horizon, data.n_channels)
         return total_loss(losses, pred_traj, y, ctx)
 
-    # A warm-started linear model already solves the L = 1 problem the curriculum starts from.
-    curr_mse = next((loss for loss in losses if isinstance(loss, CurriculumMSE)), None)
-    start_epoch = curr_mse.curr_start if (len(model.layers) == 1 and curr_mse is not None) else 0
     train_losses, val_losses, train_comps, val_comps = fit_gradient_descent(
         model,
         tensors.X_train,
@@ -355,24 +318,16 @@ def _train_waveform(cfg: NNPredictorConfig, data_files: list[str], *, seed_offse
         trn,
         seed=seed,
         loss_fn=batch_loss,
-        start_epoch=start_epoch,
         desc="Training MLP",
     )
 
     eval_steps = max(1, round(trn.eval_horizon_s * fs))
-    # The energy course follows the metrics layer's own eeg_ms convention rather than a knob of its
-    # own, clamped where the evaluation horizon is too short to hold one window.
-    energy_window = min(max(1, round(METRICS["eeg_ms"].window_s * fs)), eval_steps)
-    energy_hop = max(1, round(DEFAULT_HOP_S * fs))
     du_sensitivity = _du_sensitivity(model, tensors.X_val)
     # The protocol runtime interfaces through NumPy, so the free-run evaluation runs on the CPU copy.
     model = model.cpu()
     model.provenance = training_provenance(data_files, sim.cutoff_hz)
     model.downsample = sim.downsample
-    rollout = evaluate_rollouts(model, data.val_trajs, eval_steps)
-    log_energy = evaluate_log_energy(
-        model, data.val_trajs, eval_steps, window_steps=energy_window, hop_steps=energy_hop
-    )
+    rollout, log_energy = evaluate_free_run(model, data.val_trajs, eval_steps, fs)
     return TrainingResult(
         predictor=model,
         candidates={

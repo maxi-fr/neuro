@@ -57,7 +57,6 @@ def fit_gradient_descent(  # noqa: PLR0913, PLR0917 -- model, the four tensor bl
     *,
     seed: int,
     loss_fn: Callable[[nn.Module, Tensor, Tensor, int | None], tuple[Tensor, dict[str, float]]],
-    start_epoch: int = 0,
     desc: str = "Training",
 ) -> tuple[list[float], list[float], dict[str, list[float]], dict[str, list[float]]]:
     """Run the gradient-descent training loop, leaving ``model`` holding the best-validation weights.
@@ -66,8 +65,7 @@ def fit_gradient_descent(  # noqa: PLR0913, PLR0917 -- model, the four tensor bl
     and its unweighted component diagnostics. ``epoch`` is ``None`` for the validation score, so a
     curriculum schedule can trust its full span there. AdamW with the shared warmup-cosine
     schedule, a best-validation snapshot and patience-based early stopping are the same for every
-    module. ``start_epoch`` skips warm-start epochs (a warm-started linear model already solves the
-    schedule's one-step problem).
+    module.
 
     Returns ``(train_losses, val_losses, train_components, val_components)``, one entry per epoch
     actually run; the component dicts hold per-epoch unweighted means keyed by loss name.
@@ -76,9 +74,7 @@ def fit_gradient_descent(  # noqa: PLR0913, PLR0917 -- model, the four tensor bl
     n_samples = x_train.shape[0]
 
     steps_per_epoch = (n_samples + cfg.batch_size - 1) // cfg.batch_size
-    total_steps = max(steps_per_epoch * (cfg.epochs - start_epoch), 1)
-    # A warm-started linear model skips ahead to start_epoch, which can leave fewer epochs than the
-    # configured warm-up asks for.
+    total_steps = max(steps_per_epoch * cfg.epochs, 1)
     warmup_steps = min(steps_per_epoch * cfg.warmup_epochs, total_steps - 1)
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=cfg.learning_rate, weight_decay=cfg.weight_decay)
@@ -93,7 +89,7 @@ def fit_gradient_descent(  # noqa: PLR0913, PLR0917 -- model, the four tensor bl
     train_components: dict[str, list[float]] = collections.defaultdict(list)
     val_components: dict[str, list[float]] = collections.defaultdict(list)
 
-    pbar = tqdm(range(start_epoch, cfg.epochs), desc=desc)
+    pbar = tqdm(range(cfg.epochs), desc=desc)
     for epoch in pbar:
         epoch_loss, batches = 0.0, 0
         comps_sum: dict[str, float] = collections.defaultdict(float)

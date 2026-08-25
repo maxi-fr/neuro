@@ -181,12 +181,13 @@ def test_returned_artifact_is_the_best_epoch_not_the_last(files: list[str]) -> N
     assert _validation_loss(cfg, files, result.predictor) == pytest.approx(min(result.val_losses))
 
 
-def test_depth0_ridge_fit_reproduces_the_warm_start(files: list[str]) -> None:
-    """The Ridge Trainer on a depth-0 MLP reproduces the incumbent warm-start least-squares.
+def test_depth0_ridge_fit_reproduces_the_exact_one_step_lstsq(files: list[str]) -> None:
+    """The Ridge Trainer on a depth-0 MLP reproduces the exact 1-step least-squares.
 
-    The incumbent warm start is the exact 1-step ``lstsq`` over the standardized windows; the
-    ridge fit folds the same features and targets into normal equations from the raw trajectories
-    and must land on the same single layer at lambda = 0.
+    The gradient-descent arm no longer runs a closed-form warm start, so this least-squares is
+    the Ridge Trainer's own contract: the ridge fit folds the same features and targets into
+    normal equations from the raw trajectories and must land on the same single layer at
+    lambda = 0 as a direct ``lstsq`` over the standardized windows.
     """
     cfg = _config(depth=0)
     mdl, trn = cfg.model, cfg.training
@@ -231,7 +232,7 @@ def test_depth0_ridge_fit_reproduces_the_warm_start(files: list[str]) -> None:
     model = build()
     RidgeTrainer(ridge_lambda=0.0).fit(model, split.train_trajs)
 
-    # The incumbent warm-start solution, re-derived on the same standardized windows.
+    # The exact 1-step least-squares, re-derived on the same standardized windows.
     y_len = mdl.n_y * data.n_channels
     m = data.n_controls
     X_1step = np.hstack([data.X_train[:, :y_len], data.X_train[:, y_len + m : y_len + (mdl.n_u + 1) * m]])
@@ -292,12 +293,16 @@ def test_warmup_shortens_the_first_epochs_without_changing_the_epoch_count(files
     assert warmed.train_losses != plain.train_losses
 
 
-def test_linear_model_is_warm_started_and_skips_the_one_step_epochs(files: list[str]) -> None:
-    """A depth-0 model starts from the exact 1-step solution, so the L = 1 epochs are skipped."""
+def test_depth0_gradient_descent_starts_from_random_init_and_runs_every_epoch(files: list[str]) -> None:
+    """A depth-0 model under gradient descent is randomly initialised and runs every epoch.
+
+    The closed-form warm start lives only in the Ridge Trainer now, so the depth-0 arm behaves
+    like any other module: all ``epochs`` epochs, no skipped curriculum prefix.
+    """
     linear = _wave_train(_config(depth=0, epochs=3, curr_start=2, curr_end=2), files)
     nonlinear = _wave_train(_config(depth=1, epochs=3, curr_start=2, curr_end=2), files)
 
     assert len(linear.predictor.layers) == 1
-    assert len(linear.train_losses) == 1
+    assert len(linear.train_losses) == 3
     assert len(nonlinear.train_losses) == 3
     assert np.isfinite(linear.rollout.pooled)
