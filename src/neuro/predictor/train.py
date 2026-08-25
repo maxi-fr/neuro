@@ -8,7 +8,7 @@ import numpy as np
 import torch
 
 from neuro.config import ESNPredictorConfig
-from neuro.predictor.data import prepare_datasets
+from neuro.predictor.data import Datasets, prepare_datasets
 from neuro.predictor.esn_train import _train_esn
 from neuro.predictor.evaluation import evaluate_free_run
 from neuro.predictor.gradient import fit_gradient_descent, float32_tensor
@@ -29,6 +29,7 @@ if TYPE_CHECKING:
 
     from neuro.config import NNPredictorConfig
     from neuro.predictor.evaluation import LogEnergyError, RolloutNMSE
+    from neuro.predictor.losses import Loss
     from neuro.types import FloatArray
 
 _DU_WINDOWS = 8
@@ -191,21 +192,22 @@ def _train_ridge(
     return _train_waveform_ridge(cfg, data_files)
 
 
-def _train_waveform_ridge(cfg: NNPredictorConfig, data_files: list[str]) -> RidgeTrainingResult:
-    """Fit the single layer of a depth-0 waveform MLP by closed-form ridge.
+def _prepare_waveform(
+    cfg: NNPredictorConfig, data_files: list[str], *, depth: int
+) -> tuple[Datasets, AutoregressiveMLP, list[Loss]]:
+    """Build the prepared datasets and the autoregressive waveform MLP for ``cfg``.
 
-    The exact 1-step least-squares fit the gradient-descent arm no longer runs: the Ridge
-    Trainer folds the same features and targets into normal equations from the raw training
-    trajectories and installs the result as the single layer, the only closed form left. The
-    native horizon comes from ``training.losses``, as on the gradient-descent arm.
+    Shared by the two waveform arms, which differ only in ``depth`` (0 on the ridge arm,
+    ``cfg.model.depth`` on the gradient-descent arm); the built losses ride along for the
+    gradient arm's batch scoring.
     """
     sim, mdl, trn = cfg.simulation, cfg.model, cfg.training
     if trn.losses is None:
-        msg = "the waveform ridge arm requires 'training.losses' (for the native horizon)."
+        msg = "the waveform arm requires 'training.losses' (for the native horizon)."
         raise ValueError(msg)
     fs = cfg.fs
-    horizon = max(loss.span_steps for loss in build_losses(trn.losses, fs))
-
+    losses = build_losses(trn.losses, fs)
+    horizon = max(loss.span_steps for loss in losses)
     data = prepare_datasets(
         data_files,
         sim.n_steps,
@@ -219,7 +221,6 @@ def _train_waveform_ridge(cfg: NNPredictorConfig, data_files: list[str]) -> Ridg
         global_scaling=trn.global_scaling,
         cutoff_hz=sim.cutoff_hz,
     )
-
     model = AutoregressiveMLP(
         n_y=mdl.n_y,
         n_u=mdl.n_u,
@@ -227,12 +228,26 @@ def _train_waveform_ridge(cfg: NNPredictorConfig, data_files: list[str]) -> Ridg
         n_channels=data.n_channels,
         n_controls=data.n_controls,
         hidden_size=mdl.hidden_size,
-        depth=0,
+        depth=depth,
         activation=mdl.activation,
         dt=sim.dt * sim.downsample,
         y_std=data.y_std,
         u_std=data.u_std,
     )
+    return data, model, losses
+
+
+def _train_waveform_ridge(cfg: NNPredictorConfig, data_files: list[str]) -> RidgeTrainingResult:
+    """Fit the single layer of a depth-0 waveform MLP by closed-form ridge.
+
+    The exact 1-step least-squares fit the gradient-descent arm no longer runs: the Ridge
+    Trainer folds the same features and targets into normal equations from the raw training
+    trajectories and installs the result as the single layer, the only closed form left. The
+    native horizon comes from ``training.losses``, as on the gradient-descent arm.
+    """
+    sim, trn = cfg.simulation, cfg.training
+    fs = cfg.fs
+    data, model, _ = _prepare_waveform(cfg, data_files, depth=0)
     RidgeTrainer(ridge_lambda=trn.ridge_lambda).fit(model, data.train_trajs)
 
     eval_steps = max(1, round(trn.eval_horizon_s * fs))
@@ -253,46 +268,15 @@ def _train_waveform_ridge(cfg: NNPredictorConfig, data_files: list[str]) -> Ridg
 
 def _train_waveform(cfg: NNPredictorConfig, data_files: list[str], *, seed_offset: int = 0) -> TrainingResult:
     """Train the autoregressive waveform MLP for one config and return everything the run produced."""
-    sim, mdl, trn = cfg.simulation, cfg.model, cfg.training
-    if trn.losses is None:
-        msg = "the waveform arm requires 'training.losses'; a config with an 'observable' block is routed elsewhere."
-        raise ValueError(msg)
+    sim, trn = cfg.simulation, cfg.training
     seed = trn.seed + seed_offset
     torch.manual_seed(seed)
     device = torch.device(trn.device)
     fs = cfg.fs
 
-    losses = build_losses(trn.losses, fs)
-    horizon = max(loss.span_steps for loss in losses)
-
-    data = prepare_datasets(
-        data_files,
-        sim.n_steps,
-        sim.downsample,
-        mdl.n_y,
-        mdl.n_u,
-        horizon,
-        sim.dt,
-        trn.train_split,
-        scaler=trn.scaler,
-        global_scaling=trn.global_scaling,
-        cutoff_hz=sim.cutoff_hz,
-    )
-
-    model = AutoregressiveMLP(
-        n_y=mdl.n_y,
-        n_u=mdl.n_u,
-        horizon=horizon,
-        n_channels=data.n_channels,
-        n_controls=data.n_controls,
-        hidden_size=mdl.hidden_size,
-        depth=mdl.depth,
-        activation=mdl.activation,
-        dt=sim.dt * sim.downsample,
-        y_std=data.y_std,
-        u_std=data.u_std,
-    )
+    data, model, losses = _prepare_waveform(cfg, data_files, depth=cfg.model.depth)
     model = model.to(device)
+    horizon = max(loss.span_steps for loss in losses)
 
     tensors = _Tensors(
         X_train=float32_tensor(data.X_train, device),

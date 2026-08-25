@@ -74,6 +74,37 @@ def score_trial(
     return recorded[objective]
 
 
+def _run_trial(
+    config: NNPredictorConfig | ESNPredictorConfig,
+    data_files: list[str],
+    trial: BaseTrial,
+    trial_dir: Path,
+    sweep: NNSweepConfig | ESNSweepConfig,
+) -> float:
+    """Train one trial at ``config``, persist it under ``trial_dir`` and return the named objective.
+
+    Shared body of the two sweep objectives; a NaN training loss prunes the trial instead of
+    failing the study.
+    """
+    trial_dir.mkdir(parents=True, exist_ok=True)
+    with (trial_dir / "trial_config.yaml").open("w") as f:
+        yaml.dump(config.model_dump(exclude={"sweep"}), f)
+    try:
+        result = train(config, data_files, seed_offset=trial.number)
+    except ValueError as exc:
+        if "NaN" in str(exc):
+            raise optuna.TrialPruned from exc
+        raise
+    result.save(trial_dir)
+    return score_trial(
+        trial,
+        candidates=result.candidates,
+        objective=sweep.objective,
+        trial_dir=trial_dir,
+        closed_loop=sweep.closed_loop,
+    )
+
+
 class OptunaSweep:
     """Optuna sweep seam serving the two NN predictor kinds: waveform and observable.
 
@@ -112,23 +143,7 @@ class OptunaSweep:
             }
         )
         trial_dir = self.artifact_dir / f"trial_{trial.number}"
-        trial_dir.mkdir(parents=True, exist_ok=True)
-        with (trial_dir / "trial_config.yaml").open("w") as f:
-            yaml.dump(config.model_dump(exclude={"sweep"}), f)
-        try:
-            result = train(config, self.data_files, seed_offset=trial.number)
-        except ValueError as exc:
-            if "NaN" in str(exc):
-                raise optuna.TrialPruned from exc
-            raise
-        result.save(trial_dir)
-        return score_trial(
-            trial,
-            candidates=result.candidates,
-            objective=self.sweep.objective,
-            trial_dir=trial_dir,
-            closed_loop=self.sweep.closed_loop,
-        )
+        return _run_trial(config, self.data_files, trial, trial_dir, self.sweep)
 
     def run(self) -> optuna.Study:
         """Create or resume the sqlite-backed study and run ``sweep.n_trials`` evaluations."""
@@ -194,23 +209,7 @@ class GridSweep:
             }
         )
         trial_dir = self.artifact_dir / f"n{reservoir_size}_lam{ridge_lambda:g}_trial_{trial.number}"
-        trial_dir.mkdir(parents=True, exist_ok=True)
-        with (trial_dir / "trial_config.yaml").open("w") as f:
-            yaml.dump(config.model_dump(exclude={"sweep"}), f)
-        try:
-            result = train(config, self.data_files, seed_offset=trial.number)
-        except ValueError as exc:
-            if "NaN" in str(exc):
-                raise optuna.TrialPruned from exc
-            raise
-        result.save(trial_dir)
-        return score_trial(
-            trial,
-            candidates=result.candidates,
-            objective=self.sweep.objective,
-            trial_dir=trial_dir,
-            closed_loop=self.sweep.closed_loop,
-        )
+        return _run_trial(config, self.data_files, trial, trial_dir, self.sweep)
 
     def run(self) -> list[GridResult]:
         """Run the outer grid; one in-memory Optuna study per (reservoir_size, ridge_lambda) cell."""
