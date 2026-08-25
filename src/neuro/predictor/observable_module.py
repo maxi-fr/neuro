@@ -7,12 +7,17 @@ import numpy as np
 import torch
 from torch import nn
 
-from neuro.observable import ObservableArtifact, control_means, log_observable
+from neuro.observable import ObservableArtifact, control_means, geometry_from_meta, geometry_meta, log_observable
+from neuro.predictor.artifact import ACTIVATIONS
+from neuro.predictor.checkpoint import load_checkpoint, save_checkpoint
 from neuro.predictor.data import build_dataset_for_trajectory, extract_future_windows
 from neuro.predictor.module import activation_module, to_numpy
+from neuro.provenance import TrainingProvenance
 from neuro.transforms import Standardizer
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from torch import Tensor
 
     from neuro.config import ObservableGeometry
@@ -207,6 +212,8 @@ class StepwiseObservableMLP(nn.Module):
     u_scale: Tensor
     l_center: Tensor
     l_scale: Tensor
+    downsample: int
+    provenance: TrainingProvenance
 
     def __init__(  # noqa: PLR0913 -- geometry, state/lift/transition shapes and standardizers are the constructor surface
         self,
@@ -243,9 +250,16 @@ class StepwiseObservableMLP(nn.Module):
         self.geometry = geometry
         self.fs = fs
         self.z_dim = z_dim
+        self.lift_hidden = lift_hidden
+        self.lift_depth = lift_depth
+        self.transition_hidden = transition_hidden
+        self.transition_depth = transition_depth
         self.activation = activation
         self.n_values = geometry.n_values(fs)
         self.n_outputs = n_channels * self.n_values
+        # Recorded metadata the checkpoint persists and ``load`` restores; training sets them.
+        self.downsample = 1
+        self.provenance = TrainingProvenance()
 
         n_hist = n_y * n_channels + n_u * n_controls
         self.lift = mlp_stack([n_hist, *[lift_hidden] * lift_depth, z_dim], activation)
@@ -510,3 +524,84 @@ class StepwiseObservableMLP(nn.Module):
         u_buf = np.zeros(self.n_u * self.n_controls, dtype=np.float64)
         register = np.concatenate([y_buf, u_buf])
         return np.concatenate([register, self._lift_batch(register[None, :])[0]])
+
+    def save(self, path: str | Path) -> None:
+        """Persist weights, standardizer buffers and recorded metadata into one ``.npz`` checkpoint.
+
+        ``path`` is a suffix-less stem. The layout -- a JSON ``meta`` block carrying the geometry,
+        provenance and model_type, the block weight arrays and the standardizer arrays -- is the
+        one the artifact loaders already read, so the torch-free control path keeps consuming what
+        ``save`` writes without the module.
+        """
+        linears = [m for m in self.lift if isinstance(m, nn.Linear)]
+        transitions = [m for m in self.transition if isinstance(m, nn.Linear)]
+        meta = {
+            "model_type": "observable",
+            "activation": self.activation,
+            "n_y": self.n_y,
+            "n_u": self.n_u,
+            "horizon": self.horizon,
+            "n_channels": self.n_channels,
+            "n_controls": self.n_controls,
+            "dt": self.dt,
+            "downsample": self.downsample,
+            "z_dim": self.z_dim,
+            "lift_hidden": self.lift_hidden,
+            "lift_depth": self.lift_depth,
+            "transition_hidden": self.transition_hidden,
+            "transition_depth": self.transition_depth,
+            "n_lift_layers": len(linears),
+            "n_transition_layers": len(transitions),
+            "geometry": geometry_meta(self.geometry),
+            **self.provenance.meta,
+        }
+        arrays: dict[str, FloatArray] = {}
+        for prefix, blocks in (("lift", linears), ("transition", transitions)):
+            for i, lin in enumerate(blocks):
+                arrays[f"{prefix}.{i}.weight"] = to_numpy(lin.weight)
+                arrays[f"{prefix}.{i}.bias"] = to_numpy(lin.bias)
+        arrays["readout.weight"] = to_numpy(self.readout.weight)
+        arrays["readout.bias"] = to_numpy(self.readout.bias)
+        arrays.update(self.y_std.arrays("y"))
+        arrays.update(self.u_std.arrays("u"))
+        arrays.update(self.l_std.arrays("l"))
+        save_checkpoint(path, meta=meta, arrays=arrays)
+
+    @classmethod
+    def load(cls, path: str | Path) -> Self:
+        """Rebuild the module from a :meth:`save` checkpoint, restoring weights, buffers and metadata."""
+        meta, arrays = load_checkpoint(path)
+        if meta.get("model_type") != "observable":
+            msg = f"checkpoint at {path} is model_type {meta.get('model_type')!r}, not 'observable'."
+            raise ValueError(msg)
+        if meta["activation"] not in ACTIVATIONS:
+            msg = f"Unsupported activation: {meta['activation']!r}"
+            raise ValueError(msg)
+        model = cls(
+            n_y=int(meta["n_y"]),
+            n_u=int(meta["n_u"]),
+            horizon=int(meta["horizon"]),
+            n_channels=int(meta["n_channels"]),
+            n_controls=int(meta["n_controls"]),
+            geometry=geometry_from_meta(meta["geometry"]),
+            fs=1.0 / float(meta["dt"]),
+            z_dim=int(meta["z_dim"]),
+            lift_hidden=int(meta["lift_hidden"]),
+            lift_depth=int(meta["lift_depth"]),
+            transition_hidden=int(meta["transition_hidden"]),
+            transition_depth=int(meta["transition_depth"]),
+            activation=meta["activation"],
+            y_std=Standardizer.from_arrays(arrays, "y"),
+            u_std=Standardizer.from_arrays(arrays, "u"),
+            l_std=Standardizer.from_arrays(arrays, "l"),
+        )
+        model.downsample = int(meta["downsample"])
+        model.provenance = TrainingProvenance.from_meta(meta)
+        with torch.no_grad():
+            for block, prefix in ((model.lift, "lift"), (model.transition, "transition")):
+                for i, lin in enumerate(m for m in block if isinstance(m, nn.Linear)):
+                    lin.weight.copy_(torch.as_tensor(np.asarray(arrays[f"{prefix}.{i}.weight"]), dtype=torch.float32))
+                    lin.bias.copy_(torch.as_tensor(np.asarray(arrays[f"{prefix}.{i}.bias"]), dtype=torch.float32))
+            model.readout.weight.copy_(torch.as_tensor(np.asarray(arrays["readout.weight"]), dtype=torch.float32))
+            model.readout.bias.copy_(torch.as_tensor(np.asarray(arrays["readout.bias"]), dtype=torch.float32))
+        return model

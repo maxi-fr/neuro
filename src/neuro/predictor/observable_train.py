@@ -1,18 +1,15 @@
 from __future__ import annotations
 
-import copy
-import dataclasses
 import json
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, cast
 
 import numpy as np
 import torch
-from tqdm import tqdm
 
 from neuro.predictor.data import frame_targets, prepare_datasets
-from neuro.predictor.observable_module import ObservableMLP
-from neuro.predictor.train import float32_tensor, lr_schedule, shuffled_batches
+from neuro.predictor.gradient import fit_gradient_descent, float32_tensor
+from neuro.predictor.observable_module import StepwiseObservableMLP
 from neuro.provenance import training_provenance
 from neuro.transforms import Standardizer
 
@@ -22,7 +19,6 @@ if TYPE_CHECKING:
     from torch import Tensor, nn
 
     from neuro.config import NNPredictorConfig
-    from neuro.observable import ObservableArtifact
     from neuro.types import FloatArray
 
 _DU_WINDOWS = 8
@@ -30,12 +26,17 @@ _DU_WINDOWS = 8
 
 @dataclass(frozen=True)
 class ObservableTrainingResult:
-    """Everything one observable-space training run produced. Nothing is written; the caller persists.
+    """Everything one observable-space training run produced; ``save`` persists it all.
 
     Attributes
     ----------
-    artifact : ObservableArtifact
-        The best-validation-loss weights frozen together with the fitted transforms and geometry.
+    predictor : StepwiseObservableMLP
+        The trained one-Frame-per-step module holding the best-validation-loss weights, with the
+        standardizers as buffers and the recorded metadata (geometry, provenance, downsample)
+        attached.
+    candidates : dict[str, float]
+        Every objective the sweep seam can rank this run on: ``val_loss`` and ``val_log_mse``,
+        both lower-is-better.
     train_losses, val_losses : list[float]
         Per-epoch MSE in standardized log-Observable space, one entry per epoch actually run.
     val_log_mse : float
@@ -51,7 +52,8 @@ class ObservableTrainingResult:
         The held-out ``(u, y)`` trajectories, kept whole so the caller can score or plot them.
     """
 
-    artifact: ObservableArtifact
+    predictor: StepwiseObservableMLP
+    candidates: dict[str, float]
     train_losses: list[float]
     val_losses: list[float]
     val_log_mse: float
@@ -60,8 +62,8 @@ class ObservableTrainingResult:
     val_trajs: list[tuple[FloatArray, FloatArray]]
 
     def save(self, artifact_dir: Path) -> None:
-        """Write ``model.npz`` and ``training_stats.json`` into ``artifact_dir``."""
-        self.artifact.save(artifact_dir / "model")
+        """Write the numpy-checkpoint and ``training_stats.json`` into ``artifact_dir``."""
+        self.predictor.save(artifact_dir / "model")
         stats = {
             "train_loss": self.train_losses,
             "val_loss": self.val_losses,
@@ -175,75 +177,6 @@ def du_sensitivity(model: nn.Module, x_val: Tensor, n_hist: int) -> float:
     return float(np.mean(norms))
 
 
-def fit(
-    model: nn.Module,
-    tensors: tuple[Tensor, Tensor, Tensor, Tensor],
-    cfg: NNPredictorConfig,
-    *,
-    seed: int,
-) -> tuple[list[float], list[float]]:
-    """Regress ``model`` onto the Frame targets, leaving it holding the best-validation weights.
-
-    The Loss is a plain MSE in standardized log-Observable space over ``(frame, channel, value)``.
-    The hinge stays in the controller: training one would discard every gradient from Frames already
-    under the envelope. Any module mapping the input row to that target shape fits here, which is
-    what lets the direct-map arm of the gate probe share this schedule exactly.
-    """
-    x_train, y_train, x_val, y_val = tensors
-    trn = cfg.training
-    rng = np.random.default_rng(seed)
-    n_samples = x_train.shape[0]
-
-    steps_per_epoch = (n_samples + trn.batch_size - 1) // trn.batch_size
-    total_steps = max(steps_per_epoch * trn.epochs, 1)
-    warmup_steps = min(steps_per_epoch * trn.warmup_epochs, total_steps - 1)
-
-    optimizer = torch.optim.AdamW(model.parameters(), lr=trn.learning_rate, weight_decay=trn.weight_decay)
-    scheduler = lr_schedule(optimizer, warmup_steps=warmup_steps, total_steps=total_steps)
-
-    best_val_loss = float("inf")
-    best_state = copy.deepcopy(model.state_dict())
-    epochs_without_improvement = 0
-    train_losses: list[float] = []
-    val_losses: list[float] = []
-
-    pbar = tqdm(range(trn.epochs), desc="Training observable MLP")
-    for _ in pbar:
-        epoch_loss, batches = 0.0, 0
-        for idx in shuffled_batches(n_samples, trn.batch_size, rng):
-            loss = torch.mean((model(x_train[idx]) - y_train[idx]) ** 2)
-            optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
-            scheduler.step()
-            epoch_loss += float(loss.detach())
-            batches += 1
-
-        train_loss = epoch_loss / batches
-        with torch.no_grad():
-            val_loss = float(torch.mean((model(x_val) - y_val) ** 2).detach())
-
-        train_losses.append(train_loss)
-        val_losses.append(val_loss)
-        if np.isnan(train_loss) or np.isnan(val_loss):
-            msg = "Loss is NaN. Aborting training."
-            raise ValueError(msg)
-
-        if val_loss < best_val_loss:
-            best_val_loss = val_loss
-            best_state = copy.deepcopy(model.state_dict())
-            epochs_without_improvement = 0
-        else:
-            epochs_without_improvement += 1
-
-        pbar.set_postfix(train_loss=f"{train_loss:.4f}", val_loss=f"{val_loss:.4f}")
-        if epochs_without_improvement >= trn.patience:
-            break
-
-    model.load_state_dict(best_state)
-    return train_losses, val_losses
-
-
 def log_mse(model: nn.Module, x_val: Tensor, targets_val: FloatArray, l_std: Standardizer) -> float:
     """Held-out MSE in raw log-Observable units, the scale every gate arm is compared on."""
     with torch.no_grad():
@@ -251,29 +184,20 @@ def log_mse(model: nn.Module, x_val: Tensor, targets_val: FloatArray, l_std: Sta
     return float(np.mean((l_std.inverse_transform(standardized) - targets_val) ** 2))
 
 
-def train_observable(
+def _train_observable(
     cfg: NNPredictorConfig, data_files: list[str], *, seed_offset: int = 0
 ) -> ObservableTrainingResult:
     """Train the observable-space predictor for one config and return everything the run produced.
 
-    Parameters
-    ----------
-    cfg : NNPredictorConfig
-        Validated configuration carrying an ``observable`` block.
-    data_files : list[str]
-        Paths to the ``.npz`` trajectory files, split into train/validation by trajectory.
-    seed_offset : int, optional
-        Added to ``training.seed``. Defaults to 0.
-
-    Returns
-    -------
-    ObservableTrainingResult
-        The best-validation artifact, the loss curves, the held-out log-space error, the honest
-        sample count, the control sensitivity and the held-out trajectories.
+    The Loss is a plain MSE in standardized log-Observable space over ``(frame, channel, value)``.
+    The hinge stays in the controller: training one would discard every gradient from Frames already
+    under the envelope. Any module mapping the input row to that target shape fits the shared
+    gradient-descent loop, which is what lets the direct-map arm of the gate probe share this
+    schedule exactly.
     """
     sim, mdl, trn, obs = cfg.simulation, cfg.model, cfg.training, cfg.observable
     if obs is None:
-        msg = "train_observable requires an 'observable' block; use neuro.predictor.train.train otherwise."
+        msg = "the observable arm requires an 'observable' block; other configs go through the waveform arm."
         raise ValueError(msg)
 
     seed = trn.seed + seed_offset
@@ -281,7 +205,7 @@ def train_observable(
     device = torch.device(trn.device)
     data = prepare_observable_data(cfg, data_files)
 
-    model = ObservableMLP(
+    model = StepwiseObservableMLP(
         n_y=mdl.n_y,
         n_u=mdl.n_u,
         horizon=obs.horizon,
@@ -303,19 +227,41 @@ def train_observable(
         float32_tensor(data.x_val, device),
         float32_tensor(data.l_std.transform(data.targets_val), device),
     )
-    train_losses, val_losses = fit(model, tensors, cfg, seed=seed)
 
-    art = dataclasses.replace(
-        model.to_artifact(sim.dt * sim.downsample, sim.downsample, data.y_std, data.u_std, data.l_std),
-        provenance=training_provenance(data_files, sim.cutoff_hz),
+    def mse_loss(
+        model: nn.Module,
+        x: Tensor,
+        y: Tensor,
+        epoch: int | None,  # noqa: ARG001 -- the schedule clock is epoch-independent for plain MSE
+    ) -> tuple[Tensor, dict[str, float]]:
+        """Standardized log-Observable MSE; the schedule clock is epoch-independent here."""
+        return torch.mean((model(x) - y) ** 2), {}
+
+    train_losses, val_losses, _, _ = fit_gradient_descent(
+        model,
+        *tensors,
+        trn,
+        seed=seed,
+        loss_fn=mse_loss,
+        desc="Training observable MLP",
     )
+
     n_hist = mdl.n_y * data.n_channels + mdl.n_u * data.n_controls
+    val_log_mse = log_mse(model, tensors[2], data.targets_val, data.l_std)
+    sensitivity = du_sensitivity(model, tensors[0], n_hist)
+    model = model.cpu()
+    model.provenance = training_provenance(data_files, sim.cutoff_hz)
+    model.downsample = sim.downsample
     return ObservableTrainingResult(
-        artifact=art,
+        predictor=model,
+        candidates={
+            "val_loss": float(min(val_losses)),
+            "val_log_mse": val_log_mse,
+        },
         train_losses=train_losses,
         val_losses=val_losses,
-        val_log_mse=log_mse(model, tensors[2], data.targets_val, data.l_std),
+        val_log_mse=val_log_mse,
         n_independent_samples=data.x_train.shape[0] // obs.horizon,
-        du_sensitivity=du_sensitivity(model, tensors[0], n_hist),
+        du_sensitivity=sensitivity,
         val_trajs=data.val_trajs,
     )

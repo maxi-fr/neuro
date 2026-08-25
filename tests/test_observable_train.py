@@ -8,7 +8,6 @@ from typing import TYPE_CHECKING
 import numpy as np
 import pytest
 
-from neuro.artifacts import load_any_artifact
 from neuro.config import (
     EegMsGeometry,
     ModelConfig,
@@ -19,9 +18,11 @@ from neuro.config import (
     StftGeometry,
     TrainingConfig,
 )
-from neuro.observable import ObservableArtifact, log_observable
+from neuro.observable import log_observable
 from neuro.predictor.data import frame_targets, prepare_datasets
-from neuro.predictor.observable_train import prepare_observable_data, train_observable
+from neuro.predictor.observable_module import StepwiseObservableMLP
+from neuro.predictor.observable_train import ObservableTrainingResult, prepare_observable_data
+from neuro.predictor.train import train
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -124,19 +125,21 @@ def test_targets_cover_both_splits_on_the_shared_window_grid(tmp_path: Path) -> 
     assert data.targets_val.shape == (data.x_val.shape[0], n_frames, _N_EEG * _GEOMETRY.n_values(1.0 / _DT))
 
 
-def test_train_observable_writes_a_loadable_artifact(tmp_path: Path) -> None:
-    """A run produces an artifact that ``load_any_artifact`` dispatches on and stats that persist."""
-    result = train_observable(_config(), _write_trajectories(tmp_path))
+def test_train_writes_a_loadable_checkpoint(tmp_path: Path) -> None:
+    """A run returns the trained module; ``save`` persists a checkpoint that round-trips it."""
+    result = train(_config(), _write_trajectories(tmp_path))
+    assert isinstance(result, ObservableTrainingResult)
 
     assert len(result.train_losses) == 3
+    assert result.train_losses[-1] < result.train_losses[0]
     assert result.n_independent_samples > 0
-    assert result.artifact.geometry == _GEOMETRY
-    assert result.artifact.horizon == _HORIZON
+    assert result.predictor.geometry == _GEOMETRY
+    assert result.predictor.horizon == _HORIZON
 
     result.save(tmp_path)
-    loaded = load_any_artifact(tmp_path / "model")
-    assert isinstance(loaded, ObservableArtifact)
+    loaded = StepwiseObservableMLP.load(tmp_path / "model")
     assert loaded.geometry == _GEOMETRY
+    assert loaded.horizon == _HORIZON
     stats = json.loads((tmp_path / "training_stats.json").read_text())
     assert stats["n_independent_samples"] == result.n_independent_samples
     assert stats["du_sensitivity"] == result.du_sensitivity

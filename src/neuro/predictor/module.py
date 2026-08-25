@@ -7,12 +7,15 @@ import numpy as np
 import torch
 from torch import nn
 
-from neuro.predictor.artifact import MLPArtifact
+from neuro.predictor.artifact import ACTIVATIONS, MLPArtifact
+from neuro.predictor.checkpoint import load_checkpoint, save_checkpoint
 from neuro.predictor.data import build_dataset_for_trajectory
+from neuro.provenance import TrainingProvenance
 from neuro.transforms import Standardizer
 
 if TYPE_CHECKING:
     from collections.abc import Callable
+    from pathlib import Path
 
     from torch import Tensor
 
@@ -106,6 +109,8 @@ class AutoregressiveMLP(nn.Module):
     y_scale: Tensor
     u_center: Tensor
     u_scale: Tensor
+    downsample: int
+    provenance: TrainingProvenance
     # The Ridge-Fittable capability is attached per-instance on depth-0 models only (see
     # __init__); the declarations keep the bound methods visible to static checks while hidden-
     # layer instances still lack them at runtime, so the build-time capability check fails.
@@ -140,7 +145,12 @@ class AutoregressiveMLP(nn.Module):
         self.n_channels = n_channels
         self.n_controls = n_controls
         self.activation = activation
+        self.hidden_size = hidden_size
+        self.depth = depth
         self.dt = float(dt)
+        # Recorded metadata the checkpoint persists and ``load`` restores; training sets them.
+        self.downsample = 1
+        self.provenance = TrainingProvenance()
 
         sizes = [n_y * n_channels + n_u * n_controls, *[hidden_size] * depth, n_channels]
         modules: list[nn.Module] = []
@@ -377,4 +387,67 @@ class AutoregressiveMLP(nn.Module):
             for lin, (w, b) in zip(linears, art.layers, strict=True):
                 lin.weight.copy_(torch.as_tensor(w, dtype=torch.float32))
                 lin.bias.copy_(torch.as_tensor(b, dtype=torch.float32))
+        return model
+
+    def save(self, path: str | Path) -> None:
+        """Persist weights, standardizer buffers and recorded metadata into one ``.npz`` checkpoint.
+
+        ``path`` is a suffix-less stem. The layout -- a JSON ``meta`` block, per-layer weight
+        arrays and the standardizer arrays -- is the one the artifact loaders already read, so the
+        torch-free control path keeps consuming what ``save`` writes without the module.
+        """
+        linears = [m for m in self.layers if isinstance(m, nn.Linear)]
+        meta = {
+            "model_type": "mlp",
+            "activation": self.activation,
+            "n_y": self.n_y,
+            "n_u": self.n_u,
+            "horizon": self.horizon,
+            "n_channels": self.n_channels,
+            "n_controls": self.n_controls,
+            "hidden_size": self.hidden_size,
+            "depth": self.depth,
+            "dt": self.dt,
+            "downsample": self.downsample,
+            "n_layers": len(linears),
+            **self.provenance.meta,
+        }
+        arrays: dict[str, FloatArray] = {}
+        for i, lin in enumerate(linears):
+            arrays[f"layer.{i}.weight"] = to_numpy(lin.weight)
+            arrays[f"layer.{i}.bias"] = to_numpy(lin.bias)
+        arrays.update(self.y_std.arrays("y"))
+        arrays.update(self.u_std.arrays("u"))
+        save_checkpoint(path, meta=meta, arrays=arrays)
+
+    @classmethod
+    def load(cls, path: str | Path) -> Self:
+        """Rebuild the module from a :meth:`save` checkpoint, restoring weights, buffers and metadata."""
+        meta, arrays = load_checkpoint(path)
+        if meta.get("model_type") != "mlp":
+            msg = f"checkpoint at {path} is model_type {meta.get('model_type')!r}, not 'mlp'."
+            raise ValueError(msg)
+        if meta["activation"] not in ACTIVATIONS:
+            msg = f"Unsupported activation: {meta['activation']!r}"
+            raise ValueError(msg)
+        model = cls(
+            n_y=int(meta["n_y"]),
+            n_u=int(meta["n_u"]),
+            horizon=int(meta["horizon"]),
+            n_channels=int(meta["n_channels"]),
+            n_controls=int(meta["n_controls"]),
+            hidden_size=int(meta["hidden_size"]),
+            depth=int(meta["depth"]),
+            activation=meta["activation"],
+            dt=float(meta["dt"]),
+            y_std=Standardizer.from_arrays(arrays, "y"),
+            u_std=Standardizer.from_arrays(arrays, "u"),
+        )
+        model.downsample = int(meta["downsample"])
+        model.provenance = TrainingProvenance.from_meta(meta)
+        linears = [m for m in model.layers if isinstance(m, nn.Linear)]
+        with torch.no_grad():
+            for i, lin in enumerate(linears):
+                lin.weight.copy_(torch.as_tensor(np.asarray(arrays[f"layer.{i}.weight"]), dtype=torch.float32))
+                lin.bias.copy_(torch.as_tensor(np.asarray(arrays[f"layer.{i}.bias"]), dtype=torch.float32))
         return model

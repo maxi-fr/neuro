@@ -9,7 +9,6 @@ import numpy as np
 import pytest
 import torch
 
-from neuro.artifacts import load_any_artifact
 from neuro.config import (
     CurriculumMSESpec,
     LossSpecs,
@@ -18,12 +17,12 @@ from neuro.config import (
     SimulationConfig,
     TrainingConfig,
 )
-from neuro.predictor.artifact import MLPArtifact
 from neuro.predictor.data import fit_standardizers, prepare_datasets
+from neuro.predictor.gradient import lr_schedule
 from neuro.predictor.losses import LossContext, build_losses, total_loss
 from neuro.predictor.module import AutoregressiveMLP
 from neuro.predictor.ridge import RidgeTrainer
-from neuro.predictor.train import lr_schedule, train
+from neuro.predictor.train import TrainingResult, train
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -73,13 +72,20 @@ def _config(depth: int = 1, curr_start: int = 0, curr_end: int = 2, **training: 
     )
 
 
-def _weights(art: MLPArtifact) -> list[np.ndarray]:
+def _weights(model: AutoregressiveMLP) -> list[np.ndarray]:
     """Flat list of every weight and bias array, in forward order."""
-    return [a for layer in art.layers for a in layer]
+    return [p.detach().numpy() for p in model.parameters()]
 
 
-def _validation_loss(cfg: NNPredictorConfig, files: list[str], art: MLPArtifact) -> float:
-    """Re-score ``art`` on the validation windows exactly as the training loop does."""
+def _wave_train(cfg: NNPredictorConfig, files: list[str], *, seed_offset: int = 0) -> TrainingResult:
+    """Train the waveform arm, narrowing the union the dispatcher returns."""
+    result = train(cfg, files, seed_offset=seed_offset)
+    assert isinstance(result, TrainingResult)
+    return result
+
+
+def _validation_loss(cfg: NNPredictorConfig, files: list[str], model: AutoregressiveMLP) -> float:
+    """Re-score ``model`` on the validation windows exactly as the training loop does."""
     mdl = cfg.model
     fs = cfg.fs
     assert cfg.training.losses is not None
@@ -99,15 +105,9 @@ def _validation_loss(cfg: NNPredictorConfig, files: list[str], art: MLPArtifact)
         global_scaling=cfg.training.global_scaling,
     )
 
-    model = AutoregressiveMLP.from_artifact(art)
-    pred = model(torch.as_tensor(data.X_val, dtype=torch.float32)).reshape(-1, horizon, art.n_channels)
+    pred = model(torch.as_tensor(data.X_val, dtype=torch.float32)).reshape(-1, horizon, model.n_channels)
     target = torch.as_tensor(data.Y_val, dtype=torch.float32).reshape(-1, horizon, data.n_channels)
-    ctx = LossContext(
-        y_center=torch.as_tensor(art.y_std.center, dtype=torch.float32),
-        y_scale=torch.as_tensor(art.y_std.scale, dtype=torch.float32),
-        fs=fs,
-        epoch=None,
-    )
+    ctx = LossContext(y_center=model.y_center, y_scale=model.y_scale, fs=fs, epoch=None)
     loss, _ = total_loss(losses, pred, target, ctx)
     return float(loss.detach())
 
@@ -119,7 +119,7 @@ def files(tmp_path: Path) -> list[str]:
 
 def test_training_converges_and_scores_the_rollout(files: list[str]) -> None:
     """The smoke test: the loss goes down and the free-run rollout produces finite numbers."""
-    result = train(_config(), files)
+    result = _wave_train(_config(), files)
 
     assert len(result.train_losses) == len(result.val_losses) == 3
     assert result.train_losses[-1] < result.train_losses[0]
@@ -134,8 +134,8 @@ def test_training_converges_and_scores_the_rollout(files: list[str]) -> None:
 
 
 def test_save_round_trip_predicts_identically(files: list[str], tmp_path: Path) -> None:
-    """``save`` writes both files and the reloaded artifact rolls out bit-identically."""
-    result = train(_config(), files)
+    """``save`` writes the checkpoint and stats; the reloaded module rolls out bit-identically."""
+    result = _wave_train(_config(), files)
     artifact_dir = tmp_path / "artifacts"
     artifact_dir.mkdir()
 
@@ -155,14 +155,13 @@ def test_save_round_trip_predicts_identically(files: list[str], tmp_path: Path) 
     assert stats["nmse_rollout"] == result.rollout.pooled
     assert stats["log_energy"] == result.log_energy.pooled
 
-    loaded = load_any_artifact(artifact_dir / "model")
-    assert isinstance(loaded, MLPArtifact)
+    loaded = AutoregressiveMLP.load(artifact_dir / "model")
 
     u, y = result.val_trajs[0]
-    priming = result.artifact.priming_steps
-    state = result.artifact.prime(y[:priming], u[:priming])
+    priming = result.predictor.priming_steps
+    state = result.predictor.prime(y[:priming], u[:priming])
     u_future = u[priming : priming + _HORIZON]
-    np.testing.assert_array_equal(loaded.rollout(state, u_future), result.artifact.rollout(state, u_future))
+    np.testing.assert_array_equal(loaded.rollout(state, u_future), result.predictor.rollout(state, u_future))
 
 
 def test_returned_artifact_is_the_best_epoch_not_the_last(files: list[str]) -> None:
@@ -173,13 +172,13 @@ def test_returned_artifact_is_the_best_epoch_not_the_last(files: list[str]) -> N
     epoch cannot be the last; re-scoring the returned artifact then pins which epoch it came from.
     """
     cfg = _config(epochs=20, learning_rate=0.3, curr_end=1, patience=2)
-    result = train(cfg, files)
+    result = _wave_train(cfg, files)
 
     assert len(result.val_losses) < 20, "the run must stop on patience, not on the epoch budget"
     assert int(np.argmin(result.val_losses)) == len(result.val_losses) - 3
     assert min(result.val_losses) < result.val_losses[-1]
 
-    assert _validation_loss(cfg, files, result.artifact) == pytest.approx(min(result.val_losses))
+    assert _validation_loss(cfg, files, result.predictor) == pytest.approx(min(result.val_losses))
 
 
 def test_depth0_ridge_fit_reproduces_the_warm_start(files: list[str]) -> None:
@@ -249,18 +248,18 @@ def test_depth0_ridge_fit_reproduces_the_warm_start(files: list[str]) -> None:
 
 def test_same_seed_reproduces_and_offset_decorrelates(files: list[str]) -> None:
     """Both the initialisation and the epoch shuffle follow ``training.seed + seed_offset``."""
-    first = train(_config(), files)
-    again = train(_config(), files)
-    shifted = train(_config(), files, seed_offset=1)
+    first = _wave_train(_config(), files)
+    again = _wave_train(_config(), files)
+    shifted = _wave_train(_config(), files, seed_offset=1)
 
     assert first.train_losses == again.train_losses
-    for got, want in zip(_weights(again.artifact), _weights(first.artifact), strict=True):
+    for got, want in zip(_weights(again.predictor), _weights(first.predictor), strict=True):
         np.testing.assert_array_equal(got, want)
 
     assert shifted.train_losses != first.train_losses
     assert any(
         not np.array_equal(got, want)
-        for got, want in zip(_weights(shifted.artifact), _weights(first.artifact), strict=True)
+        for got, want in zip(_weights(shifted.predictor), _weights(first.predictor), strict=True)
     )
 
 
@@ -286,8 +285,8 @@ def test_lr_schedule_ramps_in_then_anneals_to_zero(warmup_steps: int) -> None:
 
 def test_warmup_shortens_the_first_epochs_without_changing_the_epoch_count(files: list[str]) -> None:
     """``warmup_epochs`` reshapes the schedule only -- the loop still runs every configured epoch."""
-    plain = train(_config(epochs=4), files)
-    warmed = train(_config(epochs=4, warmup_epochs=2), files)
+    plain = _wave_train(_config(epochs=4), files)
+    warmed = _wave_train(_config(epochs=4, warmup_epochs=2), files)
 
     assert len(warmed.train_losses) == len(plain.train_losses) == 4
     assert warmed.train_losses != plain.train_losses
@@ -295,10 +294,10 @@ def test_warmup_shortens_the_first_epochs_without_changing_the_epoch_count(files
 
 def test_linear_model_is_warm_started_and_skips_the_one_step_epochs(files: list[str]) -> None:
     """A depth-0 model starts from the exact 1-step solution, so the L = 1 epochs are skipped."""
-    linear = train(_config(depth=0, epochs=3, curr_start=2, curr_end=2), files)
-    nonlinear = train(_config(depth=1, epochs=3, curr_start=2, curr_end=2), files)
+    linear = _wave_train(_config(depth=0, epochs=3, curr_start=2, curr_end=2), files)
+    nonlinear = _wave_train(_config(depth=1, epochs=3, curr_start=2, curr_end=2), files)
 
-    assert linear.artifact.is_linear
+    assert len(linear.predictor.layers) == 1
     assert len(linear.train_losses) == 1
     assert len(nonlinear.train_losses) == 3
     assert np.isfinite(linear.rollout.pooled)

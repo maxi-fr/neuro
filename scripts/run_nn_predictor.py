@@ -1,6 +1,7 @@
 import argparse
 import shutil
 from pathlib import Path
+from typing import cast
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -52,15 +53,15 @@ def plot_training_curves(result: TrainingResult, plot_path: Path) -> None:
 
 def plot_rollout_comparison(result: TrainingResult, plot_path: Path) -> None:
     """Overlay free-run rollout fans on the first held-out trajectory."""
-    art = result.artifact
+    model = result.predictor
     u, y = result.val_trajs[0]
-    priming = art.priming_steps
-    n_anchors = min(MAX_PLOT_ANCHORS, len(y) - priming - art.horizon)
+    priming = model.priming_steps
+    n_anchors = min(MAX_PLOT_ANCHORS, len(y) - priming - model.horizon)
 
     # The rollout primed on history up to t - 1 predicts y[t : t + horizon], so its anchor is t - 1.
     y_pred = np.stack(
         [
-            art.rollout(art.prime(y[t - priming : t], u[t - priming : t]), u[t : t + art.horizon])
+            model.rollout(model.prime(y[t - priming : t], u[t - priming : t]), u[t : t + model.horizon])
             for t in range(priming, priming + n_anchors)
         ]
     )
@@ -68,10 +69,10 @@ def plot_rollout_comparison(result: TrainingResult, plot_path: Path) -> None:
     fig, _ = plot_multistep_predictions(
         y_true=y[priming - 1 : priming - 1 + n_anchors],
         y_pred=y_pred,
-        dt=art.dt,
-        channels=list(range(min(MAX_PLOT_CHANNELS, art.n_channels))),
-        stride=art.horizon,
-        title=f"EEG {art.horizon}-Step Free-Run Rollout",
+        dt=model.dt,
+        channels=list(range(min(MAX_PLOT_CHANNELS, model.n_channels))),
+        stride=model.horizon,
+        title=f"EEG {model.horizon}-Step Free-Run Rollout",
     )
     fig.savefig(plot_path, dpi=300)
     plt.close(fig)
@@ -97,7 +98,7 @@ def main() -> None:
     artifact_dir = resolve_artifact_dir(config.artifact, "nn_predictor")
     shutil.copy2(config_path, artifact_dir / config_path.name)
 
-    result = train(config, data_files)
+    result = cast("TrainingResult", train(config, data_files))
     result.save(artifact_dir)
     plot_training_curves(result, artifact_dir / "loss_curve.png")
     plot_rollout_comparison(result, artifact_dir / "comparison.png")
@@ -106,7 +107,7 @@ def main() -> None:
         f"Rollout NMSE: {result.rollout.pooled:.4f}, log-energy error: {result.log_energy.pooled:.4f}, "
         f"du sensitivity: {result.du_sensitivity:.4f}"
     )
-    print(f"Saved NN predictor artifact -> {artifact_dir / 'model.npz'}")
+    print(f"Saved NN predictor checkpoint -> {artifact_dir / 'model.npz'}")
     print(f"Plot saved to {artifact_dir / 'comparison.png'}")
 
 

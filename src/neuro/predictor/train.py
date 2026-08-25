@@ -1,45 +1,45 @@
 from __future__ import annotations
 
-import collections
-import copy
-import dataclasses
 import json
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, cast
 
 import numpy as np
 import torch
-from tqdm import tqdm
 
 from neuro.metrics import DEFAULT_HOP_S, METRICS
 from neuro.predictor.data import prepare_datasets
 from neuro.predictor.evaluation import evaluate_log_energy, evaluate_rollouts
-from neuro.predictor.losses import CurriculumMSE, Loss, LossContext, build_losses, total_loss
+from neuro.predictor.gradient import fit_gradient_descent, float32_tensor
+from neuro.predictor.losses import CurriculumMSE, LossContext, build_losses, total_loss
 from neuro.predictor.module import AutoregressiveMLP
+from neuro.predictor.observable_train import ObservableTrainingResult, _train_observable
 from neuro.provenance import training_provenance
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator, Sequence
     from pathlib import Path
 
     from torch import Tensor, nn
 
-    from neuro.config import NNPredictorConfig, TrainingConfig
-    from neuro.predictor.artifact import MLPArtifact
+    from neuro.config import NNPredictorConfig
     from neuro.predictor.evaluation import LogEnergyError, RolloutNMSE
-    from neuro.types import FloatArray, IntArray
+    from neuro.types import FloatArray
 
 _DU_WINDOWS = 8
 
 
 @dataclass(frozen=True)
 class TrainingResult:
-    """Everything one training run produced. Nothing is written; the caller persists and plots.
+    """Everything one gradient-descent training run produced; ``save`` persists it all.
 
     Attributes
     ----------
-    artifact : MLPArtifact
-        The best-validation-loss weights frozen together with the fitted transforms.
+    predictor : AutoregressiveMLP
+        The trained module holding the best-validation-loss weights, with the standardizers as
+        buffers and the recorded metadata (provenance, downsample) attached.
+    candidates : dict[str, float]
+        Every objective the sweep seam can rank this run on: ``log_energy``, ``val_loss`` and
+        ``rollout_nmse``, all lower-is-better.
     train_losses, val_losses : list[float]
         Per-epoch loss, one entry per epoch actually run (early stopping shortens both).
     train_components, val_components : dict[str, list[float]]
@@ -56,7 +56,8 @@ class TrainingResult:
         value near zero means the model predicts EEG while ignoring stimulation.
     """
 
-    artifact: MLPArtifact
+    predictor: AutoregressiveMLP
+    candidates: dict[str, float]
     train_losses: list[float]
     val_losses: list[float]
     train_components: dict[str, list[float]]
@@ -67,8 +68,8 @@ class TrainingResult:
     du_sensitivity: float
 
     def save(self, artifact_dir: Path) -> None:
-        """Write ``model.npz`` and ``training_stats.json`` into ``artifact_dir``."""
-        self.artifact.save(artifact_dir / "model")
+        """Write the numpy-checkpoint and ``training_stats.json`` into ``artifact_dir``."""
+        self.predictor.save(artifact_dir / "model")
         stats = {
             "train_loss": self.train_losses,
             "val_loss": self.val_losses,
@@ -95,11 +96,6 @@ class _Tensors:
     y_scale: Tensor
 
 
-def float32_tensor(a: FloatArray, device: torch.device) -> Tensor:
-    """Move a NumPy array onto ``device`` as a float32 tensor."""
-    return torch.as_tensor(np.ascontiguousarray(a), dtype=torch.float32, device=device)
-
-
 def _warm_start_linear(
     model: AutoregressiveMLP,
     X_train: FloatArray,
@@ -123,135 +119,6 @@ def _warm_start_linear(
         layer.bias.copy_(torch.as_tensor(weight_bias[-1], dtype=torch.float32))
 
 
-def lr_schedule(
-    optimizer: torch.optim.Optimizer, *, warmup_steps: int, total_steps: int
-) -> torch.optim.lr_scheduler.LRScheduler:
-    """Linear warm-up over ``warmup_steps`` batches, then cosine anneal to zero over the remainder.
-
-    The rollout is ``max(span_steps)`` deep from the first batch, so a randomly initialised model
-    backpropagates through the full horizon at epoch 0. Ramping in avoids taking that first,
-    badly-conditioned gradient at the peak learning rate.
-    """
-    cosine = torch.optim.lr_scheduler.CosineAnnealingLR(
-        optimizer, T_max=max(total_steps - warmup_steps, 1), eta_min=0.0
-    )
-    if warmup_steps < 1:
-        return cosine
-    warmup = torch.optim.lr_scheduler.LinearLR(optimizer, start_factor=1.0 / warmup_steps, total_iters=warmup_steps)
-    return torch.optim.lr_scheduler.SequentialLR(optimizer, [warmup, cosine], milestones=[warmup_steps])
-
-
-def shuffled_batches(n_samples: int, batch_size: int, rng: np.random.Generator) -> Iterator[IntArray]:
-    """Yield index batches covering one freshly shuffled pass over the training set."""
-    indices = rng.permutation(n_samples)
-    for start in range(0, n_samples, batch_size):
-        yield indices[start : start + batch_size]
-
-
-def _batch_loss(
-    model: AutoregressiveMLP, x: Tensor, y: Tensor, losses: Sequence[Loss], ctx: LossContext
-) -> tuple[Tensor, dict[str, float]]:
-    """Roll ``x`` out and score it against the standardized-channel targets ``y``."""
-    pred_traj = model(x).reshape(x.shape[0], model.horizon, model.n_channels)
-    return total_loss(losses, pred_traj, y, ctx)
-
-
-def _fit(  # noqa: PLR0913, PLR0915
-    model: AutoregressiveMLP,
-    tensors: _Tensors,
-    cfg: TrainingConfig,
-    losses: Sequence[Loss],
-    *,
-    fs: float,
-    seed: int,
-) -> tuple[list[float], list[float], dict[str, list[float]], dict[str, list[float]]]:
-    """Run the curriculum training loop, leaving ``model`` holding the best-validation weights."""
-    rng = np.random.default_rng(seed)
-    n_samples = tensors.X_train.shape[0]
-
-    # A warm-started linear model already solves the L = 1 problem the curriculum starts from.
-    curr_mse = next((loss for loss in losses if isinstance(loss, CurriculumMSE)), None)
-    start_epoch = curr_mse.curr_start if (len(model.layers) == 1 and curr_mse is not None) else 0
-    steps_per_epoch = (n_samples + cfg.batch_size - 1) // cfg.batch_size
-    total_steps = max(steps_per_epoch * (cfg.epochs - start_epoch), 1)
-    # A warm-started linear model skips ahead to curr_start, which can leave fewer epochs than the
-    # configured warm-up asks for.
-    warmup_steps = min(steps_per_epoch * cfg.warmup_epochs, total_steps - 1)
-
-    optimizer = torch.optim.AdamW(model.parameters(), lr=cfg.learning_rate, weight_decay=cfg.weight_decay)
-    scheduler = lr_schedule(optimizer, warmup_steps=warmup_steps, total_steps=total_steps)
-
-    val_ctx = LossContext(y_center=tensors.y_center, y_scale=tensors.y_scale, fs=fs, epoch=None)
-    best_val_loss = float("inf")
-    # A torch module is mutable, so the best-so-far snapshot has to be a copy, not an alias.
-    best_state = copy.deepcopy(model.state_dict())
-    epochs_without_improvement = 0
-    train_losses: list[float] = []
-    val_losses: list[float] = []
-    train_components: dict[str, list[float]] = collections.defaultdict(list)
-    val_components: dict[str, list[float]] = collections.defaultdict(list)
-
-    pbar = tqdm(range(start_epoch, cfg.epochs), desc="Training MLP")
-    for epoch in pbar:
-        train_ctx = LossContext(y_center=tensors.y_center, y_scale=tensors.y_scale, fs=fs, epoch=epoch)
-
-        epoch_loss, batches = 0.0, 0
-        comps_sum: dict[str, float] = collections.defaultdict(float)
-        for idx in shuffled_batches(n_samples, cfg.batch_size, rng):
-            loss, parts = _batch_loss(model, tensors.X_train[idx], tensors.Y_train[idx], losses, train_ctx)
-            optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
-            scheduler.step()
-
-            epoch_loss += float(loss.detach())
-            for key, val in parts.items():
-                comps_sum[key] += val
-            batches += 1
-
-        train_loss = epoch_loss / batches
-        with torch.no_grad():
-            val_loss_t, val_parts = _batch_loss(model, tensors.X_val, tensors.Y_val, losses, val_ctx)
-            val_loss = float(val_loss_t.detach())
-
-        train_losses.append(train_loss)
-        val_losses.append(val_loss)
-
-        for loss_obj in losses:
-            train_components[loss_obj.name].append(comps_sum[loss_obj.name] / batches)
-            val_components[loss_obj.name].append(val_parts[loss_obj.name])
-
-        if np.isnan(train_loss) or np.isnan(val_loss):
-            msg = "Loss is NaN. Aborting training."
-            raise ValueError(msg)
-
-        if val_loss < best_val_loss:
-            best_val_loss = val_loss
-            best_state = copy.deepcopy(model.state_dict())
-            epochs_without_improvement = 0
-        else:
-            epochs_without_improvement += 1
-
-        loss_weights = {loss_obj.name: loss_obj.weight for loss_obj in losses}
-        postfix: dict[str, Any] = {
-            "train_loss": f"{train_loss:.4f}",
-            "val_loss": f"{val_loss:.4f}",
-        }
-        for key, val in comps_sum.items():
-            if key == "L":
-                postfix["L"] = int(val / batches)
-            else:
-                weight = loss_weights.get(key, 1.0)
-                postfix[key] = f"{(val / batches) * weight:.4f}"
-        pbar.set_postfix(**postfix)
-
-        if epochs_without_improvement >= cfg.patience:
-            break
-
-    model.load_state_dict(best_state)
-    return train_losses, val_losses, dict(train_components), dict(val_components)
-
-
 def _du_sensitivity(model: AutoregressiveMLP, X_val: Tensor) -> float:
     """Mean Frobenius norm of d(rollout)/d(future controls) over a fixed subsample of windows.
 
@@ -273,8 +140,16 @@ def _du_sensitivity(model: AutoregressiveMLP, X_val: Tensor) -> float:
     return float(np.mean(norms))
 
 
-def train(cfg: NNPredictorConfig, data_files: list[str], *, seed_offset: int = 0) -> TrainingResult:
-    """Train the autoregressive MLP for one config and return everything the run produced.
+def train(
+    cfg: NNPredictorConfig, data_files: list[str], *, seed_offset: int = 0
+) -> TrainingResult | ObservableTrainingResult:
+    """Train the NN predictor named by ``cfg`` for one config and return everything the run produced.
+
+    Dispatches on the config tree: a config carrying an ``observable`` block trains the
+    one-Frame-per-step observable predictor, any other trains the autoregressive waveform MLP.
+    Both arms run the same generic gradient-descent fit and return a result holding the trained
+    Predictor, the recorded ``candidates`` and a ``save`` that persists the numpy-checkpoint and
+    the training stats.
 
     Parameters
     ----------
@@ -287,13 +162,20 @@ def train(cfg: NNPredictorConfig, data_files: list[str], *, seed_offset: int = 0
 
     Returns
     -------
-    TrainingResult
-        The best-validation artifact, the loss curves, the free-run rollout NMSE, the held-out
-        trajectories and the control sensitivity.
+    TrainingResult | ObservableTrainingResult
+        The trained Predictor, the candidate objectives, the loss curves, the free-run scores, the
+        held-out trajectories and the control sensitivity.
     """
+    if cfg.observable is not None:
+        return _train_observable(cfg, data_files, seed_offset=seed_offset)
+    return _train_waveform(cfg, data_files, seed_offset=seed_offset)
+
+
+def _train_waveform(cfg: NNPredictorConfig, data_files: list[str], *, seed_offset: int = 0) -> TrainingResult:
+    """Train the autoregressive waveform MLP for one config and return everything the run produced."""
     sim, mdl, trn = cfg.simulation, cfg.model, cfg.training
     if trn.losses is None:
-        msg = "train requires 'training.losses'; a config with an 'observable' block goes through train_observable."
+        msg = "the waveform arm requires 'training.losses'; a config with an 'observable' block is routed elsewhere."
         raise ValueError(msg)
     seed = trn.seed + seed_offset
     torch.manual_seed(seed)
@@ -335,22 +217,37 @@ def train(cfg: NNPredictorConfig, data_files: list[str], *, seed_offset: int = 0
 
     model = model.to(device)
 
-    target_shape = (-1, horizon, data.n_channels)
     tensors = _Tensors(
         X_train=float32_tensor(data.X_train, device),
-        Y_train=float32_tensor(data.Y_train, device).reshape(target_shape),
+        Y_train=float32_tensor(data.Y_train, device).reshape(-1, horizon, data.n_channels),
         X_val=float32_tensor(data.X_val, device),
-        Y_val=float32_tensor(data.Y_val, device).reshape(target_shape),
+        Y_val=float32_tensor(data.Y_val, device).reshape(-1, horizon, data.n_channels),
         y_center=float32_tensor(data.y_std.center, device),
         y_scale=float32_tensor(data.y_std.scale, device),
     )
 
-    train_losses, val_losses, train_comps, val_comps = _fit(model, tensors, trn, losses, fs=fs, seed=seed)
+    def batch_loss(model: nn.Module, x: Tensor, y: Tensor, epoch: int | None) -> tuple[Tensor, dict[str, float]]:
+        """Roll ``x`` out and score it against the standardized-channel targets ``y``."""
+        ctx = LossContext(y_center=tensors.y_center, y_scale=tensors.y_scale, fs=fs, epoch=epoch)
+        pred_traj = model(x).reshape(x.shape[0], horizon, data.n_channels)
+        return total_loss(losses, pred_traj, y, ctx)
 
-    art = dataclasses.replace(
-        model.to_artifact(sim.dt * sim.downsample, sim.downsample, data.y_std, data.u_std),
-        provenance=training_provenance(data_files, sim.cutoff_hz),
+    # A warm-started linear model already solves the L = 1 problem the curriculum starts from.
+    curr_mse = next((loss for loss in losses if isinstance(loss, CurriculumMSE)), None)
+    start_epoch = curr_mse.curr_start if (len(model.layers) == 1 and curr_mse is not None) else 0
+    train_losses, val_losses, train_comps, val_comps = fit_gradient_descent(
+        model,
+        tensors.X_train,
+        tensors.Y_train,
+        tensors.X_val,
+        tensors.Y_val,
+        trn,
+        seed=seed,
+        loss_fn=batch_loss,
+        start_epoch=start_epoch,
+        desc="Training MLP",
     )
+
     eval_steps = max(1, round(trn.eval_horizon_s * fs))
     # The energy course follows the metrics layer's own eeg_ms convention rather than a knob of its
     # own, clamped where the evaluation horizon is too short to hold one window.
@@ -359,16 +256,25 @@ def train(cfg: NNPredictorConfig, data_files: list[str], *, seed_offset: int = 0
     du_sensitivity = _du_sensitivity(model, tensors.X_val)
     # The protocol runtime interfaces through NumPy, so the free-run evaluation runs on the CPU copy.
     model = model.cpu()
+    model.provenance = training_provenance(data_files, sim.cutoff_hz)
+    model.downsample = sim.downsample
+    rollout = evaluate_rollouts(model, data.val_trajs, eval_steps)
+    log_energy = evaluate_log_energy(
+        model, data.val_trajs, eval_steps, window_steps=energy_window, hop_steps=energy_hop
+    )
     return TrainingResult(
-        artifact=art,
+        predictor=model,
+        candidates={
+            "log_energy": log_energy.pooled,
+            "val_loss": float(min(val_losses)),
+            "rollout_nmse": rollout.pooled,
+        },
         train_losses=train_losses,
         val_losses=val_losses,
         train_components=train_comps,
         val_components=val_comps,
-        rollout=evaluate_rollouts(model, data.val_trajs, eval_steps),
-        log_energy=evaluate_log_energy(
-            model, data.val_trajs, eval_steps, window_steps=energy_window, hop_steps=energy_hop
-        ),
+        rollout=rollout,
+        log_energy=log_energy,
         val_trajs=data.val_trajs,
         du_sensitivity=du_sensitivity,
     )

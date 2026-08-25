@@ -12,9 +12,9 @@ from neuro.artifacts import load_any_artifact
 from neuro.config import load_config, resolve_data_files
 from neuro.observable import log_observable
 from neuro.predictor.artifact import MLPArtifact
+from neuro.predictor.gradient import fit_gradient_descent, float32_tensor
 from neuro.predictor.observable_module import ObservableMLP, mlp_stack
-from neuro.predictor.observable_train import ObservableData, fit, log_mse, prepare_observable_data
-from neuro.predictor.train import float32_tensor
+from neuro.predictor.observable_train import ObservableData, log_mse, prepare_observable_data
 
 if TYPE_CHECKING:
     from torch import Tensor
@@ -68,7 +68,7 @@ class _DirectMap(nn.Module):
 
 
 def _tensors(data: ObservableData, device: torch.device) -> tuple[Tensor, Tensor, Tensor, Tensor]:
-    """Standardized inputs and targets on ``device``, the four tensors ``fit`` consumes."""
+    """Standardized inputs and targets on ``device``, the four tensors the shared fit consumes."""
     return (
         float32_tensor(data.x_train, device),
         float32_tensor(data.l_std.transform(data.targets_train), device),
@@ -77,12 +77,22 @@ def _tensors(data: ObservableData, device: torch.device) -> tuple[Tensor, Tensor
     )
 
 
+def _mse_loss(
+    model: nn.Module,
+    x: Tensor,
+    y: Tensor,
+    epoch: int | None,  # noqa: ARG001 -- the shared loop's schedule clock; MSE is epoch-independent
+) -> tuple[Tensor, dict[str, float]]:
+    """Standardized log-Observable MSE over the Frame grid."""
+    return torch.mean((model(x) - y) ** 2), {}
+
+
 def _train_arm(model: nn.Module, cfg: NNPredictorConfig, data: ObservableData, seed: int) -> float:
     """Train one arm on the shared data and schedule; return its held-out MSE in raw log units."""
     torch.manual_seed(seed)
     device = torch.device(cfg.training.device)
     tensors = _tensors(data, device)
-    fit(model.to(device), tensors, cfg, seed=seed)
+    fit_gradient_descent(model.to(device), *tensors, cfg.training, seed=seed, loss_fn=_mse_loss)
     return log_mse(model, tensors[2], data.targets_val, data.l_std)
 
 

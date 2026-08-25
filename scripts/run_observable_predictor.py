@@ -1,11 +1,13 @@
 import argparse
 import shutil
 from pathlib import Path
+from typing import cast
 
 import matplotlib.pyplot as plt
 
 from neuro.config import load_config, resolve_artifact_dir, resolve_data_files
-from neuro.predictor.observable_train import ObservableTrainingResult, train_observable
+from neuro.predictor.observable_train import ObservableTrainingResult
+from neuro.predictor.train import train
 
 
 def plot_training_curves(result: ObservableTrainingResult, plot_path: Path) -> None:
@@ -45,7 +47,7 @@ def main() -> None:
     artifact_dir = resolve_artifact_dir(config.artifact, "observable_predictor")
     shutil.copy2(config_path, artifact_dir / config_path.name)
 
-    result = train_observable(config, data_files)
+    result = cast("ObservableTrainingResult", train(config, data_files))
     result.save(artifact_dir)
     plot_training_curves(result, artifact_dir / "loss_curve.png")
 
@@ -54,7 +56,7 @@ def main() -> None:
         f"du sensitivity: {result.du_sensitivity:.4f}, "
         f"non-overlapping training targets: {result.n_independent_samples}"
     )
-    print(f"Saved observable predictor artifact -> {artifact_dir / 'model.npz'}")
+    print(f"Saved observable predictor checkpoint -> {artifact_dir / 'model.npz'}")
 
 
 if __name__ == "__main__":

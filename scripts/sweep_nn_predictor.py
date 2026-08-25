@@ -69,11 +69,7 @@ def objective(
 
     # Every candidate objective is recorded on every trial, whichever one is being minimized, so a
     # finished study can be re-ranked on the others without re-running it.
-    candidates = {
-        "log_energy": float(result.log_energy.pooled),
-        "val_loss": float(min(result.val_losses)),
-        "rollout_nmse": float(result.rollout.pooled),
-    }
+    candidates = dict(result.candidates)
     for name, value in candidates.items():
         trial.set_user_attr(name, value)
 
