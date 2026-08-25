@@ -6,19 +6,22 @@ import json
 from typing import TYPE_CHECKING
 
 import numpy as np
+import pytest
 
 from neuro.artifacts import load_any_artifact
 from neuro.config import (
+    EegMsGeometry,
     ModelConfig,
     NNPredictorConfig,
+    ObservableGeometry,
     ObservableSpec,
     SimulationConfig,
     StftGeometry,
     TrainingConfig,
 )
 from neuro.observable import ObservableArtifact, log_observable
-from neuro.predictor.data import prepare_datasets
-from neuro.predictor.observable_train import build_targets, prepare_observable_data, train_observable
+from neuro.predictor.data import frame_targets, prepare_datasets
+from neuro.predictor.observable_train import prepare_observable_data, train_observable
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -74,18 +77,51 @@ def _config(*, control_blind: bool = False) -> NNPredictorConfig:
     )
 
 
-def test_training_targets_are_the_shared_observable_of_the_true_future(tmp_path: Path) -> None:
-    """The targets the trainer regresses on are ``log_observable`` of the same windows, flattened."""
+def test_frame_targets_match_the_round_trip_build_targets(tmp_path: Path) -> None:
+    """The raw-direct pipeline targets equal today's round-trip ``build_targets`` output.
+
+    The round trip the raw-direct path replaces is reproduced inline -- standardize, inverse,
+    reduce -- so the two paths are pinned to agree to floating-point tolerance, and the raw
+    windows ride on the exact grid the standardized waveform targets use.
+    """
     files = _write_trajectories(tmp_path)
     data = prepare_datasets(files, None, 1, 3, 2, _HORIZON, _DT, 0.5, scaler="standard", global_scaling=False)
 
-    targets = build_targets(data.Y_train, data.y_std, _GEOMETRY, horizon=_HORIZON, n_channels=_N_EEG, fs=1.0 / _DT)
+    targets = frame_targets(data.Y_raw_train, _GEOMETRY, horizon=_HORIZON, n_channels=_N_EEG, fs=1.0 / _DT)
     n_frames = _GEOMETRY.n_frames(_HORIZON, 1.0 / _DT)
     assert targets.shape == (data.Y_train.shape[0], n_frames, _N_EEG * _GEOMETRY.n_values(1.0 / _DT))
 
-    raw = data.y_std.inverse_transform(data.Y_train[:3].reshape(3, _HORIZON, _N_EEG))
-    expected = log_observable(raw, _GEOMETRY, 1.0 / _DT).reshape(3, n_frames, -1)
-    np.testing.assert_allclose(targets[:3], expected, rtol=1e-12, atol=1e-12)
+    raw = data.y_std.inverse_transform(data.Y_train.reshape(-1, _HORIZON, _N_EEG))
+    np.testing.assert_allclose(data.Y_raw_train.reshape(-1, _HORIZON, _N_EEG), raw, rtol=1e-12, atol=1e-12)
+    expected = log_observable(raw, _GEOMETRY, 1.0 / _DT).reshape(-1, n_frames, _N_EEG * _GEOMETRY.n_values(1.0 / _DT))
+    np.testing.assert_allclose(targets, expected, rtol=1e-12, atol=1e-12)
+
+
+@pytest.mark.parametrize("horizon", [16, 32, 64])
+@pytest.mark.parametrize("geometry", [_GEOMETRY, EegMsGeometry(window_s=0.3, hop_s=0.1)])
+def test_resolved_frame_count_matches_the_geometry_across_horizons(
+    tmp_path: Path, geometry: ObservableGeometry, horizon: int
+) -> None:
+    """The Frame count the pipeline resolves equals the geometry's own derivation, for any horizon."""
+    files = _write_trajectories(tmp_path)
+    data = prepare_datasets(files, None, 1, 3, 2, horizon, _DT, 0.5, scaler="standard", global_scaling=False)
+
+    targets = frame_targets(data.Y_raw_train, geometry, horizon=horizon, n_channels=_N_EEG, fs=1.0 / _DT)
+
+    n_frames = geometry.n_frames(horizon, 1.0 / _DT)
+    supports = geometry.frame_supports(horizon, 1.0 / _DT)
+    assert targets.shape[1] == n_frames == len(supports)
+    assert all(start < end <= horizon for start, end in supports)
+
+
+def test_targets_cover_both_splits_on_the_shared_window_grid(tmp_path: Path) -> None:
+    """Both splits get Frame targets on the same window grid as the waveform features."""
+    files = _write_trajectories(tmp_path)
+    data = prepare_observable_data(_config(), files)
+
+    n_frames = _GEOMETRY.n_frames(_HORIZON, 1.0 / _DT)
+    assert data.targets_train.shape == (data.x_train.shape[0], n_frames, _N_EEG * _GEOMETRY.n_values(1.0 / _DT))
+    assert data.targets_val.shape == (data.x_val.shape[0], n_frames, _N_EEG * _GEOMETRY.n_values(1.0 / _DT))
 
 
 def test_train_observable_writes_a_loadable_artifact(tmp_path: Path) -> None:

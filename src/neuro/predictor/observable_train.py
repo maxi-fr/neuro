@@ -10,8 +10,7 @@ import numpy as np
 import torch
 from tqdm import tqdm
 
-from neuro.observable import log_observable
-from neuro.predictor.data import prepare_datasets
+from neuro.predictor.data import frame_targets, prepare_datasets
 from neuro.predictor.observable_module import ObservableMLP
 from neuro.predictor.train import float32_tensor, lr_schedule, shuffled_batches
 from neuro.provenance import training_provenance
@@ -22,7 +21,7 @@ if TYPE_CHECKING:
 
     from torch import Tensor, nn
 
-    from neuro.config import NNPredictorConfig, ObservableGeometry
+    from neuro.config import NNPredictorConfig
     from neuro.observable import ObservableArtifact
     from neuro.types import FloatArray
 
@@ -105,25 +104,6 @@ class ObservableData:
     n_controls: int
 
 
-def build_targets(  # noqa: PLR0913
-    y_standardized: FloatArray,
-    y_std: Standardizer,
-    geometry: ObservableGeometry,
-    *,
-    horizon: int,
-    n_channels: int,
-    fs: float,
-) -> FloatArray:
-    """Reduce standardized future-EEG windows ``(samples, horizon * C)`` onto the Frame grid.
-
-    Returns ``(samples, n_frames, n_channels * n_values)`` of raw log-Observable, built by the same
-    geometry object the training Loss and the MPC Cost use.
-    """
-    raw = y_std.inverse_transform(y_standardized.reshape(-1, horizon, n_channels))
-    frames = log_observable(raw, geometry, fs)
-    return frames.reshape(frames.shape[0], frames.shape[1], -1)
-
-
 def prepare_observable_data(cfg: NNPredictorConfig, data_files: list[str]) -> ObservableData:
     """Build the sliding windows and their Frame targets for the config's Observable geometry."""
     sim, mdl, trn, obs = cfg.simulation, cfg.model, cfg.training, cfg.observable
@@ -155,8 +135,8 @@ def prepare_observable_data(cfg: NNPredictorConfig, data_files: list[str]) -> Ob
         x_val[:, n_hist:] = 0.0
 
     targets = {
-        split: build_targets(y, data.y_std, geometry, horizon=horizon, n_channels=data.n_channels, fs=cfg.fs)
-        for split, y in (("train", data.Y_train), ("val", data.Y_val))
+        split: frame_targets(y, geometry, horizon=horizon, n_channels=data.n_channels, fs=cfg.fs)
+        for split, y in (("train", data.Y_raw_train), ("val", data.Y_raw_val))
     }
     return ObservableData(
         x_train=x_train,
