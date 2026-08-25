@@ -39,6 +39,7 @@ repos:
       - id: markdownlint-cli2
         args: ["--fix"]
         pass_filenames: true
+        exclude: "CLAUDE.md|AGENTS.md"
 
   - repo: local
     hooks:

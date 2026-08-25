@@ -66,6 +66,20 @@ _Avoid_: Burn-in Period, Transient Phase, Settling Time
 One trajectory produced by running a dynamical system forward from a fixed starting condition under a given control sequence, with no correction from measurement along the way. Covers both a plant simulation held at one stimulation condition and a surrogate predictor free-running from a primed state.
 _Avoid_: Trajectory, Forecast, Free Run, Simulation, Horizon
 
+## Training & Search
+
+**Trainer**:
+A generic training algorithm that fits a Predictor's parameters. A Trainer is named by the fit it performs (gradient-descent or ridge) and asks the Predictor which fits it supports, so it is not tied to one model kind.
+_Avoid_: Training Loop, Fitting Routine
+
+**Ridge-Fittable**:
+A Predictor whose readout is linear in a feature vector the Predictor itself produces, and which accepts the closed-form-fitted readout back; the capability the Ridge Trainer requires, checked at build time.
+_Avoid_: Linear Model, Linearizable, Is-Linear
+
+**Sweep**:
+The hyperparameter search over a Predictor's configuration, evaluating each configuration by one objective the Trainer reports.
+_Avoid_: Study, Trial Loop, Hyperparameter Search
+
 ## Seizure Dynamics & Ground Truth
 
 **(Regional) Seizure Threshhold**:

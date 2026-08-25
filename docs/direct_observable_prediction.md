@@ -373,27 +373,3 @@ The cost is that section 3.2 becomes the hard case: $z$ must carry enough phase 
 information to be genuinely Markovian, which is the standard Koopman lifting question and is not
 free. Worth pricing against the direct map before committing, because it dominates the direct map on
 three of the four objections raised here.
-
----
-
-## 8. Summary of the critique
-
-What survives scrutiny:
-
-- Removing the 75-step unrolled rollout from the CasADi graph is worth ~10x on the Jacobian.
-- Training and control objectives genuinely align, in log-power space.
-- The suppression mechanism is excitability damping, not phase cancellation, so envelope power really
-  does respond smoothly and monotonically to sustained current.
-
-What does not:
-
-- The DFT graph is under 5% of the cost; eliminating it was never the point.
-- Single shooting already removed the shooting roots the comparison table credited to the proposal.
-- The cited DMS literature concludes iterated beats direct, and Koopman is recursive.
-
-What is unresolved and gates everything:
-
-- Whether ~1000 independent horizon targets can teach a 565k-parameter map a 0.5$\sigma$ control
-  effect that a linear probe cannot see at all (sections 3.1, 3.6, stage 2).
-- Whether freezing the horizon and envelope geometry into the weights is acceptable, given the
-  deployed config currently exploits the freedom to change both (section 3.4).

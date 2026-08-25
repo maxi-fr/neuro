@@ -1,67 +1,48 @@
 # AGENT instructions
 
-## Project Architecture
+## Commands
 
-* src/        # Implementations inside packages.
-* scripts/    # CLI entry points.
-* notebooks/  # Marimo notebooks
+`uv` runs everything. Add dependencies with `uv add <package>` instead of editing `pyproject.toml`. Torch is the exception, needing `uv pip install torch --torch-backend=auto`.
 
-## Project specific instructions
+Iterate with targeted checks:
 
-* uv is used for dependency management (prefer `uv add [package]` over editing the pyproject.toml) and to run scripts: uv run ...
-* use the ty LSP
-* Make sure no formatting, linting, type or test errors are present. Sometimes it might be allowed to selectively ingore rules if it makes the code cleaner
+```bash
+uv run pytest tests/test_foo.py -x
+uv run ty check src/neuro/foo.py
+uv run ruff check --fix
+```
 
-**Standard Workflow:**
-Since `pre-commit` is configured to run all checks (ruff check with --fix --unsafe-fixes and format, ty, pytest, marimo checks, markdownlint), rely on it to verify your work.
+Then run the gate once before calling the work done:
 
-## General instructions
+```bash
+uv run pre-commit run --all-files
+```
 
-### 1. Clarify Before Coding
+## Clarify, then run
 
-Do not guess my intent. Before implementing:
+Don't guess my intent. Name missing constraints, give the competing readings rather than picking one, push back if something simpler exists, ask when unclear. That comes before coding, not during. Once the approach is settled, execute to green without checking back in; if ambiguity surfaces mid-task, do the parts that don't depend on it and state your assumption.
 
-* Explicitly look for missing constraints, edge cases, or unspoken assumptions in my prompt.
-* If multiple interpretations exist, present them - don't pick silently.
-* If a simpler approach exists, say so. Push back.
-* If something is unclear, stop. Name what's confusing. Ask.
+Make the goal verifiable first, a failing test that reproduces the bug or tests green either side of a refactor.
 
-### 2. Simplicity First
+## Changes
 
-**Minimum code that solves the problem. Nothing speculative.**
+No unrelated churn. Don't refactor code the task doesn't touch. Do restructure what you do touch: split the function you're editing if it needs it, change the surrounding structure rather than contorting new code into it, and say so.
 
-* No features beyond what was asked.
-* No abstractions for single-use code.
-* No "flexibility" or "configurability" that wasn't requested.
-* No error handling for impossible scenarios.
+Write the minimum that solves the problem. No features beyond the ask, no abstractions for single-use code, no configurability nobody requested, no error handling for states that can't happen.
+No unnecessary backward compatibility
 
-### 3. Surgical Changes
+## Conventions
 
-**Touch only what you must. Clean up only your own mess.**
+Update the docstring of any function you change. One line is the default; add numpy sections only for adding information about parameters, above all an array's shape, ``(n_windows, steps, n_channels)``. No module-level docstrings.
 
-When editing existing code:
+Capitalize `CONTEXT.md` glossary terms (Frame, Observable, Control Horizon). Use the `neuro.types` aliases, not raw `npt.NDArray[...]`. `__init__.py` stays empty; import from the module.
 
-* Don't "improve" adjacent code, comments, or formatting.
-* Don't refactor things that aren't broken.
-* Match existing style, even if you'd do it differently.
-* Always update doc-strings of functions you change
-* Avoid long function doc-strings with explanations or big comments
-* Do not add module level doc-strings
+When two types repeat members on purpose, say why in the docstring. `ObservableModel` and `SymbolicModel` share seven and stay unrelated so a model missing the stepping members fails at build time. Unexplained, that reads as an oversight and gets factored away.
 
-However, integrate cleanly. Don't force square pegs into round holes. Do not contort new code to fit outdated, poorly written, or convoluted structures just to minimize the lines changed. Leave the immediate code better than you found it.
+## Suppressions
 
-### 4. Goal-Driven Execution
+Ruff runs `select = ["ALL"]`, so ill-fitting rules get suppressed, though fixing the code beats silencing the check. One rule code, one line, with a reason: `# noqa: ARG002 -- geometry is already in samples`.
 
-**Define success criteria. Loop until verified.**
-
-Transform tasks into verifiable goals:
-
-* "Add validation" → "Write tests for invalid inputs, then make them pass"
-* "Fix the bug" → "Write a test that reproduces it, then make it pass"
-* "Refactor X" → "Ensure tests pass before and after"
-
-For multi-step tasks, break it down into sub-goals.
-
-### Domain docs
+## Domain docs
 
 Single-context (`CONTEXT.md` + `docs/adr/` at repo root). See `docs/agents/domain.md`.

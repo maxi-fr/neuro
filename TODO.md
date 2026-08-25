@@ -1,8 +1,26 @@
 # TODO list
 
 * **Monday 24.08** Start predictor sweeps: Papa in München
+  * is sweeping implemented for ObservableSpace?
+  * what are all the hyperparameters?
+  * how to split into different sweeps?
+    * check again if curriculum is actually helpful in closed loop performance?
+    * lr, weight decay, etc.
+    * ny, nu, etc.
+    * different losses
+  * In what oder to run sweeps?
+  * How to update sweeps based on the results of the prior?
+  * what optuna score do the different sweeps use?
 
 ## Refactors
+
+* is MLP residual?
+
+* is mpc hinge spectral cost function tested?
+
+* Refactor predictor + mpc setup to use trajopt package
+
+## Not urgent
 
 * MPC metric: solver iterations, pred error along horizon
 
@@ -11,15 +29,7 @@
 * investigate running controller slower than predictor model. Less decision variables but still prediction model with high resolution
   * Idea: dynamics faster than input can affect
 
-* what about the effect of filter on spectrum losses/cost
-
-* what about predicting the metric directly?
-
 * reservoir computer w. hopf nodes
-
-* is mpc hinge spectral cost function tested?
-
-* check again if curriculum is actually helpful in closed loop performance
 
 ### Efficiency
 
