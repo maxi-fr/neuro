@@ -14,7 +14,7 @@ from neuro.spectral import LOG_FLOOR
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
-    from neuro.control.trajopt_mpc import WaveformMLPModel
+    from neuro.control.trajopt_mpc import ESNModel, ObservableModel, WaveformMLPModel
     from neuro.spectral import PsdEnvelope
     from neuro.types import FloatArray
 
@@ -114,13 +114,13 @@ class SpectralHingeCost(CostFunction):
 
     A whole-horizon functional: window ``m`` covers predicted outputs ``y_{m*hop+1} .. y_{m*hop
     + window}``, so no single knot carries enough history to score it (``window`` typically
-    exceeds the predictor's ``n_y``). ``stage_costs`` therefore decodes the predicted outputs
-    from the stage states -- one extra model step recovers the terminal output the stage knots
-    do not carry -- and computes the exact windowed hinge with ``jnp.fft``; ``evaluate``
-    returns ``0`` at any single knot, so per-knot local expansions (native solvers) degrade to
-    the quadratic/L1 objective rather than mis-score the hinge. The transcription path
-    (single-shooting and multiple-shooting Ipopt) evaluates the exact hinge through
-    ``stage_costs``.
+    exceeds the predictor's history window). ``stage_costs`` therefore decodes the predicted
+    outputs from the stage states via the model's ``output`` -- one extra model step recovers
+    the terminal output the stage knots do not carry -- and computes the exact windowed hinge
+    with ``jnp.fft``; ``evaluate`` returns ``0`` at any single knot, so per-knot local
+    expansions (native solvers) degrade to the quadratic/L1 objective rather than mis-score
+    the hinge. The transcription path (single-shooting and multiple-shooting Ipopt) evaluates
+    the exact hinge through ``stage_costs``.
 
     The periodogram convention is that of :func:`neuro.spectral.compute_periodograms` and of
     the training loss: periodic Hann, no per-segment detrend, one-sided and density-scaled.
@@ -129,32 +129,31 @@ class SpectralHingeCost(CostFunction):
     sub-window cannot be cancelled by a cold one.
     """
 
-    n_y: int = eqx.field(static=True)
     n_channels: int = eqx.field(static=True)
     window: int = eqx.field(static=True)
     hop: int = eqx.field(static=True)
     fs: float = eqx.field(static=True)
     n_bins: int = eqx.field(static=True)
     n_windows: int = eqx.field(static=True)
-    model: WaveformMLPModel
+    model: WaveformMLPModel | ESNModel
     w: jax.Array
     power: jax.Array
 
     def __init__(
         self,
-        model: WaveformMLPModel,
+        model: WaveformMLPModel | ESNModel,
         envelope: PsdEnvelope,
         *,
         w_psd: float,
         horizon: int,
     ) -> None:
-        """Initialize from the waveform model, the healthy envelope and the spectral weight.
+        """Initialize from the sample-grid model, the healthy envelope and the spectral weight.
 
         Parameters
         ----------
         model
-            The trajopt waveform model adapter whose predicted outputs are windowed; its
-            ``z_last`` decode matches ``NNSymbolicModel.output``.
+            The trajopt waveform or ESN model adapter whose predicted outputs are windowed;
+            its ``output`` decode matches the incumbent's ``f_out``.
         envelope
             The healthy reference envelope; its ``window``/``hop`` geometry drives the cost.
         w_psd
@@ -164,7 +163,6 @@ class SpectralHingeCost(CostFunction):
         """
         super().__init__(n=model.n, m=model.m)
         self.model = model
-        self.n_y = int(model.n_y)
         self.n_channels = int(model.n_channels)
         self.window = int(envelope.window)
         self.hop = int(envelope.hop)
@@ -193,16 +191,14 @@ class SpectralHingeCost(CostFunction):
     def _predicted_outputs(self, X: jax.Array, U: jax.Array) -> jax.Array:
         """Decode the raw predicted outputs ``y_1 .. y_H`` from the stage states and controls.
 
-        Stage knot ``k`` carries the prediction ``y_k`` as its newest y-window row; the
-        terminal output ``y_H`` is recovered with one extra model step from the last stage
-        knot, since the stage trajectory excludes the terminal state.
+        Stage knot ``k`` carries the prediction ``y_k`` -- the newest y-window row for the
+        waveform, the readout of the post-step reservoir for the ESN; the terminal output
+        ``y_H`` is recovered with one extra model step from the last stage knot, since the
+        stage trajectory excludes the terminal state.
         """
-        n_z = self.n_y * self.n_channels
-        z_last = X[1:, n_z - self.n_channels : n_z]
-        y = z_last * self.model.y_scale + self.model.y_center
+        y = jax.vmap(self.model.output)(X[1:])
         x_term = self.model.discrete_dynamics(X[-1], U[-1], 0.0, 0.0)
-        z_term = x_term[n_z - self.n_channels : n_z]
-        return jnp.concatenate([y, (z_term * self.model.y_scale + self.model.y_center)[None, :]], axis=0)
+        return jnp.concatenate([y, self.model.output(x_term)[None, :]], axis=0)
 
     def stage_costs(self, X: jax.Array, U: jax.Array, t: jax.Array) -> jax.Array:
         """Evaluate the exact windowed hinge, concentrated in the first stage entry.
@@ -294,3 +290,142 @@ class ObservableHingeCost(CostFunction):
     def stage_costs(self, X: jax.Array, U: jax.Array, t: jax.Array) -> jax.Array:
         """Evaluate the per-Frame hinge over the forecast trajectory, one entry per stage."""
         return jax.vmap(self.evaluate)(X, U, t)
+
+
+class ESNAutoRegressiveCost(CostFunction):
+    """Per-knot ESN stage cost: ``(w_y / horizon) * ||output(x)||^2 + (w_u / horizon) * ||u||^2``.
+
+    The ESN's predicted sample is the readout of the reservoir -- a linear map of the state, not
+    a state component -- so the EEG-power term cannot be a diagonal state weight the way the
+    waveform model's ``z_last`` decode is; the cost reads the raw output off the model instead,
+    reproducing the incumbent's ``w_y * ||f_out(x)||^2 / horizon`` exactly. The terminal variant
+    drops the control term and carries ``w_y_terminal`` where given, mirroring the waveform
+    builder's explicit terminal.
+    """
+
+    model: ESNModel
+    w_y: jax.Array
+    w_u: jax.Array
+    horizon: int = eqx.field(static=True)
+
+    def __init__(
+        self,
+        model: ESNModel,
+        *,
+        w_y: float,
+        w_u: float,
+        horizon: int,
+        terminal: bool = False,
+    ) -> None:
+        """Initialize from the ESN model and the power/effort weights.
+
+        Parameters
+        ----------
+        model
+            The trajopt ESN model adapter whose readout output is penalized.
+        w_y
+            Weight on the raw predicted EEG power; ``0`` disables the power term.
+        w_u
+            Weight on the control effort (quadratic); ``0`` disables it.
+        horizon
+            Control Horizon in steps, for the horizon-mean reduction.
+        terminal
+            Build the terminal variant: state power only, no control term.
+        """
+        super().__init__(n=model.n, m=model.m, terminal=terminal)
+        self.model = model
+        self.w_y = jnp.asarray(w_y)
+        self.w_u = jnp.asarray(w_u)
+        self.horizon = int(horizon)
+
+    def evaluate(
+        self,
+        x: jax.Array,
+        u: jax.Array | None = None,
+        t: float | jax.Array = 0.0,
+    ) -> jax.Array:
+        """Evaluate the per-knot power cost, plus the effort when a control is present."""
+        del t
+        value = (self.w_y / self.horizon) * jnp.sum(self.model.output(x) ** 2)
+        if u is not None:
+            value = value + (self.w_u / self.horizon) * jnp.sum(u**2)
+        return value
+
+
+class ObservableForecastHinge(CostFunction):
+    """Whole-horizon hinge over the forecast Frames, decoded from the observable model's states.
+
+    Frame ``m``'s forecast is the readout of the lifted state the step that produced it
+    returns, so no single stage knot carries a Frame -- stage knot ``k`` holds the lifted state
+    after step ``k - 1``, and the terminal knot holds the last one. ``stage_costs`` therefore
+    decodes the Frames from ``X[1:]`` plus one extra model step (the terminal Frame the stage
+    trajectory excludes) and returns one hinge value per stage, the same structure as
+    :class:`SpectralHingeCost`; ``evaluate`` returns ``0`` at any single knot, so per-knot
+    local expansions (native solvers) degrade to the effort/quadratic objective rather than
+    mis-score the hinge. The Frame values hinge against the
+    ``ObservableGeometry``-derived log reference, the shared source of truth with the
+    training-time Loss.
+    """
+
+    model: ObservableModel
+    hinge: ObservableHingeCost
+
+    def __init__(
+        self,
+        model: ObservableModel,
+        *,
+        log_reference: FloatArray,
+        w_psd: float,
+        n_frames: int,
+    ) -> None:
+        """Initialize from the observable model and the reference reduced onto its Frame grid.
+
+        Parameters
+        ----------
+        model
+            The trajopt observable model adapter whose lifted states decode into Frames.
+        log_reference
+            The healthy envelope reduced onto the Frame grid, ``(n_channels, n_values)`` in
+            raw log units -- the ``ObservableGeometry``-derived reference.
+        w_psd
+            Weight on the hinge.
+        n_frames
+            Frame count the horizon's forecast holds, for the horizon-mean reduction.
+        """
+        super().__init__(n=model.n, m=model.m)
+        self.model = model
+        self.hinge = ObservableHingeCost(
+            n=model.n,
+            m=model.m,
+            log_reference=log_reference,
+            w_psd=w_psd,
+            n_frames=n_frames,
+        )
+
+    def evaluate(
+        self,
+        x: jax.Array,
+        u: jax.Array | None = None,
+        t: float | jax.Array = 0.0,
+    ) -> jax.Array:
+        """Return ``0``: the hinge is whole-horizon and is scored by :meth:`stage_costs`."""
+        del x, u, t
+        return jnp.zeros(())
+
+    def _predicted_frames(self, X: jax.Array, U: jax.Array) -> jax.Array:
+        """Decode the raw forecast Frames ``l_1 .. l_M`` from the stage states and controls.
+
+        Stage knot ``k`` holds the lifted state after step ``k - 1``, so its ``output`` is
+        Frame ``k - 1``'s forecast; the terminal Frame ``l_M`` is recovered with one extra
+        model step from the last stage knot, since the stage trajectory excludes the terminal
+        state.
+        """
+        frames = jax.vmap(self.model.output)(X[1:])
+        x_term = self.model.discrete_dynamics(X[-1], U[-1], 0.0, 0.0)
+        return jnp.concatenate([frames, self.model.output(x_term)[None, :]], axis=0)
+
+    def stage_costs(self, X: jax.Array, U: jax.Array, t: jax.Array) -> jax.Array:
+        """Evaluate one per-Frame hinge value per stage, summing to the exact total."""
+        del t
+        frames = self._predicted_frames(X, U)
+        return jax.vmap(lambda frame: self.hinge.evaluate(frame, None, 0.0))(frames)
