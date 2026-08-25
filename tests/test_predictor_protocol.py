@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 import pytest
 
+from neuro.checkpoint import MLPCheckpoint
 from neuro.nn_predictor_casadi import NNSymbolicModel
 from neuro.predictor.artifact import MLPArtifact
 from neuro.predictor.module import AutoregressiveMLP
@@ -176,11 +177,16 @@ def test_rollout_equals_a_loop_of_step() -> None:
     np.testing.assert_allclose(got, want, rtol=_RTOL, atol=_ATOL)
 
 
+def _as_checkpoint(art: MLPArtifact) -> MLPCheckpoint:
+    """Build the torch-free checkpoint twin of an artifact, for the CasADi side of a parity test."""
+    return MLPCheckpoint.from_artifact(art)
+
+
 def test_absorb_is_ready_initial_state_reproduce_the_incumbent_shift_register() -> None:
     """``initial_state``/``absorb``/``is_ready`` match the CasADi bridge's NaN-padded register."""
     art = _artifact()
     model = _model()
-    sym = NNSymbolicModel(art)
+    sym = NNSymbolicModel(_as_checkpoint(art))
 
     state = model.initial_state()
     want_state = sym.initial_state()

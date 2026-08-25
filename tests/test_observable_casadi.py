@@ -1,4 +1,4 @@
-"""Pin the observable artifact's NumPy forecast against the torch module and the CasADi bridge."""
+"""Pin the observable checkpoint's NumPy forecast against the torch module and the CasADi bridge."""
 
 from __future__ import annotations
 
@@ -9,13 +9,15 @@ import numpy as np
 import pytest
 
 from neuro.config import EegMsGeometry, StftGeometry
+from neuro.observable import ObservableArtifact
 from neuro.observable_casadi import ObservableSymbolicModel
-from neuro.predictor.observable_module import ObservableMLP
+from neuro.predictor.observable_module import StepwiseObservableMLP
 
 if TYPE_CHECKING:
     from collections.abc import Callable
+    from pathlib import Path
 
-    from neuro.observable import ObservableArtifact
+    from neuro.checkpoint import ObservableCheckpoint
     from neuro.predictor.artifact import Activation
     from neuro.types import FloatArray
 
@@ -30,6 +32,12 @@ _GEOMETRIES = [
 ]
 
 
+def _save_and_reference(tmp_path: Path, ckpt: ObservableCheckpoint) -> ObservableArtifact:
+    """Write the checkpoint to disk and reload it as the artifact runtime, the float64 reference."""
+    ckpt.save(tmp_path / "obs")
+    return ObservableArtifact.load(tmp_path / "obs")
+
+
 def _inputs(art: ObservableArtifact, horizon: int) -> tuple[FloatArray, FloatArray, FloatArray, FloatArray]:
     """Random history and future controls in raw units, plus the primed state."""
     rng = np.random.default_rng(_SEED)
@@ -41,22 +49,24 @@ def _inputs(art: ObservableArtifact, horizon: int) -> tuple[FloatArray, FloatArr
 
 @pytest.mark.parametrize("activation", ["relu", "tanh", "softplus"])
 @pytest.mark.parametrize("geometry", _GEOMETRIES)
-def test_casadi_forecast_matches_the_artifact(
+def test_casadi_forecast_matches_the_checkpoint(
+    tmp_path: Path,
     geometry: StftGeometry | EegMsGeometry,
     activation: Activation,
-    make_observable_artifact: Callable[..., ObservableArtifact],
+    make_observable_checkpoint: Callable[..., ObservableCheckpoint],
 ) -> None:
-    """The control path never runs torch, so the NumPy and CasADi forecasts must be one function.
+    """The control path never runs torch, so the checkpoint's NumPy and CasADi forecasts agree.
 
-    They are independent implementations of the same recursion, both in float64, so they agree to
-    round-off rather than merely to a tolerance.
+    The adapter is rebuilt from the checkpoint's buffers and the reference is the same file read
+    through the float64 runtime, so they are one recursion to round-off.
     """
     horizon = 24
-    art = make_observable_artifact(geometry, horizon=horizon, activation=activation)
+    ckpt = make_observable_checkpoint(geometry, horizon=horizon, activation=activation)
+    art = _save_and_reference(tmp_path, ckpt)
     _, _, u_future, state = _inputs(art, horizon)
 
     want = art.forecast(state, u_future)
-    got = np.asarray(ca.DM(ObservableSymbolicModel(art).f_forecast(state, u_future)))
+    got = np.asarray(ca.DM(ObservableSymbolicModel(ckpt).f_forecast(state, u_future)))
 
     assert got.shape == (art.n_channels * art.n_values, art.n_frames())
     np.testing.assert_allclose(got.T.reshape(want.shape), want, rtol=1e-10, atol=1e-12)
@@ -64,20 +74,23 @@ def test_casadi_forecast_matches_the_artifact(
 
 @pytest.mark.parametrize("activation", ["relu", "tanh", "softplus"])
 @pytest.mark.parametrize("geometry", _GEOMETRIES)
-def test_torch_forecast_matches_the_artifact(
+def test_torch_forecast_matches_the_checkpoint(
+    tmp_path: Path,
     geometry: StftGeometry | EegMsGeometry,
     activation: Activation,
-    make_observable_artifact: Callable[..., ObservableArtifact],
+    make_observable_checkpoint: Callable[..., ObservableCheckpoint],
 ) -> None:
-    """The torch module the trainer optimises forecasts what the frozen artifact later replays.
+    """The float32 module the trainer optimises forecasts what the checkpoint later replays.
 
-    The torch side runs in float32, which sets the tolerance; the artifact's averaging of *raw*
+    The torch side runs in float32, which sets the tolerance; the checkpoint's averaging of *raw*
     controls and the module's averaging of *standardized* ones agree because both maps are affine.
     """
     import torch  # noqa: PLC0415 -- kept out of module scope so the control-path guard stays honest
 
     horizon = 24
-    art = make_observable_artifact(geometry, horizon=horizon, activation=activation)
+    ckpt = make_observable_checkpoint(geometry, horizon=horizon, activation=activation)
+    ckpt.save(tmp_path / "obs")
+    art = ObservableArtifact.load(tmp_path / "obs")
     y_hist, u_hist, u_future, state = _inputs(art, horizon)
 
     row = np.concatenate(
@@ -87,7 +100,7 @@ def test_torch_forecast_matches_the_artifact(
             art.u_std.transform(u_future).reshape(-1),
         ]
     )
-    module = ObservableMLP.from_artifact(art)
+    module = StepwiseObservableMLP.load(tmp_path / "obs")
     with torch.no_grad():
         standardized = module(torch.as_tensor(row[None], dtype=torch.float32)).numpy()[0].astype(np.float64)
     got = art.l_std.inverse_transform(standardized).reshape(art.n_frames(), art.n_channels, art.n_values)
@@ -97,14 +110,17 @@ def test_torch_forecast_matches_the_artifact(
 
 @pytest.mark.parametrize("horizon", [16, 20, 24, 32])
 def test_forecast_frame_count_follows_the_horizon_not_a_frozen_head(
-    horizon: int, make_observable_artifact: Callable[..., ObservableArtifact]
+    tmp_path: Path,
+    horizon: int,
+    make_observable_checkpoint: Callable[..., ObservableCheckpoint],
 ) -> None:
-    """An artifact trained at one Frame count deploys at another: geometry, not a frozen horizon."""
+    """A checkpoint trained at one Frame count deploys at another: geometry, not a frozen horizon."""
     geometry = StftGeometry(n_segment=8, n_hop=4)
-    art = make_observable_artifact(geometry, horizon=16)
+    ckpt = make_observable_checkpoint(geometry, horizon=16)
+    art = _save_and_reference(tmp_path, ckpt)
     _, _, u_future, state = _inputs(art, horizon)
 
-    model = ObservableSymbolicModel(art)
+    model = ObservableSymbolicModel(ckpt)
     x_sym = ca.MX.sym("x", *model.state_shape)
     u_sym = ca.MX.sym("u", horizon, model.n_controls)
     forecast = ca.Function("f", [x_sym, u_sym], [model.forecast(x_sym, u_sym)])
@@ -122,16 +138,16 @@ def test_forecast_frame_count_follows_the_horizon_not_a_frozen_head(
 
 
 def test_state_seam_carries_over_from_the_autoregressive_model(
-    make_observable_artifact: Callable[..., ObservableArtifact],
+    make_observable_checkpoint: Callable[..., ObservableCheckpoint],
 ) -> None:
     """Priming, State Absorption and readiness behave exactly as they do on the incumbent path."""
-    art = make_observable_artifact(StftGeometry(n_segment=8, n_hop=4), horizon=16, n_y=3, n_u=2)
-    model = ObservableSymbolicModel(art)
+    ckpt = make_observable_checkpoint(StftGeometry(n_segment=8, n_hop=4), horizon=16, n_y=3, n_u=2)
+    model = ObservableSymbolicModel(ckpt)
     rng = np.random.default_rng(_SEED + 4)
 
     state = model.initial_state()
     assert not model.is_ready(state)
-    for _ in range(art.n_y):
-        state = model.absorb(state, rng.standard_normal(art.n_channels), np.zeros(art.n_controls))
+    for _ in range(ckpt.n_y):
+        state = model.absorb(state, rng.standard_normal(ckpt.n_channels), np.zeros(ckpt.n_controls))
     assert model.is_ready(state)
     assert state.shape == (model.state_shape[0],)

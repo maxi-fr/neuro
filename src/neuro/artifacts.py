@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
+from neuro.checkpoint import ESNCheckpoint, MLPCheckpoint, ObservableCheckpoint
 from neuro.esn import ESNArtifact
 from neuro.esn_predictor_casadi import ESNSymbolicModel
 from neuro.nn_predictor_casadi import NNSymbolicModel
@@ -47,9 +48,13 @@ def load_rollout_artifact(artifact_path: str | Path) -> RolloutArtifact:
 
 
 def build_symbolic_model(art: PredictorArtifact) -> SymbolicModel | ObservableModel:
-    """Build the appropriate symbolic model bridge; the MPC branches on which of the two it gets."""
+    """Build the appropriate symbolic model bridge; the MPC branches on which of the two it gets.
+
+    The adapters are rebuilt from checkpoint buffers, so the artifact is converted on the way in;
+    this dispatch dies with the artifacts in the contract ticket.
+    """
     if isinstance(art, ESNArtifact):
-        return ESNSymbolicModel(art)
+        return ESNSymbolicModel(ESNCheckpoint.from_artifact(art))
     if isinstance(art, ObservableArtifact):
-        return ObservableSymbolicModel(art)
-    return NNSymbolicModel(art)
+        return ObservableSymbolicModel(ObservableCheckpoint.from_artifact(art))
+    return NNSymbolicModel(MLPCheckpoint.from_artifact(art))

@@ -32,8 +32,8 @@ def test_missing_simulation_config_raises(tmp_path: Path) -> None:
         evaluate_closed_loop_suppression(trial_dir, _eval_cfg(tmp_path / "absent.yaml"))
 
 
-def test_missing_model_artifact_raises(tmp_path: Path) -> None:
-    """Test evaluate_closed_loop_suppression raises when the trial has no trained predictor."""
+def test_missing_model_checkpoint_raises(tmp_path: Path) -> None:
+    """Test evaluate_closed_loop_suppression raises when the trial has no trained predictor checkpoint."""
     sim_config_path = tmp_path / "sim.yaml"
     with sim_config_path.open("w") as f:
         yaml.dump({"t_end": 5.0}, f)
@@ -41,5 +41,5 @@ def test_missing_model_artifact_raises(tmp_path: Path) -> None:
     trial_dir = tmp_path / "trial_0"
     trial_dir.mkdir()
 
-    with pytest.raises(FileNotFoundError, match="Trained predictor artifact not found"):
+    with pytest.raises(FileNotFoundError, match="Trained predictor checkpoint not found"):
         evaluate_closed_loop_suppression(trial_dir, _eval_cfg(sim_config_path))

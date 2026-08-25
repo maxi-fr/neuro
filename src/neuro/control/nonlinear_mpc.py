@@ -7,7 +7,7 @@ import numpy as np
 from pydantic import Field
 from simulate.controller import Controller
 
-from neuro.artifacts import build_symbolic_model, load_any_artifact
+from neuro.checkpoint import build_symbolic_model, load_any
 from neuro.config import StrictConfig
 from neuro.control.nlp import MPCNlp
 from neuro.control.solvers import IpoptMPCSolver, MPCSolver, SqpFallbackMPCSolver, SqpMPCSolver
@@ -205,11 +205,11 @@ class MPCController(Controller[MPCControllerLog]):
 
     @classmethod
     def from_config(cls, config: dict[str, Any]) -> Self:
-        """Instantiate from a config dict, loading the predictor artifact from disk."""
+        """Instantiate from a config dict, loading the predictor checkpoint from disk."""
         cfg = _MPCControllerConfig.model_validate(config)
         return cls(
             dt=cfg.dt,
-            model=build_symbolic_model(load_any_artifact(cfg.artifact)),
+            model=build_symbolic_model(load_any(cfg.artifact)),
             u_max=cfg.u_max,
             horizon=cfg.horizon,
             w_y=cfg.w_y,

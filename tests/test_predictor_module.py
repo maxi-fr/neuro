@@ -12,6 +12,7 @@ import numpy as np
 import pytest
 import torch
 
+from neuro.checkpoint import MLPCheckpoint
 from neuro.nn_predictor_casadi import NNSymbolicModel
 from neuro.predictor.artifact import MLPArtifact
 from neuro.predictor.module import AutoregressiveMLP
@@ -62,7 +63,7 @@ def _build_artifact(depth: int, activation: Activation) -> MLPArtifact:
 
 def _casadi_rollout(art: MLPArtifact, y_hist: FloatArray, u_hist: FloatArray, u_future: FloatArray) -> FloatArray:
     """Chain ``f_step``/``f_out`` over the horizon on RAW controls -> raw EEG ``(horizon, n_channels)``."""
-    sym = NNSymbolicModel(art)
+    sym = NNSymbolicModel(MLPCheckpoint.from_artifact(art))
     x = np.concatenate([art.encode(y_hist[-art.n_y :]).flatten(), u_hist[-art.n_u :].flatten()])
     preds = []
     for t in range(art.horizon):
@@ -190,7 +191,11 @@ def test_module_layers_sequential() -> None:
     [
         "neuro.predictor.artifact",
         "neuro.predictor.data",
+        "neuro.predictor.checkpoint",
+        "neuro.checkpoint",
         "neuro.nn_predictor_casadi",
+        "neuro.esn",
+        "neuro.esn_predictor_casadi",
         "neuro.observable",
         "neuro.observable_casadi",
         "neuro.control",

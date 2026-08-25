@@ -8,9 +8,11 @@ from typing import TYPE_CHECKING
 import casadi as ca
 import numpy as np
 import pytest
+import torch
 
 from neuro.nn_predictor_casadi import NNSymbolicModel, mlp_forward_ca
 from neuro.predictor.artifact import Activation, MLPArtifact
+from neuro.predictor.module import AutoregressiveMLP
 from neuro.transforms import Standardizer
 
 if TYPE_CHECKING:
@@ -67,9 +69,9 @@ def _casadi_horizon_rollout(
     ending at ``t - 1`` -- what ``absorb`` builds in the MPC. ``prime`` instead ends both windows at
     ``t - 1``. Lagging the u-window and prepending ``u_ctx``'s last entry converts one to the other.
     """
-    art = model.artifact
-    x = np.concatenate([z_ctx[-art.n_y :].flatten(), u_ctx[-art.n_u - 1 : -1].flatten()])
-    u_seq = np.concatenate([u_ctx[-1:], u_future[: art.horizon - 1]])
+    ckpt = model.checkpoint
+    x = np.concatenate([z_ctx[-ckpt.n_y :].flatten(), u_ctx[-ckpt.n_u - 1 : -1].flatten()])
+    u_seq = np.concatenate([u_ctx[-1:], u_future[: ckpt.horizon - 1]])
     preds = []
     for u in u_seq:
         x = _np2(model.f_step(x, u)).flatten()
@@ -167,7 +169,7 @@ def test_single_step_matches_manual_scan_iteration(
     artifact, _layers, scalers = _build_artifact(
         tmp_path, n_y, n_u, horizon, hidden_size, depth, n_channels, n_controls, activation
     )
-    model = NNSymbolicModel.from_artifact(artifact)
+    model = NNSymbolicModel.from_checkpoint(artifact)
     art = MLPArtifact.load(artifact)
 
     rng = np.random.default_rng(_SEED + 2)
@@ -220,7 +222,7 @@ def test_single_step_with_global_scalar_scalers(tmp_path: Path) -> None:
         y_std=Standardizer(center=scalers["y_mean"], scale=scalers["y_scale"]),
         u_std=Standardizer(center=scalers["u_mean"], scale=scalers["u_scale"]),
     ).save(artifact)
-    model = NNSymbolicModel.from_artifact(artifact)
+    model = NNSymbolicModel.from_checkpoint(artifact)
     art = MLPArtifact.load(artifact)
 
     rng = np.random.default_rng(_SEED + 9)
@@ -246,7 +248,7 @@ def test_output_slices_most_recent_row_not_oldest(tmp_path: Path) -> None:
     """
     n_y, n_u, n_channels, n_controls = 3, 2, 2, 2
     artifact, _layers, _scalers = _build_artifact(tmp_path, n_y, n_u, 3, 5, 2, n_channels, n_controls)
-    model = NNSymbolicModel.from_artifact(artifact)
+    model = NNSymbolicModel.from_checkpoint(artifact)
     art = MLPArtifact.load(artifact)
 
     y_w = np.arange(n_y * n_channels, dtype=np.float64).reshape(n_y, n_channels)
@@ -255,6 +257,97 @@ def test_output_slices_most_recent_row_not_oldest(tmp_path: Path) -> None:
 
     got = _np2(model.f_out(x)).flatten()
     np.testing.assert_allclose(got, art.decode(y_w[-1]), rtol=1e-10, atol=1e-12)
+
+
+def _module_checkpoint(
+    tmp_path: Path,
+    n_y: int,
+    n_u: int,
+    horizon: int,
+    hidden_size: int,
+    depth: int,
+    n_channels: int,
+    n_controls: int,
+    activation: Activation = "relu",
+) -> Path:
+    """Save a random torch MLP's checkpoint (float32-stored weights), returning its stem."""
+    rng = np.random.default_rng(_SEED)
+    layers = _random_layers(rng, n_y * n_channels + n_u * n_controls, n_channels, hidden_size, depth)
+    scalers = {
+        "u_mean": rng.uniform(-1.0, 1.0, n_controls),
+        "u_scale": rng.uniform(0.5, 2.0, n_controls),
+        "y_mean": rng.uniform(-1.0, 1.0, n_channels),
+        "y_scale": rng.uniform(0.5, 2.0, n_channels),
+    }
+    art = MLPArtifact(
+        layers=layers,
+        activation=activation,
+        n_y=n_y,
+        n_u=n_u,
+        horizon=horizon,
+        n_channels=n_channels,
+        n_controls=n_controls,
+        dt=0.01,
+        downsample=1,
+        y_std=Standardizer(center=scalers["y_mean"], scale=scalers["y_scale"]),
+        u_std=Standardizer(center=scalers["u_mean"], scale=scalers["u_scale"]),
+    )
+    path = tmp_path / "module_ckpt"
+    AutoregressiveMLP.from_artifact(art).save(path)
+    return path
+
+
+@pytest.mark.parametrize(
+    ("n_y", "n_u", "horizon", "hidden_size", "depth", "n_channels", "n_controls", "activation"), _CASES
+)
+def test_adapter_rollout_matches_the_checkpoint_float64_rollout(
+    tmp_path: Path,
+    n_y: int,
+    n_u: int,
+    horizon: int,
+    hidden_size: int,
+    depth: int,
+    n_channels: int,
+    n_controls: int,
+    activation: Activation,
+) -> None:
+    """The adapter rebuilt from a torch-written checkpoint equals the checkpoint's float64 rollout.
+
+    The module stores float32 weights; the torch-free reader and the artifact loader both cast them
+    to float64, so the CasADi chain and the reference are the same arithmetic to round-off, across
+    activations and horizons.
+    """
+    path = _module_checkpoint(tmp_path, n_y, n_u, horizon, hidden_size, depth, n_channels, n_controls, activation)
+    model = NNSymbolicModel.from_checkpoint(path)
+    art = MLPArtifact.load(path)
+
+    rng = np.random.default_rng(_SEED + 3)
+    ctx = max(n_y, n_u) + 2
+    y_ctx = rng.standard_normal((n_channels, ctx))
+    u_ctx = rng.standard_normal((ctx, n_controls))
+    u_future = rng.standard_normal((horizon, n_controls))
+
+    y_pred_np = _artifact_horizon_rollout(art, y_ctx, u_ctx, u_future)
+    y_pred_ca_arr = _casadi_horizon_rollout(model, art.encode(y_ctx.T), u_ctx, u_future)
+
+    np.testing.assert_allclose(y_pred_ca_arr, y_pred_np, rtol=1e-10, atol=1e-12)
+
+
+def test_module_rollout_matches_the_checkpoint_float64_rollout(tmp_path: Path) -> None:
+    """The float32 module loaded from the checkpoint matches the checkpoint's float64 rollout."""
+    path = _module_checkpoint(tmp_path, 2, 2, 3, 5, 2, 2, 2, "relu")
+    module = AutoregressiveMLP.load(path)
+    art = MLPArtifact.load(path)
+
+    rng = np.random.default_rng(_SEED + 3)
+    y_hist = rng.standard_normal((5, 2))
+    u_hist = rng.standard_normal((5, 2))
+    u_future = rng.standard_normal((art.horizon, 2))
+
+    want = art.rollout(art.prime(y_hist, u_hist), u_future)
+    got = module.rollout(module.prime(y_hist, u_hist), u_future)
+
+    np.testing.assert_allclose(got, want, rtol=1e-5, atol=1e-6)
 
 
 @pytest.mark.parametrize(
@@ -275,7 +368,7 @@ def test_multistep_rollout_matches_artifact_rollout(
     artifact, _layers, _scalers = _build_artifact(
         tmp_path, n_y, n_u, horizon, hidden_size, depth, n_channels, n_controls, activation
     )
-    model = NNSymbolicModel.from_artifact(artifact)
+    model = NNSymbolicModel.from_checkpoint(artifact)
     art = MLPArtifact.load(artifact)
 
     rng = np.random.default_rng(_SEED + 3)

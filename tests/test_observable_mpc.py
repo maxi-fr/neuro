@@ -21,7 +21,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable
     from pathlib import Path
 
-    from neuro.observable import ObservableArtifact
+    from neuro.checkpoint import ObservableCheckpoint
     from neuro.types import FloatArray
 
 _SEED = 41
@@ -94,11 +94,11 @@ def test_observable_hinge_is_exactly_zero_when_under_the_envelope() -> None:
 
 
 def test_observable_nlp_rejects_a_stagewise_output_weight(
-    make_observable_artifact: Callable[..., ObservableArtifact],
+    make_observable_checkpoint: Callable[..., ObservableCheckpoint],
 ) -> None:
     """``w_y`` has no meaning without per-step outputs, so it raises rather than being ignored."""
-    art = make_observable_artifact(StftGeometry(n_segment=_L, n_hop=_R), horizon=16)
-    model = ObservableSymbolicModel(art)
+    ckpt = make_observable_checkpoint(StftGeometry(n_segment=_L, n_hop=_R), horizon=16)
+    model = ObservableSymbolicModel(ckpt)
 
     with pytest.raises(ValueError, match="w_y"):
         MPCNlp.build(
@@ -109,16 +109,16 @@ def test_observable_nlp_rejects_a_stagewise_output_weight(
             u_max=np.full(model.n_controls, 2.0),
             w_y=1.0,
             w_psd=1.0,
-            log_reference=np.zeros((art.n_channels, art.n_values)),
+            log_reference=np.zeros((ckpt.n_channels, ckpt.n_values)),
         )
 
 
 def test_observable_nlp_rejects_multiple_shooting(
-    make_observable_artifact: Callable[..., ObservableArtifact],
+    make_observable_checkpoint: Callable[..., ObservableCheckpoint],
 ) -> None:
     """There is no per-sample state to introduce shooting roots on, so a short depth raises."""
-    art = make_observable_artifact(StftGeometry(n_segment=_L, n_hop=_R), horizon=16)
-    model = ObservableSymbolicModel(art)
+    ckpt = make_observable_checkpoint(StftGeometry(n_segment=_L, n_hop=_R), horizon=16)
+    model = ObservableSymbolicModel(ckpt)
 
     with pytest.raises(ValueError, match="shooting_depth"):
         MPCNlp.build(
@@ -129,17 +129,17 @@ def test_observable_nlp_rejects_multiple_shooting(
             u_max=np.full(model.n_controls, 2.0),
             w_y=0.0,
             w_psd=1.0,
-            log_reference=np.zeros((art.n_channels, art.n_values)),
+            log_reference=np.zeros((ckpt.n_channels, ckpt.n_values)),
         )
 
 
 def test_observable_nlp_has_no_shooting_variables(
-    make_observable_artifact: Callable[..., ObservableArtifact],
+    make_observable_checkpoint: Callable[..., ObservableCheckpoint],
 ) -> None:
     """The decision vector is the controls alone: no ``phi`` roots are constructed at all."""
     horizon = 16
-    art = make_observable_artifact(StftGeometry(n_segment=_L, n_hop=_R), horizon=horizon)
-    model = ObservableSymbolicModel(art)
+    ckpt = make_observable_checkpoint(StftGeometry(n_segment=_L, n_hop=_R), horizon=horizon)
+    model = ObservableSymbolicModel(ckpt)
 
     mpc_nlp = MPCNlp.build(
         model,
@@ -150,18 +150,20 @@ def test_observable_nlp_has_no_shooting_variables(
         w_y=0.0,
         w_u=1.0,
         w_psd=1.0,
-        log_reference=np.zeros((art.n_channels, art.n_values)),
+        log_reference=np.zeros((ckpt.n_channels, ckpt.n_values)),
     )
     assert mpc_nlp.nlp["x"].numel() == horizon * model.n_controls
     assert mpc_nlp.nlp["g"].numel() == horizon  # the Kirchhoff equality only
 
 
-def _controller(art: ObservableArtifact, envelope_path: Path, *, horizon: int = 16, **kwargs: object) -> MPCController:
+def _controller(
+    ckpt: ObservableCheckpoint, envelope_path: Path, *, horizon: int = 16, **kwargs: object
+) -> MPCController:
     """An MPC driven by the observable model, wired to the healthy envelope on disk."""
     defaults = {"u_max": 2.0, "w_y": 0.0, "w_u": 0.01, "w_psd": 1.0}
     return MPCController(
-        dt=art.dt,
-        model=ObservableSymbolicModel(art),
+        dt=ckpt.dt,
+        model=ObservableSymbolicModel(ckpt),
         horizon=horizon,
         psd_ref=str(envelope_path),
         **{**defaults, **kwargs},  # ty: ignore[invalid-argument-type]
@@ -169,48 +171,48 @@ def _controller(art: ObservableArtifact, envelope_path: Path, *, horizon: int = 
 
 
 def test_warmup_emits_zero_until_window_filled(
-    tmp_path: Path, make_observable_artifact: Callable[..., ObservableArtifact]
+    tmp_path: Path, make_observable_checkpoint: Callable[..., ObservableCheckpoint]
 ) -> None:
     """While the EEG window is still NaN-padded, the MPC holds off and emits zeros."""
-    art = make_observable_artifact(StftGeometry(n_segment=_L, n_hop=_R), horizon=16, n_y=4)
-    controller = _controller(art, _envelope_npz(tmp_path, np.full((art.n_channels, _L // 2 + 1), 1e-3)))
+    ckpt = make_observable_checkpoint(StftGeometry(n_segment=_L, n_hop=_R), horizon=16, n_y=4)
+    controller = _controller(ckpt, _envelope_npz(tmp_path, np.full((ckpt.n_channels, _L // 2 + 1), 1e-3)))
 
-    results = _drive(controller, n_steps=art.n_y, n_channels=art.n_channels)
-    for u, log in results[: art.n_y - 1]:
+    results = _drive(controller, n_steps=ckpt.n_y, n_channels=ckpt.n_channels)
+    for u, log in results[: ckpt.n_y - 1]:
         assert log.warmup
-        np.testing.assert_array_equal(u, np.zeros(art.n_controls))
+        np.testing.assert_array_equal(u, np.zeros(ckpt.n_controls))
     assert not results[-1][1].warmup
 
 
 def test_solved_controls_respect_bounds_and_kirchhoff(
-    tmp_path: Path, make_observable_artifact: Callable[..., ObservableArtifact]
+    tmp_path: Path, make_observable_checkpoint: Callable[..., ObservableCheckpoint]
 ) -> None:
     """Past warm-up the control is finite, inside the box, and sums to zero across electrodes."""
     u_max = 2.0
-    art = make_observable_artifact(StftGeometry(n_segment=_L, n_hop=_R), horizon=16, n_y=4)
+    ckpt = make_observable_checkpoint(StftGeometry(n_segment=_L, n_hop=_R), horizon=16, n_y=4)
     # A biting envelope, so the solver has a reason to stimulate rather than sit at zero.
-    envelope = _envelope_npz(tmp_path, np.full((art.n_channels, _L // 2 + 1), 1e-6))
-    controller = _controller(art, envelope, u_max=u_max, w_u=0.0, w_psd=100.0)
+    envelope = _envelope_npz(tmp_path, np.full((ckpt.n_channels, _L // 2 + 1), 1e-6))
+    controller = _controller(ckpt, envelope, u_max=u_max, w_u=0.0, w_psd=100.0)
 
-    for u, log in _drive(controller, n_steps=8, n_channels=art.n_channels)[art.n_y :]:
+    for u, log in _drive(controller, n_steps=8, n_channels=ckpt.n_channels)[ckpt.n_y :]:
         assert not log.warmup
-        assert u.shape == (art.n_controls,)
+        assert u.shape == (ckpt.n_controls,)
         assert np.isfinite(u).all()
         assert np.all(np.abs(u) <= u_max + 1e-6)
         assert abs(float(np.sum(u))) < 1e-6
 
 
-def test_from_config_loads_an_observable_artifact_and_defaults_the_horizon(
-    tmp_path: Path, make_observable_artifact: Callable[..., ObservableArtifact]
+def test_from_config_loads_an_observable_checkpoint_and_defaults_the_horizon(
+    tmp_path: Path, make_observable_checkpoint: Callable[..., ObservableCheckpoint]
 ) -> None:
-    """from_config dispatches on ``model_type`` and defaults the horizon to the artifact's."""
-    art = make_observable_artifact(StftGeometry(n_segment=_L, n_hop=_R), horizon=16)
-    art.save(tmp_path / "observable")
-    envelope = _envelope_npz(tmp_path, np.full((art.n_channels, _L // 2 + 1), 1e-3))
+    """from_config dispatches on ``model_type`` and defaults the horizon to the checkpoint's."""
+    ckpt = make_observable_checkpoint(StftGeometry(n_segment=_L, n_hop=_R), horizon=16)
+    ckpt.save(tmp_path / "observable")
+    envelope = _envelope_npz(tmp_path, np.full((ckpt.n_channels, _L // 2 + 1), 1e-3))
 
     controller = MPCController.from_config(
         {
-            "dt": art.dt,
+            "dt": ckpt.dt,
             "artifact": str(tmp_path / "observable"),
             "u_max": 2.0,
             "w_y": 0.0,
@@ -224,24 +226,24 @@ def test_from_config_loads_an_observable_artifact_and_defaults_the_horizon(
     assert controller.is_observable
     assert controller.psd_envelope is None
     assert controller.log_reference is not None
-    assert controller.log_reference.shape == (art.n_channels, art.n_values)
+    assert controller.log_reference.shape == (ckpt.n_channels, ckpt.n_values)
 
 
 def test_closed_loop_simulation_runs(
-    tmp_path: Path, make_observable_artifact: Callable[..., ObservableArtifact]
+    tmp_path: Path, make_observable_checkpoint: Callable[..., ObservableCheckpoint]
 ) -> None:
     """The observable MPC closes the loop through the orchestrator and keeps controls in bounds."""
     n_channels, u_max = 3, 3.0
-    art = make_observable_artifact(
+    ckpt = make_observable_checkpoint(
         StftGeometry(n_segment=_L, n_hop=_R), horizon=16, n_y=4, n_u=3, n_channels=n_channels, dt=0.01
     )
-    art.save(tmp_path / "observable")
+    ckpt.save(tmp_path / "observable")
     envelope_path = tmp_path / "healthy.npz"
     np.savez(
         envelope_path,
         Pref=np.full((n_channels, _L // 2 + 1), 1e-4),
-        freqs=np.fft.rfftfreq(_L, art.dt),
-        fs=1.0 / art.dt,
+        freqs=np.fft.rfftfreq(_L, ckpt.dt),
+        fs=1.0 / ckpt.dt,
         L=_L,
         R=_R,
         quantile=0.9,
@@ -269,7 +271,7 @@ def test_closed_loop_simulation_runs(
         "estimator": {"class_path": "simulate.estimator.IdentityEstimator", "dt": 1e-4},
         "controller": {
             "class_path": "neuro.control.nonlinear_mpc.MPCController",
-            "dt": art.dt,
+            "dt": ckpt.dt,
             "artifact": str(tmp_path / "observable"),
             "horizon": 16,
             "u_max": u_max,
@@ -285,16 +287,16 @@ def test_closed_loop_simulation_runs(
 
     assert sim.logger is not None
     us = sim.logger.signal("controller", "u")
-    assert us.shape[1] == art.n_controls
+    assert us.shape[1] == ckpt.n_controls
     assert np.all(np.abs(us) <= u_max + 1e-6)
 
 
-def test_geometry_mismatch_between_artifact_and_envelope_raises(
-    tmp_path: Path, make_observable_artifact: Callable[..., ObservableArtifact]
+def test_geometry_mismatch_between_checkpoint_and_envelope_raises(
+    tmp_path: Path, make_observable_checkpoint: Callable[..., ObservableCheckpoint]
 ) -> None:
-    """An artifact recording one Frame grid and an envelope measured on another is a hard error."""
-    art = make_observable_artifact(StftGeometry(n_segment=_L + 2, n_hop=_R), horizon=16, n_channels=2)
-    art.save(tmp_path / "observable")
+    """A checkpoint recording one Frame grid and an envelope measured on another is a hard error."""
+    ckpt = make_observable_checkpoint(StftGeometry(n_segment=_L + 2, n_hop=_R), horizon=16, n_channels=2)
+    ckpt.save(tmp_path / "observable")
     envelope = _envelope_npz(tmp_path, np.full((2, _L // 2 + 1), 1e-3))
 
     config = {
@@ -303,7 +305,7 @@ def test_geometry_mismatch_between_artifact_and_envelope_raises(
         "sensors": {"class_path": "simulate.sensor.GaussianSensor", "dt": 1e-4},
         "controller": {
             "class_path": "neuro.control.nonlinear_mpc.MPCController",
-            "dt": art.dt,
+            "dt": ckpt.dt,
             "artifact": str(tmp_path / "observable"),
             "u_max": 2.0,
             "psd_ref": str(envelope),
@@ -313,12 +315,12 @@ def test_geometry_mismatch_between_artifact_and_envelope_raises(
         validate_simulation_config(config)
 
 
-def test_eeg_ms_artifact_needs_the_mean_square_envelope(
-    tmp_path: Path, make_observable_artifact: Callable[..., ObservableArtifact]
+def test_eeg_ms_checkpoint_needs_the_mean_square_envelope(
+    tmp_path: Path, make_observable_checkpoint: Callable[..., ObservableCheckpoint]
 ) -> None:
-    """An ``eeg_ms`` artifact pointed at an npz without ``Pref_ms`` fails loudly, not silently."""
-    art = make_observable_artifact(EegMsGeometry(window_s=_L * 0.02, hop_s=_R * 0.02), horizon=16, n_channels=2)
-    art.save(tmp_path / "observable")
+    """An ``eeg_ms`` checkpoint pointed at an npz without ``Pref_ms`` fails loudly, not silently."""
+    ckpt = make_observable_checkpoint(EegMsGeometry(window_s=_L * 0.02, hop_s=_R * 0.02), horizon=16, n_channels=2)
+    ckpt.save(tmp_path / "observable")
 
     config = {
         "dynamics": {"dt": 1e-4},
@@ -326,7 +328,7 @@ def test_eeg_ms_artifact_needs_the_mean_square_envelope(
         "sensors": {"class_path": "simulate.sensor.GaussianSensor", "dt": 1e-4},
         "controller": {
             "class_path": "neuro.control.nonlinear_mpc.MPCController",
-            "dt": art.dt,
+            "dt": ckpt.dt,
             "artifact": str(tmp_path / "observable"),
             "u_max": 2.0,
             "psd_ref": str(_envelope_npz(tmp_path, np.full((2, _L // 2 + 1), 1e-3))),
@@ -335,9 +337,9 @@ def test_eeg_ms_artifact_needs_the_mean_square_envelope(
     with pytest.raises(ConfigConsistencyError, match="Pref_ms"):
         validate_simulation_config(config)
 
-    art_path = tmp_path / "observable"
+    ckpt_path = tmp_path / "observable"
     config["controller"]["psd_ref"] = str(
         _envelope_npz(tmp_path, np.full((2, _L // 2 + 1), 1e-3), ms_power=np.full(2, 1e-3))
     )
     validate_simulation_config(config)
-    assert art_path.with_suffix(".npz").exists()
+    assert ckpt_path.with_suffix(".npz").exists()

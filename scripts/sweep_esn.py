@@ -7,6 +7,7 @@ from pathlib import Path
 
 import optuna
 
+from neuro.checkpoint import ESNCheckpoint
 from neuro.config import (
     FloatParam,
     ParamSpec,
@@ -228,7 +229,7 @@ def main() -> None:  # noqa: PLR0915
                 u_std=data.u_std,
                 provenance=provenance,
             )
-            sym_model = ESNSymbolicModel(winning_art)
+            sym_model = ESNSymbolicModel(ESNCheckpoint.from_artifact(winning_art))
             n_nodes = sym_model.f_step.n_nodes()
 
             row = {

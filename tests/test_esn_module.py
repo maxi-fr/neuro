@@ -4,11 +4,13 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+import casadi as ca
 import numpy as np
 import pytest
 import torch
 
 from neuro.esn import ESNArtifact, generate_reservoir, harvest_normal_equations, solve_ridge
+from neuro.esn_predictor_casadi import ESNSymbolicModel
 from neuro.predictor.esn_module import ESNModule
 from neuro.predictor.ridge import RidgeTrainer
 from neuro.transforms import Standardizer
@@ -383,6 +385,33 @@ def test_rollout_accepts_any_length_not_just_the_native_horizon() -> None:
     long = model.rollout(state, np.zeros((_HORIZON + 3, _N_CONTROLS)))
 
     assert long.shape == (_HORIZON + 3, _N_EEG)
+
+
+@pytest.mark.parametrize("steps", [3, 8, 16])
+def test_casadi_adapter_rollout_matches_the_checkpoint_float64_rollout(tmp_path: Path, steps: int) -> None:
+    """The CasADi bridge rebuilt from the module's checkpoint reproduces the float64 rollout.
+
+    The module stores float32 weights; the torch-free reader and the artifact loader both cast them
+    to float64, so the f_step/f_out chain and the reference are the same arithmetic to round-off.
+    """
+    model = _module()
+    path = tmp_path / "esn_module"
+    model.save(path)
+
+    sym = ESNSymbolicModel.from_checkpoint(path)
+    art = ESNArtifact.load(path)
+    y_hist, u_hist, u_future = _context(steps=steps)
+
+    want = art.rollout(art.prime(y_hist, u_hist), u_future)
+    x = art.prime(y_hist, u_hist)
+    preds = []
+    for u in u_future:
+        preds.append(np.asarray(ca.DM(sym.f_out(x))).flatten())
+        x = np.asarray(sym.f_step(x, u)).flatten()
+    got = np.stack(preds)
+
+    assert got.shape == want.shape
+    np.testing.assert_allclose(got, want, rtol=1e-10, atol=1e-12)
 
 
 def test_save_checkpoint_is_readable_by_the_torch_free_loader(tmp_path: Path) -> None:

@@ -121,7 +121,7 @@ def test_casadi_step_matches_numpy_step(tmp_path: Path) -> None:
     """ESNSymbolicModel.f_step equals ESNPredictor's free-running numpy step to 1e-10."""
     art_path = _build_tiny_esn_artifact(tmp_path)
     art = ESNArtifact.load(art_path)
-    model = ESNSymbolicModel.from_artifact(art_path)
+    model = ESNSymbolicModel.from_checkpoint(art_path)
 
     rng = np.random.default_rng(_SEED)
     h = rng.standard_normal(art.reservoir_size)
@@ -137,7 +137,7 @@ def test_casadi_rollout_matches_numpy_rollout(tmp_path: Path) -> None:
     """Chaining f_step/f_out over 50 steps equals ESNArtifact.rollout to 1e-10."""
     art_path = _build_tiny_esn_artifact(tmp_path, horizon=50)
     art = ESNArtifact.load(art_path)
-    model = ESNSymbolicModel.from_artifact(art_path)
+    model = ESNSymbolicModel.from_checkpoint(art_path)
 
     rng = np.random.default_rng(_SEED + 1)
     h_init = rng.standard_normal(art.reservoir_size)

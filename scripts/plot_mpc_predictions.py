@@ -34,7 +34,7 @@ def parse_args() -> argparse.Namespace:
         "--artifact",
         type=str,
         default=None,
-        help="Predictor artifact basename; defaults to the config's controller.artifact.",
+        help="Predictor checkpoint basename; defaults to the config's controller.artifact.",
     )
     parser.add_argument("--t-end", type=float, default=None, help="Open-loop duration (s); defaults to config t_end.")
     parser.add_argument("--anchors", type=int, default=4, help="Number of forecast anchor times.")
@@ -66,10 +66,10 @@ def run_open_loop(config: dict, t_end: float) -> tuple[FloatArray, float]:
 
 def free_run(model: NNSymbolicModel, eeg: FloatArray, anchor: int) -> tuple[FloatArray, FloatArray]:
     """Free-run (zero control) ``horizon`` steps from ``anchor``; return (predicted, true) EEG."""
-    n_y, horizon = model.artifact.n_y, model.artifact.horizon
-    n_u, n_controls = model.artifact.n_u, model.n_controls
+    n_y, horizon = model.checkpoint.n_y, model.checkpoint.horizon
+    n_u, n_controls = model.checkpoint.n_u, model.n_controls
 
-    y_window = model.artifact.encode(eeg[anchor - n_y : anchor])
+    y_window = model.checkpoint.y_std.transform(eeg[anchor - n_y : anchor])
     x = np.concatenate([y_window.reshape(-1), np.zeros(n_u * n_controls)])
     preds = []
     for _ in range(horizon):
@@ -87,9 +87,9 @@ def main() -> None:
 
     print(f"Running plant open-loop for {t_end}s from {args.config} ...", flush=True)
     eeg, dt_model = run_open_loop(config, t_end)
-    model = NNSymbolicModel.from_artifact(artifact)
+    model = NNSymbolicModel.from_checkpoint(artifact)
 
-    n_y, horizon = model.artifact.n_y, model.artifact.horizon
+    n_y, horizon = model.checkpoint.n_y, model.checkpoint.horizon
     anchors = np.linspace(n_y + 1, len(eeg) - horizon - 1, args.anchors).astype(int)
     time = np.arange(len(eeg)) * dt_model
 

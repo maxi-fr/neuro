@@ -37,13 +37,13 @@ def evaluate_closed_loop_suppression(  # noqa: PLR0915
         raise FileNotFoundError(msg)
     base_sim_dict = load_sim_config(base_sim_path)
 
-    model_artifact_path = (trial_dir / "model.npz").resolve()
-    if not model_artifact_path.exists():
-        msg = f"Trained predictor artifact not found: {model_artifact_path}"
+    model_checkpoint_path = (trial_dir / "model.npz").resolve()
+    if not model_checkpoint_path.exists():
+        msg = f"Trained predictor checkpoint not found: {model_checkpoint_path}"
         raise FileNotFoundError(msg)
 
     base_sim_dict["t_end"] = eval_cfg.t_end
-    base_sim_dict["controller"]["artifact"] = str(model_artifact_path)
+    base_sim_dict["controller"]["artifact"] = str(model_checkpoint_path)
     if base_sim_dict["dynamics"].get("log", "none") == "none":
         base_sim_dict["dynamics"]["log"] = "lfp"
     # The seeds differ only in the plant realisation, so the wiring is the same for all of them.

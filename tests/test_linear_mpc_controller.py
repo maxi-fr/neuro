@@ -97,7 +97,7 @@ def test_sparse_dense_ipopt_equivalence(tmp_path: Path, w_u_l1: float) -> None:
         "w_u": 0.1,
         "w_u_l1": w_u_l1,
     }
-    model = NNSymbolicModel.from_artifact(_build_artifact(tmp_path, n_y=n_y, n_channels=n_channels))
+    model = NNSymbolicModel.from_checkpoint(_build_artifact(tmp_path, n_y=n_y, n_channels=n_channels))
 
     u_sparse = _drive(LinearMPCController(model=model, formulation="sparse", **kw), n_y, n_channels)[-1][0]
     u_dense = _drive(LinearMPCController(model=model, formulation="dense", **kw), n_y, n_channels)[-1][0]
@@ -111,7 +111,7 @@ def test_sparse_dense_ipopt_equivalence(tmp_path: Path, w_u_l1: float) -> None:
 def test_update_respects_bounds(tmp_path: Path, formulation: str) -> None:
     """Past warm-up, update returns a finite ``(n_controls,)`` control within the box bounds."""
     u_max = 0.5
-    model = NNSymbolicModel.from_artifact(_build_artifact(tmp_path, n_y=4))
+    model = NNSymbolicModel.from_checkpoint(_build_artifact(tmp_path, n_y=4))
     controller = LinearMPCController(
         dt=0.01, model=model, u_max=u_max, horizon=4, w_y=1.0, w_u=0.0, formulation=formulation
     )
@@ -130,7 +130,7 @@ def test_control_obeys_kirchhoff_current_law(tmp_path: Path, formulation: str) -
     Both QP formulations carry the sum-to-zero equality, so even while stimulating
     (``w_y=1, w_u=0``) the montage's currents balance exactly.
     """
-    model = NNSymbolicModel.from_artifact(_build_artifact(tmp_path, n_y=4))
+    model = NNSymbolicModel.from_checkpoint(_build_artifact(tmp_path, n_y=4))
     controller = LinearMPCController(
         dt=0.01, model=model, u_max=5.0, horizon=4, w_y=1.0, w_u=0.0, formulation=formulation
     )
@@ -144,7 +144,7 @@ def test_control_obeys_kirchhoff_current_law(tmp_path: Path, formulation: str) -
 @pytest.mark.parametrize("formulation", ["sparse", "dense"])
 def test_pure_effort_cost_yields_zero_control(tmp_path: Path, formulation: str) -> None:
     """With w_y=0 the cost is sum||u||^2, whose unique constrained minimizer is u=0."""
-    model = NNSymbolicModel.from_artifact(_build_artifact(tmp_path, n_y=4))
+    model = NNSymbolicModel.from_checkpoint(_build_artifact(tmp_path, n_y=4))
     controller = LinearMPCController(
         dt=0.01, model=model, u_max=1.0, horizon=4, w_y=0.0, w_u=1.0, formulation=formulation
     )
@@ -165,7 +165,7 @@ def test_l1_penalty_yields_sparse_control(tmp_path: Path, formulation: str) -> N
     ``sum(u)=0`` forces ``[a, -a]``, allowing all-or-nothing sparsity but never a single zero.
     """
     n_y, n_ch, n_controls = 4, 2, 3
-    model = NNSymbolicModel.from_artifact(_build_artifact(tmp_path, n_y=n_y, n_channels=n_ch, n_controls=n_controls))
+    model = NNSymbolicModel.from_checkpoint(_build_artifact(tmp_path, n_y=n_y, n_channels=n_ch, n_controls=n_controls))
     base: dict[str, Any] = {"dt": 0.01, "u_max": 5.0, "horizon": 4, "w_y": 1.0, "w_u": 0.0, "formulation": formulation}
 
     u_l2 = _drive(LinearMPCController(model=model, w_u_l1=0.0, **base), n_y, n_ch)[-1][0]
@@ -182,7 +182,7 @@ def test_l1_penalty_yields_sparse_control(tmp_path: Path, formulation: str) -> N
 @pytest.mark.parametrize("formulation", ["sparse", "dense"])
 def test_l1_zero_weight_leaves_solver_structure_unchanged(tmp_path: Path, formulation: str) -> None:
     """``w_u_l1=0`` adds no slacks/inequalities; a positive weight enlarges the decision vector."""
-    model = NNSymbolicModel.from_artifact(_build_artifact(tmp_path, n_y=4))
+    model = NNSymbolicModel.from_checkpoint(_build_artifact(tmp_path, n_y=4))
     off = LinearMPCController(dt=0.01, model=model, u_max=1.0, horizon=4, formulation=formulation)
     on = LinearMPCController(dt=0.01, model=model, u_max=1.0, horizon=4, w_u_l1=1.0, formulation=formulation)
 
@@ -195,7 +195,7 @@ def test_l1_zero_weight_leaves_solver_structure_unchanged(tmp_path: Path, formul
 def test_warmup_emits_zero_until_window_filled(tmp_path: Path, formulation: str) -> None:
     """While the EEG window is still zero-padded, the MPC holds off and emits zeros."""
     n_y = 4
-    model = NNSymbolicModel.from_artifact(_build_artifact(tmp_path, n_y=n_y))
+    model = NNSymbolicModel.from_checkpoint(_build_artifact(tmp_path, n_y=n_y))
     controller = LinearMPCController(dt=0.01, model=model, u_max=0.5, horizon=4, formulation=formulation)
 
     results = _drive(controller, n_steps=n_y, n_channels=model.n_channels)
@@ -220,14 +220,14 @@ def test_from_config_loads_artifact_and_honours_formulation(tmp_path: Path) -> N
 
 def test_nonlinear_model_rejected(tmp_path: Path) -> None:
     """A non-linear (depth>0) predictor is rejected -- the QP would silently linearize it."""
-    model = NNSymbolicModel.from_artifact(_build_artifact(tmp_path, depth=2))
+    model = NNSymbolicModel.from_checkpoint(_build_artifact(tmp_path, depth=2))
     with pytest.raises(ValueError, match="requires a linear predictor"):
         LinearMPCController(dt=0.01, model=model, u_max=1.0, horizon=4)
 
 
 def test_invalid_formulation_rejected(tmp_path: Path) -> None:
     """An unknown formulation name is rejected up front."""
-    model = NNSymbolicModel.from_artifact(_build_artifact(tmp_path))
+    model = NNSymbolicModel.from_checkpoint(_build_artifact(tmp_path))
     with pytest.raises(ValueError, match="formulation must be"):
         LinearMPCController(dt=0.01, model=model, u_max=1.0, horizon=4, formulation="banded")
 
@@ -284,7 +284,7 @@ def test_terminal_weight_defaults_to_uniform(tmp_path: Path) -> None:
     """``w_y_terminal`` equal to ``w_y`` is the uniform cost, so the applied control is unchanged."""
     n_y, n_channels = 4, 2
     kw: dict[str, Any] = {"dt": 0.01, "u_max": 5.0, "horizon": 4, "w_y": 1.0, "w_u": 0.1}
-    model = NNSymbolicModel.from_artifact(_build_artifact(tmp_path, n_y=n_y, n_channels=n_channels))
+    model = NNSymbolicModel.from_checkpoint(_build_artifact(tmp_path, n_y=n_y, n_channels=n_channels))
 
     u_uniform = _drive(MPCController(model=model, **kw), n_y, n_channels)[-1][0]
     u_explicit = _drive(MPCController(model=model, w_y_terminal=1.0, **kw), n_y, n_channels)[-1][0]
@@ -296,7 +296,7 @@ def test_terminal_only_cost_differs_from_uniform(tmp_path: Path) -> None:
     """Costing the terminal step alone (``w_y = 0``) is a different objective, so it moves the control."""
     n_y, n_channels = 4, 2
     kw: dict[str, Any] = {"dt": 0.01, "u_max": 5.0, "horizon": 4, "w_u": 0.1}
-    model = NNSymbolicModel.from_artifact(_build_artifact(tmp_path, n_y=n_y, n_channels=n_channels))
+    model = NNSymbolicModel.from_checkpoint(_build_artifact(tmp_path, n_y=n_y, n_channels=n_channels))
 
     u_uniform = _drive(MPCController(model=model, w_y=1.0, **kw), n_y, n_channels)[-1][0]
     u_terminal = _drive(MPCController(model=model, w_y=0.0, w_y_terminal=1.0, **kw), n_y, n_channels)[-1][0]
@@ -307,7 +307,7 @@ def test_terminal_only_cost_differs_from_uniform(tmp_path: Path) -> None:
 def test_solve_logs_iteration_count(tmp_path: Path) -> None:
     """Post-warmup solves report IPOPT's iteration count and whether the cap was hit."""
     n_y, n_channels = 4, 2
-    model = NNSymbolicModel.from_artifact(_build_artifact(tmp_path, n_y=n_y, n_channels=n_channels))
+    model = NNSymbolicModel.from_checkpoint(_build_artifact(tmp_path, n_y=n_y, n_channels=n_channels))
     controller = MPCController(dt=0.01, model=model, u_max=5.0, horizon=4, w_y=1.0, w_u=0.1)
 
     _, log = _drive(controller, n_y, n_channels)[-1]

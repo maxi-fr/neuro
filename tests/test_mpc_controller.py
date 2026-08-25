@@ -11,6 +11,7 @@ import scipy.signal as sps
 from scipy.signal.windows import hann
 from simulate.simulation import Simulation
 
+from neuro.checkpoint import load_esn, load_mlp
 from neuro.control.nlp import MPCNlp
 from neuro.control.nonlinear_mpc import MPCController, MPCControllerLog
 from neuro.control.solvers import (
@@ -96,7 +97,7 @@ def test_output_condensation_matches_full_state_rollout(tmp_path: Path) -> None:
     """
     n_y, n_u, n_channels, n_controls = 4, 3, 2, 2
     artifact = _build_artifact(tmp_path, n_y=n_y, n_u=n_u, n_channels=n_channels, n_controls=n_controls)
-    model = NNSymbolicModel.from_artifact(artifact)
+    model = NNSymbolicModel.from_checkpoint(artifact)
     art = MLPArtifact.load(artifact)
     rng = np.random.default_rng(_SEED + 2)
     horizon = 5
@@ -129,7 +130,7 @@ def test_output_condensation_matches_full_state_rollout(tmp_path: Path) -> None:
 def test_warmup_emits_zero_until_window_filled(tmp_path: Path) -> None:
     """While the EEG window is still zero-padded, the MPC holds off and emits zeros."""
     n_y = 4
-    model = NNSymbolicModel.from_artifact(_build_artifact(tmp_path, n_y=n_y))
+    model = NNSymbolicModel.from_checkpoint(_build_artifact(tmp_path, n_y=n_y))
     controller = MPCController(dt=0.01, model=model, u_max=0.5, horizon=3)
 
     results = _drive(controller, n_steps=n_y, n_channels=model.n_channels)
@@ -148,7 +149,7 @@ def test_update_respects_bounds(tmp_path: Path) -> None:
     still finite and bound-respecting (here pushed toward the bound to cut EEG power).
     """
     u_max = 0.5
-    model = NNSymbolicModel.from_artifact(_build_artifact(tmp_path, n_y=4))
+    model = NNSymbolicModel.from_checkpoint(_build_artifact(tmp_path, n_y=4))
     controller = MPCController(dt=0.01, model=model, u_max=u_max, horizon=3, w_y=1.0, w_u=0.0)
 
     u, _ = _drive(controller, n_steps=6, n_channels=model.n_channels)[-1]
@@ -163,7 +164,7 @@ def test_control_obeys_kirchhoff_current_law(tmp_path: Path) -> None:
     With ``w_y=1, w_u=0`` the MPC actively stimulates to cut predicted EEG power, yet the
     montage's per-electrode currents must still balance so no net current is injected.
     """
-    model = NNSymbolicModel.from_artifact(_build_artifact(tmp_path, n_y=4))
+    model = NNSymbolicModel.from_checkpoint(_build_artifact(tmp_path, n_y=4))
     controller = MPCController(dt=0.01, model=model, u_max=5.0, horizon=3, w_y=1.0, w_u=0.0)
 
     u, log = _drive(controller, n_steps=6, n_channels=model.n_channels)[-1]
@@ -174,7 +175,7 @@ def test_control_obeys_kirchhoff_current_law(tmp_path: Path) -> None:
 
 def test_pure_effort_cost_yields_zero_control(tmp_path: Path) -> None:
     """With w_y=0 the cost is sum||u||^2, whose unconstrained minimizer is u=0."""
-    model = NNSymbolicModel.from_artifact(_build_artifact(tmp_path, n_y=4))
+    model = NNSymbolicModel.from_checkpoint(_build_artifact(tmp_path, n_y=4))
     controller = MPCController(dt=0.01, model=model, u_max=1.0, horizon=3, w_y=0.0, w_u=1.0)
 
     u, log = _drive(controller, n_steps=6, n_channels=model.n_channels)[-1]
@@ -189,7 +190,7 @@ def test_l1_penalty_drives_control_toward_zero(tmp_path: Path) -> None:
     dominant L1 effort penalty (epigraph-reformulated into the NLP) makes stimulating uneconomical,
     so the control collapses to (near-)zero.
     """
-    model = NNSymbolicModel.from_artifact(_build_artifact(tmp_path, n_y=4))
+    model = NNSymbolicModel.from_checkpoint(_build_artifact(tmp_path, n_y=4))
     base: dict[str, Any] = {"dt": 0.01, "model": model, "u_max": 5.0, "horizon": 3, "w_y": 1.0, "w_u": 0.0}
 
     u_l2 = _drive(MPCController(w_u_l1=0.0, **base), n_steps=6, n_channels=model.n_channels)[-1][0]
@@ -201,7 +202,7 @@ def test_l1_penalty_drives_control_toward_zero(tmp_path: Path) -> None:
 
 def test_per_electrode_bounds_rejected_when_mismatched(tmp_path: Path) -> None:
     """A u_max length that is neither 1 nor n_controls is rejected."""
-    model = NNSymbolicModel.from_artifact(_build_artifact(tmp_path, n_controls=2))
+    model = NNSymbolicModel.from_checkpoint(_build_artifact(tmp_path, n_controls=2))
     with pytest.raises(ValueError, match="u_max has 3 entries but n_controls is 2"):
         MPCController(dt=0.01, model=model, u_max=[1.0, 2.0, 3.0], horizon=3)
 
@@ -312,7 +313,7 @@ def test_mpc_controller_with_esn_model(tmp_path: Path) -> None:
     """MPCController runs end-to-end with an ESNSymbolicModel across warmup and active steps."""
     priming_steps = 5
     art_path = _build_tiny_esn_artifact(tmp_path, priming_steps=priming_steps)
-    model = ESNSymbolicModel.from_artifact(art_path)
+    model = ESNSymbolicModel.from_checkpoint(art_path)
     u_max = 0.5
     controller = MPCController(dt=0.01, model=model, u_max=u_max, horizon=3, w_y=1.0, w_u=0.0)
 
@@ -352,7 +353,7 @@ def test_symbolic_model_priming_seam(tmp_path: Path) -> None:
     n_y, n_u, n_ch, n_ctrl = 4, 3, 2, 2
     nn_art_path = _build_artifact(tmp_path, n_y=n_y, n_u=n_u, n_channels=n_ch, n_controls=n_ctrl)
     nn_art = MLPArtifact.load(nn_art_path)
-    nn_model = NNSymbolicModel(nn_art)
+    nn_model = NNSymbolicModel(load_mlp(nn_art_path))
 
     assert nn_model.native_horizon == nn_art.horizon
     state = nn_model.initial_state()
@@ -376,7 +377,7 @@ def test_symbolic_model_priming_seam(tmp_path: Path) -> None:
         tmp_path, reservoir_size=res_size, priming_steps=priming_steps, n_channels=n_ch
     )
     esn_art = ESNArtifact.load(esn_art_path)
-    esn_model = ESNSymbolicModel(esn_art)
+    esn_model = ESNSymbolicModel(load_esn(esn_art_path))
 
     assert esn_model.native_horizon == esn_art.horizon
     esn_state = esn_model.initial_state()
@@ -412,7 +413,7 @@ def test_spectral_cost_matches_numpy_periodogram(
     n_bins = length // 2 + 1
 
     artifact = _build_artifact(tmp_path, n_y=2, n_u=2, horizon=horizon, n_channels=n_channels, n_controls=n_controls)
-    model = NNSymbolicModel.from_artifact(artifact)
+    model = NNSymbolicModel.from_checkpoint(artifact)
 
     rng = np.random.default_rng(_SEED + 10)
     x0 = rng.standard_normal(model.state_shape[0])
@@ -465,7 +466,7 @@ def test_spectral_cost_is_zero_when_under_envelope(tmp_path: Path) -> None:
     artifact = _build_artifact(
         tmp_path, n_y=n_y, n_u=n_u, horizon=horizon, n_channels=n_channels, n_controls=n_controls
     )
-    model = NNSymbolicModel.from_artifact(artifact)
+    model = NNSymbolicModel.from_checkpoint(artifact)
 
     rng = np.random.default_rng(_SEED + 11)
     envelope = PsdEnvelope(power=np.full((n_channels, n_bins), 1e8), fs=50.0, window=L, hop=R)
@@ -555,7 +556,7 @@ def test_healthy_plant_scores_near_zero_on_envelope() -> None:
 @pytest.mark.parametrize("qpsol", ["qpoases", "qrqp", "osqp"])
 def test_mpc_controller_sqp_standalone(tmp_path: Path, qpsol: Literal["qpoases", "qrqp", "osqp"]) -> None:
     """MPCController operates with standalone SQP solver using various QP subsolvers."""
-    model = NNSymbolicModel.from_artifact(_build_artifact(tmp_path, n_y=4))
+    model = NNSymbolicModel.from_checkpoint(_build_artifact(tmp_path, n_y=4))
     u_max = 2.0
     controller = MPCController(
         dt=0.01,
@@ -581,7 +582,7 @@ def test_mpc_controller_sqp_standalone(tmp_path: Path, qpsol: Literal["qpoases",
 
 def test_mpc_controller_sqp_fallback_on_failure(tmp_path: Path) -> None:
     """When SQP fails to converge, IPOPT fallback is invoked and produces valid control."""
-    model = NNSymbolicModel.from_artifact(_build_artifact(tmp_path, n_y=4))
+    model = NNSymbolicModel.from_checkpoint(_build_artifact(tmp_path, n_y=4))
     u_max = 2.0
     controller = MPCController(
         dt=0.01,
@@ -613,7 +614,7 @@ def test_mpc_controller_sqp_fallback_on_failure(tmp_path: Path) -> None:
 
 def test_mpc_controller_sqp_fallback_on_exception(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """When SQP raises an unexpected exception, IPOPT fallback is invoked smoothly."""
-    model = NNSymbolicModel.from_artifact(_build_artifact(tmp_path, n_y=4))
+    model = NNSymbolicModel.from_checkpoint(_build_artifact(tmp_path, n_y=4))
     u_max = 2.0
     controller = MPCController(
         dt=0.01,
@@ -665,14 +666,14 @@ def test_mpc_controller_from_config_sqp_fallback(tmp_path: Path) -> None:
 
 def test_mpc_controller_invalid_solver_raises(tmp_path: Path) -> None:
     """Invalid solver mode raises a ValueError."""
-    model = NNSymbolicModel.from_artifact(_build_artifact(tmp_path, n_y=4))
+    model = NNSymbolicModel.from_checkpoint(_build_artifact(tmp_path, n_y=4))
     with pytest.raises(ValueError, match="solver must be 'ipopt', 'sqp', or 'sqp_fallback'"):
         MPCController(dt=0.01, model=model, u_max=1.0, solver="bad_solver")  # ty: ignore[invalid-argument-type]
 
 
 def test_mpc_nlp_and_solver_builders(tmp_path: Path) -> None:
     """MPCNlp.build builds MPCNlp and solver builders instantiate correct solver wrappers."""
-    model = NNSymbolicModel.from_artifact(_build_artifact(tmp_path, n_y=4))
+    model = NNSymbolicModel.from_checkpoint(_build_artifact(tmp_path, n_y=4))
     u_max = np.full(model.n_controls, 2.0)
 
     mpc_nlp = MPCNlp.build(

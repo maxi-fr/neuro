@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, Self
 import casadi as ca
 import numpy as np
 
-from neuro.esn import ESNArtifact
+from neuro.checkpoint import ESNCheckpoint, load_esn
 from neuro.transforms import unzscore, zscore
 
 if TYPE_CHECKING:
@@ -49,38 +49,38 @@ class ESNSymbolicModel:
 
     Attributes
     ----------
-    artifact : ESNArtifact
-        The loaded ESN artifact containing weight matrices, standardizers, and metadata.
+    checkpoint : ESNCheckpoint
+        The torch-free weights and metadata the bridge is rebuilt from.
     """
 
-    artifact: ESNArtifact
+    checkpoint: ESNCheckpoint
 
     @classmethod
-    def from_artifact(cls, artifact: str | Path) -> Self:
-        """Build the symbolic model by loading an ESN artifact from disk."""
-        return cls(ESNArtifact.load(artifact))
+    def from_checkpoint(cls, path: str | Path) -> Self:
+        """Build the symbolic model by loading an ESN checkpoint from disk, torch-free."""
+        return cls(load_esn(path))
 
     @property
     def state_shape(self) -> tuple[int, int]:
         """Shape of the reservoir state vector h as a column vector (N, 1)."""
-        return (self.artifact.reservoir_size, 1)
+        return (self.checkpoint.reservoir_size, 1)
 
     history_depth: int = 0
 
     @property
     def n_controls(self) -> int:
         """Number of control input channels m."""
-        return self.artifact.n_controls
+        return self.checkpoint.n_controls
 
     @property
     def n_channels(self) -> int:
         """Number of EEG channels C."""
-        return self.artifact.n_channels
+        return self.checkpoint.n_channels
 
     @property
     def native_horizon(self) -> int:
-        """Native prediction horizon of the underlying artifact."""
-        return self.artifact.horizon
+        """Native prediction horizon of the underlying checkpoint."""
+        return self.checkpoint.horizon
 
     @property
     def is_linear(self) -> bool:
@@ -94,36 +94,40 @@ class ESNSymbolicModel:
 
     def initial_state(self) -> FloatArray:
         """Return initial zero reservoir state."""
-        return ReservoirState(np.zeros(self.artifact.reservoir_size, dtype=np.float64), steps_seen=0)
+        return ReservoirState(np.zeros(self.checkpoint.reservoir_size, dtype=np.float64), steps_seen=0)
 
     def absorb(self, state: FloatArray, y: FloatArray, u: FloatArray) -> FloatArray:
         """Absorb raw measurement y and control u via state absorption step."""
         assert isinstance(state, ReservoirState)  # noqa: S101
-        z = self.artifact.encode(np.asarray(y, dtype=np.float64).reshape(-1))
-        v = self.artifact.u_std.transform(np.asarray(u, dtype=np.float64).reshape(1, -1)).reshape(-1)
+        z = self.checkpoint.y_std.transform(np.asarray(y, dtype=np.float64).reshape(-1))
+        v = self.checkpoint.u_std.transform(np.asarray(u, dtype=np.float64).reshape(1, -1)).reshape(-1)
         h_arr = np.asarray(state, dtype=np.float64).reshape(-1)
-        h_next = self.artifact.predictor.absorb(h_arr, z, v)
+        # The numpy reservoir update from ESNPredictor.absorb, inlined so the bridge needs no runtime.
+        x_in = np.concatenate([z, v, np.ones(1)])
+        h_next = (1.0 - self.checkpoint.leak_rate) * h_arr + self.checkpoint.leak_rate * np.tanh(
+            h_arr @ self.checkpoint.w_res.T + x_in @ self.checkpoint.w_in.T
+        )
         return ReservoirState(h_next, steps_seen=state.steps_seen + 1)
 
     def is_ready(self, state: FloatArray) -> bool:
         """Return True if reservoir has absorbed at least priming_steps steps."""
         assert isinstance(state, ReservoirState)  # noqa: S101
-        return state.steps_seen >= self.artifact.priming_steps
+        return state.steps_seen >= self.checkpoint.priming_steps
 
     @cached_property
     def _w_res_dm(self) -> ca.DM:
         """Sparse CasADi DM matrix for W_res."""
-        return _scipy_csr_to_casadi(self.artifact.w_res)
+        return _scipy_csr_to_casadi(self.checkpoint.w_res)
 
     @cached_property
     def _w_in_dm(self) -> ca.DM:
         """Dense CasADi DM matrix for W_in."""
-        return ca.DM(self.artifact.w_in)
+        return ca.DM(self.checkpoint.w_in)
 
     @cached_property
     def _w_out_dm(self) -> ca.DM:
         """Dense CasADi DM matrix for W_out."""
-        return ca.DM(self.artifact.w_out)
+        return ca.DM(self.checkpoint.w_out)
 
     def step(self, history: Sequence[ca.SX | ca.MX], u: ca.SX | ca.MX) -> ca.SX | ca.MX:
         """Advance reservoir state h by one free-running step under raw control u.
@@ -141,7 +145,7 @@ class ESNSymbolicModel:
             Next reservoir state, shape (N, 1).
         """
         (h,) = history
-        u_std = self.artifact.u_std
+        u_std = self.checkpoint.u_std
 
         n_ctrl = self.n_controls
         u_center = np.broadcast_to(u_std.center, (n_ctrl,)).reshape(-1, 1)
@@ -152,7 +156,7 @@ class ESNSymbolicModel:
         z_hat = ca.mtimes(self._w_out_dm, h_aug)
         in_vec = ca.vertcat(z_hat, v, 1.0)
 
-        alpha = self.artifact.leak_rate
+        alpha = self.checkpoint.leak_rate
         net = ca.mtimes(self._w_res_dm, h) + ca.mtimes(self._w_in_dm, in_vec)
         return (1.0 - alpha) * h + alpha * ca.tanh(net)
 
@@ -160,8 +164,8 @@ class ESNSymbolicModel:
         """Decode readout prediction from reservoir state to raw EEG space."""
         h_aug = ca.vertcat(x, 1.0)
         z_hat = ca.mtimes(self._w_out_dm, h_aug)
-        std = self.artifact.y_std
-        n_ch = self.artifact.n_channels
+        std = self.checkpoint.y_std
+        n_ch = self.checkpoint.n_channels
         center = np.broadcast_to(std.center, (n_ch,)).reshape(-1, 1)
         scale = np.broadcast_to(std.scale, (n_ch,)).reshape(-1, 1)
         return unzscore(z_hat, center, scale)
