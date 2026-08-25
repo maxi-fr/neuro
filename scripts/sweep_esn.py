@@ -7,7 +7,6 @@ from pathlib import Path
 
 import optuna
 
-from neuro.artifacts import evaluate_rollouts
 from neuro.config import (
     FloatParam,
     ParamSpec,
@@ -22,6 +21,8 @@ from neuro.esn import (
 )
 from neuro.esn_predictor_casadi import ESNSymbolicModel
 from neuro.esn_training import prepare_training_data
+from neuro.predictor.esn_module import ESNModule
+from neuro.predictor.evaluation import evaluate_rollouts
 from neuro.provenance import training_provenance
 
 optuna.logging.set_verbosity(optuna.logging.WARNING)
@@ -156,28 +157,18 @@ def main() -> None:  # noqa: PLR0915
                     w_out = solve_ridge(G, P, lam)
                     fit_time = time.perf_counter() - t0_f
 
-                    art = ESNArtifact(
+                    model = ESNModule(
+                        w_res=w_res,
                         w_in=w_in,
                         w_out=w_out,
-                        w_res=w_res,
-                        dt=cfg.simulation.dt * cfg.simulation.downsample,
-                        downsample=cfg.simulation.downsample,
-                        horizon=cfg.model.horizon,
-                        reservoir_size=res_size,
                         leak_rate=leak,
-                        spectral_radius=spec_rad,
                         priming_steps=prime_steps,
-                        input_scaling=inp_scale,
-                        density=dens,
-                        noise_sigma=noise,
-                        ridge_lambda=lam,
-                        seed=cfg.training.seed,
+                        horizon=cfg.model.horizon,
+                        dt=cfg.simulation.dt * cfg.simulation.downsample,
                         y_std=data.y_std,
                         u_std=data.u_std,
-                        provenance=provenance,
                     )
-
-                    val_nmse = evaluate_rollouts(art, data.val_trajs, cfg.model.horizon).pooled
+                    val_nmse = evaluate_rollouts(model, data.val_trajs, cfg.model.horizon).pooled
                     if val_nmse < trial_best_nmse:
                         trial_best_nmse = val_nmse
                         trial_best_lam = lam

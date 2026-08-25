@@ -5,15 +5,16 @@ import dataclasses
 import numpy as np
 import pytest
 
-from neuro.artifacts import (
+from neuro.predictor.artifact import MLPArtifact
+from neuro.predictor.data import split_data_files
+from neuro.predictor.evaluation import (
     accumulate_rollout_errors,
     evaluate_log_energy,
     evaluate_rollouts,
     nmse,
     window_energy,
 )
-from neuro.predictor.artifact import MLPArtifact
-from neuro.predictor.data import split_data_files
+from neuro.predictor.module import AutoregressiveMLP
 from neuro.transforms import Standardizer
 
 _RNG = np.random.default_rng(0)
@@ -76,11 +77,13 @@ def _tiny_mlp_artifact(*, n_y: int, n_u: int, horizon: int, n_eeg: int, n_contro
 
 def test_evaluate_rollouts_pools_its_own_per_step_curve() -> None:
     horizon, n_eeg, n_controls = 6, 3, 2
-    art = _tiny_mlp_artifact(n_y=4, n_u=2, horizon=horizon, n_eeg=n_eeg, n_controls=n_controls)
+    model = AutoregressiveMLP.from_artifact(
+        _tiny_mlp_artifact(n_y=4, n_u=2, horizon=horizon, n_eeg=n_eeg, n_controls=n_controls)
+    )
     trajs = [(_RNG.normal(size=(200, n_controls)), _RNG.normal(size=(200, n_eeg))) for _ in range(2)]
 
-    rollout = evaluate_rollouts(art, trajs, horizon)
-    _, power, _ = accumulate_rollout_errors(art, trajs, horizon, stride=25)
+    rollout = evaluate_rollouts(model, trajs, horizon)
+    _, power, _ = accumulate_rollout_errors(model, trajs, horizon, stride=25)
 
     assert rollout.per_step.shape == (horizon,)
     assert rollout.pooled == pytest.approx(float(np.average(rollout.per_step, weights=power)))
@@ -105,10 +108,12 @@ def test_window_energy_is_the_cross_channel_mean_square_per_trailing_window() ->
 def test_log_energy_is_zero_when_the_prediction_matches() -> None:
     """A silent model on a silent plant: both energies are floored identically, so the error is 0."""
     horizon, n_eeg, n_controls = 6, 3, 2
-    art = _silent_mlp_artifact(n_y=4, n_u=2, horizon=horizon, n_eeg=n_eeg, n_controls=n_controls)
+    model = AutoregressiveMLP.from_artifact(
+        _silent_mlp_artifact(n_y=4, n_u=2, horizon=horizon, n_eeg=n_eeg, n_controls=n_controls)
+    )
     trajs = [(np.zeros((200, n_controls)), np.zeros((200, n_eeg))) for _ in range(2)]
 
-    score = evaluate_log_energy(art, trajs, horizon, window_steps=4, hop_steps=2)
+    score = evaluate_log_energy(model, trajs, horizon, window_steps=4, hop_steps=2)
 
     assert score.pooled == pytest.approx(0.0)
     assert score.per_position.shape == (2,)
@@ -117,22 +122,24 @@ def test_log_energy_is_zero_when_the_prediction_matches() -> None:
 def test_log_energy_separates_a_silent_predictor_that_nmse_cannot() -> None:
     """The motivating case: NMSE reads exactly 1.0 -- its saturation value -- and log-energy does not."""
     horizon, n_eeg, n_controls = 6, 3, 2
-    art = _silent_mlp_artifact(n_y=4, n_u=2, horizon=horizon, n_eeg=n_eeg, n_controls=n_controls)
+    model = AutoregressiveMLP.from_artifact(
+        _silent_mlp_artifact(n_y=4, n_u=2, horizon=horizon, n_eeg=n_eeg, n_controls=n_controls)
+    )
     trajs = [(_RNG.normal(size=(200, n_controls)), _RNG.normal(size=(200, n_eeg))) for _ in range(2)]
 
-    assert evaluate_rollouts(art, trajs, horizon).pooled == pytest.approx(1.0)
+    assert evaluate_rollouts(model, trajs, horizon).pooled == pytest.approx(1.0)
 
-    score = evaluate_log_energy(art, trajs, horizon, window_steps=4, hop_steps=2)
+    score = evaluate_log_energy(model, trajs, horizon, window_steps=4, hop_steps=2)
     assert np.isfinite(score.pooled)
     assert score.pooled > 1.0
 
 
 def test_log_energy_rejects_a_horizon_shorter_than_one_window() -> None:
-    art = _tiny_mlp_artifact(n_y=4, n_u=2, horizon=6, n_eeg=3, n_controls=2)
+    model = AutoregressiveMLP.from_artifact(_tiny_mlp_artifact(n_y=4, n_u=2, horizon=6, n_eeg=3, n_controls=2))
     trajs = [(_RNG.normal(size=(200, 2)), _RNG.normal(size=(200, 3))) for _ in range(2)]
 
     with pytest.raises(ValueError, match="shorter than the energy window"):
-        evaluate_log_energy(art, trajs, 6, window_steps=8, hop_steps=2)
+        evaluate_log_energy(model, trajs, 6, window_steps=8, hop_steps=2)
 
 
 def test_split_data_files_holds_out_the_tail() -> None:

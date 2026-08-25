@@ -11,9 +11,9 @@ import numpy as np
 import torch
 from tqdm import tqdm
 
-from neuro.artifacts import evaluate_log_energy, evaluate_rollouts
 from neuro.metrics import DEFAULT_HOP_S, METRICS
 from neuro.predictor.data import prepare_datasets
+from neuro.predictor.evaluation import evaluate_log_energy, evaluate_rollouts
 from neuro.predictor.losses import CurriculumMSE, Loss, LossContext, build_losses, total_loss
 from neuro.predictor.module import AutoregressiveMLP
 from neuro.provenance import training_provenance
@@ -24,9 +24,9 @@ if TYPE_CHECKING:
 
     from torch import Tensor, nn
 
-    from neuro.artifacts import LogEnergyError, RolloutNMSE
     from neuro.config import NNPredictorConfig, TrainingConfig
     from neuro.predictor.artifact import MLPArtifact
+    from neuro.predictor.evaluation import LogEnergyError, RolloutNMSE
     from neuro.types import FloatArray, IntArray
 
 _DU_WINDOWS = 8
@@ -356,16 +356,19 @@ def train(cfg: NNPredictorConfig, data_files: list[str], *, seed_offset: int = 0
     # own, clamped where the evaluation horizon is too short to hold one window.
     energy_window = min(max(1, round(METRICS["eeg_ms"].window_s * fs)), eval_steps)
     energy_hop = max(1, round(DEFAULT_HOP_S * fs))
+    du_sensitivity = _du_sensitivity(model, tensors.X_val)
+    # The protocol runtime interfaces through NumPy, so the free-run evaluation runs on the CPU copy.
+    model = model.cpu()
     return TrainingResult(
         artifact=art,
         train_losses=train_losses,
         val_losses=val_losses,
         train_components=train_comps,
         val_components=val_comps,
-        rollout=evaluate_rollouts(art, data.val_trajs, eval_steps),
+        rollout=evaluate_rollouts(model, data.val_trajs, eval_steps),
         log_energy=evaluate_log_energy(
-            art, data.val_trajs, eval_steps, window_steps=energy_window, hop_steps=energy_hop
+            model, data.val_trajs, eval_steps, window_steps=energy_window, hop_steps=energy_hop
         ),
         val_trajs=data.val_trajs,
-        du_sensitivity=_du_sensitivity(model, tensors.X_val),
+        du_sensitivity=du_sensitivity,
     )

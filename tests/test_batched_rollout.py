@@ -3,19 +3,21 @@
 from __future__ import annotations
 
 import itertools
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 import numpy as np
 import pytest
 
-from neuro.artifacts import accumulate_rollout_errors
 from neuro.esn import ESNArtifact, generate_reservoir
 from neuro.predictor.artifact import MLPArtifact
+from neuro.predictor.esn_module import ESNModule
+from neuro.predictor.evaluation import accumulate_rollout_errors, evaluate_log_energy, evaluate_rollouts
+from neuro.predictor.module import AutoregressiveMLP
 from neuro.transforms import Standardizer
 
 if TYPE_CHECKING:
     from neuro.artifacts import RolloutArtifact
-    from neuro.types import FloatArray
+    from neuro.types import FloatArray, Predictor
 
 _SEED = 31
 _N_EEG, _N_CONTROLS = 6, 2
@@ -93,6 +95,24 @@ def _artifact(family: str) -> RolloutArtifact:
     return _mlp_artifact() if family == "mlp" else _esn_artifact()
 
 
+def _module(family: str) -> Predictor:
+    """The torch module twin of the requested artifact family."""
+    if family == "mlp":
+        return AutoregressiveMLP.from_artifact(_mlp_artifact())
+    art = _esn_artifact()
+    return ESNModule(
+        w_res=art.w_res,
+        w_in=art.w_in,
+        w_out=art.w_out,
+        leak_rate=art.leak_rate,
+        priming_steps=art.priming_steps,
+        horizon=art.horizon,
+        dt=art.dt,
+        y_std=art.y_std,
+        u_std=art.u_std,
+    )
+
+
 def _batch(art: RolloutArtifact, n_batch: int) -> tuple[FloatArray, FloatArray, FloatArray]:
     """Independently drawn ``(y_hists, u_hists, u_futures)`` -- no two batch members share a history."""
     rng = np.random.default_rng(_SEED + 100)
@@ -151,24 +171,55 @@ def test_batch_members_do_not_share_state(family: str) -> None:
 
 @pytest.mark.parametrize("family", _CASES)
 def test_accumulate_rollout_errors_matches_per_window_loop(family: str) -> None:
-    """The batched accumulator reproduces the per-window ``prime``/``rollout`` loop."""
-    art = _artifact(family)
+    """The batched accumulator reproduces the per-window ``prime``/``rollout`` loop on the module."""
+    model = _module(family)
     rng = np.random.default_rng(_SEED + 200)
     trajs = [
-        (rng.standard_normal((90, art.n_controls)), rng.standard_normal((90, art.n_channels))),
-        (rng.standard_normal((70, art.n_controls)), rng.standard_normal((70, art.n_channels))),
+        (rng.standard_normal((90, model.n_controls)), rng.standard_normal((90, model.n_channels))),
+        (rng.standard_normal((70, model.n_controls)), rng.standard_normal((70, model.n_channels))),
     ]
 
-    sq_err, power, pred_power = accumulate_rollout_errors(art, trajs, _STEPS, stride=7)
+    sq_err, power, pred_power = accumulate_rollout_errors(model, trajs, _STEPS, stride=7)
 
     ref = np.zeros((3, _STEPS), dtype=np.float64)
-    k = art.priming_steps
+    k = model.priming_steps
     for u, y in trajs:
         for t0 in range(k, len(y) - _STEPS, 7):
-            y_pred = art.rollout(art.prime(y[t0 - k : t0], u[t0 - k : t0]), u[t0 : t0 + _STEPS])
+            y_pred = model.rollout(model.prime(y[t0 - k : t0], u[t0 - k : t0]), u[t0 : t0 + _STEPS])
             y_true = y[t0 : t0 + _STEPS]
             ref[0] += ((y_pred - y_true) ** 2).sum(axis=1)
             ref[1] += (y_true**2).sum(axis=1)
             ref[2] += (y_pred**2).sum(axis=1)
 
-    np.testing.assert_allclose(np.stack([sq_err, power, pred_power]), ref, rtol=1e-12, atol=0.0)
+    # Batched vs looped linear algebra differs in the last ulps of float32, and the ESN's
+    # reservoir recurrence accumulates them, so the tolerance follows the module family.
+    rtol, atol = (1e-4, 1e-5) if family == "esn" else (1e-5, 1e-6)
+    np.testing.assert_allclose(np.stack([sq_err, power, pred_power]), ref, rtol=rtol, atol=atol)
+
+
+@pytest.mark.parametrize("family", _CASES)
+def test_evaluation_scores_match_artifact_twin(family: str) -> None:
+    """``evaluate_rollouts``/``evaluate_log_energy`` score a module identically to its artifact twin.
+
+    The module carries float32 weights while its artifact twin is float64, so the scores agree to
+    the module-vs-checkpoint tolerance rather than bit-for-bit; the artifact still satisfies the
+    batched ``prime_many``/``rollout_many`` surface the evaluator actually touches.
+    """
+    art = _artifact(family)
+    model = _module(family)
+    rng = np.random.default_rng(_SEED + 300)
+    trajs = [
+        (rng.standard_normal((90, art.n_controls)), rng.standard_normal((90, art.n_channels))),
+        (rng.standard_normal((70, art.n_controls)), rng.standard_normal((70, art.n_channels))),
+    ]
+
+    module_rollout = evaluate_rollouts(model, trajs, _STEPS)
+    twin_rollout = evaluate_rollouts(cast("Predictor", art), trajs, _STEPS)
+    module_energy = evaluate_log_energy(model, trajs, _STEPS, window_steps=4, hop_steps=2)
+    twin_energy = evaluate_log_energy(cast("Predictor", art), trajs, _STEPS, window_steps=4, hop_steps=2)
+
+    rtol, atol = (1e-3, 1e-4) if family == "esn" else (1e-4, 1e-5)
+    assert module_rollout.pooled == pytest.approx(twin_rollout.pooled, rel=rtol, abs=atol)
+    np.testing.assert_allclose(module_rollout.per_step, twin_rollout.per_step, rtol=rtol, atol=atol)
+    assert module_energy.pooled == pytest.approx(twin_energy.pooled, rel=rtol, abs=atol)
+    np.testing.assert_allclose(module_energy.per_position, twin_energy.per_position, rtol=rtol, atol=atol)

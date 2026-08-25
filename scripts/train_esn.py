@@ -7,7 +7,6 @@ from pathlib import Path
 
 import yaml
 
-from neuro.artifacts import evaluate_rollouts
 from neuro.config import (
     load_esn_config,
     resolve_artifact_dir,
@@ -20,6 +19,8 @@ from neuro.esn import (
     solve_ridge,
 )
 from neuro.esn_training import prepare_training_data
+from neuro.predictor.esn_module import ESNModule
+from neuro.predictor.evaluation import evaluate_rollouts
 from neuro.provenance import training_provenance
 
 
@@ -108,7 +109,18 @@ def main() -> None:
     )
 
     print("Evaluating validation rollout NMSE...", flush=True)
-    rollout = evaluate_rollouts(art, data.val_trajs, cfg.model.horizon)
+    model = ESNModule(
+        w_res=w_res,
+        w_in=w_in,
+        w_out=w_out,
+        leak_rate=cfg.model.leak_rate,
+        priming_steps=cfg.model.priming_steps,
+        horizon=cfg.model.horizon,
+        dt=cfg.simulation.dt * cfg.simulation.downsample,
+        y_std=data.y_std,
+        u_std=data.u_std,
+    )
+    rollout = evaluate_rollouts(model, data.val_trajs, cfg.model.horizon)
     print(f"Validation rollout NMSE at horizon {cfg.model.horizon}: {rollout.pooled:.4f}", flush=True)
 
     artifact_dir = resolve_artifact_dir(cfg.artifact, "esn")
