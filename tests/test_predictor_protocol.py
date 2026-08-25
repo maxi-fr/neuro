@@ -1,0 +1,210 @@
+"""Seam 1 -- the Predictor protocol and the waveform MLP's raw-units runtime surface."""
+
+from __future__ import annotations
+
+import itertools
+from typing import TYPE_CHECKING
+
+import numpy as np
+import pytest
+
+from neuro.nn_predictor_casadi import NNSymbolicModel
+from neuro.predictor.artifact import MLPArtifact
+from neuro.predictor.module import AutoregressiveMLP
+from neuro.transforms import Standardizer
+from neuro.types import Predictor
+
+if TYPE_CHECKING:
+    from neuro.predictor.artifact import Activation
+    from neuro.types import FloatArray
+
+_SEED = 17
+_N_Y, _N_U, _HORIZON = 3, 2, 5
+_N_EEG, _N_CONTROLS, _HIDDEN = 5, 2, 6
+_STEPS = 8  # rollout length, deliberately different from the trained horizon
+_RTOL, _ATOL = 1e-5, 1e-6  # float32 tolerance
+
+
+def _random_layers(
+    rng: np.random.Generator, in_size: int, out_size: int, hidden_size: int, depth: int
+) -> tuple[tuple[FloatArray, FloatArray], ...]:
+    """Random ``(W, b)`` pairs for a ``depth``-hidden-layer MLP, scaled so activations stay O(1)."""
+    sizes = [in_size, *[hidden_size] * depth, out_size]
+    return tuple(
+        (
+            (rng.standard_normal((n_out, n_in), dtype=np.float32) / np.float32(np.sqrt(n_in))).astype(np.float64),
+            (rng.standard_normal(n_out, dtype=np.float32) * np.float32(0.1)).astype(np.float64),
+        )
+        for n_in, n_out in itertools.pairwise(sizes)
+    )
+
+
+def _artifact(depth: int = 2, activation: Activation = "softplus") -> MLPArtifact:
+    """A random artifact with nontrivial standardizers."""
+    rng = np.random.default_rng(_SEED)
+    y_std = Standardizer(center=rng.uniform(-1.0, 1.0, _N_EEG), scale=rng.uniform(0.5, 2.0, _N_EEG))
+    u_std = Standardizer(center=rng.uniform(-1.0, 1.0, _N_CONTROLS), scale=rng.uniform(0.5, 2.0, _N_CONTROLS))
+    return MLPArtifact(
+        layers=_random_layers(rng, _N_Y * _N_EEG + _N_U * _N_CONTROLS, _N_EEG, _HIDDEN, depth),
+        activation=activation,
+        n_y=_N_Y,
+        n_u=_N_U,
+        horizon=_HORIZON,
+        n_channels=_N_EEG,
+        n_controls=_N_CONTROLS,
+        dt=0.01,
+        downsample=2,
+        y_std=y_std,
+        u_std=u_std,
+    )
+
+
+def _model() -> AutoregressiveMLP:
+    """The waveform MLP carrying a random artifact's weights and standardizer buffers."""
+    return AutoregressiveMLP.from_artifact(_artifact())
+
+
+def _context(seed: int = _SEED + 1) -> tuple[FloatArray, FloatArray, FloatArray]:
+    """Raw EEG history, raw control history and raw future controls, all ending/starting at the seam."""
+    rng = np.random.default_rng(seed)
+    k = max(_N_Y, _N_U)
+    return (
+        rng.standard_normal((k, _N_EEG)),
+        rng.standard_normal((k, _N_CONTROLS)),
+        rng.standard_normal((_STEPS, _N_CONTROLS)),
+    )
+
+
+def _batch(n_batch: int) -> tuple[FloatArray, FloatArray, FloatArray]:
+    """Independently drawn ``(y_hists, u_hists, u_futures)`` -- no two members share a history."""
+    rng = np.random.default_rng(_SEED + 100)
+    k = max(_N_Y, _N_U)
+    return (
+        rng.standard_normal((n_batch, k, _N_EEG)),
+        rng.standard_normal((n_batch, k, _N_CONTROLS)),
+        rng.standard_normal((n_batch, _STEPS, _N_CONTROLS)),
+    )
+
+
+def test_mlp_satisfies_predictor_protocol() -> None:
+    """The waveform MLP is a Predictor, and ``rollout_many`` returns ``(B, positions, outputs)``."""
+    model = _model()
+    assert isinstance(model, Predictor)
+    assert model.n_outputs == _N_EEG
+    assert model.n_channels == _N_EEG
+    assert model.n_controls == _N_CONTROLS
+    assert model.dt == 0.01
+    assert model.priming_steps == max(_N_Y, _N_U)
+    assert model.horizon == _HORIZON
+
+    y_hists, u_hists, u_futures = _batch(5)
+    preds = model.rollout_many(model.prime_many(y_hists, u_hists), u_futures)
+    assert preds.shape == (5, _STEPS, model.n_outputs)
+
+
+def test_prime_encodes_and_rollout_decodes_against_the_artifact() -> None:
+    """``prime``/``rollout`` reproduce the artifact's raw-in/raw-out path on raw history."""
+    art = _artifact()
+    model = _model()
+    y_hist, u_hist, u_future = _context()
+
+    state = model.prime(y_hist, u_hist)
+    want_state = art.prime(y_hist, u_hist)
+    assert state.shape == want_state.shape
+    np.testing.assert_allclose(state, want_state, rtol=_RTOL, atol=_ATOL)
+
+    got = model.rollout(state, u_future)
+    want = art.rollout(want_state, u_future)
+    assert got.shape == (_STEPS, _N_EEG)
+    np.testing.assert_allclose(got, want, rtol=_RTOL, atol=_ATOL)
+
+
+def test_standardizers_are_buffers_and_round_trip_raw() -> None:
+    """``from_artifact`` installs the standardizers as float32 buffers; ``encode``/``decode`` invert."""
+    art = _artifact()
+    model = _model()
+    np.testing.assert_allclose(model.y_std.center, art.y_std.center, rtol=_RTOL, atol=_ATOL)
+    np.testing.assert_allclose(model.y_std.scale, art.y_std.scale, rtol=_RTOL, atol=_ATOL)
+    np.testing.assert_allclose(model.u_std.center, art.u_std.center, rtol=_RTOL, atol=_ATOL)
+    np.testing.assert_allclose(model.u_std.scale, art.u_std.scale, rtol=_RTOL, atol=_ATOL)
+
+    rng = np.random.default_rng(_SEED + 3)
+    y = rng.standard_normal((4, _N_EEG))
+    np.testing.assert_allclose(model.decode(model.encode(y)), y, rtol=_RTOL, atol=_ATOL)
+
+
+@pytest.mark.parametrize("n_batch", [1, 5])
+def test_prime_many_matches_a_loop_of_prime(n_batch: int) -> None:
+    """``prime_many`` equals a loop of ``prime`` over per-member histories."""
+    model = _model()
+    y_hists, u_hists, _ = _batch(n_batch)
+
+    batched = model.prime_many(y_hists, u_hists)
+    looped = np.stack([model.prime(y_hists[i], u_hists[i]) for i in range(n_batch)])
+
+    assert batched.shape == looped.shape
+    np.testing.assert_allclose(batched, looped, rtol=_RTOL, atol=_ATOL)
+
+
+@pytest.mark.parametrize("n_batch", [1, 5])
+def test_rollout_many_matches_a_loop_of_rollout(n_batch: int) -> None:
+    """``rollout_many`` equals a loop of ``rollout`` from per-member states."""
+    model = _model()
+    y_hists, u_hists, u_futures = _batch(n_batch)
+
+    states = np.stack([model.prime(y_hists[i], u_hists[i]) for i in range(n_batch)])
+    batched = model.rollout_many(states, u_futures)
+    looped = np.stack([model.rollout(states[i], u_futures[i]) for i in range(n_batch)])
+
+    assert batched.shape == (n_batch, _STEPS, model.n_outputs)
+    np.testing.assert_allclose(batched, looped, rtol=_RTOL, atol=_ATOL)
+
+
+def test_rollout_equals_a_loop_of_step() -> None:
+    """``rollout`` is exactly one ``step`` per position, emitting raw output at each."""
+    model = _model()
+    y_hist, u_hist, u_future = _context()
+
+    state = model.prime(y_hist, u_hist)
+    got = model.rollout(state, u_future)
+
+    want = np.empty((_STEPS, _N_EEG), dtype=np.float64)
+    for t in range(_STEPS):
+        state, y = model.step(state, u_future[t])
+        want[t] = y
+
+    np.testing.assert_allclose(got, want, rtol=_RTOL, atol=_ATOL)
+
+
+def test_absorb_is_ready_initial_state_reproduce_the_incumbent_shift_register() -> None:
+    """``initial_state``/``absorb``/``is_ready`` match the CasADi bridge's NaN-padded register."""
+    art = _artifact()
+    model = _model()
+    sym = NNSymbolicModel(art)
+
+    state = model.initial_state()
+    want_state = sym.initial_state()
+    np.testing.assert_array_equal(state, want_state)
+    assert np.isnan(state[: _N_Y * _N_EEG]).all()
+    assert not model.is_ready(state)
+
+    rng = np.random.default_rng(_SEED + 5)
+    y = rng.standard_normal((_N_Y + 2, _N_EEG))
+    u = rng.standard_normal((_N_Y + 2, _N_CONTROLS))
+    for t in range(len(y)):
+        state = model.absorb(state, y[t], u[t])
+        want_state = sym.absorb(want_state, y[t], u[t])
+        np.testing.assert_allclose(state, want_state, rtol=_RTOL, atol=_ATOL)
+        assert model.is_ready(state) == sym.is_ready(want_state)
+    assert model.is_ready(state)
+
+
+def test_rollout_accepts_any_length_not_just_the_native_horizon() -> None:
+    """``rollout`` is not bounded by the trained ``horizon``; the identity stays available."""
+    model = _model()
+    y_hist, u_hist, _ = _context()
+
+    state = model.prime(y_hist, u_hist)
+    long = model.rollout(state, np.zeros((_HORIZON + 3, _N_CONTROLS)))
+
+    assert long.shape == (_HORIZON + 3, _N_EEG)

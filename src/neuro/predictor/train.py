@@ -326,6 +326,9 @@ def train(cfg: NNPredictorConfig, data_files: list[str], *, seed_offset: int = 0
         hidden_size=mdl.hidden_size,
         depth=mdl.depth,
         activation=mdl.activation,
+        dt=sim.dt * sim.downsample,
+        y_std=data.y_std,
+        u_std=data.u_std,
     )
     if mdl.depth == 0:
         _warm_start_linear(model, data.X_train, data.Y_train, data.n_channels)
