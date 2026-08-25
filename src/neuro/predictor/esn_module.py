@@ -66,7 +66,7 @@ class ESNModule(nn.Module):
     u_center: Tensor
     u_scale: Tensor
 
-    def __init__(  # noqa: PLR0913
+    def __init__(  # noqa: PLR0913 -- reservoir, readout and standardizer buffers are the module's constructor surface
         self,
         *,
         w_res: scipy.sparse.csr_matrix,

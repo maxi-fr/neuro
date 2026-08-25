@@ -207,7 +207,7 @@ class StepwiseObservableMLP(nn.Module):
     l_center: Tensor
     l_scale: Tensor
 
-    def __init__(  # noqa: PLR0913
+    def __init__(  # noqa: PLR0913 -- geometry, state/lift/transition shapes and standardizers are the constructor surface
         self,
         *,
         n_y: int,
