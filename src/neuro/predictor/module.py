@@ -7,11 +7,11 @@ import numpy as np
 import torch
 from torch import nn
 
-from neuro.predictor.artifact import ACTIVATIONS, MLPArtifact
 from neuro.predictor.checkpoint import load_checkpoint, save_checkpoint
 from neuro.predictor.data import build_dataset_for_trajectory
 from neuro.provenance import TrainingProvenance
 from neuro.transforms import Standardizer
+from neuro.types import ACTIVATIONS
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -19,8 +19,7 @@ if TYPE_CHECKING:
 
     from torch import Tensor
 
-    from neuro.predictor.artifact import Activation
-    from neuro.types import FloatArray
+    from neuro.types import Activation, FloatArray
 
 
 def activation_module(activation: Activation) -> nn.Module:
@@ -190,8 +189,8 @@ class AutoregressiveMLP(nn.Module):
         for t in range(self.horizon):
             # The feature row's u-window ends one step *behind* its y-window (see the slicing in
             # build_dataset_for_trajectory), so the control shifts in before the MLP call to bring
-            # the two level. MLPArtifact.rollout shifts *after* because a prime() state is already
-            # level -- opposite order, same rule: both windows end at t when y_{t+1} is predicted.
+            # the two level. ``rollout`` shifts *after* because a prime() state is already level --
+            # opposite order, same rule: both windows end at t when y_{t+1} is predicted.
             u_window = torch.cat([u_window[:, 1:], u_future[:, t : t + 1]], dim=1)
             mlp_in = torch.cat([y_window.reshape(batch, -1), u_window.reshape(batch, -1)], dim=1)
             y_next = self.layers(mlp_in)
@@ -348,53 +347,12 @@ class AutoregressiveMLP(nn.Module):
         u_buf = np.zeros(self.n_u * self.n_controls, dtype=np.float64)
         return np.concatenate([y_buf, u_buf])
 
-    def to_artifact(self, dt: float, downsample: int, y_std: Standardizer, u_std: Standardizer) -> MLPArtifact:
-        """Freeze the trained weights and standardizers into a framework-free artifact."""
-        linears = (m for m in self.layers if isinstance(m, nn.Linear))
-        layers = tuple((to_numpy(lin.weight), to_numpy(lin.bias)) for lin in linears)
-        return MLPArtifact(
-            layers=layers,
-            activation=self.activation,
-            n_y=self.n_y,
-            n_u=self.n_u,
-            horizon=self.horizon,
-            n_channels=self.n_channels,
-            n_controls=self.n_controls,
-            dt=dt,
-            downsample=downsample,
-            y_std=y_std,
-            u_std=u_std,
-        )
-
-    @classmethod
-    def from_artifact(cls, art: MLPArtifact) -> Self:
-        """Rebuild the module carrying the artifact's weights, dt and standardizer buffers."""
-        model = cls(
-            n_y=art.n_y,
-            n_u=art.n_u,
-            horizon=art.horizon,
-            n_channels=art.n_channels,
-            n_controls=art.n_controls,
-            hidden_size=art.layers[0][0].shape[0],
-            depth=len(art.layers) - 1,
-            activation=art.activation,
-            dt=art.dt,
-            y_std=art.y_std,
-            u_std=art.u_std,
-        )
-        linears = (m for m in model.layers if isinstance(m, nn.Linear))
-        with torch.no_grad():
-            for lin, (w, b) in zip(linears, art.layers, strict=True):
-                lin.weight.copy_(torch.as_tensor(w, dtype=torch.float32))
-                lin.bias.copy_(torch.as_tensor(b, dtype=torch.float32))
-        return model
-
     def save(self, path: str | Path) -> None:
         """Persist weights, standardizer buffers and recorded metadata into one ``.npz`` checkpoint.
 
         ``path`` is a suffix-less stem. The layout -- a JSON ``meta`` block, per-layer weight
-        arrays and the standardizer arrays -- is the one the artifact loaders already read, so the
-        torch-free control path keeps consuming what ``save`` writes without the module.
+        arrays and the standardizer arrays -- is the one the torch-free checkpoint reader reads, so
+        the control path keeps consuming what ``save`` writes without the module.
         """
         linears = [m for m in self.layers if isinstance(m, nn.Linear)]
         meta = {

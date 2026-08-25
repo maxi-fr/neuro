@@ -102,7 +102,7 @@ class ESNSymbolicModel:
         z = self.checkpoint.y_std.transform(np.asarray(y, dtype=np.float64).reshape(-1))
         v = self.checkpoint.u_std.transform(np.asarray(u, dtype=np.float64).reshape(1, -1)).reshape(-1)
         h_arr = np.asarray(state, dtype=np.float64).reshape(-1)
-        # The numpy reservoir update from ESNPredictor.absorb, inlined so the bridge needs no runtime.
+        # The reservoir update, inlined so the bridge needs no runtime.
         x_in = np.concatenate([z, v, np.ones(1)])
         h_next = (1.0 - self.checkpoint.leak_rate) * h_arr + self.checkpoint.leak_rate * np.tanh(
             h_arr @ self.checkpoint.w_res.T + x_in @ self.checkpoint.w_in.T

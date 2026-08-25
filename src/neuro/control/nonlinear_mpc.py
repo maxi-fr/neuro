@@ -20,7 +20,9 @@ if TYPE_CHECKING:
 
     from numpy.typing import ArrayLike
 
-    from neuro.types import FloatArray, ObservableModel, SymbolicModel
+    from neuro.esn_predictor_casadi import ESNSymbolicModel
+    from neuro.nn_predictor_casadi import NNSymbolicModel
+    from neuro.types import FloatArray
 
 
 @dataclasses.dataclass(frozen=True)
@@ -72,7 +74,7 @@ class MPCController(Controller[MPCControllerLog]):
     def __init__(  # noqa: PLR0913, PLR0917
         self,
         dt: float,
-        model: SymbolicModel | ObservableModel,
+        model: NNSymbolicModel | ESNSymbolicModel | ObservableSymbolicModel,
         u_max: ArrayLike,
         horizon: int | None = None,
         w_y: float = 1.0,
@@ -299,7 +301,7 @@ class MPCController(Controller[MPCControllerLog]):
 
     def _shooting_roots(self, x0: FloatArray, u_guess: FloatArray) -> list[FloatArray]:
         """Roll ``f_step`` forward under ``u_guess`` to seed the multiple-shooting state variables."""
-        model = cast("SymbolicModel", self.model)
+        model = cast("NNSymbolicModel | ESNSymbolicModel", self.model)
         x = x0
         roots = []
         for step in range(self.horizon):

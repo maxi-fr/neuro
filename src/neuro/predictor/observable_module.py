@@ -7,13 +7,13 @@ import numpy as np
 import torch
 from torch import nn
 
-from neuro.observable import ObservableArtifact, control_means, geometry_from_meta, geometry_meta, log_observable
-from neuro.predictor.artifact import ACTIVATIONS
+from neuro.observable import control_means, geometry_from_meta, geometry_meta, log_observable
 from neuro.predictor.checkpoint import load_checkpoint, save_checkpoint
 from neuro.predictor.data import build_dataset_for_trajectory, extract_future_windows
 from neuro.predictor.module import activation_module, to_numpy
 from neuro.provenance import TrainingProvenance
 from neuro.transforms import Standardizer
+from neuro.types import ACTIVATIONS
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -21,8 +21,7 @@ if TYPE_CHECKING:
     from torch import Tensor
 
     from neuro.config import ObservableGeometry
-    from neuro.predictor.artifact import Activation
-    from neuro.types import FloatArray
+    from neuro.types import Activation, FloatArray
 
 
 def mlp_stack(sizes: list[int], activation: Activation) -> nn.Sequential:
@@ -115,65 +114,6 @@ class ObservableMLP(nn.Module):
             frames.append(self.readout(z))
         return torch.stack(frames, dim=1)
 
-    def to_artifact(
-        self,
-        dt: float,
-        downsample: int,
-        y_std: Standardizer,
-        u_std: Standardizer,
-        l_std: Standardizer,
-    ) -> ObservableArtifact:
-        """Freeze the trained weights and standardizers into a framework-free artifact."""
-
-        def layers(block: nn.Sequential) -> tuple[tuple[np.ndarray, np.ndarray], ...]:
-            return tuple((to_numpy(m.weight), to_numpy(m.bias)) for m in block if isinstance(m, nn.Linear))
-
-        return ObservableArtifact(
-            lift=layers(self.lift),
-            transition=layers(self.transition),
-            readout=(to_numpy(self.readout.weight), to_numpy(self.readout.bias)),
-            activation=self.activation,
-            n_y=self.n_y,
-            n_u=self.n_u,
-            horizon=self.horizon,
-            n_channels=self.n_channels,
-            n_controls=self.n_controls,
-            dt=dt,
-            downsample=downsample,
-            geometry=self.geometry,
-            y_std=y_std,
-            u_std=u_std,
-            l_std=l_std,
-        )
-
-    @classmethod
-    def from_artifact(cls, art: ObservableArtifact) -> Self:
-        """Rebuild the module carrying the artifact's weights."""
-        model = cls(
-            n_y=art.n_y,
-            n_u=art.n_u,
-            horizon=art.horizon,
-            n_channels=art.n_channels,
-            n_controls=art.n_controls,
-            geometry=art.geometry,
-            fs=art.fs,
-            z_dim=art.z_dim,
-            lift_hidden=art.lift[0][0].shape[0],
-            lift_depth=len(art.lift) - 1,
-            transition_hidden=art.transition[0][0].shape[0],
-            transition_depth=len(art.transition) - 1,
-            activation=art.activation,
-        )
-        with torch.no_grad():
-            for block, weights in ((model.lift, art.lift), (model.transition, art.transition)):
-                linears = (m for m in block if isinstance(m, nn.Linear))
-                for lin, (w, b) in zip(linears, weights, strict=True):
-                    lin.weight.copy_(torch.as_tensor(w, dtype=torch.float32))
-                    lin.bias.copy_(torch.as_tensor(b, dtype=torch.float32))
-            model.readout.weight.copy_(torch.as_tensor(art.readout[0], dtype=torch.float32))
-            model.readout.bias.copy_(torch.as_tensor(art.readout[1], dtype=torch.float32))
-        return model
-
 
 class StepwiseObservableMLP(nn.Module):
     """One-Frame-per-step Observable predictor satisfying the Predictor protocol directly.
@@ -183,14 +123,14 @@ class StepwiseObservableMLP(nn.Module):
     raw future controls into Frame means via :func:`neuro.observable.control_means` before
     unrolling ``step``. The standardized batched ``forward`` unrolls the same recursion for
     training (BPTT depth is the Frame count, not the Control Horizon), so callers exchange raw
-    units only at the protocol boundary. There is no artifact hand-off: the standardizers live in
-    this module as float32 buffers.
+    units only at the protocol boundary. There is no persistence hand-off: the standardizers live
+    in this module as float32 buffers.
 
     The opaque state is ``[standardized EEG window | raw control window | lifted Frame state]``:
     the register mirrors the waveform module's shift register (``absorb``/``is_ready``), and the
     module lifts once at ``prime``/``absorb`` so ``step``/``rollout`` only recurse on the carried
-    Frame state. The incumbent one-shot :class:`ObservableMLP` and the artifact stay in place for
-    the controller until the contract ticket; this module is the protocol-compliant replacement.
+    Frame state. The incumbent one-shot :class:`ObservableMLP` stays as the shared-weights
+    training twin; this module is the protocol-compliant replacement.
 
     Attributes
     ----------
@@ -432,7 +372,7 @@ class StepwiseObservableMLP(nn.Module):
 
         ``y_hist (k, n_channels)`` and ``u_hist (k, n_controls)`` both end at the same step
         ``t - 1``, so :meth:`rollout` predicts from ``t`` onwards. The register part is
-        byte-identical in layout to :meth:`neuro.observable.ObservableArtifact.prime`.
+        byte-identical in layout to :meth:`neuro.predictor.module.AutoregressiveMLP.prime`.
         """
         y_arr = np.asarray(y_hist, dtype=np.float64)
         u_arr = np.asarray(u_hist, dtype=np.float64)
@@ -530,7 +470,7 @@ class StepwiseObservableMLP(nn.Module):
 
         ``path`` is a suffix-less stem. The layout -- a JSON ``meta`` block carrying the geometry,
         provenance and model_type, the block weight arrays and the standardizer arrays -- is the
-        one the artifact loaders already read, so the torch-free control path keeps consuming what
+        one the torch-free checkpoint reader reads, so the control path keeps consuming what
         ``save`` writes without the module.
         """
         linears = [m for m in self.lift if isinstance(m, nn.Linear)]

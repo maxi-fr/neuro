@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 import pytest
 import scipy.sparse
+import torch
 
 from neuro.checkpoint import (
     MLPCheckpoint,
@@ -18,8 +19,6 @@ from neuro.checkpoint import (
     load_rollout,
 )
 from neuro.config import StftGeometry
-from neuro.esn import ESNArtifact
-from neuro.predictor.artifact import MLPArtifact
 from neuro.predictor.checkpoint import save_checkpoint
 from neuro.predictor.esn_module import ESNModule
 from neuro.predictor.module import AutoregressiveMLP
@@ -34,96 +33,117 @@ if TYPE_CHECKING:
 _SEED = 23
 
 
-def _mlp_artifact() -> MLPArtifact:
-    """A random MLP artifact with nontrivial standardizers and recorded provenance."""
+def _mlp_module() -> AutoregressiveMLP:
+    """A random MLP module with nontrivial standardizers and recorded provenance."""
     rng = np.random.default_rng(_SEED)
-    in_size = 3 * 4 + 2 * 2
-    layers = (
-        (rng.normal(size=(6, in_size)), rng.normal(size=6)),
-        (rng.normal(size=(6, 6)), rng.normal(size=6)),
-        (rng.normal(size=(4, 6)), rng.normal(size=4)),
-    )
-    return MLPArtifact(
-        layers=layers,
-        activation="softplus",
+    model = AutoregressiveMLP(
         n_y=3,
         n_u=2,
         horizon=4,
         n_channels=4,
         n_controls=2,
+        hidden_size=6,
+        depth=2,
+        activation="softplus",
         dt=0.01,
-        downsample=2,
         y_std=Standardizer(center=rng.uniform(-1.0, 1.0, 4), scale=rng.uniform(0.5, 2.0, 4)),
         u_std=Standardizer(center=rng.uniform(-1.0, 1.0, 2), scale=rng.uniform(0.5, 2.0, 2)),
-        provenance=TrainingProvenance(cutoff_hz=100.0, plant_fingerprint="abc"),
     )
+    with torch.no_grad():
+        for module in model.layers:
+            if isinstance(module, torch.nn.Linear):
+                module.weight.normal_()
+                module.bias.normal_()
+    model.downsample = 2
+    model.provenance = TrainingProvenance(cutoff_hz=100.0, plant_fingerprint="abc")
+    return model
 
 
 def test_mlp_reader_round_trips_weights_standardizers_and_metadata(tmp_path: Path) -> None:
-    """``load_mlp`` yields what ``AutoregressiveMLP.save`` wrote, exactly as the artifact loader reads it."""
-    art = _mlp_artifact()
+    """``load_mlp`` yields what ``AutoregressiveMLP.save`` wrote, exactly as the module holds it."""
+    module = _mlp_module()
     path = tmp_path / "mlp"
-    module = AutoregressiveMLP.from_artifact(art)
-    module.downsample = art.downsample
-    module.provenance = art.provenance
     module.save(path)
 
     got = load_mlp(path)
-    ref = MLPArtifact.load(path)
+    want = MLPCheckpoint(
+        layers=tuple(
+            (m.weight.detach().cpu().numpy(), m.bias.detach().cpu().numpy())
+            for m in module.layers
+            if isinstance(m, torch.nn.Linear)
+        ),
+        activation=module.activation,
+        n_y=module.n_y,
+        n_u=module.n_u,
+        horizon=module.horizon,
+        n_channels=module.n_channels,
+        n_controls=module.n_controls,
+        hidden_size=module.hidden_size,
+        depth=module.depth,
+        dt=module.dt,
+        downsample=module.downsample,
+        y_std=module.y_std,
+        u_std=module.u_std,
+        provenance=module.provenance,
+    )
 
     assert got.model_type == "mlp"
-    assert got.activation == art.activation
-    assert got.n_y == art.n_y
-    assert got.n_u == art.n_u
-    assert got.horizon == art.horizon
-    assert got.n_channels == art.n_channels
-    assert got.n_controls == art.n_controls
+    assert got.activation == module.activation
+    assert got.n_y == module.n_y
+    assert got.n_u == module.n_u
+    assert got.horizon == module.horizon
+    assert got.n_channels == module.n_channels
+    assert got.n_controls == module.n_controls
     assert got.hidden_size == 6
     assert got.depth == 2
-    assert got.dt == pytest.approx(art.dt)
-    assert got.downsample == art.downsample
-    assert got.priming_steps == max(art.n_y, art.n_u)
+    assert got.dt == pytest.approx(module.dt)
+    assert got.downsample == module.downsample
+    assert got.priming_steps == max(module.n_y, module.n_u)
     assert not got.is_linear
-    assert got.provenance == art.provenance
-    for (got_w, got_b), (ref_w, ref_b) in zip(got.layers, ref.layers, strict=True):
-        np.testing.assert_array_equal(got_w, ref_w)
-        np.testing.assert_array_equal(got_b, ref_b)
-    np.testing.assert_array_equal(got.y_std.center, ref.y_std.center)
-    np.testing.assert_array_equal(got.y_std.scale, ref.y_std.scale)
-    np.testing.assert_array_equal(got.u_std.center, ref.u_std.center)
-    np.testing.assert_array_equal(got.u_std.scale, ref.u_std.scale)
+    assert got.provenance == module.provenance
+    for (got_w, got_b), (want_w, want_b) in zip(got.layers, want.layers, strict=True):
+        np.testing.assert_array_equal(got_w, want_w)
+        np.testing.assert_array_equal(got_b, want_b)
+    np.testing.assert_array_equal(got.y_std.center, want.y_std.center)
+    np.testing.assert_array_equal(got.y_std.scale, want.y_std.scale)
+    np.testing.assert_array_equal(got.u_std.center, want.u_std.center)
+    np.testing.assert_array_equal(got.u_std.scale, want.u_std.scale)
 
 
 def test_mlp_checkpoint_save_load_round_trips_recorded_provenance(tmp_path: Path) -> None:
     """``MLPCheckpoint.save`` then ``load_mlp`` preserves the recorded metadata bit-exactly."""
-    art = _mlp_artifact()
+    module = _mlp_module()
     ckpt = MLPCheckpoint(
-        layers=art.layers,
-        activation=art.activation,
-        n_y=art.n_y,
-        n_u=art.n_u,
-        horizon=art.horizon,
-        n_channels=art.n_channels,
-        n_controls=art.n_controls,
-        hidden_size=6,
-        depth=2,
-        dt=art.dt,
-        downsample=art.downsample,
-        y_std=art.y_std,
-        u_std=art.u_std,
-        provenance=art.provenance,
+        layers=tuple(
+            (m.weight.detach().cpu().numpy(), m.bias.detach().cpu().numpy())
+            for m in module.layers
+            if isinstance(m, torch.nn.Linear)
+        ),
+        activation=module.activation,
+        n_y=module.n_y,
+        n_u=module.n_u,
+        horizon=module.horizon,
+        n_channels=module.n_channels,
+        n_controls=module.n_controls,
+        hidden_size=module.hidden_size,
+        depth=module.depth,
+        dt=module.dt,
+        downsample=module.downsample,
+        y_std=module.y_std,
+        u_std=module.u_std,
+        provenance=module.provenance,
     )
     path = tmp_path / "mlp_ckpt"
     ckpt.save(path)
 
     got = load_mlp(path)
-    assert got.provenance == art.provenance
+    assert got.provenance == module.provenance
     # The torch module loader reads the same layout the dataclass save wrote.
-    assert AutoregressiveMLP.load(path).n_y == art.n_y
+    assert AutoregressiveMLP.load(path).n_y == module.n_y
 
 
 def test_esn_reader_round_trips_weights_standardizers_and_metadata(tmp_path: Path) -> None:
-    """``load_esn`` yields what ``ESNModule.save`` wrote, exactly as the artifact loader reads it."""
+    """``load_esn`` yields what ``ESNModule.save`` wrote, exactly as the module holds it."""
     rng = np.random.default_rng(_SEED)
     model = ESNModule(
         w_res=_esn_w_res(),
@@ -146,7 +166,6 @@ def test_esn_reader_round_trips_weights_standardizers_and_metadata(tmp_path: Pat
     model.save(path)
 
     got = load_esn(path)
-    ref = ESNArtifact.load(path)
 
     assert got.model_type == "esn"
     assert got.n_channels == 2
@@ -161,13 +180,13 @@ def test_esn_reader_round_trips_weights_standardizers_and_metadata(tmp_path: Pat
     assert got.noise_sigma == pytest.approx(0.0)
     assert got.ridge_lambda == pytest.approx(1e-3)
     assert got.seed == _SEED
-    np.testing.assert_array_equal(got.w_in, ref.w_in)
-    np.testing.assert_array_equal(got.w_out, ref.w_out)
-    np.testing.assert_array_equal(got.w_res.toarray(), ref.w_res.toarray())
-    np.testing.assert_array_equal(got.y_std.center, ref.y_std.center)
-    np.testing.assert_array_equal(got.y_std.scale, ref.y_std.scale)
-    np.testing.assert_array_equal(got.u_std.center, ref.u_std.center)
-    np.testing.assert_array_equal(got.u_std.scale, ref.u_std.scale)
+    np.testing.assert_array_equal(got.w_in, model.w_in.detach().cpu().numpy())
+    np.testing.assert_array_equal(got.w_out, model.w_out.detach().cpu().numpy())
+    np.testing.assert_array_equal(got.w_res.toarray(), model.w_res.to_dense().numpy())
+    np.testing.assert_array_equal(got.y_std.center, model.y_std.center)
+    np.testing.assert_array_equal(got.y_std.scale, model.y_std.scale)
+    np.testing.assert_array_equal(got.u_std.center, model.u_std.center)
+    np.testing.assert_array_equal(got.u_std.scale, model.u_std.scale)
 
 
 @pytest.mark.parametrize(
@@ -206,7 +225,7 @@ def test_observable_reader_round_trips_weights_standardizers_and_geometry(
 def test_load_any_dispatches_and_load_rollout_rejects_observable(tmp_path: Path) -> None:
     """``load_any`` switches on ``model_type``; ``load_rollout`` refuses the observable forecast."""
     mlp = tmp_path / "mlp"
-    _mlp_artifact().save(mlp)
+    _mlp_module().save(mlp)
     obs = tmp_path / "obs"
     ckpt = ObservableCheckpoint(
         lift=((np.ones((2, 4)), np.zeros(2)),),

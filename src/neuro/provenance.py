@@ -73,7 +73,7 @@ def check_excitation_alignment(data_dir: Path, downsample: int) -> None:
 
 @dataclass(frozen=True)
 class TrainingProvenance:
-    """What a predictor's training data was made of, carried in its artifact.
+    """What a predictor's training data was made of, carried in its checkpoint.
 
     Everything here is what the closed-loop config has to agree with but cannot read off the
     weights, so :func:`neuro.validation.validate_simulation_config` can catch a predictor deployed
@@ -95,12 +95,12 @@ class TrainingProvenance:
 
     @property
     def meta(self) -> dict[str, Any]:
-        """Serializable representation, flattened into the artifact's own ``meta`` mapping."""
+        """Serializable representation, flattened into the checkpoint's own ``meta`` mapping."""
         return {"cutoff_hz": self.cutoff_hz, "plant_fingerprint": self.plant_fingerprint}
 
     @classmethod
     def from_meta(cls, meta: Mapping[str, Any]) -> Self:
-        """Read back from an artifact's ``meta``; artifacts written before it recorded nothing."""
+        """Read back from a checkpoint's ``meta``; checkpoints written before it recorded nothing."""
         return cls(
             cutoff_hz=meta.get("cutoff_hz"),
             plant_fingerprint=meta.get("plant_fingerprint"),

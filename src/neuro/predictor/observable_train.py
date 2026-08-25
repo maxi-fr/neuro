@@ -48,7 +48,7 @@ class ObservableTrainingResult:
         Per-epoch MSE in standardized log-Observable space, one entry per epoch actually run.
     val_log_mse : float
         Held-out MSE in **raw** log units -- the scale the gates of decision 11 compare on, and the
-        one an incumbent artifact pushed through the same geometry can be scored against.
+        one an incumbent checkpoint pushed through the same geometry can be scored against.
     n_independent_samples : int
         Non-overlapping targets in the training split. Each target spans the whole Control Horizon,
         so overlapping windows are not independent evidence and the honest count is this one.
@@ -94,7 +94,7 @@ class ObservableData:
     l_std : Standardizer
         Fitted on the training targets, so every arm is optimised on one scale.
     y_std, u_std : Standardizer
-        The channel and control standardizers the artifact carries.
+        The channel and control standardizers the checkpoint carries.
     train_trajs, val_trajs : list[tuple[FloatArray, FloatArray]]
         The training-side and held-out ``(u, y)`` trajectories, kept whole so the ridge arm can
         fit the shared readout raw-direct and free-run rollouts can be scored on them.

@@ -13,7 +13,7 @@ from neuro.config import EegMsGeometry, ObservableGeometry, StftGeometry
 from neuro.observable import control_means, log_observable
 from neuro.predictor.data import build_dataset_for_trajectory, extract_future_windows
 from neuro.predictor.module import AutoregressiveMLP, to_numpy
-from neuro.predictor.observable_module import StepwiseObservableMLP
+from neuro.predictor.observable_module import ObservableMLP, StepwiseObservableMLP
 from neuro.predictor.ridge import RidgeTrainer
 from neuro.transforms import Standardizer
 from neuro.types import Predictor, RidgeFittable
@@ -21,7 +21,6 @@ from neuro.types import Predictor, RidgeFittable
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-    from neuro.observable import ObservableArtifact
     from neuro.types import FloatArray
 
 _SEED = 17
@@ -365,47 +364,75 @@ def test_frame_m_is_invariant_to_controls_after_its_segment() -> None:
         assert not np.allclose(model.rollout(state, perturbed)[m + 1 :], base[m + 1 :])
 
 
-def test_step_recursion_matches_the_incumbent_one_shot_forecast(
-    make_observable_artifact: Callable[..., ObservableArtifact],
-) -> None:
+def _shared_weight_modules(
+    geometry: ObservableGeometry, *, horizon: int
+) -> tuple[StepwiseObservableMLP, ObservableMLP]:
+    """The step-wise module and the incumbent one-shot module sharing one set of random weights."""
+    step = StepwiseObservableMLP(
+        n_y=_N_Y,
+        n_u=_N_U,
+        horizon=horizon,
+        n_channels=_N_EEG,
+        n_controls=_N_CONTROLS,
+        geometry=geometry,
+        fs=_FS,
+        z_dim=_Z_DIM,
+        lift_hidden=_HIDDEN,
+        lift_depth=_DEPTH,
+        transition_hidden=_HIDDEN,
+        transition_depth=_DEPTH,
+    )
+    one_shot = ObservableMLP(
+        n_y=_N_Y,
+        n_u=_N_U,
+        horizon=horizon,
+        n_channels=_N_EEG,
+        n_controls=_N_CONTROLS,
+        geometry=geometry,
+        fs=_FS,
+        z_dim=_Z_DIM,
+        lift_hidden=_HIDDEN,
+        lift_depth=_DEPTH,
+        transition_hidden=_HIDDEN,
+        transition_depth=_DEPTH,
+    )
+    with torch.no_grad():
+        for block_s, block_o in ((step.lift, one_shot.lift), (step.transition, one_shot.transition)):
+            for lin_s, lin_o in zip(
+                (m for m in block_s if isinstance(m, nn.Linear)),
+                (m for m in block_o if isinstance(m, nn.Linear)),
+                strict=True,
+            ):
+                lin_o.weight.copy_(lin_s.weight)
+                lin_o.bias.copy_(lin_s.bias)
+        one_shot.readout.weight.copy_(step.readout.weight)
+        one_shot.readout.bias.copy_(step.readout.bias)
+    return step, one_shot
+
+
+def test_step_recursion_matches_the_incumbent_one_shot_forecast() -> None:
     """The new step recursion and the incumbent one-shot forecast are the same Frame math."""
     geometry = StftGeometry(n_segment=8, n_hop=4)
     horizon = 20
-    art = make_observable_artifact(geometry, horizon=horizon)
-    model = StepwiseObservableMLP(
-        n_y=art.n_y,
-        n_u=art.n_u,
-        horizon=art.horizon,
-        n_channels=art.n_channels,
-        n_controls=art.n_controls,
-        geometry=art.geometry,
-        fs=art.fs,
-        z_dim=art.z_dim,
-        lift_hidden=art.lift[0][0].shape[0],
-        lift_depth=len(art.lift) - 1,
-        transition_hidden=art.transition[0][0].shape[0],
-        transition_depth=len(art.transition) - 1,
-        activation=art.activation,
-        y_std=art.y_std,
-        u_std=art.u_std,
-        l_std=art.l_std,
-    )
-    with torch.no_grad():
-        for block, weights in ((model.lift, art.lift), (model.transition, art.transition)):
-            linears = (m for m in block if isinstance(m, nn.Linear))
-            for lin, (w, b) in zip(linears, weights, strict=True):
-                lin.weight.copy_(torch.as_tensor(w, dtype=torch.float32))
-                lin.bias.copy_(torch.as_tensor(b, dtype=torch.float32))
-        model.readout.weight.copy_(torch.as_tensor(art.readout[0], dtype=torch.float32))
-        model.readout.bias.copy_(torch.as_tensor(art.readout[1], dtype=torch.float32))
+    step, one_shot = _shared_weight_modules(geometry, horizon=horizon)
 
     rng = np.random.default_rng(_SEED + 7)
-    y_hist = rng.standard_normal((art.n_y, art.n_channels))
-    u_hist = rng.standard_normal((art.n_u, art.n_controls))
-    u_future = rng.standard_normal((horizon, art.n_controls))
+    y_hist = rng.standard_normal((_N_Y, _N_EEG))
+    u_hist = rng.standard_normal((_N_U, _N_CONTROLS))
+    u_future = rng.standard_normal((horizon, _N_CONTROLS))
 
-    got = model.rollout(model.prime(y_hist, u_hist), u_future)
-    want = art.forecast(art.prime(y_hist, u_hist), u_future).reshape(-1, art.n_channels * art.n_values)
+    got = step.rollout(step.prime(y_hist, u_hist), u_future)
+
+    row = np.concatenate(
+        [
+            step.encode(y_hist).reshape(-1),
+            step.u_std.transform(u_hist).reshape(-1),
+            step.u_std.transform(u_future).reshape(-1),
+        ]
+    )
+    with torch.no_grad():
+        standardized = one_shot(torch.as_tensor(row[None], dtype=torch.float32)).numpy()[0].astype(np.float64)
+    want = step.l_std.inverse_transform(standardized).reshape(-1, step.n_outputs)
 
     assert got.shape == want.shape
     np.testing.assert_allclose(got, want, rtol=_RTOL, atol=_ATOL)

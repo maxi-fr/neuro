@@ -13,7 +13,9 @@ from neuro.spectral import LOG_FLOOR, PsdEnvelope
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-    from neuro.types import FloatArray, ObservableModel, SymbolicModel
+    from neuro.esn_predictor_casadi import ESNSymbolicModel
+    from neuro.nn_predictor_casadi import NNSymbolicModel
+    from neuro.types import FloatArray
 
 
 def _l1_epigraph(u_vars: list[ca.MX], w_l1: float) -> tuple[list[ca.MX], ca.MX, ca.MX]:
@@ -110,7 +112,7 @@ def _observable_hinge_cost(l_hat: ca.SX | ca.MX, log_reference: FloatArray) -> c
 
 
 def _rollout_cost(  # noqa: PLR0913
-    model: SymbolicModel,
+    model: NNSymbolicModel | ESNSymbolicModel,
     *,
     get_phi: Callable[[int], ca.MX],
     u_vars: list[ca.MX],
@@ -156,7 +158,7 @@ class MPCNlp:
     @classmethod
     def build(  # noqa: PLR0913
         cls,
-        model: SymbolicModel | ObservableModel,
+        model: NNSymbolicModel | ESNSymbolicModel | ObservableSymbolicModel,
         *,
         horizon: int,
         shooting_depth: int,
@@ -206,7 +208,7 @@ class MPCNlp:
                 return x0_p if idx == 0 else phi_vars[idx - 1]
 
             cost, defects, y_nodes = _rollout_cost(
-                cast("SymbolicModel", model),
+                cast("NNSymbolicModel | ESNSymbolicModel", model),
                 get_phi=get_phi,
                 u_vars=u_vars,
                 n_segments=n_segments,
@@ -285,7 +287,7 @@ def _observable_cost(  # noqa: PLR0913
     n_frames = model.n_frames(horizon)
     if n_frames < 1:
         msg = (
-            f"horizon ({horizon}) holds no {model.geometry.kind} frame at the artifact's geometry; "
+            f"horizon ({horizon}) holds no {model.geometry.kind} frame at the checkpoint's geometry; "
             f"it must cover at least one Segment."
         )
         raise ValueError(msg)

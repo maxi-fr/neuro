@@ -2,32 +2,33 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Self
+from typing import TYPE_CHECKING
 
 import numpy as np
 import scipy.sparse
 
 from neuro.observable import geometry_from_meta, geometry_meta
-from neuro.predictor.artifact import ACTIVATIONS, Activation, Layers
 from neuro.predictor.checkpoint import load_checkpoint, save_checkpoint
 from neuro.provenance import TrainingProvenance
 from neuro.transforms import Standardizer
+from neuro.types import ACTIVATIONS, Activation, Layers
 
 if TYPE_CHECKING:
     from neuro.config import ObservableGeometry
-    from neuro.esn import ESNArtifact
-    from neuro.observable import ObservableArtifact
-    from neuro.predictor.artifact import MLPArtifact
-    from neuro.types import FloatArray, ObservableModel, SymbolicModel
+    from neuro.esn_predictor_casadi import ESNSymbolicModel
+    from neuro.nn_predictor_casadi import NNSymbolicModel
+    from neuro.observable_casadi import ObservableSymbolicModel
+    from neuro.types import FloatArray
 
 
 @dataclass(frozen=True)
 class MLPCheckpoint:
     """NumPy weights and recorded metadata of the autoregressive MLP, as read from its checkpoint.
 
-    This is the torch-free twin of :class:`neuro.predictor.artifact.MLPArtifact` minus the numpy
-    runtime: the CasADi adapter rebuilds its bridges from these buffers and the validator reads
-    the recorded metadata off them, and neither path imports torch.
+    This is the torch-free reader's view of an
+    :class:`neuro.predictor.module.AutoregressiveMLP` checkpoint: the CasADi adapter rebuilds its
+    bridges from these buffers and the validator reads the recorded metadata off them, and neither
+    path imports torch.
 
     Attributes
     ----------
@@ -83,31 +84,6 @@ class MLPCheckpoint:
         """Whether the MLP is linear (a single layer, i.e. no hidden layers)."""
         return len(self.layers) == 1
 
-    @classmethod
-    def from_artifact(cls, art: MLPArtifact) -> Self:
-        """Build the checkpoint twin of an artifact: the legacy bridge for the artifact dispatch.
-
-        The artifacts are on their way out (the contract ticket deletes them), so this exists only
-        to keep the probe-script dispatch and the adapter constructors type-correct until then.
-        """
-        depth = len(art.layers) - 1
-        return cls(
-            layers=art.layers,
-            activation=art.activation,
-            n_y=art.n_y,
-            n_u=art.n_u,
-            horizon=art.horizon,
-            n_channels=art.n_channels,
-            n_controls=art.n_controls,
-            hidden_size=art.layers[0][0].shape[0] if depth else 0,
-            depth=depth,
-            dt=art.dt,
-            downsample=art.downsample,
-            y_std=art.y_std,
-            u_std=art.u_std,
-            provenance=art.provenance,
-        )
-
     def save(self, path: str | Path) -> None:
         """Persist weights, standardizers and metadata into one ``.npz`` checkpoint (a stem).
 
@@ -142,8 +118,8 @@ class MLPCheckpoint:
 class ESNCheckpoint:
     """NumPy weights and recorded metadata of the ESN, as read from its checkpoint.
 
-    The torch-free twin of :class:`neuro.esn.ESNArtifact` minus the numpy runtime; the CasADi
-    adapter and the validator read these buffers without importing torch.
+    This is the torch-free reader's view of an :class:`neuro.predictor.esn_module.ESNModule`
+    checkpoint; the CasADi adapter and the validator read these buffers without importing torch.
 
     Attributes
     ----------
@@ -211,34 +187,6 @@ class ESNCheckpoint:
         """Number of control input channels m, read off W_in's ``[z; v; 1]`` input width."""
         return self.w_in.shape[1] - self.n_channels - 1
 
-    @classmethod
-    def from_artifact(cls, art: ESNArtifact) -> Self:
-        """Build the checkpoint twin of an artifact: the legacy bridge for the artifact dispatch.
-
-        The artifacts are on their way out (the contract ticket deletes them), so this exists only
-        to keep the probe-script dispatch and the adapter constructors type-correct until then.
-        """
-        return cls(
-            w_in=art.w_in,
-            w_out=art.w_out,
-            w_res=art.w_res,
-            dt=art.dt,
-            downsample=art.downsample,
-            horizon=art.horizon,
-            reservoir_size=art.reservoir_size,
-            leak_rate=art.leak_rate,
-            spectral_radius=art.spectral_radius,
-            priming_steps=art.priming_steps,
-            input_scaling=art.input_scaling,
-            density=art.density,
-            noise_sigma=art.noise_sigma,
-            ridge_lambda=art.ridge_lambda,
-            seed=art.seed,
-            y_std=art.y_std,
-            u_std=art.u_std,
-            provenance=art.provenance,
-        )
-
     def save(self, path: str | Path) -> None:
         """Persist weights, standardizers and metadata into one ``.npz`` checkpoint (a stem).
 
@@ -278,8 +226,9 @@ class ESNCheckpoint:
 class ObservableCheckpoint:
     """NumPy weights and recorded metadata of the observable predictor, as read from its checkpoint.
 
-    The torch-free twin of :class:`neuro.observable.ObservableArtifact` minus the numpy runtime;
-    the CasADi adapter and the validator read these buffers without importing torch.
+    This is the torch-free reader's view of a
+    :class:`neuro.predictor.observable_module.StepwiseObservableMLP` checkpoint; the CasADi
+    adapter and the validator read these buffers without importing torch.
 
     Attributes
     ----------
@@ -354,32 +303,6 @@ class ObservableCheckpoint:
     def n_frames(self, horizon: int | None = None) -> int:
         """Frames the recursion emits over ``horizon`` samples (default: the trained horizon)."""
         return self.geometry.n_frames(self.horizon if horizon is None else horizon, self.fs)
-
-    @classmethod
-    def from_artifact(cls, art: ObservableArtifact) -> Self:
-        """Build the checkpoint twin of an artifact: the legacy bridge for the artifact dispatch.
-
-        The artifacts are on their way out (the contract ticket deletes them), so this exists only
-        to keep the probe-script dispatch and the adapter constructors type-correct until then.
-        """
-        return cls(
-            lift=art.lift,
-            transition=art.transition,
-            readout=art.readout,
-            activation=art.activation,
-            n_y=art.n_y,
-            n_u=art.n_u,
-            horizon=art.horizon,
-            n_channels=art.n_channels,
-            n_controls=art.n_controls,
-            dt=art.dt,
-            downsample=art.downsample,
-            geometry=art.geometry,
-            y_std=art.y_std,
-            u_std=art.u_std,
-            l_std=art.l_std,
-            provenance=art.provenance,
-        )
 
     def save(self, path: str | Path) -> None:
         """Persist weights, standardizers and metadata into one ``.npz`` checkpoint (a stem).
@@ -559,8 +482,8 @@ def load_rollout(path: str | Path) -> RolloutCheckpoint:
     return ckpt
 
 
-def build_symbolic_model(ckpt: Checkpoint) -> SymbolicModel | ObservableModel:
-    """Build the appropriate CasADi adapter; the MPC branches on which of the two it gets."""
+def build_symbolic_model(ckpt: Checkpoint) -> NNSymbolicModel | ESNSymbolicModel | ObservableSymbolicModel:
+    """Build the appropriate CasADi adapter; the MPC branches on which of the three it gets."""
     from neuro.esn_predictor_casadi import (  # noqa: PLC0415 -- the adapters import this module; top-level would cycle
         ESNSymbolicModel,
     )

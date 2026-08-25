@@ -7,14 +7,13 @@ import numpy as np
 import pytest
 
 from neuro.checkpoint import ObservableCheckpoint
-from neuro.observable import ObservableArtifact
 from neuro.transforms import Standardizer
 
 if TYPE_CHECKING:
     from collections.abc import Callable
 
     from neuro.config import ObservableGeometry
-    from neuro.predictor.artifact import Activation
+    from neuro.types import Activation
 
 
 def pytest_addoption(parser: pytest.Parser) -> None:
@@ -71,29 +70,6 @@ def _random_observable_params(
         "u_std": Standardizer(center=rng.uniform(-1.0, 1.0, n_controls), scale=rng.uniform(0.5, 2.0, n_controls)),
         "l_std": Standardizer(center=rng.uniform(-1.0, 1.0, n_out), scale=rng.uniform(0.5, 2.0, n_out)),
     }
-
-
-@pytest.fixture
-def make_observable_artifact() -> Callable[..., ObservableArtifact]:
-    """Factory for a tiny synthetic observable artifact with random weights and real standardizers."""
-
-    def build(
-        geometry: ObservableGeometry,
-        *,
-        n_y: int = 4,
-        n_u: int = 3,
-        horizon: int = 12,
-        n_channels: int = 2,
-        activation: Activation = "softplus",
-        dt: float = 0.02,
-    ) -> ObservableArtifact:
-        return ObservableArtifact(
-            **_random_observable_params(
-                geometry, n_y=n_y, n_u=n_u, horizon=horizon, n_channels=n_channels, activation=activation, dt=dt
-            )
-        )
-
-    return build
 
 
 @pytest.fixture

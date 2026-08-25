@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-import itertools
 from typing import TYPE_CHECKING
 
 import numpy as np
+import torch
 
-from neuro.predictor.artifact import MLPArtifact
 from neuro.predictor.data import build_dataset_for_trajectory, load_trajectory, prepare_datasets
+from neuro.predictor.module import AutoregressiveMLP
 from neuro.transforms import Standardizer
 
 if TYPE_CHECKING:
@@ -30,11 +30,6 @@ def _write_trajectory(path: Path, n_steps: int, n_eeg: int, n_controls: int) -> 
 def _standardizer(rng: np.random.Generator, dim: int) -> Standardizer:
     """A random (non-trivial) standardizer of channel dimension ``dim``."""
     return Standardizer(center=rng.standard_normal(dim), scale=rng.uniform(0.5, 2.0, dim))
-
-
-def _random_layers(rng: np.random.Generator, sizes: list[int]) -> tuple[tuple[FloatArray, FloatArray], ...]:
-    """Random ``(weight (out, in), bias (out,))`` pairs for the given layer widths."""
-    return tuple((rng.standard_normal((out, inp)), rng.standard_normal(out)) for inp, out in itertools.pairwise(sizes))
 
 
 def test_prepare_datasets_builds_standardized_windows(tmp_path: Path) -> None:
@@ -90,35 +85,43 @@ def test_prepare_datasets_holds_out_the_validation_trajectories(tmp_path: Path) 
     np.testing.assert_allclose(data.Y_val, y_manual, atol=1e-12)
 
 
-def test_artifact_round_trip(tmp_path: Path) -> None:
-    """``MLPArtifact`` persists and restores weights, metadata, and standardizers."""
+def test_checkpoint_round_trip(tmp_path: Path) -> None:
+    """``AutoregressiveMLP.save``/``load`` persist and restore weights, metadata, and standardizers."""
     n_channels, n_controls = 4, 2
     rng = np.random.default_rng(_SEED)
-    artifact = tmp_path / "art"
     y_std = _standardizer(rng, n_channels)
     u_std = _standardizer(rng, n_controls)
-    MLPArtifact(
-        layers=_random_layers(rng, [2 * n_channels + 2 * n_controls, 4, n_channels]),
-        activation="relu",
+    model = AutoregressiveMLP(
         n_y=2,
         n_u=2,
         horizon=3,
         n_channels=n_channels,
         n_controls=n_controls,
+        hidden_size=4,
+        depth=1,
+        activation="relu",
         dt=0.01,
-        downsample=1,
         y_std=y_std,
         u_std=u_std,
-    ).save(artifact)
+    )
+    checkpoint = tmp_path / "model"
+    model.save(checkpoint)
 
-    loaded = MLPArtifact.load(artifact)
+    loaded = AutoregressiveMLP.load(checkpoint)
     assert loaded.n_channels == n_channels
     assert loaded.n_controls == n_controls
+    assert loaded.depth == 1
     np.testing.assert_allclose(loaded.y_std.center, y_std.center)
     np.testing.assert_allclose(loaded.y_std.scale, y_std.scale)
     np.testing.assert_allclose(loaded.u_std.center, u_std.center)
     np.testing.assert_allclose(loaded.u_std.scale, u_std.scale)
-    assert not loaded.is_linear
+    for got, want in zip(
+        (m for m in loaded.layers if isinstance(m, torch.nn.Linear)),
+        (m for m in model.layers if isinstance(m, torch.nn.Linear)),
+        strict=True,
+    ):
+        np.testing.assert_array_equal(got.weight.detach().numpy(), want.weight.detach().numpy())
+        np.testing.assert_array_equal(got.bias.detach().numpy(), want.bias.detach().numpy())
 
 
 def test_load_trajectory_and_prepare_datasets_with_cutoff_hz(tmp_path: Path) -> None:

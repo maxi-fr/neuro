@@ -15,8 +15,8 @@ def save_checkpoint(path: str | Path, *, meta: dict[str, Any], arrays: dict[str,
 
     ``meta`` is stored as a 0-d unicode array holding JSON, so loading needs no ``allow_pickle``;
     every weight and standardizer rides as its own NumPy array, which is what lets a torch-free
-    reader consume the checkpoint later. The layout is the one the artifact loaders already read,
-    so the incumbent control path keeps loading what ``save`` writes.
+    reader consume the checkpoint later. The layout is the one the checkpoint readers read, so
+    the incumbent control path keeps loading what ``save`` writes.
     """
     file = Path(path).with_suffix(".npz")
     file.parent.mkdir(parents=True, exist_ok=True)

@@ -219,7 +219,9 @@ class GridSweep:
             for ridge_lambda in self.sweep.lambdas:
                 study = optuna.create_study(direction="minimize")
                 study.optimize(
-                    lambda trial, n=reservoir_size, lam=ridge_lambda: self.objective(trial, reservoir_size=n, ridge_lambda=lam),
+                    lambda trial, n=reservoir_size, lam=ridge_lambda: self.objective(
+                        trial, reservoir_size=n, ridge_lambda=lam
+                    ),
                     n_trials=self.sweep.n_trials,
                 )
                 best = study.best_trial

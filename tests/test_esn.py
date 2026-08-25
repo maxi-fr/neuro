@@ -5,15 +5,12 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 import pytest
+from _predictor_reference import esn_absorb, esn_prime, esn_rollout, esn_step, mlp_forward, mlp_prime, mlp_rollout
 
-from neuro.artifacts import load_any_artifact
-from neuro.esn import (
-    ESNArtifact,
-    generate_reservoir,
-    harvest_normal_equations,
-)
+from neuro.checkpoint import ESNCheckpoint, load_any, load_esn, load_mlp
+from neuro.esn import generate_reservoir, harvest_normal_equations
 from neuro.esn_predictor_casadi import ESNSymbolicModel
-from neuro.predictor.artifact import MLPArtifact
+from neuro.predictor.module import AutoregressiveMLP
 from neuro.transforms import Standardizer
 
 if TYPE_CHECKING:
@@ -22,7 +19,7 @@ if TYPE_CHECKING:
 _SEED = 42
 
 
-def _build_tiny_esn_artifact(
+def _build_tiny_esn_checkpoint(
     tmp_path: Path,
     *,
     reservoir_size: int = 50,
@@ -35,7 +32,7 @@ def _build_tiny_esn_artifact(
     n_channels: int = 2,
     n_controls: int = 2,
 ) -> Path:
-    """Save a tiny synthetic ESN artifact for testing."""
+    """Save a tiny synthetic ESN checkpoint for testing."""
     rng = np.random.default_rng(_SEED)
     in_dim = n_channels + n_controls + 1
 
@@ -53,7 +50,8 @@ def _build_tiny_esn_artifact(
     y_std = Standardizer(center=rng.uniform(-1.0, 1.0, n_channels), scale=rng.uniform(0.5, 2.0, n_channels))
     u_std = Standardizer(center=rng.uniform(-1.0, 1.0, n_controls), scale=rng.uniform(0.5, 2.0, n_controls))
 
-    art = ESNArtifact(
+    checkpoint_path = tmp_path / "esn_tiny"
+    ESNCheckpoint(
         w_in=w_in,
         w_out=w_out,
         w_res=w_res,
@@ -71,14 +69,11 @@ def _build_tiny_esn_artifact(
         seed=_SEED,
         y_std=y_std,
         u_std=u_std,
-    )
-
-    artifact_path = tmp_path / "esn_tiny"
-    art.save(artifact_path)
-    return artifact_path
+    ).save(checkpoint_path)
+    return checkpoint_path
 
 
-def _build_tiny_mlp_artifact(
+def _build_tiny_mlp_checkpoint(
     tmp_path: Path,
     *,
     n_y: int = 4,
@@ -87,63 +82,53 @@ def _build_tiny_mlp_artifact(
     n_channels: int = 2,
     n_controls: int = 2,
 ) -> Path:
-    """Save a tiny synthetic MLP artifact for testing."""
+    """Save a tiny synthetic MLP checkpoint for testing."""
     rng = np.random.default_rng(_SEED)
-    in_size = n_y * n_channels + n_u * n_controls
-    layers = (
-        (rng.standard_normal((5, in_size)) / np.sqrt(in_size), rng.standard_normal(5)),
-        (rng.standard_normal((n_channels, 5)) / np.sqrt(5), rng.standard_normal(n_channels)),
-    )
-    scalers = {
-        "u_mean": rng.uniform(-1.0, 1.0, n_controls),
-        "u_scale": rng.uniform(0.5, 2.0, n_controls),
-        "y_mean": rng.uniform(-1.0, 1.0, n_channels),
-        "y_scale": rng.uniform(0.5, 2.0, n_channels),
-    }
-    artifact = tmp_path / "mlp_tiny"
-    MLPArtifact(
-        layers=layers,
-        activation="relu",
+    model = AutoregressiveMLP(
         n_y=n_y,
         n_u=n_u,
         horizon=horizon,
         n_channels=n_channels,
         n_controls=n_controls,
+        hidden_size=5,
+        depth=1,
+        activation="relu",
         dt=0.02,
-        downsample=200,
-        y_std=Standardizer(center=scalers["y_mean"], scale=scalers["y_scale"]),
-        u_std=Standardizer(center=scalers["u_mean"], scale=scalers["u_scale"]),
-    ).save(artifact)
-    return artifact
+        y_std=Standardizer(center=rng.uniform(-1.0, 1.0, n_channels), scale=rng.uniform(0.5, 2.0, n_channels)),
+        u_std=Standardizer(center=rng.uniform(-1.0, 1.0, n_controls), scale=rng.uniform(0.5, 2.0, n_controls)),
+    )
+    checkpoint = tmp_path / "mlp_tiny"
+    model.save(checkpoint)
+    return checkpoint
 
 
-def test_casadi_step_matches_numpy_step(tmp_path: Path) -> None:
-    """ESNSymbolicModel.f_step equals ESNPredictor's free-running numpy step to 1e-10."""
-    art_path = _build_tiny_esn_artifact(tmp_path)
-    art = ESNArtifact.load(art_path)
-    model = ESNSymbolicModel.from_checkpoint(art_path)
+def test_casadi_step_matches_the_float64_reference(tmp_path: Path) -> None:
+    """``ESNSymbolicModel.f_step`` equals the checkpoint's float64 free-running step to 1e-10."""
+    ckpt_path = _build_tiny_esn_checkpoint(tmp_path)
+    ckpt = load_esn(ckpt_path)
+    model = ESNSymbolicModel.from_checkpoint(ckpt_path)
 
     rng = np.random.default_rng(_SEED)
-    h = rng.standard_normal(art.reservoir_size)
-    u = rng.standard_normal(art.n_controls)
+    h = rng.standard_normal(ckpt.reservoir_size)
+    u = rng.standard_normal(ckpt.n_controls)
 
     h_next_ca = np.asarray(model.f_step(h.reshape(-1, 1), u.reshape(-1, 1))).reshape(-1)
-    h_next_np = art.predictor.step(h, art.u_std.transform(u))
+    h_next_np = esn_step(ckpt, h, ckpt.u_std.transform(u))
 
     np.testing.assert_allclose(h_next_ca, h_next_np, atol=1e-10)
 
 
-def test_casadi_rollout_matches_numpy_rollout(tmp_path: Path) -> None:
-    """Chaining f_step/f_out over 50 steps equals ESNArtifact.rollout to 1e-10."""
-    art_path = _build_tiny_esn_artifact(tmp_path, horizon=50)
-    art = ESNArtifact.load(art_path)
-    model = ESNSymbolicModel.from_checkpoint(art_path)
+def test_casadi_rollout_matches_the_float64_reference(tmp_path: Path) -> None:
+    """Chaining f_step/f_out over 50 steps equals the checkpoint's float64 rollout to 1e-10."""
+    ckpt_path = _build_tiny_esn_checkpoint(tmp_path, horizon=50)
+    ckpt = load_esn(ckpt_path)
+    model = ESNSymbolicModel.from_checkpoint(ckpt_path)
 
     rng = np.random.default_rng(_SEED + 1)
-    h_init = rng.standard_normal(art.reservoir_size)
-    u_future = rng.standard_normal((50, art.n_controls))
+    h_init = rng.standard_normal(ckpt.reservoir_size)
+    u_future = rng.standard_normal((50, ckpt.n_controls))
 
-    y_preds_np = art.rollout(h_init, u_future)
+    y_preds_np = esn_rollout(ckpt, h_init, u_future)
 
     h_curr = h_init.reshape(-1, 1)
     y_preds_ca_list = []
@@ -156,63 +141,65 @@ def test_casadi_rollout_matches_numpy_rollout(tmp_path: Path) -> None:
     np.testing.assert_allclose(y_preds_ca, y_preds_np, atol=1e-10)
 
 
-def test_artifact_round_trip_preserves_weights(tmp_path: Path) -> None:
+def test_checkpoint_round_trip_preserves_weights(tmp_path: Path) -> None:
     """Save/load reproduces W_res (including sparsity pattern), W_in, W_out, standardizers, and metadata exactly."""
-    art_path = _build_tiny_esn_artifact(tmp_path)
-    art_orig = ESNArtifact.load(art_path)
+    ckpt_path = _build_tiny_esn_checkpoint(tmp_path)
+    orig = load_esn(ckpt_path)
 
-    art_save_path = tmp_path / "roundtrip"
-    art_orig.save(art_save_path)
+    save_path = tmp_path / "roundtrip"
+    orig.save(save_path)
     assert (tmp_path / "roundtrip.npz").exists()
 
-    art_loaded = ESNArtifact.load(art_save_path)
+    loaded = load_esn(save_path)
 
-    np.testing.assert_array_equal(art_orig.w_in, art_loaded.w_in)
-    np.testing.assert_array_equal(art_orig.w_out, art_loaded.w_out)
-    np.testing.assert_array_equal(art_orig.w_res.data, art_loaded.w_res.data)
-    np.testing.assert_array_equal(art_orig.w_res.indices, art_loaded.w_res.indices)
-    np.testing.assert_array_equal(art_orig.w_res.indptr, art_loaded.w_res.indptr)
-    assert art_orig.w_res.shape == art_loaded.w_res.shape
-    assert art_orig.meta == art_loaded.meta
-    np.testing.assert_allclose(art_orig.y_std.center, art_loaded.y_std.center)
-    np.testing.assert_allclose(art_orig.y_std.scale, art_loaded.y_std.scale)
-    np.testing.assert_allclose(art_orig.u_std.center, art_loaded.u_std.center)
-    np.testing.assert_allclose(art_orig.u_std.scale, art_loaded.u_std.scale)
+    np.testing.assert_array_equal(orig.w_in, loaded.w_in)
+    np.testing.assert_array_equal(orig.w_out, loaded.w_out)
+    np.testing.assert_array_equal(orig.w_res.data, loaded.w_res.data)
+    np.testing.assert_array_equal(orig.w_res.indices, loaded.w_res.indices)
+    np.testing.assert_array_equal(orig.w_res.indptr, loaded.w_res.indptr)
+    assert orig.w_res.shape == loaded.w_res.shape
+    assert orig.leak_rate == loaded.leak_rate
+    assert orig.priming_steps == loaded.priming_steps
+    assert orig.ridge_lambda == loaded.ridge_lambda
+    np.testing.assert_allclose(orig.y_std.center, loaded.y_std.center)
+    np.testing.assert_allclose(orig.y_std.scale, loaded.y_std.scale)
+    np.testing.assert_allclose(orig.u_std.center, loaded.u_std.center)
+    np.testing.assert_allclose(orig.u_std.scale, loaded.u_std.scale)
 
 
 def test_harvest_pairs_pre_update_state_with_target(tmp_path: Path) -> None:
     """Harvested rows hold h_t *before* it absorbs z[t], so the readout is one-step-ahead."""
-    art_path = _build_tiny_esn_artifact(tmp_path, priming_steps=5)
-    art = ESNArtifact.load(art_path)
+    ckpt_path = _build_tiny_esn_checkpoint(tmp_path, priming_steps=5)
+    ckpt = load_esn(ckpt_path)
 
     rng = np.random.default_rng(_SEED + 3)
     t_len = 40
-    y_raw = rng.standard_normal((t_len, art.n_channels))
-    u_raw = rng.standard_normal((t_len, art.n_controls))
+    y_raw = rng.standard_normal((t_len, ckpt.n_channels))
+    u_raw = rng.standard_normal((t_len, ckpt.n_controls))
 
     G, P = harvest_normal_equations(
         trajectories=[(u_raw, y_raw)],
-        y_std=art.y_std,
-        u_std=art.u_std,
-        w_res=art.w_res,
-        w_in=art.w_in,
-        leak_rate=art.leak_rate,
-        priming_steps=art.priming_steps,
+        y_std=ckpt.y_std,
+        u_std=ckpt.u_std,
+        w_res=ckpt.w_res,
+        w_in=ckpt.w_in,
+        leak_rate=ckpt.leak_rate,
+        priming_steps=ckpt.priming_steps,
         noise_sigma=0.0,
         seed=_SEED,
     )
 
-    z = art.encode(y_raw)
-    v = art.u_std.transform(u_raw)
-    h_aug = np.ones((t_len - art.priming_steps, art.reservoir_size + 1))
-    h = np.zeros(art.reservoir_size)
+    z = ckpt.y_std.transform(y_raw)
+    v = ckpt.u_std.transform(u_raw)
+    h_aug = np.ones((t_len - ckpt.priming_steps, ckpt.reservoir_size + 1))
+    h = np.zeros(ckpt.reservoir_size)
     for t in range(t_len):
-        if t >= art.priming_steps:
-            h_aug[t - art.priming_steps, : art.reservoir_size] = h
-        h = art.predictor.absorb(h, z[t], v[t])
+        if t >= ckpt.priming_steps:
+            h_aug[t - ckpt.priming_steps, : ckpt.reservoir_size] = h
+        h = esn_absorb(ckpt, h, z[t], v[t])
 
     np.testing.assert_allclose(G, h_aug.T @ h_aug, atol=1e-10)
-    np.testing.assert_allclose(P, h_aug.T @ z[art.priming_steps :], atol=1e-10)
+    np.testing.assert_allclose(P, h_aug.T @ z[ckpt.priming_steps :], atol=1e-10)
 
 
 def test_spectral_radius_is_scaled_to_rho() -> None:
@@ -233,81 +220,82 @@ def test_spectral_radius_is_scaled_to_rho() -> None:
 
 def test_priming_forgets_initial_state(tmp_path: Path) -> None:
     """Two different h0 primed on identical history converge after priming steps (echo state property)."""
-    art_path = _build_tiny_esn_artifact(tmp_path, spectral_radius=0.5, leak_rate=0.3, priming_steps=200)
-    art = ESNArtifact.load(art_path)
+    ckpt_path = _build_tiny_esn_checkpoint(tmp_path, spectral_radius=0.5, leak_rate=0.3, priming_steps=200)
+    ckpt = load_esn(ckpt_path)
 
     rng = np.random.default_rng(_SEED)
-    y_hist = rng.standard_normal((art.priming_steps, art.n_channels))
-    u_hist = rng.standard_normal((art.priming_steps, art.n_controls))
+    y_hist = rng.standard_normal((ckpt.priming_steps, ckpt.n_channels))
+    u_hist = rng.standard_normal((ckpt.priming_steps, ckpt.n_controls))
 
-    h_from_zero = art.prime(y_hist, u_hist)
+    h_from_zero = esn_prime(ckpt, y_hist, u_hist)
 
     # The same history driven from a random h0 instead of prime's h0 = 0.
-    z = art.encode(y_hist)
-    v = art.u_std.transform(u_hist)
-    h = rng.standard_normal(art.reservoir_size)
-    for t in range(art.priming_steps):
-        h = art.predictor.absorb(h, z[t], v[t])
+    z = ckpt.y_std.transform(y_hist)
+    v = ckpt.u_std.transform(u_hist)
+    h = rng.standard_normal(ckpt.reservoir_size)
+    for t in range(ckpt.priming_steps):
+        h = esn_absorb(ckpt, h, z[t], v[t])
 
     assert float(np.linalg.norm(h - h_from_zero)) < 1e-5
 
 
 def test_rollout_stays_bounded_over_horizon(tmp_path: Path) -> None:
     """Free-running 50 steps produces finite output bounded by a multiple of training-data scale."""
-    art_path = _build_tiny_esn_artifact(tmp_path, horizon=50)
-    art = ESNArtifact.load(art_path)
+    ckpt_path = _build_tiny_esn_checkpoint(tmp_path, horizon=50)
+    ckpt = load_esn(ckpt_path)
 
     rng = np.random.default_rng(_SEED)
-    h_init = np.zeros(art.reservoir_size)
-    u_future = rng.standard_normal((50, art.n_controls))
+    h_init = np.zeros(ckpt.reservoir_size)
+    u_future = rng.standard_normal((50, ckpt.n_controls))
 
-    preds = art.rollout(h_init, u_future)
+    preds = esn_rollout(ckpt, h_init, u_future)
     assert np.isfinite(preds).all()
     assert float(np.abs(preds).max()) < 100.0
 
 
 def test_mlp_prime_rollout_matches_hand_rolled_windows(tmp_path: Path) -> None:
-    """MLPArtifact.prime/rollout match a hand-indexed model-space AR loop bit-for-bit."""
-    art_path = _build_tiny_mlp_artifact(tmp_path)
-    art = MLPArtifact.load(art_path)
+    """The module's ``prime``/``rollout`` match a hand-indexed model-space AR loop bit-for-bit."""
+    ckpt_path = _build_tiny_mlp_checkpoint(tmp_path)
+    model = AutoregressiveMLP.load(ckpt_path)
+    ckpt = load_mlp(ckpt_path)
 
     rng = np.random.default_rng(_SEED + 2)
     t_len = 100
-    y_raw = rng.standard_normal((t_len, art.n_channels))
-    u_raw = rng.standard_normal((t_len, art.n_controls))
+    y_raw = rng.standard_normal((t_len, ckpt.n_channels))
+    u_raw = rng.standard_normal((t_len, ckpt.n_controls))
 
-    n_y, n_u = art.n_y, art.n_u
+    n_y, n_u = ckpt.n_y, ckpt.n_u
     max_steps = 50
     t0 = max(n_y, n_u)
 
-    z = art.encode(y_raw)
-    w = art.u_std.transform(u_raw)
+    z = ckpt.y_std.transform(y_raw)
+    w = ckpt.u_std.transform(u_raw)
     y_hist = list(z[t0 - n_y : t0])
     for t in range(max_steps):
         y_win = np.array(y_hist[-n_y:])
         u_win = w[t0 + t - n_u : t0 + t]
-        y_hist.append(art.forward_1step(y_win.reshape(-1), u_win.reshape(-1)))
-    y_pred_manual = art.decode(np.array(y_hist[n_y:]))
+        y_hist.append(mlp_forward(np.concatenate([y_win.reshape(-1), u_win.reshape(-1)]), ckpt.layers, ckpt.activation))
+    y_pred_manual = ckpt.y_std.inverse_transform(np.array(y_hist[n_y:]))
 
-    # prime / rollout seam
-    state = art.prime(y_raw[t0 - art.priming_steps : t0], u_raw[t0 - art.priming_steps : t0])
-    y_pred_new = art.rollout(state, u_raw[t0 : t0 + max_steps])
+    # prime / rollout seam on the float32 module, versus the float64 hand-rolled loop.
+    state = model.prime(y_raw[t0 - model.priming_steps : t0], u_raw[t0 - model.priming_steps : t0])
+    y_pred_new = model.rollout(state, u_raw[t0 : t0 + max_steps])
 
-    np.testing.assert_allclose(y_pred_new, y_pred_manual, atol=1e-12)
+    np.testing.assert_allclose(y_pred_new, y_pred_manual, atol=1e-5)
 
 
-def test_load_any_artifact_dispatches_by_model_type(tmp_path: Path) -> None:
-    """load_any_artifact switches on meta['model_type'] and loads ESN or MLP correctly."""
-    esn_path = _build_tiny_esn_artifact(tmp_path)
-    mlp_path = _build_tiny_mlp_artifact(tmp_path)
+def test_load_any_dispatches_by_model_type(tmp_path: Path) -> None:
+    """``load_any`` switches on ``model_type`` and reads ESN or MLP checkpoints correctly."""
+    esn_path = _build_tiny_esn_checkpoint(tmp_path)
+    mlp_path = _build_tiny_mlp_checkpoint(tmp_path)
 
-    loaded_esn = load_any_artifact(esn_path)
-    assert isinstance(loaded_esn, ESNArtifact)
+    loaded_esn = load_any(esn_path)
+    assert isinstance(loaded_esn, ESNCheckpoint)
 
-    loaded_mlp = load_any_artifact(mlp_path)
-    assert isinstance(loaded_mlp, MLPArtifact)
+    loaded_mlp = load_any(mlp_path)
+    assert loaded_mlp.model_type == "mlp"
 
     bad_path = tmp_path / "bad_model"
     np.savez(bad_path.with_suffix(".npz"), meta=np.array(json.dumps({"model_type": "unknown"})))
     with pytest.raises(ValueError, match="unsupported model_type 'unknown'"):
-        load_any_artifact(bad_path)
+        load_any(bad_path)

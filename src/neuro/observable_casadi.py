@@ -146,7 +146,7 @@ class ObservableSymbolicModel:
 
     @cached_property
     def f_forecast(self) -> ca.Function:
-        """Reusable compiled forecast ``(x0, u_seq) -> l_hat`` at the artifact's native horizon."""
+        """Reusable compiled forecast ``(x0, u_seq) -> l_hat`` at the checkpoint's native horizon."""
         x_sym = ca.MX.sym("x", *self.state_shape)
         u_sym = ca.MX.sym("u", self.native_horizon, self.n_controls)
         return ca.Function("F_observable", [x_sym, u_sym], [self.forecast(x_sym, u_sym)])

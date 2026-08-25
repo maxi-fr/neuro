@@ -14,13 +14,11 @@ import torch
 
 from neuro.checkpoint import MLPCheckpoint
 from neuro.nn_predictor_casadi import NNSymbolicModel
-from neuro.predictor.artifact import MLPArtifact
 from neuro.predictor.module import AutoregressiveMLP
 from neuro.transforms import Standardizer
 
 if TYPE_CHECKING:
-    from neuro.predictor.artifact import Activation
-    from neuro.types import FloatArray
+    from neuro.types import Activation, FloatArray
 
 _SEED = 17
 _N_Y, _N_U, _HORIZON = 3, 2, 5
@@ -41,19 +39,54 @@ def _random_layers(
     )
 
 
-def _build_artifact(depth: int, activation: Activation) -> MLPArtifact:
-    """A random artifact with nontrivial standardizers."""
+def _params(
+    depth: int, activation: Activation
+) -> tuple[tuple[tuple[FloatArray, FloatArray], ...], Standardizer, Standardizer]:
+    """Random layers and nontrivial standardizers, shared by the module and its checkpoint twin."""
     rng = np.random.default_rng(_SEED)
     y_std = Standardizer(center=rng.uniform(-1.0, 1.0, _N_EEG), scale=rng.uniform(0.5, 2.0, _N_EEG))
     u_std = Standardizer(center=rng.uniform(-1.0, 1.0, _N_CONTROLS), scale=rng.uniform(0.5, 2.0, _N_CONTROLS))
-    return MLPArtifact(
-        layers=_random_layers(rng, _N_Y * _N_EEG + _N_U * _N_CONTROLS, _N_EEG, _HIDDEN, depth),
+    layers = _random_layers(rng, _N_Y * _N_EEG + _N_U * _N_CONTROLS, _N_EEG, _HIDDEN, depth)
+    return layers, y_std, u_std
+
+
+def _build_module(depth: int, activation: Activation) -> AutoregressiveMLP:
+    """A random module with nontrivial standardizers."""
+    layers, y_std, u_std = _params(depth, activation)
+    model = AutoregressiveMLP(
+        n_y=_N_Y,
+        n_u=_N_U,
+        horizon=_HORIZON,
+        n_channels=_N_EEG,
+        n_controls=_N_CONTROLS,
+        hidden_size=_HIDDEN,
+        depth=depth,
+        activation=activation,
+        dt=0.01,
+        y_std=y_std,
+        u_std=u_std,
+    )
+    linears = [m for m in model.layers if isinstance(m, torch.nn.Linear)]
+    with torch.no_grad():
+        for lin, (w, b) in zip(linears, layers, strict=True):
+            lin.weight.copy_(torch.as_tensor(w, dtype=torch.float32))
+            lin.bias.copy_(torch.as_tensor(b, dtype=torch.float32))
+    return model
+
+
+def _build_checkpoint(depth: int, activation: Activation) -> MLPCheckpoint:
+    """The float64 checkpoint twin of the module, for the CasADi side of a parity test."""
+    layers, y_std, u_std = _params(depth, activation)
+    return MLPCheckpoint(
+        layers=layers,
         activation=activation,
         n_y=_N_Y,
         n_u=_N_U,
         horizon=_HORIZON,
         n_channels=_N_EEG,
         n_controls=_N_CONTROLS,
+        hidden_size=_HIDDEN,
+        depth=depth,
         dt=0.01,
         downsample=2,
         y_std=y_std,
@@ -61,61 +94,63 @@ def _build_artifact(depth: int, activation: Activation) -> MLPArtifact:
     )
 
 
-def _casadi_rollout(art: MLPArtifact, y_hist: FloatArray, u_hist: FloatArray, u_future: FloatArray) -> FloatArray:
+def _casadi_rollout(ckpt: MLPCheckpoint, y_hist: FloatArray, u_hist: FloatArray, u_future: FloatArray) -> FloatArray:
     """Chain ``f_step``/``f_out`` over the horizon on RAW controls -> raw EEG ``(horizon, n_channels)``."""
-    sym = NNSymbolicModel(MLPCheckpoint.from_artifact(art))
-    x = np.concatenate([art.encode(y_hist[-art.n_y :]).flatten(), u_hist[-art.n_u :].flatten()])
+    sym = NNSymbolicModel(ckpt)
+    x = np.concatenate([ckpt.y_std.transform(y_hist[-ckpt.n_y :]).flatten(), u_hist[-ckpt.n_u :].flatten()])
     preds = []
-    for t in range(art.horizon):
+    for t in range(ckpt.horizon):
         x = np.array(ca.DM(sym.f_step(x, u_future[t]))).flatten()
         preds.append(np.array(ca.DM(sym.f_out(x))).flatten())
     return np.stack(preds)
 
 
-def _model_space_inputs(art: MLPArtifact, y_hist: FloatArray, u_hist: FloatArray, u_future: FloatArray) -> FloatArray:
+def _model_space_inputs(
+    ckpt: MLPCheckpoint, y_hist: FloatArray, u_hist: FloatArray, u_future: FloatArray
+) -> FloatArray:
     """Assemble the torch input row, controls transformed as standardizer does."""
     return np.concatenate(
         [
-            art.encode(y_hist[-art.n_y :]).flatten(),
-            art.u_std.transform(u_hist[-art.n_u :]).flatten(),
-            art.u_std.transform(u_future).flatten(),
+            ckpt.y_std.transform(y_hist[-ckpt.n_y :]).flatten(),
+            ckpt.u_std.transform(u_hist[-ckpt.n_u :]).flatten(),
+            ckpt.u_std.transform(u_future).flatten(),
         ]
     )
 
 
-def _context(art: MLPArtifact, seed: int) -> tuple[FloatArray, FloatArray, FloatArray]:
+def _context(ckpt: MLPCheckpoint, seed: int) -> tuple[FloatArray, FloatArray, FloatArray]:
     """Raw EEG history, raw control history and raw future controls."""
     rng = np.random.default_rng(seed)
-    hist = max(art.n_y, art.n_u)
+    hist = max(ckpt.n_y, ckpt.n_u)
     return (
-        rng.standard_normal((hist, art.n_channels)),
-        rng.standard_normal((hist, art.n_controls)),
-        rng.standard_normal((art.horizon, art.n_controls)),
+        rng.standard_normal((hist, ckpt.n_channels)),
+        rng.standard_normal((hist, ckpt.n_controls)),
+        rng.standard_normal((ckpt.horizon, ckpt.n_controls)),
     )
 
 
 def test_prime_rollout_matches_the_training_window_at_the_same_index() -> None:
     """``prime`` + ``rollout`` reproduce the torch rollout of the training window over the same targets."""
-    art = _build_artifact(2, "softplus")
-    n_y, n_u, horizon = art.n_y, art.n_u, art.horizon
+    ckpt = _build_checkpoint(2, "softplus")
+    n_y, n_u, horizon = ckpt.n_y, ckpt.n_u, ckpt.horizon
     rng = np.random.default_rng(_SEED + 9)
     t0 = max(n_y, n_u) + 3
-    y_raw = rng.standard_normal((t0 + horizon, art.n_channels))
-    u_raw = rng.standard_normal((t0 + horizon, art.n_controls))
+    y_raw = rng.standard_normal((t0 + horizon, ckpt.n_channels))
+    u_raw = rng.standard_normal((t0 + horizon, ckpt.n_controls))
 
     k = t0 - 1
     x = np.concatenate(
         [
-            art.encode(y_raw[k - n_y + 1 : k + 1]).flatten(),
-            art.u_std.transform(u_raw[k - n_u : k]).flatten(),
-            art.u_std.transform(u_raw[k : k + horizon]).flatten(),
+            ckpt.y_std.transform(y_raw[k - n_y + 1 : k + 1]).flatten(),
+            ckpt.u_std.transform(u_raw[k - n_u : k]).flatten(),
+            ckpt.u_std.transform(u_raw[k : k + horizon]).flatten(),
         ]
     )
-    model = AutoregressiveMLP.from_artifact(art)
-    pred = model(torch.as_tensor(x, dtype=torch.float32)[None, :]).detach().numpy().reshape(horizon, art.n_channels)
-    want = art.decode(pred)
+    model = _build_module(2, "softplus")
+    pred = model(torch.as_tensor(x, dtype=torch.float32)[None, :]).detach().numpy().reshape(horizon, ckpt.n_channels)
+    want = ckpt.y_std.inverse_transform(pred)
 
-    got = art.rollout(art.prime(y_raw[:t0], u_raw[:t0]), u_raw[t0 : t0 + horizon])
+    got = model.rollout(model.prime(y_raw[:t0], u_raw[:t0]), u_raw[t0 : t0 + horizon])
 
     np.testing.assert_allclose(got, want, rtol=1e-5, atol=1e-6)
 
@@ -124,45 +159,33 @@ def test_prime_rollout_matches_the_training_window_at_the_same_index() -> None:
 @pytest.mark.parametrize("depth", [0, 2])
 def test_torch_rollout_matches_casadi(depth: int, activation: Activation) -> None:
     """The torch rollout reproduces the CasADi f_step/f_out chain, closing torch == CasADi."""
-    art = _build_artifact(depth, activation)
-    y_hist, u_hist, u_future = _context(art, _SEED + 1)
+    ckpt = _build_checkpoint(depth, activation)
+    y_hist, u_hist, u_future = _context(ckpt, _SEED + 1)
 
-    want = _casadi_rollout(art, y_hist, u_hist, u_future)
+    want = _casadi_rollout(ckpt, y_hist, u_hist, u_future)
 
-    model = AutoregressiveMLP.from_artifact(art)
-    x = torch.as_tensor(_model_space_inputs(art, y_hist, u_hist, u_future), dtype=torch.float32)[None, :]
-    pred = model(x).detach().numpy().reshape(art.horizon, art.n_channels)
-    got = art.decode(pred)
+    model = _build_module(depth, activation)
+    x = torch.as_tensor(_model_space_inputs(ckpt, y_hist, u_hist, u_future), dtype=torch.float32)[None, :]
+    pred = model(x).detach().numpy().reshape(ckpt.horizon, ckpt.n_channels)
+    got = ckpt.y_std.inverse_transform(pred)
 
-    assert got.shape == (art.horizon, art.n_channels)
+    assert got.shape == (ckpt.horizon, ckpt.n_channels)
     np.testing.assert_allclose(got, want, rtol=1e-5, atol=1e-6)
 
 
 def test_forward_is_row_independent() -> None:
     """Stacking two contexts into one batch predicts the same as running them one at a time."""
-    art = _build_artifact(2, "tanh")
-    model = AutoregressiveMLP.from_artifact(art)
+    ckpt = _build_checkpoint(2, "tanh")
+    model = _build_module(2, "tanh")
 
-    rows = [_model_space_inputs(art, *_context(art, _SEED + offset)) for offset in (2, 3)]
+    rows = [_model_space_inputs(ckpt, *_context(ckpt, _SEED + offset)) for offset in (2, 3)]
     batched = model(torch.as_tensor(np.stack(rows), dtype=torch.float32)).detach().numpy()
     singles = np.concatenate(
         [model(torch.as_tensor(row, dtype=torch.float32)[None, :]).detach().numpy() for row in rows]
     )
 
-    assert batched.shape == (2, art.horizon * art.n_channels)
+    assert batched.shape == (2, ckpt.horizon * ckpt.n_channels)
     np.testing.assert_allclose(batched, singles, rtol=1e-5, atol=1e-6)
-
-
-@pytest.mark.parametrize("depth", [0, 2])
-def test_artifact_round_trip_is_exact(depth: int) -> None:
-    """``from_artifact`` then ``to_artifact`` returns bit-identical weights and metadata."""
-    art = _build_artifact(depth, "softplus")
-    got = AutoregressiveMLP.from_artifact(art).to_artifact(art.dt, art.downsample, art.y_std, art.u_std)
-
-    assert got.meta == art.meta
-    for (got_w, got_b), (want_w, want_b) in zip(got.layers, art.layers, strict=True):
-        np.testing.assert_array_equal(got_w, want_w)
-        np.testing.assert_array_equal(got_b, want_b)
 
 
 def test_module_layers_sequential() -> None:
@@ -189,7 +212,6 @@ def test_module_layers_sequential() -> None:
 @pytest.mark.parametrize(
     "module",
     [
-        "neuro.predictor.artifact",
         "neuro.predictor.data",
         "neuro.predictor.checkpoint",
         "neuro.checkpoint",
@@ -206,7 +228,6 @@ def test_module_layers_sequential() -> None:
         "neuro.control.solvers",
         "neuro.control.nonlinear_mpc",
         "neuro.control.linear_mpc",
-        "neuro.artifacts",
     ],
 )
 def test_control_path_never_imports_torch(module: str) -> None:

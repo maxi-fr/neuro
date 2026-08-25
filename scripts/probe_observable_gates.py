@@ -8,11 +8,10 @@ import numpy as np
 import torch
 from torch import nn
 
-from neuro.artifacts import load_any_artifact
 from neuro.config import load_config, resolve_data_files
 from neuro.observable import log_observable
-from neuro.predictor.artifact import MLPArtifact
 from neuro.predictor.gradient import fit_gradient_descent, float32_tensor
+from neuro.predictor.module import AutoregressiveMLP
 from neuro.predictor.observable_module import ObservableMLP, mlp_stack
 from neuro.predictor.observable_train import ObservableData, log_mse, prepare_observable_data
 
@@ -51,7 +50,7 @@ def _observable_model(cfg: NNPredictorConfig, data: ObservableData) -> Observabl
 class _DirectMap(nn.Module):
     """The horizon-wide direct map ``g(x_0, u) -> l_hat`` of the exploration document's sections 1-6.
 
-    Stage 2's arm only. It gets no artifact type, no symbolic bridge and no MPC path, so that
+    Stage 2's arm only. It gets no checkpoint type, no symbolic bridge and no MPC path, so that
     "iterated beats direct" is measured on this data rather than assumed in either direction.
     """
 
@@ -147,19 +146,19 @@ def stage_direct_vs_iterated(cfg: NNPredictorConfig, data_files: list[str], seed
     print(f"  {'iterated' if iterated.mean() < direct.mean() else 'direct'} wins on held-out log-MSE")
 
 
-def _incumbent_log_mse(art: MLPArtifact, cfg: NNPredictorConfig, data: ObservableData, stride: int) -> float:
+def _incumbent_log_mse(model: AutoregressiveMLP, cfg: NNPredictorConfig, data: ObservableData, stride: int) -> float:
     """Push the incumbent rollout through the identical geometry and score it on the same Frames."""
     obs = cfg.observable
     assert obs is not None  # noqa: S101
-    horizon, geometry, k = obs.horizon, obs.geometry(), art.priming_steps
+    horizon, geometry, k = obs.horizon, obs.geometry(), model.priming_steps
 
     squared, count = 0.0, 0
     for u, y in data.val_trajs:
         t0s = range(k, len(y) - horizon, stride)
         if not t0s:
             continue
-        states = art.prime_many(np.stack([y[t0 - k : t0] for t0 in t0s]), np.stack([u[t0 - k : t0] for t0 in t0s]))
-        y_pred = art.rollout_many(states, np.stack([u[t0 : t0 + horizon] for t0 in t0s]))
+        states = model.prime_many(np.stack([y[t0 - k : t0] for t0 in t0s]), np.stack([u[t0 - k : t0] for t0 in t0s]))
+        y_pred = model.rollout_many(states, np.stack([u[t0 : t0 + horizon] for t0 in t0s]))
         y_true = np.stack([y[t0 + 1 : t0 + 1 + horizon] for t0 in t0s])
         residual = log_observable(y_pred, geometry, cfg.fs) - log_observable(y_true, geometry, cfg.fs)
         squared += float((residual**2).sum())
@@ -173,20 +172,17 @@ def _incumbent_log_mse(art: MLPArtifact, cfg: NNPredictorConfig, data: Observabl
 def stage_incumbent_baseline(
     cfg: NNPredictorConfig, data_files: list[str], seeds: list[int], incumbent: Path, stride: int
 ) -> bool:
-    """Score the observable Predictor against the incumbent artifact pushed through the same geometry.
+    """Score the observable Predictor against the incumbent checkpoint pushed through the same geometry.
 
     *Kill:* if the observable Predictor does not beat the incumbent. The baseline is the incumbent,
     not the training mean.
     """
     print("\n== Stage 3: incumbent baseline ==", flush=True)
-    art = load_any_artifact(incumbent)
-    if not isinstance(art, MLPArtifact):
-        msg = f"{incumbent} is not an autoregressive MLP artifact; the baseline is the incumbent path."
-        raise SystemExit(msg)
+    model = AutoregressiveMLP.load(incumbent)
 
     data = prepare_observable_data(cfg, data_files)
     observable = np.array([_train_arm(_observable_model(cfg, data), cfg, data, s) for s in seeds])
-    baseline = _incumbent_log_mse(art, cfg, data, stride)
+    baseline = _incumbent_log_mse(model, cfg, data, stride)
 
     print(f"  observable log-MSE: {observable.mean():.5f} +- {observable.std(ddof=1):.5f}")
     print(f"  incumbent  log-MSE: {baseline:.5f}  ({incumbent})")
@@ -270,7 +266,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--config", type=Path, default=Path("configs/nn_predictor/observable_stft.yaml"))
     parser.add_argument("--data-path", type=str, default=None, help="Override the config's data path.")
     parser.add_argument("--seeds", type=int, nargs="+", default=[0, 1, 2], help="Seed offsets per arm.")
-    parser.add_argument("--incumbent", type=Path, default=Path("artifacts/nonlinear_mse02_psd/model"))
+    parser.add_argument(
+        "--incumbent",
+        type=Path,
+        default=Path("artifacts/nonlinear_mse02_psd/model"),
+        help="Incumbent MLP checkpoint basename.",
+    )
     parser.add_argument("--stride", type=int, default=25, help="t0 spacing when scoring the incumbent.")
     parser.add_argument("--electrode", type=str, default="TP9", help="Electrode swept in stage 4.")
     parser.add_argument("--field-projection", type=Path, default=Path("data/roast_field_projection_3d.npz"))
@@ -298,7 +299,7 @@ def main() -> None:
         msg_0 = "stage 4 kill criterion tripped; stages 5 and 6 do not run."
         raise SystemExit(msg_0)
 
-    print("\nStages 1-4 passed. Stage 5: scripts/probe_solve_time.py --artifact <observable artifact>.")
+    print("\nStages 1-4 passed. Stage 5: scripts/probe_solve_time.py --artifact <observable checkpoint>.")
     print("Stage 6: run configs/simulation/observable_psd_mpc.yaml against mse02_psd_mpc_spectral.yaml.")
 
 

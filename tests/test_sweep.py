@@ -67,9 +67,7 @@ def _wave_config(
     )
 
 
-def _obs_config(
-    *, objective: str = "val_loss", closed_loop: ClosedLoopEvalConfig | None = None
-) -> NNPredictorConfig:
+def _obs_config(*, objective: str = "val_loss", closed_loop: ClosedLoopEvalConfig | None = None) -> NNPredictorConfig:
     """A tiny but complete observable config whose sweep names ``objective``."""
     return NNPredictorConfig(
         simulation=SimulationConfig(dt=_OBS_DT, downsample=1),
@@ -179,9 +177,7 @@ def test_optuna_sweep_records_every_candidate_and_scores_the_named_objective(
     assert captured[0].model.n_y == 2  # the base config reaches the trainer
 
 
-def test_optuna_sweep_merges_suggested_params_into_the_config(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_optuna_sweep_merges_suggested_params_into_the_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """A trial's suggested search-space value reaches the trainer inside the merged config."""
     captured = _stub_train(monkeypatch, {"log_energy": 0.1, "val_loss": 0.2, "rollout_nmse": 0.3})
     cfg = _wave_config(sweep_model={"depth": IntParam(type="int", low=0, high=3)})
@@ -267,9 +263,7 @@ def test_objective_missing_from_candidates_raises(tmp_path: Path, monkeypatch: p
     _stub_train(monkeypatch, {"rollout_nmse": 0.15, "log_energy": 0.23})  # e.g. a ridge fit, no epoch loop
 
     with pytest.raises(ValueError, match="val_loss"):
-        OptunaSweep(_wave_config(objective="val_loss"), ["sim_0.npz"], tmp_path).objective(
-            optuna.trial.FixedTrial({})
-        )
+        OptunaSweep(_wave_config(objective="val_loss"), ["sim_0.npz"], tmp_path).objective(optuna.trial.FixedTrial({}))
 
 
 def test_grid_sweep_run_returns_one_best_per_outer_cell(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

@@ -106,7 +106,7 @@ class ESNModule(nn.Module):
         (:func:`neuro.esn.generate_reservoir` and the ridge fit) copied into float32 buffers;
         ``y_std``/``u_std`` become the module's float32 buffers, defaulting to the identity map.
         The six generation/fit hyperparameters are recorded metadata: ``save`` writes them so
-        the torch-free :class:`neuro.esn.ESNArtifact` loader can consume the checkpoint.
+        the torch-free :func:`neuro.checkpoint.load_esn` reader can consume the checkpoint.
         """
         super().__init__()
         self.reservoir_size = w_res.shape[0]
@@ -338,7 +338,7 @@ class ESNModule(nn.Module):
         """Persist weights, standardizer buffers and recorded metadata into one ``.npz`` checkpoint.
 
         ``path`` is a suffix-less stem. The layout -- a JSON ``meta`` block, the sparse reservoir
-        CSR arrays and the standardizer arrays -- reuses the keys the ESN artifact loader already
+        CSR arrays and the standardizer arrays -- reuses the keys the torch-free checkpoint reader
         reads, so a torch-free reader can consume what ``save`` writes without the module.
         """
         coo = self.w_res.coalesce()

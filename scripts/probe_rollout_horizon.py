@@ -2,40 +2,22 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
-from typing import TYPE_CHECKING
 
-from neuro.artifacts import RolloutArtifact, load_rollout_artifact
-from neuro.esn import ESNArtifact
-from neuro.predictor.artifact import MLPArtifact
+from neuro.checkpoint import RolloutCheckpoint, load_rollout
 from neuro.predictor.data import load_trajectory
 from neuro.predictor.esn_module import ESNModule
 from neuro.predictor.evaluation import accumulate_rollout_errors, nmse
 from neuro.predictor.module import AutoregressiveMLP
 
-if TYPE_CHECKING:
-    from neuro.types import Predictor
-
 _REPORT_STEPS = (1, 5, 10, 20, 40, 60, 80, 100, 125, 150)
 
 
-def _as_module(art: RolloutArtifact) -> Predictor:
-    """Rebuild the torch module twin of a loaded artifact for protocol-based evaluation."""
-    if isinstance(art, MLPArtifact):
-        return AutoregressiveMLP.from_artifact(art)
-    if isinstance(art, ESNArtifact):
-        return ESNModule(
-            w_res=art.w_res,
-            w_in=art.w_in,
-            w_out=art.w_out,
-            leak_rate=art.leak_rate,
-            priming_steps=art.priming_steps,
-            horizon=art.horizon,
-            dt=art.dt,
-            y_std=art.y_std,
-            u_std=art.u_std,
-        )
-    msg = f"unsupported artifact type {type(art).__name__}"
-    raise ValueError(msg)
+def _load_module(path: Path) -> AutoregressiveMLP | ESNModule:
+    """Load the torch rollout Predictor whose checkpoint ``path`` names."""
+    ckpt = load_rollout(path)
+    if ckpt.model_type == "mlp":
+        return AutoregressiveMLP.load(path)
+    return ESNModule.load(path)
 
 
 def parse_args() -> argparse.Namespace:
@@ -48,7 +30,7 @@ def parse_args() -> argparse.Namespace:
         type=Path,
         nargs="+",
         required=True,
-        help="Artifact basename(s), e.g. artifacts/mlp_model artifacts/esn_model",
+        help="Checkpoint basename(s), e.g. artifacts/mlp_model artifacts/esn_model",
     )
     parser.add_argument("--data", type=Path, required=True, help="Directory of held-out .npz trajectories.")
     parser.add_argument("--max-steps", type=int, default=150, help="Longest rollout to evaluate, in model steps.")
@@ -59,9 +41,9 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     """Roll predictor(s) out to --max-steps on held-out data and print per-step NMSE and power_ratio."""
     args = parse_args()
-    artifact_paths: list[Path] = args.artifact
-    artifacts = [load_rollout_artifact(p) for p in artifact_paths]
-    predictors = [_as_module(art) for art in artifacts]
+    checkpoint_paths: list[Path] = args.artifact
+    ckpts: list[RolloutCheckpoint] = [load_rollout(p) for p in checkpoint_paths]
+    predictors = [_load_module(p) for p in checkpoint_paths]
 
     files = sorted(str(p) for p in args.data.glob("*.npz"))
     if not files:
@@ -69,20 +51,20 @@ def main() -> None:
         raise SystemExit(msg)
 
     # Shared start window alignment across all predictors
-    global_start = max(a.priming_steps for a in artifacts)
+    global_start = max(c.priming_steps for c in ckpts)
 
-    # One resampling drives every artifact, so they must agree on it or the co-evaluation is a lie.
-    base_art = artifacts[0]
+    # One resampling drives every checkpoint, so they must agree on it or the co-evaluation is a lie.
+    base_ckpt = ckpts[0]
     mismatched = [
         str(p)
-        for p, a in zip(artifact_paths, artifacts, strict=True)
-        if (a.downsample, a.dt) != (base_art.downsample, base_art.dt)
+        for p, c in zip(checkpoint_paths, ckpts, strict=True)
+        if (c.downsample, c.dt) != (base_ckpt.downsample, base_ckpt.dt)
     ]
     if mismatched:
         msg = (
-            f"artifacts co-evaluated in one run must share downsample/dt; "
-            f"{mismatched} differ from {artifact_paths[0]} "
-            f"(downsample={base_art.downsample}, dt={base_art.dt})"
+            f"checkpoints co-evaluated in one run must share downsample/dt; "
+            f"{mismatched} differ from {checkpoint_paths[0]} "
+            f"(downsample={base_ckpt.downsample}, dt={base_ckpt.dt})"
         )
         raise SystemExit(msg)
 
@@ -90,12 +72,12 @@ def main() -> None:
     print(f"Loading {len(files)} trajectories from {args.data}...", flush=True)
     trajectories = []
     for f in files:
-        u, y = load_trajectory(f, None, base_art.downsample, base_art.dt / base_art.downsample)
+        u, y = load_trajectory(f, None, base_ckpt.downsample, base_ckpt.dt / base_ckpt.downsample)
         trajectories.append((u, y))
 
     print(f"Loaded {len(trajectories)} trajectories.", flush=True)
 
-    for path, art, predictor in zip(artifact_paths, artifacts, predictors, strict=True):
+    for path, ckpt, predictor in zip(checkpoint_paths, ckpts, predictors, strict=True):
         sq_err, power, pred_power = accumulate_rollout_errors(
             predictor, trajectories, args.max_steps, stride=args.stride, start=global_start
         )
@@ -104,14 +86,14 @@ def main() -> None:
         power_ratio = pred_power / power
 
         print(
-            f"\nArtifact: {path} ({art.model_type}), native horizon {art.horizon}, dt {art.dt:.4f} s",
+            f"\nCheckpoint: {path} ({ckpt.model_type}), native horizon {ckpt.horizon}, dt {ckpt.dt:.4f} s",
             flush=True,
         )
         print(f"{'step':>6} {'lookahead':>10} {'NMSE':>9} {'power_ratio':>13}", flush=True)
         for k in _REPORT_STEPS:
             if k <= args.max_steps:
                 print(
-                    f"{k:>6} {k * art.dt:>9.2f}s {per_step_nmse[k - 1]:>9.4f} {power_ratio[k - 1]:>13.4f}", flush=True
+                    f"{k:>6} {k * ckpt.dt:>9.2f}s {per_step_nmse[k - 1]:>9.4f} {power_ratio[k - 1]:>13.4f}", flush=True
                 )
 
 

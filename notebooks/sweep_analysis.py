@@ -21,14 +21,14 @@ def imports():
     import seaborn as sns
     import yaml
 
-    from neuro.predictor.artifact import MLPArtifact
     from neuro.predictor.data import prepare_datasets
+    from neuro.predictor.module import AutoregressiveMLP
     from utils.plotting import plot_multistep_predictions
 
     artifact_base = Path(__file__).parent.parent / "artifacts"
     sweep_dirs = sorted([d.name for d in artifact_base.iterdir() if d.is_dir() and "sweep_nn_predictor" in d.name])
     return (
-        MLPArtifact,
+        AutoregressiveMLP,
         artifact_base,
         mo,
         np,
@@ -119,7 +119,7 @@ def ui_trial_selection(mo, trials_df):
 
 @app.cell
 def load_trial_data(
-    MLPArtifact,
+    AutoregressiveMLP,
     mo,
     prepare_datasets,
     sweep_path,
@@ -137,9 +137,9 @@ def load_trial_data(
         config = yaml.safe_load(f)
 
     artifact_path = trial_dir / "model.npz"
-    mo.stop(not artifact_path.exists(), "Model artifact not found for this trial.")
+    mo.stop(not artifact_path.exists(), "Model checkpoint not found for this trial.")
 
-    artifact = MLPArtifact.load(artifact_path)
+    artifact = AutoregressiveMLP.load(artifact_path)
 
     sim_cfg = config.get("simulation", {})
     downsample = sim_cfg.get("downsample", 1)

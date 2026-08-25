@@ -8,10 +8,12 @@ import casadi as ca
 import numpy as np
 import pytest
 import scipy.signal as sps
+import torch
+from _predictor_reference import esn_prime, mlp_prime
 from scipy.signal.windows import hann
 from simulate.simulation import Simulation
 
-from neuro.checkpoint import load_esn, load_mlp
+from neuro.checkpoint import ESNCheckpoint, load_esn, load_mlp
 from neuro.control.nlp import MPCNlp
 from neuro.control.nonlinear_mpc import MPCController, MPCControllerLog
 from neuro.control.solvers import (
@@ -20,11 +22,11 @@ from neuro.control.solvers import (
     SqpFallbackMPCSolver,
     SqpMPCSolver,
 )
-from neuro.esn import ESNArtifact, generate_reservoir
+from neuro.esn import generate_reservoir
 from neuro.esn_predictor_casadi import ESNSymbolicModel
 from neuro.nn_predictor_casadi import NNSymbolicModel
-from neuro.predictor.artifact import MLPArtifact
 from neuro.predictor.data import load_trajectory
+from neuro.predictor.module import AutoregressiveMLP
 from neuro.spectral import PsdEnvelope, compute_periodograms, hinge_penalty
 from neuro.transforms import Standardizer
 
@@ -42,7 +44,7 @@ def _random_layers(rng: np.random.Generator, sizes: list[int]) -> tuple[tuple[Fl
     )
 
 
-def _build_artifact(
+def _build_checkpoint(
     tmp_path: Path,
     *,
     n_y: int = 4,
@@ -51,7 +53,7 @@ def _build_artifact(
     n_channels: int = 2,
     n_controls: int = 2,
 ) -> Path:
-    """Save a tiny synthetic MLP artifact and return its basename path."""
+    """Save a tiny synthetic MLP checkpoint and return its basename path."""
     rng = np.random.default_rng(_SEED)
     in_size = n_y * n_channels + n_u * n_controls
     scalers = {
@@ -60,21 +62,27 @@ def _build_artifact(
         "y_mean": rng.uniform(-1.0, 1.0, n_channels),
         "y_scale": rng.uniform(0.5, 2.0, n_channels),
     }
-    artifact = tmp_path / "art"
-    MLPArtifact(
-        layers=_random_layers(rng, [in_size, 5, 5, n_channels]),
-        activation="relu",
+    model = AutoregressiveMLP(
         n_y=n_y,
         n_u=n_u,
         horizon=horizon,
         n_channels=n_channels,
         n_controls=n_controls,
+        hidden_size=5,
+        depth=2,
+        activation="relu",
         dt=0.01,
-        downsample=1,
         y_std=Standardizer(center=scalers["y_mean"], scale=scalers["y_scale"]),
         u_std=Standardizer(center=scalers["u_mean"], scale=scalers["u_scale"]),
-    ).save(artifact)
-    return artifact
+    )
+    linears = [m for m in model.layers if isinstance(m, torch.nn.Linear)]
+    with torch.no_grad():
+        for lin, (w, b) in zip(linears, _random_layers(rng, [in_size, 5, 5, n_channels]), strict=True):
+            lin.weight.copy_(torch.as_tensor(w, dtype=torch.float32))
+            lin.bias.copy_(torch.as_tensor(b, dtype=torch.float32))
+    checkpoint = tmp_path / "art"
+    model.save(checkpoint)
+    return checkpoint
 
 
 def _drive(controller: MPCController, n_steps: int, n_channels: int) -> list[tuple[FloatArray, MPCControllerLog]]:
@@ -96,9 +104,8 @@ def test_output_condensation_matches_full_state_rollout(tmp_path: Path) -> None:
     otherwise the condensed NLP would not be the same optimization problem.
     """
     n_y, n_u, n_channels, n_controls = 4, 3, 2, 2
-    artifact = _build_artifact(tmp_path, n_y=n_y, n_u=n_u, n_channels=n_channels, n_controls=n_controls)
-    model = NNSymbolicModel.from_checkpoint(artifact)
-    art = MLPArtifact.load(artifact)
+    checkpoint = _build_checkpoint(tmp_path, n_y=n_y, n_u=n_u, n_channels=n_channels, n_controls=n_controls)
+    model = NNSymbolicModel.from_checkpoint(checkpoint)
     rng = np.random.default_rng(_SEED + 2)
     horizon = 5
     x0 = rng.standard_normal(model.state_shape[0])
@@ -121,7 +128,7 @@ def test_output_condensation_matches_full_state_rollout(tmp_path: Path) -> None:
     for u in controls:
         u_win = [*u_win[1:], u]
         y_pred = np.asarray(predict(np.concatenate(y_win), np.concatenate(u_win))).reshape(-1)
-        y_cond.append(art.decode(y_pred))
+        y_cond.append(model.checkpoint.y_std.inverse_transform(y_pred))
         y_win = [*y_win[1:], y_pred]
 
     np.testing.assert_allclose(np.array(y_cond), np.array(y_full), rtol=1e-9, atol=1e-9)
@@ -130,7 +137,7 @@ def test_output_condensation_matches_full_state_rollout(tmp_path: Path) -> None:
 def test_warmup_emits_zero_until_window_filled(tmp_path: Path) -> None:
     """While the EEG window is still zero-padded, the MPC holds off and emits zeros."""
     n_y = 4
-    model = NNSymbolicModel.from_checkpoint(_build_artifact(tmp_path, n_y=n_y))
+    model = NNSymbolicModel.from_checkpoint(_build_checkpoint(tmp_path, n_y=n_y))
     controller = MPCController(dt=0.01, model=model, u_max=0.5, horizon=3)
 
     results = _drive(controller, n_steps=n_y, n_channels=model.n_channels)
@@ -149,7 +156,7 @@ def test_update_respects_bounds(tmp_path: Path) -> None:
     still finite and bound-respecting (here pushed toward the bound to cut EEG power).
     """
     u_max = 0.5
-    model = NNSymbolicModel.from_checkpoint(_build_artifact(tmp_path, n_y=4))
+    model = NNSymbolicModel.from_checkpoint(_build_checkpoint(tmp_path, n_y=4))
     controller = MPCController(dt=0.01, model=model, u_max=u_max, horizon=3, w_y=1.0, w_u=0.0)
 
     u, _ = _drive(controller, n_steps=6, n_channels=model.n_channels)[-1]
@@ -164,7 +171,7 @@ def test_control_obeys_kirchhoff_current_law(tmp_path: Path) -> None:
     With ``w_y=1, w_u=0`` the MPC actively stimulates to cut predicted EEG power, yet the
     montage's per-electrode currents must still balance so no net current is injected.
     """
-    model = NNSymbolicModel.from_checkpoint(_build_artifact(tmp_path, n_y=4))
+    model = NNSymbolicModel.from_checkpoint(_build_checkpoint(tmp_path, n_y=4))
     controller = MPCController(dt=0.01, model=model, u_max=5.0, horizon=3, w_y=1.0, w_u=0.0)
 
     u, log = _drive(controller, n_steps=6, n_channels=model.n_channels)[-1]
@@ -175,7 +182,7 @@ def test_control_obeys_kirchhoff_current_law(tmp_path: Path) -> None:
 
 def test_pure_effort_cost_yields_zero_control(tmp_path: Path) -> None:
     """With w_y=0 the cost is sum||u||^2, whose unconstrained minimizer is u=0."""
-    model = NNSymbolicModel.from_checkpoint(_build_artifact(tmp_path, n_y=4))
+    model = NNSymbolicModel.from_checkpoint(_build_checkpoint(tmp_path, n_y=4))
     controller = MPCController(dt=0.01, model=model, u_max=1.0, horizon=3, w_y=0.0, w_u=1.0)
 
     u, log = _drive(controller, n_steps=6, n_channels=model.n_channels)[-1]
@@ -190,7 +197,7 @@ def test_l1_penalty_drives_control_toward_zero(tmp_path: Path) -> None:
     dominant L1 effort penalty (epigraph-reformulated into the NLP) makes stimulating uneconomical,
     so the control collapses to (near-)zero.
     """
-    model = NNSymbolicModel.from_checkpoint(_build_artifact(tmp_path, n_y=4))
+    model = NNSymbolicModel.from_checkpoint(_build_checkpoint(tmp_path, n_y=4))
     base: dict[str, Any] = {"dt": 0.01, "model": model, "u_max": 5.0, "horizon": 3, "w_y": 1.0, "w_u": 0.0}
 
     u_l2 = _drive(MPCController(w_u_l1=0.0, **base), n_steps=6, n_channels=model.n_channels)[-1][0]
@@ -202,14 +209,14 @@ def test_l1_penalty_drives_control_toward_zero(tmp_path: Path) -> None:
 
 def test_per_electrode_bounds_rejected_when_mismatched(tmp_path: Path) -> None:
     """A u_max length that is neither 1 nor n_controls is rejected."""
-    model = NNSymbolicModel.from_checkpoint(_build_artifact(tmp_path, n_controls=2))
+    model = NNSymbolicModel.from_checkpoint(_build_checkpoint(tmp_path, n_controls=2))
     with pytest.raises(ValueError, match="u_max has 3 entries but n_controls is 2"):
         MPCController(dt=0.01, model=model, u_max=[1.0, 2.0, 3.0], horizon=3)
 
 
 def test_from_config_loads_artifact_and_defaults_horizon(tmp_path: Path) -> None:
     """from_config loads the artifact path and defaults the horizon to the model's."""
-    artifact = _build_artifact(tmp_path, horizon=5)
+    artifact = _build_checkpoint(tmp_path, horizon=5)
     controller = MPCController.from_config({"dt": 0.01, "artifact": str(artifact), "u_max": 3.0, "w_u_l1": 0.25})
     assert controller.dt == 0.01
     assert controller.horizon == 5
@@ -220,7 +227,7 @@ def test_from_config_loads_artifact_and_defaults_horizon(tmp_path: Path) -> None
 def test_closed_loop_simulation_runs(tmp_path: Path) -> None:
     """The MPC closes the loop through the orchestrator and keeps controls within bounds."""
     n_channels, u_max = 3, 3.0
-    artifact = _build_artifact(tmp_path, n_y=4, n_u=3, horizon=3, n_channels=n_channels, n_controls=2)
+    artifact = _build_checkpoint(tmp_path, n_y=4, n_u=3, horizon=3, n_channels=n_channels, n_controls=2)
 
     config = {
         "t_end": 0.05,
@@ -263,7 +270,7 @@ def test_closed_loop_simulation_runs(tmp_path: Path) -> None:
     assert np.all(np.abs(us) <= u_max + 1e-6)
 
 
-def _build_tiny_esn_artifact(
+def _build_tiny_esn_checkpoint(
     tmp_path: Path,
     *,
     reservoir_size: int = 30,
@@ -272,7 +279,7 @@ def _build_tiny_esn_artifact(
     n_channels: int = 2,
     n_controls: int = 2,
 ) -> Path:
-    """Save a tiny synthetic ESN artifact for testing."""
+    """Save a tiny synthetic ESN checkpoint for testing."""
     rng = np.random.default_rng(_SEED)
     in_dim = n_channels + n_controls + 1
     w_res, w_in = generate_reservoir(
@@ -286,8 +293,8 @@ def _build_tiny_esn_artifact(
     w_out = rng.uniform(-0.1, 0.1, size=(n_channels, reservoir_size + 1))
     y_std = Standardizer(center=rng.uniform(-1.0, 1.0, n_channels), scale=rng.uniform(0.5, 2.0, n_channels))
     u_std = Standardizer(center=rng.uniform(-1.0, 1.0, n_controls), scale=rng.uniform(0.5, 2.0, n_controls))
-    artifact = tmp_path / "esn_art"
-    ESNArtifact(
+    checkpoint = tmp_path / "esn_art"
+    ESNCheckpoint(
         w_in=w_in,
         w_out=w_out,
         w_res=w_res,
@@ -305,14 +312,14 @@ def _build_tiny_esn_artifact(
         seed=_SEED,
         y_std=y_std,
         u_std=u_std,
-    ).save(artifact)
-    return artifact
+    ).save(checkpoint)
+    return checkpoint
 
 
 def test_mpc_controller_with_esn_model(tmp_path: Path) -> None:
     """MPCController runs end-to-end with an ESNSymbolicModel across warmup and active steps."""
     priming_steps = 5
-    art_path = _build_tiny_esn_artifact(tmp_path, priming_steps=priming_steps)
+    art_path = _build_tiny_esn_checkpoint(tmp_path, priming_steps=priming_steps)
     model = ESNSymbolicModel.from_checkpoint(art_path)
     u_max = 0.5
     controller = MPCController(dt=0.01, model=model, u_max=u_max, horizon=3, w_y=1.0, w_u=0.0)
@@ -329,9 +336,9 @@ def test_mpc_controller_with_esn_model(tmp_path: Path) -> None:
         assert np.all(np.abs(u) <= u_max + 1e-6)
 
 
-def test_mpc_from_config_loads_esn_artifact(tmp_path: Path) -> None:
-    """MPCController.from_config routes through build_symbolic_model for ESN artifacts."""
-    art_path = _build_tiny_esn_artifact(tmp_path, priming_steps=3)
+def test_mpc_from_config_loads_esn_checkpoint(tmp_path: Path) -> None:
+    """MPCController.from_config routes through build_symbolic_model for ESN checkpoints."""
+    art_path = _build_tiny_esn_checkpoint(tmp_path, priming_steps=3)
     controller = MPCController.from_config(
         {
             "dt": 0.01,
@@ -346,16 +353,17 @@ def test_mpc_from_config_loads_esn_artifact(tmp_path: Path) -> None:
 
 
 def test_symbolic_model_priming_seam(tmp_path: Path) -> None:
-    """initial_state, absorb, and is_ready match the artifact prime contract for NN and ESN."""
+    """initial_state, absorb, and is_ready match the checkpoint prime contract for NN and ESN."""
+
     rng = np.random.default_rng(_SEED + 5)
 
     # NN model priming
     n_y, n_u, n_ch, n_ctrl = 4, 3, 2, 2
-    nn_art_path = _build_artifact(tmp_path, n_y=n_y, n_u=n_u, n_channels=n_ch, n_controls=n_ctrl)
-    nn_art = MLPArtifact.load(nn_art_path)
-    nn_model = NNSymbolicModel(load_mlp(nn_art_path))
+    nn_ckpt_path = _build_checkpoint(tmp_path, n_y=n_y, n_u=n_u, n_channels=n_ch, n_controls=n_ctrl)
+    nn_ckpt = load_mlp(nn_ckpt_path)
+    nn_model = NNSymbolicModel(nn_ckpt)
 
-    assert nn_model.native_horizon == nn_art.horizon
+    assert nn_model.native_horizon == nn_ckpt.horizon
     state = nn_model.initial_state()
     assert not nn_model.is_ready(state)
 
@@ -368,18 +376,18 @@ def test_symbolic_model_priming_seam(tmp_path: Path) -> None:
 
     state = nn_model.absorb(state, y_seq[n_y - 1], u_seq[n_y - 1])
     assert nn_model.is_ready(state)
-    expected_nn = nn_art.prime(y_seq, u_seq)
+    expected_nn = mlp_prime(nn_ckpt, y_seq, u_seq)
     np.testing.assert_allclose(state, expected_nn, atol=1e-12)
 
     # ESN model priming
     priming_steps, res_size = 6, 20
-    esn_art_path = _build_tiny_esn_artifact(
+    esn_ckpt_path = _build_tiny_esn_checkpoint(
         tmp_path, reservoir_size=res_size, priming_steps=priming_steps, n_channels=n_ch
     )
-    esn_art = ESNArtifact.load(esn_art_path)
-    esn_model = ESNSymbolicModel(load_esn(esn_art_path))
+    esn_ckpt = load_esn(esn_ckpt_path)
+    esn_model = ESNSymbolicModel(esn_ckpt)
 
-    assert esn_model.native_horizon == esn_art.horizon
+    assert esn_model.native_horizon == esn_ckpt.horizon
     esn_state = esn_model.initial_state()
     assert not esn_model.is_ready(esn_state)
 
@@ -391,7 +399,7 @@ def test_symbolic_model_priming_seam(tmp_path: Path) -> None:
 
     esn_state = esn_model.absorb(esn_state, y_esn[priming_steps - 1], u_esn[priming_steps - 1])
     assert esn_model.is_ready(esn_state)
-    expected_esn = esn_art.prime(y_esn, u_esn)
+    expected_esn = esn_prime(esn_ckpt, y_esn, u_esn)
     np.testing.assert_allclose(esn_state, expected_esn, atol=1e-12)
 
 
@@ -412,7 +420,7 @@ def test_spectral_cost_matches_numpy_periodogram(
     n_controls, fs = 2, 50.0
     n_bins = length // 2 + 1
 
-    artifact = _build_artifact(tmp_path, n_y=2, n_u=2, horizon=horizon, n_channels=n_channels, n_controls=n_controls)
+    artifact = _build_checkpoint(tmp_path, n_y=2, n_u=2, horizon=horizon, n_channels=n_channels, n_controls=n_controls)
     model = NNSymbolicModel.from_checkpoint(artifact)
 
     rng = np.random.default_rng(_SEED + 10)
@@ -463,7 +471,7 @@ def test_spectral_cost_is_zero_when_under_envelope(tmp_path: Path) -> None:
     horizon, L, R = 6, 4, 2
     n_bins = L // 2 + 1
 
-    artifact = _build_artifact(
+    artifact = _build_checkpoint(
         tmp_path, n_y=n_y, n_u=n_u, horizon=horizon, n_channels=n_channels, n_controls=n_controls
     )
     model = NNSymbolicModel.from_checkpoint(artifact)
@@ -500,7 +508,7 @@ def test_spectral_cost_is_zero_when_under_envelope(tmp_path: Path) -> None:
 
 def test_spectral_mpc_controller_from_config(tmp_path: Path) -> None:
     """MPCController.from_config loads psd_ref npz and configures spectral cost."""
-    artifact = _build_artifact(tmp_path, horizon=6, n_channels=2, n_controls=2)
+    artifact = _build_checkpoint(tmp_path, horizon=6, n_channels=2, n_controls=2)
     psd_npz_path = tmp_path / "psd.npz"
     np.savez(
         psd_npz_path,
@@ -556,7 +564,7 @@ def test_healthy_plant_scores_near_zero_on_envelope() -> None:
 @pytest.mark.parametrize("qpsol", ["qpoases", "qrqp", "osqp"])
 def test_mpc_controller_sqp_standalone(tmp_path: Path, qpsol: Literal["qpoases", "qrqp", "osqp"]) -> None:
     """MPCController operates with standalone SQP solver using various QP subsolvers."""
-    model = NNSymbolicModel.from_checkpoint(_build_artifact(tmp_path, n_y=4))
+    model = NNSymbolicModel.from_checkpoint(_build_checkpoint(tmp_path, n_y=4))
     u_max = 2.0
     controller = MPCController(
         dt=0.01,
@@ -582,7 +590,7 @@ def test_mpc_controller_sqp_standalone(tmp_path: Path, qpsol: Literal["qpoases",
 
 def test_mpc_controller_sqp_fallback_on_failure(tmp_path: Path) -> None:
     """When SQP fails to converge, IPOPT fallback is invoked and produces valid control."""
-    model = NNSymbolicModel.from_checkpoint(_build_artifact(tmp_path, n_y=4))
+    model = NNSymbolicModel.from_checkpoint(_build_checkpoint(tmp_path, n_y=4))
     u_max = 2.0
     controller = MPCController(
         dt=0.01,
@@ -614,7 +622,7 @@ def test_mpc_controller_sqp_fallback_on_failure(tmp_path: Path) -> None:
 
 def test_mpc_controller_sqp_fallback_on_exception(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """When SQP raises an unexpected exception, IPOPT fallback is invoked smoothly."""
-    model = NNSymbolicModel.from_checkpoint(_build_artifact(tmp_path, n_y=4))
+    model = NNSymbolicModel.from_checkpoint(_build_checkpoint(tmp_path, n_y=4))
     u_max = 2.0
     controller = MPCController(
         dt=0.01,
@@ -644,7 +652,7 @@ def test_mpc_controller_sqp_fallback_on_exception(tmp_path: Path, monkeypatch: p
 
 def test_mpc_controller_from_config_sqp_fallback(tmp_path: Path) -> None:
     """from_config properly passes SQP and fallback configuration options."""
-    artifact = _build_artifact(tmp_path, horizon=5)
+    artifact = _build_checkpoint(tmp_path, horizon=5)
     controller = MPCController.from_config(
         {
             "dt": 0.01,
@@ -666,14 +674,14 @@ def test_mpc_controller_from_config_sqp_fallback(tmp_path: Path) -> None:
 
 def test_mpc_controller_invalid_solver_raises(tmp_path: Path) -> None:
     """Invalid solver mode raises a ValueError."""
-    model = NNSymbolicModel.from_checkpoint(_build_artifact(tmp_path, n_y=4))
+    model = NNSymbolicModel.from_checkpoint(_build_checkpoint(tmp_path, n_y=4))
     with pytest.raises(ValueError, match="solver must be 'ipopt', 'sqp', or 'sqp_fallback'"):
         MPCController(dt=0.01, model=model, u_max=1.0, solver="bad_solver")  # ty: ignore[invalid-argument-type]
 
 
 def test_mpc_nlp_and_solver_builders(tmp_path: Path) -> None:
     """MPCNlp.build builds MPCNlp and solver builders instantiate correct solver wrappers."""
-    model = NNSymbolicModel.from_checkpoint(_build_artifact(tmp_path, n_y=4))
+    model = NNSymbolicModel.from_checkpoint(_build_checkpoint(tmp_path, n_y=4))
     u_max = np.full(model.n_controls, 2.0)
 
     mpc_nlp = MPCNlp.build(

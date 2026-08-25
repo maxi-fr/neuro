@@ -15,7 +15,9 @@ from neuro.control.nonlinear_mpc import MPCControllerLog
 if TYPE_CHECKING:
     from numpy.typing import ArrayLike
 
-    from neuro.types import FloatArray, SymbolicModel
+    from neuro.esn_predictor_casadi import ESNSymbolicModel
+    from neuro.nn_predictor_casadi import NNSymbolicModel
+    from neuro.types import FloatArray
 
 
 class _LinearMPCControllerConfig(StrictConfig):
@@ -38,7 +40,7 @@ class LinearMPCController(Controller[MPCControllerLog]):
     def __init__(  # noqa: PLR0913, PLR0917
         self,
         dt: float,
-        model: SymbolicModel,
+        model: NNSymbolicModel | ESNSymbolicModel,
         u_max: ArrayLike,
         horizon: int | None = None,
         w_y: float = 1.0,
@@ -118,7 +120,7 @@ class LinearMPCController(Controller[MPCControllerLog]):
         cfg = _LinearMPCControllerConfig.model_validate(config)
         return cls(
             dt=cfg.dt,
-            model=cast("SymbolicModel", build_symbolic_model(load_rollout(cfg.artifact))),
+            model=cast("NNSymbolicModel | ESNSymbolicModel", build_symbolic_model(load_rollout(cfg.artifact))),
             u_max=cfg.u_max,
             horizon=cfg.horizon,
             w_y=cfg.w_y,

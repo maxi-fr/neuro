@@ -12,20 +12,20 @@ def _():
     from matplotlib import pyplot as plt
     from pydantic import ValidationError
 
-    from neuro.artifacts import load_any_artifact
     from neuro.config import StftSpec
     from neuro.eeg import build_eeg_leadfield
     from neuro.predictor.data import load_trajectory
     from neuro.predictor.losses import frame_kernel, pool_bins, smooth_frames, spectrogram
+    from neuro.predictor.module import AutoregressiveMLP
     from neuro.spectral import LOG_FLOOR
 
     return (
+        AutoregressiveMLP,
         LOG_FLOOR,
         StftSpec,
         ValidationError,
         build_eeg_leadfield,
         frame_kernel,
-        load_any_artifact,
         load_trajectory,
         mo,
         np,
@@ -60,10 +60,10 @@ def _(mo):
 
 
 @app.cell
-def _(build_eeg_leadfield, load_any_artifact, load_trajectory):
+def _(AutoregressiveMLP, build_eeg_leadfield, load_trajectory):
     MAX_SPAN = 150
 
-    art = load_any_artifact("artifacts/nonlinear_mse02_psd/model")
+    art = AutoregressiveMLP.load("artifacts/nonlinear_mse02_psd/model")
     fs = 1.0 / art.dt
     channel_labels = [str(label) for label in build_eeg_leadfield()[1]]
 

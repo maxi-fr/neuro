@@ -7,17 +7,17 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 import pytest
+import torch
+from _predictor_reference import mlp_prime, mlp_rollout
 
 from neuro.checkpoint import MLPCheckpoint
 from neuro.nn_predictor_casadi import NNSymbolicModel
-from neuro.predictor.artifact import MLPArtifact
 from neuro.predictor.module import AutoregressiveMLP
 from neuro.transforms import Standardizer
 from neuro.types import Predictor
 
 if TYPE_CHECKING:
-    from neuro.predictor.artifact import Activation
-    from neuro.types import FloatArray
+    from neuro.types import Activation, FloatArray
 
 _SEED = 17
 _N_Y, _N_U, _HORIZON = 3, 2, 5
@@ -40,29 +40,59 @@ def _random_layers(
     )
 
 
-def _artifact(depth: int = 2, activation: Activation = "softplus") -> MLPArtifact:
-    """A random artifact with nontrivial standardizers."""
+def _params(
+    depth: int = 2, activation: Activation = "softplus"
+) -> tuple[tuple[tuple[FloatArray, FloatArray], ...], Standardizer, Standardizer]:
+    """Random layers and nontrivial standardizers, shared by the module and its checkpoint twin."""
     rng = np.random.default_rng(_SEED)
     y_std = Standardizer(center=rng.uniform(-1.0, 1.0, _N_EEG), scale=rng.uniform(0.5, 2.0, _N_EEG))
     u_std = Standardizer(center=rng.uniform(-1.0, 1.0, _N_CONTROLS), scale=rng.uniform(0.5, 2.0, _N_CONTROLS))
-    return MLPArtifact(
-        layers=_random_layers(rng, _N_Y * _N_EEG + _N_U * _N_CONTROLS, _N_EEG, _HIDDEN, depth),
+    layers = _random_layers(rng, _N_Y * _N_EEG + _N_U * _N_CONTROLS, _N_EEG, _HIDDEN, depth)
+    return layers, y_std, u_std
+
+
+def _model(depth: int = 2, activation: Activation = "softplus") -> AutoregressiveMLP:
+    """The waveform MLP carrying random weights and standardizer buffers."""
+    layers, y_std, u_std = _params(depth, activation)
+    model = AutoregressiveMLP(
+        n_y=_N_Y,
+        n_u=_N_U,
+        horizon=_HORIZON,
+        n_channels=_N_EEG,
+        n_controls=_N_CONTROLS,
+        hidden_size=_HIDDEN,
+        depth=depth,
+        activation=activation,
+        dt=0.01,
+        y_std=y_std,
+        u_std=u_std,
+    )
+    linears = [m for m in model.layers if isinstance(m, torch.nn.Linear)]
+    with torch.no_grad():
+        for lin, (w, b) in zip(linears, layers, strict=True):
+            lin.weight.copy_(torch.as_tensor(w, dtype=torch.float32))
+            lin.bias.copy_(torch.as_tensor(b, dtype=torch.float32))
+    return model
+
+
+def _checkpoint(depth: int = 2, activation: Activation = "softplus") -> MLPCheckpoint:
+    """The float64 checkpoint twin of the module, for the reference side of a parity test."""
+    layers, y_std, u_std = _params(depth, activation)
+    return MLPCheckpoint(
+        layers=layers,
         activation=activation,
         n_y=_N_Y,
         n_u=_N_U,
         horizon=_HORIZON,
         n_channels=_N_EEG,
         n_controls=_N_CONTROLS,
+        hidden_size=_HIDDEN,
+        depth=depth,
         dt=0.01,
         downsample=2,
         y_std=y_std,
         u_std=u_std,
     )
-
-
-def _model() -> AutoregressiveMLP:
-    """The waveform MLP carrying a random artifact's weights and standardizer buffers."""
-    return AutoregressiveMLP.from_artifact(_artifact())
 
 
 def _context(seed: int = _SEED + 1) -> tuple[FloatArray, FloatArray, FloatArray]:
@@ -103,31 +133,32 @@ def test_mlp_satisfies_predictor_protocol() -> None:
     assert preds.shape == (5, _STEPS, model.n_outputs)
 
 
-def test_prime_encodes_and_rollout_decodes_against_the_artifact() -> None:
-    """``prime``/``rollout`` reproduce the artifact's raw-in/raw-out path on raw history."""
-    art = _artifact()
+def test_prime_encodes_and_rollout_decodes_against_the_float64_reference() -> None:
+    """``prime``/``rollout`` reproduce the checkpoint's raw-in/raw-out path on raw history."""
+
+    ckpt = _checkpoint()
     model = _model()
     y_hist, u_hist, u_future = _context()
 
     state = model.prime(y_hist, u_hist)
-    want_state = art.prime(y_hist, u_hist)
+    want_state = mlp_prime(ckpt, y_hist, u_hist)
     assert state.shape == want_state.shape
     np.testing.assert_allclose(state, want_state, rtol=_RTOL, atol=_ATOL)
 
     got = model.rollout(state, u_future)
-    want = art.rollout(want_state, u_future)
+    want = mlp_rollout(ckpt, want_state, u_future)
     assert got.shape == (_STEPS, _N_EEG)
     np.testing.assert_allclose(got, want, rtol=_RTOL, atol=_ATOL)
 
 
 def test_standardizers_are_buffers_and_round_trip_raw() -> None:
-    """``from_artifact`` installs the standardizers as float32 buffers; ``encode``/``decode`` invert."""
-    art = _artifact()
+    """The module holds the standardizers as float32 buffers; ``encode``/``decode`` invert."""
+    _, y_std, u_std = _params()
     model = _model()
-    np.testing.assert_allclose(model.y_std.center, art.y_std.center, rtol=_RTOL, atol=_ATOL)
-    np.testing.assert_allclose(model.y_std.scale, art.y_std.scale, rtol=_RTOL, atol=_ATOL)
-    np.testing.assert_allclose(model.u_std.center, art.u_std.center, rtol=_RTOL, atol=_ATOL)
-    np.testing.assert_allclose(model.u_std.scale, art.u_std.scale, rtol=_RTOL, atol=_ATOL)
+    np.testing.assert_allclose(model.y_std.center, y_std.center, rtol=_RTOL, atol=_ATOL)
+    np.testing.assert_allclose(model.y_std.scale, y_std.scale, rtol=_RTOL, atol=_ATOL)
+    np.testing.assert_allclose(model.u_std.center, u_std.center, rtol=_RTOL, atol=_ATOL)
+    np.testing.assert_allclose(model.u_std.scale, u_std.scale, rtol=_RTOL, atol=_ATOL)
 
     rng = np.random.default_rng(_SEED + 3)
     y = rng.standard_normal((4, _N_EEG))
@@ -177,16 +208,11 @@ def test_rollout_equals_a_loop_of_step() -> None:
     np.testing.assert_allclose(got, want, rtol=_RTOL, atol=_ATOL)
 
 
-def _as_checkpoint(art: MLPArtifact) -> MLPCheckpoint:
-    """Build the torch-free checkpoint twin of an artifact, for the CasADi side of a parity test."""
-    return MLPCheckpoint.from_artifact(art)
-
-
-def test_absorb_is_ready_initial_state_reproduce_the_incumbent_shift_register() -> None:
+def test_absorb_is_ready_initial_state_reproduce_the_shift_register() -> None:
     """``initial_state``/``absorb``/``is_ready`` match the CasADi bridge's NaN-padded register."""
-    art = _artifact()
+    ckpt = _checkpoint()
     model = _model()
-    sym = NNSymbolicModel(_as_checkpoint(art))
+    sym = NNSymbolicModel(ckpt)
 
     state = model.initial_state()
     want_state = sym.initial_state()

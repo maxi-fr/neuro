@@ -14,14 +14,13 @@ if TYPE_CHECKING:
     from collections.abc import Sequence
     from pathlib import Path
 
-    from neuro.predictor.artifact import Activation
-    from neuro.types import FloatArray
+    from neuro.types import Activation, FloatArray
 
 
 def mlp_forward_ca(
     x: ca.SX | ca.MX, layers: Sequence[tuple[FloatArray, FloatArray]], activation: Activation
 ) -> ca.SX | ca.MX:
-    """Evaluate an MLP forward pass symbolically, replicating :meth:`MLPArtifact.forward_1step`.
+    """Evaluate an MLP forward pass symbolically, replicating the module's one-step forward.
 
     The activation is applied after every layer except the last; the last layer is affine. The
     name is validated once, in :meth:`MLPCheckpoint.save`'s reader (:func:`neuro.checkpoint.load_mlp`),

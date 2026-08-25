@@ -1,19 +1,13 @@
 from __future__ import annotations
 
-import json
-from dataclasses import dataclass, field
-from functools import cached_property
-from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 import numpy as np
 import scipy.sparse
 import scipy.sparse.linalg
 
-from neuro.provenance import TrainingProvenance
-from neuro.transforms import Standardizer
-
 if TYPE_CHECKING:
+    from neuro.transforms import Standardizer
     from neuro.types import FloatArray
 
 
@@ -92,6 +86,10 @@ def harvest_normal_equations(  # noqa: PLR0913, PLR0917
 ) -> tuple[FloatArray, FloatArray]:
     """Harvest normal equations G and P continuously over trajectories.
 
+    The incumbent closed-form reference the torch ESN's ``design_normal_equations`` reproduces
+    at ``noise_sigma = 0``; it stays as the one-time scipy preprocessing twin of the module's
+    capability, not as a runtime.
+
     Parameters
     ----------
     trajectories : list[tuple[FloatArray, FloatArray]]
@@ -166,6 +164,9 @@ def harvest_normal_equations(  # noqa: PLR0913, PLR0917
 def solve_ridge(G: FloatArray, P: FloatArray, ridge_lambda: float) -> FloatArray:
     """Solve ridge regression W_out = (G + lambda * I)^-1 P with unregularized bias column.
 
+    The incumbent closed-form reference the torch ESN's ``solve_ridge`` reproduces to LAPACK
+    precision; it stays as the one-time scipy preprocessing twin, not as a runtime.
+
     Parameters
     ----------
     G : FloatArray
@@ -186,300 +187,3 @@ def solve_ridge(G: FloatArray, P: FloatArray, ridge_lambda: float) -> FloatArray
 
     w_out_t = np.linalg.solve(G + reg, P)
     return np.ascontiguousarray(w_out_t.T)
-
-
-def _append_bias(x: FloatArray) -> FloatArray:
-    """Concatenate a constant-1 column onto the last axis of ``x`` (batch dims pass through)."""
-    return np.concatenate([x, np.ones((*x.shape[:-1], 1), dtype=np.float64)], axis=-1)
-
-
-@dataclass(frozen=True)
-class ESNPredictor:
-    """Core NumPy ESN execution engine for state absorption and autonomous prediction.
-
-    Attributes
-    ----------
-    w_in : FloatArray
-        Input weight matrix (N, C + m + 1).
-    w_out : FloatArray
-        Readout weight matrix (C, N + 1).
-    w_res : scipy.sparse.csr_matrix
-        Reservoir recurrent weight matrix (N, N).
-    leak_rate : float
-        Leakage rate alpha in (0, 1].
-    """
-
-    w_in: FloatArray
-    w_out: FloatArray
-    w_res: scipy.sparse.csr_matrix
-    leak_rate: float
-
-    def readout(self, h: FloatArray) -> FloatArray:
-        """One-step-ahead model-space prediction z_hat from state ``h`` ``(..., N)`` -> ``(..., C)``."""
-        return _append_bias(h) @ self.w_out.T
-
-    def absorb(self, h: FloatArray, z: FloatArray, v: FloatArray) -> FloatArray:
-        """Advance ``h`` ``(..., N)`` absorbing the model-space input ``(z, v)``."""
-        alpha = self.leak_rate
-        x_in = _append_bias(np.concatenate([z, v], axis=-1))
-        return (1.0 - alpha) * h + alpha * np.tanh(h @ self.w_res.T + x_in @ self.w_in.T)
-
-    def step(self, h: FloatArray, v: FloatArray) -> FloatArray:
-        """Advance ``h`` free-running under model-space control ``v``: the readout replaces z."""
-        return self.absorb(h, self.readout(h), v)
-
-
-@dataclass(frozen=True)
-class ESNArtifact:
-    """Complete serialized ESN predictor artifact.
-
-    Attributes
-    ----------
-    w_in : FloatArray
-        Dense input weight matrix (N, C + m + 1).
-    w_out : FloatArray
-        Dense readout weight matrix (C, N + 1).
-    w_res : scipy.sparse.csr_matrix
-        Sparse reservoir weight matrix (N, N).
-    dt : float
-        Effective sampling time in seconds (simulation dt * downsample).
-    downsample : int
-        Downsampling factor applied to raw trajectory data.
-    horizon : int
-        Nominal prediction horizon (number of steps).
-    reservoir_size : int
-        Number of reservoir units (N).
-    leak_rate : float
-        Leakage rate alpha in (0, 1].
-    spectral_radius : float
-        Target spectral radius of reservoir matrix.
-    priming_steps : int
-        Number of initial priming steps to discard.
-    input_scaling : float
-        Uniform input weight scale gamma.
-    density : float
-        Sparsity density of reservoir matrix.
-    noise_sigma : float
-        Noise injection standard deviation on input during state harvesting.
-    ridge_lambda : float
-        Tikhonov regularization parameter.
-    seed : int
-        Random seed used for reservoir generation and noise injection.
-    y_std : Standardizer
-        Channel standardizer for EEG outputs.
-    u_std : Standardizer
-        Control standardizer for inputs.
-    provenance : TrainingProvenance
-        What the training data was made of; empty on artifacts written before it was recorded.
-    """
-
-    w_in: FloatArray
-    w_out: FloatArray
-    w_res: scipy.sparse.csr_matrix
-    dt: float
-    downsample: int
-    horizon: int
-    reservoir_size: int
-    leak_rate: float
-    spectral_radius: float
-    priming_steps: int
-    input_scaling: float
-    density: float
-    noise_sigma: float
-    ridge_lambda: float
-    seed: int
-    y_std: Standardizer
-    u_std: Standardizer
-    provenance: TrainingProvenance = field(default_factory=TrainingProvenance)
-
-    @cached_property
-    def predictor(self) -> ESNPredictor:
-        """Numpy ESN backing :meth:`prime` and :meth:`rollout`."""
-        return ESNPredictor(w_in=self.w_in, w_out=self.w_out, w_res=self.w_res, leak_rate=self.leak_rate)
-
-    @property
-    def model_type(self) -> str:
-        """Model architecture type string ('esn')."""
-        return "esn"
-
-    @property
-    def n_channels(self) -> int:
-        """Number of EEG channels C."""
-        return self.w_out.shape[0]
-
-    @property
-    def n_controls(self) -> int:
-        """Number of control input channels m, read off W_in's ``[z; v; 1]`` input width."""
-        return self.w_in.shape[1] - self.n_channels - 1
-
-    @property
-    def meta(self) -> dict[str, Any]:
-        """Serializable dictionary representation of artifact metadata."""
-        return {
-            "model_type": self.model_type,
-            "dt": self.dt,
-            "downsample": self.downsample,
-            "horizon": self.horizon,
-            "reservoir_size": self.reservoir_size,
-            "leak_rate": self.leak_rate,
-            "spectral_radius": self.spectral_radius,
-            "priming_steps": self.priming_steps,
-            "input_scaling": self.input_scaling,
-            "density": self.density,
-            "noise_sigma": self.noise_sigma,
-            "ridge_lambda": self.ridge_lambda,
-            "seed": self.seed,
-            "n_channels": self.n_channels,
-            "n_controls": self.n_controls,
-            **self.provenance.meta,
-        }
-
-    def encode(self, y: FloatArray) -> FloatArray:
-        """Map raw EEG (..., n_channels) into standardized model space."""
-        return self.y_std.transform(np.asarray(y, dtype=np.float64))
-
-    def decode(self, z: FloatArray) -> FloatArray:
-        """Reconstruct raw EEG (..., n_channels) from standardized model space."""
-        return self.y_std.inverse_transform(np.asarray(z, dtype=np.float64))
-
-    def prime(self, y_hist: FloatArray, u_hist: FloatArray) -> FloatArray:
-        """Absorb raw history into initial reservoir state h0 = 0.
-
-        Parameters
-        ----------
-        y_hist : FloatArray
-            Raw EEG history (k, n_channels).
-        u_hist : FloatArray
-            Raw control history (k, n_controls).
-
-        Returns
-        -------
-        h : FloatArray
-            Primed reservoir state (N,).
-        """
-        z = self.encode(y_hist)
-        v = self.u_std.transform(np.asarray(u_hist, dtype=np.float64))
-        esn = self.predictor
-        h = np.zeros(self.reservoir_size, dtype=np.float64)
-
-        for t in range(len(z)):
-            h = esn.absorb(h, z[t], v[t])
-        return h
-
-    def prime_many(self, y_hists: FloatArray, u_hists: FloatArray) -> FloatArray:
-        """Batched :meth:`prime`: ``(B, k, n_channels)`` and ``(B, k, n_controls)`` -> ``(B, N)``."""
-        z = self.encode(y_hists)
-        v = self.u_std.transform(np.asarray(u_hists, dtype=np.float64))
-        esn = self.predictor
-        h = np.zeros((z.shape[0], self.reservoir_size), dtype=np.float64)
-
-        for t in range(z.shape[1]):
-            h = esn.absorb(h, z[:, t], v[:, t])
-        return h
-
-    def rollout(self, state: FloatArray, u_future: FloatArray) -> FloatArray:
-        """Free-run from state under raw u_future -> (steps, n_channels).
-
-        Parameters
-        ----------
-        state : FloatArray
-            Initial reservoir state (N,).
-        u_future : FloatArray
-            Future control actions (steps, n_controls).
-
-        Returns
-        -------
-        y_preds : FloatArray
-            Predicted raw EEG trajectories (steps, n_channels).
-        """
-        v_future = self.u_std.transform(np.asarray(u_future, dtype=np.float64))
-        esn = self.predictor
-        h = np.asarray(state, dtype=np.float64).copy()
-
-        n_steps = len(v_future)
-        preds_z = np.zeros((n_steps, self.n_channels), dtype=np.float64)
-        for t in range(n_steps):
-            z_hat = esn.readout(h)
-            preds_z[t] = z_hat
-            h = esn.absorb(h, z_hat, v_future[t])
-
-        return self.decode(preds_z)
-
-    def rollout_many(self, states: FloatArray, u_futures: FloatArray) -> FloatArray:
-        """Batched :meth:`rollout`: ``(B, N)`` and raw ``(B, steps, n_controls)``.
-
-        Returns ``(B, steps, n_channels)``.
-        """
-        v_future = self.u_std.transform(np.asarray(u_futures, dtype=np.float64))
-        esn = self.predictor
-        h = np.array(states, dtype=np.float64)
-
-        n_batch, n_steps = v_future.shape[0], v_future.shape[1]
-        preds_z = np.zeros((n_batch, n_steps, self.n_channels), dtype=np.float64)
-        for t in range(n_steps):
-            z_hat = esn.readout(h)
-            preds_z[:, t] = z_hat
-            h = esn.absorb(h, z_hat, v_future[:, t])
-
-        return self.decode(preds_z)
-
-    @classmethod
-    def load(cls, artifact: str | Path) -> ESNArtifact:
-        """Load the single-``.npz`` ESN artifact from disk (``artifact`` is a suffix-less stem)."""
-        path = Path(artifact).with_suffix(".npz")
-        with np.load(path) as npz:
-            meta: dict[str, Any] = json.loads(str(npz["meta"]))
-            w_in = np.asarray(npz["W_in"], dtype=np.float64)
-            w_out = np.asarray(npz["W_out"], dtype=np.float64)
-            w_res_data = np.asarray(npz["W_res.data"], dtype=np.float64)
-            w_res_indices = np.asarray(npz["W_res.indices"], dtype=np.int32)
-            w_res_indptr = np.asarray(npz["W_res.indptr"], dtype=np.int32)
-            w_res_shape = tuple(npz["W_res.shape"])
-            w_res = scipy.sparse.csr_matrix((w_res_data, w_res_indices, w_res_indptr), shape=w_res_shape)
-            y_std = Standardizer.from_arrays(npz, "y")
-            u_std = Standardizer.from_arrays(npz, "u")
-
-        priming_steps = int(meta["priming_steps"])
-
-        return cls(
-            w_in=w_in,
-            w_out=w_out,
-            w_res=w_res,
-            dt=float(meta["dt"]),
-            downsample=int(meta["downsample"]),
-            horizon=int(meta["horizon"]),
-            reservoir_size=int(meta["reservoir_size"]),
-            leak_rate=float(meta["leak_rate"]),
-            spectral_radius=float(meta["spectral_radius"]),
-            priming_steps=priming_steps,
-            input_scaling=float(meta["input_scaling"]),
-            density=float(meta["density"]),
-            noise_sigma=float(meta["noise_sigma"]),
-            ridge_lambda=float(meta["ridge_lambda"]),
-            seed=int(meta["seed"]),
-            y_std=y_std,
-            u_std=u_std,
-            provenance=TrainingProvenance.from_meta(meta),
-        )
-
-    def save(self, artifact: str | Path) -> None:
-        """Persist weights, transforms and metadata into one ``.npz`` (``artifact`` is a stem).
-
-        ``meta`` is stored as a 0-d unicode array holding JSON, so loading needs no ``allow_pickle``.
-        """
-        path = Path(artifact).with_suffix(".npz")
-        path.parent.mkdir(parents=True, exist_ok=True)
-
-        arrays: dict[str, np.ndarray[Any, Any]] = {
-            "meta": np.array(json.dumps(self.meta)),
-            "W_in": self.w_in,
-            "W_out": self.w_out,
-            "W_res.data": self.w_res.data,
-            "W_res.indices": self.w_res.indices,
-            "W_res.indptr": self.w_res.indptr,
-            "W_res.shape": np.array(self.w_res.shape),
-        }
-        arrays.update(self.y_std.arrays("y"))
-        arrays.update(self.u_std.arrays("u"))
-
-        np.savez(path, **arrays)  # ty: ignore[invalid-argument-type]

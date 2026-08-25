@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import dataclasses
 import warnings
 from typing import TYPE_CHECKING, Any
 
@@ -8,7 +7,7 @@ import numpy as np
 import pytest
 import yaml
 
-from neuro.predictor.artifact import MLPArtifact
+from neuro.predictor.module import AutoregressiveMLP
 from neuro.provenance import (
     TrainingProvenance,
     check_excitation_alignment,
@@ -35,25 +34,32 @@ def _plant() -> dict[str, Any]:
     }
 
 
-def _artifact(tmp_path: Path, provenance: TrainingProvenance) -> Path:
-    """Save a tiny MLP artifact carrying ``provenance`` and return its suffix-less stem."""
-    rng = np.random.default_rng(0)
-    in_size = 2 * _N_CHANNELS + 2 * _N_CONTROLS
-    stem = tmp_path / "model"
-    MLPArtifact(
-        layers=((rng.normal(size=(_N_CHANNELS, in_size)), rng.normal(size=_N_CHANNELS)),),
-        activation="relu",
+def _module(
+    provenance: TrainingProvenance, *, dt: float = _PLANT_DT * _DOWNSAMPLE, downsample: int = _DOWNSAMPLE
+) -> AutoregressiveMLP:
+    """A tiny depth-0 MLP carrying ``provenance`` at the given rate and decimation."""
+    model = AutoregressiveMLP(
         n_y=2,
         n_u=2,
         horizon=50,
         n_channels=_N_CHANNELS,
         n_controls=_N_CONTROLS,
-        dt=_PLANT_DT * _DOWNSAMPLE,
-        downsample=_DOWNSAMPLE,
+        hidden_size=0,
+        depth=0,
+        activation="relu",
+        dt=dt,
         y_std=Standardizer(center=np.zeros(_N_CHANNELS), scale=np.ones(_N_CHANNELS)),
         u_std=Standardizer(center=np.zeros(_N_CONTROLS), scale=np.ones(_N_CONTROLS)),
-        provenance=provenance,
-    ).save(stem)
+    )
+    model.downsample = downsample
+    model.provenance = provenance
+    return model
+
+
+def _artifact(tmp_path: Path, provenance: TrainingProvenance) -> Path:
+    """Save a tiny MLP checkpoint carrying ``provenance`` and return its suffix-less stem."""
+    stem = tmp_path / "model"
+    _module(provenance).save(stem)
     return stem
 
 
@@ -210,7 +216,7 @@ def test_seed_and_log_do_not_count_as_a_different_plant(config: dict[str, Any]) 
 
 
 def test_artifact_without_provenance_skips_those_checks(config: dict[str, Any], tmp_path: Path) -> None:
-    """Artifacts written before provenance was recorded still validate on what they do carry."""
+    """Checkpoints written before provenance was recorded still validate on what they do carry."""
     config["controller"]["artifact"] = str(_artifact(tmp_path, TrainingProvenance()))
     with warnings.catch_warnings():
         warnings.simplefilter("error")
@@ -232,8 +238,7 @@ def test_data_plant_fingerprint_absent_without_a_config(tmp_path: Path) -> None:
 def test_undecimated_predictor_needs_no_filter(config: dict[str, Any], tmp_path: Path) -> None:
     """A predictor trained on undecimated data is correctly paired with an unfiltered estimator."""
     provenance = TrainingProvenance(plant_fingerprint=plant_fingerprint(_plant()))
-    art = MLPArtifact.load(_artifact(tmp_path, provenance))
-    dataclasses.replace(art, dt=_PLANT_DT, downsample=1).save(tmp_path / "undecimated")
+    _module(provenance, dt=_PLANT_DT, downsample=1).save(tmp_path / "undecimated")
 
     config["estimator"] = {"class_path": "simulate.estimator.IdentityEstimator", "dt": _PLANT_DT}
     config["controller"]["dt"] = _PLANT_DT

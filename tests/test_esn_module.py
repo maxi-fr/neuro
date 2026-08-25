@@ -8,8 +8,10 @@ import casadi as ca
 import numpy as np
 import pytest
 import torch
+from _predictor_reference import esn_absorb, esn_prime, esn_readout, esn_rollout, esn_step
 
-from neuro.esn import ESNArtifact, generate_reservoir, harvest_normal_equations, solve_ridge
+from neuro.checkpoint import ESNCheckpoint, load_esn
+from neuro.esn import generate_reservoir, harvest_normal_equations, solve_ridge
 from neuro.esn_predictor_casadi import ESNSymbolicModel
 from neuro.predictor.esn_module import ESNModule
 from neuro.predictor.ridge import RidgeTrainer
@@ -32,8 +34,8 @@ _RTOL, _ATOL = 1e-4, 1e-5
 _RIDGE_RTOL, _RIDGE_ATOL = 1e-8, 1e-9  # both solves run in float64 (LAPACK)
 
 
-def _artifact() -> ESNArtifact:
-    """A random ESN artifact with nontrivial standardizers, matching the module's weights."""
+def _checkpoint() -> ESNCheckpoint:
+    """A random ESN checkpoint with nontrivial standardizers, matching the module's weights."""
     rng = np.random.default_rng(_SEED)
     y_std = Standardizer(center=rng.uniform(-1.0, 1.0, _N_EEG), scale=rng.uniform(0.5, 2.0, _N_EEG))
     u_std = Standardizer(center=rng.uniform(-1.0, 1.0, _N_CONTROLS), scale=rng.uniform(0.5, 2.0, _N_CONTROLS))
@@ -45,7 +47,7 @@ def _artifact() -> ESNArtifact:
         in_dim=_N_EEG + _N_CONTROLS + 1,
         seed=_SEED,
     )
-    return ESNArtifact(
+    return ESNCheckpoint(
         w_in=w_in,
         w_out=rng.uniform(-0.1, 0.1, size=(_N_EEG, _N_RES + 1)),
         w_res=w_res,
@@ -67,24 +69,24 @@ def _artifact() -> ESNArtifact:
 
 
 def _module() -> ESNModule:
-    """The torch ESN module carrying the artifact's weights, buffers and generation metadata."""
-    art = _artifact()
+    """The torch ESN module carrying the checkpoint's weights, buffers and generation metadata."""
+    ckpt = _checkpoint()
     return ESNModule(
-        w_res=art.w_res,
-        w_in=art.w_in,
-        w_out=art.w_out,
-        leak_rate=art.leak_rate,
-        priming_steps=art.priming_steps,
-        horizon=art.horizon,
-        dt=art.dt,
-        spectral_radius=art.spectral_radius,
-        density=art.density,
-        input_scaling=art.input_scaling,
-        noise_sigma=art.noise_sigma,
-        ridge_lambda=art.ridge_lambda,
-        seed=art.seed,
-        y_std=art.y_std,
-        u_std=art.u_std,
+        w_res=ckpt.w_res,
+        w_in=ckpt.w_in,
+        w_out=ckpt.w_out,
+        leak_rate=ckpt.leak_rate,
+        priming_steps=ckpt.priming_steps,
+        horizon=ckpt.horizon,
+        dt=ckpt.dt,
+        spectral_radius=ckpt.spectral_radius,
+        density=ckpt.density,
+        input_scaling=ckpt.input_scaling,
+        noise_sigma=ckpt.noise_sigma,
+        ridge_lambda=ckpt.ridge_lambda,
+        seed=ckpt.seed,
+        y_std=ckpt.y_std,
+        u_std=ckpt.u_std,
     )
 
 
@@ -126,7 +128,7 @@ def test_esn_module_satisfies_predictor_protocol() -> None:
 
 def test_buffers_hold_weights_and_standardizers() -> None:
     """W_res stays sparse; W_in/W_out and the standardizers are float32 buffers; raw round-trips."""
-    art = _artifact()
+    ckpt = _checkpoint()
     model = _module()
     assert model.w_res.layout == torch.sparse_coo
     assert model.w_res.dtype == torch.float32
@@ -134,83 +136,90 @@ def test_buffers_hold_weights_and_standardizers() -> None:
     assert model.w_out.dtype == torch.float32
     assert model.y_center.dtype == torch.float32
     assert model.u_center.dtype == torch.float32
-    np.testing.assert_allclose(model.w_in.numpy(), art.w_in, rtol=_RTOL, atol=_ATOL)
-    np.testing.assert_allclose(model.w_out.numpy(), art.w_out, rtol=_RTOL, atol=_ATOL)
-    np.testing.assert_allclose(model.w_res.to_dense().numpy(), art.w_res.toarray(), rtol=_RTOL, atol=_ATOL)
-    np.testing.assert_allclose(model.y_std.center, art.y_std.center, rtol=_RTOL, atol=_ATOL)
-    np.testing.assert_allclose(model.u_std.center, art.u_std.center, rtol=_RTOL, atol=_ATOL)
+    np.testing.assert_allclose(model.w_in.numpy(), ckpt.w_in, rtol=_RTOL, atol=_ATOL)
+    np.testing.assert_allclose(model.w_out.numpy(), ckpt.w_out, rtol=_RTOL, atol=_ATOL)
+    np.testing.assert_allclose(model.w_res.to_dense().numpy(), ckpt.w_res.toarray(), rtol=_RTOL, atol=_ATOL)
+    np.testing.assert_allclose(model.y_std.center, ckpt.y_std.center, rtol=_RTOL, atol=_ATOL)
+    np.testing.assert_allclose(model.u_std.center, ckpt.u_std.center, rtol=_RTOL, atol=_ATOL)
 
     rng = np.random.default_rng(_SEED + 2)
     y = rng.standard_normal((4, _N_EEG))
     np.testing.assert_allclose(model.decode(model.encode(y)), y, rtol=_RTOL, atol=_ATOL)
 
 
-def test_absorb_matches_numpy_runtime() -> None:
-    """Torch ``absorb`` advances the reservoir exactly like ``ESNPredictor.absorb``, step by step."""
-    art = _artifact()
+def test_absorb_matches_the_float64_reference() -> None:
+    """Torch ``absorb`` advances the reservoir exactly like the checkpoint's float64 absorb."""
+    ckpt = _checkpoint()
     model = _module()
     rng = np.random.default_rng(_SEED + 3)
     y = rng.standard_normal((_PRIMING + 4, _N_EEG))
     u = rng.standard_normal((_PRIMING + 4, _N_CONTROLS))
-    z = art.encode(y)
-    v = art.u_std.transform(u)
+    z = ckpt.y_std.transform(y)
+    v = ckpt.u_std.transform(u)
 
     h_np = np.zeros(_N_RES)
     state = model.initial_state()
     for t in range(len(y)):
-        h_np = art.predictor.absorb(h_np, z[t], v[t])
+        h_np = esn_absorb(ckpt, h_np, z[t], v[t])
         state = model.absorb(state, y[t], u[t])
         np.testing.assert_allclose(state[:_N_RES], h_np, rtol=_RTOL, atol=_ATOL)
     assert state[_N_RES] == len(y)
 
 
-def test_step_matches_numpy_runtime() -> None:
-    """Torch ``step`` free-runs the same recurrence and emits the same raw output as the numpy runtime."""
-    art = _artifact()
+def test_step_matches_the_float64_reference() -> None:
+    """Torch ``step`` free-runs the same recurrence and emits the same raw output as the reference."""
+    ckpt = _checkpoint()
     model = _module()
     y_hist, u_hist, u_future = _context()
 
     state = model.prime(y_hist, u_hist)
-    h_np = art.prime(y_hist, u_hist)
+    h_np = np.zeros(_N_RES)
+    for t in range(_PRIMING):
+        z = ckpt.y_std.transform(y_hist[t])
+        v = ckpt.u_std.transform(u_hist[t])
+        h_np = esn_absorb(ckpt, h_np, z, v)
     for t in range(_STEPS):
-        v = art.u_std.transform(u_future[t])
-        z_hat_np = art.predictor.readout(h_np)
-        want_y = art.decode(z_hat_np)
-        h_np = art.predictor.step(h_np, v)
+        v = ckpt.u_std.transform(u_future[t])
+        z_hat_np = esn_readout(ckpt, h_np)
+        want_y = ckpt.y_std.inverse_transform(z_hat_np)
+        h_np = esn_step(ckpt, h_np, v)
 
         state, got_y = model.step(state, u_future[t])
         np.testing.assert_allclose(got_y, want_y, rtol=_RTOL, atol=_ATOL)
         np.testing.assert_allclose(state[:_N_RES], h_np, rtol=_RTOL, atol=_ATOL)
 
 
-def test_prime_matches_numpy_prime() -> None:
-    """``prime`` reproduces the artifact's reservoir state and counts the absorbed history."""
-    art = _artifact()
+def test_prime_matches_the_float64_prime() -> None:
+    """``prime`` reproduces the checkpoint's reservoir state and counts the absorbed history."""
+    ckpt = _checkpoint()
     model = _module()
     y_hist, u_hist, _ = _context()
-    np.testing.assert_allclose(model.prime(y_hist, u_hist)[:_N_RES], art.prime(y_hist, u_hist), rtol=_RTOL, atol=_ATOL)
+
+    np.testing.assert_allclose(
+        model.prime(y_hist, u_hist)[:_N_RES], esn_prime(ckpt, y_hist, u_hist), rtol=_RTOL, atol=_ATOL
+    )
 
 
-def test_rollout_matches_numpy_rollout() -> None:
-    """``rollout`` reproduces the artifact's raw free-run to float32 tolerance."""
-    art = _artifact()
+def test_rollout_matches_the_float64_rollout() -> None:
+    """``rollout`` reproduces the checkpoint's raw free-run to float32 tolerance."""
+    ckpt = _checkpoint()
     model = _module()
     y_hist, u_hist, u_future = _context()
 
     got = model.rollout(model.prime(y_hist, u_hist), u_future)
-    want = art.rollout(art.prime(y_hist, u_hist), u_future)
+    want = esn_rollout(ckpt, esn_prime(ckpt, y_hist, u_hist), u_future)
     assert got.shape == (_STEPS, _N_EEG)
     np.testing.assert_allclose(got, want, rtol=_RTOL, atol=_ATOL)
 
 
-def test_rollout_many_matches_numpy_rollout_many() -> None:
-    """Batched ``prime_many``/``rollout_many`` reproduce the artifact's batched path."""
-    art = _artifact()
+def test_rollout_many_matches_the_float64_rollout_many() -> None:
+    """Batched ``prime_many``/``rollout_many`` reproduce the reference's per-member free-runs."""
+    ckpt = _checkpoint()
     model = _module()
     y_hists, u_hists, u_futures = _batch(5)
 
     got = model.rollout_many(model.prime_many(y_hists, u_hists), u_futures)
-    want = art.rollout_many(art.prime_many(y_hists, u_hists), u_futures)
+    want = np.stack([esn_rollout(ckpt, esn_prime(ckpt, y_hists[i], u_hists[i]), u_futures[i]) for i in range(5)])
     assert got.shape == (5, _STEPS, _N_EEG)
     np.testing.assert_allclose(got, want, rtol=_RTOL, atol=_ATOL)
 
@@ -290,18 +299,18 @@ def test_absorb_counts_toward_ready() -> None:
 
 def test_solve_ridge_reproduces_the_incumbent() -> None:
     """The torch ridge solve equals ``solve_ridge`` on a real harvest to LAPACK precision."""
-    art = _artifact()
+    ckpt = _checkpoint()
     rng = np.random.default_rng(_SEED + 7)
     y = rng.standard_normal((60, _N_EEG))
     u = rng.standard_normal((60, _N_CONTROLS))
     G, P = harvest_normal_equations(
         trajectories=[(u, y)],
-        y_std=art.y_std,
-        u_std=art.u_std,
-        w_res=art.w_res,
-        w_in=art.w_in,
-        leak_rate=art.leak_rate,
-        priming_steps=art.priming_steps,
+        y_std=ckpt.y_std,
+        u_std=ckpt.u_std,
+        w_res=ckpt.w_res,
+        w_in=ckpt.w_in,
+        leak_rate=ckpt.leak_rate,
+        priming_steps=ckpt.priming_steps,
         noise_sigma=0.0,
         seed=_SEED,
     )
@@ -313,7 +322,7 @@ def test_solve_ridge_reproduces_the_incumbent() -> None:
 
 def test_design_normal_equations_reproduces_the_incumbent_harvest() -> None:
     """Streaming G/P equals the incumbent numpy harvest at noise_sigma = 0, to float32 tolerance."""
-    art = _artifact()
+    ckpt = _checkpoint()
     model = _module()
     rng = np.random.default_rng(_SEED + 7)
     y = rng.standard_normal((60, _N_EEG))
@@ -322,12 +331,12 @@ def test_design_normal_equations_reproduces_the_incumbent_harvest() -> None:
     G, P = model.design_normal_equations([(u, y)])
     G_want, P_want = harvest_normal_equations(
         trajectories=[(u, y)],
-        y_std=art.y_std,
-        u_std=art.u_std,
-        w_res=art.w_res,
-        w_in=art.w_in,
-        leak_rate=art.leak_rate,
-        priming_steps=art.priming_steps,
+        y_std=ckpt.y_std,
+        u_std=ckpt.u_std,
+        w_res=ckpt.w_res,
+        w_in=ckpt.w_in,
+        leak_rate=ckpt.leak_rate,
+        priming_steps=ckpt.priming_steps,
         noise_sigma=0.0,
         seed=_SEED,
     )
@@ -346,7 +355,7 @@ def test_install_readout_writes_w_out() -> None:
 
 def test_ridge_trainer_fits_the_esn_end_to_end() -> None:
     """The Ridge Trainer on the ESN reproduces the incumbent design -> solve -> install pipeline."""
-    _artifact()
+    _checkpoint()
     model = _module()
     assert isinstance(model, RidgeFittable)
     rng = np.random.default_rng(_SEED + 10)
@@ -391,19 +400,19 @@ def test_rollout_accepts_any_length_not_just_the_native_horizon() -> None:
 def test_casadi_adapter_rollout_matches_the_checkpoint_float64_rollout(tmp_path: Path, steps: int) -> None:
     """The CasADi bridge rebuilt from the module's checkpoint reproduces the float64 rollout.
 
-    The module stores float32 weights; the torch-free reader and the artifact loader both cast them
-    to float64, so the f_step/f_out chain and the reference are the same arithmetic to round-off.
+    The module stores float32 weights; the torch-free reader casts them to float64, so the
+    f_step/f_out chain and the reference are the same arithmetic to round-off.
     """
     model = _module()
     path = tmp_path / "esn_module"
     model.save(path)
 
     sym = ESNSymbolicModel.from_checkpoint(path)
-    art = ESNArtifact.load(path)
+    ckpt = load_esn(path)
     y_hist, u_hist, u_future = _context(steps=steps)
 
-    want = art.rollout(art.prime(y_hist, u_hist), u_future)
-    x = art.prime(y_hist, u_hist)
+    x = esn_prime(ckpt, y_hist, u_hist)
+    want = esn_rollout(ckpt, x, u_future)
     preds = []
     for u in u_future:
         preds.append(np.asarray(ca.DM(sym.f_out(x))).flatten())
@@ -416,12 +425,12 @@ def test_casadi_adapter_rollout_matches_the_checkpoint_float64_rollout(tmp_path:
 
 def test_save_checkpoint_is_readable_by_the_torch_free_loader(tmp_path: Path) -> None:
     """``ESNModule.save`` writes the six generation/fit metadata keys, so the torch-free
-    :class:`neuro.esn.ESNArtifact` loader reads the checkpoint and its runtime matches the module."""
+    :func:`neuro.checkpoint.load_esn` reader reads the checkpoint and the reference matches the module."""
     model = _module()
     path = tmp_path / "esn_module"
     model.save(path)
 
-    loaded = ESNArtifact.load(path)
+    loaded = load_esn(path)
     assert loaded.spectral_radius == pytest.approx(_RHO)
     assert loaded.density == pytest.approx(_DENSITY)
     assert loaded.input_scaling == pytest.approx(_IN_SCALE)
@@ -434,6 +443,6 @@ def test_save_checkpoint_is_readable_by_the_torch_free_loader(tmp_path: Path) ->
 
     y_hist, u_hist, u_future = _context()
     want = model.rollout(model.prime(y_hist, u_hist), u_future)
-    got = loaded.rollout(loaded.prime(y_hist, u_hist), u_future)
+    got = esn_rollout(loaded, esn_prime(loaded, y_hist, u_hist), u_future)
     assert got.shape == want.shape
     np.testing.assert_allclose(got, want, rtol=_RTOL, atol=_ATOL)
