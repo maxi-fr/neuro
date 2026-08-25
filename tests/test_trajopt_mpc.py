@@ -5,22 +5,18 @@ from __future__ import annotations
 import itertools
 from typing import TYPE_CHECKING
 
-import casadi as ca
 import jax.numpy as jnp
 import numpy as np
 import pytest
 import torch
 
-import neuro.control.nlp as nlp_mod
 from neuro.checkpoint import load_mlp
-from neuro.control.nonlinear_mpc import MPCController
 from neuro.control.trajopt_mpc import (
     TrajOptMPCController,
     TrajOptMPCLog,
     WaveformMLPModel,
     build_waveform_problem,
 )
-from neuro.nn_predictor_casadi import NNSymbolicModel
 from neuro.predictor.module import AutoregressiveMLP
 from neuro.transforms import Standardizer
 
@@ -85,10 +81,9 @@ def _build_checkpoint(
 def _lagged_state(artifact: Path, y_ctx: FloatArray, u_ctx: FloatArray) -> FloatArray:
     """MPC-convention state carrying the same trajectory as ``prime(y_ctx, u_ctx)``.
 
-    The incumbent CasADi chain rolls a state whose y-window ends at ``t`` while its u-window
-    ends at ``t - 1``; the torch module's ``prime`` ends both windows at ``t - 1``. Lagging the
-    u-window and prepending ``u_ctx``'s last entry converts one to the other (the conversion
-    ``test_nn_predictor_casadi.py`` documents for its adapter parity check).
+    The controller chain rolls a state whose y-window ends at ``t`` while its u-window ends at
+    ``t - 1``; the torch module's ``prime`` ends both windows at ``t - 1``. Lagging the
+    u-window and prepending ``u_ctx``'s last entry converts one to the other.
     """
     ckpt = load_mlp(artifact)
     return np.concatenate(
@@ -272,48 +267,3 @@ def test_controller_keeps_absorbed_state_private(tmp_path: Path) -> None:
     assert not np.isnan(controller._state[:n_z]).any()  # noqa: SLF001
     np.testing.assert_array_equal(controller._u_last, u_last)  # noqa: SLF001
     assert not np.array_equal(np.asarray(controller.state.x0), controller._state)  # noqa: SLF001
-
-
-@pytest.mark.parametrize(
-    ("w_u", "w_y_terminal"),
-    [(0.0, None), (0.1, None), (0.1, 2.0)],
-    ids=["pure-y", "with-effort", "terminal-weighted"],
-)
-def test_reproduces_mpc_controller_control_sequence(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, w_u: float, w_y_terminal: float | None
-) -> None:
-    """The trajopt controller reproduces the incumbent's control sequence on a scripted trajectory.
-
-    Compared on the quadratic-cost/box-constraint subset of today's problem, so the incumbent's
-    Kirchhoff equality (ticket 02's scope) is removed from the reference via a monkeypatched
-    ``_sum_to_zero``; a depth-0 (linear) checkpoint keeps the problem convex so both Ipopt
-    solves land on the same unique minimum.
-    """
-    monkeypatch.setattr(nlp_mod, "_sum_to_zero", lambda _u_vars: ca.MX(0))
-    artifact = _build_checkpoint(tmp_path, depth=0)
-    ckpt = load_mlp(artifact)
-
-    incumbent = MPCController(
-        dt=0.01,
-        model=NNSymbolicModel.from_checkpoint(artifact),
-        u_max=0.5,
-        horizon=3,
-        w_y=1.0,
-        w_u=w_u,
-        w_y_terminal=w_y_terminal,
-        solver="ipopt",
-    )
-    problem = build_waveform_problem(artifact, horizon=3, u_max=0.5, w_y=1.0, w_u=w_u, w_y_terminal=w_y_terminal)
-    controller = TrajOptMPCController(dt=0.01, problem=problem)
-
-    rng = np.random.default_rng(_SEED + 5)
-    want = []
-    got = []
-    for k in range(8):
-        measurement = rng.standard_normal(ckpt.n_channels)
-        u_inc, _ = incumbent.update(k * 0.01, ref=np.array([0.0]), x_hat=measurement)
-        u_new, _ = controller.update(k * 0.01, ref=np.array([0.0]), x_hat=measurement)
-        want.append(np.atleast_1d(np.asarray(u_inc, dtype=np.float64)))
-        got.append(np.atleast_1d(np.asarray(u_new, dtype=np.float64)))
-
-    np.testing.assert_allclose(np.array(got[3:]), np.array(want[3:]), atol=1e-4)

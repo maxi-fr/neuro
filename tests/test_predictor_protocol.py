@@ -11,7 +11,6 @@ import torch
 from _predictor_reference import mlp_prime, mlp_rollout
 
 from neuro.checkpoint import MLPCheckpoint
-from neuro.nn_predictor_casadi import NNSymbolicModel
 from neuro.predictor.module import AutoregressiveMLP
 from neuro.transforms import Standardizer
 from neuro.types import Predictor
@@ -206,29 +205,6 @@ def test_rollout_equals_a_loop_of_step() -> None:
         want[t] = y
 
     np.testing.assert_allclose(got, want, rtol=_RTOL, atol=_ATOL)
-
-
-def test_absorb_is_ready_initial_state_reproduce_the_shift_register() -> None:
-    """``initial_state``/``absorb``/``is_ready`` match the CasADi bridge's NaN-padded register."""
-    ckpt = _checkpoint()
-    model = _model()
-    sym = NNSymbolicModel(ckpt)
-
-    state = model.initial_state()
-    want_state = sym.initial_state()
-    np.testing.assert_array_equal(state, want_state)
-    assert np.isnan(state[: _N_Y * _N_EEG]).all()
-    assert not model.is_ready(state)
-
-    rng = np.random.default_rng(_SEED + 5)
-    y = rng.standard_normal((_N_Y + 2, _N_EEG))
-    u = rng.standard_normal((_N_Y + 2, _N_CONTROLS))
-    for t in range(len(y)):
-        state = model.absorb(state, y[t], u[t])
-        want_state = sym.absorb(want_state, y[t], u[t])
-        np.testing.assert_allclose(state, want_state, rtol=_RTOL, atol=_ATOL)
-        assert model.is_ready(state) == sym.is_ready(want_state)
-    assert model.is_ready(state)
 
 
 def test_rollout_accepts_any_length_not_just_the_native_horizon() -> None:

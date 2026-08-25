@@ -5,11 +5,10 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 import pytest
-from _predictor_reference import esn_absorb, esn_prime, esn_rollout, esn_step, mlp_forward, mlp_prime, mlp_rollout
+from _predictor_reference import esn_absorb, esn_prime, esn_rollout, mlp_forward, mlp_prime, mlp_rollout
 
 from neuro.checkpoint import ESNCheckpoint, load_any, load_esn, load_mlp
 from neuro.esn import generate_reservoir, harvest_normal_equations
-from neuro.esn_predictor_casadi import ESNSymbolicModel
 from neuro.predictor.module import AutoregressiveMLP
 from neuro.transforms import Standardizer
 
@@ -100,45 +99,6 @@ def _build_tiny_mlp_checkpoint(
     checkpoint = tmp_path / "mlp_tiny"
     model.save(checkpoint)
     return checkpoint
-
-
-def test_casadi_step_matches_the_float64_reference(tmp_path: Path) -> None:
-    """``ESNSymbolicModel.f_step`` equals the checkpoint's float64 free-running step to 1e-10."""
-    ckpt_path = _build_tiny_esn_checkpoint(tmp_path)
-    ckpt = load_esn(ckpt_path)
-    model = ESNSymbolicModel.from_checkpoint(ckpt_path)
-
-    rng = np.random.default_rng(_SEED)
-    h = rng.standard_normal(ckpt.reservoir_size)
-    u = rng.standard_normal(ckpt.n_controls)
-
-    h_next_ca = np.asarray(model.f_step(h.reshape(-1, 1), u.reshape(-1, 1))).reshape(-1)
-    h_next_np = esn_step(ckpt, h, ckpt.u_std.transform(u))
-
-    np.testing.assert_allclose(h_next_ca, h_next_np, atol=1e-10)
-
-
-def test_casadi_rollout_matches_the_float64_reference(tmp_path: Path) -> None:
-    """Chaining f_step/f_out over 50 steps equals the checkpoint's float64 rollout to 1e-10."""
-    ckpt_path = _build_tiny_esn_checkpoint(tmp_path, horizon=50)
-    ckpt = load_esn(ckpt_path)
-    model = ESNSymbolicModel.from_checkpoint(ckpt_path)
-
-    rng = np.random.default_rng(_SEED + 1)
-    h_init = rng.standard_normal(ckpt.reservoir_size)
-    u_future = rng.standard_normal((50, ckpt.n_controls))
-
-    y_preds_np = esn_rollout(ckpt, h_init, u_future)
-
-    h_curr = h_init.reshape(-1, 1)
-    y_preds_ca_list = []
-    for t in range(len(u_future)):
-        y_t = np.asarray(model.f_out(h_curr)).reshape(-1)
-        y_preds_ca_list.append(y_t)
-        h_curr = model.f_step(h_curr, u_future[t].reshape(-1, 1))
-
-    y_preds_ca = np.array(y_preds_ca_list)
-    np.testing.assert_allclose(y_preds_ca, y_preds_np, atol=1e-10)
 
 
 def test_checkpoint_round_trip_preserves_weights(tmp_path: Path) -> None:

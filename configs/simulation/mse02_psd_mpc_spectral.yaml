@@ -2,7 +2,7 @@
 # Matched pair with mse02_psd_mpc.yaml -- the ONLY difference is the cost block:
 #   - w_y: 0.0 (stagewise power cost replaced by spectral envelope cost);
 #   - w_psd: 1000.0 with data/healthy_psd.npz;
-#   - horizon: 75, shooting_depth: 75 (1.5 s horizon, M=2 windows of L=50, R=25 at 50 Hz).
+#   - horizon: 75 (1.5 s horizon, M=2 windows of L=50, R=25 at 50 Hz).
 t_end: 20.0
 
 dynamics:
@@ -42,16 +42,14 @@ sensors:
 estimator: {class_path: neuro.filtering.AntiAliasEstimator, dt: 0.0001, downsample: 200}
 
 controller:
-  class_path: neuro.control.nonlinear_mpc.MPCController
+  class_path: neuro.control.trajopt_mpc.TrajOptMPCController
   dt: 0.02              # = predictor dt = 0.0001 * 200
-  artifact: artifacts/nonlinear_mse02_psd/model
-  horizon: 75           # 1.5 s horizon (M=2 windows of L=50, R=25)
-  u_max: 2.0
-  w_y: 0.0
-  w_u: 10.0
-  w_psd: 1000.0
-  psd_ref: data/healthy_psd.npz
-  psd_window_s: 1.0
-  psd_hop_s: 0.5
-  shooting_depth: 75    # >= horizon -> single shooting (states condensed out; controls-only NLP)
-  max_iter: 100
+  problem:
+    class_path: neuro.control.trajopt_mpc.build_waveform_problem
+    artifact: artifacts/nonlinear_mse02_psd/model
+    horizon: 75         # 1.5 s horizon (M=2 windows of L=50, R=25)
+    u_max: 2.0
+    w_y: 0.0
+    w_u: 10.0
+    w_psd: 1000.0
+    psd_ref: data/healthy_psd.npz

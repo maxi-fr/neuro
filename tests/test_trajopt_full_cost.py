@@ -1,34 +1,21 @@
-"""Ticket 02: full cost and constraint parity -- hinge/L1 costs, Kirchhoff, controller parity."""
+"""Ticket 02: full cost and constraint set -- hinge/L1 costs, Kirchhoff, native solvers."""
 
 from __future__ import annotations
 
 import itertools
 from typing import TYPE_CHECKING
 
-import casadi as ca
 import jax.numpy as jnp
 import numpy as np
-import pytest
 import torch
 from trajopt.constraints.linear import LinearConstraint
 from trajopt.problem import MPCState
 from trajopt.solvers.altro import ALTRO
 from trajopt.transcription.ipopt import Ipopt
 
-from neuro.config import StftGeometry
-from neuro.control.nlp import _observable_hinge_cost, _spectral_hinge_cost
-from neuro.control.nonlinear_mpc import MPCController
-from neuro.control.trajopt_costs import L1ControlCost, ObservableHingeCost, SpectralHingeCost, SumCost
-from neuro.control.trajopt_mpc import (
-    TrajOptMPCController,
-    WaveformMLPModel,
-    build_waveform_problem,
-    kirchhoff_constraint,
-)
-from neuro.nn_predictor_casadi import NNSymbolicModel
-from neuro.observable import envelope_log_reference
+from neuro.control.trajopt_costs import L1ControlCost, SumCost
+from neuro.control.trajopt_mpc import WaveformMLPModel, build_waveform_problem
 from neuro.predictor.module import AutoregressiveMLP
-from neuro.spectral import PsdEnvelope, compute_periodograms
 from neuro.transforms import Standardizer
 
 if TYPE_CHECKING:
@@ -100,52 +87,6 @@ def _ready_state(artifact: Path, rng: np.random.Generator) -> FloatArray:
     return state
 
 
-def _biting_envelope(tmp_path: Path, artifact: Path, horizon: int, *, length: int, hop: int, fs: float) -> Path:
-    """Write a healthy-envelope npz whose power the model's zero-control rollout exceeds.
-
-    The envelope is the per-``(channel, bin)`` median of the rollout's own periodograms, so
-    roughly half of every cell sits over it and the hinge actually bites.
-    """
-    probe = WaveformMLPModel.from_checkpoint(artifact)
-    rng = np.random.default_rng(_SEED + 1)
-    x0 = np.asarray(probe.initial_state())
-    x0[: probe.n_y * probe.n_channels] = rng.standard_normal(probe.n_y * probe.n_channels)
-    x = jnp.asarray(x0)
-    y_traj = []
-    for _ in range(horizon):
-        x = probe.discrete_dynamics(x, jnp.zeros(probe.m), 0.0, 0.01)
-        z = np.asarray(x)[(probe.n_y - 1) * probe.n_channels : probe.n_y * probe.n_channels]
-        y_traj.append(z * np.asarray(probe.y_scale) + np.asarray(probe.y_center))
-    windows = compute_periodograms(np.array(y_traj), fs=fs, window=length, hop=hop)
-    path = tmp_path / "healthy.npz"
-    np.savez(
-        path,
-        Pref=np.median(windows, axis=0),
-        freqs=np.fft.rfftfreq(length, 1.0 / fs),
-        fs=fs,
-        L=length,
-        R=hop,
-        quantile=0.9,
-        n_windows=10,
-        plant_fingerprint="test",
-    )
-    return path
-
-
-def _roll_trajectory(artifact: Path, x0: FloatArray, u_seq: FloatArray) -> tuple[list[FloatArray], FloatArray]:
-    """Roll the adapter under ``u_seq``; returns the predicted raw outputs and the state trajectory."""
-    probe = WaveformMLPModel.from_checkpoint(artifact)
-    states = [np.asarray(x0)]
-    y_nodes = []
-    x = jnp.asarray(x0)
-    for u in u_seq:
-        x = probe.discrete_dynamics(x, jnp.asarray(u), 0.0, 0.01)
-        states.append(np.asarray(x))
-        z = np.asarray(x)[(probe.n_y - 1) * probe.n_channels : probe.n_y * probe.n_channels]
-        y_nodes.append(z * np.asarray(probe.y_scale) + np.asarray(probe.y_center))
-    return y_nodes, np.array(states)
-
-
 def _full_parity_solver() -> Ipopt:
     """The general Ipopt transcription with L-BFGS and acceptable-level termination.
 
@@ -164,52 +105,6 @@ def _full_parity_solver() -> Ipopt:
             "acceptable_constr_viol_tol": 1e-4,
         }
     )
-
-
-def test_spectral_hinge_matches_casadi_graph(tmp_path: Path) -> None:
-    """The trajopt spectral hinge totals the CasADi graph's value on a fixed trajectory."""
-    n_y, n_u, n_channels, n_controls = 4, 3, 2, 2
-    horizon, length, hop, fs = 6, 4, 2, 50.0
-    artifact = _build_checkpoint(
-        tmp_path, n_y=n_y, n_u=n_u, horizon=horizon, n_channels=n_channels, n_controls=n_controls
-    )
-    probe = WaveformMLPModel.from_checkpoint(artifact)
-    env_path = _biting_envelope(tmp_path, artifact, horizon, length=length, hop=hop, fs=fs)
-    envelope = PsdEnvelope.load(env_path)
-
-    rng = np.random.default_rng(_SEED + 2)
-    x0 = _ready_state(artifact, rng)
-    u_seq = rng.uniform(-0.5, 0.5, (horizon, n_controls))
-    y_nodes, states = _roll_trajectory(artifact, x0, u_seq)
-
-    casadi_value = float(ca.evalf(_spectral_hinge_cost([ca.MX(y.reshape(-1, 1)) for y in y_nodes], envelope, horizon)))
-
-    cost = SpectralHingeCost(model=probe, envelope=envelope, w_psd=1.0, horizon=horizon)
-    stage = cost.stage_costs(jnp.asarray(states[:-1]), jnp.asarray(u_seq), jnp.zeros(horizon))
-    assert casadi_value > 0.0, "the envelope must actually bite for the parity check to mean anything"
-    np.testing.assert_allclose(float(jnp.sum(stage)), casadi_value, rtol=1e-10, atol=1e-12)
-
-
-def test_observable_hinge_matches_casadi_graph() -> None:
-    """The trajopt observable hinge totals the CasADi graph's value on fixed forecast frames.
-
-    The reference is reduced from the healthy envelope through the ``ObservableGeometry`` -- the
-    same shared source of truth the training-time Loss scores against.
-    """
-    rng = np.random.default_rng(_SEED + 3)
-    n_channels, n_values, n_frames = 3, 4, 5
-    geometry = StftGeometry(n_segment=8, n_hop=4)
-    envelope = PsdEnvelope(power=np.full((n_channels, 5), 1.5), fs=50.0, window=8, hop=4)
-    log_reference = envelope_log_reference(envelope, geometry, 50.0)
-    assert log_reference.shape == (n_channels, n_values)
-
-    l_hat = rng.standard_normal((n_channels * n_values, n_frames)) + 1.0
-    casadi_value = float(ca.evalf(_observable_hinge_cost(ca.MX(l_hat), log_reference)))
-    assert casadi_value > 0.0, "the reference must actually bite for the parity check to mean anything"
-
-    cost = ObservableHingeCost(n=0, m=0, log_reference=log_reference, w_psd=1.0, n_frames=n_frames)
-    stage = cost.stage_costs(jnp.asarray(l_hat.T), jnp.zeros((n_frames, 1)), jnp.zeros(n_frames))
-    np.testing.assert_allclose(float(jnp.sum(stage)), casadi_value, rtol=1e-12, atol=1e-12)
 
 
 def test_kirchhoff_constraint_registered_and_enforced(tmp_path: Path) -> None:
@@ -249,110 +144,6 @@ def test_kirchhoff_constraint_registered_and_enforced(tmp_path: Path) -> None:
     solved = with_kirchhoff.solve(state, solver=_full_parity_solver())
     assert solved.status == "converged"
     np.testing.assert_allclose(np.sum(np.asarray(solved.controls), axis=1), np.zeros(6), atol=1e-6)
-
-
-def test_full_cost_controller_reproduces_incumbent(tmp_path: Path) -> None:
-    """The controller reproduces the incumbent's control sequence with the full cost and constraint set.
-
-    Quadratic (power + effort) plus the spectral hinge and the smooth L1 surrogate, against the
-    box bounds and the Kirchhoff equality -- the incumbent's epigraph L1 and hand-rolled DFT
-    hinge replaced by the custom ``CostFunction``s, both sides solved by Ipopt on the same
-    scripted trajectory. A depth-0 (linear) checkpoint keeps the problem well-behaved so both
-    land on the same optimum.
-    """
-    n_y, n_u, n_channels, n_controls = 4, 3, 2, 2
-    horizon, length, hop, fs = 8, 4, 2, 50.0
-    artifact = _build_checkpoint(
-        tmp_path, n_y=n_y, n_u=n_u, horizon=horizon, n_channels=n_channels, n_controls=n_controls, depth=0
-    )
-    env_path = _biting_envelope(tmp_path, artifact, horizon, length=length, hop=hop, fs=fs)
-
-    w_y, w_u, w_l1, w_psd, u_max = 1.0, 0.05, 0.5, 50.0, 0.8
-
-    incumbent = MPCController(
-        dt=0.01,
-        model=NNSymbolicModel.from_checkpoint(artifact),
-        u_max=u_max,
-        horizon=horizon,
-        w_y=w_y,
-        w_u=w_u,
-        w_u_l1=w_l1,
-        w_psd=w_psd,
-        psd_ref=str(env_path),
-        solver="ipopt",
-    )
-    problem = build_waveform_problem(
-        artifact,
-        horizon=horizon,
-        u_max=u_max,
-        w_y=w_y,
-        w_u=w_u,
-        w_u_l1=w_l1,
-        w_psd=w_psd,
-        psd_ref=str(env_path),
-        kirchhoff=True,
-    )
-    controller = TrajOptMPCController(dt=0.01, problem=problem, solver=_full_parity_solver())
-
-    rng = np.random.default_rng(_SEED + 5)
-    want = []
-    got = []
-    for k in range(6):
-        measurement = rng.standard_normal(n_channels)
-        u_inc, _ = incumbent.update(k * 0.01, ref=np.array([0.0]), x_hat=measurement)
-        u_new, log_new = controller.update(k * 0.01, ref=np.array([0.0]), x_hat=measurement)
-        if not log_new.warmup:
-            assert log_new.success, "the trajopt solve must converge"
-        want.append(np.atleast_1d(np.asarray(u_inc, dtype=np.float64)))
-        got.append(np.atleast_1d(np.asarray(u_new, dtype=np.float64)))
-
-    np.testing.assert_allclose(np.array(got[3:]), np.array(want[3:]), atol=1e-4)
-    # The Kirchhoff equality holds on the emitted controls.
-    np.testing.assert_allclose(np.sum(np.array(got[3:]), axis=1), np.zeros(3), atol=1e-6)
-
-
-def test_l1_surrogate_matches_incumbent_epigraph(tmp_path: Path) -> None:
-    """The smooth L1 surrogate reproduces the incumbent's epigraph controls on the transcription path.
-
-    With only the quadratic and L1 terms active (no spectral hinge), the problem is a convex QP,
-    so both sides converge to the same unique optimum: the data behind keeping the smooth
-    surrogate for every solver rather than restricting L1 to transcription-based ones.
-    """
-    n_y, n_u, n_channels, n_controls = 4, 3, 2, 2
-    horizon = 6
-    artifact = _build_checkpoint(
-        tmp_path, n_y=n_y, n_u=n_u, horizon=horizon, n_channels=n_channels, n_controls=n_controls, depth=0
-    )
-
-    w_y, w_u, w_l1, u_max = 1.0, 0.05, 0.5, 0.8
-
-    incumbent = MPCController(
-        dt=0.01,
-        model=NNSymbolicModel.from_checkpoint(artifact),
-        u_max=u_max,
-        horizon=horizon,
-        w_y=w_y,
-        w_u=w_u,
-        w_u_l1=w_l1,
-        solver="ipopt",
-    )
-    problem = build_waveform_problem(
-        artifact, horizon=horizon, u_max=u_max, w_y=w_y, w_u=w_u, w_u_l1=w_l1, kirchhoff=True
-    )
-    controller = TrajOptMPCController(dt=0.01, problem=problem, solver=_full_parity_solver())
-
-    rng = np.random.default_rng(_SEED + 6)
-    want = []
-    got = []
-    for k in range(6):
-        measurement = rng.standard_normal(n_channels)
-        u_inc, _ = incumbent.update(k * 0.01, ref=np.array([0.0]), x_hat=measurement)
-        u_new, log_new = controller.update(k * 0.01, ref=np.array([0.0]), x_hat=measurement)
-        assert log_new.success
-        want.append(np.atleast_1d(np.asarray(u_inc, dtype=np.float64)))
-        got.append(np.atleast_1d(np.asarray(u_new, dtype=np.float64)))
-
-    np.testing.assert_allclose(np.array(got[3:]), np.array(want[3:]), atol=1e-3)
 
 
 def test_native_solver_converges_on_smooth_l1(tmp_path: Path) -> None:

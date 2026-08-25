@@ -16,9 +16,7 @@ if TYPE_CHECKING:
     from neuro.provenance import TrainingProvenance
 
 _FILTERING_ESTIMATORS = frozenset({"neuro.filtering.AntiAliasEstimator", "neuro.filtering.LowPassEstimator"})
-_PREDICTIVE_CONTROLLERS = frozenset(
-    {"neuro.control.nonlinear_mpc.MPCController", "neuro.control.linear_mpc.LinearMPCController"}
-)
+_PREDICTIVE_CONTROLLERS = frozenset({"neuro.control.trajopt_mpc.TrajOptMPCController"})
 _REL_TOL = 1e-9
 
 
@@ -81,9 +79,9 @@ def _check_rates(config: Mapping[str, Any]) -> None:
             raise ConfigConsistencyError(msg)
 
 
-def _check_psd_reference(controller: Mapping[str, Any], controller_dt: float) -> None:
+def _check_psd_reference(problem: Mapping[str, Any], controller_dt: float) -> None:
     """Validate spectral reference envelope and geometry against controller configuration."""
-    psd_ref_path = controller.get("psd_ref")
+    psd_ref_path = problem.get("psd_ref")
     if psd_ref_path is None:
         return
 
@@ -100,27 +98,13 @@ def _check_psd_reference(controller: Mapping[str, Any], controller_dt: float) ->
         )
         raise ConfigConsistencyError(msg)
 
-    for key, declared, actual in (
-        ("psd_window_s", controller.get("psd_window_s"), envelope.window),
-        ("psd_hop_s", controller.get("psd_hop_s"), envelope.hop),
-    ):
-        if declared is None:
-            continue
-        steps = round(float(declared) / controller_dt)
-        if steps != actual:
-            msg = (
-                f"controller.{key} ({declared} s = {steps} steps) does not match the spectral "
-                f"reference geometry ({actual} steps)."
-            )
-            raise ConfigConsistencyError(msg)
 
-
-def _check_observable_geometry(ckpt: ObservableCheckpoint, controller: Mapping[str, Any]) -> None:
+def _check_observable_geometry(ckpt: ObservableCheckpoint, problem: Mapping[str, Any]) -> None:
     """Require the geometry recorded in an observable checkpoint to match the reference envelope's.
 
     :func:`_check_psd_reference` only sees what the YAML declares, not what the predictor was fit on.
     """
-    psd_ref_path = controller.get("psd_ref")
+    psd_ref_path = problem.get("psd_ref")
     if psd_ref_path is None:
         return
 
@@ -166,7 +150,8 @@ def _check_predictor(config: Mapping[str, Any]) -> None:
     if controller["class_path"] not in _PREDICTIVE_CONTROLLERS:
         return
 
-    ckpt = load_any(controller["artifact"])
+    problem = controller["problem"]
+    ckpt = load_any(problem["artifact"])
     provenance = ckpt.provenance
 
     controller_dt = float(controller["dt"])
@@ -186,17 +171,17 @@ def _check_predictor(config: Mapping[str, Any]) -> None:
         )
         raise ConfigConsistencyError(msg)
 
-    horizon = controller.get("horizon")
+    horizon = problem.get("horizon")
     if horizon is not None and int(horizon) > ckpt.horizon:
         warnings.warn(
-            f"controller.horizon ({horizon}) exceeds the predictor's trained horizon ({ckpt.horizon}); "
+            f"controller.problem.horizon ({horizon}) exceeds the predictor's trained horizon ({ckpt.horizon}); "
             f"the MPC would cost a free run longer than any the model was ever fit against.",
             stacklevel=2,
         )
 
-    _check_psd_reference(controller, controller_dt)
+    _check_psd_reference(problem, controller_dt)
     if isinstance(ckpt, ObservableCheckpoint):
-        _check_observable_geometry(ckpt, controller)
+        _check_observable_geometry(ckpt, problem)
 
     if provenance.plant_fingerprint is not None and provenance.plant_fingerprint != plant_fingerprint(config):
         warnings.warn(

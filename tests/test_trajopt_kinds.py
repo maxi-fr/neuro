@@ -6,7 +6,6 @@ import itertools
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-import casadi as ca
 import jax.numpy as jnp
 import numpy as np
 import pytest
@@ -17,12 +16,9 @@ from trajopt.solvers.altro import ALTRO
 from trajopt.transcription.ipopt import Ipopt
 from yaml import safe_load
 
-import neuro.control.nlp as nlp_mod
 from neuro.checkpoint import ESNCheckpoint, load_esn
 from neuro.config import StftGeometry
-from neuro.control.nlp import _observable_hinge_cost, _spectral_hinge_cost
-from neuro.control.nonlinear_mpc import MPCController
-from neuro.control.trajopt_costs import ESNAutoRegressiveCost, ObservableForecastHinge, SpectralHingeCost
+from neuro.control.trajopt_costs import ESNAutoRegressiveCost
 from neuro.control.trajopt_mpc import (
     ESNModel,
     ObservableModel,
@@ -32,11 +28,11 @@ from neuro.control.trajopt_mpc import (
     build_observable_problem,
 )
 from neuro.esn import generate_reservoir
-from neuro.observable import control_means, envelope_log_reference
+from neuro.observable import control_means
 from neuro.predictor.esn_module import ESNModule
 from neuro.predictor.module import AutoregressiveMLP
 from neuro.predictor.observable_module import StepwiseObservableMLP
-from neuro.spectral import PsdEnvelope, compute_periodograms
+from neuro.spectral import compute_periodograms
 from neuro.transforms import Standardizer
 
 if TYPE_CHECKING:
@@ -373,18 +369,18 @@ def test_migrated_yaml_controller_block_dispatches_each_kind(
     factory: str,
     weights: dict[str, object],
 ) -> None:
-    """The checked-in ``mse02_psd_mpc.yaml`` controller block migrates to the new controller.
+    """The checked-in ``mse02_psd_mpc.yaml`` controller block dispatches each predictor kind.
 
-    Migrating the config means pointing ``class_path`` at ``TrajOptMPCController`` and nesting
-    the existing cost-weight fields (``artifact``, ``horizon``, ``u_max``, ``w_y``, ``w_u``,
-    ``w_psd``, ``psd_ref``) under ``problem`` with the per-kind factory -- no new config schema.
-    The incumbent-only solver knobs (``shooting_depth``, ``max_iter``) have no meaning on the
-    trajopt side and are dropped.
+    The config carries the migrated layout: ``class_path`` at ``TrajOptMPCController`` and the
+    cost-weight fields (``artifact``, ``horizon``, ``u_max``, ``w_y``, ``w_u``) nested under
+    ``problem`` with the per-kind factory. Swapping in a synthetic checkpoint for each kind and
+    adding the observable-only weights drives it through ``from_config`` directly.
     """
     with Path("configs/simulation/mse02_psd_mpc.yaml").open() as file:
         sim_config = safe_load(file)
     controller_cfg = sim_config["controller"]
-    assert controller_cfg["class_path"] == "neuro.control.nonlinear_mpc.MPCController"
+    assert controller_cfg["class_path"] == "neuro.control.trajopt_mpc.TrajOptMPCController"
+    assert controller_cfg["problem"]["class_path"] == "neuro.control.trajopt_mpc.build_waveform_problem"
 
     if kind == "mlp":
         artifact = _mlp_checkpoint(tmp_path)
@@ -397,15 +393,12 @@ def test_migrated_yaml_controller_block_dispatches_each_kind(
         weights["psd_ref"] = str(_envelope_npz(tmp_path, np.full((ckpt.n_channels, _L // 2 + 1), 1e-3)))
 
     problem_cfg = {
-        key: value
-        for key, value in controller_cfg.items()
-        if key not in ("class_path", "dt", "shooting_depth", "max_iter")
+        **controller_cfg["problem"],
+        "class_path": f"neuro.control.trajopt_mpc.{factory}",
+        "artifact": str(artifact),
+        **weights,
     }
-    problem_cfg.update({"class_path": f"neuro.control.trajopt_mpc.{factory}", "artifact": str(artifact)})
-    problem_cfg.update(weights)
-    migrated = {"dt": controller_cfg["dt"], "problem": problem_cfg}
-
-    controller = TrajOptMPCController.from_config(migrated)
+    controller = TrajOptMPCController.from_config({"dt": controller_cfg["dt"], "problem": problem_cfg})
     assert controller.dt == controller_cfg["dt"]
     u, log = controller.update(0.0, np.array([0.0]), np.zeros(controller.model.n_channels))
     assert u.shape == (controller.model.m,)
@@ -453,131 +446,6 @@ def _random_layers(rng: np.random.Generator, sizes: list[int]) -> tuple[tuple[Fl
         (rng.uniform(-1.0, 1.0, (out, inp)) / np.sqrt(inp), rng.uniform(-1.0, 1.0, out) / np.sqrt(inp))
         for inp, out in itertools.pairwise(sizes)
     )
-
-
-def test_migrated_esn_config_reproduces_incumbent_sequence(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """The migrated ESN config reproduces the incumbent's control sequence through config loading.
-
-    Both controllers are built from the same checkpoint via ``from_config`` -- the incumbent
-    from a plain ``{artifact, u_max, ...}`` dict, the migrated one from a ``{class_path, ...}``
-    factory dict -- and driven on the same scripted trajectory. The incumbent's unconditional
-    Kirchhoff equality is removed via a monkeypatched ``_sum_to_zero`` so the comparison sits on
-    the quadratic/box subset, exactly ticket 01's parity scope for the waveform.
-    """
-    monkeypatch.setattr(nlp_mod, "_sum_to_zero", lambda _u_vars: ca.MX(0))
-    artifact = _esn_checkpoint(tmp_path)
-
-    incumbent = MPCController.from_config(
-        {
-            "dt": 0.01,
-            "artifact": str(artifact),
-            "u_max": 0.5,
-            "horizon": _HORIZON,
-            "w_y": 1.0,
-            "w_u": 0.1,
-            "solver": "ipopt",
-        }
-    )
-    migrated = TrajOptMPCController.from_config(
-        {
-            "dt": 0.01,
-            "problem": {
-                "class_path": "neuro.control.trajopt_mpc.build_esn_problem",
-                "artifact": str(artifact),
-                "horizon": _HORIZON,
-                "u_max": 0.5,
-                "w_y": 1.0,
-                "w_u": 0.1,
-            },
-        }
-    )
-
-    rng = np.random.default_rng(_SEED + 7)
-    want = []
-    got = []
-    for k in range(8):
-        measurement = rng.standard_normal(_N_EEG)
-        u_inc, _ = incumbent.update(k * 0.01, ref=np.array([0.0]), x_hat=measurement)
-        u_new, log_new = migrated.update(k * 0.01, ref=np.array([0.0]), x_hat=measurement)
-        if not log_new.warmup:
-            assert log_new.success, "the migrated solve must converge"
-        want.append(np.atleast_1d(np.asarray(u_inc, dtype=np.float64)))
-        got.append(np.atleast_1d(np.asarray(u_new, dtype=np.float64)))
-
-    np.testing.assert_allclose(np.array(got[_PRIMING - 1 :]), np.array(want[_PRIMING - 1 :]), atol=1e-4)
-
-
-def test_esn_spectral_hinge_matches_casadi_graph(tmp_path: Path) -> None:
-    """The trajopt spectral hinge totals the CasADi graph's value on a fixed ESN trajectory.
-
-    Pins the hinge's decode path for a model whose predicted output is a readout of the state
-    rather than a state component.
-    """
-    horizon, length, hop, fs = 6, 4, 2, 50.0
-    artifact = _esn_checkpoint(tmp_path)
-    probe = ESNModel.from_checkpoint(artifact)
-    rng = np.random.default_rng(_SEED + 8)
-
-    x0 = np.concatenate([rng.standard_normal(_N_RES), [0.0]])
-    u_seq = rng.uniform(-0.5, 0.5, (horizon, _N_CONTROLS))
-    x = jnp.asarray(x0)
-    y_nodes = []
-    states = [x0]
-    for u in u_seq:
-        x = probe.discrete_dynamics(x, jnp.asarray(u), 0.0, 0.01)
-        states.append(np.asarray(x))
-        y_nodes.append(np.asarray(probe.output(x)))
-    windows = compute_periodograms(np.array(y_nodes), fs=fs, window=length, hop=hop)
-    envelope = PsdEnvelope(power=np.median(windows, axis=0), fs=fs, window=length, hop=hop)
-
-    casadi_value = float(ca.evalf(_spectral_hinge_cost([ca.MX(y.reshape(-1, 1)) for y in y_nodes], envelope, horizon)))
-    assert casadi_value > 0.0, "the envelope must actually bite for the parity check to mean anything"
-
-    cost = SpectralHingeCost(model=probe, envelope=envelope, w_psd=1.0, horizon=horizon)
-    stage = cost.stage_costs(jnp.asarray(states[:-1]), jnp.asarray(u_seq), jnp.zeros(horizon))
-    np.testing.assert_allclose(float(jnp.sum(stage)), casadi_value, rtol=1e-10, atol=1e-12)
-
-
-def test_observable_forecast_hinge_matches_casadi_graph(
-    tmp_path: Path, make_observable_checkpoint: Callable[..., ObservableCheckpoint]
-) -> None:
-    """The trajopt observable forecast hinge totals the CasADi graph's value on a fixed trajectory.
-
-    The Frames are decoded from the adapter's lifted states (one extra model step recovers the
-    terminal Frame), then hinged against the same ``ObservableGeometry``-derived reference.
-    """
-    horizon = 16
-    ckpt = make_observable_checkpoint(StftGeometry(n_segment=_L, n_hop=_R), horizon=horizon, n_y=4, n_u=3, dt=0.02)
-    artifact = tmp_path / "observable"
-    ckpt.save(artifact)
-    model = ObservableModel.from_checkpoint(artifact)
-    envelope = _envelope_npz(tmp_path, np.full((ckpt.n_channels, _L // 2 + 1), 1e-3))
-    log_reference = envelope_log_reference(PsdEnvelope.load(envelope), ckpt.geometry, ckpt.fs)
-    assert log_reference.shape == (ckpt.n_channels, ckpt.n_values)
-
-    rng = np.random.default_rng(_SEED + 9)
-    x0 = np.asarray(model.initial_state())
-    for _ in range(ckpt.n_y):
-        x0 = model.absorb(x0, rng.standard_normal(ckpt.n_channels), np.zeros(ckpt.n_controls))
-    u_seq = rng.uniform(-0.5, 0.5, (horizon, ckpt.n_controls))
-    u_bar = control_means(ckpt.geometry, horizon, ckpt.fs) @ u_seq
-
-    x = jnp.asarray(x0)
-    frames = []
-    states = [x0]
-    for u in u_bar:
-        x = model.discrete_dynamics(x, jnp.asarray(u), 0.0, 0.0)
-        states.append(np.asarray(x))
-        frames.append(np.asarray(model.output(x)))
-    frames = np.stack(frames)
-    casadi_value = float(
-        ca.evalf(_observable_hinge_cost(ca.MX(frames.reshape(ckpt.n_channels * ckpt.n_values, -1)), log_reference))
-    )
-    assert casadi_value > 0.0, "the reference must actually bite for the parity check to mean anything"
-
-    cost = ObservableForecastHinge(model=model, log_reference=log_reference, w_psd=1.0, n_frames=frames.shape[0])
-    stage = cost.stage_costs(jnp.asarray(states[:-1]), jnp.asarray(u_bar), jnp.zeros(frames.shape[0]))
-    np.testing.assert_allclose(float(jnp.sum(stage)), casadi_value, rtol=1e-12, atol=1e-12)
 
 
 def test_esn_full_cost_set_solves_with_kirchhoff(tmp_path: Path) -> None:

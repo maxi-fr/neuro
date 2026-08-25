@@ -77,10 +77,13 @@ def config(tmp_path: Path) -> dict[str, Any]:
             "downsample": _DOWNSAMPLE,
         },
         "controller": {
-            "class_path": "neuro.control.nonlinear_mpc.MPCController",
+            "class_path": "neuro.control.trajopt_mpc.TrajOptMPCController",
             "dt": _PLANT_DT * _DOWNSAMPLE,
-            "artifact": str(_artifact(tmp_path, provenance)),
-            "horizon": 50,
+            "problem": {
+                "class_path": "neuro.control.trajopt_mpc.build_waveform_problem",
+                "artifact": str(_artifact(tmp_path, provenance)),
+                "horizon": 50,
+            },
         },
     }
 
@@ -116,7 +119,7 @@ def test_unfiltered_estimator_rejected(config: dict[str, Any]) -> None:
 def test_explicit_training_cutoff_must_match(config: dict[str, Any], tmp_path: Path) -> None:
     """A predictor trained behind an explicit cutoff needs that same cutoff online."""
     provenance = TrainingProvenance(cutoff_hz=12.0, plant_fingerprint=plant_fingerprint(_plant()))
-    config["controller"]["artifact"] = str(_artifact(tmp_path, provenance))
+    config["controller"]["problem"]["artifact"] = str(_artifact(tmp_path, provenance))
     with pytest.raises(ConfigConsistencyError, match="12 Hz"):
         validate_simulation_config(config)
 
@@ -137,7 +140,7 @@ def test_sensor_must_run_at_estimator_rate(config: dict[str, Any]) -> None:
 
 def test_horizon_beyond_trained_horizon_warns(config: dict[str, Any]) -> None:
     """The MPC costing a free run longer than the predictor was fit against warns."""
-    config["controller"]["horizon"] = 51
+    config["controller"]["problem"]["horizon"] = 51
     with pytest.warns(UserWarning, match=r"trained horizon"):
         validate_simulation_config(config)
 
@@ -160,10 +163,8 @@ def _psd_npz(tmp_path: Path, *, fs: float = 50.0, L: int = 50, R: int = 25) -> P
 
 
 def test_consistent_psd_reference_passes(config: dict[str, Any], tmp_path: Path) -> None:
-    """A PSD reference agreeing on rate, window, and hop passes cleanly."""
-    config["controller"]["psd_ref"] = str(_psd_npz(tmp_path, fs=50.0, L=50, R=25))
-    config["controller"]["psd_window_s"] = 1.0
-    config["controller"]["psd_hop_s"] = 0.5
+    """A PSD reference agreeing on rate passes cleanly."""
+    config["controller"]["problem"]["psd_ref"] = str(_psd_npz(tmp_path, fs=50.0, L=50, R=25))
     with warnings.catch_warnings():
         warnings.simplefilter("error")
         validate_simulation_config(config)
@@ -171,31 +172,15 @@ def test_consistent_psd_reference_passes(config: dict[str, Any], tmp_path: Path)
 
 def test_missing_psd_reference_raises(config: dict[str, Any], tmp_path: Path) -> None:
     """A missing PSD reference npz raises ConfigConsistencyError."""
-    config["controller"]["psd_ref"] = str(tmp_path / "absent.npz")
+    config["controller"]["problem"]["psd_ref"] = str(tmp_path / "absent.npz")
     with pytest.raises(ConfigConsistencyError, match="spectral reference envelope not found"):
         validate_simulation_config(config)
 
 
 def test_psd_reference_rate_mismatch_raises(config: dict[str, Any], tmp_path: Path) -> None:
     """A sampling rate mismatch between controller and PSD reference raises ConfigConsistencyError."""
-    config["controller"]["psd_ref"] = str(_psd_npz(tmp_path, fs=100.0))
+    config["controller"]["problem"]["psd_ref"] = str(_psd_npz(tmp_path, fs=100.0))
     with pytest.raises(ConfigConsistencyError, match="must match spectral reference dt"):
-        validate_simulation_config(config)
-
-
-def test_psd_reference_window_mismatch_raises(config: dict[str, Any], tmp_path: Path) -> None:
-    """A window length mismatch between controller YAML and PSD reference raises ConfigConsistencyError."""
-    config["controller"]["psd_ref"] = str(_psd_npz(tmp_path, L=50))
-    config["controller"]["psd_window_s"] = 2.0  # 100 steps
-    with pytest.raises(ConfigConsistencyError, match=r"psd_window_s .* does not match the spectral reference geometry"):
-        validate_simulation_config(config)
-
-
-def test_psd_reference_hop_mismatch_raises(config: dict[str, Any], tmp_path: Path) -> None:
-    """A hop size mismatch between controller YAML and PSD reference raises ConfigConsistencyError."""
-    config["controller"]["psd_ref"] = str(_psd_npz(tmp_path, R=25))
-    config["controller"]["psd_hop_s"] = 1.0  # 50 steps
-    with pytest.raises(ConfigConsistencyError, match=r"psd_hop_s .* does not match the spectral reference geometry"):
         validate_simulation_config(config)
 
 
@@ -217,7 +202,7 @@ def test_seed_and_log_do_not_count_as_a_different_plant(config: dict[str, Any]) 
 
 def test_artifact_without_provenance_skips_those_checks(config: dict[str, Any], tmp_path: Path) -> None:
     """Checkpoints written before provenance was recorded still validate on what they do carry."""
-    config["controller"]["artifact"] = str(_artifact(tmp_path, TrainingProvenance()))
+    config["controller"]["problem"]["artifact"] = str(_artifact(tmp_path, TrainingProvenance()))
     with warnings.catch_warnings():
         warnings.simplefilter("error")
         validate_simulation_config(config)
@@ -242,7 +227,7 @@ def test_undecimated_predictor_needs_no_filter(config: dict[str, Any], tmp_path:
 
     config["estimator"] = {"class_path": "simulate.estimator.IdentityEstimator", "dt": _PLANT_DT}
     config["controller"]["dt"] = _PLANT_DT
-    config["controller"]["artifact"] = str(tmp_path / "undecimated")
+    config["controller"]["problem"]["artifact"] = str(tmp_path / "undecimated")
 
     with warnings.catch_warnings():
         warnings.simplefilter("error")

@@ -15,9 +15,6 @@ from neuro.types import ACTIVATIONS, Activation, Layers
 
 if TYPE_CHECKING:
     from neuro.config import ObservableGeometry
-    from neuro.esn_predictor_casadi import ESNSymbolicModel
-    from neuro.nn_predictor_casadi import NNSymbolicModel
-    from neuro.observable_casadi import ObservableSymbolicModel
     from neuro.types import FloatArray
 
 
@@ -26,9 +23,9 @@ class MLPCheckpoint:
     """NumPy weights and recorded metadata of the autoregressive MLP, as read from its checkpoint.
 
     This is the torch-free reader's view of an
-    :class:`neuro.predictor.module.AutoregressiveMLP` checkpoint: the CasADi adapter rebuilds its
-    bridges from these buffers and the validator reads the recorded metadata off them, and neither
-    path imports torch.
+    :class:`neuro.predictor.module.AutoregressiveMLP` checkpoint: the trajopt model adapter
+    rebuilds its buffers from these and the validator reads the recorded metadata off them, and
+    neither path imports torch.
 
     Attributes
     ----------
@@ -119,7 +116,8 @@ class ESNCheckpoint:
     """NumPy weights and recorded metadata of the ESN, as read from its checkpoint.
 
     This is the torch-free reader's view of an :class:`neuro.predictor.esn_module.ESNModule`
-    checkpoint; the CasADi adapter and the validator read these buffers without importing torch.
+    checkpoint; the trajopt model adapter and the validator read these buffers without importing
+    torch.
 
     Attributes
     ----------
@@ -227,8 +225,8 @@ class ObservableCheckpoint:
     """NumPy weights and recorded metadata of the observable predictor, as read from its checkpoint.
 
     This is the torch-free reader's view of a
-    :class:`neuro.predictor.observable_module.StepwiseObservableMLP` checkpoint; the CasADi
-    adapter and the validator read these buffers without importing torch.
+    :class:`neuro.predictor.observable_module.StepwiseObservableMLP` checkpoint; the trajopt
+    model adapter and the validator read these buffers without importing torch.
 
     Attributes
     ----------
@@ -454,7 +452,7 @@ def load_observable(path: str | Path) -> ObservableCheckpoint:
 
 
 Checkpoint = MLPCheckpoint | ESNCheckpoint | ObservableCheckpoint
-"""Checkpoint dataclasses the torch-free reader yields and the CasADi adapter rebuilds from."""
+"""Checkpoint dataclasses the torch-free reader yields and the trajopt adapters rebuild from."""
 RolloutCheckpoint = MLPCheckpoint | ESNCheckpoint
 """Checkpoints that free-run on the sample grid; the observable one forecasts the Observable instead."""
 
@@ -480,22 +478,3 @@ def load_rollout(path: str | Path) -> RolloutCheckpoint:
         msg = f"{path} is an observable checkpoint; it forecasts the Observable and never a waveform."
         raise TypeError(msg)
     return ckpt
-
-
-def build_symbolic_model(ckpt: Checkpoint) -> NNSymbolicModel | ESNSymbolicModel | ObservableSymbolicModel:
-    """Build the appropriate CasADi adapter; the MPC branches on which of the three it gets."""
-    from neuro.esn_predictor_casadi import (  # noqa: PLC0415 -- the adapters import this module; top-level would cycle
-        ESNSymbolicModel,
-    )
-    from neuro.nn_predictor_casadi import (  # noqa: PLC0415 -- the adapters import this module; top-level would cycle
-        NNSymbolicModel,
-    )
-    from neuro.observable_casadi import (  # noqa: PLC0415 -- the adapters import this module; top-level would cycle
-        ObservableSymbolicModel,
-    )
-
-    if isinstance(ckpt, ESNCheckpoint):
-        return ESNSymbolicModel(ckpt)
-    if isinstance(ckpt, ObservableCheckpoint):
-        return ObservableSymbolicModel(ckpt)
-    return NNSymbolicModel(ckpt)

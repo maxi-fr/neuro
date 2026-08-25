@@ -9,17 +9,15 @@ if TYPE_CHECKING:
     from collections.abc import Mapping
     from typing import TypeVar
 
-    import casadi as ca
-
     from neuro.types import FloatArray
 
-    TMath = TypeVar("TMath", FloatArray, ca.SX, ca.MX)
+    TMath = TypeVar("TMath", bound=FloatArray)
 else:
     TMath = Any
 
 
 def zscore(x: TMath, center: FloatArray, scale: FloatArray) -> TMath:
-    """Standardize ``x`` with precomputed ``center``/``scale`` (NumPy/CasADi generic)."""
+    """Standardize ``x`` with precomputed ``center``/``scale``."""
     return (x - center) / scale  # ty: ignore[invalid-return-type]
 
 

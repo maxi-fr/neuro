@@ -9,11 +9,13 @@ mpl.use("Agg")
 
 from typing import TYPE_CHECKING
 
+import jax.numpy as jnp
 import matplotlib.pyplot as plt
 import numpy as np
 from simulate.config import build_component, load_config
 
-from neuro.nn_predictor_casadi import NNSymbolicModel
+from neuro.checkpoint import load_mlp
+from neuro.control.trajopt_mpc import WaveformMLPModel
 
 if TYPE_CHECKING:
     from neuro.types import FloatArray
@@ -64,17 +66,16 @@ def run_open_loop(config: dict, t_end: float) -> tuple[FloatArray, float]:
     return np.asarray(eeg), ctrl_dt
 
 
-def free_run(model: NNSymbolicModel, eeg: FloatArray, anchor: int) -> tuple[FloatArray, FloatArray]:
+def free_run(model: WaveformMLPModel, eeg: FloatArray, anchor: int, horizon: int) -> tuple[FloatArray, FloatArray]:
     """Free-run (zero control) ``horizon`` steps from ``anchor``; return (predicted, true) EEG."""
-    n_y, horizon = model.checkpoint.n_y, model.checkpoint.horizon
-    n_u, n_controls = model.checkpoint.n_u, model.n_controls
-
-    y_window = model.checkpoint.y_std.transform(eeg[anchor - n_y : anchor])
-    x = np.concatenate([y_window.reshape(-1), np.zeros(n_u * n_controls)])
+    n_y, n_controls = model.n_y, model.n_controls
+    x = model.initial_state()
+    for i in range(n_y):
+        x = model.absorb(x, eeg[anchor - n_y + i], np.zeros(n_controls))
     preds = []
     for _ in range(horizon):
-        x = np.asarray(model.f_step(x, np.zeros(n_controls))).reshape(-1)
-        preds.append(np.asarray(model.f_out(x)).reshape(-1))
+        x = np.asarray(model.discrete_dynamics(jnp.asarray(x), jnp.zeros(n_controls), 0.0, 0.0))
+        preds.append(np.asarray(model.output(jnp.asarray(x))).reshape(-1))
     return np.asarray(preds), eeg[anchor : anchor + horizon]
 
 
@@ -87,9 +88,10 @@ def main() -> None:
 
     print(f"Running plant open-loop for {t_end}s from {args.config} ...", flush=True)
     eeg, dt_model = run_open_loop(config, t_end)
-    model = NNSymbolicModel.from_checkpoint(artifact)
+    model = WaveformMLPModel.from_checkpoint(artifact)
+    ckpt = load_mlp(artifact)
 
-    n_y, horizon = model.checkpoint.n_y, model.checkpoint.horizon
+    n_y, horizon = model.n_y, ckpt.horizon
     anchors = np.linspace(n_y + 1, len(eeg) - horizon - 1, args.anchors).astype(int)
     time = np.arange(len(eeg)) * dt_model
 
@@ -99,7 +101,7 @@ def main() -> None:
     ax_power.plot(time, power, color="k", lw=0.8, label="plant EEG power")
     rmses = []
     for anchor in anchors:
-        pred, true = free_run(model, eeg, anchor)
+        pred, true = free_run(model, eeg, anchor, horizon)
         horizon_t = (np.arange(horizon) + anchor) * dt_model
         ax_power.plot(horizon_t, (pred**2).mean(axis=1), color="C3", lw=1.5)
         rmses.append(float(np.sqrt(((pred - true) ** 2).mean())))
@@ -107,7 +109,7 @@ def main() -> None:
     ax_power.set(xlabel="t (s)", ylabel="mean-square EEG", title=f"{args.config.stem}: forecasts vs plant")
     ax_power.legend(loc="upper left", fontsize=8)
 
-    pred, true = free_run(model, eeg, anchors[len(anchors) // 2])
+    pred, true = free_run(model, eeg, anchors[len(anchors) // 2], horizon)
     horizon_t = np.arange(horizon) * dt_model
     for channel in range(min(N_CHANNELS_TO_PLOT, pred.shape[1])):
         ax_chan.plot(horizon_t, true[:, channel], color=f"C{channel}", lw=1.3)

@@ -47,8 +47,8 @@ class PredictorModel(Protocol):
 
     The controller absorbs measurements into the model's opaque state (``absorb``), holds off
     until the state is primed (``is_ready``) and seeds its ``MPCState`` from the unprimed state
-    (``initial_state``) -- the same seam ``MPCController`` uses today, hosted on the trajopt
-    model adapter instead of the CasADi bridge. ``m`` and ``n_channels`` are the control and
+    (``initial_state``) -- the same seam the incumbent MPC used, hosted on the trajopt model
+    adapter instead of a symbolic bridge. ``m`` and ``n_channels`` are the control and
     EEG channel counts the controller reads off the model directly.
     """
 
@@ -766,7 +766,7 @@ class TrajOptMPCController(Controller[TrajOptMPCLog]):
     """Receding-horizon MPC for the waveform predictor, built directly on trajopt primitives.
 
     Owns the true absorbed predictor state and ``u_last`` as private instance attributes, and
-    reproduces the incumbent ``MPCController.update`` loop shape -- ``absorb``, then
+    reproduces the incumbent MPC ``update`` loop shape -- ``absorb``, then
     ``with_measurement``, ``problem.solve``, extract the first control, ``shift`` -- without
     instantiating ``TrajOptMPC``. ``TrajOptMPC.update`` is the reference for how ``Problem``,
     ``MPCState`` and the solver compose, not a dependency.

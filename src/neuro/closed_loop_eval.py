@@ -16,9 +16,7 @@ if TYPE_CHECKING:
     from neuro.config import ClosedLoopEvalConfig
 
 
-def evaluate_closed_loop_suppression(  # noqa: PLR0915
-    trial_dir: Path, eval_cfg: ClosedLoopEvalConfig
-) -> tuple[float, dict[str, float]]:
+def evaluate_closed_loop_suppression(trial_dir: Path, eval_cfg: ClosedLoopEvalConfig) -> tuple[float, dict[str, float]]:
     """Run closed-loop simulations across ``eval_cfg.seeds`` and score seizure suppression proficiency.
 
     Returns the Optuna score to minimize and the summary stats. The score is the **seizure
@@ -43,7 +41,7 @@ def evaluate_closed_loop_suppression(  # noqa: PLR0915
         raise FileNotFoundError(msg)
 
     base_sim_dict["t_end"] = eval_cfg.t_end
-    base_sim_dict["controller"]["artifact"] = str(model_checkpoint_path)
+    base_sim_dict["controller"]["problem"]["artifact"] = str(model_checkpoint_path)
     if base_sim_dict["dynamics"].get("log", "none") == "none":
         base_sim_dict["dynamics"]["log"] = "lfp"
     # The seeds differ only in the plant realisation, so the wiring is the same for all of them.
@@ -69,15 +67,12 @@ def evaluate_closed_loop_suppression(  # noqa: PLR0915
                 msg = "Simulation logger is missing after run."
                 raise RuntimeError(msg)
 
-            u_max = getattr(sim.controller, "u_max", None)
-            if u_max is None:
-                msg = (
-                    f"Closed-loop evaluation needs a controller exposing 'u_max', got {type(sim.controller).__name__}."
-                )
-                raise TypeError(msg)
+            # The trajopt MPC carries the amplitude bound in its problem config, not on the
+            # controller object, so it is read here from the same dict the simulation was built from.
+            u_max = np.asarray(base_sim_dict["controller"]["problem"]["u_max"], dtype=np.float64)
 
             us = sim.logger.signal("controller", "u")
-            amplitudes.append(float(np.mean(np.abs(us) / np.asarray(u_max, dtype=np.float64))))
+            amplitudes.append(float(np.mean(np.abs(us) / u_max)))
             delivered_charges.append(float(np.sum(np.abs(us)) * sim.dt))
 
             # One of the two region-space logs is always present: the config is coerced to "lfp"
