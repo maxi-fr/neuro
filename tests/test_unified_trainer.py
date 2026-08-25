@@ -1,4 +1,4 @@
-"""Seam 2 -- the unified gradient-descent Trainer: dispatch, candidates, and the save round-trip."""
+"""Seam 2 -- the unified Trainer entry point: fit dispatch, candidates, and the save round-trip."""
 
 from __future__ import annotations
 
@@ -11,6 +11,9 @@ from torch import nn
 
 from neuro.config import (
     CurriculumMSESpec,
+    ESNModelConfig,
+    ESNPredictorConfig,
+    ESNTrainingConfig,
     LossSpecs,
     ModelConfig,
     NNPredictorConfig,
@@ -20,10 +23,12 @@ from neuro.config import (
     StftGeometry,
     TrainingConfig,
 )
+from neuro.predictor.esn_module import ESNModule
 from neuro.predictor.gradient import fit_gradient_descent
 from neuro.predictor.module import AutoregressiveMLP
 from neuro.predictor.observable_module import StepwiseObservableMLP
 from neuro.predictor.observable_train import ObservableTrainingResult
+from neuro.predictor.ridge import RidgeTrainingResult
 from neuro.predictor.train import TrainingResult, train
 from neuro.types import Predictor
 
@@ -124,6 +129,36 @@ def _obs_train(cfg: NNPredictorConfig, files: list[str]) -> ObservableTrainingRe
     result = train(cfg, files)
     assert isinstance(result, ObservableTrainingResult)
     return result
+
+
+def _esn_config(**training: object) -> ESNPredictorConfig:
+    """A tiny but complete ESN config; ``training`` overrides the training block."""
+    defaults = {
+        "train_split": 0.5,
+        "seed": _SEED,
+        "scaler": "standard",
+        "global_scaling": False,
+    }
+    return ESNPredictorConfig(
+        simulation=SimulationConfig(dt=_WAVE_DT, downsample=1),
+        model=ESNModelConfig(
+            reservoir_size=50,
+            spectral_radius=0.9,
+            leak_rate=0.1,
+            density=0.1,
+            input_scaling=0.5,
+            priming_steps=10,
+            ridge_lambda=1e-3,
+            noise_sigma=0.0,
+            horizon=8,
+        ),
+        training=ESNTrainingConfig.model_validate({**defaults, **training}),
+    )
+
+
+def _wave_model(depth: int) -> ModelConfig:
+    """The waveform model block the shared helpers use, at an explicit depth."""
+    return ModelConfig(n_y=2, n_u=2, hidden_size=4, depth=depth)
 
 
 @pytest.mark.parametrize(
@@ -280,3 +315,84 @@ def test_gradient_descent_serves_any_torch_module() -> None:
     assert train_losses[-1] < train_losses[0]
     assert val_losses[-1] < val_losses[0]
     assert all(np.isfinite(value) for value in train_losses + val_losses)
+
+
+def test_ridge_fit_on_depth2_mlp_fails_at_build_time(tmp_path: Path) -> None:
+    """``training.fit: ridge`` on a depth-2 MLP fails at build time, before any fit runs."""
+    cfg = _wave_config(fit="ridge").model_copy(update={"model": _wave_model(depth=2)})
+    with pytest.raises(ValueError, match="depth-0 MLP"):
+        train(cfg, _write_trajectories(tmp_path, dt=_WAVE_DT, t=_T))
+
+
+def test_gradient_descent_fit_on_esn_fails_at_build_time(tmp_path: Path) -> None:
+    """``training.fit: gradient_descent`` on the ESN fails at build time: not implemented."""
+    cfg = _esn_config(fit="gradient_descent")
+    with pytest.raises(ValueError, match="gradient-descent training of the ESN"):
+        train(cfg, _write_trajectories(tmp_path, dt=_WAVE_DT, t=_T))
+
+
+def test_ridge_fit_through_train_on_depth0_mlp(tmp_path: Path) -> None:
+    """``training.fit: ridge`` on a depth-0 MLP routes to the Ridge Trainer and fits end-to-end."""
+    cfg = _wave_config(fit="ridge").model_copy(update={"model": _wave_model(depth=0)})
+    result = train(cfg, _write_trajectories(tmp_path, dt=_WAVE_DT, t=_T))
+
+    assert isinstance(result, RidgeTrainingResult)
+    assert isinstance(result.predictor, AutoregressiveMLP)
+    assert result.predictor.depth == 0
+    assert set(result.candidates) == {"rollout_nmse", "log_energy"}
+    assert result.candidates["rollout_nmse"] == result.rollout.pooled
+    assert result.candidates["log_energy"] == result.log_energy.pooled
+    assert all(np.isfinite(value) for value in result.candidates.values())
+
+
+def test_esn_config_through_train_produces_checkpoint_and_candidates(tmp_path: Path) -> None:
+    """An ESN config through ``train`` fits by ridge and returns candidates plus a round-tripping save."""
+    result = train(_esn_config(), _write_trajectories(tmp_path, dt=_WAVE_DT, t=_T))
+
+    assert isinstance(result, RidgeTrainingResult)
+    assert isinstance(result.predictor, ESNModule)
+    assert set(result.candidates) == {"rollout_nmse", "log_energy"}
+    assert result.candidates["rollout_nmse"] == result.rollout.pooled
+    assert result.candidates["log_energy"] == result.log_energy.pooled
+    assert all(np.isfinite(value) for value in result.candidates.values())
+
+    artifact_dir = tmp_path / "esn"
+    result.save(artifact_dir)
+    assert (artifact_dir / "training_stats.json").exists()
+
+    loaded = ESNModule.load(artifact_dir / "model")
+    for got, want in (
+        (loaded.w_out.numpy(), result.predictor.w_out.numpy()),
+        (loaded.w_in.numpy(), result.predictor.w_in.numpy()),
+        (loaded.w_res.to_dense().numpy(), result.predictor.w_res.to_dense().numpy()),
+    ):
+        np.testing.assert_array_equal(got, want)
+    np.testing.assert_array_equal(loaded.y_std.center, result.predictor.y_std.center)
+    np.testing.assert_array_equal(loaded.u_std.scale, result.predictor.u_std.scale)
+    assert loaded.horizon == result.predictor.horizon
+    assert loaded.dt == result.predictor.dt
+    assert loaded.priming_steps == result.predictor.priming_steps
+    assert loaded.downsample == result.predictor.downsample
+    assert loaded.provenance == result.predictor.provenance
+
+
+def test_observable_ridge_through_train(tmp_path: Path) -> None:
+    """``training.fit: ridge`` on a depth-0 observable MLP fits the shared readout by ridge."""
+    base = _obs_config(lift_depth=0, transition_depth=0)
+    cfg = base.model_copy(update={"training": base.training.model_copy(update={"fit": "ridge"})})
+    result = train(cfg, _write_trajectories(tmp_path, dt=_OBS_DT, t=_OBS_T))
+
+    assert isinstance(result, ObservableTrainingResult)
+    assert isinstance(result.predictor, StepwiseObservableMLP)
+    assert set(result.candidates) == {"val_loss", "val_log_mse"}
+    assert result.candidates["val_log_mse"] == result.val_log_mse
+    assert result.val_losses == []  # a closed-form fit has no epoch curve to minimize over
+    assert all(np.isfinite(value) for value in result.candidates.values())
+
+
+def test_observable_ridge_with_hidden_layers_fails_at_build_time(tmp_path: Path) -> None:
+    """``training.fit: ridge`` on a lifted observable MLP fails at build time, not mid-fit."""
+    cfg = _obs_config(lift_depth=1)
+    cfg = cfg.model_copy(update={"training": cfg.training.model_copy(update={"fit": "ridge"})})
+    with pytest.raises(ValueError, match="depth-0 observable"):
+        train(cfg, _write_trajectories(tmp_path, dt=_OBS_DT, t=_OBS_T))

@@ -222,8 +222,9 @@ class Datasets:
         Observable targets reduce raw-direct on the shared window grid.
     y_std, u_std : Standardizer
         Fitted channel and control standardizers.
-    val_trajs : list[tuple[FloatArray, FloatArray]]
-        The held-out ``(u, y)`` trajectories in raw units, kept whole so free-run rollouts can be scored on them.
+    train_trajs, val_trajs : list[tuple[FloatArray, FloatArray]]
+        The training-side and held-out ``(u, y)`` trajectories in raw units, kept whole so the
+        Ridge arms can fit readouts raw-direct and free-run rollouts can be scored on them.
     n_channels : int
         Number of raw EEG output channels.
     n_controls : int
@@ -240,6 +241,7 @@ class Datasets:
     Y_raw_val: FloatArray
     y_std: Standardizer
     u_std: Standardizer
+    train_trajs: list[tuple[FloatArray, FloatArray]]
     val_trajs: list[tuple[FloatArray, FloatArray]]
     n_channels: int
     n_controls: int
@@ -301,6 +303,7 @@ def prepare_datasets(  # noqa: PLR0913, PLR0917
         Y_raw_val=Y_raw_val,
         y_std=y_std,
         u_std=u_std,
+        train_trajs=split.train_trajs,
         val_trajs=split.val_trajs,
         n_channels=n_channels,
         n_controls=n_controls,

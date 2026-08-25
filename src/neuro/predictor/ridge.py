@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -7,6 +9,11 @@ import numpy as np
 from neuro.types import RidgeFittable
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
+    from neuro.predictor.esn_module import ESNModule
+    from neuro.predictor.evaluation import LogEnergyError, RolloutNMSE
+    from neuro.predictor.module import AutoregressiveMLP
     from neuro.types import FloatArray
 
 
@@ -53,3 +60,50 @@ class RidgeTrainer:
         A = ridge(G, P, self.ridge_lambda)
         model.install_readout(A)
         return model
+
+
+@dataclass(frozen=True)
+class RidgeTrainingResult:
+    """Everything one closed-form Ridge training run produced; ``save`` persists it all.
+
+    Shared by the two entry-point arms whose free-run scores live on the sample grid -- the
+    depth-0 waveform MLP and the ESN -- because both produce the same shape of result: a fitted
+    Predictor, the free-run scores, and no training curve. (The depth-0 observable arm is the
+    deliberate exception: its ``rollout`` emits one Frame per position, so sample-grid free-run
+    scores do not apply and it returns :class:`~neuro.predictor.observable_train.ObservableTrainingResult`
+    instead.) The absence of ``val_loss`` in ``candidates`` is deliberate: a closed-form fit has
+    no epoch loop, so the only objectives these arms can rank on are the two free-run scores,
+    ``rollout_nmse`` and ``log_energy``.
+
+    Attributes
+    ----------
+    predictor : AutoregressiveMLP | ESNModule
+        The trained module holding the fitted readout, with the standardizers as buffers and the
+        recorded metadata (provenance, downsample) attached.
+    candidates : dict[str, float]
+        Every objective the sweep seam can rank this run on: ``rollout_nmse`` and ``log_energy``,
+        both lower-is-better.
+    rollout : RolloutNMSE
+        Free-run rollout NMSE on ``val_trajs``, per horizon step and pooled over the horizon.
+    log_energy : LogEnergyError
+        Free-run windowed-energy log-ratio error on ``val_trajs``.
+    val_trajs : list[tuple[FloatArray, FloatArray]]
+        The held-out ``(u, y)`` trajectories, kept whole so the caller can plot free runs.
+    """
+
+    predictor: AutoregressiveMLP | ESNModule
+    candidates: dict[str, float]
+    rollout: RolloutNMSE
+    log_energy: LogEnergyError
+    val_trajs: list[tuple[FloatArray, FloatArray]]
+
+    def save(self, artifact_dir: Path) -> None:
+        """Write the numpy-checkpoint and ``training_stats.json`` into ``artifact_dir``."""
+        self.predictor.save(artifact_dir / "model")
+        stats = {
+            "nmse_rollout": self.rollout.pooled,
+            "nmse_rollout_per_step": self.rollout.per_step.tolist(),
+            "log_energy": self.log_energy.pooled,
+            "log_energy_per_position": self.log_energy.per_position.tolist(),
+        }
+        (artifact_dir / "training_stats.json").write_text(json.dumps(stats, indent=2))

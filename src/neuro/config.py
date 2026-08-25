@@ -358,8 +358,16 @@ class LossSpecs(StrictConfig):
 
 
 class TrainingConfig(StrictConfig):
-    """Optimisation and scaling settings for the NN predictor."""
+    """Optimisation and scaling settings for the NN predictor.
 
+    ``fit`` names the algorithm the unified entry point routes to: ``gradient_descent`` serves any
+    torch module over the base protocol, ``ridge`` serves only the Ridge-Fittable depth-0 waveform
+    MLP and depth-0 observable MLP. A fit the configured model does not support fails at build time
+    in :func:`neuro.predictor.train.train`, not mid-fit.
+    """
+
+    fit: Literal["gradient_descent", "ridge"] = "gradient_descent"
+    ridge_lambda: float = Field(default=0.0, ge=0)
     epochs: int = Field(default=100, ge=1)
     warmup_epochs: int = Field(default=0, ge=0)
     batch_size: int = Field(default=128, ge=1)
@@ -633,8 +641,14 @@ class ESNModelConfig(StrictConfig):
 
 
 class ESNTrainingConfig(StrictConfig):
-    """Training settings for ESN predictor."""
+    """Training settings for ESN predictor.
 
+    ``fit`` names the algorithm the unified entry point routes to; the ESN supports only
+    ``ridge`` (the closed-form readout fit), and ``gradient_descent`` fails at build time in
+    :func:`neuro.predictor.train.train` -- the torch move enables it, it is not performed here.
+    """
+
+    fit: Literal["gradient_descent", "ridge"] = "ridge"
     train_split: float = Field(default=0.8, gt=0, lt=1)
     seed: int = Field(default=69, ge=0)
     scaler: Literal["standard", "robust"] = "standard"

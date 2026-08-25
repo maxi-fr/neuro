@@ -7,13 +7,20 @@ from typing import TYPE_CHECKING, cast
 import numpy as np
 import torch
 
+from neuro.config import ESNPredictorConfig
 from neuro.metrics import DEFAULT_HOP_S, METRICS
 from neuro.predictor.data import prepare_datasets
+from neuro.predictor.esn_train import _train_esn
 from neuro.predictor.evaluation import evaluate_log_energy, evaluate_rollouts
 from neuro.predictor.gradient import fit_gradient_descent, float32_tensor
 from neuro.predictor.losses import CurriculumMSE, LossContext, build_losses, total_loss
 from neuro.predictor.module import AutoregressiveMLP
-from neuro.predictor.observable_train import ObservableTrainingResult, _train_observable
+from neuro.predictor.observable_train import (
+    ObservableTrainingResult,
+    _train_observable,
+    _train_observable_ridge,
+)
+from neuro.predictor.ridge import RidgeTrainer, RidgeTrainingResult
 from neuro.provenance import training_provenance
 
 if TYPE_CHECKING:
@@ -141,19 +148,21 @@ def _du_sensitivity(model: AutoregressiveMLP, X_val: Tensor) -> float:
 
 
 def train(
-    cfg: NNPredictorConfig, data_files: list[str], *, seed_offset: int = 0
-) -> TrainingResult | ObservableTrainingResult:
-    """Train the NN predictor named by ``cfg`` for one config and return everything the run produced.
+    cfg: NNPredictorConfig | ESNPredictorConfig, data_files: list[str], *, seed_offset: int = 0
+) -> TrainingResult | ObservableTrainingResult | RidgeTrainingResult:
+    """Train the Predictor named by ``cfg`` for one config and return everything the run produced.
 
-    Dispatches on the config tree: a config carrying an ``observable`` block trains the
-    one-Frame-per-step observable predictor, any other trains the autoregressive waveform MLP.
-    Both arms run the same generic gradient-descent fit and return a result holding the trained
-    Predictor, the recorded ``candidates`` and a ``save`` that persists the numpy-checkpoint and
-    the training stats.
+    Dispatches on the config tree first, then on ``training.fit``: an ESN config always routes to
+    the ESN arm (``ridge`` only); an NN config with ``training.fit: ridge`` routes to the Ridge
+    Trainer, which serves the depth-0 waveform MLP and the depth-0 observable MLP; any other NN
+    config runs the generic gradient-descent fit over the waveform or observable arm. A fit the
+    configured model does not support fails here at build time, before data is loaded or any fit
+    runs. Every arm returns a result holding the trained Predictor, the recorded ``candidates``
+    and a ``save`` that persists the numpy-checkpoint and the training stats.
 
     Parameters
     ----------
-    cfg : NNPredictorConfig
+    cfg : NNPredictorConfig | ESNPredictorConfig
         Validated configuration with any sweep overrides already applied by the caller.
     data_files : list[str]
         Paths to the ``.npz`` trajectory files, split into train/validation by trajectory.
@@ -162,13 +171,115 @@ def train(
 
     Returns
     -------
-    TrainingResult | ObservableTrainingResult
-        The trained Predictor, the candidate objectives, the loss curves, the free-run scores, the
-        held-out trajectories and the control sensitivity.
+    TrainingResult | ObservableTrainingResult | RidgeTrainingResult
+        The trained Predictor, the candidate objectives, the free-run scores, the held-out
+        trajectories and, on the gradient-descent arms, the loss curves and control sensitivity.
+
+    Raises
+    ------
+    ValueError
+        If the named fit is one the configured model does not support: ``ridge`` on an MLP with
+        hidden layers, or ``gradient_descent`` on the ESN.
     """
+    if isinstance(cfg, ESNPredictorConfig):
+        return _train_esn(cfg, data_files, seed_offset=seed_offset)
+    if cfg.training.fit == "ridge":
+        return _train_ridge(cfg, data_files, seed_offset=seed_offset)
     if cfg.observable is not None:
         return _train_observable(cfg, data_files, seed_offset=seed_offset)
     return _train_waveform(cfg, data_files, seed_offset=seed_offset)
+
+
+def _train_ridge(
+    cfg: NNPredictorConfig, data_files: list[str], *, seed_offset: int = 0
+) -> RidgeTrainingResult | ObservableTrainingResult:
+    """Route an NN config naming ``training.fit: ridge`` to the Ridge Trainer.
+
+    The Ridge Trainer serves the two Ridge-Fittable NN predictors: the depth-0 waveform MLP and
+    the depth-0 observable MLP (``lift_depth = transition_depth = 0``, linear end-to-end). A
+    config whose model carries hidden layers is not Ridge-Fittable and fails here at build time,
+    before data is loaded or any fit runs.
+    """
+    if cfg.observable is not None:
+        if cfg.observable.lift_depth > 0 or cfg.observable.transition_depth > 0:
+            msg = (
+                "'training.fit: ridge' requires a depth-0 observable MLP "
+                f"(lift_depth = transition_depth = 0), got lift_depth = {cfg.observable.lift_depth} "
+                f"and transition_depth = {cfg.observable.transition_depth}."
+            )
+            raise ValueError(msg)
+        return _train_observable_ridge(cfg, data_files, seed_offset=seed_offset)
+    if cfg.model.depth > 0:
+        msg = f"'training.fit: ridge' requires a depth-0 MLP, got model.depth = {cfg.model.depth}."
+        raise ValueError(msg)
+    return _train_waveform_ridge(cfg, data_files)
+
+
+def _train_waveform_ridge(cfg: NNPredictorConfig, data_files: list[str]) -> RidgeTrainingResult:
+    """Fit the single layer of a depth-0 waveform MLP by closed-form ridge.
+
+    The exact 1-step least-squares the gradient-descent arm uses as its warm start, extracted as
+    a standalone fit: the Ridge Trainer folds the same features and targets into normal equations
+    from the raw training trajectories and installs the result as the single layer. The native
+    horizon comes from ``training.losses``, as on the gradient-descent arm.
+    """
+    sim, mdl, trn = cfg.simulation, cfg.model, cfg.training
+    if trn.losses is None:
+        msg = "the waveform ridge arm requires 'training.losses' (for the native horizon)."
+        raise ValueError(msg)
+    fs = cfg.fs
+    horizon = max(loss.span_steps for loss in build_losses(trn.losses, fs))
+
+    data = prepare_datasets(
+        data_files,
+        sim.n_steps,
+        sim.downsample,
+        mdl.n_y,
+        mdl.n_u,
+        horizon,
+        sim.dt,
+        trn.train_split,
+        scaler=trn.scaler,
+        global_scaling=trn.global_scaling,
+        cutoff_hz=sim.cutoff_hz,
+    )
+
+    model = AutoregressiveMLP(
+        n_y=mdl.n_y,
+        n_u=mdl.n_u,
+        horizon=horizon,
+        n_channels=data.n_channels,
+        n_controls=data.n_controls,
+        hidden_size=mdl.hidden_size,
+        depth=0,
+        activation=mdl.activation,
+        dt=sim.dt * sim.downsample,
+        y_std=data.y_std,
+        u_std=data.u_std,
+    )
+    RidgeTrainer(ridge_lambda=trn.ridge_lambda).fit(model, data.train_trajs)
+
+    eval_steps = max(1, round(trn.eval_horizon_s * fs))
+    # The energy course follows the metrics layer's own eeg_ms convention rather than a knob of its
+    # own, clamped where the evaluation horizon is too short to hold one window.
+    energy_window = min(max(1, round(METRICS["eeg_ms"].window_s * fs)), eval_steps)
+    energy_hop = max(1, round(DEFAULT_HOP_S * fs))
+    rollout = evaluate_rollouts(model, data.val_trajs, eval_steps)
+    log_energy = evaluate_log_energy(
+        model, data.val_trajs, eval_steps, window_steps=energy_window, hop_steps=energy_hop
+    )
+    model.provenance = training_provenance(data_files, sim.cutoff_hz)
+    model.downsample = sim.downsample
+    return RidgeTrainingResult(
+        predictor=model,
+        candidates={
+            "rollout_nmse": rollout.pooled,
+            "log_energy": log_energy.pooled,
+        },
+        rollout=rollout,
+        log_energy=log_energy,
+        val_trajs=data.val_trajs,
+    )
 
 
 def _train_waveform(cfg: NNPredictorConfig, data_files: list[str], *, seed_offset: int = 0) -> TrainingResult:

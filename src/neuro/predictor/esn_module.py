@@ -1,16 +1,20 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Self
 
 import numpy as np
+import scipy.sparse
 import torch
 from torch import nn
 
+from neuro.predictor.checkpoint import load_checkpoint, save_checkpoint
 from neuro.predictor.module import to_numpy
+from neuro.provenance import TrainingProvenance
 from neuro.transforms import Standardizer
 
 if TYPE_CHECKING:
-    import scipy.sparse
+    from pathlib import Path
+
     from torch import Tensor
 
     from neuro.types import FloatArray
@@ -65,6 +69,8 @@ class ESNModule(nn.Module):
     y_scale: Tensor
     u_center: Tensor
     u_scale: Tensor
+    downsample: int
+    provenance: TrainingProvenance
 
     def __init__(  # noqa: PLR0913 -- reservoir, readout and standardizer buffers are the module's constructor surface
         self,
@@ -93,6 +99,9 @@ class ESNModule(nn.Module):
         self.priming_steps = int(priming_steps)
         self.horizon = int(horizon)
         self.dt = float(dt)
+        # Recorded metadata the checkpoint persists and ``load`` restores; training sets them.
+        self.downsample = 1
+        self.provenance = TrainingProvenance()
 
         self.register_buffer("w_res", _coo_buffer(w_res))
         self.register_buffer("w_in", torch.as_tensor(w_in, dtype=torch.float32))
@@ -301,3 +310,64 @@ class ESNModule(nn.Module):
         reg = ridge_lambda * torch.eye(g.shape[0], dtype=torch.float64)
         reg[-1, -1] = 0.0  # do not regularize the bias column
         return to_numpy(torch.linalg.solve(g + reg, p)).T
+
+    def save(self, path: str | Path) -> None:
+        """Persist weights, standardizer buffers and recorded metadata into one ``.npz`` checkpoint.
+
+        ``path`` is a suffix-less stem. The layout -- a JSON ``meta`` block, the sparse reservoir
+        CSR arrays and the standardizer arrays -- reuses the keys the ESN artifact loader already
+        reads, so a torch-free reader can consume what ``save`` writes without the module.
+        """
+        coo = self.w_res.coalesce()
+        indices = coo.indices().cpu().numpy()
+        csr = scipy.sparse.csr_matrix(
+            (to_numpy(coo.values()), (indices[0], indices[1])),
+            shape=(self.reservoir_size, self.reservoir_size),
+        )
+        meta = {
+            "model_type": "esn",
+            "dt": self.dt,
+            "downsample": self.downsample,
+            "horizon": self.horizon,
+            "reservoir_size": self.reservoir_size,
+            "leak_rate": self.leak_rate,
+            "priming_steps": self.priming_steps,
+            **self.provenance.meta,
+        }
+        arrays: dict[str, FloatArray] = {
+            "W_in": to_numpy(self.w_in),
+            "W_out": to_numpy(self.w_out),
+            "W_res.data": np.asarray(csr.data, dtype=np.float64),
+            "W_res.indices": csr.indices,
+            "W_res.indptr": csr.indptr,
+            "W_res.shape": np.array(csr.shape),
+        }
+        arrays.update(self.y_std.arrays("y"))
+        arrays.update(self.u_std.arrays("u"))
+        save_checkpoint(path, meta=meta, arrays=arrays)
+
+    @classmethod
+    def load(cls, path: str | Path) -> Self:
+        """Rebuild the module from a :meth:`save` checkpoint, restoring weights, buffers and metadata."""
+        meta, arrays = load_checkpoint(path)
+        if meta.get("model_type") != "esn":
+            msg = f"checkpoint at {path} is model_type {meta.get('model_type')!r}, not 'esn'."
+            raise ValueError(msg)
+        w_res = scipy.sparse.csr_matrix(
+            (arrays["W_res.data"], arrays["W_res.indices"], arrays["W_res.indptr"]),
+            shape=tuple(int(s) for s in arrays["W_res.shape"]),
+        )
+        model = cls(
+            w_res=w_res,
+            w_in=np.asarray(arrays["W_in"]),
+            w_out=np.asarray(arrays["W_out"]),
+            leak_rate=float(meta["leak_rate"]),
+            priming_steps=int(meta["priming_steps"]),
+            horizon=int(meta["horizon"]),
+            dt=float(meta["dt"]),
+            y_std=Standardizer.from_arrays(arrays, "y"),
+            u_std=Standardizer.from_arrays(arrays, "u"),
+        )
+        model.downsample = int(meta["downsample"])
+        model.provenance = TrainingProvenance.from_meta(meta)
+        return model
