@@ -1,5 +1,3 @@
-"""Ticket 03: ESN and Observable trajopt model adapters, factories, and config dispatch."""
-
 from __future__ import annotations
 
 import itertools
@@ -517,27 +515,19 @@ def test_observable_problem_rejects_w_y_and_requires_psd(
         build_observable_problem(artifact, horizon=4, u_max=2.0, w_psd=1.0, psd_ref=envelope)
 
 
-def test_observable_problem_solves_with_altro(
+def test_observable_problem_rejects_native_solver_with_hinge(
     tmp_path: Path, make_observable_checkpoint: Callable[..., ObservableCheckpoint]
 ) -> None:
-    """The observable problem's local costs (effort only, per-knot) solve on the native path.
+    """A native expansion-only solver is rejected when the objective carries a whole-horizon hinge.
 
-    The whole-horizon hinge is invisible to per-knot Taylor expansions, so the native path
-    carries the effort quadratic and the box bounds -- the same degradation the spectral hinge
-    exhibits.
+    The hinge returns ``0`` from ``evaluate``, so a native backend would silently solve a problem
+    missing it; the controller raises instead. The transcription path still scores the hinge and
+    is covered by the parity tests.
     """
     ckpt = make_observable_checkpoint(StftGeometry(n_segment=_L, n_hop=_R), horizon=16, n_y=4, dt=0.02)
     artifact = tmp_path / "observable"
     ckpt.save(artifact)
     envelope = _envelope_npz(tmp_path, np.full((ckpt.n_channels, _L // 2 + 1), 1e-3))
     problem = build_observable_problem(artifact, horizon=16, u_max=2.0, w_u=0.1, w_psd=10.0, psd_ref=envelope)
-    rng = np.random.default_rng(_SEED + 12)
-    model = ObservableModel.from_checkpoint(artifact)
-    x0 = np.asarray(model.initial_state())
-    for _ in range(ckpt.n_y):
-        x0 = model.absorb(x0, rng.standard_normal(ckpt.n_channels), np.zeros(ckpt.n_controls))
-    state = MPCState.initial(problem, x0=jnp.asarray(x0), dt=ckpt.dt)
-    solved = problem.solve(state, solver=ALTRO())
-    # The whole-horizon hinge is invisible to per-knot expansions, so the native solve carries
-    # the effort quadratic alone and lands on its unconstrained minimizer, u = 0.
-    np.testing.assert_allclose(np.asarray(solved.controls), np.zeros((problem.N - 1, ckpt.n_controls)), atol=1e-4)
+    with pytest.raises(ValueError, match="whole-horizon"):
+        TrajOptMPCController(dt=ckpt.dt, problem=problem, solver=ALTRO())

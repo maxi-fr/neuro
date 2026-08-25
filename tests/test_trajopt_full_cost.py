@@ -1,5 +1,3 @@
-"""Ticket 02: full cost and constraint set -- hinge/L1 costs, Kirchhoff, native solvers."""
-
 from __future__ import annotations
 
 import itertools

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import dataclasses
 import importlib
-from typing import TYPE_CHECKING, Any, Protocol, Self, cast
+from typing import TYPE_CHECKING, Any, Protocol, Self, runtime_checkable
 
 import equinox as eqx
 import jax
@@ -23,10 +23,12 @@ from trajopt.transcription.single_shooting import SingleShooting
 from neuro.checkpoint import ESNCheckpoint, MLPCheckpoint, ObservableCheckpoint, load_esn, load_mlp, load_observable
 from neuro.control.trajopt_costs import (
     ESNAutoRegressiveCost,
+    ExcludeInitialKnotState,
     L1ControlCost,
-    ObservableForecastHinge,
+    ObservableRolloutHinge,
     SpectralHingeCost,
     SumCost,
+    has_whole_horizon_cost,
 )
 from neuro.observable import load_log_reference
 from neuro.spectral import PsdEnvelope
@@ -42,6 +44,7 @@ if TYPE_CHECKING:
     from neuro.types import Activation, FloatArray
 
 
+@runtime_checkable
 class PredictorModel(Protocol):
     """A trajopt model that also exposes the Predictor's raw-units priming seam.
 
@@ -81,6 +84,15 @@ def _build_problem(spec: dict[str, Any] | Problem) -> tuple[Problem, MPCState | 
         state = res[1] if len(res) > 1 and isinstance(res[1], MPCState) else None
         return res[0], state
     return res, None
+
+
+def _apply_activation(activation: Activation, z: jax.Array) -> jax.Array:
+    """Apply the model's activation elementwise."""
+    if activation == "relu":
+        return jnp.maximum(z, 0.0)
+    if activation == "tanh":
+        return jnp.tanh(z)
+    return jnp.logaddexp(z, 0.0)
 
 
 class WaveformMLPModel(DiscreteDynamics):
@@ -137,11 +149,7 @@ class WaveformMLPModel(DiscreteDynamics):
 
     def _activate(self, z: jax.Array) -> jax.Array:
         """Apply the model's activation elementwise."""
-        if self.activation == "relu":
-            return jnp.maximum(z, 0.0)
-        if self.activation == "tanh":
-            return jnp.tanh(z)
-        return jnp.logaddexp(z, 0.0)
+        return _apply_activation(self.activation, z)
 
     def _predict(self, y_window: jax.Array, u_window: jax.Array) -> jax.Array:
         """One MLP forward pass on standardized windows -> the next standardized sample ``(n_channels,)``."""
@@ -396,11 +404,7 @@ class ObservableModel(DiscreteDynamics):
 
     def _activate(self, z: jax.Array) -> jax.Array:
         """Apply the model's activation elementwise."""
-        if self.activation == "relu":
-            return jnp.maximum(z, 0.0)
-        if self.activation == "tanh":
-            return jnp.tanh(z)
-        return jnp.logaddexp(z, 0.0)
+        return _apply_activation(self.activation, z)
 
     def _mlp(self, weights: tuple[jax.Array, ...], biases: tuple[jax.Array, ...], z: jax.Array) -> jax.Array:
         """One MLP block forward pass; the activation follows every layer except the last."""
@@ -492,6 +496,56 @@ def kirchhoff_constraint(n: int, m: int) -> LinearConstraint:
     )
 
 
+def _combine_costs(costs: list[CostFunction]) -> CostFunction:
+    """Return the single stage cost, wrapping several sub-costs in a :class:`SumCost`."""
+    return SumCost(costs) if len(costs) > 1 else costs[0]
+
+
+def _spectral_envelope(psd_ref: str | Path | None, w_psd: float) -> PsdEnvelope | None:
+    """Load the healthy PSD envelope when ``w_psd`` enables the spectral hinge, else ``None``."""
+    if w_psd <= 0:
+        return None
+    if psd_ref is None:
+        msg = "psd_ref must be provided when w_psd > 0"
+        raise ValueError(msg)
+    return PsdEnvelope.load(psd_ref)
+
+
+def _assemble_problem(
+    model: DiscreteDynamics,
+    objective: Objective,
+    *,
+    N: int,
+    u_max: ArrayLike,
+    kirchhoff: bool,
+) -> Problem:
+    """Add the control box bounds (and optional Kirchhoff equality) and build the ``Problem``."""
+    n, m = model.n, model.m
+    u_max_arr = np.broadcast_to(np.atleast_1d(np.asarray(u_max, dtype=np.float64)), (m,))
+    constraints = ConstraintList(n=n, m=m, N=N)
+    constraints.add_constraint(ControlBound(n=n, m=m, u_min=-u_max_arr, u_max=u_max_arr), range(N - 1))
+    if kirchhoff:
+        constraints.add_constraint(kirchhoff_constraint(n, m), range(N - 1))
+    return Problem(model=model, obj=objective, constraints=constraints, N=N)
+
+
+def _native_expansion_only(solver: Solver) -> bool:
+    """Whether ``solver`` is a native JAX backend that Taylor-expands ``evaluate`` per knot."""
+    return type(solver).__module__.startswith("trajopt.solvers")
+
+
+def ensure_solver_supports_objective(problem: Problem, solver: Solver) -> None:
+    """Raise when a native expansion-only solver would silently drop a whole-horizon cost."""
+    if not _native_expansion_only(solver):
+        return
+    if has_whole_horizon_cost(problem.obj.stage_cost):
+        msg = (
+            f"{type(solver).__name__} expands costs per knot and cannot score the whole-horizon "
+            "hinge cost; use a transcription solver (e.g. SingleShooting(Ipopt(...)))."
+        )
+        raise ValueError(msg)
+
+
 def build_waveform_problem(  # noqa: PLR0913 -- checkpoint plus the nine MPC cost/bound knobs
     artifact: str | Path,
     *,
@@ -517,8 +571,8 @@ def build_waveform_problem(  # noqa: PLR0913 -- checkpoint plus the nine MPC cos
     (``w_psd`` against ``psd_ref``'s healthy envelope) join the quadratic as custom
     ``CostFunction`` subclasses. The constraints are the control box bounds
     ``-u_max <= u <= u_max``, plus the Kirchhoff sum-to-zero equality when ``kirchhoff`` is
-    set -- ticket 01's quadratic/box subset leaves the equality out, because the single-shooting
-    transcription cannot carry it; the full set is solved with the general Ipopt transcription.
+    set. The default single-shooting transcription rejects the controls-block linear equality,
+    so the full constraint set is solved with the general Ipopt transcription.
 
     Parameters
     ----------
@@ -547,36 +601,24 @@ def build_waveform_problem(  # noqa: PLR0913 -- checkpoint plus the nine MPC cos
         Path to the healthy reference envelope npz written by ``scripts/build_healthy_psd.py``.
         Required when ``w_psd > 0``; its stored window geometry drives the cost.
     kirchhoff
-        Add the Kirchhoff sum-to-zero equality on the controls. Off by default, matching
-        ticket 01's quadratic/box subset; the incumbent applies it unconditionally, so the
-        full parity test sets it.
+        Add the Kirchhoff sum-to-zero equality on the controls. Off by default; the incumbent
+        applies it unconditionally, so full parity sets it.
     """
     model = WaveformMLPModel.from_checkpoint(artifact)
     n, m = model.n, model.m
     N = horizon + 1
-    u_max_arr = np.broadcast_to(np.atleast_1d(np.asarray(u_max, dtype=np.float64)), (m,))
 
     z_last = slice((model.n_y - 1) * model.n_channels, model.n_y * model.n_channels)
     Q = jnp.zeros(n).at[z_last].set(2.0 * w_y * model.y_scale**2 / horizon)
     xf = jnp.zeros(n).at[z_last].set(-model.y_center / model.y_scale)
     stage = DiagonalCost.tracking(Q, jnp.full(m, 2.0 * w_u / horizon), xf, jnp.zeros(m))
-    costs: list[CostFunction] = [stage]
+    costs: list[CostFunction] = [ExcludeInitialKnotState(stage)]
     if w_u_l1 > 0:
         costs.append(L1ControlCost(n=n, m=m, w_l1=w_u_l1, horizon=horizon))
-    if w_psd > 0:
-        if psd_ref is None:
-            msg = "psd_ref must be provided when w_psd > 0"
-            raise ValueError(msg)
-        envelope = PsdEnvelope.load(psd_ref)
-        costs.append(
-            SpectralHingeCost(
-                model=model,
-                envelope=envelope,
-                w_psd=w_psd,
-                horizon=horizon,
-            )
-        )
-    stage_cost: CostFunction = SumCost(costs) if len(costs) > 1 else costs[0]
+    envelope = _spectral_envelope(psd_ref, w_psd)
+    if envelope is not None:
+        costs.append(SpectralHingeCost(model=model, envelope=envelope, w_psd=w_psd, horizon=horizon))
+    stage_cost: CostFunction = _combine_costs(costs)
     # The terminal knot carries the horizon's final output, weighted by ``w_y_terminal`` when
     # given else ``w_y`` -- the incumbent's last-step stage cost. Always explicit, because the
     # composite's derived terminal (``SumCost.as_terminal``) would otherwise carry the
@@ -586,11 +628,7 @@ def build_waveform_problem(  # noqa: PLR0913 -- checkpoint plus the nine MPC cos
     terminal = DiagonalCost.terminal_tracking(Q_f, xf, m)
     objective = Objective(stage_cost=stage_cost, terminal_cost=terminal, N=N)
 
-    constraints = ConstraintList(n=n, m=m, N=N)
-    constraints.add_constraint(ControlBound(n=n, m=m, u_min=-u_max_arr, u_max=u_max_arr), range(N - 1))
-    if kirchhoff:
-        constraints.add_constraint(kirchhoff_constraint(n, m), range(N - 1))
-    return Problem(model=model, obj=objective, constraints=constraints, N=N)
+    return _assemble_problem(model, objective, N=N, u_max=u_max, kirchhoff=kirchhoff)
 
 
 def build_esn_problem(  # noqa: PLR0913 -- checkpoint plus the nine MPC cost/bound knobs
@@ -647,29 +685,23 @@ def build_esn_problem(  # noqa: PLR0913 -- checkpoint plus the nine MPC cost/bou
     model = ESNModel.from_checkpoint(artifact)
     n, m = model.n, model.m
     N = horizon + 1
-    u_max_arr = np.broadcast_to(np.atleast_1d(np.asarray(u_max, dtype=np.float64)), (m,))
 
-    costs: list[CostFunction] = [ESNAutoRegressiveCost(model=model, w_y=w_y, w_u=w_u, horizon=horizon)]
+    costs: list[CostFunction] = [
+        ExcludeInitialKnotState(ESNAutoRegressiveCost(model=model, w_y=w_y, w_u=w_u, horizon=horizon))
+    ]
     if w_u_l1 > 0:
         costs.append(L1ControlCost(n=n, m=m, w_l1=w_u_l1, horizon=horizon))
-    if w_psd > 0:
-        if psd_ref is None:
-            msg = "psd_ref must be provided when w_psd > 0"
-            raise ValueError(msg)
-        envelope = PsdEnvelope.load(psd_ref)
+    envelope = _spectral_envelope(psd_ref, w_psd)
+    if envelope is not None:
         costs.append(SpectralHingeCost(model=model, envelope=envelope, w_psd=w_psd, horizon=horizon))
-    stage_cost: CostFunction = SumCost(costs) if len(costs) > 1 else costs[0]
+    stage_cost: CostFunction = _combine_costs(costs)
     # The terminal knot carries the horizon's final output, weighted by ``w_y_terminal`` when
     # given else ``w_y`` -- the incumbent's last-step stage cost, with no control term.
     w_y_final = w_y_terminal if w_y_terminal is not None else w_y
     terminal = ESNAutoRegressiveCost(model=model, w_y=w_y_final, w_u=0.0, horizon=horizon, terminal=True)
     objective = Objective(stage_cost=stage_cost, terminal_cost=terminal, N=N)
 
-    constraints = ConstraintList(n=n, m=m, N=N)
-    constraints.add_constraint(ControlBound(n=n, m=m, u_min=-u_max_arr, u_max=u_max_arr), range(N - 1))
-    if kirchhoff:
-        constraints.add_constraint(kirchhoff_constraint(n, m), range(N - 1))
-    return Problem(model=model, obj=objective, constraints=constraints, N=N)
+    return _assemble_problem(model, objective, N=N, u_max=u_max, kirchhoff=kirchhoff)
 
 
 def build_observable_problem(  # noqa: PLR0913 -- checkpoint plus the nine MPC cost/bound knobs
@@ -689,7 +721,7 @@ def build_observable_problem(  # noqa: PLR0913 -- checkpoint plus the nine MPC c
 
     The Observable predictor steps one Frame per position, so the trajopt horizon is the Frame
     count ``n_frames(horizon)`` rather than the sample count and every decision variable is a
-    Frame-mean control. ``w_y``/``w_y_terminal`` are rejected -- the forecast produces no
+    Frame-mean control. ``w_y``/``w_y_terminal`` are rejected -- the Rollout produces no
     per-sample EEG outputs -- and ``w_psd > 0`` with a ``psd_ref`` is required, exactly the
     incumbent's observable branch. The log reference is reduced from the envelope onto the
     checkpoint's ``ObservableGeometry`` grid: the shared source of truth with the training-time
@@ -705,7 +737,7 @@ def build_observable_problem(  # noqa: PLR0913 -- checkpoint plus the nine MPC c
         Per-electrode amplitude bound: a scalar shared by every electrode or a
         length-``n_controls`` vector, applied to the Frame-mean controls.
     w_y
-        Weight on predicted EEG power; rejected on this path (it forecasts the Observable
+        Weight on predicted EEG power; rejected on this path (it predicts the Observable
         directly and produces no per-sample outputs).
     w_u
         Weight on control effort (quadratic) in the cost.
@@ -714,7 +746,7 @@ def build_observable_problem(  # noqa: PLR0913 -- checkpoint plus the nine MPC c
     w_u_l1
         Weight on the L1 norm of the Frame-mean controls; ``0`` (default) disables it.
     w_psd
-        Weight on the Observable hinge: the mean squared amount by which the forecast Frames
+        Weight on the Observable hinge: the mean squared amount by which the rolled-out Frames
         exceed ``psd_ref``'s healthy envelope, in log units. Required on this path.
     psd_ref
         Path to the healthy reference envelope npz; required when ``w_psd > 0`` (always here).
@@ -725,7 +757,7 @@ def build_observable_problem(  # noqa: PLR0913 -- checkpoint plus the nine MPC c
     if w_y > 0 or w_y_terminal is not None:
         msg = (
             f"w_y ({w_y}) and w_y_terminal ({w_y_terminal}) have no meaning on the observable "
-            "path: it forecasts the Observable directly and produces no per-sample EEG outputs."
+            "path: it predicts the Observable directly and produces no per-sample EEG outputs."
         )
         raise ValueError(msg)
     if w_psd <= 0 or psd_ref is None:
@@ -740,26 +772,21 @@ def build_observable_problem(  # noqa: PLR0913 -- checkpoint plus the nine MPC c
         raise ValueError(msg)
     n, m = model.n, model.m
     N = frames + 1
-    u_max_arr = np.broadcast_to(np.atleast_1d(np.asarray(u_max, dtype=np.float64)), (m,))
     log_reference = load_log_reference(psd_ref, model.geometry, model.fs)
 
     costs: list[CostFunction] = [
-        ObservableForecastHinge(model=model, log_reference=log_reference, w_psd=w_psd, n_frames=frames),
+        ObservableRolloutHinge(model=model, log_reference=log_reference, w_psd=w_psd, n_frames=frames),
         DiagonalCost(Q=jnp.zeros(n), R=jnp.full(m, 2.0 * w_u / frames)),
     ]
     if w_u_l1 > 0:
         costs.append(L1ControlCost(n=n, m=m, w_l1=w_u_l1, horizon=frames))
-    stage_cost: CostFunction = SumCost(costs)
+    stage_cost: CostFunction = _combine_costs(costs)
     # The terminal knot scores nothing of its own: the last Frame's hinge value already landed
     # in the final stage entry, and there is no control at the terminal.
     terminal = DiagonalCost.terminal_tracking(jnp.zeros(n), jnp.zeros(n), m)
     objective = Objective(stage_cost=stage_cost, terminal_cost=terminal, N=N)
 
-    constraints = ConstraintList(n=n, m=m, N=N)
-    constraints.add_constraint(ControlBound(n=n, m=m, u_min=-u_max_arr, u_max=u_max_arr), range(N - 1))
-    if kirchhoff:
-        constraints.add_constraint(kirchhoff_constraint(n, m), range(N - 1))
-    return Problem(model=model, obj=objective, constraints=constraints, N=N)
+    return _assemble_problem(model, objective, N=N, u_max=u_max, kirchhoff=kirchhoff)
 
 
 class TrajOptMPCController(Controller[TrajOptMPCLog]):
@@ -798,8 +825,13 @@ class TrajOptMPCController(Controller[TrajOptMPCLog]):
         """
         super().__init__(dt)
         self.problem = problem
-        self.model = cast("PredictorModel", problem.model)
+        model = problem.model
+        if not isinstance(model, PredictorModel):
+            msg = f"problem.model ({type(model).__name__}) does not implement the Predictor priming seam"
+            raise TypeError(msg)
+        self.model = model
         self.solver = solver if solver is not None else SingleShooting(solver=Ipopt(options={"print_level": 0}))
+        ensure_solver_supports_objective(problem, self.solver)
         unprimed = jnp.nan_to_num(jnp.asarray(self.model.initial_state()), nan=0.0)
         self.state = initial_state if initial_state is not None else MPCState.initial(problem, x0=unprimed, dt=dt)
         self._state = np.asarray(self.model.initial_state(), dtype=np.float64)

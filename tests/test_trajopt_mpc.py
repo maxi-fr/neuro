@@ -1,14 +1,15 @@
-"""Ticket 01: the trajopt waveform MPC model adapter and controller."""
-
 from __future__ import annotations
 
 import itertools
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import jax.numpy as jnp
 import numpy as np
 import pytest
 import torch
+from trajopt.transcription.ipopt import Ipopt
+from yaml import safe_load
 
 from neuro.checkpoint import load_mlp
 from neuro.control.trajopt_mpc import (
@@ -21,11 +22,61 @@ from neuro.predictor.module import AutoregressiveMLP
 from neuro.transforms import Standardizer
 
 if TYPE_CHECKING:
-    from pathlib import Path
-
     from neuro.types import FloatArray
 
 _SEED = 7
+
+# Pinned parity values from the incumbent CasADi MPCController at fd0d244 (solver="ipopt"), run
+# on the depth-0 checkpoint and the _SEED + 5 measurement trajectory below, with Kirchhoff
+# applied unconditionally as the incumbent always does.
+_WAVEFORM_PARITY_CONTROLS = np.array(
+    [
+        [0.0, 0.0],
+        [0.0, 0.0],
+        [0.0, 0.0],
+        [-0.5000000097735464, 0.5000000097735464],
+        [-0.2197725016350544, 0.2197725016350544],
+        [-0.5000000099748614, 0.5000000099748614],
+        [-0.5000000099693410, 0.5000000099693410],
+        [-0.5000000099527547, 0.5000000099527547],
+    ]
+)
+_WAVEFORM_PARITY_COSTS = [
+    0.0,
+    0.0,
+    0.0,
+    1.4970273984042963,
+    1.6780944598038890,
+    1.8600552355429352,
+    1.7721805744284902,
+    2.4054735588528806,
+]
+
+
+def _full_parity_solver() -> Ipopt:
+    """The general Ipopt transcription that carries the Kirchhoff linear equality."""
+    return Ipopt(
+        options={
+            "hessian_approximation": "limited-memory",
+            "print_level": 0,
+            "max_iter": 500,
+            "acceptable_tol": 1e-5,
+            "acceptable_iter": 5,
+            "acceptable_constr_viol_tol": 1e-4,
+        }
+    )
+
+
+def _drive_golden(controller: TrajOptMPCController, n_steps: int, n_channels: int) -> tuple[FloatArray, list[float]]:
+    """Feed the fixed golden trajectory through ``update``, returning controls and reported costs."""
+    rng = np.random.default_rng(_SEED + 5)
+    controls = []
+    costs = []
+    for k in range(n_steps):
+        u, log = controller.update(k * controller.dt, ref=np.array([0.0]), x_hat=rng.standard_normal(n_channels))
+        controls.append(np.atleast_1d(np.asarray(u, dtype=np.float64)))
+        costs.append(log.cost)
+    return np.array(controls), costs
 
 
 def _random_layers(rng: np.random.Generator, sizes: list[int]) -> tuple[tuple[FloatArray, FloatArray], ...]:
@@ -264,6 +315,51 @@ def test_controller_keeps_absorbed_state_private(tmp_path: Path) -> None:
     results = _drive(controller, n_steps=6, n_channels=controller.model.n_channels)
     u_last, log_last = results[-1]
     assert not log_last.warmup
-    assert not np.isnan(controller._state[:n_z]).any()  # noqa: SLF001
-    np.testing.assert_array_equal(controller._u_last, u_last)  # noqa: SLF001
-    assert not np.array_equal(np.asarray(controller.state.x0), controller._state)  # noqa: SLF001
+    assert not np.isnan(controller._state[:n_z]).any()  # noqa: SLF001 -- the test inspects the absorbed state it owns
+    np.testing.assert_array_equal(controller._u_last, u_last)  # noqa: SLF001 -- the test verifies the private u_last persistence
+    seed = controller.state.x0
+    assert not np.array_equal(np.asarray(seed), controller._state)  # noqa: SLF001 -- absorbed state vs post-solve seed
+
+
+def test_reproduces_mpc_controller_control_sequence(tmp_path: Path) -> None:
+    """The trajopt controller reproduces the incumbent CasADi control sequence and reported cost.
+
+    The golden values are pinned from the incumbent ``MPCController`` (``solver="ipopt"``) at
+    fd0d244 on this same depth-0 (linear, hence convex) checkpoint and measurement trajectory.
+    Both the controls and the per-step reported cost must match: the cost assertion is what
+    catches the absorbed-measurement term the incumbent graph never scores.
+    """
+    artifact = _build_checkpoint(tmp_path, depth=0)
+    problem = build_waveform_problem(artifact, horizon=3, u_max=0.5, w_y=1.0, w_u=0.0, kirchhoff=True)
+    controller = TrajOptMPCController(dt=0.01, problem=problem, solver=_full_parity_solver())
+
+    controls, costs = _drive_golden(controller, n_steps=8, n_channels=controller.model.n_channels)
+    np.testing.assert_allclose(controls, _WAVEFORM_PARITY_CONTROLS, atol=1e-4)
+    np.testing.assert_allclose(costs, _WAVEFORM_PARITY_COSTS, atol=1e-4)
+
+
+def test_migrated_config_reproduces_incumbent_end_to_end(tmp_path: Path) -> None:
+    """The migrated YAML, dispatched through ``from_config``, reproduces the incumbent sequence and cost.
+
+    Loads ``mse02_psd_mpc.yaml`` and swaps in the synthetic checkpoint and the golden weights,
+    keeping the config's ``kirchhoff: true``; the controller is then built through the config's
+    class-path dispatch rather than direct instantiation.
+    """
+    with Path("configs/simulation/mse02_psd_mpc.yaml").open() as file:
+        sim_config = safe_load(file)
+    controller_cfg = sim_config["controller"]
+    problem_cfg = {
+        **controller_cfg["problem"],
+        "artifact": str(_build_checkpoint(tmp_path, depth=0)),
+        "horizon": 3,
+        "u_max": 0.5,
+        "w_y": 1.0,
+        "w_u": 0.0,
+    }
+    controller = TrajOptMPCController.from_config(
+        {"dt": controller_cfg["dt"], "problem": problem_cfg, "solver": _full_parity_solver()}
+    )
+
+    controls, costs = _drive_golden(controller, n_steps=8, n_channels=controller.model.n_channels)
+    np.testing.assert_allclose(controls, _WAVEFORM_PARITY_CONTROLS, atol=1e-4)
+    np.testing.assert_allclose(costs, _WAVEFORM_PARITY_COSTS, atol=1e-4)

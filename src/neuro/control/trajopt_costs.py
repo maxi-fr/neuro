@@ -228,16 +228,16 @@ class SpectralHingeCost(CostFunction):
 
 
 class ObservableHingeCost(CostFunction):
-    """Mean squared one-sided log excess of a forecast Observable over its healthy envelope.
+    """Mean squared one-sided log excess of a predicted Observable over its healthy envelope.
 
-    Per-knot local: ``evaluate(x, u, t)`` hinges one forecast Frame ``x`` of shape
+    Per-knot local: ``evaluate(x, u, t)`` hinges one predicted Frame ``x`` of shape
     ``(n_channels * n_values,)`` in raw log units against the ``ObservableGeometry``-derived
     reference, so unlike the spectral hinge it needs no whole-trajectory ``stage_costs``
     override and works with every solver backend. The reduction is a mean over
     ``(frame, channel, value)`` -- never over frames alone -- matching the training-time Loss
     and keeping ``w_psd`` with exactly the meaning it has on the spectral path.
 
-    ``x`` is the Frame's forecast value; the Observable model adapter (ticket 03) exposes its
+    ``x`` is the Frame's predicted value; the Observable model adapter (ticket 03) exposes its
     state as that value, or composes this cost with its readout.
     """
 
@@ -268,7 +268,7 @@ class ObservableHingeCost(CostFunction):
         w_psd
             Weight on the hinge.
         n_frames
-            Frame count the horizon's forecast holds, for the horizon-mean reduction.
+            Frame count the horizon's Rollout holds, for the horizon-mean reduction.
         """
         super().__init__(n=n, m=m)
         self.log_reference = jnp.asarray(log_reference).reshape(-1)
@@ -282,13 +282,13 @@ class ObservableHingeCost(CostFunction):
         u: jax.Array | None = None,
         t: float | jax.Array = 0.0,
     ) -> jax.Array:
-        """Hinge one forecast Frame against the reference: ``w * mean_v(hinge^2) / n_frames``."""
+        """Hinge one predicted Frame against the reference: ``w * mean_v(hinge^2) / n_frames``."""
         del u, t
         hinge = jnp.maximum(0.0, x - self.log_reference) ** 2
         return self.w * jnp.mean(hinge) / self.n_frames
 
     def stage_costs(self, X: jax.Array, U: jax.Array, t: jax.Array) -> jax.Array:
-        """Evaluate the per-Frame hinge over the forecast trajectory, one entry per stage."""
+        """Evaluate the per-Frame hinge over the rolled-out trajectory, one entry per stage."""
         return jax.vmap(self.evaluate)(X, U, t)
 
 
@@ -352,10 +352,43 @@ class ESNAutoRegressiveCost(CostFunction):
         return value
 
 
-class ObservableForecastHinge(CostFunction):
-    """Whole-horizon hinge over the forecast Frames, decoded from the observable model's states.
+class ExcludeInitialKnotState(CostFunction):
+    """Wrap a per-knot stage cost, dropping its knot-0 state-only term in ``stage_costs``.
 
-    Frame ``m``'s forecast is the readout of the lifted state the step that produced it
+    The incumbent rollout cost steps first and scores ``y_next``, never the absorbed state at
+    knot 0, so the transcription/reported-cost path (``stage_costs``) subtracts the wrapped
+    cost's knot-0 state term. ``evaluate`` stays the wrapped cost's single-knot value, so native
+    per-knot expansions still work; the dropped term is constant in the controls and never moves
+    the minimizer.
+    """
+
+    inner: CostFunction
+
+    def __init__(self, inner: CostFunction) -> None:
+        """Initialize from the single-knot cost whose knot-0 state term is dropped."""
+        super().__init__(n=inner.n, m=inner.m, terminal=inner.terminal)
+        self.inner = inner
+
+    def evaluate(
+        self,
+        x: jax.Array,
+        u: jax.Array | None = None,
+        t: float | jax.Array = 0.0,
+    ) -> jax.Array:
+        """Evaluate the wrapped cost unchanged at one knot."""
+        return self.inner.evaluate(x, u, t)
+
+    def stage_costs(self, X: jax.Array, U: jax.Array, t: jax.Array) -> jax.Array:
+        """Evaluate per-knot, dropping the wrapped cost's knot-0 state-only term."""
+        base = self.inner.stage_costs(X, U, t)
+        state0 = self.inner.evaluate(X[0], None, t[0])
+        return base.at[0].add(-state0)
+
+
+class ObservableRolloutHinge(CostFunction):
+    """Whole-horizon hinge over the rolled-out Frames, decoded from the observable model's states.
+
+    Frame ``m``'s prediction is the readout of the lifted state the step that produced it
     returns, so no single stage knot carries a Frame -- stage knot ``k`` holds the lifted state
     after step ``k - 1``, and the terminal knot holds the last one. ``stage_costs`` therefore
     decodes the Frames from ``X[1:]`` plus one extra model step (the terminal Frame the stage
@@ -390,7 +423,7 @@ class ObservableForecastHinge(CostFunction):
         w_psd
             Weight on the hinge.
         n_frames
-            Frame count the horizon's forecast holds, for the horizon-mean reduction.
+            Frame count the horizon's Rollout holds, for the horizon-mean reduction.
         """
         super().__init__(n=model.n, m=model.m)
         self.model = model
@@ -413,10 +446,10 @@ class ObservableForecastHinge(CostFunction):
         return jnp.zeros(())
 
     def _predicted_frames(self, X: jax.Array, U: jax.Array) -> jax.Array:
-        """Decode the raw forecast Frames ``l_1 .. l_M`` from the stage states and controls.
+        """Decode the raw predicted Frames ``l_1 .. l_M`` from the stage states and controls.
 
         Stage knot ``k`` holds the lifted state after step ``k - 1``, so its ``output`` is
-        Frame ``k - 1``'s forecast; the terminal Frame ``l_M`` is recovered with one extra
+        Frame ``k - 1``'s prediction; the terminal Frame ``l_M`` is recovered with one extra
         model step from the last stage knot, since the stage trajectory excludes the terminal
         state.
         """
@@ -429,3 +462,14 @@ class ObservableForecastHinge(CostFunction):
         del t
         frames = self._predicted_frames(X, U)
         return jax.vmap(lambda frame: self.hinge.evaluate(frame, None, 0.0))(frames)
+
+
+def has_whole_horizon_cost(cost: CostFunction) -> bool:
+    """Whether ``cost`` or any :class:`SumCost` sub-cost is scored only through ``stage_costs``.
+
+    Whole-horizon costs return ``0`` from ``evaluate`` and concentrate their value in
+    ``stage_costs``; a native expansion-only solver would silently drop them.
+    """
+    if isinstance(cost, SumCost):
+        return any(has_whole_horizon_cost(sub) for sub in cost.costs)
+    return isinstance(cost, (SpectralHingeCost, ObservableRolloutHinge))

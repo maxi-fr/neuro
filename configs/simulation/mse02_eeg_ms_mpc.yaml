@@ -52,3 +52,4 @@ controller:
     u_max: 2.0
     w_y: 1.0
     w_u: 10.0
+    kirchhoff: true

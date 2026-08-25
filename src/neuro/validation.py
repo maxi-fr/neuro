@@ -80,7 +80,7 @@ def _check_rates(config: Mapping[str, Any]) -> None:
 
 
 def _check_psd_reference(problem: Mapping[str, Any], controller_dt: float) -> None:
-    """Validate spectral reference envelope and geometry against controller configuration."""
+    """Validate the spectral reference envelope path and sample rate against the controller dt."""
     psd_ref_path = problem.get("psd_ref")
     if psd_ref_path is None:
         return

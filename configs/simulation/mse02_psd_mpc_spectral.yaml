@@ -53,3 +53,4 @@ controller:
     w_u: 10.0
     w_psd: 1000.0
     psd_ref: data/healthy_psd.npz
+    kirchhoff: true
