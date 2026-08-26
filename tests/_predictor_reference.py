@@ -1,6 +1,6 @@
 """Float64 numpy reference runtimes for the predictor tests, rebuilt from checkpoint buffers.
 
-The three artifacts and their NumPy runtimes are deleted (the contract ticket), but the tests
+The legacy artifacts and their NumPy runtimes are deleted (the contract ticket), but the tests
 still need a float64 reference to pin the float32 torch modules and the CasADi adapters against.
 These hand-rolled rollouts are that reference: they read only the checkpoint dataclasses' float64
 buffers and the shared geometry helpers, never a module and never torch.
@@ -15,7 +15,7 @@ import numpy as np
 from neuro.observable import control_means
 
 if TYPE_CHECKING:
-    from neuro.checkpoint import ESNCheckpoint, MLPCheckpoint, ObservableCheckpoint
+    from neuro.checkpoint import MLPCheckpoint, ObservableCheckpoint
     from neuro.types import FloatArray, Layers
 
 
@@ -65,45 +65,6 @@ def mlp_rollout(ckpt: MLPCheckpoint, state: FloatArray, u_future: FloatArray) ->
         y_window = np.concatenate([y_window[1:], y_next[None, :]], axis=0)
         u_window = np.concatenate([u_window[1:], w_future[t][None, :]], axis=0)
         preds[t] = y_next
-    return ckpt.y_std.inverse_transform(preds)
-
-
-def esn_readout(ckpt: ESNCheckpoint, h: FloatArray) -> FloatArray:
-    """One-step-ahead standardized prediction from ``h`` ``(..., N)`` -> ``(..., C)``."""
-    return np.concatenate([h, np.ones((*h.shape[:-1], 1), dtype=np.float64)], axis=-1) @ ckpt.w_out.T
-
-
-def esn_absorb(ckpt: ESNCheckpoint, h: FloatArray, z: FloatArray, v: FloatArray) -> FloatArray:
-    """Advance ``h`` one step, absorbing the standardized input ``(z, v)``."""
-    x_in = np.concatenate([z, v, np.ones((*v.shape[:-1], 1), dtype=np.float64)], axis=-1)
-    alpha = ckpt.leak_rate
-    return (1.0 - alpha) * h + alpha * np.tanh(h @ ckpt.w_res.T + x_in @ ckpt.w_in.T)
-
-
-def esn_step(ckpt: ESNCheckpoint, h: FloatArray, v: FloatArray) -> FloatArray:
-    """Advance ``h`` one free-running step under standardized control ``v``: the readout replaces z."""
-    return esn_absorb(ckpt, h, esn_readout(ckpt, h), v)
-
-
-def esn_prime(ckpt: ESNCheckpoint, y_hist: FloatArray, u_hist: FloatArray) -> FloatArray:
-    """Absorb raw history into the initial reservoir state, started at zero."""
-    z = ckpt.y_std.transform(np.asarray(y_hist, dtype=np.float64))
-    v = ckpt.u_std.transform(np.asarray(u_hist, dtype=np.float64))
-    h = np.zeros(ckpt.reservoir_size, dtype=np.float64)
-    for t in range(len(z)):
-        h = esn_absorb(ckpt, h, z[t], v[t])
-    return h
-
-
-def esn_rollout(ckpt: ESNCheckpoint, state: FloatArray, u_future: FloatArray) -> FloatArray:
-    """Free-run the checkpoint's float64 reservoir from ``state`` under raw controls -> raw EEG."""
-    v_future = ckpt.u_std.transform(np.asarray(u_future, dtype=np.float64))
-    h = np.asarray(state, dtype=np.float64).copy()
-    preds = np.empty((len(v_future), ckpt.n_channels), dtype=np.float64)
-    for t in range(len(v_future)):
-        z_hat = esn_readout(ckpt, h)
-        preds[t] = z_hat
-        h = esn_absorb(ckpt, h, z_hat, v_future[t])
     return ckpt.y_std.inverse_transform(preds)
 
 

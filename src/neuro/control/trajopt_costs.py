@@ -14,7 +14,7 @@ from neuro.spectral import LOG_FLOOR
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
-    from neuro.control.trajopt_mpc import ESNModel, ObservableModel, WaveformMLPModel
+    from neuro.control.trajopt_mpc import ObservableModel, WaveformMLPModel
     from neuro.spectral import PsdEnvelope
     from neuro.types import FloatArray
 
@@ -135,13 +135,13 @@ class SpectralHingeCost(CostFunction):
     fs: float = eqx.field(static=True)
     n_bins: int = eqx.field(static=True)
     n_windows: int = eqx.field(static=True)
-    model: WaveformMLPModel | ESNModel
+    model: WaveformMLPModel
     w: jax.Array
     power: jax.Array
 
     def __init__(
         self,
-        model: WaveformMLPModel | ESNModel,
+        model: WaveformMLPModel,
         envelope: PsdEnvelope,
         *,
         w_psd: float,
@@ -152,8 +152,8 @@ class SpectralHingeCost(CostFunction):
         Parameters
         ----------
         model
-            The trajopt waveform or ESN model adapter whose predicted outputs are windowed;
-            its ``output`` decode matches the incumbent's ``f_out``.
+            The trajopt waveform model adapter whose predicted outputs are windowed; its
+            ``output`` decode matches the incumbent's ``f_out``.
         envelope
             The healthy reference envelope; its ``window``/``hop`` geometry drives the cost.
         w_psd
@@ -192,9 +192,8 @@ class SpectralHingeCost(CostFunction):
         """Decode the raw predicted outputs ``y_1 .. y_H`` from the stage states and controls.
 
         Stage knot ``k`` carries the prediction ``y_k`` -- the newest y-window row for the
-        waveform, the readout of the post-step reservoir for the ESN; the terminal output
-        ``y_H`` is recovered with one extra model step from the last stage knot, since the
-        stage trajectory excludes the terminal state.
+        waveform; the terminal output ``y_H`` is recovered with one extra model step from the
+        last stage knot, since the stage trajectory excludes the terminal state.
         """
         y = jax.vmap(self.model.output)(X[1:])
         x_term = self.model.discrete_dynamics(X[-1], U[-1], 0.0, 0.0)
@@ -290,66 +289,6 @@ class ObservableHingeCost(CostFunction):
     def stage_costs(self, X: jax.Array, U: jax.Array, t: jax.Array) -> jax.Array:
         """Evaluate the per-Frame hinge over the rolled-out trajectory, one entry per stage."""
         return jax.vmap(self.evaluate)(X, U, t)
-
-
-class ESNAutoRegressiveCost(CostFunction):
-    """Per-knot ESN stage cost: ``(w_y / horizon) * ||output(x)||^2 + (w_u / horizon) * ||u||^2``.
-
-    The ESN's predicted sample is the readout of the reservoir -- a linear map of the state, not
-    a state component -- so the EEG-power term cannot be a diagonal state weight the way the
-    waveform model's ``z_last`` decode is; the cost reads the raw output off the model instead,
-    reproducing the incumbent's ``w_y * ||f_out(x)||^2 / horizon`` exactly. The terminal variant
-    drops the control term and carries ``w_y_terminal`` where given, mirroring the waveform
-    builder's explicit terminal.
-    """
-
-    model: ESNModel
-    w_y: jax.Array
-    w_u: jax.Array
-    horizon: int = eqx.field(static=True)
-
-    def __init__(
-        self,
-        model: ESNModel,
-        *,
-        w_y: float,
-        w_u: float,
-        horizon: int,
-        terminal: bool = False,
-    ) -> None:
-        """Initialize from the ESN model and the power/effort weights.
-
-        Parameters
-        ----------
-        model
-            The trajopt ESN model adapter whose readout output is penalized.
-        w_y
-            Weight on the raw predicted EEG power; ``0`` disables the power term.
-        w_u
-            Weight on the control effort (quadratic); ``0`` disables it.
-        horizon
-            Control Horizon in steps, for the horizon-mean reduction.
-        terminal
-            Build the terminal variant: state power only, no control term.
-        """
-        super().__init__(n=model.n, m=model.m, terminal=terminal)
-        self.model = model
-        self.w_y = jnp.asarray(w_y)
-        self.w_u = jnp.asarray(w_u)
-        self.horizon = int(horizon)
-
-    def evaluate(
-        self,
-        x: jax.Array,
-        u: jax.Array | None = None,
-        t: float | jax.Array = 0.0,
-    ) -> jax.Array:
-        """Evaluate the per-knot power cost, plus the effort when a control is present."""
-        del t
-        value = (self.w_y / self.horizon) * jnp.sum(self.model.output(x) ** 2)
-        if u is not None:
-            value = value + (self.w_u / self.horizon) * jnp.sum(u**2)
-        return value
 
 
 class ExcludeInitialKnotState(CostFunction):

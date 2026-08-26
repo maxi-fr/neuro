@@ -7,9 +7,7 @@ from typing import TYPE_CHECKING, cast
 import numpy as np
 import torch
 
-from neuro.config import ESNPredictorConfig
 from neuro.predictor.data import Datasets, prepare_datasets
-from neuro.predictor.esn_train import _train_esn
 from neuro.predictor.evaluation import evaluate_free_run
 from neuro.predictor.gradient import fit_gradient_descent, float32_tensor
 from neuro.predictor.losses import LossContext, build_losses, total_loss
@@ -125,12 +123,11 @@ def _du_sensitivity(model: AutoregressiveMLP, X_val: Tensor) -> float:
 
 
 def train(
-    cfg: NNPredictorConfig | ESNPredictorConfig, data_files: list[str], *, seed_offset: int = 0
+    cfg: NNPredictorConfig, data_files: list[str], *, seed_offset: int = 0
 ) -> TrainingResult | ObservableTrainingResult | RidgeTrainingResult:
     """Train the Predictor named by ``cfg`` for one config and return everything the run produced.
 
-    Dispatches on the config tree first, then on ``training.fit``: an ESN config always routes to
-    the ESN arm (``ridge`` only); an NN config with ``training.fit: ridge`` routes to the Ridge
+    Dispatches on ``training.fit``: an NN config with ``training.fit: ridge`` routes to the Ridge
     Trainer, which serves the depth-0 waveform MLP and the depth-0 observable MLP; any other NN
     config runs the generic gradient-descent fit over the waveform or observable arm. A fit the
     configured model does not support fails here at build time, before data is loaded or any fit
@@ -139,7 +136,7 @@ def train(
 
     Parameters
     ----------
-    cfg : NNPredictorConfig | ESNPredictorConfig
+    cfg : NNPredictorConfig
         Validated configuration with any sweep overrides already applied by the caller.
     data_files : list[str]
         Paths to the ``.npz`` trajectory files, split into train/validation by trajectory.
@@ -156,10 +153,8 @@ def train(
     ------
     ValueError
         If the named fit is one the configured model does not support: ``ridge`` on an MLP with
-        hidden layers, or ``gradient_descent`` on the ESN.
+        hidden layers.
     """
-    if isinstance(cfg, ESNPredictorConfig):
-        return _train_esn(cfg, data_files, seed_offset=seed_offset)
     if cfg.training.fit == "ridge":
         return _train_ridge(cfg, data_files, seed_offset=seed_offset)
     if cfg.observable is not None:

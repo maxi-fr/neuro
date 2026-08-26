@@ -219,9 +219,7 @@ $$
 
 clamped so each side keeps at least one of the $n_\text{files}$ files. Splitting whole trajectories rather than
 the concatenated window index avoids leakage between the heavily-overlapping sliding windows, and it
-leaves the validation trajectories intact so free-run rollouts can be scored on them (§8). The ESN
-path splits identically — it calls the same helper — so the two model families are validated on the
-same held-out files.
+leaves the validation trajectories intact so free-run rollouts can be scored on them (§8).
 
 ### 4.2 Transforms (Standardizers)
 
@@ -617,7 +615,7 @@ rollout that feeds each predicted step back into its own history (§1, §5.2); t
 teacher-forced evaluation anywhere in this section. Everything is scored in **raw EEG units**: the
 model's standardized $\hat{z}$ is mapped back through `y_std.inverse_transform` (§3.1, §4.2).
 
-Every reported NMSE — here and in the ESN path — divides a summed squared error by the **energy** of
+Every reported NMSE — here among the predictors — divides a summed squared error by the **energy** of
 the true signal over the same index set (the uncentred second moment, not the variance) through the
 single definition in [`nmse`](../src/neuro/artifacts.py), so $1.0$ is always the score of the zero
 predictor. [`evaluate_rollouts`](../src/neuro/artifacts.py) computes it over windows started on a
@@ -641,7 +639,7 @@ and issues one batched `prime_many` + `rollout_many` call per trajectory rather 
 window, which is worth 2–4× at the default `stride = 25` depending on model size (3.7× measured on
 `nonlinear`'s dimensions). Both artifact families implement the batched pair.
 
-The pooled NMSE remains the quantity `sweep_esn` minimises, and is available to the NN sweep as
+The pooled NMSE remains available to the NN sweep as
 `objective: rollout_nmse` — but it is **no longer the default objective**, for the reason §8.2.1
 gives. Rolling out *past* the evaluation horizon $N_\text{eval}$ is a separate question, measured by
 [`probe_rollout_horizon.py`](../scripts/probe_rollout_horizon.py), which reports the same
@@ -707,7 +705,6 @@ subsample of 8 validation windows. A full Jacobian per window would dominate the
 **Read it within one config, never across configs.** The Jacobian is taken in **standardized space**
 on both sides, so the number scales with whatever the `y` and `u` standardizers fitted on this
 dataset. It is a "is the model responsive to stimulation at all" signal, not a comparable quantity.
-The ESN path has no equivalent.
 
 ### 8.4 The artifact: one `.npz`, no framework
 
@@ -998,7 +995,6 @@ the score.
   reproduce that offset, and so does anything else that hand-builds a one-step input.
 - **`MLPArtifact.rollout` shifts after, because `prime` aligns the windows.** A `prime` state ends
   both windows at the same step, so the first prediction is made before any future control enters
-  and `u_future`'s last entry is never consumed — matching `ESNArtifact` exactly, so
-  `accumulate_rollout_errors` can stay polymorphic over both families. Shifting first would score
+  and `u_future`'s last entry is never consumed. Shifting first would score
   the sweep's objective on a model given one step of control lookahead it never had in training
   (§5.3).

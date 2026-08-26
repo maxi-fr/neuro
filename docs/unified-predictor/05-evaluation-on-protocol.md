@@ -10,5 +10,5 @@ ticket.
 
 ## Acceptance criteria
 
-- [ ] The batched accumulator reproduces the per-window `prime`/`rollout` loop for both the MLP and ESN modules.
+- [ ] The batched accumulator reproduces the per-window `prime`/`rollout` loop for both the MLP and observable modules.
 - [ ] `evaluate_rollouts`/`evaluate_log_energy` score a module identically to its artifact twin.

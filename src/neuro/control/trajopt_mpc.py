@@ -20,9 +20,8 @@ from trajopt.problem import MPCState, Problem
 from trajopt.transcription.ipopt import Ipopt
 from trajopt.transcription.single_shooting import SingleShooting
 
-from neuro.checkpoint import ESNCheckpoint, MLPCheckpoint, ObservableCheckpoint, load_esn, load_mlp, load_observable
+from neuro.checkpoint import MLPCheckpoint, ObservableCheckpoint, load_mlp, load_observable
 from neuro.control.trajopt_costs import (
-    ESNAutoRegressiveCost,
     ExcludeInitialKnotState,
     L1ControlCost,
     ObservableRolloutHinge,
@@ -221,115 +220,6 @@ class WaveformMLPModel(DiscreteDynamics):
         y_buf = np.full(self.n_y * self.n_channels, np.nan, dtype=np.float64)
         u_buf = np.zeros(self.n_u * self.n_controls, dtype=np.float64)
         return np.concatenate([y_buf, u_buf])
-
-
-class ESNModel(DiscreteDynamics):
-    """trajopt ``DiscreteDynamics`` adapter for the ESN predictor checkpoint.
-
-    The opaque state is the reservoir vector followed by the absorbed-step counter, exactly the
-    ``ESNModule`` state; ``discrete_dynamics`` advances one free-running sample -- the readout of
-    the current reservoir replaces the measurement in the input, matching the torch module's
-    ``step``/``rollout`` -- and ``output`` decodes that readout into the raw predicted sample.
-    The checkpoint's float64 weights and standardizer buffers become Equinox arrays, with the
-    sparse reservoir densified for JAX.
-    """
-
-    reservoir_size: int = eqx.field(static=True)
-    n_channels: int = eqx.field(static=True)
-    n_controls: int = eqx.field(static=True)
-    priming_steps: int = eqx.field(static=True)
-    leak_rate: float = eqx.field(static=True)
-    y_center: jax.Array
-    y_scale: jax.Array
-    u_center: jax.Array
-    u_scale: jax.Array
-    w_res: jax.Array
-    w_in: jax.Array
-    w_out: jax.Array
-
-    def __init__(self, checkpoint: ESNCheckpoint) -> None:
-        """Copy the checkpoint's float64 buffers into Equinox arrays, densifying the reservoir.
-
-        Parameters
-        ----------
-        checkpoint
-            The torch-free ESN checkpoint whose weights and standardizers become this model.
-        """
-        super().__init__(
-            n=checkpoint.reservoir_size + 1,
-            m=checkpoint.n_controls,
-            ne=checkpoint.reservoir_size + 1,
-        )
-        self.reservoir_size = int(checkpoint.reservoir_size)
-        self.n_channels = int(checkpoint.n_channels)
-        self.n_controls = int(checkpoint.n_controls)
-        self.priming_steps = int(checkpoint.priming_steps)
-        self.leak_rate = float(checkpoint.leak_rate)
-        self.y_center = jnp.asarray(checkpoint.y_std.center)
-        self.y_scale = jnp.asarray(checkpoint.y_std.scale)
-        self.u_center = jnp.asarray(checkpoint.u_std.center)
-        self.u_scale = jnp.asarray(checkpoint.u_std.scale)
-        self.w_res = jnp.asarray(checkpoint.w_res.toarray())
-        self.w_in = jnp.asarray(checkpoint.w_in)
-        self.w_out = jnp.asarray(checkpoint.w_out)
-
-    @classmethod
-    def from_checkpoint(cls, path: str | Path) -> Self:
-        """Rebuild the model from a numpy-readable ESN checkpoint on disk (a suffix-less stem)."""
-        return cls(load_esn(path))
-
-    def _readout(self, h: jax.Array) -> jax.Array:
-        """Standardized one-step-ahead readout ``(n_channels,)`` from the reservoir ``h``."""
-        return h @ self.w_out[:, : self.reservoir_size].T + self.w_out[:, self.reservoir_size]
-
-    def _absorb_reservoir(self, h: jax.Array, z: jax.Array, v: jax.Array) -> jax.Array:
-        """Advance the reservoir one step under the standardized input ``(z, v)``."""
-        x_in = jnp.concatenate([z, v, jnp.ones(1)])
-        alpha = self.leak_rate
-        return (1.0 - alpha) * h + alpha * jnp.tanh(h @ self.w_res.T + x_in @ self.w_in.T)
-
-    def output(self, x: jax.Array) -> jax.Array:
-        """Decode the readout of the reservoir part of the state into the raw sample ``(n_channels,)``."""
-        return self._readout(x[: self.reservoir_size]) * self.y_scale + self.y_center
-
-    def discrete_dynamics(
-        self,
-        x: jax.Array,
-        u: jax.Array,
-        t: float | jax.Array,
-        dt: float | jax.Array,
-    ) -> jax.Array:
-        """Advance one free-running sample: readout the current reservoir, then absorb it with ``u``.
-
-        Matches the torch module's ``step``: the readout of the pre-step reservoir is the emitted
-        prediction, and the same standardized readout feeds the update. The step counter advances.
-        """
-        del t, dt
-        h = x[: self.reservoir_size]
-        v = (u - self.u_center) / self.u_scale
-        h_next = self._absorb_reservoir(h, self._readout(h), v)
-        return jnp.concatenate([h_next, x[self.reservoir_size :] + 1.0])
-
-    def absorb(self, state: FloatArray, y: FloatArray, u: FloatArray) -> FloatArray:
-        """Append raw measurement ``y`` and applied control ``u``, advancing the step counter."""
-        state_arr = np.asarray(state, dtype=np.float64)
-        z = jnp.asarray(
-            (np.asarray(y, dtype=np.float64).reshape(-1) - np.asarray(self.y_center)) / np.asarray(self.y_scale)
-        )
-        v = jnp.asarray(
-            (np.asarray(u, dtype=np.float64).reshape(-1) - np.asarray(self.u_center)) / np.asarray(self.u_scale)
-        )
-        h = jnp.asarray(state_arr[: self.reservoir_size])
-        h_next = np.asarray(self._absorb_reservoir(h, z, v), dtype=np.float64)
-        return np.concatenate([h_next, state_arr[self.reservoir_size :] + 1.0])
-
-    def is_ready(self, state: FloatArray) -> bool:
-        """Report whether the state has absorbed at least ``priming_steps`` samples."""
-        return np.asarray(state, dtype=np.float64)[self.reservoir_size] >= self.priming_steps
-
-    def initial_state(self) -> FloatArray:
-        """Zero reservoir and zero absorbed steps: nothing absorbed yet."""
-        return np.zeros(self.reservoir_size + 1, dtype=np.float64)
 
 
 class ObservableModel(DiscreteDynamics):
@@ -698,79 +588,6 @@ def build_waveform_problem(  # noqa: PLR0913 -- checkpoint plus the nine MPC cos
     w_y_final = w_y_terminal if w_y_terminal is not None else w_y
     Q_f = jnp.zeros(n).at[z_last].set(2.0 * w_y_final * model.y_scale**2 / horizon)
     terminal = DiagonalCost.terminal_tracking(Q_f, xf, m)
-    objective = Objective(stage_cost=stage_cost, terminal_cost=terminal, N=N)
-
-    return _assemble_problem(model, objective, N=N, u_max=u_max, kirchhoff=kirchhoff)
-
-
-def build_esn_problem(  # noqa: PLR0913 -- checkpoint plus the nine MPC cost/bound knobs
-    artifact: str | Path,
-    *,
-    horizon: int,
-    u_max: ArrayLike,
-    w_y: float = 1.0,
-    w_u: float = 0.0,
-    w_y_terminal: float | None = None,
-    w_u_l1: float = 0.0,
-    w_psd: float = 0.0,
-    psd_ref: str | Path | None = None,
-    kirchhoff: bool = False,
-) -> Problem:
-    """Assemble the ESN MPC problem: model adapter, objective, box and Kirchhoff bounds.
-
-    The same shape as :func:`build_waveform_problem` on the ESN: the EEG-power term reads the
-    raw readout output off the reservoir state (a linear map of the state, not a component, so
-    it cannot be a diagonal state weight), the smooth L1 surrogate and the spectral PSD hinge
-    join the quadratic as custom ``CostFunction`` subclasses, and the constraints are the
-    control box bounds plus the optional Kirchhoff equality.
-
-    Parameters
-    ----------
-    artifact
-        Suffix-less stem of the numpy-readable ESN checkpoint.
-    horizon
-        Control Horizon in steps; the trajopt horizon is ``horizon + 1`` knot points.
-    u_max
-        Per-electrode amplitude bound: a scalar shared by every electrode or a
-        length-``n_controls`` vector.
-    w_y
-        Weight on predicted EEG power in the cost.
-    w_u
-        Weight on control effort (quadratic) in the cost.
-    w_y_terminal
-        Weight on predicted EEG power at the final horizon step, replacing ``w_y`` there;
-        ``None`` (default) keeps ``w_y`` uniform over the horizon.
-    w_u_l1
-        Weight on the L1 norm of the control effort (a sparse-stimulation penalty); ``0``
-        disables it (default), leaving the pure-quadratic problem unchanged.
-    w_psd
-        Weight on the spectral cost: the mean squared amount by which the predicted EEG
-        spectrum exceeds ``psd_ref``'s healthy envelope, in log power. ``0`` (default)
-        disables it.
-    psd_ref
-        Path to the healthy reference envelope npz written by ``scripts/build_healthy_psd.py``.
-        Required when ``w_psd > 0``; its stored window geometry drives the cost.
-    kirchhoff
-        Add the Kirchhoff sum-to-zero equality on the controls. Off by default, matching the
-        quadratic/box subset; the incumbent applies it unconditionally, so full parity sets it.
-    """
-    model = ESNModel.from_checkpoint(artifact)
-    n, m = model.n, model.m
-    N = horizon + 1
-
-    costs: list[CostFunction] = [
-        ExcludeInitialKnotState(ESNAutoRegressiveCost(model=model, w_y=w_y, w_u=w_u, horizon=horizon))
-    ]
-    if w_u_l1 > 0:
-        costs.append(L1ControlCost(n=n, m=m, w_l1=w_u_l1, horizon=horizon))
-    envelope = _spectral_envelope(psd_ref, w_psd)
-    if envelope is not None:
-        costs.append(SpectralHingeCost(model=model, envelope=envelope, w_psd=w_psd, horizon=horizon))
-    stage_cost: CostFunction = _combine_costs(costs)
-    # The terminal knot carries the horizon's final output, weighted by ``w_y_terminal`` when
-    # given else ``w_y`` -- the incumbent's last-step stage cost, with no control term.
-    w_y_final = w_y_terminal if w_y_terminal is not None else w_y
-    terminal = ESNAutoRegressiveCost(model=model, w_y=w_y_final, w_u=0.0, horizon=horizon, terminal=True)
     objective = Objective(stage_cost=stage_cost, terminal_cost=terminal, N=N)
 
     return _assemble_problem(model, objective, N=N, u_max=u_max, kirchhoff=kirchhoff)

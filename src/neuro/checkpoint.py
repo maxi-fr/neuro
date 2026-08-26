@@ -5,7 +5,6 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 import numpy as np
-import scipy.sparse
 
 from neuro.observable import geometry_from_meta, geometry_meta
 from neuro.predictor.checkpoint import load_checkpoint, save_checkpoint
@@ -110,115 +109,6 @@ class MLPCheckpoint:
         for i, (w, b) in enumerate(self.layers):
             arrays[f"layer.{i}.weight"] = w
             arrays[f"layer.{i}.bias"] = b
-        arrays.update(self.y_std.arrays("y"))
-        arrays.update(self.u_std.arrays("u"))
-        save_checkpoint(path, meta=meta, arrays=arrays)
-
-
-@dataclass(frozen=True)
-class ESNCheckpoint:
-    """NumPy weights and recorded metadata of the ESN, as read from its checkpoint.
-
-    This is the torch-free reader's view of an :class:`neuro.predictor.esn_module.ESNModule`
-    checkpoint; the trajopt model adapter and the validator read these buffers without importing
-    torch.
-
-    Attributes
-    ----------
-    w_in : FloatArray
-        Dense input weight matrix (N, C + m + 1).
-    w_out : FloatArray
-        Dense readout weight matrix (C, N + 1).
-    w_res : scipy.sparse.csr_matrix
-        Sparse reservoir weight matrix (N, N).
-    dt : float
-        The model's native time step, seconds.
-    downsample : int
-        Downsampling factor relative to the simulation's base ``dt``.
-    horizon : int
-        The native/trained horizon, identity metadata only.
-    reservoir_size : int
-        Number of reservoir units N.
-    leak_rate : float
-        Leakage alpha in (0, 1].
-    spectral_radius, density, input_scaling : float
-        Reservoir generation hyperparameters, recorded metadata.
-    priming_steps : int
-        Minimum number of absorbed samples before the state is ready.
-    noise_sigma, ridge_lambda : float
-        Harvest noise-injection sigma and readout-fit ridge regularization, recorded metadata.
-    seed : int
-        Reservoir generation seed, recorded metadata.
-    y_std, u_std : Standardizer
-        Channel and control standardizers mapping raw units to model space.
-    provenance : TrainingProvenance
-        What the training data was made of; empty on checkpoints written before it was recorded.
-    """
-
-    w_in: FloatArray
-    w_out: FloatArray
-    w_res: scipy.sparse.csr_matrix
-    dt: float
-    downsample: int
-    horizon: int
-    reservoir_size: int
-    leak_rate: float
-    spectral_radius: float
-    priming_steps: int
-    input_scaling: float
-    density: float
-    noise_sigma: float
-    ridge_lambda: float
-    seed: int
-    y_std: Standardizer
-    u_std: Standardizer
-    provenance: TrainingProvenance = field(default_factory=TrainingProvenance)
-
-    @property
-    def model_type(self) -> str:
-        """Model architecture type string ('esn')."""
-        return "esn"
-
-    @property
-    def n_channels(self) -> int:
-        """Number of EEG channels C."""
-        return self.w_out.shape[0]
-
-    @property
-    def n_controls(self) -> int:
-        """Number of control input channels m, read off W_in's ``[z; v; 1]`` input width."""
-        return self.w_in.shape[1] - self.n_channels - 1
-
-    def save(self, path: str | Path) -> None:
-        """Persist weights, standardizers and metadata into one ``.npz`` checkpoint (a stem).
-
-        The layout matches what :meth:`neuro.predictor.esn_module.ESNModule.save` writes, so the
-        torch module's loader and this reader are interchangeable on the file.
-        """
-        meta = {
-            "model_type": self.model_type,
-            "dt": self.dt,
-            "downsample": self.downsample,
-            "horizon": self.horizon,
-            "reservoir_size": self.reservoir_size,
-            "leak_rate": self.leak_rate,
-            "spectral_radius": self.spectral_radius,
-            "priming_steps": self.priming_steps,
-            "input_scaling": self.input_scaling,
-            "density": self.density,
-            "noise_sigma": self.noise_sigma,
-            "ridge_lambda": self.ridge_lambda,
-            "seed": self.seed,
-            **self.provenance.meta,
-        }
-        arrays: dict[str, FloatArray] = {
-            "W_in": self.w_in,
-            "W_out": self.w_out,
-            "W_res.data": np.asarray(self.w_res.data, dtype=np.float64),
-            "W_res.indices": self.w_res.indices,
-            "W_res.indptr": self.w_res.indptr,
-            "W_res.shape": np.array(self.w_res.shape),
-        }
         arrays.update(self.y_std.arrays("y"))
         arrays.update(self.u_std.arrays("u"))
         save_checkpoint(path, meta=meta, arrays=arrays)
@@ -386,38 +276,6 @@ def load_mlp(path: str | Path) -> MLPCheckpoint:
     )
 
 
-def load_esn(path: str | Path) -> ESNCheckpoint:
-    """Read the ESN checkpoint's weights, standardizers and recorded metadata (a suffix-less stem)."""
-    meta, arrays = load_checkpoint(path)
-    if meta.get("model_type") != "esn":
-        msg = f"checkpoint at {path} is model_type {meta.get('model_type')!r}, not 'esn'."
-        raise ValueError(msg)
-    w_res = scipy.sparse.csr_matrix(
-        (arrays["W_res.data"], arrays["W_res.indices"], arrays["W_res.indptr"]),
-        shape=tuple(int(s) for s in arrays["W_res.shape"]),
-    )
-    return ESNCheckpoint(
-        w_in=np.asarray(arrays["W_in"], dtype=np.float64),
-        w_out=np.asarray(arrays["W_out"], dtype=np.float64),
-        w_res=w_res,
-        dt=float(meta["dt"]),
-        downsample=int(meta["downsample"]),
-        horizon=int(meta["horizon"]),
-        reservoir_size=int(meta["reservoir_size"]),
-        leak_rate=float(meta["leak_rate"]),
-        spectral_radius=float(meta["spectral_radius"]),
-        priming_steps=int(meta["priming_steps"]),
-        input_scaling=float(meta["input_scaling"]),
-        density=float(meta["density"]),
-        noise_sigma=float(meta["noise_sigma"]),
-        ridge_lambda=float(meta["ridge_lambda"]),
-        seed=int(meta["seed"]),
-        y_std=Standardizer.from_arrays(arrays, "y"),
-        u_std=Standardizer.from_arrays(arrays, "u"),
-        provenance=TrainingProvenance.from_meta(meta),
-    )
-
-
 def load_observable(path: str | Path) -> ObservableCheckpoint:
     """Read the observable checkpoint's weights, standardizers and recorded metadata (a stem)."""
     meta, arrays = load_checkpoint(path)
@@ -461,20 +319,18 @@ def load_observable(path: str | Path) -> ObservableCheckpoint:
     )
 
 
-Checkpoint = MLPCheckpoint | ESNCheckpoint | ObservableCheckpoint
+Checkpoint = MLPCheckpoint | ObservableCheckpoint
 """Checkpoint dataclasses the torch-free reader yields and the trajopt adapters rebuild from."""
-RolloutCheckpoint = MLPCheckpoint | ESNCheckpoint
+RolloutCheckpoint = MLPCheckpoint
 """Checkpoints that free-run on the sample grid; the observable one forecasts the Observable instead."""
 
 
 def load_any(path: str | Path) -> Checkpoint:
-    """Read a single ``.npz`` predictor checkpoint (MLP, ESN or observable) from disk, torch-free."""
+    """Read a single ``.npz`` predictor checkpoint (MLP or observable) from disk, torch-free."""
     meta, _ = load_checkpoint(path)
     model_type = meta["model_type"]
     if model_type == "mlp":
         return load_mlp(path)
-    if model_type == "esn":
-        return load_esn(path)
     if model_type == "observable":
         return load_observable(path)
     msg = f"unsupported model_type {model_type!r} in {Path(path).with_suffix('.npz')}"

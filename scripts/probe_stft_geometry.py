@@ -9,11 +9,9 @@ from typing import TYPE_CHECKING
 import numpy as np
 import torch
 
-from neuro.checkpoint import load_rollout
 from neuro.config import EegMsSpec, StftSpec
 from neuro.filtering import antialias_filter
 from neuro.predictor.data import load_trajectory
-from neuro.predictor.esn_module import ESNModule
 from neuro.predictor.losses import EegMsLoss, LossContext, StftLoss, spectrogram
 from neuro.predictor.module import AutoregressiveMLP
 from neuro.spectral import LOG_FLOOR, PsdEnvelope
@@ -21,16 +19,13 @@ from neuro.spectral import LOG_FLOOR, PsdEnvelope
 if TYPE_CHECKING:
     from neuro.types import FloatArray
 
-RolloutPredictor = AutoregressiveMLP | ESNModule
-"""The torch rollout predictors the probe rolls out; the observable one never free-runs here."""
+RolloutPredictor = AutoregressiveMLP
+"""The torch waveform rollout predictor the probe rolls out; the observable one never free-runs here."""
 
 
-def _load_rollout_module(path: Path) -> RolloutPredictor:
-    """Load the torch rollout Predictor whose checkpoint ``path`` names."""
-    ckpt = load_rollout(path)
-    if ckpt.model_type == "mlp":
-        return AutoregressiveMLP.load(path)
-    return ESNModule.load(path)
+def _load_rollout_module(path: Path) -> AutoregressiveMLP:
+    """Load the torch waveform rollout Predictor whose checkpoint ``path`` names."""
+    return AutoregressiveMLP.load(path)
 
 
 # Seizure branches only: the healthy branch runs a different A vector than the predictor's

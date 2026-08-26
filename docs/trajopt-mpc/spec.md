@@ -71,9 +71,9 @@ though hitting the 20ms deadline is out of scope.
 
 ### 1. Predictor → `AbstractModel`
 
-Each torch Predictor (waveform MLP, ESN, Observable) becomes a `trajopt.dynamics.base.
+Each torch Predictor (waveform MLP, Observable) becomes a `trajopt.dynamics.base.
 DiscreteDynamics`/`EuclideanModel` subclass: `n` = the Predictor's opaque state width (the
-shift-register or reservoir vector), `m` = control count, `discrete_dynamics(x, u, t, dt)` = one
+shift-register vector), `m` = control count, `discrete_dynamics(x, u, t, dt)` = one
 `step`. Weights load from the Predictor's numpy-readable checkpoint into Equinox buffers — the
 permanent replacement for the torch→CasADi bridge, not another throwaway adapter.
 
@@ -145,7 +145,7 @@ our own controller's `from_config` follows, matching the existing pattern
 (`configs/simulation/*mpc*.yaml` currently dispatches `class_path:
 neuro.control.nonlinear_mpc.MPCController`). Migrating a simulation config means pointing
 `class_path` at our new controller (e.g. `neuro.control.trajopt_mpc.TrajOptMPCController`) and at a
-`Problem`-building factory function per predictor kind (waveform/ESN/Observable) that assembles the
+`Problem`-building factory function per predictor kind (waveform/Observable) that assembles the
 `AbstractModel` + `Objective` + `ConstraintList` from checkpoint + geometry + the existing
 cost-weight fields (`w_y`, `w_u`, `w_u_l1`, `w_psd`, `u_max`, etc.) — no new config tree, consistent
 with decision 10 of the unified-predictor spec (dispatch by config type, not a `model_type` field).
@@ -153,8 +153,8 @@ with decision 10 of the unified-predictor spec (dispatch by config type, not a `
 ### 6. Removals
 
 `nonlinear_mpc.py`, `linear_mpc.py`, `nlp.py`, `solvers.py`, `narx_mpc.py`,
-`nn_predictor_casadi.py`, `esn_predictor_casadi.py`, `observable_casadi.py`, and
-`artifacts.py::build_symbolic_model` are deleted (the latter three and the artifact bridge are
+`nn_predictor_casadi.py`, `observable_casadi.py`, and
+`artifacts.py::build_symbolic_model` are deleted (the latter two and the artifact bridge are
 already slated for removal by the unified-predictor spec regardless). CasADi drops as a dependency
 — it's a **direct** pyproject dependency, not purely a controller concern, so confirm
 `src/neuro/transforms.py`'s CasADi usage isn't load-bearing for something outside the controller

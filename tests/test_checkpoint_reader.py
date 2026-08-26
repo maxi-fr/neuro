@@ -6,21 +6,18 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 import pytest
-import scipy.sparse
 import torch
 
 from neuro.checkpoint import (
     MLPCheckpoint,
     ObservableCheckpoint,
     load_any,
-    load_esn,
     load_mlp,
     load_observable,
     load_rollout,
 )
 from neuro.config import StftGeometry
 from neuro.predictor.checkpoint import save_checkpoint
-from neuro.predictor.esn_module import ESNModule
 from neuro.predictor.module import AutoregressiveMLP
 from neuro.predictor.observable_module import StepwiseObservableMLP
 from neuro.provenance import TrainingProvenance
@@ -146,53 +143,6 @@ def test_mlp_checkpoint_save_load_round_trips_recorded_provenance(tmp_path: Path
     assert AutoregressiveMLP.load(path).n_y == module.n_y
 
 
-def test_esn_reader_round_trips_weights_standardizers_and_metadata(tmp_path: Path) -> None:
-    """``load_esn`` yields what ``ESNModule.save`` wrote, exactly as the module holds it."""
-    rng = np.random.default_rng(_SEED)
-    model = ESNModule(
-        w_res=_esn_w_res(),
-        w_in=rng.normal(size=(20, 2 + 2 + 1)),
-        w_out=rng.uniform(-0.1, 0.1, size=(2, 21)),
-        leak_rate=0.2,
-        priming_steps=6,
-        horizon=5,
-        dt=0.02,
-        spectral_radius=0.9,
-        density=0.1,
-        input_scaling=0.5,
-        noise_sigma=0.0,
-        ridge_lambda=1e-3,
-        seed=_SEED,
-        y_std=Standardizer(center=rng.uniform(-1.0, 1.0, 2), scale=rng.uniform(0.5, 2.0, 2)),
-        u_std=Standardizer(center=rng.uniform(-1.0, 1.0, 2), scale=rng.uniform(0.5, 2.0, 2)),
-    )
-    path = tmp_path / "esn"
-    model.save(path)
-
-    got = load_esn(path)
-
-    assert got.model_type == "esn"
-    assert got.n_channels == 2
-    assert got.n_controls == 2
-    assert got.reservoir_size == 20
-    assert got.leak_rate == pytest.approx(0.2)
-    assert got.priming_steps == 6
-    assert got.horizon == 5
-    assert got.spectral_radius == pytest.approx(0.9)
-    assert got.density == pytest.approx(0.1)
-    assert got.input_scaling == pytest.approx(0.5)
-    assert got.noise_sigma == pytest.approx(0.0)
-    assert got.ridge_lambda == pytest.approx(1e-3)
-    assert got.seed == _SEED
-    np.testing.assert_array_equal(got.w_in, model.w_in.detach().cpu().numpy())
-    np.testing.assert_array_equal(got.w_out, model.w_out.detach().cpu().numpy())
-    np.testing.assert_array_equal(got.w_res.toarray(), model.w_res.to_dense().numpy())
-    np.testing.assert_array_equal(got.y_std.center, model.y_std.center)
-    np.testing.assert_array_equal(got.y_std.scale, model.y_std.scale)
-    np.testing.assert_array_equal(got.u_std.center, model.u_std.center)
-    np.testing.assert_array_equal(got.u_std.scale, model.u_std.scale)
-
-
 @pytest.mark.parametrize(
     "geometry", [StftGeometry(n_segment=8, n_hop=4), StftGeometry(n_segment=10, n_hop=5, n_bin_pool=2)]
 )
@@ -264,22 +214,25 @@ def test_load_any_dispatches_and_load_rollout_rejects_observable(tmp_path: Path)
 
 
 def test_reader_rejects_a_wrong_model_type_for_its_kind(tmp_path: Path) -> None:
-    """``load_mlp`` on an ESN checkpoint raises instead of misreading the layout."""
-    model = ESNModule(
-        w_res=_esn_w_res(),
-        w_in=np.zeros((20, 5)),
-        w_out=np.zeros((2, 21)),
-        leak_rate=0.2,
-        priming_steps=6,
-        horizon=5,
+    """``load_mlp`` on an observable checkpoint raises instead of misreading the layout."""
+    ckpt = ObservableCheckpoint(
+        lift=((np.ones((2, 4)), np.zeros(2)),),
+        transition=((np.ones((2, 4)), np.zeros(2)),),
+        readout=(np.ones((2, 2)), np.zeros(2)),
+        activation="relu",
+        n_y=1,
+        n_u=1,
+        horizon=4,
+        n_channels=2,
+        n_controls=2,
+        dt=0.02,
+        downsample=1,
+        geometry=StftGeometry(n_segment=4, n_hop=2),
+        y_std=Standardizer(center=np.zeros(2), scale=np.ones(2)),
+        u_std=Standardizer(center=np.zeros(2), scale=np.ones(2)),
+        l_std=Standardizer(center=np.zeros(2), scale=np.ones(2)),
     )
-    path = tmp_path / "esn"
-    model.save(path)
-    with pytest.raises(ValueError, match="model_type 'esn', not 'mlp'"):
+    path = tmp_path / "obs"
+    ckpt.save(path)
+    with pytest.raises(ValueError, match="model_type 'observable', not 'mlp'"):
         load_mlp(path)
-
-
-def _esn_w_res() -> scipy.sparse.csr_matrix:
-    """A tiny sparse reservoir for the reader tests."""
-    rng = np.random.default_rng(_SEED)
-    return scipy.sparse.random(20, 20, density=0.1, random_state=rng, format="csr")

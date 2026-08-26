@@ -2,23 +2,22 @@
 
 ## Problem Statement
 
-The predictor side of the codebase has three trained models — the autoregressive MLP, the
-observable-space MLP, and the ESN — that share almost all of their runtime surface (`prime`,
-`rollout`, `absorb`, `is_ready`, `initial_state`) yet are wired to three separate training
+The predictor side of the codebase has two trained models — the autoregressive MLP and the
+observable-space MLP — that share almost all of their runtime surface (`prime`,
+`rollout`, `absorb`, `is_ready`, `initial_state`) yet are wired to two separate training
 implementations and two bespoke sweep scripts, with no seam between them. Three consequences:
 
 1. **Training is duplicated, not shared.** The two torch training loops (waveform and observable)
-   each reimplement the batch/curriculum/early-stopping machinery; the ESN's closed-form fit lives
-   in a script. Adding a model, or adding a fit algorithm, means copying the loop again.
+   each reimplement the batch/curriculum/early-stopping machinery. Adding a model, or adding a
+   fit algorithm, means copying the loop again.
 2. **The observable projection lives in the wrong layer.** The Frame targets are computed in the
    observable trainer by standardizing the EEG, inverting the standardizer, and reducing — a round
    trip that re-does work the data pipeline already did. The NumPy/torch/CasADi copies of the same
    spectrogram-and-Frame machinery are three implementations of one function.
 3. **The framework-free artifact has become the wrong abstraction.** The Predictor is the torch
    module; the NumPy artifact duplicates its weights and its runtime in a second framework, purely
-   so evaluation and the CasADi controller can read it. Moving the ESN to torch (so it can later be
-   gradient-descent trained) and moving the controller to a torch→CasADi weight adapter removes the
-   reason for that duplication.
+   so evaluation and the CasADi controller can read it. Moving the controller to a torch→CasADi
+   weight adapter removes the reason for that duplication.
 
 The design must also survive the coming JAX/Equinox MPC replacement: the predictor contract settled
 now is what that conversion reads, so it has to be minimal and framework-agnostic, not
@@ -58,7 +57,7 @@ exchange raw units only.
 ### 1. The Predictor protocol is runtime-only and raw-units
 
 The protocol carries the members above and nothing else. State is opaque: the MLP predictors carry
-a shift-register, the ESN a reservoir vector, and callers never inspect it. Raw units at the
+a shift-register, and callers never inspect it. Raw units at the
 boundary: `prime` takes raw history, `rollout` returns raw predictions, `absorb` takes raw
 measurements. Standardizers are module buffers, invisible through the protocol. `step`'s "position"
 is a sample for the waveform predictors and a Frame for the observable predictor; that granularity
@@ -72,7 +71,7 @@ one-Frame-per-step module, not the incumbent one-shot forecast over the Control 
 
 ### 2. No framework-free artifact; persistence is a numpy-readable checkpoint
 
-`MLPArtifact`, `ESNArtifact` and `ObservableArtifact`, and their NumPy `prime`/`rollout`, are
+`MLPArtifact` and `ObservableArtifact`, and their NumPy `prime`/`rollout`, are
 deleted. A trained Predictor is a torch module; its `__init__`, `save` and `load` are its own
 business and persist whatever "everything we need to know later" is — weights, standardizer
 buffers, and implementation-specific attributes (the observable predictor's geometry, provenance,
@@ -92,8 +91,7 @@ needs to hinge a Cost against the log reference.
 
 A Trainer is named by the fit it performs — gradient-descent or Ridge — and asks the Predictor which
 fits it supports. Gradient-descent serves any torch module over the base protocol. Ridge serves any
-module that is Ridge-Fittable. A model can support either or both: a depth-0 MLP supports both; the
-ESN supports Ridge now and gradient-descent once it is a torch module. The config names the fit
+module that is Ridge-Fittable. A model can support either or both: a depth-0 MLP supports both. The config names the fit
 with `training.fit`; a fit the model does not support fails at build time.
 
 ### 5. RidgeFittable is a capability protocol, not a base-protocol member
@@ -105,57 +103,46 @@ install_readout(A (c, f)) -> None
 
 The Ridge Trainer is `G, P = model.design_normal_equations(trajs); A = ridge(G, P, λ); model.install_readout(A)`
 with no knowledge of which model it holds (`ridge` leaves the bias column unregularized). The capability is named around the readout, not
-"linearity": a depth-0 MLP is linear end-to-end, the ESN is nonlinear end-to-end with only a linear
-readout, and a depth-0 observable MLP is linear end-to-end — all three are Ridge-Fittable. `is_linear` is rejected as the name because it cannot express
+"linearity": a depth-0 MLP is linear end-to-end, and a depth-0 observable MLP is linear end-to-end —
+both are Ridge-Fittable. `is_linear` is rejected as the name because it cannot express
 that, and a bare boolean would still leave the Trainer needing per-kind knowledge of how to extract
 features and where to write the result.
 
 - depth-0 MLP: `design_normal_equations` folds the one-step input features (with the control-window
   shift alignment) and the next-step targets into `G`/`P`; `install_readout` writes the single
   layer. This extracts today's warm-start least-squares fit out of the gradient-descent Trainer.
-- ESN: `design_normal_equations` streams the fixed-reservoir states `[h; 1]` and their one-step-ahead
-  targets into `G`/`P`; `install_readout` writes `W_out`.
 - depth-0 observable MLP: `design_normal_equations` harvests the per-Frame lifted state `z_m`;
   `install_readout` writes the shared readout.
 
-### 6. Sweep is a seam with two implementations
+### 6. Sweep is a seam
 
-`OptunaSweep` serves the two NN predictors; `GridSweep` serves the ESN (outer reservoir-size ×
-ridge-λ grid, inner Optuna over the continuous reservoir hyperparameters — the incumbent hybrid,
-not a pure grid). The objective is a named string in config drawn from the Trainer's `candidates`;
-every candidate is recorded on every trial so a finished study can be re-ranked. Trainer candidates
-are per-model — waveform `{log_energy, val_loss, rollout_nmse}`, observable `{val_loss,
-val_log_mse}`, ESN `{rollout_nmse, log_energy}` — and `closed_loop` is a sweep-level candidate
-available for all three kinds.
+`OptunaSweep` serves the two NN predictors. The objective is a named string in config drawn from the
+Trainer's `candidates`; every candidate is recorded on every trial so a finished study can be
+re-ranked. Trainer candidates are per-model — waveform `{log_energy, val_loss, rollout_nmse}`,
+observable `{val_loss, val_log_mse}` — and `closed_loop` is a sweep-level candidate
+available for both kinds.
 
-### 7. ESN moves to torch
-
-Reservoir generation (sparse random matrix, spectral-radius rescale) stays a one-time scipy
-preprocessing step whose outputs are copied into torch buffers. The Predictor itself — `absorb`,
-`readout`, `step`, `rollout` — becomes torch. The ridge readout solve uses `torch.linalg`. The
-closed-form Trainer stays; the move is what later lets gradient-descent serve the ESN too.
-
-### 8. Interim controller bridge: torch → CasADi weights
+### 7. Interim controller bridge: torch → CasADi weights
 
 The current MPC builds its symbolic models from artifacts; with artifacts gone it needs a source. A
 thin adapter rebuilds the existing CasADi bridges from a torch module's buffers plus its metadata
 instead of an artifact. This is throwaway — it keeps the controller green until the Equinox
 conversion lands and deletes it.
 
-### 9. Data pipeline owns the observable projection
+### 8. Data pipeline owns the observable projection
 
 The Frame targets are computed in the data-preparation module, raw-direct on the loaded trajectories
 (no standardize→inverse round trip), on the same window grid the waveform targets use. The NumPy
 spectrogram-and-Frame machinery becomes the single target path; the differentiable Loss terms stay
 where they are, because they score predictions, not targets.
 
-### 10. Config stays two trees; dispatch is by config type
+### 9. Config stays two trees; dispatch is by config type
 
-`NNPredictorConfig` and `ESNPredictorConfig` are kept. The Trainer and Sweep dispatch on which tree
+`NNPredictorConfig` and `ObservablePredictorConfig` are kept. The Trainer and Sweep dispatch on which tree
 they are handed, not on a `model_type` read off the module. `training.fit` names the algorithm;
 `sweep.objective` becomes a named string instead of a fixed literal.
 
-### 11. Removals
+### 10. Removals
 
 The three artifacts, their NumPy runtime, the artifact-dispatch entry point, and the
 `SymbolicModel`/`ObservableModel` protocols. Evaluation moves onto the torch module. The
@@ -172,22 +159,20 @@ below were chosen deliberately; each has prior art in this repo.
 
 Every torch predictor satisfies the protocol; `rollout_many` returns `(B, n_positions, n_outputs)`;
 raw units round-trip at the boundary with standardizers internal. Prior art:
-`tests/test_batched_rollout.py`, `tests/test_predictor_module.py`, `tests/test_esn.py`.
+`tests/test_batched_rollout.py`, `tests/test_predictor_module.py`.
 
 ### Seam 2 — Trainer
 
 `train(cfg, data_files)` returns the Predictor plus `candidates` and a `save` that round-trips.
-Gradient-descent serves waveform and observable; Ridge serves depth-0 MLP, depth-0 observable, and
-ESN; `candidates` contains the config-named objective. Prior art: `tests/test_predictor_train.py`,
+Gradient-descent serves waveform and observable; Ridge serves depth-0 MLP and depth-0 observable;
+`candidates` contains the config-named objective. Prior art: `tests/test_predictor_train.py`,
 `tests/test_observable_train.py`.
 
 ### Seam 3 — RidgeFittable
 
-Depth-0 MLP ridge fit reproduces the incumbent warm-start least-squares; ESN
-`design_normal_equations` reproduces the incumbent harvest; depth-0 observable fits the shared
-readout on harvested `z_m`; `install_readout` writes weights back; a non-fittable model handed to
-the Ridge Trainer fails at build time. Prior art: `tests/test_esn.py` (harvest/ridge),
-`tests/test_predictor_train.py` (warm start).
+Depth-0 MLP ridge fit reproduces the incumbent warm-start least-squares; depth-0 observable fits the
+shared readout on harvested `z_m`; `install_readout` writes weights back; a non-fittable model handed to
+the Ridge Trainer fails at build time. Prior art: `tests/test_predictor_train.py` (warm start).
 
 ### Seam 4 — Sweep
 
@@ -223,7 +208,6 @@ invariants; performance remains the job of probe scripts and closed-loop benchma
   that conversion to read.
 - **CasADi removal** — the interim adapter keeps it alive; deleting it belongs to the MPC
   replacement.
-- **Gradient-descent training of the ESN** — enabled by the torch move, not performed here.
 - **Merging the two config trees** — they stay separate; dispatch happens at the seams.
 - **Closed-loop gates and performance benchmarks** — none are introduced here.
 

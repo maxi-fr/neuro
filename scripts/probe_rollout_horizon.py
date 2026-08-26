@@ -5,32 +5,28 @@ from pathlib import Path
 
 from neuro.checkpoint import RolloutCheckpoint, load_rollout
 from neuro.predictor.data import load_trajectory
-from neuro.predictor.esn_module import ESNModule
 from neuro.predictor.evaluation import accumulate_rollout_errors, nmse
 from neuro.predictor.module import AutoregressiveMLP
 
 _REPORT_STEPS = (1, 5, 10, 20, 40, 60, 80, 100, 125, 150)
 
 
-def _load_module(path: Path) -> AutoregressiveMLP | ESNModule:
-    """Load the torch rollout Predictor whose checkpoint ``path`` names."""
-    ckpt = load_rollout(path)
-    if ckpt.model_type == "mlp":
-        return AutoregressiveMLP.load(path)
-    return ESNModule.load(path)
+def _load_module(path: Path) -> AutoregressiveMLP:
+    """Load the torch waveform rollout Predictor whose checkpoint ``path`` names."""
+    return AutoregressiveMLP.load(path)
 
 
 def parse_args() -> argparse.Namespace:
     """Parse command-line arguments for the rollout-horizon probe."""
     parser = argparse.ArgumentParser(
-        description="Measure per-step NMSE and power_ratio of identified predictors (MLP/ESN) rolled out far past training horizon."
+        description="Measure per-step NMSE and power_ratio of the waveform predictor rolled out far past training horizon."
     )
     parser.add_argument(
         "--artifact",
         type=Path,
         nargs="+",
         required=True,
-        help="Checkpoint basename(s), e.g. artifacts/mlp_model artifacts/esn_model",
+        help="Checkpoint basename(s), e.g. artifacts/mlp_model",
     )
     parser.add_argument("--data", type=Path, required=True, help="Directory of held-out .npz trajectories.")
     parser.add_argument("--max-steps", type=int, default=150, help="Longest rollout to evaluate, in model steps.")

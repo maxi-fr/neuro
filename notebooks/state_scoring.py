@@ -1226,7 +1226,7 @@ def _(mo):
     survives it is easier to forecast than what went in. Two rungs sit below every windowed metric,
     and both are now scored on every axis above rather than only here:
 
-    - **waveform** — the sample values themselves, which is what the MLP/ESN predictor is trained
+    - **waveform** — the sample values themselves, which is what the MLP predictor is trained
       to forecast today. It needs the phase, which diverges fastest.
     - **envelope** — the causal band amplitude. It is *already* a reduction of the waveform: the
       band-pass and rectifier throw the phase away and keep the amplitude, at the cost of nothing

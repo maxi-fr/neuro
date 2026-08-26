@@ -30,7 +30,7 @@ def rollout_batches(
     ``prime_many``/``rollout_many`` call, so every free-run score reads the same windows off one
     traversal rather than re-rolling per metric. ``start`` overrides the first window index, so
     several predictors can share one t0 grid. The scores live on the sample grid -- one output
-    per position -- so the waveform MLP and ESN are the intended subjects, not the observable
+    per position -- so the waveform MLP is the intended subject, not the observable
     predictor, whose ``rollout`` emits one Frame per position.
     """
     grid_start = predictor.priming_steps if start is None else start

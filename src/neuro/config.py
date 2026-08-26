@@ -465,7 +465,6 @@ ParamSpec = Annotated[
 # sweep-level candidate every kind can rank on too.
 WAVEFORM_TRAINER_CANDIDATES = frozenset({"log_energy", "val_loss", "rollout_nmse"})
 OBSERVABLE_TRAINER_CANDIDATES = frozenset({"val_loss", "val_log_mse"})
-ESN_TRAINER_CANDIDATES = frozenset({"rollout_nmse", "log_energy"})
 CLOSED_LOOP_OBJECTIVE = "closed_loop"
 
 
@@ -635,10 +634,10 @@ def _validate_sweep_overlap_and_keys(
 def _validate_sweep_objective(objective: str, candidates: frozenset[str]) -> None:
     """Raise unless the named sweep objective is one the configured model's Trainer can report.
 
-    The Trainer candidates are per-model kind -- waveform ``{log_energy, val_loss, rollout_nmse}``,
-    observable ``{val_loss, val_log_mse}``, ESN ``{rollout_nmse, log_energy}`` -- and ``closed_loop``
-    is the sweep-level candidate every kind can rank on. Failing here catches a mismatched
-    objective at build time instead of on the first trial.
+    The Trainer candidates are per-model kind -- waveform ``{log_energy, val_loss, rollout_nmse}``
+    or observable ``{val_loss, val_log_mse}`` -- and ``closed_loop`` is the sweep-level candidate
+    every kind can rank on. Failing here catches a mismatched objective at build time instead of
+    on the first trial.
     """
     if objective in candidates or objective == CLOSED_LOOP_OBJECTIVE:
         return
@@ -661,82 +660,6 @@ def expand_dotted_dict(flat: dict[str, Any]) -> dict[str, Any]:
     return nested
 
 
-class ESNModelConfig(StrictConfig):
-    """ESN predictor architecture settings."""
-
-    reservoir_size: int = Field(default=500, ge=1)
-    spectral_radius: float = Field(default=0.9, gt=0)
-    leak_rate: float = Field(default=0.1, gt=0, le=1)
-    density: float = Field(default=0.1, gt=0, le=1)
-    input_scaling: float = Field(default=0.1, gt=0)
-    priming_steps: int = Field(default=100, ge=0)
-    ridge_lambda: float = Field(default=1e-3, ge=0)
-    noise_sigma: float = Field(default=0.0, ge=0)
-    horizon: int = Field(default=50, ge=1)
-
-
-class ESNTrainingConfig(StrictConfig):
-    """Training settings for ESN predictor.
-
-    ``fit`` names the algorithm the unified entry point routes to; the ESN supports only
-    ``ridge`` (the closed-form readout fit), and ``gradient_descent`` fails at build time in
-    :func:`neuro.predictor.train.train` -- the torch move enables it, it is not performed here.
-    """
-
-    fit: Literal["gradient_descent", "ridge"] = "ridge"
-    train_split: float = Field(default=0.8, gt=0, lt=1)
-    seed: int = Field(default=69, ge=0)
-    scaler: Literal["standard", "robust"] = "standard"
-    global_scaling: bool = False
-
-
-class ESNSweepConfig(StrictConfig):
-    """Sweep settings for the ESN predictor: the outer reservoir-size x ridge-lambda grid, the per-cell trial count and the continuous search space.
-
-    ``objective`` names the Trainer candidate each per-cell study minimizes; :class:`ESNPredictorConfig`
-    validates it against the ESN candidate set (plus the sweep-level ``closed_loop``), so a
-    mismatched name fails at build time.
-    """
-
-    reservoir_sizes: list[int] = Field(default_factory=lambda: [100, 250, 500, 1000])
-    lambdas: list[float] = Field(default_factory=lambda: [1e-5, 1e-4, 1e-3, 1e-2, 1e-1, 1.0, 10.0])
-    n_trials: int = Field(default=50, ge=1)
-    artifact: str | None = None
-    objective: str = "rollout_nmse"
-    model: dict[str, ParamSpec] = Field(default_factory=dict)
-    closed_loop: ClosedLoopEvalConfig | None = None
-
-    @model_validator(mode="after")
-    def _validate_objective(self) -> Self:
-        if self.objective == CLOSED_LOOP_OBJECTIVE and self.closed_loop is None:
-            msg = "objective 'closed_loop' requires a 'sweep.closed_loop' section."
-            raise ValueError(msg)
-        return self
-
-
-class ESNPredictorConfig(StrictConfig):
-    """Fully-resolved, validated configuration for the ESN-predictor pipeline."""
-
-    simulation: SimulationConfig = Field(default_factory=SimulationConfig)
-    model: ESNModelConfig = Field(default_factory=ESNModelConfig)
-    training: ESNTrainingConfig = Field(default_factory=ESNTrainingConfig)
-    artifact: str | None = None
-    sweep: ESNSweepConfig | None = None
-
-    @classmethod
-    def from_dict(cls, data: dict[str, Any] | None) -> ESNPredictorConfig:
-        """Build a typed config from a raw YAML mapping, rejecting unknown keys everywhere."""
-        return cls.model_validate({} if data is None else data)
-
-    @model_validator(mode="after")
-    def _validate_sweep_exclusivity_and_keys(self) -> Self:
-        if self.sweep is None:
-            return self
-        _validate_sweep_overlap_and_keys(self.sweep.model, self.model, "model")
-        _validate_sweep_objective(self.sweep.objective, ESN_TRAINER_CANDIDATES)
-        return self
-
-
 def load_config(path: Path) -> NNPredictorConfig:
     """Load and strictly validate an NN-predictor YAML config from ``path``."""
     if not path.exists():
@@ -747,19 +670,7 @@ def load_config(path: Path) -> NNPredictorConfig:
     return NNPredictorConfig.from_dict(raw)
 
 
-def load_esn_config(path: Path) -> ESNPredictorConfig:
-    """Load and strictly validate an ESN-predictor YAML config from ``path``."""
-    if not path.exists():
-        msg = f"Config file not found: {path}"
-        raise FileNotFoundError(msg)
-    with path.open() as f:
-        raw = yaml.safe_load(f)
-    return ESNPredictorConfig.from_dict(raw)
-
-
-def resolve_data_files(
-    config: NNPredictorConfig | ESNPredictorConfig, data_path_override: str | None = None
-) -> list[str]:
+def resolve_data_files(config: NNPredictorConfig, data_path_override: str | None = None) -> list[str]:
     """Resolve and validate the ``.npz`` training files from the config or an override."""
     data_path_str = data_path_override or config.simulation.data_path
     if not data_path_str:

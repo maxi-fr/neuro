@@ -11,7 +11,6 @@ from neuro.types import RidgeFittable
 if TYPE_CHECKING:
     from pathlib import Path
 
-    from neuro.predictor.esn_module import ESNModule
     from neuro.predictor.evaluation import LogEnergyError, RolloutNMSE
     from neuro.predictor.module import AutoregressiveMLP
     from neuro.types import FloatArray
@@ -66,18 +65,18 @@ class RidgeTrainer:
 class RidgeTrainingResult:
     """Everything one closed-form Ridge training run produced; ``save`` persists it all.
 
-    Shared by the two entry-point arms whose free-run scores live on the sample grid -- the
-    depth-0 waveform MLP and the ESN -- because both produce the same shape of result: a fitted
-    Predictor, the free-run scores, and no training curve. (The depth-0 observable arm is the
-    deliberate exception: its ``rollout`` emits one Frame per position, so sample-grid free-run
-    scores do not apply and it returns :class:`~neuro.predictor.observable_train.ObservableTrainingResult`
-    instead.) The absence of ``val_loss`` in ``candidates`` is deliberate: a closed-form fit has
-    no epoch loop, so the only objectives these arms can rank on are the two free-run scores,
-    ``rollout_nmse`` and ``log_energy``.
+    Owned by the depth-0 waveform MLP arm whose free-run scores live on the sample grid, which
+    returns exactly this shape of result: a fitted Predictor, the free-run scores, and no
+    training curve. (The depth-0 observable arm is the deliberate exception: its ``rollout``
+    emits one Frame per position, so sample-grid free-run scores do not apply and it returns
+    :class:`~neuro.predictor.observable_train.ObservableTrainingResult` instead.) The absence of
+    ``val_loss`` in ``candidates`` is deliberate: a closed-form fit has no epoch loop, so the
+    only objectives this arm can rank on are the two free-run scores, ``rollout_nmse`` and
+    ``log_energy``.
 
     Attributes
     ----------
-    predictor : AutoregressiveMLP | ESNModule
+    predictor : AutoregressiveMLP
         The trained module holding the fitted readout, with the standardizers as buffers and the
         recorded metadata (provenance, downsample) attached.
     candidates : dict[str, float]
@@ -91,7 +90,7 @@ class RidgeTrainingResult:
         The held-out ``(u, y)`` trajectories, kept whole so the caller can plot free runs.
     """
 
-    predictor: AutoregressiveMLP | ESNModule
+    predictor: AutoregressiveMLP
     candidates: dict[str, float]
     rollout: RolloutNMSE
     log_energy: LogEnergyError

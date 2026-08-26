@@ -24,7 +24,7 @@ class Predictor(Protocol):
     """Runtime-only, raw-units interface every surrogate predictor implements.
 
     Predicts the next output(s) from an opaque internal state. State is the module's own business
-    -- a shift register for the waveform MLP, a reservoir vector for the ESN -- and callers never
+    -- a shift register for the waveform MLP -- and callers never
     inspect it. Every boundary value is in raw units: ``prime`` takes raw history, ``rollout`` and
     ``step`` return raw predictions, ``absorb`` takes raw measurements; the standardizers live
     inside the implementation, invisible through this interface.
@@ -103,11 +103,11 @@ class RidgeFittable(Protocol):
     """Capability of a Predictor whose readout is linear in a feature vector it produces itself.
 
     A capability protocol, not a base-protocol member: it names the closed-form fit around the
-    readout, so it stays independent of how the features are produced -- a depth-0 MLP is linear
-    end-to-end, the ESN is nonlinear end-to-end with only a linear readout, and a depth-0
-    observable MLP is linear end-to-end. ``is_linear`` would not express that, and a bare boolean
-    would still leave the Ridge Trainer needing per-kind knowledge of how to extract features and
-    where to write the result. The Trainer checks this capability at build time.
+    readout, so it stays independent of how the features are produced -- a depth-0 MLP and a
+    depth-0 observable MLP are both linear end-to-end. ``is_linear`` would not express that, and
+    a bare boolean would still leave the Ridge Trainer needing per-kind knowledge of how to
+    extract features and where to write the result. The Trainer checks this capability at build
+    time.
     """
 
     def design_normal_equations(
