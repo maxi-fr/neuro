@@ -242,7 +242,19 @@ def build_waveform_problem(  # noqa: PLR0913 -- checkpoint plus the nine MPC cos
         costs.append(L1ControlCost(n=n, m=m, w_l1=w_u_l1, horizon=horizon))
     envelope = _spectral_envelope(psd_ref, w_psd)
     if envelope is not None:
-        costs.append(SpectralHingeCost(model=model, envelope=envelope, w_psd=w_psd, horizon=horizon))
+        costs.append(
+            SpectralHingeCost(
+                n=n,
+                m=m,
+                n_y=model.n_y,
+                n_channels=model.n_channels,
+                y_center=model.y_center,
+                y_scale=model.y_scale,
+                envelope=envelope,
+                w_psd=w_psd,
+                horizon=horizon,
+            )
+        )
     stage_cost: CostFunction = _combine_costs(costs)
     # The terminal knot carries the horizon's final output, weighted by ``w_y_terminal`` when
     # given else ``w_y`` -- the incumbent's last-step stage cost. Always explicit, because the

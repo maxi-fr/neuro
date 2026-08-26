@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 import pytest
+import torch
 
 from neuro.predictor.module import AutoregressiveMLP
 from neuro.predictor.ridge import RidgeTrainer, ridge
@@ -90,3 +91,30 @@ def test_ridge_trainer_rejects_a_non_fittable_model() -> None:
     assert not isinstance(model, RidgeFittable)
     with pytest.raises(TypeError, match="Ridge-Fittable"):
         RidgeTrainer(ridge_lambda=0.0).fit(model, [])  # ty: ignore[invalid-argument-type] -- deliberately non-fittable
+
+
+def test_ridge_trainer_fits_distinct_output_width() -> None:
+    """RidgeTrainer fits a depth-0 MLP whose output width exceeds channel count."""
+    rng = np.random.default_rng(123)
+    n_channels, n_outputs, n_controls = 2, 4, 1
+    model = AutoregressiveMLP(
+        n_y=2,
+        n_u=1,
+        horizon=3,
+        n_channels=n_channels,
+        n_controls=n_controls,
+        n_outputs=n_outputs,
+        hidden_size=5,
+        depth=0,
+    )
+    assert isinstance(model, RidgeFittable)
+    trajs = [
+        (rng.standard_normal((30, n_controls)), rng.standard_normal((30, n_outputs))),
+        (rng.standard_normal((30, n_controls)), rng.standard_normal((30, n_outputs))),
+    ]
+    fitted = RidgeTrainer(ridge_lambda=0.05).fit(model, trajs)
+    assert fitted is model
+    layer = model.layers[0]
+    assert isinstance(layer, torch.nn.Linear)
+    assert layer.weight.shape == (n_outputs, 2 * n_outputs + 1 * n_controls)
+    assert layer.bias.shape == (n_outputs,)

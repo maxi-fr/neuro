@@ -69,11 +69,6 @@ class InferencePredictor(ABC):
         ...
 
     @abstractmethod
-    def output(self, x: jax.Array) -> jax.Array:
-        """Decode the raw output one state carries."""
-        ...
-
-    @abstractmethod
     def absorb(self, state: FloatArray, y: FloatArray, u: FloatArray) -> FloatArray:
         """Append raw measurement ``y`` and applied control ``u`` into the model's opaque state."""
         ...
@@ -158,14 +153,15 @@ class WaveformMLPModel(DiscreteDynamics, InferencePredictor):
     enters the control window *before* the prediction, so the predicted sample depends on the
     control applied at that step. ``free_run`` is the training-aligned free run used by
     evaluation -- prime on raw history, then one prediction per future control with the control
-    shifted in *after* -- so it reproduces the decoded torch ``forward`` rather than the MPC
-    recursion.
+    shifted in *after* -- so it reproduces the unstandardized torch ``forward`` rather than the
+    MPC recursion.
     """
 
     n_y: int = eqx.field(static=True)
     n_u: int = eqx.field(static=True)
     n_channels: int = eqx.field(static=True)
     n_controls: int = eqx.field(static=True)
+    n_outputs: int = eqx.field(static=True)
     horizon: int = eqx.field(static=True)
     hidden_size: int = eqx.field(static=True)
     depth: int = eqx.field(static=True)
@@ -201,18 +197,21 @@ class WaveformMLPModel(DiscreteDynamics, InferencePredictor):
         u_scale: FloatArray,
         weights: tuple[FloatArray, ...],
         biases: tuple[FloatArray, ...],
+        n_outputs: int | None = None,
         provenance: TrainingProvenance | None = None,
     ) -> None:
         """Copy the checkpoint's float64 buffers into jax arrays."""
+        n_out = int(n_outputs) if n_outputs is not None else int(n_channels)
         super().__init__(
-            n=n_y * n_channels + n_u * n_controls,
-            m=n_controls,
-            ne=n_y * n_channels + n_u * n_controls,
+            n=int(n_y) * n_out + int(n_u) * int(n_controls),
+            m=int(n_controls),
+            ne=int(n_y) * n_out + int(n_u) * int(n_controls),
         )
         self.n_y = int(n_y)
         self.n_u = int(n_u)
         self.n_channels = int(n_channels)
         self.n_controls = int(n_controls)
+        self.n_outputs = n_out
         self.horizon = int(horizon)
         self.hidden_size = int(hidden_size)
         self.depth = int(depth)
@@ -228,13 +227,8 @@ class WaveformMLPModel(DiscreteDynamics, InferencePredictor):
         self.weights = tuple(jnp.asarray(weight) for weight in weights)
         self.biases = tuple(jnp.asarray(bias) for bias in biases)
 
-    @property
-    def n_outputs(self) -> int:
-        """Output width per position: one EEG sample across all channels."""
-        return self.n_channels
-
     def _predict(self, y_window: jax.Array, u_window: jax.Array) -> jax.Array:
-        """One MLP forward pass on standardized windows -> the next standardized sample ``(n_channels,)``.
+        """One MLP forward pass on standardized windows -> the next standardized output ``(n_outputs,)``.
 
         With the residual skip the MLP output adds the window's last sample, so the layers fit
         the one-step delta exactly as the torch module does.
@@ -247,16 +241,6 @@ class WaveformMLPModel(DiscreteDynamics, InferencePredictor):
         )
         return z + y_window[-1] if self.residual else z
 
-    def output(self, x: jax.Array) -> jax.Array:
-        """Decode the newest standardized y-window row into the raw predicted sample ``(n_channels,)``.
-
-        The prediction the state carries is always its newest row, so the raw sample is a state
-        component -- the decode the spectral hinge reads off any sample-grid model.
-        """
-        n_z = self.n_y * self.n_channels
-        z_last = x[n_z - self.n_channels : n_z]
-        return z_last * self.y_scale + self.y_center
-
     def discrete_dynamics(
         self,
         x: jax.Array,
@@ -264,15 +248,15 @@ class WaveformMLPModel(DiscreteDynamics, InferencePredictor):
         t: float | jax.Array,
         dt: float | jax.Array,
     ) -> jax.Array:
-        """Advance one sample: shift ``u`` into the control window, predict, and shift both windows.
+        """Advance one position: shift ``u`` into the control window, predict, and shift both windows.
 
         Mirrors the incumbent MPC's ``NNSymbolicModel.f_step``: the predicted ``y_{t+1}`` is the
         MLP output on the y-window ending at ``t`` and the u-window ending at ``t + 1`` after
         ``u`` is shifted in, and the returned state's control window ends with ``u``.
         """
         del t, dt
-        n_z = self.n_y * self.n_channels
-        y_window = x[:n_z].reshape(self.n_y, self.n_channels)
+        n_z = self.n_y * self.n_outputs
+        y_window = x[:n_z].reshape(self.n_y, self.n_outputs)
         u_window_raw = x[n_z:].reshape(self.n_u, self.n_controls)
         u_window = jnp.concatenate([u_window_raw[1:], u.reshape(1, -1)], axis=0)
         z_next = self._predict(y_window, (u_window - self.u_center) / self.u_scale)
@@ -280,7 +264,7 @@ class WaveformMLPModel(DiscreteDynamics, InferencePredictor):
         return jnp.concatenate([y_window.reshape(-1), u_window.reshape(-1)])
 
     def _rollout_one(self, y_hist: jax.Array, u_hist: jax.Array, u_future: jax.Array) -> jax.Array:
-        """Free-run one raw history under raw future controls -> raw ``(steps, n_channels)``."""
+        """Free-run one raw history under raw future controls -> raw ``(steps, n_outputs)``."""
         y_window = (y_hist[-self.n_y :] - self.y_center) / self.y_scale
         u_window = (u_hist[-self.n_u :] - self.u_center) / self.u_scale
         u_future = (u_future - self.u_center) / self.u_scale
@@ -304,14 +288,14 @@ class WaveformMLPModel(DiscreteDynamics, InferencePredictor):
         u_hists: FloatArray,
         u_futures: FloatArray,
     ) -> jax.Array:
-        """Free-run raw-in -> raw-out ``(B, steps, n_channels)``, batched over independently primed histories."""
+        """Free-run raw-in -> raw-out ``(B, steps, n_outputs)``, batched over independently primed histories."""
         return jax.vmap(self._rollout_one)(jnp.asarray(y_hists), jnp.asarray(u_hists), jnp.asarray(u_futures))
 
     def absorb(self, state: FloatArray, y: FloatArray, u: FloatArray) -> FloatArray:
         """Append raw measurement ``y`` and applied control ``u`` into the shift-register state."""
-        n_z = self.n_y * self.n_channels
+        n_z = self.n_y * self.n_outputs
         state_arr = np.asarray(state, dtype=np.float64)
-        y_window = state_arr[:n_z].reshape(self.n_y, self.n_channels)
+        y_window = state_arr[:n_z].reshape(self.n_y, self.n_outputs)
         u_window = state_arr[n_z:].reshape(self.n_u, self.n_controls)
         z = (np.asarray(y, dtype=np.float64).reshape(-1) - np.asarray(self.y_center)) / np.asarray(self.y_scale)
         y_window = np.concatenate([y_window[1:], z[None, :]], axis=0)
@@ -319,13 +303,13 @@ class WaveformMLPModel(DiscreteDynamics, InferencePredictor):
         return np.concatenate([y_window.reshape(-1), u_window.reshape(-1)])
 
     def is_ready(self, state: FloatArray) -> bool:
-        """Report whether the EEG window holds no NaN, i.e. at least ``n_y`` samples were absorbed."""
-        n_z = self.n_y * self.n_channels
+        """Report whether the output window holds no NaN, i.e. at least ``n_y`` samples were absorbed."""
+        n_z = self.n_y * self.n_outputs
         return not bool(np.isnan(np.asarray(state, dtype=np.float64)[:n_z]).any())
 
     def initial_state(self) -> FloatArray:
-        """NaN-padded EEG window and zero-padded control window: nothing absorbed yet."""
-        y_buf = np.full(self.n_y * self.n_channels, np.nan, dtype=np.float64)
+        """NaN-padded output window and zero-padded control window: nothing absorbed yet."""
+        y_buf = np.full(self.n_y * self.n_outputs, np.nan, dtype=np.float64)
         u_buf = np.zeros(self.n_u * self.n_controls, dtype=np.float64)
         return np.concatenate([y_buf, u_buf])
 
@@ -339,6 +323,7 @@ class WaveformMLPModel(DiscreteDynamics, InferencePredictor):
             "horizon": self.horizon,
             "n_channels": self.n_channels,
             "n_controls": self.n_controls,
+            "n_outputs": self.n_outputs,
             "hidden_size": self.hidden_size,
             "depth": self.depth,
             "residual": int(self.residual),
@@ -365,6 +350,7 @@ class WaveformMLPModel(DiscreteDynamics, InferencePredictor):
             horizon=int(meta["horizon"]),
             n_channels=int(meta["n_channels"]),
             n_controls=int(meta["n_controls"]),
+            n_outputs=int(meta.get("n_outputs", meta["n_channels"])),
             hidden_size=int(meta["hidden_size"]),
             depth=int(meta["depth"]),
             activation=meta["activation"],

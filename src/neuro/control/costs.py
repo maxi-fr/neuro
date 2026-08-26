@@ -14,8 +14,8 @@ from neuro.spectral import LOG_FLOOR
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
-    from neuro.predictor.inference import WaveformMLPModel
     from neuro.spectral import PsdEnvelope
+    from neuro.types import FloatArray
 
 
 class SumCost(CostFunction):
@@ -113,13 +113,12 @@ class SpectralHingeCost(CostFunction):
 
     A whole-horizon functional: window ``m`` covers predicted outputs ``y_{m*hop+1} .. y_{m*hop
     + window}``, so no single knot carries enough history to score it (``window`` typically
-    exceeds the predictor's history window). ``stage_costs`` therefore decodes the predicted
-    outputs from the stage states via the model's ``output`` -- one extra model step recovers
-    the terminal output the stage knots do not carry -- and computes the exact windowed hinge
-    with ``jnp.fft``; ``evaluate`` returns ``0`` at any single knot, so per-knot local
-    expansions (native solvers) degrade to the quadratic/L1 objective rather than mis-score
-    the hinge. The transcription path (single-shooting and multiple-shooting Ipopt) evaluates
-    the exact hinge through ``stage_costs``.
+    exceeds the predictor's history window). ``stage_costs`` slices the predicted outputs
+    directly from the stage states using the build-time center/scale arrays and computes the
+    exact windowed hinge with ``jnp.fft``; ``evaluate`` returns ``0`` at any single knot, so
+    per-knot local expansions (native solvers) degrade to the quadratic/L1 objective rather than
+    mis-score the hinge. The transcription path (single-shooting and multiple-shooting Ipopt)
+    evaluates the exact hinge through ``stage_costs``.
 
     The periodogram convention is that of :func:`neuro.spectral.compute_periodograms` and of
     the training loss: periodic Hann, no per-segment detrend, one-sided and density-scaled.
@@ -129,30 +128,42 @@ class SpectralHingeCost(CostFunction):
     """
 
     n_channels: int = eqx.field(static=True)
+    n_y: int = eqx.field(static=True)
     window: int = eqx.field(static=True)
     hop: int = eqx.field(static=True)
     fs: float = eqx.field(static=True)
     n_bins: int = eqx.field(static=True)
     n_windows: int = eqx.field(static=True)
-    model: WaveformMLPModel
     w: jax.Array
     power: jax.Array
+    y_center: jax.Array
+    y_scale: jax.Array
 
-    def __init__(
+    def __init__(  # noqa: PLR0913 -- geometry, standardizers, envelope, weight and horizon
         self,
-        model: WaveformMLPModel,
-        envelope: PsdEnvelope,
         *,
+        n: int,
+        m: int,
+        n_y: int,
+        n_channels: int,
+        y_center: FloatArray | jax.Array,
+        y_scale: FloatArray | jax.Array,
+        envelope: PsdEnvelope,
         w_psd: float,
         horizon: int,
     ) -> None:
-        """Initialize from the sample-grid model, the healthy envelope and the spectral weight.
+        """Initialize from geometry, standardizers, the healthy envelope and the spectral weight.
 
         Parameters
         ----------
-        model
-            The trajopt waveform model adapter whose predicted outputs are windowed; its
-            ``output`` decode matches the incumbent's ``f_out``.
+        n, m
+            Model state and control dimensions.
+        n_y
+            Past output steps in the model's history window.
+        n_channels
+            Physical EEG channel count.
+        y_center, y_scale
+            Center and scale arrays mapping standardized state units to raw EEG units.
         envelope
             The healthy reference envelope; its ``window``/``hop`` geometry drives the cost.
         w_psd
@@ -160,15 +171,15 @@ class SpectralHingeCost(CostFunction):
         horizon
             Control Horizon in steps; must be at least ``envelope.window``.
         """
-        super().__init__(n=model.n, m=model.m)
-        self.model = model
-        self.n_channels = int(model.n_channels)
+        super().__init__(n=n, m=m)
+        self.n_channels = int(n_channels)
+        self.n_y = int(n_y)
         self.window = int(envelope.window)
         self.hop = int(envelope.hop)
         self.fs = float(envelope.fs)
         self.n_bins = int(envelope.power.shape[1])
-        if envelope.power.shape[0] != model.n_channels:
-            msg = f"envelope has {envelope.power.shape[0]} channels but the model outputs {model.n_channels}"
+        if envelope.power.shape[0] != n_channels:
+            msg = f"envelope has {envelope.power.shape[0]} channels but the model outputs {n_channels}"
             raise ValueError(msg)
         if horizon < self.window:
             msg = f"horizon ({horizon}) is shorter than the envelope window ({self.window})"
@@ -176,6 +187,8 @@ class SpectralHingeCost(CostFunction):
         self.n_windows = (horizon - self.window) // self.hop + 1
         self.w = jnp.asarray(w_psd)
         self.power = jnp.asarray(envelope.power)
+        self.y_center = jnp.asarray(y_center)
+        self.y_scale = jnp.asarray(y_scale)
 
     def evaluate(
         self,
@@ -187,27 +200,17 @@ class SpectralHingeCost(CostFunction):
         del x, u, t
         return jnp.zeros(())
 
-    def _predicted_outputs(self, X: jax.Array, U: jax.Array) -> jax.Array:
-        """Decode the raw predicted outputs ``y_1 .. y_H`` from the stage states and controls.
-
-        Stage knot ``k`` carries the prediction ``y_k`` -- the newest y-window row for the
-        waveform; the terminal output ``y_H`` is recovered with one extra model step from the
-        last stage knot, since the stage trajectory excludes the terminal state.
-        """
-        y = jax.vmap(self.model.output)(X[1:])
-        x_term = self.model.discrete_dynamics(X[-1], U[-1], 0.0, 0.0)
-        return jnp.concatenate([y, self.model.output(x_term)[None, :]], axis=0)
+    def _predicted_outputs(self, X: jax.Array) -> jax.Array:
+        """Decode the raw predicted outputs from the stage states without stepping the model."""
+        z_last = slice((self.n_y - 1) * self.n_channels, self.n_y * self.n_channels)
+        return X[1:, z_last] * self.y_scale + self.y_center
 
     def stage_costs(self, X: jax.Array, U: jax.Array, t: jax.Array) -> jax.Array:
-        """Evaluate the exact windowed hinge, concentrated in the first stage entry.
-
-        The hinge is a mean over ``(window, channel, bin)`` of the squared one-sided log
-        excess, so it contributes a single scalar to the stage-cost sum; placing it in entry 0
-        leaves every other stage's local cost untouched and makes ``sum(stage_costs)`` the
-        exact total the CasADi graph reports.
-        """
-        del t
-        y = self._predicted_outputs(X, U)  # (H, n_channels)
+        """Evaluate the exact windowed hinge over the stage trajectory, concentrated in entry 0."""
+        del U, t
+        y = self._predicted_outputs(X)  # (H - 1, n_channels)
+        if y.shape[0] < self.window:
+            return jnp.zeros(X.shape[0])
         log_power = jax_compute_log_power_frames(y, fs=self.fs, window=self.window, hop=self.hop)
         log_excess = log_power - jnp.log(self.power[None, :, 1:])
         hinge = jnp.maximum(0.0, log_excess) ** 2

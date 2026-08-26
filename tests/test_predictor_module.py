@@ -157,3 +157,37 @@ def test_inference_path_never_imports_torch(module: str) -> None:
     """The jax inference path stays torch-free, so the rewrite cannot reach it."""
     code = f"import importlib, sys; importlib.import_module({module!r}); assert 'torch' not in sys.modules"
     subprocess.run([sys.executable, "-c", code], check=True)  # noqa: S603
+
+
+def test_autoregressive_mlp_supports_distinct_output_width() -> None:
+    """AutoregressiveMLP unrolls with n_outputs independent of n_channels."""
+    model = AutoregressiveMLP(
+        n_y=2,
+        n_u=1,
+        horizon=3,
+        n_channels=2,
+        n_controls=1,
+        n_outputs=6,
+        hidden_size=8,
+        depth=2,
+        activation="softplus",
+        residual=True,
+    )
+    assert model.n_outputs == 6
+    assert model.n_channels == 2
+    assert model.y_center.shape == (6,)
+    assert model.y_scale.shape == (6,)
+
+    # Zero-weight residual predicts persistence of length-6 output
+    with torch.no_grad():
+        for module in model.layers:
+            if isinstance(module, torch.nn.Linear):
+                module.weight.zero_()
+                module.bias.zero_()
+
+    rng = np.random.default_rng(42)
+    row = rng.standard_normal(model.n_y * 6 + (model.n_u + model.horizon) * 1)
+    pred = model(torch.as_tensor(row, dtype=torch.float32)[None, :]).detach().numpy()[0]
+    assert pred.shape == (3 * 6,)
+    z_last = row[6:12]
+    np.testing.assert_allclose(pred.reshape(3, 6), np.broadcast_to(z_last, (3, 6)), rtol=1e-6, atol=1e-7)

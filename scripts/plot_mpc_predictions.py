@@ -9,7 +9,6 @@ mpl.use("Agg")
 
 from typing import TYPE_CHECKING
 
-import jax.numpy as jnp
 import matplotlib.pyplot as plt
 import numpy as np
 from simulate.config import build_component, load_config
@@ -67,15 +66,12 @@ def run_open_loop(config: dict, t_end: float) -> tuple[FloatArray, float]:
 
 def free_run(model: WaveformMLPModel, eeg: FloatArray, anchor: int, horizon: int) -> tuple[FloatArray, FloatArray]:
     """Free-run (zero control) ``horizon`` steps from ``anchor``; return (predicted, true) EEG."""
-    n_y, n_controls = model.n_y, model.n_controls
-    x = model.initial_state()
-    for i in range(n_y):
-        x = model.absorb(x, eeg[anchor - n_y + i], np.zeros(n_controls))
-    preds = []
-    for _ in range(horizon):
-        x = np.asarray(model.discrete_dynamics(jnp.asarray(x), jnp.zeros(n_controls), 0.0, 0.0))
-        preds.append(np.asarray(model.output(jnp.asarray(x))).reshape(-1))
-    return np.asarray(preds), eeg[anchor : anchor + horizon]
+    n_y, n_u, n_controls = model.n_y, model.n_u, model.n_controls
+    y_hist = eeg[anchor - n_y : anchor][None, ...]
+    u_hist = np.zeros((1, n_u, n_controls))
+    u_future = np.zeros((1, horizon, n_controls))
+    preds = np.asarray(model.free_run(y_hist, u_hist, u_future))[0]
+    return preds, eeg[anchor : anchor + horizon]
 
 
 def main() -> None:

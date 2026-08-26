@@ -90,12 +90,12 @@ def design_normal_equations(
 ) -> tuple[FloatArray, FloatArray]:
     """Fold one-step input features and next-step targets into ``(G, P)``, bias column last.
 
-    For every window on the shared grid the feature row pairs the past-EEG block with the control
+    For every window on the shared grid the feature row pairs the past-output block with the control
     window shifted in by one step (the alignment ``forward`` uses). The target is the next
     standardized sample -- or, with the residual skip, that sample's delta from the window's last
     one, which is what the readout now predicts.
     """
-    c = self.n_channels
+    c = self.n_outputs
     m = self.n_controls
     y_len = self.n_y * c
     f = y_len + self.n_u * m + 1
@@ -120,7 +120,7 @@ def design_normal_equations(
 
 
 def install_readout(self: AutoregressiveMLP, A: FloatArray) -> None:
-    """Write the ridge-fitted single layer ``A (n_channels, f)``, bias column last."""
+    """Write the ridge-fitted single layer ``A (n_outputs, f)``, bias column last."""
     layer = cast("nn.Linear", self.layers[0])
     with torch.no_grad():
         layer.weight.copy_(torch.as_tensor(np.ascontiguousarray(A[:, :-1]), dtype=torch.float32))
@@ -128,10 +128,10 @@ def install_readout(self: AutoregressiveMLP, A: FloatArray) -> None:
 
 
 class AutoregressiveMLP(nn.Module, TrainingPredictor):
-    """One-step MLP unrolled autoregressively over ``horizon`` steps in standardized channel space.
+    """One-step MLP unrolled autoregressively over ``horizon`` steps in standardized space.
 
-    The training side of the waveform predictor: a batched ``forward`` over the trained Span plus
-    the channel and control standardizers held as float32 buffers, and the exchange-checkpoint
+    The training side of the predictor: a batched ``forward`` over the trained Span plus the
+    output and control standardizers held as float32 buffers, and the exchange-checkpoint
     ``save``/``load``. The runtime (``prime``/``step``/``rollout``/State Absorption) lives on the
     jax inference side; ``to_checkpoint``/``from_checkpoint`` are the hand-off.
 
@@ -140,13 +140,15 @@ class AutoregressiveMLP(nn.Module, TrainingPredictor):
     layers : nn.Sequential
         The ``nn.Linear`` and activation stack in forward-pass order, all ``float32``.
     n_y, n_u : int
-        Past EEG and past control steps in the model's history window.
+        Past output and past control steps in the model's history window.
     horizon : int
         Number of autoregressive steps per forward pass; BPTT depth equals it.
     n_channels : int
         Physical EEG channel count.
     n_controls : int
         Number of control channels.
+    n_outputs : int
+        Output width per step (equal to ``n_channels`` for the waveform predictor).
     activation : Activation
         Activation applied after every layer except the last.
     residual : bool
@@ -164,6 +166,7 @@ class AutoregressiveMLP(nn.Module, TrainingPredictor):
     u_scale: Tensor
     downsample: int
     provenance: TrainingProvenance
+    n_outputs: int
     # The Ridge-Fittable capability is attached per-instance on depth-0 models only (see
     # __init__); the declarations keep the bound methods visible to static checks while hidden-
     # layer instances still lack them at runtime, so the build-time capability check fails.
@@ -180,6 +183,7 @@ class AutoregressiveMLP(nn.Module, TrainingPredictor):
         n_controls: int,
         hidden_size: int,
         depth: int,
+        n_outputs: int | None = None,
         activation: Activation = "relu",
         residual: bool = True,
         dt: float = 0.0,
@@ -199,6 +203,7 @@ class AutoregressiveMLP(nn.Module, TrainingPredictor):
         self.horizon = horizon
         self.n_channels = n_channels
         self.n_controls = n_controls
+        self.n_outputs = int(n_outputs) if n_outputs is not None else int(n_channels)
         self.activation = activation
         self.residual = residual
         self.hidden_size = hidden_size
@@ -208,7 +213,7 @@ class AutoregressiveMLP(nn.Module, TrainingPredictor):
         self.downsample = 1
         self.provenance = TrainingProvenance()
 
-        sizes = [n_y * n_channels + n_u * n_controls, *[hidden_size] * depth, n_channels]
+        sizes = [n_y * self.n_outputs + n_u * n_controls, *[hidden_size] * depth, self.n_outputs]
         modules: list[nn.Module] = []
         for i, (n_in, n_out) in enumerate(itertools.pairwise(sizes)):
             modules.append(nn.Linear(n_in, n_out, dtype=torch.float32))
@@ -225,7 +230,7 @@ class AutoregressiveMLP(nn.Module, TrainingPredictor):
             )
             self.install_readout = cast("Callable[..., None]", install_readout.__get__(self))
 
-        y_std = y_std or Standardizer(center=np.zeros(n_channels), scale=np.ones(n_channels))
+        y_std = y_std or Standardizer(center=np.zeros(self.n_outputs), scale=np.ones(self.n_outputs))
         u_std = u_std or Standardizer(center=np.zeros(n_controls), scale=np.ones(n_controls))
         self.register_buffer("y_center", torch.as_tensor(y_std.center, dtype=torch.float32))
         self.register_buffer("y_scale", torch.as_tensor(y_std.scale, dtype=torch.float32))
@@ -233,16 +238,16 @@ class AutoregressiveMLP(nn.Module, TrainingPredictor):
         self.register_buffer("u_scale", torch.as_tensor(u_std.scale, dtype=torch.float32))
 
     def forward(self, x: Tensor) -> Tensor:
-        """Roll out ``horizon`` steps: ``(B, n_y*C + (n_u + horizon)*m) -> (B, horizon*C)``.
+        """Roll out ``horizon`` steps: ``(B, n_y*n_out + (n_u + horizon)*m) -> (B, horizon*n_out)``.
 
         Each step adds the window's last standardized sample to the MLP output, so a zero-weight
         stack predicts pure persistence and the layers only ever fit the one-step delta.
         """
         batch = x.shape[0]
-        n_z = self.n_y * self.n_channels
+        n_z = self.n_y * self.n_outputs
         n_u_past = self.n_u * self.n_controls
 
-        y_window = x[:, :n_z].reshape(batch, self.n_y, self.n_channels)
+        y_window = x[:, :n_z].reshape(batch, self.n_y, self.n_outputs)
         u_window = x[:, n_z : n_z + n_u_past].reshape(batch, self.n_u, self.n_controls)
         u_future = x[:, n_z + n_u_past :].reshape(batch, self.horizon, self.n_controls)
 
@@ -264,7 +269,7 @@ class AutoregressiveMLP(nn.Module, TrainingPredictor):
 
     @property
     def y_std(self) -> Standardizer:
-        """Channel standardizer reconstructed from the float32 buffers."""
+        """Output standardizer reconstructed from the float32 buffers."""
         return Standardizer(
             center=self.y_center.detach().cpu().numpy(),
             scale=self.y_scale.detach().cpu().numpy(),
@@ -289,6 +294,7 @@ class AutoregressiveMLP(nn.Module, TrainingPredictor):
             "horizon": self.horizon,
             "n_channels": self.n_channels,
             "n_controls": self.n_controls,
+            "n_outputs": self.n_outputs,
             "hidden_size": self.hidden_size,
             "depth": self.depth,
             "residual": int(self.residual),
@@ -315,6 +321,7 @@ class AutoregressiveMLP(nn.Module, TrainingPredictor):
             horizon=int(meta["horizon"]),
             n_channels=int(meta["n_channels"]),
             n_controls=int(meta["n_controls"]),
+            n_outputs=int(meta.get("n_outputs", meta["n_channels"])),
             hidden_size=int(meta["hidden_size"]),
             depth=int(meta["depth"]),
             activation=meta["activation"],

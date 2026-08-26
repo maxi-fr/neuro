@@ -5,6 +5,7 @@ from typing import TYPE_CHECKING
 
 import jax.numpy as jnp
 import numpy as np
+import pytest
 import torch
 from trajopt.constraints.linear import LinearConstraint
 from trajopt.problem import MPCState
@@ -210,3 +211,92 @@ def test_spectral_hinge_jax_reduction_agrees_with_canonical_numpy() -> None:
 
     assert jax_frames.shape == numpy_frames.shape
     np.testing.assert_allclose(np.asarray(jax_frames), numpy_frames, rtol=1e-10, atol=1e-12)
+
+
+def test_spectral_hinge_cost_is_model_free_and_scores_stage_trajectory() -> None:
+    """SpectralHingeCost constructs without a model instance and scores stage states."""
+    rng = np.random.default_rng(_SEED + 11)
+    n_y, n_channels, n_u, n_controls = 4, 3, 2, 2
+    horizon, window, hop, fs = 100, 50, 25, 50.0
+    n = n_y * n_channels + n_u * n_controls
+    m = n_controls
+
+    y_center = rng.uniform(-1.0, 1.0, n_channels)
+    y_scale = rng.uniform(0.5, 2.0, n_channels)
+    envelope_power = rng.uniform(0.1, 1.0, (n_channels, window // 2 + 1))
+    envelope = PsdEnvelope(
+        power=envelope_power,
+        fs=fs,
+        window=window,
+        hop=hop,
+    )
+
+    cost = SpectralHingeCost(
+        n=n,
+        m=m,
+        n_y=n_y,
+        n_channels=n_channels,
+        y_center=y_center,
+        y_scale=y_scale,
+        envelope=envelope,
+        w_psd=10.0,
+        horizon=horizon,
+    )
+
+    # evaluate returns 0 for native expansions
+    x_single = jnp.asarray(rng.standard_normal(n))
+    np.testing.assert_equal(float(cost.evaluate(x_single)), 0.0)
+
+    # stage_costs decodes X[1:] and scores the exact windowed hinge
+    X = rng.standard_normal((horizon, n))
+    U = rng.standard_normal((horizon, m))
+    stage_vals = cost.stage_costs(jnp.asarray(X), jnp.asarray(U), jnp.zeros(horizon))
+
+    # Entries past 0 must be 0
+    np.testing.assert_array_equal(np.asarray(stage_vals[1:]), np.zeros(horizon - 1))
+
+    # Check value at index 0 against NumPy
+    z_last = slice((n_y - 1) * n_channels, n_y * n_channels)
+    y_stage = X[1:, z_last] * y_scale + y_center  # (horizon - 1, n_channels)
+    geom = StftGeometry(n_segment=window, n_hop=hop)
+    numpy_frames = compute_log_power_frames(y_stage, geom, fs=fs)
+    log_excess = numpy_frames - np.log(envelope_power[None, :, 1:])
+    want_value = 10.0 * float(np.mean(np.maximum(0.0, log_excess) ** 2))
+    np.testing.assert_allclose(float(stage_vals[0]), want_value, rtol=1e-10, atol=1e-12)
+
+
+def test_spectral_hinge_cost_validation() -> None:
+    """SpectralHingeCost rejects mismatched channel counts or horizons shorter than window."""
+    envelope = PsdEnvelope(
+        power=np.ones((3, 26)),
+        fs=50.0,
+        window=50,
+        hop=25,
+    )
+    # Channel count mismatch (envelope has 3, n_channels=2)
+    with pytest.raises(ValueError, match="envelope has 3 channels but the model outputs 2"):
+        SpectralHingeCost(
+            n=10,
+            m=2,
+            n_y=2,
+            n_channels=2,
+            y_center=np.zeros(2),
+            y_scale=np.ones(2),
+            envelope=envelope,
+            w_psd=1.0,
+            horizon=60,
+        )
+
+    # Horizon shorter than window (horizon=40 < window=50)
+    with pytest.raises(ValueError, match="horizon \\(40\\) is shorter than the envelope window \\(50\\)"):
+        SpectralHingeCost(
+            n=12,
+            m=2,
+            n_y=2,
+            n_channels=3,
+            y_center=np.zeros(3),
+            y_scale=np.ones(3),
+            envelope=envelope,
+            w_psd=1.0,
+            horizon=40,
+        )
