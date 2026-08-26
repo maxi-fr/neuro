@@ -19,7 +19,7 @@ def build_experiments(
 ) -> dict[str, Any]:
     """Expand a base config into an experiments list with a per-trial seed sweep."""
     controller = base.get("controller", {})
-    is_waveform = str(controller.get("class_path", "")).endswith("WaveformController")
+    is_waveform = str(controller.get("class_path", "")).endswith("ScheduleController")
 
     first = copy.deepcopy(base)
     first.setdefault("dynamics", {})["seed"] = seed_base
@@ -45,7 +45,7 @@ def parse_args() -> argparse.Namespace:
         "--input-seed-offset",
         type=int,
         default=_INPUT_SEED_OFFSET,
-        help="Offset added to the plant seed for the WaveformController input RNG.",
+        help="Offset added to the plant seed for the ScheduleController input RNG.",
     )
     parser.add_argument("--output", type=Path, required=True, help="Path for the generated experiments YAML.")
     return parser.parse_args()

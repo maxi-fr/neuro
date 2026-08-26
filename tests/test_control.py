@@ -3,8 +3,8 @@ from typing import Literal
 import numpy as np
 import pytest
 
+from neuro.control.schedule import ScheduleController, build_input_schedule
 from neuro.control.threshold import AmplitudeThresholdController
-from neuro.control.waveform import WaveformController, build_input_schedule
 from neuro.control.zero import ZeroController
 
 _DT = 0.1
@@ -25,14 +25,14 @@ def test_zero_controller_from_config() -> None:
     assert controller.n_u == 2
 
 
-def test_waveform_controller_logs_the_applied_control() -> None:
+def test_schedule_controller_logs_the_applied_control() -> None:
     """The played-back current is logged, so ``controller.u`` lands in the excitation datasets.
 
     ``load_trajectory`` identifies the predictor against ``controller.u``; a log model with no
     fields is skipped wholesale by the logger, which silently drops the input channel.
     """
     schedule = np.array([[1.0, -1.0], [2.0, -2.0]])
-    controller = WaveformController(dt=_DT, schedule=schedule)
+    controller = ScheduleController(dt=_DT, schedule=schedule)
 
     for k in range(schedule.shape[0]):
         u, log = controller.update(k * _DT, ref=np.zeros(1), x_hat=np.zeros(1))

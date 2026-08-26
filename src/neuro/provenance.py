@@ -52,7 +52,7 @@ def check_excitation_alignment(data_dir: Path, downsample: int) -> None:
     partly held, so the predictor is identified against an input that was never applied.
     """
     controller = (_generating_config(data_dir) or {}).get("controller", {})
-    if not str(controller.get("class_path", "")).endswith("WaveformController"):
+    if not str(controller.get("class_path", "")).endswith("ScheduleController"):
         return
     if controller.get("input_type") not in ("ras", "prbs"):
         return

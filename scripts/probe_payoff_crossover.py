@@ -11,7 +11,7 @@ import numpy as np
 from simulate.config import load_config as load_sim_config
 from simulate.simulation import Simulation
 
-from neuro.control.waveform import WaveformController
+from neuro.control.schedule import ScheduleController
 
 if TYPE_CHECKING:
     from neuro.types import FloatArray
@@ -37,14 +37,14 @@ def _run_arm(base_sim_dict: dict, seed: int, command: tuple[float, float, float]
     sim_dict["t_end"] = t_end
     sim_dict["dynamics"]["seed"] = seed
     # A zero controller of the right shape keeps Simulation.from_config's dt/width checks honest;
-    # the fixed schedule is installed straight after, since WaveformController.from_config only
+    # the fixed schedule is installed straight after, since ScheduleController.from_config only
     # builds *random* excitation schedules.
     sim_dict["controller"] = {"class_path": "neuro.control.zero.ZeroController", "dt": dt_u, "n_u": len(command)}
 
     sim = Simulation.from_config(sim_dict)
     schedule = np.zeros((round(t_end / dt_u), len(command)), dtype=np.float64)
     schedule[round(SETTLE_S / dt_u) :] = np.asarray(command, dtype=np.float64)
-    sim.controller = WaveformController(dt=dt_u, schedule=schedule)
+    sim.controller = ScheduleController(dt=dt_u, schedule=schedule)
 
     # ignore_cleanup_errors: the memmaps stay open on Windows until the arrays are collected.
     with tempfile.TemporaryDirectory(prefix="payoff_probe_", ignore_cleanup_errors=True) as log_dir:

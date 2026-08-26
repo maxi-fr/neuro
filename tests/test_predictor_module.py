@@ -149,7 +149,7 @@ def test_module_layers_sequential() -> None:
         "neuro.control",
         "neuro.control.zero",
         "neuro.control.threshold",
-        "neuro.control.waveform",
+        "neuro.control.schedule",
         "neuro.control.costs",
         "neuro.control.mpc",
     ],

@@ -86,8 +86,8 @@ def build_input_schedule(  # noqa: PLR0913
     return u
 
 
-class _WaveformControllerConfig(StrictConfig):
-    """Config schema for :class:`WaveformController`."""
+class _ScheduleControllerConfig(StrictConfig):
+    """Config schema for :class:`ScheduleController`."""
 
     dt: float = Field(gt=0)
     input_type: Literal["ras", "prbs", "multisine"]
@@ -100,13 +100,13 @@ class _WaveformControllerConfig(StrictConfig):
 
 
 @dataclasses.dataclass(frozen=True)
-class WaveformControllerLog:
+class ScheduleControllerLog:
     """Log carrying the applied control; excitation datasets are identified against it."""
 
     u: FloatArray
 
 
-class WaveformController(Controller[WaveformControllerLog]):
+class ScheduleController(Controller[ScheduleControllerLog]):
     """Open-loop controller that plays back a precomputed per-electrode tES waveform."""
 
     def __init__(self, dt: float, schedule: ArrayLike) -> None:
@@ -118,7 +118,7 @@ class WaveformController(Controller[WaveformControllerLog]):
     @classmethod
     def from_config(cls, config: dict[str, Any]) -> Self:
         """Build the schedule from the excitation parameters in the config dict."""
-        cfg = _WaveformControllerConfig.model_validate(config)
+        cfg = _ScheduleControllerConfig.model_validate(config)
         schedule = build_input_schedule(
             input_type=cfg.input_type,
             n_steps=round(cfg.duration / cfg.dt),
@@ -136,8 +136,8 @@ class WaveformController(Controller[WaveformControllerLog]):
         t: float,
         ref: FloatArray,  # noqa: ARG002
         x_hat: FloatArray,  # noqa: ARG002
-    ) -> tuple[FloatArray, WaveformControllerLog]:
+    ) -> tuple[FloatArray, ScheduleControllerLog]:
         """Emit the scheduled per-electrode current for the current step."""
         k = round(t / self.dt)
         u = np.zeros(self.n_u, dtype=np.float64) if k >= self.schedule.shape[0] else self.schedule[k]
-        return u, WaveformControllerLog(u=u.copy())
+        return u, ScheduleControllerLog(u=u.copy())

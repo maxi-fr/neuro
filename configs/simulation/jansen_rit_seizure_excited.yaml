@@ -1,5 +1,5 @@
 # Whole-brain Jansen-Rit seizure plant driven by a persistently-exciting tES waveform, for
-# input->output (plant) identification. The WaveformController plays back a precomputed
+# input->output (plant) identification. The ScheduleController plays back a precomputed
 # per-electrode current (ras).
 #
 # t_end is 8 s so the set spends its samples on the seizure transition rather than on saturated
@@ -43,7 +43,7 @@ sensors:
 estimator: {class_path: simulate.estimator.IdentityEstimator, dt: 0.0001}
 
 controller:
-  class_path: neuro.control.waveform.WaveformController
+  class_path: neuro.control.schedule.ScheduleController
   dt: 0.0001
   n_u: 3              # one per stimulation electrode (TP9, CP5 cathodes + EX8 return)
   input_type: ras

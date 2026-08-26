@@ -239,7 +239,7 @@ def _excitation(hold_ms: list[float]) -> dict[str, Any]:
     return {
         **_plant(),
         "controller": {
-            "class_path": "neuro.control.waveform.WaveformController",
+            "class_path": "neuro.control.schedule.ScheduleController",
             "dt": _PLANT_DT,
             "input_type": "ras",
             "hold_ms": hold_ms,
