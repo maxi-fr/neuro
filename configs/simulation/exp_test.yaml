@@ -1,0 +1,275 @@
+experiments:
+- t_end: 8.0
+  dynamics:
+    class_path: neuro.jansen_rit.JansenRitDynamics
+    dt: 0.0001
+    seed: 5000
+    initial_state: rest
+    connectome:
+      speed: 50.0
+      K: 0.6
+    stimulation:
+      model: roast_3d
+      leadfield_path: data/roast_leadfield_3d.npz
+    params:
+      sigma: 280.0
+      A:
+      - 3.25
+      - 3.25
+      - 3.25
+      - 3.25
+      - 3.25
+      - 3.25
+      - 3.25
+      - 3.25
+      - 3.25
+      - 3.25
+      - 3.25
+      - 3.25
+      - 3.25
+      - 3.25
+      - 3.25
+      - 3.25
+      - 3.25
+      - 3.25
+      - 3.25
+      - 3.25
+      - 3.25
+      - 3.25
+      - 3.25
+      - 3.25
+      - 3.25
+      - 3.25
+      - 3.25
+      - 3.25
+      - 3.25
+      - 3.25
+      - 3.25
+      - 3.25
+      - 3.25
+      - 3.25
+      - 3.25
+      - 3.25
+      - 3.25
+      - 3.25
+      - 3.25
+      - 3.25
+      - 3.6
+      - 3.25
+      - 3.25
+      - 3.25
+      - 3.25
+      - 3.25
+      - 3.25
+      - 3.6
+      - 3.25
+      - 3.25
+      - 3.25
+      - 3.25
+      - 3.25
+      - 3.25
+      - 3.25
+      - 3.25
+      - 3.25
+      - 3.25
+      - 3.25
+      - 3.25
+      - 3.25
+      - 3.25
+      - 3.6
+      - 3.25
+      - 3.25
+      - 3.25
+      - 3.25
+      - 3.25
+      - 3.25
+      - 3.4
+      - 3.25
+      - 3.25
+      - 3.4
+      - 3.25
+      - 3.25
+      - 3.25
+  reference:
+    class_path: simulate.reference.StepReference
+    dt: 0.0001
+    step_value: 0.0
+  sensors:
+    class_path: simulate.sensor.GaussianSensor
+    dt: 0.0001
+    std_dev: 0.0
+    measurement:
+      class_path: neuro.eeg.EEGMeasurement
+  estimator:
+    class_path: simulate.estimator.IdentityEstimator
+    dt: 0.0001
+  controller:
+    class_path: neuro.control.WaveformController
+    dt: 0.0001
+    n_u: 3
+    input_type: ras
+    amp: 3.0
+    hold_ms:
+    - 10.0
+    - 100.0
+    - 200.0
+    - 400.0
+    - 1000.0
+    duration: 8.0
+    input_seed: 105000
+- dynamics:
+    seed: 5001
+  controller:
+    input_seed: 105001
+- dynamics:
+    seed: 5002
+  controller:
+    input_seed: 105002
+- dynamics:
+    seed: 5003
+  controller:
+    input_seed: 105003
+- dynamics:
+    seed: 5004
+  controller:
+    input_seed: 105004
+- dynamics:
+    seed: 5005
+  controller:
+    input_seed: 105005
+- dynamics:
+    seed: 5006
+  controller:
+    input_seed: 105006
+- dynamics:
+    seed: 5007
+  controller:
+    input_seed: 105007
+- dynamics:
+    seed: 5008
+  controller:
+    input_seed: 105008
+- dynamics:
+    seed: 5009
+  controller:
+    input_seed: 105009
+- dynamics:
+    seed: 5010
+  controller:
+    input_seed: 105010
+- dynamics:
+    seed: 5011
+  controller:
+    input_seed: 105011
+- dynamics:
+    seed: 5012
+  controller:
+    input_seed: 105012
+- dynamics:
+    seed: 5013
+  controller:
+    input_seed: 105013
+- dynamics:
+    seed: 5014
+  controller:
+    input_seed: 105014
+- dynamics:
+    seed: 5015
+  controller:
+    input_seed: 105015
+- dynamics:
+    seed: 5016
+  controller:
+    input_seed: 105016
+- dynamics:
+    seed: 5017
+  controller:
+    input_seed: 105017
+- dynamics:
+    seed: 5018
+  controller:
+    input_seed: 105018
+- dynamics:
+    seed: 5019
+  controller:
+    input_seed: 105019
+- dynamics:
+    seed: 5020
+  controller:
+    input_seed: 105020
+- dynamics:
+    seed: 5021
+  controller:
+    input_seed: 105021
+- dynamics:
+    seed: 5022
+  controller:
+    input_seed: 105022
+- dynamics:
+    seed: 5023
+  controller:
+    input_seed: 105023
+- dynamics:
+    seed: 5024
+  controller:
+    input_seed: 105024
+- dynamics:
+    seed: 5025
+  controller:
+    input_seed: 105025
+- dynamics:
+    seed: 5026
+  controller:
+    input_seed: 105026
+- dynamics:
+    seed: 5027
+  controller:
+    input_seed: 105027
+- dynamics:
+    seed: 5028
+  controller:
+    input_seed: 105028
+- dynamics:
+    seed: 5029
+  controller:
+    input_seed: 105029
+- dynamics:
+    seed: 5030
+  controller:
+    input_seed: 105030
+- dynamics:
+    seed: 5031
+  controller:
+    input_seed: 105031
+- dynamics:
+    seed: 5032
+  controller:
+    input_seed: 105032
+- dynamics:
+    seed: 5033
+  controller:
+    input_seed: 105033
+- dynamics:
+    seed: 5034
+  controller:
+    input_seed: 105034
+- dynamics:
+    seed: 5035
+  controller:
+    input_seed: 105035
+- dynamics:
+    seed: 5036
+  controller:
+    input_seed: 105036
+- dynamics:
+    seed: 5037
+  controller:
+    input_seed: 105037
+- dynamics:
+    seed: 5038
+  controller:
+    input_seed: 105038
+- dynamics:
+    seed: 5039
+  controller:
+    input_seed: 105039
