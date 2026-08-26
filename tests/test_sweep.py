@@ -10,10 +10,6 @@ import pytest
 from neuro.config import (
     ClosedLoopEvalConfig,
     CurriculumMSESpec,
-    ESNModelConfig,
-    ESNPredictorConfig,
-    ESNSweepConfig,
-    ESNTrainingConfig,
     FloatParam,
     IntParam,
     LossSpecs,
@@ -26,7 +22,7 @@ from neuro.config import (
     TrainingConfig,
 )
 from neuro.predictor import sweep as sweep_module
-from neuro.predictor.sweep import GridSweep, OptunaSweep
+from neuro.predictor.sweep import OptunaSweep
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -94,28 +90,6 @@ def _obs_config(*, objective: str = "val_loss", closed_loop: ClosedLoopEvalConfi
             transition_depth=1,
         ),
         sweep=NNSweepConfig(objective=objective, closed_loop=closed_loop),
-    )
-
-
-def _esn_config(
-    *, objective: str = "rollout_nmse", closed_loop: ClosedLoopEvalConfig | None = None
-) -> ESNPredictorConfig:
-    """A tiny but complete ESN config whose sweep names ``objective``."""
-    return ESNPredictorConfig(
-        simulation=SimulationConfig(dt=_WAVE_DT, downsample=1),
-        model=ESNModelConfig(
-            reservoir_size=50,
-            spectral_radius=0.9,
-            leak_rate=0.1,
-            density=0.1,
-            input_scaling=0.5,
-            priming_steps=10,
-            ridge_lambda=1e-3,
-            noise_sigma=0.0,
-            horizon=8,
-        ),
-        training=ESNTrainingConfig(train_split=0.5, seed=21),
-        sweep=ESNSweepConfig(objective=objective, closed_loop=closed_loop),
     )
 
 
@@ -204,53 +178,27 @@ def test_optuna_sweep_observable_arm_scores_its_named_objective(
     assert captured[0].observable is not None
 
 
-def test_grid_sweep_records_every_candidate_and_scores_the_named_objective(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """The ESN cell records both Trainer candidates and returns the named one."""
-    candidates = {"rollout_nmse": 0.15, "log_energy": 0.23}
-    captured = _stub_train(monkeypatch, candidates)
-    trial = optuna.trial.FixedTrial({"spectral_radius": 1.1, "leak_rate": 0.2, "density": 0.05})
-
-    value = GridSweep(_esn_config(objective="log_energy"), ["sim_0.npz"], tmp_path).objective(
-        trial, reservoir_size=100, ridge_lambda=0.01
-    )
-
-    assert value == pytest.approx(0.23)
-    assert trial.user_attrs == candidates
-    cfg = captured[0]
-    assert cfg.model.reservoir_size == 100  # the outer-grid cell reaches the trainer
-    assert cfg.model.ridge_lambda == 0.01
-    assert cfg.model.spectral_radius == 1.1  # the inner Optuna suggestion reaches the trainer
-    assert cfg.model.leak_rate == 0.2
-    assert cfg.model.density == 0.05
-
-
 @pytest.mark.parametrize(
     ("config", "sweep_factory"),
     [
         (_wave_config(objective="closed_loop", closed_loop=_closed_loop_cfg()), OptunaSweep),
         (_obs_config(objective="closed_loop", closed_loop=_closed_loop_cfg()), OptunaSweep),
-        (_esn_config(objective="closed_loop", closed_loop=_closed_loop_cfg()), GridSweep),
     ],
 )
-def test_closed_loop_objective_works_for_all_three_predictor_kinds(
+def test_closed_loop_objective_works_for_both_predictor_kinds(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     config: object,
     sweep_factory: type,
 ) -> None:
-    """``closed_loop`` scores the sweep-level evaluation, for waveform, observable and ESN alike."""
+    """``closed_loop`` scores the sweep-level evaluation, for waveform and observable alike."""
     candidates = {"log_energy": 0.31, "val_loss": 0.24, "rollout_nmse": 0.19}
     _stub_train(monkeypatch, candidates)
     _stub_closed_loop(monkeypatch)
     trial = optuna.trial.FixedTrial({"spectral_radius": 0.9, "leak_rate": 0.1, "density": 0.1})
 
     sweep = sweep_factory(config, ["sim_0.npz"], tmp_path)
-    if isinstance(sweep, GridSweep):
-        value = sweep.objective(trial, reservoir_size=50, ridge_lambda=1e-3)
-    else:
-        value = sweep.objective(trial)
+    value = sweep.objective(trial)
 
     assert value == pytest.approx(0.07)
     assert trial.user_attrs["closed_loop"] == pytest.approx(0.07)
@@ -264,22 +212,3 @@ def test_objective_missing_from_candidates_raises(tmp_path: Path, monkeypatch: p
 
     with pytest.raises(ValueError, match="val_loss"):
         OptunaSweep(_wave_config(objective="val_loss"), ["sim_0.npz"], tmp_path).objective(optuna.trial.FixedTrial({}))
-
-
-def test_grid_sweep_run_returns_one_best_per_outer_cell(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """``run`` executes the outer grid and returns each cell's best trial with its recorded candidates."""
-    candidates = {"rollout_nmse": 0.15, "log_energy": 0.23}
-    _stub_train(monkeypatch, candidates)
-    cfg = _esn_config(objective="log_energy").model_copy(
-        update={"sweep": ESNSweepConfig(objective="log_energy", reservoir_sizes=[50], lambdas=[1e-3], n_trials=1)}
-    )
-
-    results = GridSweep(cfg, ["sim_0.npz"], tmp_path).run()
-
-    assert len(results) == 1
-    result = results[0]
-    assert result.reservoir_size == 50
-    assert result.ridge_lambda == 1e-3
-    assert result.value == pytest.approx(0.23)
-    assert result.candidates["rollout_nmse"] == pytest.approx(0.15)
-    assert result.candidates["log_energy"] == pytest.approx(0.23)

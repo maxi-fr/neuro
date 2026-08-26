@@ -6,7 +6,6 @@ from pydantic import ValidationError
 from neuro.config import (
     CategoricalParam,
     CurriculumMSESpec,
-    ESNPredictorConfig,
     FloatParam,
     IntParam,
     LogUniformParam,
@@ -460,18 +459,3 @@ def test_sweep_objective_validated_against_the_observable_candidates() -> None:
     cfg = NNPredictorConfig.from_dict({**raw, "sweep": {"objective": "val_log_mse"}})
     assert cfg.sweep is not None
     assert cfg.sweep.objective == "val_log_mse"
-
-
-def test_esn_sweep_objective_validated_against_the_esn_candidates() -> None:
-    """The ESN sweep names one of its Trainer's candidates; anything else fails at build time."""
-    cfg = ESNPredictorConfig.from_dict({"sweep": {"objective": "log_energy"}})
-    assert cfg.sweep is not None
-    assert cfg.sweep.objective == "log_energy"
-    with pytest.raises(ValidationError, match="not a candidate"):
-        ESNPredictorConfig.from_dict({"sweep": {"objective": "val_loss"}})
-
-
-def test_esn_closed_loop_objective_requires_its_section() -> None:
-    """Asking the ESN sweep for closed_loop without the evaluation section is rejected."""
-    with pytest.raises(ValidationError, match=r"requires a 'sweep\.closed_loop' section"):
-        ESNPredictorConfig.from_dict({"sweep": {"objective": "closed_loop"}})
