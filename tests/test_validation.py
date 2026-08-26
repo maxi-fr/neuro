@@ -260,3 +260,61 @@ def test_aligned_excitation_holds_are_quiet(tmp_path: Path) -> None:
     with warnings.catch_warnings():
         warnings.simplefilter("error")
         check_excitation_alignment(tmp_path, _DOWNSAMPLE)
+
+
+def test_observable_estimator_and_envelope_validation(tmp_path: Path) -> None:
+    """Observable estimator must run at plant rate and envelope hop dt must match controller dt."""
+    env_path = tmp_path / "obs_env.npz"
+    np.savez_compressed(
+        env_path,
+        Pref_frames=np.full((2, 2), -2.0),
+        fs=50.0,
+        n_segment=20,
+        n_hop=5,
+        band_hz=np.array([4.0, 16.0]),
+        n_bin_pool=2,
+        kernel="boxcar",
+        kernel_width=1,
+    )
+    # Expected dt = hop / fs = 5 / 50.0 = 0.10s.
+    provenance = TrainingProvenance(cutoff_hz=25.0, plant_fingerprint=plant_fingerprint(_plant()))
+    _module(provenance, dt=0.10, downsample=200).save(tmp_path / "obs_model")
+
+    sim_cfg: dict[str, Any] = {
+        **_plant(),
+        "estimator": {
+            "class_path": "neuro.filtering.ObservableEstimator",
+            "dt": _PLANT_DT,
+            "downsample": 200,
+            "geometry": {
+                "n_segment": 20,
+                "n_hop": 5,
+                "band_hz": [4.0, 16.0],
+                "n_bin_pool": 2,
+            },
+        },
+        "controller": {
+            "class_path": "neuro.control.mpc.TrajOptMPCController",
+            "dt": 0.10,
+            "problem": {
+                "class_path": "neuro.control.mpc.build_observable_problem",
+                "artifact": str(tmp_path / "obs_model"),
+                "psd_ref": str(env_path),
+            },
+        },
+    }
+
+    # Valid rates pass validation
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        validate_simulation_config(sim_cfg)
+
+    # Mismatched estimator dt raises
+    bad_estimator_cfg = {**sim_cfg, "estimator": {**sim_cfg["estimator"], "dt": 0.01}}
+    with pytest.raises(ConfigConsistencyError, match=r"estimator.dt .* must equal dynamics.dt"):
+        validate_simulation_config(bad_estimator_cfg)
+
+    # Mismatched controller dt vs ObservableEnvelope expected dt raises
+    bad_controller_cfg = {**sim_cfg, "controller": {**sim_cfg["controller"], "dt": 0.05}}
+    with pytest.raises(ConfigConsistencyError, match=r"controller.dt .* must equal the predictor's native dt"):
+        validate_simulation_config(bad_controller_cfg)

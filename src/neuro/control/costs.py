@@ -14,7 +14,7 @@ from neuro.spectral import LOG_FLOOR
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
-    from neuro.spectral import PsdEnvelope
+    from neuro.spectral import ObservableEnvelope, PsdEnvelope
     from neuro.types import FloatArray
 
 
@@ -245,6 +245,96 @@ def jax_compute_log_power_frames(
     return jnp.log(power[..., 1:] + LOG_FLOOR)
 
 
+class ObservableHingeCost(CostFunction):
+    """Mean squared one-sided log excess of predicted Frames over a healthy Observable envelope.
+
+    Scored over the stage trajectory ``X[1:]`` carrying the predicted Frames.
+    """
+
+    n_y: int = eqx.field(static=True)
+    n_outputs: int = eqx.field(static=True)
+    w: jax.Array
+    power: jax.Array
+    y_center: jax.Array
+    y_scale: jax.Array
+
+    def __init__(  # noqa: PLR0913 -- standardizers, envelope, weight, output dimensions and horizon
+        self,
+        *,
+        n: int,
+        m: int,
+        n_y: int,
+        n_outputs: int,
+        y_center: FloatArray | jax.Array,
+        y_scale: FloatArray | jax.Array,
+        envelope: ObservableEnvelope,
+        w_psd: float,
+        horizon: int,
+    ) -> None:
+        """Initialize from geometry, standardizers, the healthy Observable envelope and the spectral weight.
+
+        Parameters
+        ----------
+        n, m
+            Model state and control dimensions.
+        n_y
+            Past output steps in the model's history window.
+        n_outputs
+            Output dimension per step (``n_channels * n_values``).
+        y_center, y_scale
+            Center and scale arrays mapping standardized state units to raw log-power units.
+        envelope
+            The healthy Observable reference envelope.
+        w_psd
+            Weight on the spectral hinge cost; ``0`` disables it.
+        horizon
+            Control Horizon in Frames; must be at least 1.
+        """
+        super().__init__(n=n, m=m)
+        self.n_y = int(n_y)
+        self.n_outputs = int(n_outputs)
+        expected_outputs = int(envelope.power.shape[0] * envelope.power.shape[1])
+        if self.n_outputs != expected_outputs:
+            msg = (
+                f"envelope has {envelope.power.shape[0]} channels and {envelope.power.shape[1]} values "
+                f"({expected_outputs} total) but the model output width is {self.n_outputs}"
+            )
+            raise ValueError(msg)
+        if horizon < 1:
+            msg = f"horizon ({horizon}) must be at least 1"
+            raise ValueError(msg)
+        self.w = jnp.asarray(w_psd)
+        self.power = jnp.asarray(envelope.power).reshape(-1)
+        self.y_center = jnp.asarray(y_center).reshape(-1)
+        self.y_scale = jnp.asarray(y_scale).reshape(-1)
+
+    def evaluate(
+        self,
+        x: jax.Array,
+        u: jax.Array | None = None,
+        t: float | jax.Array = 0.0,
+    ) -> jax.Array:
+        """Return ``0``: the hinge is whole-horizon and is scored by :meth:`stage_costs`."""
+        del x, u, t
+        return jnp.zeros(())
+
+    def _predicted_outputs(self, X: jax.Array) -> jax.Array:
+        """Decode raw predicted Frames from the stage states without stepping the model."""
+        z_last = slice((self.n_y - 1) * self.n_outputs, self.n_y * self.n_outputs)
+        return X[1:, z_last] * self.y_scale + self.y_center
+
+    def stage_costs(self, X: jax.Array, U: jax.Array, t: jax.Array) -> jax.Array:
+        """Evaluate the exact one-sided hinge over the stage trajectory, concentrated in entry 0."""
+        del U, t
+        y = self._predicted_outputs(X)  # (H - 1, n_outputs)
+        if y.shape[0] < 1:
+            return jnp.zeros(X.shape[0])
+        log_excess = y - self.power[None, :]
+        hinge = jnp.maximum(0.0, log_excess) ** 2
+        value = self.w * jnp.mean(hinge)
+        return jnp.zeros(X.shape[0]).at[0].set(value)
+
+
 class ExcludeInitialKnotState(CostFunction):
     """Wrap a per-knot stage cost, dropping its knot-0 state-only term in ``stage_costs``.
 
@@ -286,4 +376,4 @@ def has_whole_horizon_cost(cost: CostFunction) -> bool:
     """
     if isinstance(cost, SumCost):
         return any(has_whole_horizon_cost(sub) for sub in cost.costs)
-    return isinstance(cost, SpectralHingeCost)
+    return isinstance(cost, (SpectralHingeCost, ObservableHingeCost))

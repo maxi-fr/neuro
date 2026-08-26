@@ -4,9 +4,11 @@ import numpy as np
 import pytest
 from scipy.signal import sosfreqz
 
+from neuro.config import StftGeometry
 from neuro.filtering import (
     AntiAliasEstimator,
     LowPassEstimator,
+    ObservableEstimator,
     antialias_filter,
     causal_filter,
     design_bandpass_sos,
@@ -14,6 +16,7 @@ from neuro.filtering import (
     group_delay_s,
     lowpass_filter,
 )
+from neuro.spectral import compute_log_power_frames
 
 _SEED = 7
 _FS = 1e4
@@ -80,6 +83,85 @@ def test_lowpass_estimator_from_config_and_logging() -> None:
     estimator = LowPassEstimator.from_config({"dt": 1e-4, "cutoff_hz": 45.0})
     assert estimator.sos.shape == (2, 6)
     y_sample = np.array([1.0, 2.0])
+    u_sample = np.zeros(2)
+    x_hat, log = estimator.update(0.0, y_sample, u_sample)
+    np.testing.assert_array_equal(x_hat, log.x_hat)
+
+
+def test_observable_estimator_matches_offline_reduction() -> None:
+    """ObservableEstimator emits Frames that equal the offline canonical reduction on the hop grid."""
+    n_steps, n_channels = 6000, 3
+    y = _plant_signal(n_steps, n_channels)
+    fs_dec = _FS / _DOWNSAMPLE
+
+    geometry = StftGeometry(
+        n_segment=20,
+        n_hop=5,
+        band_hz=(4.0, 40.0),
+        n_bin_pool=2,
+        kernel="hann",
+        kernel_width=3,
+    )
+    sample_support = (geometry.kernel_width - 1) * geometry.n_hop + geometry.n_segment
+
+    offline_dec = antialias_filter(y, _FS, _DOWNSAMPLE)[::_DOWNSAMPLE]
+    offline_frames = compute_log_power_frames(offline_dec, geometry, fs=fs_dec)
+    assert len(offline_frames) > 0
+
+    estimator = ObservableEstimator(dt=1.0 / _FS, geometry=geometry, downsample=_DOWNSAMPLE)
+    u = np.zeros(2)
+    online_frames = np.stack([estimator.evaluate(k / _FS, y[k], u)[0] for k in range(n_steps)])
+
+    for i in range(len(offline_frames)):
+        step_idx = (sample_support - 1 + i * geometry.n_hop) * _DOWNSAMPLE
+        np.testing.assert_allclose(online_frames[step_idx], offline_frames[i], atol=1e-12)
+
+
+def test_observable_estimator_warmup_and_hold() -> None:
+    """ObservableEstimator emits unprimed NaN until sample support is reached, and holds between hops."""
+    n_steps, n_channels = 4000, 2
+    y = _plant_signal(n_steps, n_channels)
+    geometry = StftGeometry(n_segment=15, n_hop=5, kernel="boxcar", kernel_width=2)
+    sample_support = (geometry.kernel_width - 1) * geometry.n_hop + geometry.n_segment  # 20
+    first_frame_step = (sample_support - 1) * _DOWNSAMPLE  # 1900
+
+    estimator = ObservableEstimator(dt=1.0 / _FS, geometry=geometry, downsample=_DOWNSAMPLE)
+    u = np.zeros(2)
+    online_frames = [estimator.evaluate(k / _FS, y[k], u)[0] for k in range(n_steps)]
+
+    # Before first frame: all NaN
+    for k in range(first_frame_step):
+        assert np.isnan(online_frames[k]).all()
+
+    # At first frame: valid and finite
+    assert np.isfinite(online_frames[first_frame_step]).all()
+
+    # Held between hops: steps 1900 to 2399 hold the exact same frame
+    next_frame_step = first_frame_step + geometry.n_hop * _DOWNSAMPLE  # 2400
+    for k in range(first_frame_step, next_frame_step):
+        np.testing.assert_array_equal(online_frames[k], online_frames[first_frame_step])
+
+    # At next hop: fresh frame
+    assert not np.array_equal(online_frames[next_frame_step], online_frames[first_frame_step])
+
+
+def test_observable_estimator_from_config_and_logging() -> None:
+    """ObservableEstimator instantiates from config and logs x_hat."""
+    cfg = {
+        "dt": 1e-4,
+        "downsample": 100,
+        "geometry": {
+            "n_segment": 20,
+            "n_hop": 5,
+            "band_hz": [4.0, 30.0],
+            "n_bin_pool": 1,
+            "kernel": "boxcar",
+            "kernel_width": 1,
+        },
+    }
+    estimator = ObservableEstimator.from_config(cfg)
+    assert estimator.sample_support == 20
+    y_sample = np.array([1.0, 2.0, 3.0])
     u_sample = np.zeros(2)
     x_hat, log = estimator.update(0.0, y_sample, u_sample)
     np.testing.assert_array_equal(x_hat, log.x_hat)

@@ -44,7 +44,7 @@ _Avoid_: Leadfield, Spatial Matrix, Gain Matrix
 
 **Predictor/prediction model**:
 A learned model used by the controller to forecast future EEG measurements.
-_Avoid_: Plant Model, System Model, Estimator
+_Avoid_: Plant Model, System Model
 
 **State Absorption**:
 The causal single-step operation where a surrogate predictor ingests the latest measurement and applied control into its internal state.
@@ -95,6 +95,10 @@ The continuous time-average of the seizure state over the duration of a simulati
 _Avoid_: Cumulative Seizure, Total Seizure Time, Seizure Cost, Seizure Area
 
 ## Closed-Loop Control & Execution
+
+**Estimator**:
+A causal online component that ingests raw measurements at the plant rate, filters or reduces them (such as anti-aliasing or computing Observable Frames), and delivers state estimates or Frames to the controller.
+_Avoid_: Observer, State Filter, Measurement Filter
 
 **Control Horizon**:
 The number of discrete future time steps over which the optimal control problem is solved.

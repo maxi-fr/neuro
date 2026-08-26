@@ -7,7 +7,10 @@ import numpy as np
 from scipy.signal import butter, sosfilt, sosfilt_zi, sosfreqz
 from simulate.estimator import Estimator
 
+from neuro.spectral import compute_log_power_frames
+
 if TYPE_CHECKING:
+    from neuro.config import StftGeometry
     from neuro.types import FloatArray
 
 _ORDER = 4
@@ -204,3 +207,108 @@ class AntiAliasEstimator(LowPassEstimator):
     def from_config(cls, config: dict[str, Any]) -> Self:
         """Instantiate the component from a raw configuration dictionary."""
         return cls(dt=float(config["dt"]), downsample=int(config["downsample"]))
+
+
+@dataclasses.dataclass(frozen=True)
+class ObservableEstimatorLog:
+    """Log carrying the Observable log-power Frame handed to the controller."""
+
+    x_hat: np.ndarray
+
+
+class ObservableEstimator(Estimator[ObservableEstimatorLog]):
+    """Estimator that causally low-passes at plant rate, decimates, buffers and emits Observable Frames."""
+
+    def __init__(
+        self,
+        dt: float,
+        geometry: StftGeometry,
+        downsample: int = 1,
+        cutoff_hz: float | None = None,
+    ) -> None:
+        """Initialize from plant sample time, Observable geometry, and decimation factor."""
+        super().__init__(dt)
+        self.downsample = int(downsample)
+        self.geometry = geometry
+        self.fs_decimated = 1.0 / (self.dt * self.downsample)
+        self.sample_support = (geometry.kernel_width - 1) * geometry.n_hop + geometry.n_segment
+        if self.downsample > 1 or cutoff_hz is not None:
+            effective_cutoff = cutoff_hz if cutoff_hz is not None else (1.0 / self.dt) / (2 * self.downsample)
+            self.sos: np.ndarray | None = design_lowpass_sos(1.0 / self.dt, effective_cutoff)
+        else:
+            self.sos = None
+        self._zi: np.ndarray | None = None
+        self._decimated_buffer: list[np.ndarray] = []
+        self._step: int = 0
+        self._decimated_count: int = 0
+        self._current_frame: np.ndarray | None = None
+
+    @classmethod
+    def from_config(cls, config: dict[str, Any]) -> Self:
+        """Instantiate the component from a raw configuration dictionary."""
+        from neuro.config import StftGeometry  # noqa: PLC0415
+
+        geom_raw = config["geometry"]
+        geometry = geom_raw if isinstance(geom_raw, StftGeometry) else StftGeometry.model_validate(geom_raw)
+        return cls(
+            dt=float(config["dt"]),
+            geometry=geometry,
+            downsample=int(config.get("downsample", 1)),
+            cutoff_hz=float(config["cutoff_hz"]) if "cutoff_hz" in config and config["cutoff_hz"] is not None else None,
+        )
+
+    def update(
+        self,
+        t: float,  # noqa: ARG002 -- simulation time
+        y_mea: np.ndarray,
+        u: np.ndarray,  # noqa: ARG002 -- control input vector
+    ) -> tuple[np.ndarray, ObservableEstimatorLog]:
+        """Advance by one plant sample, decimating and emitting Observable Frames at the hop rate.
+
+        Parameters
+        ----------
+        t : float
+            Simulation time.
+        y_mea : numpy.ndarray
+            Measured output vector of shape ``(n_channels,)``.
+        u : numpy.ndarray
+            Control input vector.
+
+        Returns
+        -------
+        x_hat : numpy.ndarray
+            Observable log-power Frame of shape ``(n_channels, n_values)``.
+        log : ObservableEstimatorLog
+            Log containing the emitted Frame.
+        """
+        y_arr = np.atleast_1d(y_mea)
+        if self.sos is not None:
+            if self._zi is None:
+                self._zi = np.zeros((self.sos.shape[0], 2, y_arr.size))
+            filtered, self._zi = sosfilt(self.sos, y_arr[None, :], axis=0, zi=self._zi)
+            y_filt = np.asarray(filtered[0], dtype=np.float64)
+        else:
+            y_filt = np.asarray(y_arr, dtype=np.float64)
+
+        if self._step % self.downsample == 0:
+            self._decimated_count += 1
+            self._decimated_buffer.append(y_filt.copy())
+            if len(self._decimated_buffer) > self.sample_support:
+                self._decimated_buffer.pop(0)
+
+            if (
+                self._decimated_count >= self.sample_support
+                and (self._decimated_count - self.sample_support) % self.geometry.n_hop == 0
+            ):
+                buf = np.stack(self._decimated_buffer, axis=0)
+                frames = compute_log_power_frames(buf, self.geometry, fs=self.fs_decimated)
+                self._current_frame = frames[0]
+
+        self._step += 1
+
+        if self._current_frame is None:
+            n_channels = y_arr.size
+            n_values = self.geometry.n_values(self.fs_decimated)
+            self._current_frame = np.full((n_channels, n_values), np.nan, dtype=np.float64)
+
+        return self._current_frame, ObservableEstimatorLog(x_hat=self._current_frame.copy())

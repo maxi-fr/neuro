@@ -20,12 +20,13 @@ from trajopt.transcription.single_shooting import SingleShooting
 from neuro.control.costs import (
     ExcludeInitialKnotState,
     L1ControlCost,
+    ObservableHingeCost,
     SpectralHingeCost,
     SumCost,
     has_whole_horizon_cost,
 )
-from neuro.predictor.inference import InferencePredictor, WaveformMLPModel
-from neuro.spectral import PsdEnvelope
+from neuro.predictor.inference import InferencePredictor, ObservableMLPModel, WaveformMLPModel
+from neuro.spectral import ObservableEnvelope, PsdEnvelope
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -93,6 +94,16 @@ def _spectral_envelope(psd_ref: str | Path | None, w_psd: float) -> PsdEnvelope 
         msg = "psd_ref must be provided when w_psd > 0"
         raise ValueError(msg)
     return PsdEnvelope.load(psd_ref)
+
+
+def _observable_envelope(psd_ref: str | Path | None, w_psd: float) -> ObservableEnvelope | None:
+    """Load the healthy Observable envelope when ``w_psd`` enables the hinge, else ``None``."""
+    if w_psd <= 0:
+        return None
+    if psd_ref is None:
+        msg = "psd_ref must be provided when w_psd > 0"
+        raise ValueError(msg)
+    return ObservableEnvelope.load(psd_ref)
 
 
 def _assemble_problem(
@@ -263,6 +274,77 @@ def build_waveform_problem(  # noqa: PLR0913 -- checkpoint plus the nine MPC cos
     w_y_final = w_y_terminal if w_y_terminal is not None else w_y
     Q_f = jnp.zeros(n).at[z_last].set(2.0 * w_y_final * model.y_scale**2 / horizon)
     terminal = DiagonalCost.terminal_tracking(Q_f, xf, m)
+    objective = Objective(stage_cost=stage_cost, terminal_cost=terminal, N=N)
+
+    return _assemble_problem(model, objective, N=N, u_max=u_max, kirchhoff=kirchhoff)
+
+
+def build_observable_problem(  # noqa: PLR0913 -- checkpoint plus the MPC cost/bound knobs
+    artifact: str | Path,
+    *,
+    horizon: int,
+    u_max: ArrayLike,
+    w_u: float = 0.0,
+    w_u_l1: float = 0.0,
+    w_psd: float = 0.0,
+    psd_ref: str | Path | None = None,
+    kirchhoff: bool = False,
+) -> Problem:
+    """Assemble the observable MPC problem: model adapter, objective, box and Kirchhoff bounds.
+
+    The model steps one Frame per call on the hop grid. The objective minimizes the one-sided
+    log-power hinge against the healthy Observable envelope, plus quadratic and L1 control effort
+    penalties. The constraints are the control box bounds ``-u_max <= u <= u_max``, plus the
+    Kirchhoff sum-to-zero equality when ``kirchhoff`` is set.
+
+    Parameters
+    ----------
+    artifact
+        Suffix-less stem of the numpy-readable Observable MLP checkpoint.
+    horizon
+        Control Horizon counted in Frames; the trajopt horizon is ``horizon + 1`` knot points.
+    u_max
+        Per-electrode amplitude bound: a scalar shared by every electrode or a
+        length-``n_controls`` vector.
+    w_u
+        Weight on control effort (quadratic) in the cost.
+    w_u_l1
+        Weight on the L1 norm of the control effort (a sparse-stimulation penalty); ``0``
+        disables it (default).
+    w_psd
+        Weight on the spectral hinge cost: the mean squared amount by which predicted log-power
+        Frames exceed ``psd_ref``'s healthy envelope. ``0`` (default) disables it.
+    psd_ref
+        Path to the healthy reference envelope npz written by ``scripts/build_healthy_psd.py``.
+        Required when ``w_psd > 0``; its stored geometry drives the cost.
+    kirchhoff
+        Add the Kirchhoff sum-to-zero equality on the controls.
+    """
+    model = ObservableMLPModel.load(artifact)
+    n, m = model.n, model.m
+    N = horizon + 1
+
+    stage = DiagonalCost.tracking(jnp.zeros(n), jnp.full(m, 2.0 * w_u / horizon), jnp.zeros(n), jnp.zeros(m))
+    costs: list[CostFunction] = [ExcludeInitialKnotState(stage)]
+    if w_u_l1 > 0:
+        costs.append(L1ControlCost(n=n, m=m, w_l1=w_u_l1, horizon=horizon))
+    envelope = _observable_envelope(psd_ref, w_psd)
+    if envelope is not None:
+        costs.append(
+            ObservableHingeCost(
+                n=n,
+                m=m,
+                n_y=model.n_y,
+                n_outputs=model.n_outputs,
+                y_center=model.y_center,
+                y_scale=model.y_scale,
+                envelope=envelope,
+                w_psd=w_psd,
+                horizon=horizon,
+            )
+        )
+    stage_cost: CostFunction = _combine_costs(costs)
+    terminal = DiagonalCost.terminal_tracking(jnp.zeros(n), jnp.zeros(n), m)
     objective = Objective(stage_cost=stage_cost, terminal_cost=terminal, N=N)
 
     return _assemble_problem(model, objective, N=N, u_max=u_max, kirchhoff=kirchhoff)

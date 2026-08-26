@@ -1,0 +1,62 @@
+# Closed-loop seizure suppression with the Observable log-power Predictor.
+#
+# The estimator low-passes, decimates, and buffers Observable Frames.
+# The controller runs at the hop rate (dt = hop * downsample * plant_dt),
+# and solves receding-horizon MPC over the predicted Observable Frames.
+t_end: 20.0
+
+dynamics:
+  class_path: neuro.jansen_rit.JansenRitDynamics
+  dt: 0.0001
+  seed: 69
+  initial_state: rest
+  log: lfp
+  connectome:
+    speed: 50.0
+    K: 0.60
+  stimulation:
+    model: roast_3d
+    field_projection_path: data/roast_field_projection_3d.npz
+  params:
+    sigma: 280.0
+    A: [3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25,
+      3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25,
+      3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25,
+      3.25, 3.6, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.6, 3.25, 3.25, 3.25, 3.25,
+      3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.6, 3.25, 3.25,
+      3.25, 3.25, 3.25, 3.25, 3.4, 3.25, 3.25, 3.4, 3.25, 3.25, 3.25]
+
+reference: {class_path: simulate.reference.StepReference, dt: 0.0001, step_value: 0.0}
+
+sensors:
+  class_path: simulate.sensor.GaussianSensor
+  dt: 0.0001
+  std_dev: 0.0
+  measurement:
+    class_path: neuro.eeg.EEGMeasurement
+
+estimator:
+  class_path: neuro.filtering.ObservableEstimator
+  dt: 0.0001
+  downsample: 200
+  geometry:
+    n_segment: 50
+    n_hop: 25
+    band_hz: null
+    n_bin_pool: 1
+    kernel: boxcar
+    kernel_width: 1
+
+controller:
+  class_path: neuro.control.mpc.TrajOptMPCController
+  dt: 0.5              # = hop * downsample * plant_dt = 25 * 200 * 0.0001
+  problem:
+    class_path: neuro.control.mpc.build_observable_problem
+    artifact: artifacts/observable_model
+    horizon: 4
+    u_max: 2.0
+    w_u: 10.0
+    w_u_l1: 0.1
+    w_psd: 10.0
+    psd_ref: data/healthy_psd.npz
+    kirchhoff: true

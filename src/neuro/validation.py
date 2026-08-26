@@ -7,12 +7,14 @@ from typing import TYPE_CHECKING, Any
 
 from neuro.predictor.checkpoint import load_meta
 from neuro.provenance import TrainingProvenance, plant_fingerprint
-from neuro.spectral import PsdEnvelope
+from neuro.spectral import ObservableEnvelope, PsdEnvelope
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
-_FILTERING_ESTIMATORS = frozenset({"neuro.filtering.AntiAliasEstimator", "neuro.filtering.LowPassEstimator"})
+_FILTERING_ESTIMATORS = frozenset(
+    {"neuro.filtering.AntiAliasEstimator", "neuro.filtering.LowPassEstimator", "neuro.filtering.ObservableEstimator"}
+)
 _PREDICTIVE_CONTROLLERS = frozenset({"neuro.control.mpc.TrajOptMPCController"})
 _REL_TOL = 1e-9
 
@@ -28,6 +30,10 @@ def _estimator_cutoff_hz(estimator: Mapping[str, Any]) -> float | None:
             return (1.0 / float(estimator["dt"])) / (2 * int(estimator["downsample"]))
         case "neuro.filtering.LowPassEstimator":
             return float(estimator["cutoff_hz"])
+        case "neuro.filtering.ObservableEstimator":
+            if "cutoff_hz" in estimator and estimator["cutoff_hz"] is not None:
+                return float(estimator["cutoff_hz"])
+            return (1.0 / float(estimator["dt"])) / (2 * int(estimator.get("downsample", 1)))
         case _:
             return None
 
@@ -86,14 +92,24 @@ def _check_psd_reference(problem: Mapping[str, Any], controller_dt: float) -> No
     if not psd_path.exists():
         msg = f"spectral reference envelope not found: {psd_path}"
         raise ConfigConsistencyError(msg)
-    envelope = PsdEnvelope.load(psd_path)
 
-    if not math.isclose(controller_dt, 1.0 / envelope.fs, rel_tol=_REL_TOL):
-        msg = (
-            f"controller.dt ({controller_dt}) must match spectral reference dt "
-            f"({1.0 / envelope.fs:g} s from fs={envelope.fs:g} Hz)."
-        )
-        raise ConfigConsistencyError(msg)
+    if problem.get("class_path") == "neuro.control.mpc.build_observable_problem":
+        obs_envelope = ObservableEnvelope.load(psd_path)
+        expected_dt = obs_envelope.geometry.n_hop / obs_envelope.fs
+        if not math.isclose(controller_dt, expected_dt, rel_tol=_REL_TOL):
+            msg = (
+                f"controller.dt ({controller_dt}) must match Observable reference dt "
+                f"({expected_dt:g} s from hop={obs_envelope.geometry.n_hop} at fs={obs_envelope.fs:g} Hz)."
+            )
+            raise ConfigConsistencyError(msg)
+    else:
+        envelope = PsdEnvelope.load(psd_path)
+        if not math.isclose(controller_dt, 1.0 / envelope.fs, rel_tol=_REL_TOL):
+            msg = (
+                f"controller.dt ({controller_dt}) must match spectral reference dt "
+                f"({1.0 / envelope.fs:g} s from fs={envelope.fs:g} Hz)."
+            )
+            raise ConfigConsistencyError(msg)
 
 
 def _check_predictor(config: Mapping[str, Any]) -> None:

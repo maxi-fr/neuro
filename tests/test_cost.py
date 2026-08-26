@@ -13,11 +13,17 @@ from trajopt.solvers.altro import ALTRO
 from trajopt.transcription.ipopt import Ipopt
 
 from neuro.config import StftGeometry
-from neuro.control.costs import L1ControlCost, SpectralHingeCost, SumCost, jax_compute_log_power_frames
+from neuro.control.costs import (
+    L1ControlCost,
+    ObservableHingeCost,
+    SpectralHingeCost,
+    SumCost,
+    jax_compute_log_power_frames,
+)
 from neuro.control.mpc import build_waveform_problem
 from neuro.predictor.inference import WaveformMLPModel
 from neuro.predictor.module import AutoregressiveMLP
-from neuro.spectral import PsdEnvelope, compute_log_power_frames
+from neuro.spectral import ObservableEnvelope, PsdEnvelope, compute_log_power_frames
 from neuro.transforms import Standardizer
 
 if TYPE_CHECKING:
@@ -299,4 +305,94 @@ def test_spectral_hinge_cost_validation() -> None:
             envelope=envelope,
             w_psd=1.0,
             horizon=40,
+        )
+
+
+def test_observable_hinge_cost_matches_numpy_reference() -> None:
+    """ObservableHingeCost constructs without a model instance and scores stage states."""
+    rng = np.random.default_rng(_SEED + 12)
+    n_y, n_channels, n_values, n_u, n_controls = 4, 3, 5, 2, 2
+    horizon, fs = 10, 50.0
+    n_outputs = n_channels * n_values
+    n = n_y * n_outputs + n_u * n_controls
+    m = n_controls
+
+    geom = StftGeometry(n_segment=20, n_hop=5, band_hz=(4.0, 24.0), n_bin_pool=2)
+    y_center = rng.uniform(-1.0, 1.0, n_outputs)
+    y_scale = rng.uniform(0.5, 2.0, n_outputs)
+    envelope_power = rng.uniform(-5.0, 0.0, (n_channels, n_values))
+    envelope = ObservableEnvelope(
+        power=envelope_power,
+        fs=fs,
+        geometry=geom,
+    )
+
+    cost = ObservableHingeCost(
+        n=n,
+        m=m,
+        n_y=n_y,
+        n_outputs=n_outputs,
+        y_center=y_center,
+        y_scale=y_scale,
+        envelope=envelope,
+        w_psd=10.0,
+        horizon=horizon,
+    )
+
+    # evaluate returns 0 for native expansions
+    x_single = jnp.asarray(rng.standard_normal(n))
+    np.testing.assert_equal(float(cost.evaluate(x_single)), 0.0)
+
+    # stage_costs decodes X[1:] and scores the exact windowed hinge
+    X = rng.standard_normal((horizon + 1, n))
+    U = rng.standard_normal((horizon, m))
+    stage_vals = cost.stage_costs(jnp.asarray(X), jnp.asarray(U), jnp.zeros(horizon + 1))
+
+    # Entries past 0 must be 0
+    np.testing.assert_array_equal(np.asarray(stage_vals[1:]), np.zeros(horizon))
+
+    # Check value at index 0 against NumPy
+    z_last = slice((n_y - 1) * n_outputs, n_y * n_outputs)
+    y_stage = X[1:, z_last] * y_scale + y_center  # (horizon, n_outputs)
+    log_excess = y_stage - envelope_power.reshape(1, -1)
+    want_value = 10.0 * float(np.mean(np.maximum(0.0, log_excess) ** 2))
+    np.testing.assert_allclose(float(stage_vals[0]), want_value, rtol=1e-10, atol=1e-12)
+
+
+def test_observable_hinge_cost_validation() -> None:
+    """ObservableHingeCost rejects mismatched output dimensions or non-positive horizon."""
+    geom = StftGeometry(n_segment=20, n_hop=5)
+    envelope = ObservableEnvelope(
+        power=np.ones((3, 5)),
+        fs=50.0,
+        geometry=geom,
+    )
+    # Output width mismatch (envelope has 3 * 5 = 15, n_outputs=10)
+    with pytest.raises(
+        ValueError, match="envelope has 3 channels and 5 values \\(15 total\\) but the model output width is 10"
+    ):
+        ObservableHingeCost(
+            n=20,
+            m=2,
+            n_y=2,
+            n_outputs=10,
+            y_center=np.zeros(10),
+            y_scale=np.ones(10),
+            envelope=envelope,
+            w_psd=1.0,
+            horizon=5,
+        )
+
+    # Horizon < 1
+    with pytest.raises(ValueError, match="horizon \\(0\\) must be at least 1"):
+        ObservableHingeCost(
+            n=34,
+            m=2,
+            n_y=2,
+            n_outputs=15,
+            y_center=np.zeros(15),
+            y_scale=np.ones(15),
+            envelope=envelope,
+            w_psd=1.0,
+            horizon=0,
         )

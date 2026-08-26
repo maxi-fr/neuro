@@ -4,19 +4,26 @@ import itertools
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+import jax.numpy as jnp
 import numpy as np
 import pytest
 import torch
+from simulate.config import load_config as load_sim_config
+from simulate.simulation import Simulation
+from trajopt.problem import MPCState
 from trajopt.transcription.ipopt import Ipopt
 from trajopt.transcription.single_shooting import SingleShooting
 from yaml import safe_load
 
+from neuro.config import StftGeometry
 from neuro.control.mpc import (
     TrajOptMPCController,
     TrajOptMPCLog,
+    build_observable_problem,
     build_waveform_problem,
 )
-from neuro.predictor.inference import WaveformMLPModel
+from neuro.filtering import ObservableEstimator
+from neuro.predictor.inference import ObservableMLPModel, WaveformMLPModel
 from neuro.predictor.module import AutoregressiveMLP
 from neuro.transforms import Standardizer
 
@@ -329,3 +336,230 @@ def test_single_shooting_solver_rejected_when_kirchhoff(tmp_path: Path) -> None:
             problem=problem,
             solver=SingleShooting(solver=Ipopt(options={"print_level": 0})),
         )
+
+
+def _build_observable_checkpoint(
+    tmp_path: Path,
+    *,
+    n_y: int = 3,
+    n_u: int = 2,
+    horizon: int = 4,
+    n_channels: int = 2,
+    n_controls: int = 2,
+    depth: int = 1,
+    geom: StftGeometry | None = None,
+) -> tuple[Path, StftGeometry]:
+    """Save a synthetic Observable MLP checkpoint and return its stem and geometry."""
+    rng = np.random.default_rng(_SEED + 1)
+    if geom is None:
+        geom = StftGeometry(n_segment=20, n_hop=5, band_hz=(4.0, 16.0), n_bin_pool=2)
+    fs = 50.0
+    n_values = geom.n_values(fs)
+    n_outputs = n_channels * n_values
+    in_size = n_y * n_outputs + n_u * n_controls
+    scalers = {
+        "u_mean": rng.uniform(-1.0, 1.0, n_controls),
+        "u_scale": rng.uniform(0.5, 2.0, n_controls),
+        "y_mean": rng.uniform(-1.0, 1.0, n_outputs),
+        "y_scale": rng.uniform(0.5, 2.0, n_outputs),
+    }
+    model = AutoregressiveMLP(
+        n_y=n_y,
+        n_u=n_u,
+        horizon=horizon,
+        n_channels=n_channels,
+        n_controls=n_controls,
+        hidden_size=5,
+        depth=depth,
+        activation="relu",
+        dt=0.05,
+        n_outputs=n_outputs,
+        geometry=geom,
+        residual=False,
+        y_std=Standardizer(center=scalers["y_mean"], scale=scalers["y_scale"]),
+        u_std=Standardizer(center=scalers["u_mean"], scale=scalers["u_scale"]),
+    )
+    linears = [m for m in model.layers if isinstance(m, torch.nn.Linear)]
+    sizes = [in_size, *([5] * depth), n_outputs]
+    with torch.no_grad():
+        for lin, (w, b) in zip(linears, _random_layers(rng, sizes), strict=True):
+            lin.weight.copy_(torch.as_tensor(w, dtype=torch.float32))
+            lin.bias.copy_(torch.as_tensor(b, dtype=torch.float32))
+    path = tmp_path / "obs_art"
+    model.save(path)
+    return path, geom
+
+
+def test_build_observable_problem_assembles_and_solves(tmp_path: Path) -> None:
+    """The observable problem builder wires the hinge, L1, quadratic, box bounds and Kirchhoff, and solves."""
+    artifact, geom = _build_observable_checkpoint(tmp_path, n_channels=2, n_controls=2)
+    n_values = geom.n_values(50.0)
+    env_path = tmp_path / "obs_env.npz"
+    np.savez_compressed(
+        env_path,
+        Pref_frames=np.full((2, n_values), -2.0),
+        fs=50.0,
+        n_segment=geom.n_segment,
+        n_hop=geom.n_hop,
+        band_hz=np.asarray(geom.band_hz if geom.band_hz is not None else [-1.0, -1.0]),
+        n_bin_pool=geom.n_bin_pool,
+        kernel=geom.kernel,
+        kernel_width=geom.kernel_width,
+    )
+
+    problem = build_observable_problem(
+        artifact,
+        horizon=4,
+        u_max=0.5,
+        w_u=1.0,
+        w_u_l1=0.2,
+        w_psd=5.0,
+        psd_ref=env_path,
+        kirchhoff=True,
+    )
+    assert problem.N == 5
+    assert isinstance(problem.model, ObservableMLPModel)
+    assert problem.model.n_outputs == 2 * n_values
+    assert problem.model.m == 2
+
+    # Solve from a valid ready state
+    rng = np.random.default_rng(_SEED + 2)
+    model = ObservableMLPModel.load(artifact)
+    x0 = np.asarray(model.initial_state())
+    x0[: model.n_y * model.n_outputs] = rng.uniform(-1.0, 1.0, model.n_y * model.n_outputs)
+    state = MPCState.initial(problem, x0=jnp.asarray(x0), dt=model.dt)
+    solver = Ipopt(options={"print_level": 0, "hessian_approximation": "limited-memory"})
+    solved = problem.solve(state, solver=solver)
+    assert solved.status == "converged"
+
+    controls = np.asarray(solved.controls)
+    assert controls.shape == (4, 2)
+    assert np.all(np.abs(controls) <= 0.5 + 1e-6)
+    np.testing.assert_allclose(np.sum(controls, axis=1), np.zeros(4), atol=1e-5)
+
+
+def test_observable_closed_loop_warmup_and_emission(tmp_path: Path) -> None:
+    """Closed-loop run primes the predictor, emits zeros during Warm-up Period, then finite controls."""
+    n_y, n_u, n_channels = 3, 2, 2
+    artifact, geom = _build_observable_checkpoint(
+        tmp_path, n_y=n_y, n_u=n_u, horizon=4, n_channels=n_channels, n_controls=2
+    )
+    n_values = geom.n_values(50.0)
+    env_path = tmp_path / "obs_env.npz"
+    np.savez_compressed(
+        env_path,
+        Pref_frames=np.full((n_channels, n_values), -2.0),
+        fs=50.0,
+        n_segment=geom.n_segment,
+        n_hop=geom.n_hop,
+        band_hz=np.asarray(geom.band_hz if geom.band_hz is not None else [-1.0, -1.0]),
+        n_bin_pool=geom.n_bin_pool,
+        kernel=geom.kernel,
+        kernel_width=geom.kernel_width,
+    )
+
+    problem = build_observable_problem(
+        artifact,
+        horizon=4,
+        u_max=0.5,
+        w_u=1.0,
+        w_u_l1=0.2,
+        w_psd=5.0,
+        psd_ref=env_path,
+        kirchhoff=True,
+    )
+    # Plant fs = 1000 Hz (dt = 0.001s), downsample = 20 -> fs_decimated = 50.0 Hz.
+    # Hop = 5 decimated samples -> hop duration = 5 / 50.0 = 0.10s = controller dt.
+    plant_dt = 0.001
+    downsample = 20
+    controller_dt = geom.n_hop * downsample * plant_dt  # 0.10s
+    controller = TrajOptMPCController(dt=controller_dt, problem=problem)
+    estimator = ObservableEstimator(dt=plant_dt, geometry=geom, downsample=downsample)
+
+    plant_steps = 850
+    rng = np.random.default_rng(_SEED + 3)
+    y_plant = rng.standard_normal((plant_steps, n_channels))
+
+    u_applied = np.zeros(2)
+    controller_outputs: list[tuple[float, FloatArray, TrajOptMPCLog]] = []
+
+    for k in range(plant_steps):
+        t = k * plant_dt
+        x_hat, _ = estimator.evaluate(t, y_plant[k], u_applied)
+        # Controller ticks every 100 plant steps (every 0.10 s)
+        if k % 100 == 0:
+            u_applied, log = controller.update(t, ref=np.array([0.0]), x_hat=x_hat)
+            controller_outputs.append((t, u_applied.copy(), log))
+
+    # Controller ticks at t = 0.0, 0.1, 0.2, 0.3, 0.4, 0.5 (indices 0..5):
+    # Estimator warms up for first 4 ticks; controller primes for next 2 ticks.
+    # At tick 6 (t = 0.6s), controller is primed and emits finite control!
+    for i in range(6):
+        t, u_cmd, log = controller_outputs[i]
+        assert log.warmup
+        np.testing.assert_array_equal(u_cmd, np.zeros(2))
+
+    for i in range(6, len(controller_outputs)):
+        t, u_cmd, log = controller_outputs[i]
+        assert not log.warmup
+        assert log.success
+        assert np.isfinite(u_cmd).all()
+        assert np.any(u_cmd != 0.0)
+        assert np.all(np.abs(u_cmd) <= 0.5 + 1e-6)
+        np.testing.assert_allclose(np.sum(u_cmd), 0.0, atol=1e-5)
+
+
+def test_observable_controller_from_config(tmp_path: Path) -> None:
+    """Observable controller instantiates from config and routes problem factory."""
+    artifact, geom = _build_observable_checkpoint(tmp_path)
+    n_values = geom.n_values(50.0)
+    env_path = tmp_path / "obs_env.npz"
+    np.savez_compressed(
+        env_path,
+        Pref_frames=np.full((2, n_values), -2.0),
+        fs=50.0,
+        n_segment=geom.n_segment,
+        n_hop=geom.n_hop,
+        band_hz=np.asarray(geom.band_hz if geom.band_hz is not None else [-1.0, -1.0]),
+        n_bin_pool=geom.n_bin_pool,
+        kernel=geom.kernel,
+        kernel_width=geom.kernel_width,
+    )
+
+    cfg = {
+        "dt": 0.05,
+        "problem": {
+            "class_path": "neuro.control.mpc.build_observable_problem",
+            "artifact": str(artifact),
+            "horizon": 4,
+            "u_max": 1.0,
+            "w_u": 5.0,
+            "w_psd": 2.0,
+            "psd_ref": str(env_path),
+            "kirchhoff": True,
+        },
+    }
+    controller = TrajOptMPCController.from_config(cfg)
+    assert controller.dt == 0.05
+    assert controller.problem.N == 5
+    assert controller.model.m == 2
+
+
+def test_example_observable_config_runs_simulation_start_to_finish(tmp_path: Path) -> None:
+    """An example config with build_observable_problem runs the loop start to finish."""
+    sim_dict = load_sim_config(Path("configs/simulation/observable_psd_mpc.yaml"))
+    geom = StftGeometry(n_segment=50, n_hop=25, kernel="boxcar", kernel_width=1)
+    artifact, _ = _build_observable_checkpoint(
+        tmp_path, n_y=2, n_u=2, horizon=4, n_channels=62, n_controls=3, geom=geom
+    )
+    sim_dict["t_end"] = 0.5
+    sim_dict["controller"]["problem"]["artifact"] = str(artifact)
+    sim_dict["estimator"]["geometry"] = geom.model_dump()
+    sim_dict["estimator"]["downsample"] = 200
+
+    sim = Simulation.from_config(sim_dict)
+    sim.run(output_dir=tmp_path / "sim_out", use_mmap=True)
+    assert sim.logger is not None
+    us = sim.logger.signal("controller", "u")
+    assert us.shape[0] > 0
+    assert np.isfinite(us).all()
