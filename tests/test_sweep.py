@@ -16,9 +16,7 @@ from neuro.config import (
     ModelConfig,
     NNPredictorConfig,
     NNSweepConfig,
-    ObservableSpec,
     SimulationConfig,
-    StftGeometry,
     TrainingConfig,
 )
 from neuro.predictor import sweep as sweep_module
@@ -28,10 +26,7 @@ if TYPE_CHECKING:
     from pathlib import Path
 
 _WAVE_DT, _T = 1e-3, 200
-_OBS_DT, _OBS_T = 0.02, 400
 _WAVE_HORIZON = 3
-_OBS_HORIZON = 16
-_OBS_GEOMETRY = StftGeometry(n_segment=8, n_hop=4)
 
 
 def _wave_config(
@@ -60,36 +55,6 @@ def _wave_config(
             }
         ),
         sweep=NNSweepConfig(objective=objective, model=sweep_model or {}, closed_loop=closed_loop),
-    )
-
-
-def _obs_config(*, objective: str = "val_loss", closed_loop: ClosedLoopEvalConfig | None = None) -> NNPredictorConfig:
-    """A tiny but complete observable config whose sweep names ``objective``."""
-    return NNPredictorConfig(
-        simulation=SimulationConfig(dt=_OBS_DT, downsample=1),
-        model=ModelConfig(n_y=3, n_u=2),
-        training=TrainingConfig.model_validate(
-            {
-                "epochs": 3,
-                "batch_size": 64,
-                "learning_rate": 1e-2,
-                "weight_decay": 0.0,
-                "train_split": 0.5,
-                "seed": 21,
-                "patience": 50,
-                "eval_horizon_s": _OBS_HORIZON * _OBS_DT,
-            }
-        ),
-        observable=ObservableSpec(
-            horizon=_OBS_HORIZON,
-            stft=_OBS_GEOMETRY,
-            z_dim=6,
-            lift_hidden=8,
-            lift_depth=1,
-            transition_hidden=8,
-            transition_depth=1,
-        ),
-        sweep=NNSweepConfig(objective=objective, closed_loop=closed_loop),
     )
 
 
@@ -163,26 +128,10 @@ def test_optuna_sweep_merges_suggested_params_into_the_config(tmp_path: Path, mo
     assert captured[0].model.hidden_size == 4  # untouched base values survive the merge
 
 
-def test_optuna_sweep_observable_arm_scores_its_named_objective(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """The observable arm records ``{val_loss, val_log_mse}`` and returns the named one."""
-    candidates = {"val_loss": 0.18, "val_log_mse": 0.42}
-    captured = _stub_train(monkeypatch, candidates)
-    trial = optuna.trial.FixedTrial({})
-
-    value = OptunaSweep(_obs_config(objective="val_log_mse"), ["sim_0.npz"], tmp_path).objective(trial)
-
-    assert value == pytest.approx(0.42)
-    assert trial.user_attrs == candidates
-    assert captured[0].observable is not None
-
-
 @pytest.mark.parametrize(
     ("config", "sweep_factory"),
     [
         (_wave_config(objective="closed_loop", closed_loop=_closed_loop_cfg()), OptunaSweep),
-        (_obs_config(objective="closed_loop", closed_loop=_closed_loop_cfg()), OptunaSweep),
     ],
 )
 def test_closed_loop_objective_works_for_both_predictor_kinds(

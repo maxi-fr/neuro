@@ -14,9 +14,8 @@ from neuro.spectral import LOG_FLOOR
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
-    from neuro.predictor.inference import ObservableModel, WaveformMLPModel
+    from neuro.predictor.inference import WaveformMLPModel
     from neuro.spectral import PsdEnvelope
-    from neuro.types import FloatArray
 
 
 class SumCost(CostFunction):
@@ -226,71 +225,6 @@ class SpectralHingeCost(CostFunction):
         return jnp.zeros(X.shape[0]).at[0].set(value)
 
 
-class ObservableHingeCost(CostFunction):
-    """Mean squared one-sided log excess of a predicted Observable over its healthy envelope.
-
-    Per-knot local: ``evaluate(x, u, t)`` hinges one predicted Frame ``x`` of shape
-    ``(n_channels * n_values,)`` in raw log units against the ``ObservableGeometry``-derived
-    reference, so unlike the spectral hinge it needs no whole-trajectory ``stage_costs``
-    override and works with every solver backend. The reduction is a mean over
-    ``(frame, channel, value)`` -- never over frames alone -- matching the training-time Loss
-    and keeping ``w_psd`` with exactly the meaning it has on the spectral path.
-
-    ``x`` is the Frame's predicted value; the Observable model adapter (ticket 03) exposes its
-    state as that value, or composes this cost with its readout.
-    """
-
-    n_values: int = eqx.field(static=True)
-    n_frames: int = eqx.field(static=True)
-    w: jax.Array
-    log_reference: jax.Array
-
-    def __init__(
-        self,
-        *,
-        n: int,
-        m: int,
-        log_reference: FloatArray,
-        w_psd: float,
-        n_frames: int,
-    ) -> None:
-        """Initialize from the reference reduced onto the Frame's value grid, in log units.
-
-        Parameters
-        ----------
-        n, m
-            Model state and control dimensions.
-        log_reference
-            The healthy envelope reduced onto the Frame grid, ``(n_channels, n_values)`` in
-            raw log units -- the ``ObservableGeometry``-derived reference shared with the
-            training-time Loss.
-        w_psd
-            Weight on the hinge.
-        n_frames
-            Frame count the horizon's Rollout holds, for the horizon-mean reduction.
-        """
-        super().__init__(n=n, m=m)
-        self.log_reference = jnp.asarray(log_reference).reshape(-1)
-        self.n_values = self.log_reference.shape[0]
-        self.n_frames = int(n_frames)
-        self.w = jnp.asarray(w_psd)
-
-    def evaluate(
-        self,
-        x: jax.Array,
-        u: jax.Array | None = None,
-        t: float | jax.Array = 0.0,
-    ) -> jax.Array:
-        """Hinge one predicted Frame against the reference: ``w * mean_v(hinge^2) / n_frames``."""
-        del u, t
-        hinge = jnp.maximum(0.0, x - self.log_reference) ** 2
-        return self.w * jnp.mean(hinge) / self.n_frames
-
-    def stage_costs(self, X: jax.Array, U: jax.Array, t: jax.Array) -> jax.Array:
-        """Evaluate the per-Frame hinge over the rolled-out trajectory, one entry per stage."""
-        return jax.vmap(self.evaluate)(X, U, t)
-
-
 class ExcludeInitialKnotState(CostFunction):
     """Wrap a per-knot stage cost, dropping its knot-0 state-only term in ``stage_costs``.
 
@@ -324,85 +258,6 @@ class ExcludeInitialKnotState(CostFunction):
         return base.at[0].add(-state0)
 
 
-class ObservableRolloutHinge(CostFunction):
-    """Whole-horizon hinge over the rolled-out Frames, decoded from the observable model's states.
-
-    Frame ``m``'s prediction is the readout of the lifted state the step that produced it
-    returns, so no single stage knot carries a Frame -- stage knot ``k`` holds the lifted state
-    after step ``k - 1``, and the terminal knot holds the last one. ``stage_costs`` therefore
-    decodes the Frames from ``X[1:]`` plus one extra model step (the terminal Frame the stage
-    trajectory excludes) and returns one hinge value per stage, the same structure as
-    :class:`SpectralHingeCost`; ``evaluate`` returns ``0`` at any single knot, so per-knot
-    local expansions (native solvers) degrade to the effort/quadratic objective rather than
-    mis-score the hinge. The Frame values hinge against the
-    ``ObservableGeometry``-derived log reference, the shared source of truth with the
-    training-time Loss.
-    """
-
-    model: ObservableModel
-    hinge: ObservableHingeCost
-
-    def __init__(
-        self,
-        model: ObservableModel,
-        *,
-        log_reference: FloatArray,
-        w_psd: float,
-        n_frames: int,
-    ) -> None:
-        """Initialize from the observable model and the reference reduced onto its Frame grid.
-
-        Parameters
-        ----------
-        model
-            The trajopt observable model adapter whose lifted states decode into Frames.
-        log_reference
-            The healthy envelope reduced onto the Frame grid, ``(n_channels, n_values)`` in
-            raw log units -- the ``ObservableGeometry``-derived reference.
-        w_psd
-            Weight on the hinge.
-        n_frames
-            Frame count the horizon's Rollout holds, for the horizon-mean reduction.
-        """
-        super().__init__(n=model.n, m=model.m)
-        self.model = model
-        self.hinge = ObservableHingeCost(
-            n=model.n,
-            m=model.m,
-            log_reference=log_reference,
-            w_psd=w_psd,
-            n_frames=n_frames,
-        )
-
-    def evaluate(
-        self,
-        x: jax.Array,
-        u: jax.Array | None = None,
-        t: float | jax.Array = 0.0,
-    ) -> jax.Array:
-        """Return ``0``: the hinge is whole-horizon and is scored by :meth:`stage_costs`."""
-        del x, u, t
-        return jnp.zeros(())
-
-    def _predicted_frames(self, X: jax.Array, U: jax.Array) -> jax.Array:
-        """Decode the raw predicted Frames ``l_1 .. l_M`` from the stage states and controls.
-
-        Stage knot ``k`` holds the lifted state after step ``k - 1``, so its ``output`` is
-        Frame ``k - 1``'s prediction; the terminal Frame ``l_M`` is recovered with one extra
-        model step from the last stage knot, since the stage trajectory excludes the terminal
-        state.
-        """
-        frames = jax.vmap(self.model.output)(X[1:])
-        x_term = self.model.discrete_dynamics(X[-1], U[-1], 0.0, 0.0)
-        return jnp.concatenate([frames, self.model.output(x_term)[None, :]], axis=0)
-
-    def stage_costs(self, X: jax.Array, U: jax.Array, t: jax.Array) -> jax.Array:
-        """Evaluate one per-Frame hinge value per stage, summing to the exact total."""
-        del t
-        frames = self._predicted_frames(X, U)
-        return jax.vmap(lambda frame: self.hinge.evaluate(frame, None, 0.0))(frames)
-
-
 def has_whole_horizon_cost(cost: CostFunction) -> bool:
     """Whether ``cost`` or any :class:`SumCost` sub-cost is scored only through ``stage_costs``.
 
@@ -411,4 +266,4 @@ def has_whole_horizon_cost(cost: CostFunction) -> bool:
     """
     if isinstance(cost, SumCost):
         return any(has_whole_horizon_cost(sub) for sub in cost.costs)
-    return isinstance(cost, (SpectralHingeCost, ObservableRolloutHinge))
+    return isinstance(cost, SpectralHingeCost)

@@ -15,15 +15,11 @@ from neuro.config import (
     ModelConfig,
     NNPredictorConfig,
     NNSweepConfig,
-    ObservableSpec,
     SimulationConfig,
-    StftGeometry,
     TrainingConfig,
 )
 from neuro.predictor.gradient import fit_gradient_descent
 from neuro.predictor.module import AutoregressiveMLP, TrainingPredictor
-from neuro.predictor.observable_module import StepwiseObservableMLP
-from neuro.predictor.observable_train import ObservableTrainingResult
 from neuro.predictor.ridge import RidgeTrainingResult
 from neuro.predictor.train import TrainingResult, train
 
@@ -34,11 +30,8 @@ if TYPE_CHECKING:
 
 _SEED = 21
 _WAVE_DT, _T = 1e-3, 200
-_OBS_DT, _OBS_T = 0.02, 400
 _N_EEG, _N_CONTROLS = 3, 2
 _WAVE_HORIZON = 3
-_OBS_HORIZON = 16
-_OBS_GEOMETRY = StftGeometry(n_segment=8, n_hop=4)
 
 
 def _write_trajectories(tmp_path: Path, *, dt: float, t: int) -> list[str]:
@@ -78,35 +71,6 @@ def _wave_config(**training: object) -> NNPredictorConfig:
     )
 
 
-def _obs_config(**observable: object) -> NNPredictorConfig:
-    """A tiny but complete observable config; ``observable`` overrides the observable block."""
-    defaults = {
-        "epochs": 3,
-        "batch_size": 64,
-        "learning_rate": 1e-2,
-        "weight_decay": 0.0,
-        "train_split": 0.5,
-        "seed": _SEED,
-        "patience": 50,
-        "eval_horizon_s": _OBS_HORIZON * _OBS_DT,
-    }
-    obs_defaults = {
-        "horizon": _OBS_HORIZON,
-        "stft": _OBS_GEOMETRY,
-        "z_dim": 6,
-        "lift_hidden": 8,
-        "lift_depth": 1,
-        "transition_hidden": 8,
-        "transition_depth": 1,
-    }
-    return NNPredictorConfig(
-        simulation=SimulationConfig(dt=_OBS_DT, downsample=1),
-        model=ModelConfig(n_y=3, n_u=2),
-        training=TrainingConfig.model_validate(defaults),
-        observable=ObservableSpec.model_validate({**obs_defaults, **observable}),
-    )
-
-
 def _checkpoint_arrays(model: nn.Module) -> list[np.ndarray]:
     """Every trainable parameter, in forward order, as plain NumPy arrays."""
     return [p.detach().cpu().numpy().astype(np.float64) for p in model.parameters()]
@@ -119,34 +83,9 @@ def _wave_train(cfg: NNPredictorConfig, files: list[str]) -> TrainingResult:
     return result
 
 
-def _obs_train(cfg: NNPredictorConfig, files: list[str]) -> ObservableTrainingResult:
-    """Train the observable arm, narrowing the union the dispatcher returns."""
-    result = train(cfg, files)
-    assert isinstance(result, ObservableTrainingResult)
-    return result
-
-
 def _wave_model(depth: int) -> ModelConfig:
     """The waveform model block the shared helpers use, at an explicit depth."""
     return ModelConfig(n_y=2, n_u=2, hidden_size=4, depth=depth)
-
-
-@pytest.mark.parametrize(
-    ("config", "expected_type"),
-    [(_wave_config(), AutoregressiveMLP), (_obs_config(), StepwiseObservableMLP)],
-)
-def test_train_dispatches_on_config_type_and_returns_a_predictor(
-    tmp_path: Path, config: NNPredictorConfig, expected_type: type
-) -> None:
-    """One entry point, both paths: the returned module satisfies the protocol and is the right kind."""
-    dt, t = (_WAVE_DT, _T) if config.observable is None else (_OBS_DT, _OBS_T)
-    files = _write_trajectories(tmp_path, dt=dt, t=t)
-    result = train(config, files)
-
-    assert isinstance(result.predictor, TrainingPredictor)
-    assert isinstance(result.predictor, expected_type)
-    assert result.predictor.n_channels == _N_EEG
-    assert result.predictor.n_controls == _N_CONTROLS
 
 
 def test_waveform_candidates_match_the_config_kind(tmp_path: Path) -> None:
@@ -160,16 +99,6 @@ def test_waveform_candidates_match_the_config_kind(tmp_path: Path) -> None:
     assert all(np.isfinite(value) for value in result.candidates.values())
 
 
-def test_observable_candidates_match_the_config_kind(tmp_path: Path) -> None:
-    """The observable run records exactly ``{val_loss, val_log_mse}``, consistently."""
-    result = _obs_train(_obs_config(), _write_trajectories(tmp_path, dt=_OBS_DT, t=_OBS_T))
-
-    assert set(result.candidates) == {"val_loss", "val_log_mse"}
-    assert result.candidates["val_loss"] == min(result.val_losses)
-    assert result.candidates["val_log_mse"] == result.val_log_mse
-    assert all(np.isfinite(value) for value in result.candidates.values())
-
-
 def test_candidates_contain_the_config_named_objective(tmp_path: Path) -> None:
     """A ``sweep.objective`` named in config is always among the recorded candidates."""
     wave = _wave_train(
@@ -177,12 +106,6 @@ def test_candidates_contain_the_config_named_objective(tmp_path: Path) -> None:
         _write_trajectories(tmp_path, dt=_WAVE_DT, t=_T),
     )
     assert wave.candidates["rollout_nmse"] == wave.rollout.pooled
-
-    obs = _obs_train(
-        _obs_config().model_copy(update={"sweep": NNSweepConfig(objective="val_loss")}),
-        _write_trajectories(tmp_path, dt=_OBS_DT, t=_OBS_T),
-    )
-    assert obs.candidates["val_loss"] == min(obs.val_losses)
 
 
 def test_waveform_save_round_trips_weights_standardizers_and_metadata(tmp_path: Path) -> None:
@@ -204,47 +127,6 @@ def test_waveform_save_round_trips_weights_standardizers_and_metadata(tmp_path: 
     assert loaded.dt == result.predictor.dt
     assert loaded.downsample == result.predictor.downsample
     assert loaded.provenance == result.predictor.provenance
-
-
-def test_observable_save_round_trips_weights_standardizers_and_metadata(tmp_path: Path) -> None:
-    """The observable checkpoint also round-trips geometry and the log-Observable standardizer."""
-    result = _obs_train(_obs_config(), _write_trajectories(tmp_path, dt=_OBS_DT, t=_OBS_T))
-    artifact_dir = tmp_path / "obs"
-    result.save(artifact_dir)
-
-    loaded = StepwiseObservableMLP.load(artifact_dir / "model")
-
-    for got, want in zip(_checkpoint_arrays(loaded), _checkpoint_arrays(result.predictor), strict=True):
-        np.testing.assert_array_equal(got, want)
-    np.testing.assert_array_equal(loaded.l_std.center, result.predictor.l_std.center)
-    np.testing.assert_array_equal(loaded.l_std.scale, result.predictor.l_std.scale)
-    assert loaded.geometry == result.predictor.geometry
-    assert loaded.z_dim == result.predictor.z_dim
-    assert loaded.fs == result.predictor.fs
-    assert loaded.downsample == result.predictor.downsample
-    assert loaded.provenance == result.predictor.provenance
-
-
-def test_loaded_observable_rolls_out_identically(tmp_path: Path) -> None:
-    """The reloaded module emits the same standardized forecast as the trained one."""
-    result = _obs_train(_obs_config(), _write_trajectories(tmp_path, dt=_OBS_DT, t=_OBS_T))
-    artifact_dir = tmp_path / "obs"
-    result.save(artifact_dir)
-    loaded = StepwiseObservableMLP.load(artifact_dir / "model")
-
-    u, y = result.val_trajs[0]
-    n_y, n_u = result.predictor.n_y, result.predictor.n_u
-    row = np.concatenate(
-        [
-            result.predictor.y_std.transform(y[:n_y]).reshape(-1),
-            result.predictor.u_std.transform(u[:n_u]).reshape(-1),
-            result.predictor.u_std.transform(u[n_u : n_u + _OBS_HORIZON]).reshape(-1),
-        ]
-    )
-    with torch.no_grad():
-        want = result.predictor(torch.as_tensor(row, dtype=torch.float32)[None, :])
-        got = loaded(torch.as_tensor(row, dtype=torch.float32)[None, :])
-    np.testing.assert_array_equal(got.numpy(), want.numpy())
 
 
 class _TinyNet(nn.Module):
@@ -314,25 +196,3 @@ def test_ridge_fit_through_train_on_depth0_mlp(tmp_path: Path) -> None:
     assert result.candidates["rollout_nmse"] == result.rollout.pooled
     assert result.candidates["log_energy"] == result.log_energy.pooled
     assert all(np.isfinite(value) for value in result.candidates.values())
-
-
-def test_observable_ridge_through_train(tmp_path: Path) -> None:
-    """``training.fit: ridge`` on a depth-0 observable MLP fits the shared readout by ridge."""
-    base = _obs_config(lift_depth=0, transition_depth=0)
-    cfg = base.model_copy(update={"training": base.training.model_copy(update={"fit": "ridge"})})
-    result = train(cfg, _write_trajectories(tmp_path, dt=_OBS_DT, t=_OBS_T))
-
-    assert isinstance(result, ObservableTrainingResult)
-    assert isinstance(result.predictor, StepwiseObservableMLP)
-    assert set(result.candidates) == {"val_loss", "val_log_mse"}
-    assert result.candidates["val_log_mse"] == result.val_log_mse
-    assert result.val_losses == []  # a closed-form fit has no epoch curve to minimize over
-    assert all(np.isfinite(value) for value in result.candidates.values())
-
-
-def test_observable_ridge_with_hidden_layers_fails_at_build_time(tmp_path: Path) -> None:
-    """``training.fit: ridge`` on a lifted observable MLP fails at build time, not mid-fit."""
-    cfg = _obs_config(lift_depth=1)
-    cfg = cfg.model_copy(update={"training": cfg.training.model_copy(update={"fit": "ridge"})})
-    with pytest.raises(ValueError, match="depth-0 observable"):
-        train(cfg, _write_trajectories(tmp_path, dt=_OBS_DT, t=_OBS_T))

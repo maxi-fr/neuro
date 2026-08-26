@@ -6,11 +6,9 @@ from typing import TYPE_CHECKING, Literal
 import numpy as np
 
 from neuro.filtering import antialias_filter, lowpass_filter
-from neuro.observable import log_observable
 from neuro.transforms import Standardizer
 
 if TYPE_CHECKING:
-    from neuro.config import ObservableGeometry
     from neuro.types import FloatArray, IntArray
 
 
@@ -308,20 +306,3 @@ def prepare_datasets(  # noqa: PLR0913, PLR0917
         n_channels=n_channels,
         n_controls=n_controls,
     )
-
-
-def frame_targets(
-    y_raw: FloatArray,
-    geometry: ObservableGeometry,
-    *,
-    horizon: int,
-    n_channels: int,
-    fs: float,
-) -> FloatArray:
-    """Reduce raw future-EEG windows ``(samples, horizon * n_channels)`` onto the Frame grid.
-
-    Returns ``(samples, n_frames, n_channels * n_values)`` of raw log-Observable, reduced raw-direct
-    by the geometry object the training Loss and the MPC Cost share -- no standardize round trip.
-    """
-    frames = log_observable(y_raw.reshape(-1, horizon, n_channels), geometry, fs)
-    return frames.reshape(frames.shape[0], frames.shape[1], -1)

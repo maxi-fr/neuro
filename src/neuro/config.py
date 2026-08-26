@@ -305,41 +305,6 @@ class EegMsSpec(EegMsGeometry, SecondsSpanSpec):
         return EegMsGeometry(**{name: getattr(self, name) for name in EegMsGeometry.model_fields})
 
 
-class ObservableSpec(StrictConfig):
-    """Which Observable an observable-space predictor forecasts, on what grid, with what architecture.
-
-    Exactly one geometry is configured, dispatched the way :meth:`LossSpecs.active` dispatches on
-    which loss spec is non-``None``.
-    """
-
-    horizon: int = Field(ge=1)
-    stft: StftGeometry | None = None
-    eeg_ms: EegMsGeometry | None = None
-    z_dim: int = Field(default=32, ge=1)
-    lift_hidden: int = Field(default=128, ge=1)
-    lift_depth: int = Field(default=2, ge=0)
-    transition_hidden: int = Field(default=128, ge=1)
-    transition_depth: int = Field(default=2, ge=0)
-    activation: Literal["relu", "tanh", "softplus"] = "softplus"
-    control_blind: bool = False
-    residual: bool = True
-
-    def geometry(self) -> ObservableGeometry:
-        """Return the single configured Observable geometry."""
-        geom = self.stft if self.stft is not None else self.eeg_ms
-        if geom is None:  # pragma: no cover -- the validator below rules this out
-            msg = "'observable' must configure exactly one of 'stft' or 'eeg_ms'."
-            raise ValueError(msg)
-        return geom
-
-    @model_validator(mode="after")
-    def _validate_single_kind(self) -> Self:
-        if (self.stft is None) == (self.eeg_ms is None):
-            msg = "'observable' must configure exactly one of 'stft' or 'eeg_ms'."
-            raise ValueError(msg)
-        return self
-
-
 class LossSpecs(StrictConfig):
     """Config-declared set of additive loss terms."""
 
@@ -509,7 +474,6 @@ class NNPredictorConfig(StrictConfig):
     simulation: SimulationConfig = Field(default_factory=SimulationConfig)
     model: ModelConfig = Field(default_factory=ModelConfig)
     training: TrainingConfig
-    observable: ObservableSpec | None = None
     artifact: str | None = None
     sweep: NNSweepConfig | None = None
 
@@ -522,15 +486,6 @@ class NNPredictorConfig(StrictConfig):
     def from_dict(cls, data: dict[str, Any] | None) -> NNPredictorConfig:
         """Build a typed config from a raw YAML mapping, rejecting unknown keys everywhere."""
         return cls.model_validate({} if data is None else data)
-
-    @model_validator(mode="after")
-    def _validate_observable_exclusivity(self) -> Self:
-        if (self.training.losses is None) == (self.observable is None):
-            msg = "Configure exactly one of 'training.losses' (rollout path) or 'observable' (frame-grid path)."
-            raise ValueError(msg)
-        if self.observable is not None:
-            self.observable.geometry().check_span(self.observable.horizon, self.fs)
-        return self
 
     @model_validator(mode="after")
     def _validate_losses_and_horizon(self) -> Self:
@@ -565,8 +520,7 @@ class NNPredictorConfig(StrictConfig):
 
         _validate_sweep_overlap_and_keys(self.sweep.model, self.model, "model")
         _validate_sweep_overlap_and_keys(self.sweep.training, self.training, "training")
-        candidates = OBSERVABLE_TRAINER_CANDIDATES if self.observable is not None else WAVEFORM_TRAINER_CANDIDATES
-        _validate_sweep_objective(self.sweep.objective, candidates)
+        _validate_sweep_objective(self.sweep.objective, WAVEFORM_TRAINER_CANDIDATES)
         return self
 
 

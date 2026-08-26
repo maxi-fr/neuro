@@ -145,7 +145,6 @@ def test_module_layers_sequential() -> None:
         "neuro.predictor.data",
         "neuro.predictor.checkpoint",
         "neuro.predictor.inference",
-        "neuro.observable",
         "neuro.control",
         "neuro.control.zero",
         "neuro.control.threshold",

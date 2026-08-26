@@ -8,10 +8,8 @@ import numpy as np
 import pytest
 import torch
 
-from neuro.config import StftGeometry
-from neuro.predictor.inference import ObservableModel, WaveformMLPModel
+from neuro.predictor.inference import WaveformMLPModel
 from neuro.predictor.module import AutoregressiveMLP
-from neuro.predictor.observable_module import StepwiseObservableMLP
 from neuro.provenance import TrainingProvenance
 from neuro.transforms import Standardizer
 
@@ -116,57 +114,3 @@ def test_jax_save_torch_load_round_trips_weights_buffers_and_metadata(tmp_path: 
     assert loaded.dt == module.dt
     assert loaded.downsample == module.downsample
     assert loaded.provenance == module.provenance
-
-
-def test_observable_torch_save_jax_rollout_reproduces_the_decoded_torch_forward(
-    tmp_path: Path, make_observable_model: Callable[..., ObservableModel]
-) -> None:
-    """An observable torch checkpoint loaded on the jax side free-runs the same raw Frames."""
-    geometry = StftGeometry(n_segment=8, n_hop=4)
-    jax_model = make_observable_model(geometry, horizon=16)
-    path = tmp_path / "observable"
-    jax_model.save(path)
-    torch_model = StepwiseObservableMLP.load(path)
-
-    rng = np.random.default_rng(_SEED + 5)
-    k = jax_model.priming_steps
-    y_hist = rng.standard_normal((k, jax_model.n_channels))
-    u_hist = rng.standard_normal((k, jax_model.n_controls))
-    u_future = rng.standard_normal((jax_model.horizon, jax_model.n_controls))
-
-    row = np.concatenate(
-        [
-            torch_model.y_std.transform(y_hist[-jax_model.n_y :]).reshape(-1),
-            torch_model.u_std.transform(u_hist[-jax_model.n_u :]).reshape(-1),
-            torch_model.u_std.transform(u_future).reshape(-1),
-        ]
-    )
-    with torch.no_grad():
-        standardized = torch_model(torch.as_tensor(row, dtype=torch.float32)[None, :]).numpy()[0]
-    want = torch_model.l_std.inverse_transform(standardized)
-
-    got = np.asarray(jax_model.free_run(y_hist[None], u_hist[None], u_future[None]))[0]
-    np.testing.assert_allclose(got, want, rtol=1e-5, atol=1e-6)
-
-
-def test_observable_jax_save_torch_load_round_trips_weights_buffers_and_geometry(
-    tmp_path: Path, make_observable_model: Callable[..., ObservableModel]
-) -> None:
-    """An observable model written on the jax side reloads on torch with the same buffers."""
-    geometry = StftGeometry(n_segment=8, n_hop=4, n_bin_pool=2, kernel="hann", kernel_width=2, band_hz=(2.0, 20.0))
-    model = make_observable_model(geometry, horizon=20)
-    path = tmp_path / "observable_roundtrip"
-    model.save(path)
-
-    loaded = StepwiseObservableMLP.load(path)
-    assert loaded.geometry == geometry
-    assert loaded.z_dim == model.z_dim
-    assert loaded.n_frames() == model.n_frames(model.horizon)
-    assert loaded.fs == pytest.approx(model.fs)
-    assert loaded.downsample == model.downsample
-    # The torch side stores the standardizers as float32 buffers, so the float64 jax arrays come
-    # back rounded to float32 precision rather than bit-identically.
-    np.testing.assert_allclose(loaded.y_std.center, np.asarray(model.y_center), rtol=1e-5, atol=1e-6)
-    np.testing.assert_allclose(loaded.y_std.scale, np.asarray(model.y_scale), rtol=1e-5, atol=1e-6)
-    np.testing.assert_allclose(loaded.l_std.center, np.asarray(model.l_center), rtol=1e-5, atol=1e-6)
-    np.testing.assert_allclose(loaded.l_std.scale, np.asarray(model.l_scale), rtol=1e-5, atol=1e-6)

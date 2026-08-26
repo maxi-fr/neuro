@@ -67,12 +67,9 @@ class RidgeTrainingResult:
 
     Owned by the depth-0 waveform MLP arm whose free-run scores live on the sample grid, which
     returns exactly this shape of result: a fitted Predictor, the free-run scores, and no
-    training curve. (The depth-0 observable arm is the deliberate exception: its ``rollout``
-    emits one Frame per position, so sample-grid free-run scores do not apply and it returns
-    :class:`~neuro.predictor.observable_train.ObservableTrainingResult` instead.) The absence of
-    ``val_loss`` in ``candidates`` is deliberate: a closed-form fit has no epoch loop, so the
-    only objectives this arm can rank on are the two free-run scores, ``rollout_nmse`` and
-    ``log_energy``.
+    training curve. The absence of ``val_loss`` in ``candidates`` is deliberate: a closed-form
+    fit has no epoch loop, so the only objectives this arm can rank on are the two free-run
+    scores, ``rollout_nmse`` and ``log_energy``.
 
     Attributes
     ----------

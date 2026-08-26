@@ -20,13 +20,11 @@ from trajopt.transcription.single_shooting import SingleShooting
 from neuro.control.costs import (
     ExcludeInitialKnotState,
     L1ControlCost,
-    ObservableRolloutHinge,
     SpectralHingeCost,
     SumCost,
     has_whole_horizon_cost,
 )
-from neuro.observable import load_log_reference
-from neuro.predictor.inference import InferencePredictor, ObservableModel, WaveformMLPModel
+from neuro.predictor.inference import InferencePredictor, WaveformMLPModel
 from neuro.spectral import PsdEnvelope
 
 if TYPE_CHECKING:
@@ -253,91 +251,6 @@ def build_waveform_problem(  # noqa: PLR0913 -- checkpoint plus the nine MPC cos
     w_y_final = w_y_terminal if w_y_terminal is not None else w_y
     Q_f = jnp.zeros(n).at[z_last].set(2.0 * w_y_final * model.y_scale**2 / horizon)
     terminal = DiagonalCost.terminal_tracking(Q_f, xf, m)
-    objective = Objective(stage_cost=stage_cost, terminal_cost=terminal, N=N)
-
-    return _assemble_problem(model, objective, N=N, u_max=u_max, kirchhoff=kirchhoff)
-
-
-def build_observable_problem(  # noqa: PLR0913 -- checkpoint plus the nine MPC cost/bound knobs
-    artifact: str | Path,
-    *,
-    horizon: int,
-    u_max: ArrayLike,
-    w_y: float = 0.0,
-    w_u: float = 0.0,
-    w_y_terminal: float | None = None,
-    w_u_l1: float = 0.0,
-    w_psd: float = 0.0,
-    psd_ref: str | Path | None = None,
-    kirchhoff: bool = False,
-) -> Problem:
-    """Assemble the observable MPC problem on the Frame grid.
-
-    The Observable predictor steps one Frame per position, so the trajopt horizon is the Frame
-    count ``n_frames(horizon)`` rather than the sample count and every decision variable is a
-    Frame-mean control. ``w_y``/``w_y_terminal`` are rejected -- the Rollout produces no
-    per-sample EEG outputs -- and ``w_psd > 0`` with a ``psd_ref`` is required, exactly the
-    incumbent's observable branch. The log reference is reduced from the envelope onto the
-    checkpoint's ``ObservableGeometry`` grid: the shared source of truth with the training-time
-    Loss.
-
-    Parameters
-    ----------
-    artifact
-        Suffix-less stem of the numpy-readable Observable checkpoint.
-    horizon
-        Control Horizon in samples; the trajopt horizon is ``n_frames(horizon) + 1`` knots.
-    u_max
-        Per-electrode amplitude bound: a scalar shared by every electrode or a
-        length-``n_controls`` vector, applied to the Frame-mean controls.
-    w_y
-        Weight on predicted EEG power; rejected on this path (it predicts the Observable
-        directly and produces no per-sample outputs).
-    w_u
-        Weight on control effort (quadratic) in the cost.
-    w_y_terminal
-        Rejected on this path, alongside ``w_y``.
-    w_u_l1
-        Weight on the L1 norm of the Frame-mean controls; ``0`` (default) disables it.
-    w_psd
-        Weight on the Observable hinge: the mean squared amount by which the rolled-out Frames
-        exceed ``psd_ref``'s healthy envelope, in log units. Required on this path.
-    psd_ref
-        Path to the healthy reference envelope npz; required when ``w_psd > 0`` (always here).
-    kirchhoff
-        Add the Kirchhoff sum-to-zero equality on the Frame-mean controls. Off by default.
-    """
-    model = ObservableModel.load(artifact)
-    if w_y > 0 or w_y_terminal is not None:
-        msg = (
-            f"w_y ({w_y}) and w_y_terminal ({w_y_terminal}) have no meaning on the observable "
-            "path: it predicts the Observable directly and produces no per-sample EEG outputs."
-        )
-        raise ValueError(msg)
-    if w_psd <= 0 or psd_ref is None:
-        msg = "the observable path requires w_psd > 0 and a psd_ref; it has no other output term."
-        raise ValueError(msg)
-    frames = model.n_frames(horizon)
-    if frames < 1:
-        msg = (
-            f"horizon ({horizon}) holds no {model.geometry.kind} frame at the checkpoint's "
-            "geometry; it must cover at least one Segment."
-        )
-        raise ValueError(msg)
-    n, m = model.n, model.m
-    N = frames + 1
-    log_reference = load_log_reference(psd_ref, model.geometry, model.fs)
-
-    costs: list[CostFunction] = [
-        ObservableRolloutHinge(model=model, log_reference=log_reference, w_psd=w_psd, n_frames=frames),
-        DiagonalCost(Q=jnp.zeros(n), R=jnp.full(m, 2.0 * w_u / frames)),
-    ]
-    if w_u_l1 > 0:
-        costs.append(L1ControlCost(n=n, m=m, w_l1=w_u_l1, horizon=frames))
-    stage_cost: CostFunction = _combine_costs(costs)
-    # The terminal knot scores nothing of its own: the last Frame's hinge value already landed
-    # in the final stage entry, and there is no control at the terminal.
-    terminal = DiagonalCost.terminal_tracking(jnp.zeros(n), jnp.zeros(n), m)
     objective = Objective(stage_cost=stage_cost, terminal_cost=terminal, N=N)
 
     return _assemble_problem(model, objective, N=N, u_max=u_max, kirchhoff=kirchhoff)

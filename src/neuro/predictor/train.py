@@ -13,11 +13,6 @@ from neuro.predictor.gradient import fit_gradient_descent, float32_tensor
 from neuro.predictor.inference import WaveformMLPModel
 from neuro.predictor.losses import LossContext, build_losses, total_loss
 from neuro.predictor.module import AutoregressiveMLP
-from neuro.predictor.observable_train import (
-    ObservableTrainingResult,
-    _train_observable,
-    _train_observable_ridge,
-)
 from neuro.predictor.ridge import RidgeTrainer, RidgeTrainingResult
 from neuro.provenance import training_provenance
 
@@ -125,15 +120,14 @@ def _du_sensitivity(model: AutoregressiveMLP, X_val: Tensor) -> float:
 
 def train(
     cfg: NNPredictorConfig, data_files: list[str], *, seed_offset: int = 0
-) -> TrainingResult | ObservableTrainingResult | RidgeTrainingResult:
+) -> TrainingResult | RidgeTrainingResult:
     """Train the Predictor named by ``cfg`` for one config and return everything the run produced.
 
     Dispatches on ``training.fit``: an NN config with ``training.fit: ridge`` routes to the Ridge
-    Trainer, which serves the depth-0 waveform MLP and the depth-0 observable MLP; any other NN
-    config runs the generic gradient-descent fit over the waveform or observable arm. A fit the
-    configured model does not support fails here at build time, before data is loaded or any fit
-    runs. Every arm returns a result holding the trained Predictor, the recorded ``candidates``
-    and a ``save`` that persists the numpy-checkpoint and the training stats.
+    Trainer for the depth-0 waveform MLP; any other NN config runs the generic gradient-descent
+    fit. A fit the configured model does not support fails here at build time, before data is
+    loaded or any fit runs. Every arm returns a result holding the trained Predictor, the recorded
+    ``candidates`` and a ``save`` that persists the numpy-checkpoint and the training stats.
 
     Parameters
     ----------
@@ -146,9 +140,9 @@ def train(
 
     Returns
     -------
-    TrainingResult | ObservableTrainingResult | RidgeTrainingResult
+    TrainingResult | RidgeTrainingResult
         The trained Predictor, the candidate objectives, the free-run scores, the held-out
-        trajectories and, on the gradient-descent arms, the loss curves and control sensitivity.
+        trajectories and, on the gradient-descent arm, the loss curves and control sensitivity.
 
     Raises
     ------
@@ -157,31 +151,17 @@ def train(
         hidden layers.
     """
     if cfg.training.fit == "ridge":
-        return _train_ridge(cfg, data_files, seed_offset=seed_offset)
-    if cfg.observable is not None:
-        return _train_observable(cfg, data_files, seed_offset=seed_offset)
+        return _train_ridge(cfg, data_files)
     return _train_waveform(cfg, data_files, seed_offset=seed_offset)
 
 
-def _train_ridge(
-    cfg: NNPredictorConfig, data_files: list[str], *, seed_offset: int = 0
-) -> RidgeTrainingResult | ObservableTrainingResult:
+def _train_ridge(cfg: NNPredictorConfig, data_files: list[str]) -> RidgeTrainingResult:
     """Route an NN config naming ``training.fit: ridge`` to the Ridge Trainer.
 
-    The Ridge Trainer serves the two Ridge-Fittable NN predictors: the depth-0 waveform MLP and
-    the depth-0 observable MLP (``lift_depth = transition_depth = 0``, linear end-to-end). A
-    config whose model carries hidden layers is not Ridge-Fittable and fails here at build time,
-    before data is loaded or any fit runs.
+    The Ridge Trainer serves the depth-0 waveform MLP. A config whose model carries hidden
+    layers is not Ridge-Fittable and fails here at build time, before data is loaded or any
+    fit runs.
     """
-    if cfg.observable is not None:
-        if cfg.observable.lift_depth > 0 or cfg.observable.transition_depth > 0:
-            msg = (
-                "'training.fit: ridge' requires a depth-0 observable MLP "
-                f"(lift_depth = transition_depth = 0), got lift_depth = {cfg.observable.lift_depth} "
-                f"and transition_depth = {cfg.observable.transition_depth}."
-            )
-            raise ValueError(msg)
-        return _train_observable_ridge(cfg, data_files, seed_offset=seed_offset)
     if cfg.model.depth > 0:
         msg = f"'training.fit: ridge' requires a depth-0 MLP, got model.depth = {cfg.model.depth}."
         raise ValueError(msg)
