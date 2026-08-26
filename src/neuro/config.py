@@ -116,6 +116,10 @@ class ObservableGeometry(StrictConfig):
         """Spacing in samples between consecutive Segments."""
         raise NotImplementedError
 
+    def sample_support_steps(self, fs: float) -> int:
+        """Sample support in samples of a single Frame at ``fs``."""
+        raise NotImplementedError
+
     def n_frames(self, span_steps: int, fs: float) -> int:
         """Count the Observable Frames a length-``span_steps`` span holds at ``fs``."""
         raise NotImplementedError
@@ -167,12 +171,20 @@ class StftGeometry(ObservableGeometry):
         """Spacing in samples between consecutive Segments."""
         return self.n_hop
 
+    def sample_support_steps(self, fs: float) -> int:  # noqa: ARG002 -- geometry is already in samples
+        """Sample support in samples of a single Frame."""
+        return (self.kernel_width - 1) * self.n_hop + self.n_segment
+
     def n_segment_frames(self, span_steps: int) -> int:
         """Count the frames the segment grid extracts from the span, before the Frame Kernel."""
+        if span_steps < self.n_segment:
+            return 0
         return (span_steps - self.n_segment) // self.n_hop + 1
 
-    def n_frames(self, span_steps: int, fs: float) -> int:  # noqa: ARG002 -- geometry is already in samples
+    def n_frames(self, span_steps: int, fs: float) -> int:
         """Count the frames left after the Frame Kernel has consumed its valid support."""
+        if span_steps < self.sample_support_steps(fs):
+            return 0
         return self.n_segment_frames(span_steps) - self.kernel_width + 1
 
     def frame_supports(self, span_steps: int, fs: float) -> tuple[tuple[int, int], ...]:
@@ -237,8 +249,14 @@ class EegMsGeometry(ObservableGeometry):
         hop_s = self.hop_s if self.hop_s is not None else DEFAULT_HOP_S
         return round(hop_s * fs)
 
+    def sample_support_steps(self, fs: float) -> int:
+        """Sample support in samples of a single Frame."""
+        return self.window_steps(fs)
+
     def n_frames(self, span_steps: int, fs: float) -> int:
         """Count the trailing windows the hop grid extracts from the span."""
+        if span_steps < self.window_steps(fs):
+            return 0
         return (span_steps - self.window_steps(fs)) // self.hop_steps(fs) + 1
 
     def frame_supports(self, span_steps: int, fs: float) -> tuple[tuple[int, int], ...]:

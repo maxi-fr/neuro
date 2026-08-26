@@ -11,10 +11,12 @@ from trajopt.problem import MPCState
 from trajopt.solvers.altro import ALTRO
 from trajopt.transcription.ipopt import Ipopt
 
-from neuro.control.costs import L1ControlCost, SumCost
+from neuro.config import StftGeometry
+from neuro.control.costs import L1ControlCost, SpectralHingeCost, SumCost, jax_compute_log_power_frames
 from neuro.control.mpc import build_waveform_problem
 from neuro.predictor.inference import WaveformMLPModel
 from neuro.predictor.module import AutoregressiveMLP
+from neuro.spectral import PsdEnvelope, compute_log_power_frames
 from neuro.transforms import Standardizer
 
 if TYPE_CHECKING:
@@ -193,3 +195,18 @@ def test_sum_cost_composes_evaluate_and_stage_costs() -> None:
     np.testing.assert_allclose(
         total, float(jnp.sum(l1.stage_costs(jnp.asarray(x_seq), jnp.asarray(u_seq), jnp.zeros(horizon))))
     )
+
+
+def test_spectral_hinge_jax_reduction_agrees_with_canonical_numpy() -> None:
+    """The jax reduction helper inside SpectralHingeCost agrees with canonical NumPy to float tolerance."""
+    rng = np.random.default_rng(_SEED + 10)
+    horizon, n_channels, fs, window, hop = 100, 3, 50.0, 50, 25
+    y = rng.standard_normal((horizon, n_channels))
+
+    geom = StftGeometry(n_segment=window, n_hop=hop)
+    numpy_frames = compute_log_power_frames(y, geom, fs=fs)
+
+    jax_frames = jax_compute_log_power_frames(jnp.asarray(y), fs=fs, window=window, hop=hop)
+
+    assert jax_frames.shape == numpy_frames.shape
+    np.testing.assert_allclose(np.asarray(jax_frames), numpy_frames, rtol=1e-10, atol=1e-12)

@@ -5,11 +5,12 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 import scipy.signal as sps
-from scipy.signal.windows import hann
+from scipy.signal.windows import bartlett, hann
 
 if TYPE_CHECKING:
     from pathlib import Path
 
+    from neuro.config import StftGeometry
     from neuro.types import FloatArray
 
 LOG_FLOOR = 1e-8
@@ -37,6 +38,74 @@ def compute_periodograms(y: FloatArray, *, fs: float, window: int, hop: int) -> 
     segments = np.stack([y[m * hop : m * hop + window, :] for m in range(n_windows)], axis=0)
     _, power = sps.periodogram(segments, fs=fs, window=w_hann, detrend=False, axis=1, scaling="density")
     return np.asarray(power, dtype=np.float64).transpose(0, 2, 1)
+
+
+def _frame_kernel_weights(kernel: str, width: int) -> FloatArray:
+    """Normalised non-negative smoothing weights along the Frame axis."""
+    if width == 1:
+        return np.ones(1, dtype=np.float64)
+    if kernel == "boxcar":
+        weights = np.ones(width, dtype=np.float64)
+    elif kernel == "triangular":
+        weights = bartlett(width + 2, sym=True)[1:-1]
+    else:
+        weights = hann(width + 2, sym=True)[1:-1]
+    return np.asarray(weights / np.sum(weights), dtype=np.float64)
+
+
+def compute_log_power_frames(y: FloatArray, geometry: StftGeometry, *, fs: float) -> FloatArray:
+    """Reduce raw EEG trajectory to log-power Frames at the given Observable geometry.
+
+    Parameters
+    ----------
+    y
+        Raw EEG array of shape ``(n_samples, n_channels)``.
+    geometry
+        Observable STFT geometry defining Segment length, hop, band, pooling, and Frame Kernel.
+    fs
+        Sampling rate in Hz.
+
+    Returns
+    -------
+    FloatArray
+        Log-power Frames of shape ``(n_frames, n_channels, n_values)``.
+    """
+    n_samples, n_channels = y.shape
+    n_values = geometry.n_values(fs)
+    sample_support = (geometry.kernel_width - 1) * geometry.n_hop + geometry.n_segment
+    if n_samples < sample_support:
+        return np.empty((0, n_channels, n_values), dtype=np.float64)
+
+    n_raw_frames = (n_samples - geometry.n_segment) // geometry.n_hop + 1
+    w_hann = hann(geometry.n_segment, sym=False)
+    segments = np.stack(
+        [y[m * geometry.n_hop : m * geometry.n_hop + geometry.n_segment, :] for m in range(n_raw_frames)],
+        axis=0,
+    )
+
+    _, power = sps.periodogram(segments, fs=fs, window=w_hann, detrend=False, axis=1, scaling="density")
+    power = np.asarray(power, dtype=np.float64).transpose(0, 2, 1)
+
+    bin_lo, bin_hi = geometry.bin_range(fs)
+    power = power[:, :, bin_lo:bin_hi]
+
+    if geometry.n_bin_pool > 1:
+        n_groups = power.shape[-1] // geometry.n_bin_pool
+        power = (
+            power[:, :, : n_groups * geometry.n_bin_pool]
+            .reshape(power.shape[0], power.shape[1], n_groups, geometry.n_bin_pool)
+            .mean(axis=-1)
+        )
+
+    weights = _frame_kernel_weights(geometry.kernel, geometry.kernel_width)
+    n_frames = n_raw_frames - geometry.kernel_width + 1
+    if geometry.kernel_width > 1:
+        power = np.stack(
+            [np.sum(power[i : i + geometry.kernel_width] * weights[:, None, None], axis=0) for i in range(n_frames)],
+            axis=0,
+        )
+
+    return np.asarray(np.log(power + LOG_FLOOR), dtype=np.float64)
 
 
 def hinge_penalty(power: FloatArray, reference: FloatArray) -> float:
@@ -114,3 +183,67 @@ class PsdEnvelope:
             )
             raise ValueError(msg)
         return envelope
+
+
+@dataclasses.dataclass(frozen=True)
+class ObservableEnvelope:
+    """Healthy Observable log-power Frame envelope plus the geometry it was measured with."""
+
+    power: FloatArray
+    fs: float
+    geometry: StftGeometry
+
+    @classmethod
+    def load(cls, path: str | Path) -> ObservableEnvelope:
+        """Read an Observable envelope written by ``scripts/build_healthy_psd.py``."""
+        from neuro.config import StftGeometry  # noqa: PLC0415 -- deferred to prevent circular import with neuro.config
+
+        with np.load(path) as data:
+            if "Pref_frames" not in data and "Pref_observable" not in data:
+                msg = (
+                    f"envelope at {path} carries no Observable frames array; "
+                    "rebuild it with scripts/build_healthy_psd.py."
+                )
+                raise ValueError(msg)
+            key = "Pref_frames" if "Pref_frames" in data else "Pref_observable"
+            power = np.asarray(data[key], dtype=np.float64)
+            fs = float(data["fs"])
+
+            n_segment = int(data["n_segment"]) if "n_segment" in data else int(data["L"])
+            n_hop = int(data["n_hop"]) if "n_hop" in data else int(data["R"])
+
+            band_hz: tuple[float, float] | None = None
+            if "band_hz" in data:
+                b = np.asarray(data["band_hz"])
+                if b.shape == (2,) and not (np.isnan(b[0]) or b[0] < 0):
+                    band_hz = (float(b[0]), float(b[1]))
+            elif "band_lo_hz" in data and "band_hi_hz" in data:
+                lo, hi = float(data["band_lo_hz"]), float(data["band_hi_hz"])
+                if lo >= 0 and hi > lo:
+                    band_hz = (lo, hi)
+
+            n_bin_pool = int(data["n_bin_pool"]) if "n_bin_pool" in data else 1
+            kernel_str = str(data["kernel"]) if "kernel" in data else "boxcar"
+            if kernel_str not in ("boxcar", "triangular", "hann"):
+                msg = f"envelope at {path} has unknown kernel '{kernel_str}'."
+                raise ValueError(msg)
+            kernel_width = int(data["kernel_width"]) if "kernel_width" in data else 1
+
+            geom = StftGeometry(
+                n_segment=n_segment,
+                n_hop=n_hop,
+                band_hz=band_hz,
+                n_bin_pool=n_bin_pool,
+                kernel=kernel_str,
+                kernel_width=kernel_width,
+            )
+
+            expected_values = geom.n_values(fs)
+            if power.shape[1] != expected_values:
+                msg = (
+                    f"envelope at {path} has {power.shape[1]} values per channel but its geometry "
+                    f"implies {expected_values}."
+                )
+                raise ValueError(msg)
+
+            return cls(power=power, fs=fs, geometry=geom)

@@ -208,21 +208,38 @@ class SpectralHingeCost(CostFunction):
         """
         del t
         y = self._predicted_outputs(X, U)  # (H, n_channels)
-        segments = jnp.stack([y[m * self.hop : m * self.hop + self.window] for m in range(self.n_windows)])
-        w_hann = jnp.asarray(hann(self.window, sym=False))
-        y_tapered = segments * w_hann[None, :, None]
-        spectrum = jnp.fft.rfft(y_tapered, axis=1)
-        power = jnp.abs(spectrum) ** 2
-        fold = np.full(self.n_bins, 2.0)
-        fold[0] = 1.0
-        if self.window % 2 == 0:
-            fold[-1] = 1.0
-        power = power * jnp.asarray(fold)[None, :, None] / (self.fs * jnp.sum(w_hann**2))
-        power = jnp.moveaxis(power, 2, 1)  # (n_windows, n_channels, n_bins)
-        log_excess = jnp.log(power[..., 1:] + LOG_FLOOR) - jnp.log(self.power[None, :, 1:])
+        log_power = jax_compute_log_power_frames(y, fs=self.fs, window=self.window, hop=self.hop)
+        log_excess = log_power - jnp.log(self.power[None, :, 1:])
         hinge = jnp.maximum(0.0, log_excess) ** 2
         value = self.w * jnp.mean(hinge)
         return jnp.zeros(X.shape[0]).at[0].set(value)
+
+
+def jax_compute_log_power_frames(
+    y: jax.Array,
+    *,
+    fs: float,
+    window: int,
+    hop: int,
+) -> jax.Array:
+    """Log-power Frames of ``y`` ``(H, n_channels)`` on the unpooled, unbanded waveform STFT grid.
+
+    Returns ``(n_windows, n_channels, window // 2)`` excluding DC.
+    """
+    n_windows = (y.shape[0] - window) // hop + 1
+    segments = jnp.stack([y[m * hop : m * hop + window] for m in range(n_windows)])
+    w_hann = jnp.asarray(hann(window, sym=False))
+    y_tapered = segments * w_hann[None, :, None]
+    spectrum = jnp.fft.rfft(y_tapered, axis=1)
+    power = jnp.abs(spectrum) ** 2
+    n_bins = window // 2 + 1
+    fold = np.full(n_bins, 2.0)
+    fold[0] = 1.0
+    if window % 2 == 0:
+        fold[-1] = 1.0
+    power = power * jnp.asarray(fold)[None, :, None] / (fs * jnp.sum(w_hann**2))
+    power = jnp.moveaxis(power, 2, 1)  # (n_windows, n_channels, n_bins)
+    return jnp.log(power[..., 1:] + LOG_FLOOR)
 
 
 class ExcludeInitialKnotState(CostFunction):
