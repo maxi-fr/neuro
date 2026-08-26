@@ -188,3 +188,64 @@ def evaluate_log_energy(  # noqa: PLR0913
 
     per_position = total / n_windows
     return LogEnergyError(pooled=float(per_position.mean()), per_position=per_position)
+
+
+class ObservableFrameMSE(NamedTuple):
+    """Free-run log-power Frame MSE on held-out trajectories, per step and pooled."""
+
+    pooled: float
+    per_step: FloatArray
+
+
+def evaluate_observable_free_run(
+    model: InferencePredictor,
+    val_trajs: list[tuple[FloatArray, FloatArray]],
+    eval_steps: int,
+    *,
+    step_stride: int = 1,
+) -> ObservableFrameMSE:
+    """Evaluate free-run Frame MSE per horizon step and pooled over all validation windows.
+
+    Parameters
+    ----------
+    model : InferencePredictor
+        The inference predictor adapter.
+    val_trajs : list[tuple[FloatArray, FloatArray]]
+        Held-out validation trajectories in Frame space, shape ``(n_frames, n_controls)`` and
+        ``(n_frames, n_outputs)``.
+    eval_steps : int
+        Free-run horizon in Frames.
+    step_stride : int, optional
+        Spacing between window start anchors. Defaults to 1.
+
+    Returns
+    -------
+    ObservableFrameMSE
+        Pooled and per-step MSE over raw log-power Frames.
+    """
+    k = model.priming_steps
+    sq_err = np.zeros(eval_steps, dtype=np.float64)
+    n_windows = 0
+
+    for u, y in val_trajs:
+        t0s = list(range(k, len(y) - eval_steps + 1, step_stride))
+        if not t0s:
+            continue
+
+        y_pred = np.asarray(
+            model.free_run(
+                np.stack([y[t0 - k : t0] for t0 in t0s]),
+                np.stack([u[t0 - k : t0] for t0 in t0s]),
+                np.stack([u[t0 : t0 + eval_steps] for t0 in t0s]),
+            )
+        )
+        y_true = np.stack([y[t0 : t0 + eval_steps] for t0 in t0s])
+        sq_err += ((y_pred - y_true) ** 2).sum(axis=(0, 2))
+        n_windows += len(t0s)
+
+    if n_windows == 0:
+        msg = "No validation trajectory is long enough to hold one free-run window."
+        raise ValueError(msg)
+
+    per_step = sq_err / (n_windows * model.n_outputs)
+    return ObservableFrameMSE(pooled=float(per_step.mean()), per_step=per_step)

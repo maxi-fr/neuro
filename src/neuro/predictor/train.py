@@ -7,10 +7,15 @@ from typing import TYPE_CHECKING, cast
 import numpy as np
 import torch
 
-from neuro.predictor.data import Datasets, prepare_datasets
-from neuro.predictor.evaluation import evaluate_free_run
+from neuro.predictor.data import Datasets, prepare_datasets, prepare_observable_datasets
+from neuro.predictor.evaluation import (
+    LogEnergyError,
+    RolloutNMSE,
+    evaluate_free_run,
+    evaluate_observable_free_run,
+)
 from neuro.predictor.gradient import fit_gradient_descent, float32_tensor
-from neuro.predictor.inference import WaveformMLPModel
+from neuro.predictor.inference import ObservableMLPModel, WaveformMLPModel
 from neuro.predictor.losses import LossContext, build_losses, total_loss
 from neuro.predictor.module import AutoregressiveMLP
 from neuro.predictor.ridge import RidgeTrainer, RidgeTrainingResult
@@ -22,7 +27,6 @@ if TYPE_CHECKING:
     from torch import Tensor, nn
 
     from neuro.config import NNPredictorConfig
-    from neuro.predictor.evaluation import LogEnergyError, RolloutNMSE
     from neuro.predictor.losses import Loss
     from neuro.types import FloatArray
 
@@ -104,7 +108,7 @@ def _du_sensitivity(model: AutoregressiveMLP, X_val: Tensor) -> float:
     ``horizon * n_channels`` rollout it drives, and one Jacobian per validation window would
     dominate the training run.
     """
-    n_hist = model.n_y * model.n_channels + model.n_u * model.n_controls
+    n_hist = model.n_y * model.n_outputs + model.n_u * model.n_controls
     rows = X_val[:: max(X_val.shape[0] // _DU_WINDOWS, 1)][:_DU_WINDOWS]
 
     norms = []
@@ -150,9 +154,170 @@ def train(
         If the named fit is one the configured model does not support: ``ridge`` on an MLP with
         hidden layers.
     """
+    if cfg.observable is not None:
+        if cfg.training.fit == "ridge":
+            return _train_observable_ridge(cfg, data_files)
+        return _train_observable(cfg, data_files, seed_offset=seed_offset)
     if cfg.training.fit == "ridge":
         return _train_ridge(cfg, data_files)
     return _train_waveform(cfg, data_files, seed_offset=seed_offset)
+
+
+def _prepare_observable(
+    cfg: NNPredictorConfig, data_files: list[str], *, depth: int
+) -> tuple[Datasets, AutoregressiveMLP, list[Loss]]:
+    """Build the prepared datasets and the autoregressive observable MLP for ``cfg``."""
+    sim, mdl, trn, geom = cfg.simulation, cfg.model, cfg.training, cfg.observable
+    if geom is None:
+        msg = "the observable arm requires 'observable' geometry in config."
+        raise ValueError(msg)
+    if trn.losses is None:
+        msg = "the observable arm requires 'training.losses' (for the curriculum MSE)."
+        raise ValueError(msg)
+    fs = cfg.fs
+    fs_frame = fs / geom.n_hop
+    losses = build_losses(trn.losses, fs_frame)
+    horizon = max(loss.span_steps for loss in losses)
+    data = prepare_observable_datasets(
+        data_files,
+        sim.n_steps,
+        sim.downsample,
+        mdl.n_y,
+        mdl.n_u,
+        horizon,
+        sim.dt,
+        trn.train_split,
+        geom,
+        scaler=trn.scaler,
+        global_scaling=trn.global_scaling,
+        cutoff_hz=sim.cutoff_hz,
+    )
+    n_values = geom.n_values(fs)
+    n_outputs = data.n_channels * n_values
+    model = AutoregressiveMLP(
+        n_y=mdl.n_y,
+        n_u=mdl.n_u,
+        horizon=horizon,
+        n_channels=data.n_channels,
+        n_controls=data.n_controls,
+        n_outputs=n_outputs,
+        hidden_size=mdl.hidden_size,
+        depth=depth,
+        activation=mdl.activation,
+        residual=mdl.residual,
+        dt=sim.dt * sim.downsample * geom.n_hop,
+        y_std=data.y_std,
+        u_std=data.u_std,
+        geometry=geom,
+    )
+    return data, model, losses
+
+
+def _train_observable_ridge(cfg: NNPredictorConfig, data_files: list[str]) -> RidgeTrainingResult:
+    """Fit the single layer of a depth-0 observable MLP by closed-form ridge."""
+    if cfg.model.depth > 0:
+        msg = f"'training.fit: ridge' requires a depth-0 MLP, got model.depth = {cfg.model.depth}."
+        raise ValueError(msg)
+    sim, trn, geom = cfg.simulation, cfg.training, cfg.observable
+    if geom is None:
+        msg = "the observable arm requires 'observable' geometry in config."
+        raise ValueError(msg)
+    fs = cfg.fs
+    fs_frame = fs / geom.n_hop
+    data, model, _ = _prepare_observable(cfg, data_files, depth=0)
+    RidgeTrainer(ridge_lambda=trn.ridge_lambda).fit(model, data.train_trajs)
+
+    model.provenance = training_provenance(data_files, sim.cutoff_hz)
+    model.downsample = sim.downsample
+    eval_steps = max(1, round(trn.eval_horizon_s * fs_frame))
+    inference = ObservableMLPModel.from_checkpoint(*model.to_checkpoint())
+    frame_mse = evaluate_observable_free_run(inference, data.val_trajs, eval_steps)
+
+    with torch.no_grad():
+        val_pred = (
+            model(torch.as_tensor(data.X_val, dtype=torch.float32)).numpy().reshape(-1, model.horizon, model.n_outputs)
+        )
+    val_true = data.Y_val.reshape(-1, model.horizon, model.n_outputs)
+    val_frame_loss = float(np.mean((val_pred - val_true) ** 2))
+
+    return RidgeTrainingResult(
+        predictor=model,
+        candidates={
+            "val_loss": val_frame_loss,
+            "val_log_mse": frame_mse.pooled,
+        },
+        rollout=RolloutNMSE(pooled=frame_mse.pooled, per_step=frame_mse.per_step),
+        log_energy=LogEnergyError(pooled=frame_mse.pooled, per_position=frame_mse.per_step),
+        val_trajs=data.val_trajs,
+    )
+
+
+def _train_observable(cfg: NNPredictorConfig, data_files: list[str], *, seed_offset: int = 0) -> TrainingResult:
+    """Train the autoregressive observable MLP for one config and return everything the run produced."""
+    sim, trn, geom = cfg.simulation, cfg.training, cfg.observable
+    if geom is None:
+        msg = "the observable arm requires 'observable' geometry in config."
+        raise ValueError(msg)
+    seed = trn.seed + seed_offset
+    torch.manual_seed(seed)
+    device = torch.device(trn.device)
+    fs = cfg.fs
+    fs_frame = fs / geom.n_hop
+
+    data, model, losses = _prepare_observable(cfg, data_files, depth=cfg.model.depth)
+    model = model.to(device)
+    horizon = max(loss.span_steps for loss in losses)
+    n_outputs = model.n_outputs
+
+    tensors = _Tensors(
+        X_train=float32_tensor(data.X_train, device),
+        Y_train=float32_tensor(data.Y_train, device).reshape(-1, horizon, n_outputs),
+        X_val=float32_tensor(data.X_val, device),
+        Y_val=float32_tensor(data.Y_val, device).reshape(-1, horizon, n_outputs),
+        y_center=float32_tensor(data.y_std.center, device),
+        y_scale=float32_tensor(data.y_std.scale, device),
+    )
+
+    def batch_loss(model: nn.Module, x: Tensor, y: Tensor, epoch: int | None) -> tuple[Tensor, dict[str, float]]:
+        """Roll ``x`` out and score it against the standardized-frame targets ``y``."""
+        ctx = LossContext(y_center=tensors.y_center, y_scale=tensors.y_scale, fs=fs_frame, epoch=epoch)
+        pred_traj = model(x).reshape(x.shape[0], horizon, n_outputs)
+        return total_loss(losses, pred_traj, y, ctx)
+
+    train_losses, val_losses, train_comps, val_comps = fit_gradient_descent(
+        model,
+        tensors.X_train,
+        tensors.Y_train,
+        tensors.X_val,
+        tensors.Y_val,
+        trn,
+        seed=seed,
+        loss_fn=batch_loss,
+        desc="Training Observable MLP",
+    )
+
+    eval_steps = max(1, round(trn.eval_horizon_s * fs_frame))
+    du_sensitivity = _du_sensitivity(model, tensors.X_val)
+    model = model.cpu()
+    model.provenance = training_provenance(data_files, sim.cutoff_hz)
+    model.downsample = sim.downsample
+    inference = ObservableMLPModel.from_checkpoint(*model.to_checkpoint())
+    frame_mse = evaluate_observable_free_run(inference, data.val_trajs, eval_steps)
+    return TrainingResult(
+        predictor=model,
+        candidates={
+            "val_loss": float(min(val_losses)),
+            "val_log_mse": frame_mse.pooled,
+        },
+        train_losses=train_losses,
+        val_losses=val_losses,
+        train_components=train_comps,
+        val_components=val_comps,
+        rollout=RolloutNMSE(pooled=frame_mse.pooled, per_step=frame_mse.per_step),
+        log_energy=LogEnergyError(pooled=frame_mse.pooled, per_position=frame_mse.per_step),
+        val_trajs=data.val_trajs,
+        du_sensitivity=du_sensitivity,
+    )
 
 
 def _train_ridge(cfg: NNPredictorConfig, data_files: list[str]) -> RidgeTrainingResult:

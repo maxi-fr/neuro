@@ -476,6 +476,7 @@ class NNSweepConfig(StrictConfig):
     objective: str = "log_energy"
     model: dict[str, ParamSpec] = Field(default_factory=dict)
     training: dict[str, ParamSpec] = Field(default_factory=dict)
+    observable: dict[str, ParamSpec] = Field(default_factory=dict)
     closed_loop: ClosedLoopEvalConfig | None = None
 
     @model_validator(mode="after")
@@ -486,12 +487,54 @@ class NNSweepConfig(StrictConfig):
         return self
 
 
+def _validate_observable_losses(losses: LossSpecs | None, geometry: StftGeometry, fs: float) -> None:
+    if losses is None:
+        return
+    active = losses.active()
+    if "stft" in active or "eeg_ms" in active:
+        msg = "observable predictor does not support reduction losses ('stft', 'eeg_ms')."
+        raise ValueError(msg)
+    if all(spec.start_epoch > 0 for spec in active.values()):
+        msg = "At least one loss must have start_epoch = 0; otherwise epoch 0 has no gradient."
+        raise ValueError(msg)
+    fs_frame = fs / geometry.n_hop
+    for spec in active.values():
+        if isinstance(spec, SecondsSpanSpec) and spec.span_steps(fs_frame) < 1:
+            msg = f"loss span resolves to < 1 frame at frame rate {fs_frame} Hz."
+            raise ValueError(msg)
+
+
+def _validate_waveform_losses(losses: LossSpecs | None, fs: float) -> None:
+    if losses is None:
+        return
+    active = losses.active()
+    if all(spec.start_epoch > 0 for spec in active.values()):
+        msg = "At least one loss must have start_epoch = 0; otherwise epoch 0 has no gradient."
+        raise ValueError(msg)
+
+    stft = losses.stft
+    if stft is not None:
+        bin_lo, bin_hi = stft.bin_range(fs)
+        n_bins = bin_hi - bin_lo
+        if n_bins < 1:
+            msg = f"stft leaves no frequency bins at fs={fs} Hz for band_hz={stft.band_hz}."
+            raise ValueError(msg)
+        if stft.n_bin_pool > n_bins:
+            msg = f"stft.n_bin_pool ({stft.n_bin_pool}) exceeds the {n_bins} in-band bin(s) at fs={fs} Hz."
+            raise ValueError(msg)
+
+    for spec in active.values():
+        if isinstance(spec, ObservableGeometry):
+            spec.check_span(spec.span_steps(fs), fs)
+
+
 class NNPredictorConfig(StrictConfig):
     """Fully-resolved, validated configuration for the NN-predictor pipeline."""
 
     simulation: SimulationConfig = Field(default_factory=SimulationConfig)
     model: ModelConfig = Field(default_factory=ModelConfig)
     training: TrainingConfig
+    observable: StftGeometry | None = None
     artifact: str | None = None
     sweep: NNSweepConfig | None = None
 
@@ -507,28 +550,10 @@ class NNPredictorConfig(StrictConfig):
 
     @model_validator(mode="after")
     def _validate_losses_and_horizon(self) -> Self:
-        fs = self.fs
-        if self.training.losses is None:
-            return self
-        active = self.training.losses.active()
-        if all(spec.start_epoch > 0 for spec in active.values()):
-            msg = "At least one loss must have start_epoch = 0; otherwise epoch 0 has no gradient."
-            raise ValueError(msg)
-
-        stft = self.training.losses.stft
-        if stft is not None:
-            bin_lo, bin_hi = stft.bin_range(fs)
-            n_bins = bin_hi - bin_lo
-            if n_bins < 1:
-                msg = f"stft leaves no frequency bins at fs={fs} Hz for band_hz={stft.band_hz}."
-                raise ValueError(msg)
-            if stft.n_bin_pool > n_bins:
-                msg = f"stft.n_bin_pool ({stft.n_bin_pool}) exceeds the {n_bins} in-band bin(s) at fs={fs} Hz."
-                raise ValueError(msg)
-
-        for spec in active.values():
-            if isinstance(spec, ObservableGeometry):
-                spec.check_span(spec.span_steps(fs), fs)
+        if self.observable is not None:
+            _validate_observable_losses(self.training.losses, self.observable, self.fs)
+        else:
+            _validate_waveform_losses(self.training.losses, self.fs)
         return self
 
     @model_validator(mode="after")
@@ -538,7 +563,10 @@ class NNPredictorConfig(StrictConfig):
 
         _validate_sweep_overlap_and_keys(self.sweep.model, self.model, "model")
         _validate_sweep_overlap_and_keys(self.sweep.training, self.training, "training")
-        _validate_sweep_objective(self.sweep.objective, WAVEFORM_TRAINER_CANDIDATES)
+        if self.observable is not None and self.sweep.observable:
+            _validate_sweep_overlap_and_keys(self.sweep.observable, self.observable, "observable")
+        candidates = OBSERVABLE_TRAINER_CANDIDATES if self.observable is not None else WAVEFORM_TRAINER_CANDIDATES
+        _validate_sweep_objective(self.sweep.objective, candidates)
         return self
 
 

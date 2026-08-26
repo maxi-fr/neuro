@@ -16,6 +16,7 @@ from neuro.config import (
     NNPredictorConfig,
     NNSweepConfig,
     SimulationConfig,
+    StftGeometry,
     TrainingConfig,
 )
 from neuro.predictor.gradient import fit_gradient_descent
@@ -196,3 +197,76 @@ def test_ridge_fit_through_train_on_depth0_mlp(tmp_path: Path) -> None:
     assert result.candidates["rollout_nmse"] == result.rollout.pooled
     assert result.candidates["log_energy"] == result.log_energy.pooled
     assert all(np.isfinite(value) for value in result.candidates.values())
+
+
+def _obs_config(**training: object) -> NNPredictorConfig:
+    """A tiny observable config for testing the observable training arms."""
+    dt = 0.004  # 250 Hz
+    fs = 1.0 / dt
+    geometry = StftGeometry(n_segment=64, n_hop=16, band_hz=[4.0, 30.0], n_bin_pool=2, kernel_width=5)
+    fs_frame = fs / geometry.n_hop
+    span_s = 4 / fs_frame
+    losses = LossSpecs(curriculum_mse=CurriculumMSESpec(weight=1.0, span_s=span_s, curr_start=0, curr_end=2))
+    defaults = {
+        "epochs": 3,
+        "batch_size": 32,
+        "learning_rate": 1e-2,
+        "weight_decay": 0.0,
+        "train_split": 0.5,
+        "seed": _SEED,
+        "patience": 50,
+        "eval_horizon_s": span_s,
+        "losses": losses,
+    }
+    return NNPredictorConfig(
+        simulation=SimulationConfig(dt=dt, downsample=1),
+        model=ModelConfig(n_y=2, n_u=2, hidden_size=4, depth=1),
+        training=TrainingConfig.model_validate({**defaults, **training}),
+        observable=geometry,
+    )
+
+
+def test_observable_candidates_match_the_config_kind(tmp_path: Path) -> None:
+    """The observable gradient-descent run records exactly {val_loss, val_log_mse}."""
+    files = _write_trajectories(tmp_path, dt=0.004, t=600)
+    cfg = _obs_config()
+    result = train(cfg, files)
+
+    assert isinstance(result, TrainingResult)
+    assert set(result.candidates) == {"val_loss", "val_log_mse"}
+    assert result.candidates["val_loss"] == min(result.val_losses)
+    assert result.candidates["val_log_mse"] == result.rollout.pooled
+    assert all(np.isfinite(value) for value in result.candidates.values())
+
+    # Verify save round-trip
+    art_dir = tmp_path / "obs_art"
+    result.save(art_dir)
+    assert (art_dir / "model.npz").exists()
+    assert (art_dir / "training_stats.json").exists()
+
+
+def test_observable_ridge_fit_through_train_on_depth0_mlp(tmp_path: Path) -> None:
+    """training.fit: ridge on an observable depth-0 MLP fits in closed form and records candidates."""
+    files = _write_trajectories(tmp_path, dt=0.004, t=600)
+    cfg = _obs_config(fit="ridge").model_copy(update={"model": ModelConfig(n_y=2, n_u=2, hidden_size=4, depth=0)})
+    result = train(cfg, files)
+
+    assert isinstance(result, RidgeTrainingResult)
+    assert isinstance(result.predictor, AutoregressiveMLP)
+    assert result.predictor.depth == 0
+    assert set(result.candidates) == {"val_loss", "val_log_mse"}
+    assert result.candidates["val_log_mse"] == result.rollout.pooled
+    assert all(np.isfinite(value) for value in result.candidates.values())
+
+    art_dir = tmp_path / "obs_ridge_art"
+    result.save(art_dir)
+    assert (art_dir / "model.npz").exists()
+    assert (art_dir / "training_stats.json").exists()
+
+
+def test_observable_ridge_fit_on_depth2_mlp_fails_at_build_time(tmp_path: Path) -> None:
+    """training.fit: ridge on an observable depth-2 MLP fails at build time."""
+    files = _write_trajectories(tmp_path, dt=0.004, t=600)
+    cfg = _obs_config(fit="ridge").model_copy(update={"model": ModelConfig(n_y=2, n_u=2, hidden_size=4, depth=2)})
+    with pytest.raises(ValueError, match="depth-0 MLP"):
+        train(cfg, files)

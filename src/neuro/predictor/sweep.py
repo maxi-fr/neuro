@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import optuna
 import yaml
@@ -12,6 +12,7 @@ from neuro.config import (
     ModelConfig,
     NNPredictorConfig,
     NNSweepConfig,
+    StftGeometry,
     TrainingConfig,
     expand_dotted_dict,
 )
@@ -116,16 +117,20 @@ class OptunaSweep:
         """Train one trial's hyperparameters and return the named objective, recording every candidate."""
         model_overrides = {name: spec.suggest(trial, name) for name, spec in self.sweep.model.items()}
         training_overrides = {name: spec.suggest(trial, name) for name, spec in self.sweep.training.items()}
-        config = self.cfg.model_copy(
-            update={
-                "model": ModelConfig.model_validate(
-                    deep_merge(self.cfg.model.model_dump(), expand_dotted_dict(model_overrides))
-                ),
-                "training": TrainingConfig.model_validate(
-                    deep_merge(self.cfg.training.model_dump(), expand_dotted_dict(training_overrides))
-                ),
-            }
-        )
+        update_dict: dict[str, Any] = {
+            "model": ModelConfig.model_validate(
+                deep_merge(self.cfg.model.model_dump(), expand_dotted_dict(model_overrides))
+            ),
+            "training": TrainingConfig.model_validate(
+                deep_merge(self.cfg.training.model_dump(), expand_dotted_dict(training_overrides))
+            ),
+        }
+        if self.sweep.observable and self.cfg.observable is not None:
+            observable_overrides = {name: spec.suggest(trial, name) for name, spec in self.sweep.observable.items()}
+            update_dict["observable"] = StftGeometry.model_validate(
+                deep_merge(self.cfg.observable.model_dump(), expand_dotted_dict(observable_overrides))
+            )
+        config = self.cfg.model_copy(update=update_dict)
         trial_dir = self.artifact_dir / f"trial_{trial.number}"
         return _run_trial(config, self.data_files, trial, trial_dir, self.sweep)
 

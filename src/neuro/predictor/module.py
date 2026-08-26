@@ -26,6 +26,7 @@ if TYPE_CHECKING:
 
     from torch import Tensor
 
+    from neuro.config import StftGeometry
     from neuro.types import Activation, FloatArray
 
 
@@ -167,6 +168,7 @@ class AutoregressiveMLP(nn.Module, TrainingPredictor):
     downsample: int
     provenance: TrainingProvenance
     n_outputs: int
+    geometry: StftGeometry | None
     # The Ridge-Fittable capability is attached per-instance on depth-0 models only (see
     # __init__); the declarations keep the bound methods visible to static checks while hidden-
     # layer instances still lack them at runtime, so the build-time capability check fails.
@@ -189,6 +191,7 @@ class AutoregressiveMLP(nn.Module, TrainingPredictor):
         dt: float = 0.0,
         y_std: Standardizer | None = None,
         u_std: Standardizer | None = None,
+        geometry: StftGeometry | None = None,
     ) -> None:
         """Build the ``depth``-hidden-layer MLP and its standardizer buffers.
 
@@ -209,6 +212,7 @@ class AutoregressiveMLP(nn.Module, TrainingPredictor):
         self.hidden_size = hidden_size
         self.depth = depth
         self.dt = float(dt)
+        self.geometry = geometry
         # Recorded metadata the checkpoint persists and ``load`` restores; training sets them.
         self.downsample = 1
         self.provenance = TrainingProvenance()
@@ -303,6 +307,8 @@ class AutoregressiveMLP(nn.Module, TrainingPredictor):
             "n_layers": len(linears),
             **self.provenance.meta,
         }
+        if self.geometry is not None:
+            meta["geometry"] = self.geometry.model_dump()
         arrays = layer_arrays(
             "layer", [to_numpy(lin.weight) for lin in linears], [to_numpy(lin.bias) for lin in linears]
         )
@@ -313,8 +319,11 @@ class AutoregressiveMLP(nn.Module, TrainingPredictor):
     @classmethod
     def from_checkpoint(cls, meta: dict[str, Any], arrays: dict[str, FloatArray]) -> Self:
         """Rebuild the module from a ``(meta, arrays)`` pair, restoring weights, buffers and metadata."""
+        from neuro.config import StftGeometry  # noqa: PLC0415 -- deferred import
+
         require_model_type(meta, "mlp")
         require_activation(meta)
+        geometry = StftGeometry.model_validate(meta["geometry"]) if "geometry" in meta else None
         model = cls(
             n_y=int(meta["n_y"]),
             n_u=int(meta["n_u"]),
@@ -329,6 +338,7 @@ class AutoregressiveMLP(nn.Module, TrainingPredictor):
             dt=float(meta["dt"]),
             y_std=Standardizer.from_arrays(arrays, "y"),
             u_std=Standardizer.from_arrays(arrays, "u"),
+            geometry=geometry,
         )
         model.downsample = int(meta["downsample"])
         model.provenance = TrainingProvenance.from_meta(meta)

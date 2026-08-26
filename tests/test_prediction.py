@@ -5,7 +5,14 @@ from typing import TYPE_CHECKING
 import numpy as np
 import torch
 
-from neuro.predictor.data import build_dataset_for_trajectory, load_trajectory, prepare_datasets
+from neuro.config import StftGeometry
+from neuro.predictor.data import (
+    build_dataset_for_trajectory,
+    load_trajectory,
+    prepare_datasets,
+    prepare_observable_datasets,
+    reduce_trajectory_to_frames,
+)
 from neuro.predictor.module import AutoregressiveMLP
 from neuro.transforms import Standardizer
 
@@ -143,3 +150,57 @@ def test_load_trajectory_and_prepare_datasets_with_cutoff_hz(tmp_path: Path) -> 
     )
     np.testing.assert_allclose(data.X_train, x_manual, atol=1e-12)
     np.testing.assert_allclose(data.Y_train, y_manual, atol=1e-12)
+
+
+def test_reduce_trajectory_to_frames() -> None:
+    """reduce_trajectory_to_frames computes log-power Frames and flattens per-frame channels and bins."""
+    geometry = StftGeometry(n_segment=64, n_hop=16, band_hz=[4.0, 30.0], n_bin_pool=2, kernel_width=5)
+    fs = 250.0
+    n_samples, n_channels = 500, 3
+    rng = np.random.default_rng(42)
+    y = rng.standard_normal((n_samples, n_channels))
+
+    frames = reduce_trajectory_to_frames(y, geometry, fs)
+    n_values = geometry.n_values(fs)
+    n_raw_frames = (n_samples - geometry.n_segment) // geometry.n_hop + 1
+    expected_frames = n_raw_frames - geometry.kernel_width + 1
+
+    assert frames.shape == (expected_frames, n_channels * n_values)
+
+
+def test_prepare_observable_datasets(tmp_path: Path) -> None:
+    """prepare_observable_datasets builds Frame-grid standardized windows and fits per-output standardizers."""
+    n_eeg, n_controls, n_steps = 3, 2, 500
+    n_y, n_u, horizon = 3, 2, 4
+    geometry = StftGeometry(n_segment=64, n_hop=16, band_hz=[4.0, 30.0], n_bin_pool=2, kernel_width=5)
+    dt = 0.004  # 250 Hz
+    fs = 1.0 / dt
+    n_values = geometry.n_values(fs)
+    n_outputs = n_eeg * n_values
+
+    files = [_write_trajectory(tmp_path / f"traj_{i}.npz", n_steps, n_eeg, n_controls) for i in range(2)]
+
+    data = prepare_observable_datasets(
+        files,
+        n_steps,
+        1,
+        n_y,
+        n_u,
+        horizon,
+        dt,
+        0.5,
+        geometry,
+        scaler="standard",
+        global_scaling=False,
+    )
+
+    assert data.n_channels == n_eeg
+    assert data.n_controls == n_controls
+    assert data.y_std.center.shape == (n_outputs,)
+    assert data.y_std.scale.shape == (n_outputs,)
+    assert data.X_train.shape[1] == n_y * n_outputs + (n_u + horizon) * n_controls
+    assert data.Y_train.shape[1] == horizon * n_outputs
+    assert data.Y_raw_train.shape[1] == horizon * n_outputs
+    assert len(data.train_trajs) == 1
+    assert len(data.val_trajs) == 1
+    assert data.train_trajs[0][1].shape[1] == n_outputs

@@ -6,9 +6,11 @@ from typing import TYPE_CHECKING, Literal
 import numpy as np
 
 from neuro.filtering import antialias_filter, lowpass_filter
+from neuro.spectral import compute_log_power_frames
 from neuro.transforms import Standardizer
 
 if TYPE_CHECKING:
+    from neuro.config import StftGeometry
     from neuro.types import FloatArray, IntArray
 
 
@@ -303,6 +305,132 @@ def prepare_datasets(  # noqa: PLR0913, PLR0917
         u_std=u_std,
         train_trajs=split.train_trajs,
         val_trajs=split.val_trajs,
+        n_channels=n_channels,
+        n_controls=n_controls,
+    )
+
+
+def reduce_trajectory_to_frames(y: FloatArray, geometry: StftGeometry, fs: float) -> FloatArray:
+    """Reduce raw EEG trajectory to flattened log-power Frames.
+
+    Parameters
+    ----------
+    y : FloatArray
+        Raw EEG array of shape ``(n_samples, n_channels)``.
+    geometry : StftGeometry
+        Observable STFT geometry defining Segment length, hop, band, pooling, and Frame Kernel.
+    fs : float
+        Sampling frequency in Hz.
+
+    Returns
+    -------
+    FloatArray
+        Flattened log-power Frames of shape ``(n_frames, n_channels * n_values)``.
+    """
+    frames = compute_log_power_frames(y, geometry, fs=fs)
+    n_frames, n_channels, n_values = frames.shape
+    return frames.reshape(n_frames, n_channels * n_values)
+
+
+def prepare_observable_datasets(  # noqa: PLR0913, PLR0917
+    data_files: list[str],
+    n_steps_cfg: int | None,
+    downsample: int,
+    n_y: int,
+    n_u: int,
+    horizon: int,
+    dt: float,
+    train_split: float,
+    geometry: StftGeometry,
+    *,
+    scaler: Literal["standard", "robust"],
+    global_scaling: bool,
+    cutoff_hz: float | None = None,
+) -> Datasets:
+    """Split ``data_files`` by trajectory, reduce to Frames, standardize, and build sliding windows on the Frame grid.
+
+    Parameters
+    ----------
+    data_files : list[str]
+        Paths to the ``.npz`` trajectory files.
+    n_steps_cfg : int | None
+        Number of steps to load per trajectory.
+    downsample : int
+        Decimation factor applied to raw simulation trajectories.
+    n_y : int
+        Number of past Frames in history window.
+    n_u : int
+        Number of past Control Currents in history window.
+    horizon : int
+        Number of future Frames to predict.
+    dt : float
+        Plant sampling step in seconds.
+    train_split : float
+        Fraction of trajectories held for training.
+    geometry : StftGeometry
+        Observable STFT geometry defining the Frame reduction.
+    scaler : Literal["standard", "robust"]
+        Standardizer scaling algorithm.
+    global_scaling : bool
+        Whether scale is shared across outputs.
+    cutoff_hz : float | None, optional
+        Explicit lowpass filter cutoff frequency in Hz.
+
+    Returns
+    -------
+    Datasets
+        Standardized train/validation Frame windows and fitted standardizers.
+    """
+    train_files, val_files = split_data_files(data_files, train_split)
+    fs = 1.0 / (dt * downsample)
+
+    def load_frames(files: list[str]) -> list[tuple[FloatArray, FloatArray]]:
+        trajs: list[tuple[FloatArray, FloatArray]] = []
+        for f in files:
+            u_raw, y_raw = load_trajectory(f, n_steps_cfg, downsample, dt, cutoff_hz=cutoff_hz)
+            y_frames = reduce_trajectory_to_frames(y_raw, geometry, fs)
+            u_frames = u_raw[:: geometry.n_hop][: y_frames.shape[0]]
+            min_len = min(y_frames.shape[0], u_frames.shape[0])
+            trajs.append((u_frames[:min_len], y_frames[:min_len]))
+        return trajs
+
+    train_trajs = load_frames(train_files)
+    val_trajs = load_frames(val_files)
+
+    all_y_train = np.concatenate([y for _, y in train_trajs], axis=0)
+    all_u_train = np.concatenate([u for u, _ in train_trajs], axis=0)
+
+    y_std = Standardizer.fit(all_y_train, kind=scaler, global_scaling=global_scaling)
+    u_std = Standardizer.fit(all_u_train, kind=scaler, global_scaling=global_scaling)
+
+    def windows(trajs: list[tuple[FloatArray, FloatArray]]) -> tuple[FloatArray, FloatArray, FloatArray]:
+        pairs = [
+            build_dataset_for_trajectory(u_std.transform(u), y_std.transform(y), n_y, n_u, horizon) for u, y in trajs
+        ]
+        return (
+            np.concatenate([x for x, _ in pairs], axis=0),
+            np.concatenate([y for _, y in pairs], axis=0),
+            np.concatenate([extract_future_windows(y, n_y, n_u, horizon) for _, y in trajs], axis=0),
+        )
+
+    X_train, Y_train, Y_raw_train = windows(train_trajs)
+    X_val, Y_val, Y_raw_val = windows(val_trajs)
+
+    with np.load(data_files[0]) as data:
+        n_channels = int(data["sensor_0.y_mea"].shape[1])
+    n_controls = all_u_train.shape[1]
+
+    return Datasets(
+        X_train=X_train,
+        Y_train=Y_train,
+        Y_raw_train=Y_raw_train,
+        X_val=X_val,
+        Y_val=Y_val,
+        Y_raw_val=Y_raw_val,
+        y_std=y_std,
+        u_std=u_std,
+        train_trajs=train_trajs,
+        val_trajs=val_trajs,
         n_channels=n_channels,
         n_controls=n_controls,
     )

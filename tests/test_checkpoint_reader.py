@@ -8,7 +8,8 @@ import numpy as np
 import pytest
 import torch
 
-from neuro.predictor.inference import WaveformMLPModel
+from neuro.config import StftGeometry
+from neuro.predictor.inference import InferencePredictor, ObservableMLPModel, WaveformMLPModel
 from neuro.predictor.module import AutoregressiveMLP
 from neuro.provenance import TrainingProvenance
 from neuro.transforms import Standardizer
@@ -114,3 +115,48 @@ def test_jax_save_torch_load_round_trips_weights_buffers_and_metadata(tmp_path: 
     assert loaded.dt == module.dt
     assert loaded.downsample == module.downsample
     assert loaded.provenance == module.provenance
+
+
+def test_observable_torch_save_jax_load_round_trips_geometry_and_per_output_standardizers(tmp_path: Path) -> None:
+    """An observable torch checkpoint carries geometry and per-output standardizers that jax load restores."""
+    rng = np.random.default_rng(_SEED + 50)
+    geometry = StftGeometry(n_segment=64, n_hop=16, band_hz=[4.0, 30.0], n_bin_pool=2, kernel_width=3)
+    n_outputs = _N_EEG * geometry.n_values(50.0)
+    module = AutoregressiveMLP(
+        n_y=_N_Y,
+        n_u=_N_U,
+        horizon=_HORIZON,
+        n_channels=_N_EEG,
+        n_controls=_N_CONTROLS,
+        n_outputs=n_outputs,
+        hidden_size=_HIDDEN,
+        depth=1,
+        activation="relu",
+        dt=0.01 * 16,
+        y_std=Standardizer(center=rng.uniform(-1.0, 1.0, n_outputs), scale=rng.uniform(0.5, 2.0, n_outputs)),
+        u_std=Standardizer(center=rng.uniform(-1.0, 1.0, _N_CONTROLS), scale=rng.uniform(0.5, 2.0, _N_CONTROLS)),
+        geometry=geometry,
+    )
+    with torch.no_grad():
+        for layer in module.layers:
+            if isinstance(layer, torch.nn.Linear):
+                layer.weight.normal_()
+                layer.bias.normal_()
+
+    path = tmp_path / "obs_model"
+    module.save(path)
+
+    # Test polymorphic load via InferencePredictor.load and direct ObservableMLPModel.load
+    jax_model_poly = InferencePredictor.load(path)
+    assert isinstance(jax_model_poly, ObservableMLPModel)
+    assert jax_model_poly.geometry == geometry
+    assert jax_model_poly.n_outputs == n_outputs
+    np.testing.assert_array_equal(np.asarray(jax_model_poly.y_center), module.y_std.center)
+    np.testing.assert_array_equal(np.asarray(jax_model_poly.y_scale), module.y_std.scale)
+
+    # Test reloading back to torch AutoregressiveMLP
+    reloaded_torch = AutoregressiveMLP.load(path)
+    assert reloaded_torch.geometry == geometry
+    assert reloaded_torch.n_outputs == n_outputs
+    np.testing.assert_array_equal(reloaded_torch.y_std.center, module.y_std.center)
+    np.testing.assert_array_equal(reloaded_torch.y_std.scale, module.y_std.scale)

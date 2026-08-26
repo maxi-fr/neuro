@@ -102,4 +102,6 @@ class RidgeTrainingResult:
             "log_energy": self.log_energy.pooled,
             "log_energy_per_position": self.log_energy.per_position.tolist(),
         }
+        if "val_loss" in self.candidates:
+            stats["val_loss"] = self.candidates["val_loss"]
         (artifact_dir / "training_stats.json").write_text(json.dumps(stats, indent=2))

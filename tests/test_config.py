@@ -446,3 +446,51 @@ def test_sweep_objective_validated_against_the_waveform_candidates() -> None:
     """A waveform sweep may not name an observable-only candidate."""
     with pytest.raises(ValidationError, match="not a candidate"):
         NNPredictorConfig.from_dict({"training": _VALID_TRAINING, "sweep": {"objective": "val_log_mse"}})
+
+
+def test_observable_predictor_rejects_reduction_losses() -> None:
+    """An observable predictor rejects reduction losses (stft, eeg_ms)."""
+    raw = {
+        "training": {
+            "eval_horizon_s": 0.2,
+            "losses": {
+                "curriculum_mse": {"weight": 1.0, "span_s": 0.2, "curr_start": 0, "curr_end": 10},
+                "stft": {"weight": 1.0, "n_span": 80, "n_segment": 64, "n_hop": 16, "band_hz": [4.0, 30.0]},
+            },
+        },
+        "observable": {
+            "n_segment": 64,
+            "n_hop": 16,
+            "band_hz": [4.0, 30.0],
+            "n_bin_pool": 2,
+            "kernel_width": 5,
+        },
+    }
+    with pytest.raises(ValidationError, match="does not support reduction losses"):
+        NNPredictorConfig.from_dict(raw)
+
+
+def test_observable_sweep_objective_validation() -> None:
+    """An observable sweep validates its objective against observable candidates."""
+    base = {
+        "training": _VALID_TRAINING,
+        "observable": {
+            "n_segment": 64,
+            "n_hop": 16,
+            "band_hz": [4.0, 30.0],
+            "n_bin_pool": 2,
+            "kernel_width": 5,
+        },
+    }
+    # Accepts valid observable candidates
+    cfg1 = NNPredictorConfig.from_dict({**base, "sweep": {"objective": "val_log_mse"}})
+    assert cfg1.sweep is not None
+    assert cfg1.sweep.objective == "val_log_mse"
+
+    cfg2 = NNPredictorConfig.from_dict({**base, "sweep": {"objective": "val_loss"}})
+    assert cfg2.sweep is not None
+    assert cfg2.sweep.objective == "val_loss"
+
+    # Rejects waveform-only candidate
+    with pytest.raises(ValidationError, match="not a candidate"):
+        NNPredictorConfig.from_dict({**base, "sweep": {"objective": "rollout_nmse"}})

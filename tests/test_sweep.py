@@ -17,6 +17,7 @@ from neuro.config import (
     NNPredictorConfig,
     NNSweepConfig,
     SimulationConfig,
+    StftGeometry,
     TrainingConfig,
 )
 from neuro.predictor import sweep as sweep_module
@@ -161,3 +162,38 @@ def test_objective_missing_from_candidates_raises(tmp_path: Path, monkeypatch: p
 
     with pytest.raises(ValueError, match="val_loss"):
         OptunaSweep(_wave_config(objective="val_loss"), ["sim_0.npz"], tmp_path).objective(optuna.trial.FixedTrial({}))
+
+
+def test_observable_optuna_sweep_ranks_on_val_log_mse(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The observable arm records {val_loss, val_log_mse} on the trial and ranks on the named one."""
+    candidates = {"val_loss": 0.042, "val_log_mse": 0.015}
+    _stub_train(monkeypatch, candidates)
+    trial = optuna.trial.FixedTrial({})
+
+    geometry = StftGeometry(n_segment=64, n_hop=16, band_hz=[4.0, 30.0], n_bin_pool=2, kernel_width=5)
+    fs_frame = 250.0 / geometry.n_hop
+    span_s = 4 / fs_frame
+    losses = LossSpecs(curriculum_mse=CurriculumMSESpec(weight=1.0, span_s=span_s, curr_start=0, curr_end=2))
+    cfg = NNPredictorConfig(
+        simulation=SimulationConfig(dt=0.004, downsample=1),
+        model=ModelConfig(n_y=2, n_u=2, hidden_size=4),
+        training=TrainingConfig.model_validate(
+            {
+                "epochs": 3,
+                "batch_size": 64,
+                "learning_rate": 1e-2,
+                "weight_decay": 0.0,
+                "train_split": 0.5,
+                "seed": 21,
+                "patience": 50,
+                "eval_horizon_s": span_s,
+                "losses": losses,
+            }
+        ),
+        observable=geometry,
+        sweep=NNSweepConfig(objective="val_log_mse"),
+    )
+
+    value = OptunaSweep(cfg, ["sim_0.npz"], tmp_path).objective(trial)
+    assert value == pytest.approx(0.015)
+    assert trial.user_attrs == candidates
