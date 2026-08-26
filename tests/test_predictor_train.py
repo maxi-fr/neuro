@@ -161,10 +161,18 @@ def test_save_round_trip_predicts_identically(files: list[str], tmp_path: Path) 
     loaded = AutoregressiveMLP.load(artifact_dir / "model")
 
     u, y = result.val_trajs[0]
-    priming = result.predictor.priming_steps
-    state = result.predictor.prime(y[:priming], u[:priming])
-    u_future = u[priming : priming + _HORIZON]
-    np.testing.assert_array_equal(loaded.rollout(state, u_future), result.predictor.rollout(state, u_future))
+    k = max(result.predictor.n_y, result.predictor.n_u)
+    row = np.concatenate(
+        [
+            result.predictor.y_std.transform(y[:k]).reshape(-1),
+            result.predictor.u_std.transform(u[:k]).reshape(-1),
+            result.predictor.u_std.transform(u[k : k + _HORIZON]).reshape(-1),
+        ]
+    )
+    with torch.no_grad():
+        want = result.predictor(torch.as_tensor(row, dtype=torch.float32)[None, :])
+        got = loaded(torch.as_tensor(row, dtype=torch.float32)[None, :])
+    np.testing.assert_array_equal(got.numpy(), want.numpy())
 
 
 def test_returned_artifact_is_the_best_epoch_not_the_last(files: list[str]) -> None:

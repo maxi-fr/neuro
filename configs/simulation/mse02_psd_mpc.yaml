@@ -43,10 +43,10 @@ sensors:
 estimator: {class_path: neuro.filtering.AntiAliasEstimator, dt: 0.0001, downsample: 200}
 
 controller:
-  class_path: neuro.control.trajopt_mpc.TrajOptMPCController
+  class_path: neuro.control.mpc.TrajOptMPCController
   dt: 0.02              # = predictor dt = 0.0001 * 200
   problem:
-    class_path: neuro.control.trajopt_mpc.build_waveform_problem
+    class_path: neuro.control.mpc.build_waveform_problem
     artifact: artifacts/nonlinear_mse02_psd/model
     horizon: 50         # 1s horizon
     u_max: 2.0

@@ -12,20 +12,20 @@ import torch
 from neuro.config import EegMsSpec, StftSpec
 from neuro.filtering import antialias_filter
 from neuro.predictor.data import load_trajectory
+from neuro.predictor.inference import WaveformMLPModel
 from neuro.predictor.losses import EegMsLoss, LossContext, StftLoss, spectrogram
-from neuro.predictor.module import AutoregressiveMLP
 from neuro.spectral import LOG_FLOOR, PsdEnvelope
 
 if TYPE_CHECKING:
     from neuro.types import FloatArray
 
-RolloutPredictor = AutoregressiveMLP
-"""The torch waveform rollout predictor the probe rolls out; the observable one never free-runs here."""
+RolloutPredictor = WaveformMLPModel
+"""The jax waveform rollout predictor the probe rolls out; the observable one never free-runs here."""
 
 
-def _load_rollout_module(path: Path) -> AutoregressiveMLP:
-    """Load the torch waveform rollout Predictor whose checkpoint ``path`` names."""
-    return AutoregressiveMLP.load(path)
+def _load_rollout_module(path: Path) -> WaveformMLPModel:
+    """Load the jax waveform rollout Predictor whose checkpoint ``path`` names."""
+    return WaveformMLPModel.load(path)
 
 
 # Seizure branches only: the healthy branch runs a different A vector than the predictor's
@@ -215,8 +215,7 @@ def build_triplets(
         sibling = np.roll(y, 1, axis=1).reshape(flat.shape)
         stranger = np.roll(y, 1, axis=0).reshape(flat.shape)
         for t0 in range(k, n_samples - span + 1, stride):
-            states = art.prime_many(flat[:, t0 - k : t0], u[:, t0 - k : t0])
-            pred = art.rollout_many(states, u[:, t0 : t0 + span])
+            pred = np.asarray(art.free_run(flat[:, t0 - k : t0], u[:, t0 - k : t0], u[:, t0 : t0 + span]))
             window = slice(t0, t0 + span)
             triplets.append(Triplet(pred, flat[:, window], sibling[:, window], stranger[:, window], t0))
         print(f"  rolled out {n_parents * n_children} children x {len(triplets)} start offsets", flush=True)

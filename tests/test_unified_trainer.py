@@ -21,12 +21,11 @@ from neuro.config import (
     TrainingConfig,
 )
 from neuro.predictor.gradient import fit_gradient_descent
-from neuro.predictor.module import AutoregressiveMLP
+from neuro.predictor.module import AutoregressiveMLP, TrainingPredictor
 from neuro.predictor.observable_module import StepwiseObservableMLP
 from neuro.predictor.observable_train import ObservableTrainingResult
 from neuro.predictor.ridge import RidgeTrainingResult
 from neuro.predictor.train import TrainingResult, train
-from neuro.types import Predictor
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -144,7 +143,7 @@ def test_train_dispatches_on_config_type_and_returns_a_predictor(
     files = _write_trajectories(tmp_path, dt=dt, t=t)
     result = train(config, files)
 
-    assert isinstance(result.predictor, Predictor)
+    assert isinstance(result.predictor, TrainingPredictor)
     assert isinstance(result.predictor, expected_type)
     assert result.predictor.n_channels == _N_EEG
     assert result.predictor.n_controls == _N_CONTROLS
@@ -227,17 +226,25 @@ def test_observable_save_round_trips_weights_standardizers_and_metadata(tmp_path
 
 
 def test_loaded_observable_rolls_out_identically(tmp_path: Path) -> None:
-    """The reloaded module emits the same raw log-Observable rollout as the trained one."""
+    """The reloaded module emits the same standardized forecast as the trained one."""
     result = _obs_train(_obs_config(), _write_trajectories(tmp_path, dt=_OBS_DT, t=_OBS_T))
     artifact_dir = tmp_path / "obs"
     result.save(artifact_dir)
     loaded = StepwiseObservableMLP.load(artifact_dir / "model")
 
     u, y = result.val_trajs[0]
-    priming = result.predictor.priming_steps
-    state = result.predictor.prime(y[:priming], u[:priming])
-    u_future = u[priming : priming + _OBS_HORIZON]
-    np.testing.assert_array_equal(loaded.rollout(state, u_future), result.predictor.rollout(state, u_future))
+    n_y, n_u = result.predictor.n_y, result.predictor.n_u
+    row = np.concatenate(
+        [
+            result.predictor.y_std.transform(y[:n_y]).reshape(-1),
+            result.predictor.u_std.transform(u[:n_u]).reshape(-1),
+            result.predictor.u_std.transform(u[n_u : n_u + _OBS_HORIZON]).reshape(-1),
+        ]
+    )
+    with torch.no_grad():
+        want = result.predictor(torch.as_tensor(row, dtype=torch.float32)[None, :])
+        got = loaded(torch.as_tensor(row, dtype=torch.float32)[None, :])
+    np.testing.assert_array_equal(got.numpy(), want.numpy())
 
 
 class _TinyNet(nn.Module):

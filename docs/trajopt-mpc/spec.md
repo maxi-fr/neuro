@@ -144,7 +144,7 @@ needing a fix, since multiple shooting isn't carried forward.
 our own controller's `from_config` follows, matching the existing pattern
 (`configs/simulation/*mpc*.yaml` currently dispatches `class_path:
 neuro.control.nonlinear_mpc.MPCController`). Migrating a simulation config means pointing
-`class_path` at our new controller (e.g. `neuro.control.trajopt_mpc.TrajOptMPCController`) and at a
+`class_path` at our new controller (e.g. `neuro.control.mpc.TrajOptMPCController`) and at a
 `Problem`-building factory function per predictor kind (waveform/Observable) that assembles the
 `AbstractModel` + `Objective` + `ConstraintList` from checkpoint + geometry + the existing
 cost-weight fields (`w_y`, `w_u`, `w_u_l1`, `w_psd`, `u_max`, etc.) — no new config tree, consistent
@@ -193,7 +193,7 @@ explicit open-loop/closed-loop latency table, not trained-weight accuracy.
   the plant side if a trajopt model stands in as the simulated plant. `TrajOptMPC` itself is not
   instantiated anywhere in this refactor — it's a design reference only.
 - **Solver comparison (new benchmark note).** Follow up: a
-  `knowledge-base/Notes/trajopt_solver_benchmark.md` benchmarking every trajopt backend for nonlinear MPC—
+  `knowledge-base/Notes/solver_benchmark.md` benchmarking every trajopt backend for nonlinear MPC—
   NLP transcription (Ipopt × single shooting) and native JAX solvers (ALTRO) — against the existing CasADi SQP+IPOPT baseline, on the same open-loop/closed-loop
 
 ## Further Notes

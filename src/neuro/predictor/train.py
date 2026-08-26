@@ -10,6 +10,7 @@ import torch
 from neuro.predictor.data import Datasets, prepare_datasets
 from neuro.predictor.evaluation import evaluate_free_run
 from neuro.predictor.gradient import fit_gradient_descent, float32_tensor
+from neuro.predictor.inference import WaveformMLPModel
 from neuro.predictor.losses import LossContext, build_losses, total_loss
 from neuro.predictor.module import AutoregressiveMLP
 from neuro.predictor.observable_train import (
@@ -246,10 +247,11 @@ def _train_waveform_ridge(cfg: NNPredictorConfig, data_files: list[str]) -> Ridg
     data, model, _ = _prepare_waveform(cfg, data_files, depth=0)
     RidgeTrainer(ridge_lambda=trn.ridge_lambda).fit(model, data.train_trajs)
 
-    eval_steps = max(1, round(trn.eval_horizon_s * fs))
-    rollout, log_energy = evaluate_free_run(model, data.val_trajs, eval_steps, fs)
     model.provenance = training_provenance(data_files, sim.cutoff_hz)
     model.downsample = sim.downsample
+    eval_steps = max(1, round(trn.eval_horizon_s * fs))
+    inference = WaveformMLPModel.from_checkpoint(*model.to_checkpoint())
+    rollout, log_energy = evaluate_free_run(inference, data.val_trajs, eval_steps, fs)
     return RidgeTrainingResult(
         predictor=model,
         candidates={
@@ -303,11 +305,12 @@ def _train_waveform(cfg: NNPredictorConfig, data_files: list[str], *, seed_offse
 
     eval_steps = max(1, round(trn.eval_horizon_s * fs))
     du_sensitivity = _du_sensitivity(model, tensors.X_val)
-    # The protocol runtime interfaces through NumPy, so the free-run evaluation runs on the CPU copy.
+    # Free-run scoring runs on the deployed jax side, built in memory from the fitted torch model.
     model = model.cpu()
     model.provenance = training_provenance(data_files, sim.cutoff_hz)
     model.downsample = sim.downsample
-    rollout, log_energy = evaluate_free_run(model, data.val_trajs, eval_steps, fs)
+    inference = WaveformMLPModel.from_checkpoint(*model.to_checkpoint())
+    rollout, log_energy = evaluate_free_run(inference, data.val_trajs, eval_steps, fs)
     return TrainingResult(
         predictor=model,
         candidates={

@@ -12,6 +12,7 @@ from neuro.predictor.evaluation import (
     nmse,
     window_energy,
 )
+from neuro.predictor.inference import WaveformMLPModel
 from neuro.predictor.module import AutoregressiveMLP
 from neuro.transforms import Standardizer
 
@@ -85,7 +86,9 @@ def _silent_mlp_model(*, n_y: int, n_u: int, horizon: int, n_eeg: int, n_control
 
 def test_evaluate_rollouts_pools_its_own_per_step_curve() -> None:
     horizon, n_eeg, n_controls = 6, 3, 2
-    model = _tiny_mlp_model(n_y=4, n_u=2, horizon=horizon, n_eeg=n_eeg, n_controls=n_controls)
+    model = WaveformMLPModel.from_checkpoint(
+        *_tiny_mlp_model(n_y=4, n_u=2, horizon=horizon, n_eeg=n_eeg, n_controls=n_controls).to_checkpoint()
+    )
     trajs = [(_RNG.normal(size=(200, n_controls)), _RNG.normal(size=(200, n_eeg))) for _ in range(2)]
 
     rollout = evaluate_rollouts(model, trajs, horizon)
@@ -108,7 +111,9 @@ def test_window_energy_is_the_cross_channel_mean_square_per_trailing_window() ->
 def test_log_energy_is_zero_when_the_prediction_matches() -> None:
     """A silent model on a silent plant: both energies are floored identically, so the error is 0."""
     horizon, n_eeg, n_controls = 6, 3, 2
-    model = _silent_mlp_model(n_y=4, n_u=2, horizon=horizon, n_eeg=n_eeg, n_controls=n_controls)
+    model = WaveformMLPModel.from_checkpoint(
+        *_silent_mlp_model(n_y=4, n_u=2, horizon=horizon, n_eeg=n_eeg, n_controls=n_controls).to_checkpoint()
+    )
     trajs = [(np.zeros((200, n_controls)), np.zeros((200, n_eeg))) for _ in range(2)]
 
     score = evaluate_log_energy(model, trajs, horizon, window_steps=4, hop_steps=2)
@@ -120,7 +125,9 @@ def test_log_energy_is_zero_when_the_prediction_matches() -> None:
 def test_log_energy_separates_a_silent_predictor_that_nmse_cannot() -> None:
     """The motivating case: NMSE reads exactly 1.0 -- its saturation value -- and log-energy does not."""
     horizon, n_eeg, n_controls = 6, 3, 2
-    model = _silent_mlp_model(n_y=4, n_u=2, horizon=horizon, n_eeg=n_eeg, n_controls=n_controls)
+    model = WaveformMLPModel.from_checkpoint(
+        *_silent_mlp_model(n_y=4, n_u=2, horizon=horizon, n_eeg=n_eeg, n_controls=n_controls).to_checkpoint()
+    )
     trajs = [(_RNG.normal(size=(200, n_controls)), _RNG.normal(size=(200, n_eeg))) for _ in range(2)]
 
     assert evaluate_rollouts(model, trajs, horizon).pooled == pytest.approx(1.0)
@@ -131,7 +138,9 @@ def test_log_energy_separates_a_silent_predictor_that_nmse_cannot() -> None:
 
 
 def test_log_energy_rejects_a_horizon_shorter_than_one_window() -> None:
-    model = _tiny_mlp_model(n_y=4, n_u=2, horizon=6, n_eeg=3, n_controls=2)
+    model = WaveformMLPModel.from_checkpoint(
+        *_tiny_mlp_model(n_y=4, n_u=2, horizon=6, n_eeg=3, n_controls=2).to_checkpoint()
+    )
     trajs = [(_RNG.normal(size=(200, 2)), _RNG.normal(size=(200, 3))) for _ in range(2)]
 
     with pytest.raises(ValueError, match="shorter than the energy window"):

@@ -5,18 +5,16 @@ import warnings
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from neuro.checkpoint import ObservableCheckpoint, load_any
-from neuro.observable import envelope_log_reference, load_envelope
-from neuro.provenance import plant_fingerprint
+from neuro.observable import envelope_log_reference, geometry_from_meta, load_envelope
+from neuro.predictor.checkpoint import load_meta
+from neuro.provenance import TrainingProvenance, plant_fingerprint
 from neuro.spectral import PsdEnvelope
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
-    from neuro.provenance import TrainingProvenance
-
 _FILTERING_ESTIMATORS = frozenset({"neuro.filtering.AntiAliasEstimator", "neuro.filtering.LowPassEstimator"})
-_PREDICTIVE_CONTROLLERS = frozenset({"neuro.control.trajopt_mpc.TrajOptMPCController"})
+_PREDICTIVE_CONTROLLERS = frozenset({"neuro.control.mpc.TrajOptMPCController"})
 _REL_TOL = 1e-9
 
 
@@ -99,7 +97,7 @@ def _check_psd_reference(problem: Mapping[str, Any], controller_dt: float) -> No
         raise ConfigConsistencyError(msg)
 
 
-def _check_observable_geometry(ckpt: ObservableCheckpoint, problem: Mapping[str, Any]) -> None:
+def _check_observable_geometry(meta: dict[str, Any], problem: Mapping[str, Any]) -> None:
     """Require the geometry recorded in an observable checkpoint to match the reference envelope's.
 
     :func:`_check_psd_reference` only sees what the YAML declares, not what the predictor was fit on.
@@ -108,7 +106,9 @@ def _check_observable_geometry(ckpt: ObservableCheckpoint, problem: Mapping[str,
     if psd_ref_path is None:
         return
 
-    geometry, fs = ckpt.geometry, ckpt.fs
+    fs = 1.0 / float(meta["dt"])
+    geometry = geometry_from_meta(meta["geometry"])
+    n_channels = int(meta["n_channels"])
     try:
         envelope = load_envelope(psd_ref_path, geometry)
     except (ValueError, TypeError) as exc:
@@ -119,7 +119,7 @@ def _check_observable_geometry(ckpt: ObservableCheckpoint, problem: Mapping[str,
         ("fs", fs, envelope.fs),
         ("segment length", geometry.segment_steps(fs), envelope.window),
         ("hop", geometry.hop_steps(fs), envelope.hop),
-        ("channel count", ckpt.n_channels, envelope.power.shape[0]),
+        ("channel count", n_channels, envelope.power.shape[0]),
     ):
         if not math.isclose(recorded, measured, rel_tol=_REL_TOL):
             msg = (
@@ -136,10 +136,11 @@ def _check_observable_geometry(ckpt: ObservableCheckpoint, problem: Mapping[str,
     except (IndexError, TypeError) as exc:
         msg = f"the envelope at {psd_ref_path} cannot be reduced onto the checkpoint's frame grid: {exc}"
         raise ConfigConsistencyError(msg) from exc
-    if reference.shape != (ckpt.n_channels, ckpt.n_values):
+    n_values = geometry.n_values(fs)
+    if reference.shape != (n_channels, n_values):
         msg = (
             f"the checkpoint's scored bin range and pooling leave {reference.shape} reference values "
-            f"but its readout emits {(ckpt.n_channels, ckpt.n_values)}."
+            f"but its readout emits {(n_channels, n_values)}."
         )
         raise ConfigConsistencyError(msg)
 
@@ -151,19 +152,21 @@ def _check_predictor(config: Mapping[str, Any]) -> None:
         return
 
     problem = controller["problem"]
-    ckpt = load_any(problem["artifact"])
-    provenance = ckpt.provenance
+    meta = load_meta(problem["artifact"])
+    provenance = TrainingProvenance.from_meta(meta)
+    dt = float(meta["dt"])
+    downsample = int(meta["downsample"])
 
     controller_dt = float(controller["dt"])
-    if not math.isclose(controller_dt, ckpt.dt, rel_tol=_REL_TOL):
+    if not math.isclose(controller_dt, dt, rel_tol=_REL_TOL):
         msg = (
-            f"controller.dt ({controller_dt}) must equal the predictor's native dt ({ckpt.dt}), which is "
-            f"dynamics.dt x {ckpt.downsample}: the MPC steps the model once per control step."
+            f"controller.dt ({controller_dt}) must equal the predictor's native dt ({dt}), which is "
+            f"dynamics.dt x {downsample}: the MPC steps the model once per control step."
         )
         raise ConfigConsistencyError(msg)
 
     online = _estimator_cutoff_hz(config["estimator"])
-    offline = _training_cutoff_hz(ckpt.dt, ckpt.downsample, provenance)
+    offline = _training_cutoff_hz(dt, downsample, provenance)
     if not _cutoffs_agree(online, offline):
         msg = (
             f"the estimator applies {_describe(online)} but the predictor was identified on data decimated "
@@ -172,16 +175,16 @@ def _check_predictor(config: Mapping[str, Any]) -> None:
         raise ConfigConsistencyError(msg)
 
     horizon = problem.get("horizon")
-    if horizon is not None and int(horizon) > ckpt.horizon:
+    if horizon is not None and int(horizon) > int(meta["horizon"]):
         warnings.warn(
-            f"controller.problem.horizon ({horizon}) exceeds the predictor's trained horizon ({ckpt.horizon}); "
-            f"the MPC would cost a free run longer than any the model was ever fit against.",
+            f"controller.problem.horizon ({horizon}) exceeds the predictor's trained horizon "
+            f"({meta['horizon']}); the MPC would cost a free run longer than any the model was ever fit against.",
             stacklevel=2,
         )
 
     _check_psd_reference(problem, controller_dt)
-    if isinstance(ckpt, ObservableCheckpoint):
-        _check_observable_geometry(ckpt, problem)
+    if meta["model_type"] == "observable":
+        _check_observable_geometry(meta, problem)
 
     if provenance.plant_fingerprint is not None and provenance.plant_fingerprint != plant_fingerprint(config):
         warnings.warn(

@@ -1,4 +1,4 @@
-"""The torch-free checkpoint reader: numpy weights + metadata from the numpy-checkpoint."""
+"""Seam 1 -- the two-sided exchange checkpoint, tested at the ``.npz`` boundary."""
 
 from __future__ import annotations
 
@@ -8,16 +8,8 @@ import numpy as np
 import pytest
 import torch
 
-from neuro.checkpoint import (
-    MLPCheckpoint,
-    ObservableCheckpoint,
-    load_any,
-    load_mlp,
-    load_observable,
-    load_rollout,
-)
 from neuro.config import StftGeometry
-from neuro.predictor.checkpoint import save_checkpoint
+from neuro.predictor.inference import ObservableModel, WaveformMLPModel
 from neuro.predictor.module import AutoregressiveMLP
 from neuro.predictor.observable_module import StepwiseObservableMLP
 from neuro.provenance import TrainingProvenance
@@ -27,24 +19,28 @@ if TYPE_CHECKING:
     from collections.abc import Callable
     from pathlib import Path
 
+    from neuro.types import FloatArray
+
 _SEED = 23
+_N_Y, _N_U, _HORIZON = 3, 2, 4
+_N_EEG, _N_CONTROLS, _HIDDEN = 4, 2, 6
 
 
 def _mlp_module() -> AutoregressiveMLP:
     """A random MLP module with nontrivial standardizers and recorded provenance."""
     rng = np.random.default_rng(_SEED)
     model = AutoregressiveMLP(
-        n_y=3,
-        n_u=2,
-        horizon=4,
-        n_channels=4,
-        n_controls=2,
-        hidden_size=6,
+        n_y=_N_Y,
+        n_u=_N_U,
+        horizon=_HORIZON,
+        n_channels=_N_EEG,
+        n_controls=_N_CONTROLS,
+        hidden_size=_HIDDEN,
         depth=2,
         activation="softplus",
         dt=0.01,
-        y_std=Standardizer(center=rng.uniform(-1.0, 1.0, 4), scale=rng.uniform(0.5, 2.0, 4)),
-        u_std=Standardizer(center=rng.uniform(-1.0, 1.0, 2), scale=rng.uniform(0.5, 2.0, 2)),
+        y_std=Standardizer(center=rng.uniform(-1.0, 1.0, _N_EEG), scale=rng.uniform(0.5, 2.0, _N_EEG)),
+        u_std=Standardizer(center=rng.uniform(-1.0, 1.0, _N_CONTROLS), scale=rng.uniform(0.5, 2.0, _N_CONTROLS)),
     )
     with torch.no_grad():
         for module in model.layers:
@@ -56,183 +52,121 @@ def _mlp_module() -> AutoregressiveMLP:
     return model
 
 
-def test_mlp_reader_round_trips_weights_standardizers_and_metadata(tmp_path: Path) -> None:
-    """``load_mlp`` yields what ``AutoregressiveMLP.save`` wrote, exactly as the module holds it."""
+def _waveform_context(seed: int) -> tuple[FloatArray, FloatArray]:
+    """One continuous raw trajectory long enough to hold a primed free run and its training seam."""
+    rng = np.random.default_rng(seed)
+    t0 = max(_N_Y, _N_U) + 3
+    return (
+        rng.standard_normal((t0 + _HORIZON, _N_EEG)),
+        rng.standard_normal((t0 + _HORIZON, _N_CONTROLS)),
+    )
+
+
+def test_torch_save_jax_rollout_reproduces_the_decoded_torch_forward(tmp_path: Path) -> None:
+    """A torch checkpoint loaded on the jax side free-runs the same raw samples as ``forward``.
+
+    The jax ``rollout`` primes on raw history ending at ``t0 - 1`` and shifts each future control
+    in *after* predicting; the torch ``forward`` shifts in *before*. The two orders are the same
+    seam, so the decoded ``forward`` and the jax rollout agree to float32 tolerance.
+    """
     module = _mlp_module()
     path = tmp_path / "mlp"
     module.save(path)
+    jax_model = WaveformMLPModel.load(path)
 
-    got = load_mlp(path)
-    want = MLPCheckpoint(
-        layers=tuple(
-            (m.weight.detach().cpu().numpy(), m.bias.detach().cpu().numpy())
-            for m in module.layers
-            if isinstance(m, torch.nn.Linear)
-        ),
-        activation=module.activation,
-        n_y=module.n_y,
-        n_u=module.n_u,
-        horizon=module.horizon,
-        n_channels=module.n_channels,
-        n_controls=module.n_controls,
-        hidden_size=module.hidden_size,
-        depth=module.depth,
-        dt=module.dt,
-        downsample=module.downsample,
-        y_std=module.y_std,
-        u_std=module.u_std,
-        residual=module.residual,
-        provenance=module.provenance,
+    y_raw, u_raw = _waveform_context(_SEED + 9)
+    t0 = max(_N_Y, _N_U) + 3
+    k = t0 - 1
+    row = np.concatenate(
+        [
+            module.y_std.transform(y_raw[k - _N_Y + 1 : k + 1]).reshape(-1),
+            module.u_std.transform(u_raw[k - _N_U : k]).reshape(-1),
+            module.u_std.transform(u_raw[k : k + _HORIZON]).reshape(-1),
+        ]
     )
+    with torch.no_grad():
+        standardized = module(torch.as_tensor(row, dtype=torch.float32)[None, :]).numpy()[0]
+    want = module.y_std.inverse_transform(standardized.reshape(_HORIZON, _N_EEG))
 
-    assert got.model_type == "mlp"
-    assert got.activation == module.activation
-    assert got.residual == module.residual
-    assert got.n_y == module.n_y
-    assert got.n_u == module.n_u
-    assert got.horizon == module.horizon
-    assert got.n_channels == module.n_channels
-    assert got.n_controls == module.n_controls
-    assert got.hidden_size == 6
-    assert got.depth == 2
-    assert got.dt == pytest.approx(module.dt)
-    assert got.downsample == module.downsample
-    assert got.priming_steps == max(module.n_y, module.n_u)
-    assert not got.is_linear
-    assert got.provenance == module.provenance
-    for (got_w, got_b), (want_w, want_b) in zip(got.layers, want.layers, strict=True):
-        np.testing.assert_array_equal(got_w, want_w)
-        np.testing.assert_array_equal(got_b, want_b)
-    np.testing.assert_array_equal(got.y_std.center, want.y_std.center)
-    np.testing.assert_array_equal(got.y_std.scale, want.y_std.scale)
-    np.testing.assert_array_equal(got.u_std.center, want.u_std.center)
-    np.testing.assert_array_equal(got.u_std.scale, want.u_std.scale)
+    got = np.asarray(jax_model.free_run(y_raw[:t0][None], u_raw[:t0][None], u_raw[t0 : t0 + _HORIZON][None]))[0]
+    np.testing.assert_allclose(got, want, rtol=1e-5, atol=1e-6)
 
 
-def test_mlp_checkpoint_save_load_round_trips_recorded_provenance(tmp_path: Path) -> None:
-    """``MLPCheckpoint.save`` then ``load_mlp`` preserves the recorded metadata bit-exactly."""
+def test_jax_save_torch_load_round_trips_weights_buffers_and_metadata(tmp_path: Path) -> None:
+    """A torch model saved through the jax side reloads to the same weights, buffers and metadata."""
     module = _mlp_module()
-    ckpt = MLPCheckpoint(
-        layers=tuple(
-            (m.weight.detach().cpu().numpy(), m.bias.detach().cpu().numpy())
-            for m in module.layers
-            if isinstance(m, torch.nn.Linear)
-        ),
-        activation=module.activation,
-        n_y=module.n_y,
-        n_u=module.n_u,
-        horizon=module.horizon,
-        n_channels=module.n_channels,
-        n_controls=module.n_controls,
-        hidden_size=module.hidden_size,
-        depth=module.depth,
-        dt=module.dt,
-        downsample=module.downsample,
-        y_std=module.y_std,
-        u_std=module.u_std,
-        residual=module.residual,
-        provenance=module.provenance,
-    )
-    path = tmp_path / "mlp_ckpt"
-    ckpt.save(path)
+    torch_meta, torch_arrays = module.to_checkpoint()
+    jax_model = WaveformMLPModel.from_checkpoint(torch_meta, torch_arrays)
+    path = tmp_path / "roundtrip"
+    jax_model.save(path)
 
-    got = load_mlp(path)
-    assert got.provenance == module.provenance
-    assert got.residual == module.residual
-    # The torch module loader reads the same layout the dataclass save wrote.
-    assert AutoregressiveMLP.load(path).n_y == module.n_y
+    loaded = AutoregressiveMLP.load(path)
+
+    want_linears = [m for m in module.layers if isinstance(m, torch.nn.Linear)]
+    got_linears = [m for m in loaded.layers if isinstance(m, torch.nn.Linear)]
+    for got, want in zip(got_linears, want_linears, strict=True):
+        np.testing.assert_array_equal(got.weight.detach().numpy(), want.weight.detach().numpy())
+        np.testing.assert_array_equal(got.bias.detach().numpy(), want.bias.detach().numpy())
+    np.testing.assert_array_equal(loaded.y_std.center, module.y_std.center)
+    np.testing.assert_array_equal(loaded.y_std.scale, module.y_std.scale)
+    np.testing.assert_array_equal(loaded.u_std.center, module.u_std.center)
+    np.testing.assert_array_equal(loaded.u_std.scale, module.u_std.scale)
+    assert loaded.activation == module.activation
+    assert loaded.horizon == module.horizon
+    assert loaded.dt == module.dt
+    assert loaded.downsample == module.downsample
+    assert loaded.provenance == module.provenance
 
 
-@pytest.mark.parametrize(
-    "geometry", [StftGeometry(n_segment=8, n_hop=4), StftGeometry(n_segment=10, n_hop=5, n_bin_pool=2)]
-)
-def test_observable_reader_round_trips_weights_standardizers_and_geometry(
-    geometry: StftGeometry,
-    make_observable_checkpoint: Callable[..., ObservableCheckpoint],
-    tmp_path: Path,
+def test_observable_torch_save_jax_rollout_reproduces_the_decoded_torch_forward(
+    tmp_path: Path, make_observable_model: Callable[..., ObservableModel]
 ) -> None:
-    """``load_observable`` yields what the dataclass save wrote, readable by the torch module too."""
-    ckpt = make_observable_checkpoint(geometry, horizon=16)
-    path = tmp_path / "obs"
-    ckpt.save(path)
+    """An observable torch checkpoint loaded on the jax side free-runs the same raw Frames."""
+    geometry = StftGeometry(n_segment=8, n_hop=4)
+    jax_model = make_observable_model(geometry, horizon=16)
+    path = tmp_path / "observable"
+    jax_model.save(path)
+    torch_model = StepwiseObservableMLP.load(path)
 
-    got = load_observable(path)
-    assert got.model_type == "observable"
-    assert got.geometry == ckpt.geometry
-    assert got.residual == ckpt.residual
-    assert got.fs == pytest.approx(ckpt.fs)
-    assert got.z_dim == ckpt.z_dim
-    assert got.n_values == ckpt.n_values
-    assert got.n_frames() == ckpt.n_frames()
-    for got_block, saved_block in ((got.lift, ckpt.lift), (got.transition, ckpt.transition)):
-        for (w, b), (w2, b2) in zip(got_block, saved_block, strict=True):
-            np.testing.assert_array_equal(w, w2)
-            np.testing.assert_array_equal(b, b2)
-    np.testing.assert_array_equal(got.readout[0], ckpt.readout[0])
-    np.testing.assert_array_equal(got.readout[1], ckpt.readout[1])
-    for got_std, saved_std in ((got.y_std, ckpt.y_std), (got.u_std, ckpt.u_std), (got.l_std, ckpt.l_std)):
-        np.testing.assert_array_equal(got_std.center, saved_std.center)
-        np.testing.assert_array_equal(got_std.scale, saved_std.scale)
-    # The torch module loader reads the same layout the dataclass save wrote.
-    assert StepwiseObservableMLP.load(path).n_frames() == ckpt.n_frames()
+    rng = np.random.default_rng(_SEED + 5)
+    k = jax_model.priming_steps
+    y_hist = rng.standard_normal((k, jax_model.n_channels))
+    u_hist = rng.standard_normal((k, jax_model.n_controls))
+    u_future = rng.standard_normal((jax_model.horizon, jax_model.n_controls))
 
-
-def test_load_any_dispatches_and_load_rollout_rejects_observable(tmp_path: Path) -> None:
-    """``load_any`` switches on ``model_type``; ``load_rollout`` refuses the observable forecast."""
-    mlp = tmp_path / "mlp"
-    _mlp_module().save(mlp)
-    obs = tmp_path / "obs"
-    ckpt = ObservableCheckpoint(
-        lift=((np.ones((2, 4)), np.zeros(2)),),
-        transition=((np.ones((2, 4)), np.zeros(2)),),
-        readout=(np.ones((2, 2)), np.zeros(2)),
-        activation="relu",
-        n_y=1,
-        n_u=1,
-        horizon=4,
-        n_channels=2,
-        n_controls=2,
-        dt=0.02,
-        downsample=1,
-        geometry=StftGeometry(n_segment=4, n_hop=2),
-        y_std=Standardizer(center=np.zeros(2), scale=np.ones(2)),
-        u_std=Standardizer(center=np.zeros(2), scale=np.ones(2)),
-        l_std=Standardizer(center=np.zeros(2), scale=np.ones(2)),
+    row = np.concatenate(
+        [
+            torch_model.y_std.transform(y_hist[-jax_model.n_y :]).reshape(-1),
+            torch_model.u_std.transform(u_hist[-jax_model.n_u :]).reshape(-1),
+            torch_model.u_std.transform(u_future).reshape(-1),
+        ]
     )
-    ckpt.save(obs)
+    with torch.no_grad():
+        standardized = torch_model(torch.as_tensor(row, dtype=torch.float32)[None, :]).numpy()[0]
+    want = torch_model.l_std.inverse_transform(standardized)
 
-    assert isinstance(load_any(mlp), MLPCheckpoint)
-    assert isinstance(load_rollout(mlp), MLPCheckpoint)
-    assert isinstance(load_any(obs), ObservableCheckpoint)
-    with pytest.raises(TypeError, match="observable checkpoint"):
-        load_rollout(obs)
-
-    bad = tmp_path / "bad"
-    save_checkpoint(bad, meta={"model_type": "unknown"}, arrays={"x": np.zeros(1)})
-    with pytest.raises(ValueError, match="unsupported model_type 'unknown'"):
-        load_any(bad)
+    got = np.asarray(jax_model.free_run(y_hist[None], u_hist[None], u_future[None]))[0]
+    np.testing.assert_allclose(got, want, rtol=1e-5, atol=1e-6)
 
 
-def test_reader_rejects_a_wrong_model_type_for_its_kind(tmp_path: Path) -> None:
-    """``load_mlp`` on an observable checkpoint raises instead of misreading the layout."""
-    ckpt = ObservableCheckpoint(
-        lift=((np.ones((2, 4)), np.zeros(2)),),
-        transition=((np.ones((2, 4)), np.zeros(2)),),
-        readout=(np.ones((2, 2)), np.zeros(2)),
-        activation="relu",
-        n_y=1,
-        n_u=1,
-        horizon=4,
-        n_channels=2,
-        n_controls=2,
-        dt=0.02,
-        downsample=1,
-        geometry=StftGeometry(n_segment=4, n_hop=2),
-        y_std=Standardizer(center=np.zeros(2), scale=np.ones(2)),
-        u_std=Standardizer(center=np.zeros(2), scale=np.ones(2)),
-        l_std=Standardizer(center=np.zeros(2), scale=np.ones(2)),
-    )
-    path = tmp_path / "obs"
-    ckpt.save(path)
-    with pytest.raises(ValueError, match="model_type 'observable', not 'mlp'"):
-        load_mlp(path)
+def test_observable_jax_save_torch_load_round_trips_weights_buffers_and_geometry(
+    tmp_path: Path, make_observable_model: Callable[..., ObservableModel]
+) -> None:
+    """An observable model written on the jax side reloads on torch with the same buffers."""
+    geometry = StftGeometry(n_segment=8, n_hop=4, n_bin_pool=2, kernel="hann", kernel_width=2, band_hz=(2.0, 20.0))
+    model = make_observable_model(geometry, horizon=20)
+    path = tmp_path / "observable_roundtrip"
+    model.save(path)
+
+    loaded = StepwiseObservableMLP.load(path)
+    assert loaded.geometry == geometry
+    assert loaded.z_dim == model.z_dim
+    assert loaded.n_frames() == model.n_frames(model.horizon)
+    assert loaded.fs == pytest.approx(model.fs)
+    assert loaded.downsample == model.downsample
+    # The torch side stores the standardizers as float32 buffers, so the float64 jax arrays come
+    # back rounded to float32 precision rather than bit-identically.
+    np.testing.assert_allclose(loaded.y_std.center, np.asarray(model.y_center), rtol=1e-5, atol=1e-6)
+    np.testing.assert_allclose(loaded.y_std.scale, np.asarray(model.y_scale), rtol=1e-5, atol=1e-6)
+    np.testing.assert_allclose(loaded.l_std.center, np.asarray(model.l_center), rtol=1e-5, atol=1e-6)
+    np.testing.assert_allclose(loaded.l_std.scale, np.asarray(model.l_scale), rtol=1e-5, atol=1e-6)

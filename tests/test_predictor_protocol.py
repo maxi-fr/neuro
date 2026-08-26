@@ -1,4 +1,4 @@
-"""Seam 1 -- the Predictor protocol and the waveform MLP's raw-units runtime surface."""
+"""Seam 2/3/4 -- the two ABCs and the cross-side parity pin for the waveform predictor."""
 
 from __future__ import annotations
 
@@ -8,12 +8,12 @@ from typing import TYPE_CHECKING
 import numpy as np
 import pytest
 import torch
-from _predictor_reference import mlp_prime, mlp_rollout
 
-from neuro.checkpoint import MLPCheckpoint
-from neuro.predictor.module import AutoregressiveMLP
+from neuro.config import StftGeometry
+from neuro.predictor.inference import InferencePredictor, ObservableModel, WaveformMLPModel
+from neuro.predictor.module import AutoregressiveMLP, TrainingPredictor
+from neuro.predictor.observable_module import StepwiseObservableMLP
 from neuro.transforms import Standardizer
-from neuro.types import Predictor
 
 if TYPE_CHECKING:
     from neuro.types import Activation, FloatArray
@@ -21,38 +21,13 @@ if TYPE_CHECKING:
 _SEED = 17
 _N_Y, _N_U, _HORIZON = 3, 2, 5
 _N_EEG, _N_CONTROLS, _HIDDEN = 5, 2, 6
-_STEPS = 8  # rollout length, deliberately different from the trained horizon
-_RTOL, _ATOL = 1e-5, 1e-6  # float32 tolerance
+_FS = 50.0
+_RTOL, _ATOL = 1e-5, 1e-6
 
 
-def _random_layers(
-    rng: np.random.Generator, in_size: int, out_size: int, hidden_size: int, depth: int
-) -> tuple[tuple[FloatArray, FloatArray], ...]:
-    """Random ``(W, b)`` pairs for a ``depth``-hidden-layer MLP, scaled so activations stay O(1)."""
-    sizes = [in_size, *[hidden_size] * depth, out_size]
-    return tuple(
-        (
-            (rng.standard_normal((n_out, n_in), dtype=np.float32) / np.float32(np.sqrt(n_in))).astype(np.float64),
-            (rng.standard_normal(n_out, dtype=np.float32) * np.float32(0.1)).astype(np.float64),
-        )
-        for n_in, n_out in itertools.pairwise(sizes)
-    )
-
-
-def _params(
-    depth: int = 2, activation: Activation = "softplus"
-) -> tuple[tuple[tuple[FloatArray, FloatArray], ...], Standardizer, Standardizer]:
-    """Random layers and nontrivial standardizers, shared by the module and its checkpoint twin."""
+def _waveform_model(depth: int, activation: Activation, *, residual: bool) -> AutoregressiveMLP:
+    """A random waveform MLP with nontrivial standardizers."""
     rng = np.random.default_rng(_SEED)
-    y_std = Standardizer(center=rng.uniform(-1.0, 1.0, _N_EEG), scale=rng.uniform(0.5, 2.0, _N_EEG))
-    u_std = Standardizer(center=rng.uniform(-1.0, 1.0, _N_CONTROLS), scale=rng.uniform(0.5, 2.0, _N_CONTROLS))
-    layers = _random_layers(rng, _N_Y * _N_EEG + _N_U * _N_CONTROLS, _N_EEG, _HIDDEN, depth)
-    return layers, y_std, u_std
-
-
-def _model(depth: int = 2, activation: Activation = "softplus") -> AutoregressiveMLP:
-    """The waveform MLP carrying random weights and standardizer buffers."""
-    layers, y_std, u_std = _params(depth, activation)
     model = AutoregressiveMLP(
         n_y=_N_Y,
         n_u=_N_U,
@@ -62,157 +37,147 @@ def _model(depth: int = 2, activation: Activation = "softplus") -> Autoregressiv
         hidden_size=_HIDDEN,
         depth=depth,
         activation=activation,
+        residual=residual,
         dt=0.01,
-        y_std=y_std,
-        u_std=u_std,
+        y_std=Standardizer(center=rng.uniform(-1.0, 1.0, _N_EEG), scale=rng.uniform(0.5, 2.0, _N_EEG)),
+        u_std=Standardizer(center=rng.uniform(-1.0, 1.0, _N_CONTROLS), scale=rng.uniform(0.5, 2.0, _N_CONTROLS)),
     )
     linears = [m for m in model.layers if isinstance(m, torch.nn.Linear)]
     with torch.no_grad():
-        for lin, (w, b) in zip(linears, layers, strict=True):
-            lin.weight.copy_(torch.as_tensor(w, dtype=torch.float32))
-            lin.bias.copy_(torch.as_tensor(b, dtype=torch.float32))
+        for lin in linears:
+            lin.weight.normal_()
+            lin.weight.data.mul_(float(lin.in_features) ** -0.5)
+            lin.bias.normal_()
+            lin.bias.data.mul_(0.1)
     return model
 
 
-def _checkpoint(depth: int = 2, activation: Activation = "softplus") -> MLPCheckpoint:
-    """The float64 checkpoint twin of the module, for the reference side of a parity test."""
-    layers, y_std, u_std = _params(depth, activation)
-    return MLPCheckpoint(
-        layers=layers,
-        activation=activation,
+def test_waveform_torch_module_is_a_training_predictor_without_a_runtime() -> None:
+    """The torch module implements the training ABC and exposes no NumPy runtime methods."""
+    model = _waveform_model(2, "softplus", residual=True)
+    assert isinstance(model, TrainingPredictor)
+    for method in ("prime", "step", "rollout", "prime_many", "rollout_many", "absorb", "is_ready", "initial_state"):
+        assert not hasattr(model, method)
+
+
+def test_waveform_jax_model_is_an_inference_predictor() -> None:
+    """The jax adapter implements the inference ABC, the controller's priming seam included."""
+    model = WaveformMLPModel.from_checkpoint(*_waveform_model(2, "softplus", residual=True).to_checkpoint())
+    assert isinstance(model, InferencePredictor)
+    assert model.n_outputs == _N_EEG
+    assert model.n_channels == _N_EEG
+    assert model.n_controls == _N_CONTROLS
+
+
+@pytest.mark.parametrize("depth", [0, 1, 2])
+@pytest.mark.parametrize("activation", ["relu", "tanh", "softplus"])
+@pytest.mark.parametrize("residual", [False, True])
+def test_waveform_cross_side_parity(depth: int, activation: Activation, residual: bool) -> None:  # noqa: FBT001
+    """The jax ``rollout`` (raw in -> raw out) equals the decoded torch ``forward``.
+
+    This replaces the float64 reference as the correctness pin: the torch module is handed to the
+    jax side in memory via ``to_checkpoint``/``from_checkpoint`` and the two recursions are
+    compared on the training seam.
+    """
+    module = _waveform_model(depth, activation, residual=residual)
+    jax_model = WaveformMLPModel.from_checkpoint(*module.to_checkpoint())
+
+    rng = np.random.default_rng(_SEED + 100)
+    t0 = max(_N_Y, _N_U) + 3
+    y_raw = rng.standard_normal((t0 + _HORIZON, _N_EEG))
+    u_raw = rng.standard_normal((t0 + _HORIZON, _N_CONTROLS))
+    k = t0 - 1
+
+    row = np.concatenate(
+        [
+            module.y_std.transform(y_raw[k - _N_Y + 1 : k + 1]).reshape(-1),
+            module.u_std.transform(u_raw[k - _N_U : k]).reshape(-1),
+            module.u_std.transform(u_raw[k : k + _HORIZON]).reshape(-1),
+        ]
+    )
+    with torch.no_grad():
+        standardized = module(torch.as_tensor(row, dtype=torch.float32)[None, :]).numpy()[0]
+    want = module.y_std.inverse_transform(standardized.reshape(_HORIZON, _N_EEG))
+
+    got = np.asarray(jax_model.free_run(y_raw[:t0][None], u_raw[:t0][None], u_raw[t0 : t0 + _HORIZON][None]))[0]
+    assert got.shape == (_HORIZON, _N_EEG)
+    np.testing.assert_allclose(got, want, rtol=_RTOL, atol=_ATOL)
+
+
+def _observable_model(activation: Activation, *, residual: bool) -> StepwiseObservableMLP:
+    """A random observable torch module with nontrivial standardizers."""
+    rng = np.random.default_rng(_SEED + 7)
+    geometry = StftGeometry(n_segment=3, n_hop=2)
+    n_values = geometry.n_values(_FS)
+    n_out = _N_EEG * n_values
+    model = StepwiseObservableMLP(
         n_y=_N_Y,
         n_u=_N_U,
         horizon=_HORIZON,
         n_channels=_N_EEG,
         n_controls=_N_CONTROLS,
-        hidden_size=_HIDDEN,
-        depth=depth,
-        dt=0.01,
-        downsample=2,
-        y_std=y_std,
-        u_std=u_std,
+        geometry=geometry,
+        fs=_FS,
+        z_dim=6,
+        lift_hidden=_HIDDEN,
+        lift_depth=2,
+        transition_hidden=_HIDDEN,
+        transition_depth=2,
+        activation=activation,
+        residual=residual,
+        y_std=Standardizer(center=rng.uniform(-1.0, 1.0, _N_EEG), scale=rng.uniform(0.5, 2.0, _N_EEG)),
+        u_std=Standardizer(center=rng.uniform(-1.0, 1.0, _N_CONTROLS), scale=rng.uniform(0.5, 2.0, _N_CONTROLS)),
+        l_std=Standardizer(center=rng.uniform(-1.0, 1.0, n_out), scale=rng.uniform(0.5, 2.0, n_out)),
     )
+    with torch.no_grad():
+        for block in (model.lift, model.transition):
+            for lin in (m for m in block if isinstance(m, torch.nn.Linear)):
+                lin.weight.normal_()
+                lin.bias.normal_()
+        model.readout.weight.normal_()
+        model.readout.bias.normal_()
+    return model
 
 
-def _context(seed: int = _SEED + 1) -> tuple[FloatArray, FloatArray, FloatArray]:
-    """Raw EEG history, raw control history and raw future controls, all ending/starting at the seam."""
-    rng = np.random.default_rng(seed)
+def test_observable_torch_module_is_a_training_predictor_without_a_runtime() -> None:
+    """The observable torch module implements the training ABC and exposes no runtime methods."""
+    model = _observable_model("softplus", residual=True)
+    assert isinstance(model, TrainingPredictor)
+    for method in ("prime", "step", "rollout", "prime_many", "rollout_many", "absorb", "is_ready", "initial_state"):
+        assert not hasattr(model, method)
+
+
+def test_observable_jax_model_is_an_inference_predictor() -> None:
+    """The observable jax adapter implements the inference ABC."""
+    module = _observable_model("softplus", residual=True)
+    model = ObservableModel.from_checkpoint(*module.to_checkpoint())
+    assert isinstance(model, InferencePredictor)
+    assert model.n_outputs == _N_EEG * model.geometry.n_values(_FS)
+
+
+@pytest.mark.parametrize("activation", ["relu", "tanh", "softplus"])
+@pytest.mark.parametrize("residual", [False, True])
+def test_observable_cross_side_parity(activation: Activation, residual: bool) -> None:  # noqa: FBT001
+    """The observable jax ``rollout`` equals the decoded observable torch ``forward``."""
+    module = _observable_model(activation, residual=residual)
+    jax_model = ObservableModel.from_checkpoint(*module.to_checkpoint())
+
+    rng = np.random.default_rng(_SEED + 200)
     k = max(_N_Y, _N_U)
-    return (
-        rng.standard_normal((k, _N_EEG)),
-        rng.standard_normal((k, _N_CONTROLS)),
-        rng.standard_normal((_STEPS, _N_CONTROLS)),
+    y_hist = rng.standard_normal((k, _N_EEG))
+    u_hist = rng.standard_normal((k, _N_CONTROLS))
+    u_future = rng.standard_normal((_HORIZON, _N_CONTROLS))
+
+    row = np.concatenate(
+        [
+            module.y_std.transform(y_hist[-_N_Y:]).reshape(-1),
+            module.u_std.transform(u_hist[-_N_U:]).reshape(-1),
+            module.u_std.transform(u_future).reshape(-1),
+        ]
     )
+    with torch.no_grad():
+        standardized = module(torch.as_tensor(row, dtype=torch.float32)[None, :]).numpy()[0]
+    want = module.l_std.inverse_transform(standardized)
 
-
-def _batch(n_batch: int) -> tuple[FloatArray, FloatArray, FloatArray]:
-    """Independently drawn ``(y_hists, u_hists, u_futures)`` -- no two members share a history."""
-    rng = np.random.default_rng(_SEED + 100)
-    k = max(_N_Y, _N_U)
-    return (
-        rng.standard_normal((n_batch, k, _N_EEG)),
-        rng.standard_normal((n_batch, k, _N_CONTROLS)),
-        rng.standard_normal((n_batch, _STEPS, _N_CONTROLS)),
-    )
-
-
-def test_mlp_satisfies_predictor_protocol() -> None:
-    """The waveform MLP is a Predictor, and ``rollout_many`` returns ``(B, positions, outputs)``."""
-    model = _model()
-    assert isinstance(model, Predictor)
-    assert model.n_outputs == _N_EEG
-    assert model.n_channels == _N_EEG
-    assert model.n_controls == _N_CONTROLS
-    assert model.dt == 0.01
-    assert model.priming_steps == max(_N_Y, _N_U)
-    assert model.horizon == _HORIZON
-
-    y_hists, u_hists, u_futures = _batch(5)
-    preds = model.rollout_many(model.prime_many(y_hists, u_hists), u_futures)
-    assert preds.shape == (5, _STEPS, model.n_outputs)
-
-
-def test_prime_encodes_and_rollout_decodes_against_the_float64_reference() -> None:
-    """``prime``/``rollout`` reproduce the checkpoint's raw-in/raw-out path on raw history."""
-
-    ckpt = _checkpoint()
-    model = _model()
-    y_hist, u_hist, u_future = _context()
-
-    state = model.prime(y_hist, u_hist)
-    want_state = mlp_prime(ckpt, y_hist, u_hist)
-    assert state.shape == want_state.shape
-    np.testing.assert_allclose(state, want_state, rtol=_RTOL, atol=_ATOL)
-
-    got = model.rollout(state, u_future)
-    want = mlp_rollout(ckpt, want_state, u_future)
-    assert got.shape == (_STEPS, _N_EEG)
+    got = np.asarray(jax_model.free_run(y_hist[None], u_hist[None], u_future[None]))[0]
     np.testing.assert_allclose(got, want, rtol=_RTOL, atol=_ATOL)
-
-
-def test_standardizers_are_buffers_and_round_trip_raw() -> None:
-    """The module holds the standardizers as float32 buffers; ``encode``/``decode`` invert."""
-    _, y_std, u_std = _params()
-    model = _model()
-    np.testing.assert_allclose(model.y_std.center, y_std.center, rtol=_RTOL, atol=_ATOL)
-    np.testing.assert_allclose(model.y_std.scale, y_std.scale, rtol=_RTOL, atol=_ATOL)
-    np.testing.assert_allclose(model.u_std.center, u_std.center, rtol=_RTOL, atol=_ATOL)
-    np.testing.assert_allclose(model.u_std.scale, u_std.scale, rtol=_RTOL, atol=_ATOL)
-
-    rng = np.random.default_rng(_SEED + 3)
-    y = rng.standard_normal((4, _N_EEG))
-    np.testing.assert_allclose(model.decode(model.encode(y)), y, rtol=_RTOL, atol=_ATOL)
-
-
-@pytest.mark.parametrize("n_batch", [1, 5])
-def test_prime_many_matches_a_loop_of_prime(n_batch: int) -> None:
-    """``prime_many`` equals a loop of ``prime`` over per-member histories."""
-    model = _model()
-    y_hists, u_hists, _ = _batch(n_batch)
-
-    batched = model.prime_many(y_hists, u_hists)
-    looped = np.stack([model.prime(y_hists[i], u_hists[i]) for i in range(n_batch)])
-
-    assert batched.shape == looped.shape
-    np.testing.assert_allclose(batched, looped, rtol=_RTOL, atol=_ATOL)
-
-
-@pytest.mark.parametrize("n_batch", [1, 5])
-def test_rollout_many_matches_a_loop_of_rollout(n_batch: int) -> None:
-    """``rollout_many`` equals a loop of ``rollout`` from per-member states."""
-    model = _model()
-    y_hists, u_hists, u_futures = _batch(n_batch)
-
-    states = np.stack([model.prime(y_hists[i], u_hists[i]) for i in range(n_batch)])
-    batched = model.rollout_many(states, u_futures)
-    looped = np.stack([model.rollout(states[i], u_futures[i]) for i in range(n_batch)])
-
-    assert batched.shape == (n_batch, _STEPS, model.n_outputs)
-    np.testing.assert_allclose(batched, looped, rtol=_RTOL, atol=_ATOL)
-
-
-def test_rollout_equals_a_loop_of_step() -> None:
-    """``rollout`` is exactly one ``step`` per position, emitting raw output at each."""
-    model = _model()
-    y_hist, u_hist, u_future = _context()
-
-    state = model.prime(y_hist, u_hist)
-    got = model.rollout(state, u_future)
-
-    want = np.empty((_STEPS, _N_EEG), dtype=np.float64)
-    for t in range(_STEPS):
-        state, y = model.step(state, u_future[t])
-        want[t] = y
-
-    np.testing.assert_allclose(got, want, rtol=_RTOL, atol=_ATOL)
-
-
-def test_rollout_accepts_any_length_not_just_the_native_horizon() -> None:
-    """``rollout`` is not bounded by the trained ``horizon``; the identity stays available."""
-    model = _model()
-    y_hist, u_hist, _ = _context()
-
-    state = model.prime(y_hist, u_hist)
-    long = model.rollout(state, np.zeros((_HORIZON + 3, _N_CONTROLS)))
-
-    assert long.shape == (_HORIZON + 3, _N_EEG)

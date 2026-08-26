@@ -1,17 +1,24 @@
 from __future__ import annotations
 
 import itertools
-from typing import TYPE_CHECKING, Self, cast
+from abc import ABC, abstractmethod
+from typing import TYPE_CHECKING, Any, Self, cast
 
 import numpy as np
 import torch
 from torch import nn
 
-from neuro.predictor.checkpoint import load_checkpoint, save_checkpoint
+from neuro.predictor.checkpoint import (
+    layer_arrays,
+    layers_from_arrays,
+    load_checkpoint,
+    require_activation,
+    require_model_type,
+    save_checkpoint,
+)
 from neuro.predictor.data import build_dataset_for_trajectory
 from neuro.provenance import TrainingProvenance
 from neuro.transforms import Standardizer
-from neuro.types import ACTIVATIONS
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -36,6 +43,47 @@ def to_numpy(t: Tensor) -> FloatArray:
     return t.detach().cpu().numpy().astype(np.float64, copy=True)
 
 
+class TrainingPredictor(ABC):
+    """Training-side interface every torch predictor implements.
+
+    ``forward`` is the batched standardized Rollout over the trained Span; ``save``/``load``
+    round-trip the exchange checkpoint through ``to_checkpoint``/``from_checkpoint``. Channel and
+    control counts, ``dt``, ``horizon`` and the standardizers are part of the contract by
+    documentation, not abstract enforcement.
+    """
+
+    @abstractmethod
+    def forward(self, x: Tensor) -> Tensor:
+        """Roll out one batched standardized input row into the trained Span."""
+        ...
+
+    @abstractmethod
+    def to_checkpoint(self) -> tuple[dict[str, Any], dict[str, FloatArray]]:
+        """Build the ``(meta, arrays)`` pair the exchange checkpoint is written from."""
+        ...
+
+    @classmethod
+    @abstractmethod
+    def from_checkpoint(cls, meta: dict[str, Any], arrays: dict[str, FloatArray]) -> Self:
+        """Rebuild the module from a ``(meta, arrays)`` pair, in memory."""
+        ...
+
+    def save(self, path: str | Path) -> None:
+        """Persist weights, standardizer buffers and recorded metadata into one ``.npz`` checkpoint.
+
+        ``path`` is a suffix-less stem. The layout is the one both sides read and write, so the
+        jax inference side consumes what ``save`` writes without the module.
+        """
+        meta, arrays = self.to_checkpoint()
+        save_checkpoint(path, meta=meta, arrays=arrays)
+
+    @classmethod
+    def load(cls, path: str | Path) -> Self:
+        """Rebuild the module from a :meth:`save` checkpoint, restoring weights, buffers and metadata."""
+        meta, arrays = load_checkpoint(path)
+        return cls.from_checkpoint(meta, arrays)
+
+
 def design_normal_equations(
     self: AutoregressiveMLP,
     trajectories: list[tuple[FloatArray, FloatArray]],
@@ -43,7 +91,7 @@ def design_normal_equations(
     """Fold one-step input features and next-step targets into ``(G, P)``, bias column last.
 
     For every window on the shared grid the feature row pairs the past-EEG block with the control
-    window shifted in by one step (the alignment ``forward``/``step`` use). The target is the next
+    window shifted in by one step (the alignment ``forward`` uses). The target is the next
     standardized sample -- or, with the residual skip, that sample's delta from the window's last
     one, which is what the readout now predicts.
     """
@@ -56,7 +104,7 @@ def design_normal_equations(
     for u_raw, y_raw in trajectories:
         X, Y = build_dataset_for_trajectory(
             self.u_std.transform(np.asarray(u_raw, dtype=np.float64)),
-            self.encode(np.asarray(y_raw, dtype=np.float64)),
+            self.y_std.transform(np.asarray(y_raw, dtype=np.float64)),
             self.n_y,
             self.n_u,
             self.horizon,
@@ -79,14 +127,13 @@ def install_readout(self: AutoregressiveMLP, A: FloatArray) -> None:
         layer.bias.copy_(torch.as_tensor(A[:, -1], dtype=torch.float32))
 
 
-class AutoregressiveMLP(nn.Module):
+class AutoregressiveMLP(nn.Module, TrainingPredictor):
     """One-step MLP unrolled autoregressively over ``horizon`` steps in standardized channel space.
 
-    Alongside the training ``forward`` the module carries the full raw-units Predictor runtime --
-    ``prime``, ``step``, ``rollout``, ``absorb``, ``is_ready``, ``initial_state`` and their
-    batched forms -- with the channel and control standardizers held as float32 buffers, so
-    callers exchange raw units only. The opaque state is a shift register holding the
-    standardized EEG window followed by the raw control window.
+    The training side of the waveform predictor: a batched ``forward`` over the trained Span plus
+    the channel and control standardizers held as float32 buffers, and the exchange-checkpoint
+    ``save``/``load``. The runtime (``prime``/``step``/``rollout``/State Absorption) lives on the
+    jax inference side; ``to_checkpoint``/``from_checkpoint`` are the hand-off.
 
     Attributes
     ----------
@@ -231,148 +278,8 @@ class AutoregressiveMLP(nn.Module):
             scale=self.u_scale.detach().cpu().numpy(),
         )
 
-    @property
-    def n_outputs(self) -> int:
-        """Output width per position: one EEG sample across all channels."""
-        return self.n_channels
-
-    @property
-    def priming_steps(self) -> int:
-        """Minimum number of history steps required to prime the state."""
-        return max(self.n_y, self.n_u)
-
-    def encode(self, y: FloatArray) -> FloatArray:
-        """Map raw EEG ``(..., n_channels)`` into standardized channel space."""
-        return self.y_std.transform(np.asarray(y, dtype=np.float64))
-
-    def decode(self, z: FloatArray) -> FloatArray:
-        """Reconstruct raw EEG ``(..., n_channels)`` from standardized space."""
-        return self.y_std.inverse_transform(np.asarray(z, dtype=np.float64))
-
-    def _forward_1step(self, y_window: FloatArray, u_window: FloatArray) -> FloatArray:
-        """One-step MLP forward on standardized windows -> next standardized sample(s).
-
-        ``y_window`` and ``u_window`` are ``(..., n_y, n_channels)`` and ``(..., n_u, n_controls)``
-        with a leading batch dim when present; returns ``(..., n_channels)``. With the residual
-        skip the MLP output adds the window's last sample, so a zero-weight stack is persistence.
-        """
-        batch = y_window.shape[:-2]
-        x = np.concatenate(
-            [
-                y_window.reshape(*batch, self.n_y * self.n_channels),
-                u_window.reshape(*batch, self.n_u * self.n_controls),
-            ],
-            axis=-1,
-        )
-        with torch.no_grad():
-            z = self.layers(torch.as_tensor(x, dtype=torch.float32))
-        if self.residual:
-            z = z + torch.as_tensor(y_window[..., -1, :], dtype=torch.float32)
-        return to_numpy(z)
-
-    def prime(self, y_hist: FloatArray, u_hist: FloatArray) -> FloatArray:
-        """Absorb raw history into an initial state: standardized EEG window + raw control window.
-
-        ``y_hist (k, n_channels)`` and ``u_hist (k, n_controls)`` both end at the same step
-        ``t - 1``, so :meth:`rollout` predicts from ``t`` onwards.
-        """
-        y_arr = np.asarray(y_hist, dtype=np.float64)
-        u_arr = np.asarray(u_hist, dtype=np.float64)
-        z_past = self.encode(y_arr)[-self.n_y :].reshape(-1)
-        u_past = u_arr[-self.n_u :].reshape(-1)
-        return np.concatenate([z_past, u_past])
-
-    def step(self, state: FloatArray, u: FloatArray) -> tuple[FloatArray, FloatArray]:
-        """Advance one position (one sample): apply raw control ``u`` -> ``(state', output)``.
-
-        ``u`` is the control applied at this prediction step, so it enters the control window only
-        after the step's prediction used the previous one -- both windows end at ``t`` when
-        ``y_{t+1}`` is predicted, the training alignment.
-        """
-        state_arr = np.asarray(state, dtype=np.float64)
-        u_arr = np.asarray(u, dtype=np.float64).reshape(-1)
-        n_z = self.n_y * self.n_channels
-        y_window = state_arr[:n_z].reshape(self.n_y, self.n_channels)
-        u_window_raw = state_arr[n_z:].reshape(self.n_u, self.n_controls)
-
-        z_next = self._forward_1step(y_window, self.u_std.transform(u_window_raw))
-        y_window = np.concatenate([y_window[1:], z_next[None, :]], axis=0)
-        u_window = np.concatenate([u_window_raw[1:], u_arr[None, :]], axis=0)
-        state_next = np.concatenate([y_window.reshape(-1), u_window.reshape(-1)])
-        return state_next, self.decode(z_next)
-
-    def rollout(self, state: FloatArray, u_future: FloatArray) -> FloatArray:
-        """Free-run from ``state`` under raw ``u_future`` -> raw ``(steps, n_channels)``.
-
-        ``u_future[t]`` is the control applied at prediction step ``t``, so it first enters the
-        window for step ``t + 1`` and the last entry is never consumed; the length is not bounded
-        by ``horizon``. Equivalent to a loop of :meth:`step`.
-        """
-        u_arr = np.asarray(u_future, dtype=np.float64)
-        preds = np.empty((len(u_arr), self.n_channels), dtype=np.float64)
-        for t in range(len(u_arr)):
-            state, y = self.step(state, u_arr[t])
-            preds[t] = y
-        return preds
-
-    def prime_many(self, y_hists: FloatArray, u_hists: FloatArray) -> FloatArray:
-        """Batched :meth:`prime`: ``(B, k, n_channels)`` and ``(B, k, n_controls)`` -> ``(B, state)``."""
-        y_arr = np.asarray(y_hists, dtype=np.float64)
-        u_arr = np.asarray(u_hists, dtype=np.float64)
-        n_batch = y_arr.shape[0]
-        z_past = self.encode(y_arr)[:, -self.n_y :].reshape(n_batch, -1)
-        u_past = u_arr[:, -self.n_u :].reshape(n_batch, -1)
-        return np.concatenate([z_past, u_past], axis=-1)
-
-    def rollout_many(self, states: FloatArray, u_futures: FloatArray) -> FloatArray:
-        """Batched :meth:`rollout`: ``(B, state)`` and raw ``(B, steps, n_controls)``.
-
-        Returns ``(B, steps, n_channels)``.
-        """
-        states_arr = np.asarray(states, dtype=np.float64)
-        u_arr = np.asarray(u_futures, dtype=np.float64)
-        n_batch, steps = states_arr.shape[0], u_arr.shape[1]
-        n_z = self.n_y * self.n_channels
-        y_window = states_arr[:, :n_z].reshape(n_batch, self.n_y, self.n_channels)
-        u_window = self.u_std.transform(states_arr[:, n_z:].reshape(n_batch, self.n_u, self.n_controls))
-
-        preds = np.empty((n_batch, steps, self.n_channels), dtype=np.float64)
-        for t in range(steps):
-            z_next = self._forward_1step(y_window, u_window)
-            preds[:, t] = self.decode(z_next)
-            y_window = np.concatenate([y_window[:, 1:], z_next[:, None, :]], axis=1)
-            u_window = np.concatenate([u_window[:, 1:], self.u_std.transform(u_arr[:, t, None, :])], axis=1)
-        return preds
-
-    def absorb(self, state: FloatArray, y: FloatArray, u: FloatArray) -> FloatArray:
-        """Absorb a new raw measurement ``y`` and applied control ``u`` into the shift register."""
-        state_arr = np.asarray(state, dtype=np.float64)
-        n_z = self.n_y * self.n_channels
-        y_window = state_arr[:n_z].reshape(self.n_y, self.n_channels)
-        u_window = state_arr[n_z:].reshape(self.n_u, self.n_controls)
-
-        z = self.encode(np.asarray(y, dtype=np.float64).reshape(-1))
-        y_window = np.concatenate([y_window[1:], z[None, :]], axis=0)
-        u_window = np.concatenate([u_window[1:], np.asarray(u, dtype=np.float64).reshape(1, -1)], axis=0)
-        return np.concatenate([y_window.reshape(-1), u_window.reshape(-1)])
-
-    def is_ready(self, state: FloatArray) -> bool:
-        """Report whether the EEG window holds no NaN, i.e. at least ``n_y`` samples were absorbed."""
-        return not np.isnan(np.asarray(state, dtype=np.float64)[: self.n_y * self.n_channels]).any()
-
-    def initial_state(self) -> FloatArray:
-        """NaN-padded EEG window and zero-padded control window: nothing absorbed yet."""
-        y_buf = np.full(self.n_y * self.n_channels, np.nan, dtype=np.float64)
-        u_buf = np.zeros(self.n_u * self.n_controls, dtype=np.float64)
-        return np.concatenate([y_buf, u_buf])
-
-    def save(self, path: str | Path) -> None:
-        """Persist weights, standardizer buffers and recorded metadata into one ``.npz`` checkpoint.
-
-        ``path`` is a suffix-less stem. The layout -- a JSON ``meta`` block, per-layer weight
-        arrays and the standardizer arrays -- is the one the torch-free checkpoint reader reads, so
-        the control path keeps consuming what ``save`` writes without the module.
-        """
+    def to_checkpoint(self) -> tuple[dict[str, Any], dict[str, FloatArray]]:
+        """Build the ``(meta, arrays)`` pair the exchange checkpoint is written from."""
         linears = [m for m in self.layers if isinstance(m, nn.Linear)]
         meta = {
             "model_type": "mlp",
@@ -390,24 +297,18 @@ class AutoregressiveMLP(nn.Module):
             "n_layers": len(linears),
             **self.provenance.meta,
         }
-        arrays: dict[str, FloatArray] = {}
-        for i, lin in enumerate(linears):
-            arrays[f"layer.{i}.weight"] = to_numpy(lin.weight)
-            arrays[f"layer.{i}.bias"] = to_numpy(lin.bias)
+        arrays = layer_arrays(
+            "layer", [to_numpy(lin.weight) for lin in linears], [to_numpy(lin.bias) for lin in linears]
+        )
         arrays.update(self.y_std.arrays("y"))
         arrays.update(self.u_std.arrays("u"))
-        save_checkpoint(path, meta=meta, arrays=arrays)
+        return meta, arrays
 
     @classmethod
-    def load(cls, path: str | Path) -> Self:
-        """Rebuild the module from a :meth:`save` checkpoint, restoring weights, buffers and metadata."""
-        meta, arrays = load_checkpoint(path)
-        if meta.get("model_type") != "mlp":
-            msg = f"checkpoint at {path} is model_type {meta.get('model_type')!r}, not 'mlp'."
-            raise ValueError(msg)
-        if meta["activation"] not in ACTIVATIONS:
-            msg = f"Unsupported activation: {meta['activation']!r}"
-            raise ValueError(msg)
+    def from_checkpoint(cls, meta: dict[str, Any], arrays: dict[str, FloatArray]) -> Self:
+        """Rebuild the module from a ``(meta, arrays)`` pair, restoring weights, buffers and metadata."""
+        require_model_type(meta, "mlp")
+        require_activation(meta)
         model = cls(
             n_y=int(meta["n_y"]),
             n_u=int(meta["n_u"]),
@@ -425,8 +326,9 @@ class AutoregressiveMLP(nn.Module):
         model.downsample = int(meta["downsample"])
         model.provenance = TrainingProvenance.from_meta(meta)
         linears = [m for m in model.layers if isinstance(m, nn.Linear)]
+        weights, biases = layers_from_arrays(arrays, "layer", len(linears))
         with torch.no_grad():
-            for i, lin in enumerate(linears):
-                lin.weight.copy_(torch.as_tensor(np.asarray(arrays[f"layer.{i}.weight"]), dtype=torch.float32))
-                lin.bias.copy_(torch.as_tensor(np.asarray(arrays[f"layer.{i}.bias"]), dtype=torch.float32))
+            for lin, weight, bias in zip(linears, weights, biases, strict=True):
+                lin.weight.copy_(torch.as_tensor(weight, dtype=torch.float32))
+                lin.bias.copy_(torch.as_tensor(bias, dtype=torch.float32))
         return model

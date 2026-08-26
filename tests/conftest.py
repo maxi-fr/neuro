@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 import pytest
 
-from neuro.checkpoint import ObservableCheckpoint
+from neuro.predictor.inference import ObservableModel
 from neuro.transforms import Standardizer
 
 if TYPE_CHECKING:
@@ -40,6 +40,7 @@ def _random_observable_params(
     n_channels: int,
     activation: Activation,
     dt: float,
+    residual: bool,
 ) -> dict[str, Any]:
     """Random lift/transition/readout weights and standardizers, shared by the two fixtures."""
     rng = np.random.default_rng(11)
@@ -51,30 +52,42 @@ def _random_observable_params(
             for inp, out in itertools.pairwise(sizes)
         )
 
-    n_values = geometry.n_values(1.0 / dt)
+    fs = 1.0 / dt
+    n_values = geometry.n_values(fs)
     n_out = n_channels * n_values
+    lift = layers([n_y * n_channels + n_u * n_controls, *[hidden] * depth, z_dim])
+    transition = layers([z_dim + n_controls, *[hidden] * depth, z_dim])
     return {
-        "lift": layers([n_y * n_channels + n_u * n_controls, *[hidden] * depth, z_dim]),
-        "transition": layers([z_dim + n_controls, *[hidden] * depth, z_dim]),
-        "readout": (rng.standard_normal((n_out, z_dim)) / np.sqrt(z_dim), rng.standard_normal(n_out) * 0.1),
-        "activation": activation,
         "n_y": n_y,
         "n_u": n_u,
         "horizon": horizon,
         "n_channels": n_channels,
         "n_controls": n_controls,
-        "dt": dt,
+        "z_dim": z_dim,
+        "n_values": n_values,
+        "fs": fs,
         "downsample": 1,
+        "activation": activation,
+        "residual": residual,
         "geometry": geometry,
-        "y_std": Standardizer(center=rng.uniform(-1.0, 1.0, n_channels), scale=rng.uniform(0.5, 2.0, n_channels)),
-        "u_std": Standardizer(center=rng.uniform(-1.0, 1.0, n_controls), scale=rng.uniform(0.5, 2.0, n_controls)),
-        "l_std": Standardizer(center=rng.uniform(-1.0, 1.0, n_out), scale=rng.uniform(0.5, 2.0, n_out)),
+        "lift_weights": tuple(w for w, _ in lift),
+        "lift_biases": tuple(b for _, b in lift),
+        "transition_weights": tuple(w for w, _ in transition),
+        "transition_biases": tuple(b for _, b in transition),
+        "readout_w": rng.standard_normal((n_out, z_dim)) / np.sqrt(z_dim),
+        "readout_b": rng.standard_normal(n_out) * 0.1,
+        "y_center": rng.uniform(-1.0, 1.0, n_channels),
+        "y_scale": rng.uniform(0.5, 2.0, n_channels),
+        "u_center": rng.uniform(-1.0, 1.0, n_controls),
+        "u_scale": rng.uniform(0.5, 2.0, n_controls),
+        "l_center": rng.uniform(-1.0, 1.0, n_out),
+        "l_scale": rng.uniform(0.5, 2.0, n_out),
     }
 
 
 @pytest.fixture
-def make_observable_checkpoint() -> Callable[..., ObservableCheckpoint]:
-    """Factory for a tiny synthetic observable checkpoint with random weights and real standardizers."""
+def make_observable_model() -> Callable[..., ObservableModel]:
+    """Factory for a tiny synthetic observable jax model with random weights and real standardizers."""
 
     def build(
         geometry: ObservableGeometry,
@@ -85,10 +98,18 @@ def make_observable_checkpoint() -> Callable[..., ObservableCheckpoint]:
         n_channels: int = 2,
         activation: Activation = "softplus",
         dt: float = 0.02,
-    ) -> ObservableCheckpoint:
-        return ObservableCheckpoint(
+        residual: bool = True,
+    ) -> ObservableModel:
+        return ObservableModel(
             **_random_observable_params(
-                geometry, n_y=n_y, n_u=n_u, horizon=horizon, n_channels=n_channels, activation=activation, dt=dt
+                geometry,
+                n_y=n_y,
+                n_u=n_u,
+                horizon=horizon,
+                n_channels=n_channels,
+                activation=activation,
+                dt=dt,
+                residual=residual,
             )
         )
 

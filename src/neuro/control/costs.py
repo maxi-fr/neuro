@@ -14,7 +14,7 @@ from neuro.spectral import LOG_FLOOR
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
-    from neuro.control.trajopt_mpc import ObservableModel, WaveformMLPModel
+    from neuro.predictor.inference import ObservableModel, WaveformMLPModel
     from neuro.spectral import PsdEnvelope
     from neuro.types import FloatArray
 

@@ -37,8 +37,6 @@ Update the docstring of any function you change. One line is the default; add nu
 
 Capitalize `CONTEXT.md` glossary terms (Frame, Observable, Control Horizon). Use the `neuro.types` aliases, not raw `npt.NDArray[...]`. `__init__.py` stays empty; import from the module.
 
-When two types repeat members on purpose, say why in the docstring. `ObservableModel` and `SymbolicModel` share seven and stay unrelated so a model missing the stepping members fails at build time. Unexplained, that reads as an oversight and gets factored away.
-
 ## Suppressions
 
 Ruff runs `select = ["ALL"]`, so ill-fitting rules get suppressed, though fixing the code beats silencing the check. One rule code, one line, with a reason: `# noqa: ARG002 -- geometry is already in samples`.

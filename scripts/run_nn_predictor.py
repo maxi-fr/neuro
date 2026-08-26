@@ -7,6 +7,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 from neuro.config import load_config, resolve_artifact_dir, resolve_data_files
+from neuro.predictor.inference import WaveformMLPModel
 from neuro.predictor.train import TrainingResult, train
 from utils.plotting import plot_multistep_predictions
 
@@ -54,16 +55,19 @@ def plot_training_curves(result: TrainingResult, plot_path: Path) -> None:
 def plot_rollout_comparison(result: TrainingResult, plot_path: Path) -> None:
     """Overlay free-run rollout fans on the first held-out trajectory."""
     model = result.predictor
+    inference = WaveformMLPModel.from_checkpoint(*model.to_checkpoint())
     u, y = result.val_trajs[0]
-    priming = model.priming_steps
+    priming = inference.priming_steps
     n_anchors = min(MAX_PLOT_ANCHORS, len(y) - priming - model.horizon)
 
     # The rollout primed on history up to t - 1 predicts y[t : t + horizon], so its anchor is t - 1.
-    y_pred = np.stack(
-        [
-            model.rollout(model.prime(y[t - priming : t], u[t - priming : t]), u[t : t + model.horizon])
-            for t in range(priming, priming + n_anchors)
-        ]
+    anchors = range(priming, priming + n_anchors)
+    y_pred = np.asarray(
+        inference.free_run(
+            np.stack([y[t - priming : t] for t in anchors]),
+            np.stack([u[t - priming : t] for t in anchors]),
+            np.stack([u[t : t + model.horizon] for t in anchors]),
+        )
     )
 
     fig, _ = plot_multistep_predictions(

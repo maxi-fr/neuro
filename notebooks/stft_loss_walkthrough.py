@@ -15,15 +15,15 @@ def _():
     from neuro.config import StftSpec
     from neuro.eeg import build_eeg_leadfield
     from neuro.predictor.data import load_trajectory
+    from neuro.predictor.inference import WaveformMLPModel
     from neuro.predictor.losses import frame_kernel, pool_bins, smooth_frames, spectrogram
-    from neuro.predictor.module import AutoregressiveMLP
     from neuro.spectral import LOG_FLOOR
 
     return (
-        AutoregressiveMLP,
         LOG_FLOOR,
         StftSpec,
         ValidationError,
+        WaveformMLPModel,
         build_eeg_leadfield,
         frame_kernel,
         load_trajectory,
@@ -60,10 +60,10 @@ def _(mo):
 
 
 @app.cell
-def _(AutoregressiveMLP, build_eeg_leadfield, load_trajectory):
+def _(WaveformMLPModel, build_eeg_leadfield, load_trajectory):
     MAX_SPAN = 150
 
-    art = AutoregressiveMLP.load("artifacts/nonlinear_mse02_psd/model")
+    art = WaveformMLPModel.load("artifacts/nonlinear_mse02_psd/model")
     fs = 1.0 / art.dt
     channel_labels = [str(label) for label in build_eeg_leadfield()[1]]
 
@@ -103,6 +103,7 @@ def _(
     art,
     channel_dropdown,
     channel_labels,
+    np,
     t0_slider,
     traj_slider,
     trajectories,
@@ -111,8 +112,9 @@ def _(
     t0 = int(t0_slider.value)
     k = art.priming_steps
 
-    state = art.prime(y_traj[t0 - k : t0], u_traj[t0 - k : t0])
-    pred_full = art.rollout(state, u_traj[t0 : t0 + MAX_SPAN])
+    pred_full = np.asarray(
+        art.free_run(y_traj[t0 - k : t0][None], u_traj[t0 - k : t0][None], u_traj[t0 : t0 + MAX_SPAN][None])
+    )[0]
     true_full = y_traj[t0 : t0 + MAX_SPAN]
     channel = channel_labels.index(channel_dropdown.value)
     return channel, pred_full, true_full

@@ -11,8 +11,8 @@ from torch import nn
 from neuro.config import load_config, resolve_data_files
 from neuro.observable import log_observable
 from neuro.predictor.gradient import fit_gradient_descent, float32_tensor
-from neuro.predictor.module import AutoregressiveMLP
-from neuro.predictor.observable_module import ObservableMLP, mlp_stack
+from neuro.predictor.inference import WaveformMLPModel
+from neuro.predictor.observable_module import StepwiseObservableMLP, mlp_stack
 from neuro.predictor.observable_train import ObservableData, log_mse, prepare_observable_data
 
 if TYPE_CHECKING:
@@ -26,11 +26,11 @@ _MA_SWEEP = np.array([-2.0, -1.0, 0.0, 1.0, 2.0])
 _MIN_GRADIENT_RATIO = 1e-2
 
 
-def _observable_model(cfg: NNPredictorConfig, data: ObservableData) -> ObservableMLP:
+def _observable_model(cfg: NNPredictorConfig, data: ObservableData) -> StepwiseObservableMLP:
     """Build the spec's Predictor: lift, one shared Frame transition, affine log readout."""
     obs, mdl = cfg.observable, cfg.model
     assert obs is not None  # noqa: S101 -- the caller validated the config carries the block
-    return ObservableMLP(
+    return StepwiseObservableMLP(
         n_y=mdl.n_y,
         n_u=mdl.n_u,
         horizon=obs.horizon,
@@ -147,7 +147,7 @@ def stage_direct_vs_iterated(cfg: NNPredictorConfig, data_files: list[str], seed
     print(f"  {'iterated' if iterated.mean() < direct.mean() else 'direct'} wins on held-out log-MSE")
 
 
-def _incumbent_log_mse(model: AutoregressiveMLP, cfg: NNPredictorConfig, data: ObservableData, stride: int) -> float:
+def _incumbent_log_mse(model: WaveformMLPModel, cfg: NNPredictorConfig, data: ObservableData, stride: int) -> float:
     """Push the incumbent rollout through the identical geometry and score it on the same Frames."""
     obs = cfg.observable
     assert obs is not None  # noqa: S101
@@ -158,8 +158,13 @@ def _incumbent_log_mse(model: AutoregressiveMLP, cfg: NNPredictorConfig, data: O
         t0s = range(k, len(y) - horizon, stride)
         if not t0s:
             continue
-        states = model.prime_many(np.stack([y[t0 - k : t0] for t0 in t0s]), np.stack([u[t0 - k : t0] for t0 in t0s]))
-        y_pred = model.rollout_many(states, np.stack([u[t0 : t0 + horizon] for t0 in t0s]))
+        y_pred = np.asarray(
+            model.free_run(
+                np.stack([y[t0 - k : t0] for t0 in t0s]),
+                np.stack([u[t0 - k : t0] for t0 in t0s]),
+                np.stack([u[t0 : t0 + horizon] for t0 in t0s]),
+            )
+        )
         y_true = np.stack([y[t0 + 1 : t0 + 1 + horizon] for t0 in t0s])
         residual = log_observable(y_pred, geometry, cfg.fs) - log_observable(y_true, geometry, cfg.fs)
         squared += float((residual**2).sum())
@@ -179,7 +184,7 @@ def stage_incumbent_baseline(
     not the training mean.
     """
     print("\n== Stage 3: incumbent baseline ==", flush=True)
-    model = AutoregressiveMLP.load(incumbent)
+    model = WaveformMLPModel.load(incumbent)
 
     data = prepare_observable_data(cfg, data_files)
     observable = np.array([_train_arm(_observable_model(cfg, data), cfg, data, s) for s in seeds])

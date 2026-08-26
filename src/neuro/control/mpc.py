@@ -2,10 +2,8 @@ from __future__ import annotations
 
 import dataclasses
 import importlib
-from typing import TYPE_CHECKING, Any, Protocol, Self, runtime_checkable
+from typing import TYPE_CHECKING, Any, Self
 
-import equinox as eqx
-import jax
 import jax.numpy as jnp
 import numpy as np
 from simulate.controller import Controller
@@ -15,13 +13,11 @@ from trajopt.constraints.constraint_list import ConstraintList
 from trajopt.constraints.linear import GoalConstraint, LinearConstraint
 from trajopt.costs.objective import Objective
 from trajopt.costs.quadratic import DiagonalCost
-from trajopt.dynamics.base import DiscreteDynamics
 from trajopt.problem import MPCState, Problem
 from trajopt.transcription.ipopt import Ipopt
 from trajopt.transcription.single_shooting import SingleShooting
 
-from neuro.checkpoint import MLPCheckpoint, ObservableCheckpoint, load_mlp, load_observable
-from neuro.control.trajopt_costs import (
+from neuro.control.costs import (
     ExcludeInitialKnotState,
     L1ControlCost,
     ObservableRolloutHinge,
@@ -30,6 +26,7 @@ from neuro.control.trajopt_costs import (
     has_whole_horizon_cost,
 )
 from neuro.observable import load_log_reference
+from neuro.predictor.inference import InferencePredictor, ObservableModel, WaveformMLPModel
 from neuro.spectral import PsdEnvelope
 
 if TYPE_CHECKING:
@@ -37,37 +34,20 @@ if TYPE_CHECKING:
 
     from numpy.typing import ArrayLike
     from trajopt.costs.base import CostFunction
+    from trajopt.dynamics.base import DiscreteDynamics
     from trajopt.transcription.result import Solver
 
-    from neuro.config import ObservableGeometry
-    from neuro.types import Activation, FloatArray
+    from neuro.types import FloatArray
 
 
-@runtime_checkable
-class PredictorModel(Protocol):
-    """A trajopt model that also exposes the Predictor's raw-units priming seam.
+@dataclasses.dataclass(frozen=True)
+class TrajOptMPCLog:
+    """Per-step diagnostics: the applied control, optimal cost, solver success, and warm-up flag."""
 
-    The controller absorbs measurements into the model's opaque state (``absorb``), holds off
-    until the state is primed (``is_ready``) and seeds its ``MPCState`` from the unprimed state
-    (``initial_state``) -- the same seam the incumbent MPC used, hosted on the trajopt model
-    adapter instead of a symbolic bridge. ``m`` and ``n_channels`` are the control and
-    EEG channel counts the controller reads off the model directly.
-    """
-
-    m: int
-    n_channels: int
-
-    def absorb(self, state: FloatArray, y: FloatArray, u: FloatArray) -> FloatArray:
-        """Append raw measurement ``y`` and applied control ``u`` into the model's opaque state."""
-        ...
-
-    def is_ready(self, state: FloatArray) -> bool:
-        """Report whether the state has absorbed enough history to begin predicting."""
-        ...
-
-    def initial_state(self) -> FloatArray:
-        """Return the unprimed state."""
-        ...
+    u: FloatArray
+    cost: float
+    success: bool
+    warmup: bool
 
 
 def _build_problem(spec: dict[str, Any] | Problem) -> tuple[Problem, MPCState | None]:
@@ -83,321 +63,6 @@ def _build_problem(spec: dict[str, Any] | Problem) -> tuple[Problem, MPCState | 
         state = res[1] if len(res) > 1 and isinstance(res[1], MPCState) else None
         return res[0], state
     return res, None
-
-
-def _apply_activation(activation: Activation, z: jax.Array) -> jax.Array:
-    """Apply the model's activation elementwise."""
-    if activation == "relu":
-        return jnp.maximum(z, 0.0)
-    if activation == "tanh":
-        return jnp.tanh(z)
-    return jnp.logaddexp(z, 0.0)
-
-
-class WaveformMLPModel(DiscreteDynamics):
-    """trajopt ``DiscreteDynamics`` adapter for the waveform MLP predictor checkpoint.
-
-    Holds the checkpoint's float64 weights and standardizer buffers as Equinox arrays, so the
-    model rolls one MLP ``step`` per call with no torch in the loop. ``discrete_dynamics``
-    reproduces the incumbent CasADi ``NNSymbolicModel.step`` state machine exactly: the newest
-    control enters the control window *before* the prediction, so the predicted sample depends
-    on the control applied at that step.
-    """
-
-    n_y: int = eqx.field(static=True)
-    n_u: int = eqx.field(static=True)
-    n_channels: int = eqx.field(static=True)
-    n_controls: int = eqx.field(static=True)
-    activation: Activation = eqx.field(static=True)
-    residual: bool = eqx.field(static=True)
-    y_center: jax.Array
-    y_scale: jax.Array
-    u_center: jax.Array
-    u_scale: jax.Array
-    weights: tuple[jax.Array, ...]
-    biases: tuple[jax.Array, ...]
-
-    def __init__(self, checkpoint: MLPCheckpoint) -> None:
-        """Copy the checkpoint's float64 buffers into Equinox arrays.
-
-        Parameters
-        ----------
-        checkpoint
-            The torch-free MLP checkpoint whose weights and standardizers become this model.
-        """
-        super().__init__(
-            n=checkpoint.n_y * checkpoint.n_channels + checkpoint.n_u * checkpoint.n_controls,
-            m=checkpoint.n_controls,
-            ne=checkpoint.n_y * checkpoint.n_channels + checkpoint.n_u * checkpoint.n_controls,
-        )
-        self.n_y = checkpoint.n_y
-        self.n_u = checkpoint.n_u
-        self.n_channels = checkpoint.n_channels
-        self.n_controls = checkpoint.n_controls
-        self.activation = checkpoint.activation
-        self.residual = checkpoint.residual
-        self.y_center = jnp.asarray(checkpoint.y_std.center)
-        self.y_scale = jnp.asarray(checkpoint.y_std.scale)
-        self.u_center = jnp.asarray(checkpoint.u_std.center)
-        self.u_scale = jnp.asarray(checkpoint.u_std.scale)
-        self.weights = tuple(jnp.asarray(weight) for weight, _ in checkpoint.layers)
-        self.biases = tuple(jnp.asarray(bias) for _, bias in checkpoint.layers)
-
-    @classmethod
-    def from_checkpoint(cls, path: str | Path) -> Self:
-        """Rebuild the model from a numpy-readable MLP checkpoint on disk (a suffix-less stem)."""
-        return cls(load_mlp(path))
-
-    def _activate(self, z: jax.Array) -> jax.Array:
-        """Apply the model's activation elementwise."""
-        return _apply_activation(self.activation, z)
-
-    def _predict(self, y_window: jax.Array, u_window: jax.Array) -> jax.Array:
-        """One MLP forward pass on standardized windows -> the next standardized sample ``(n_channels,)``.
-
-        With the residual skip the MLP output adds the window's last sample, so the layers fit
-        the one-step delta exactly as the torch module does.
-        """
-        z = jnp.concatenate([y_window.reshape(-1), u_window.reshape(-1)])
-        for i, weight in enumerate(self.weights[:-1]):
-            z = self._activate(z @ weight.T + self.biases[i])
-        weight_last, bias_last = self.weights[-1], self.biases[-1]
-        z = z @ weight_last.T + bias_last
-        if self.residual:
-            z = z + y_window[-1]
-        return z
-
-    def output(self, x: jax.Array) -> jax.Array:
-        """Decode the newest standardized y-window row into the raw predicted sample ``(n_channels,)``.
-
-        The prediction the state carries is always its newest row, so the raw sample is a state
-        component -- the decode the spectral hinge reads off any sample-grid model.
-        """
-        n_z = self.n_y * self.n_channels
-        z_last = x[n_z - self.n_channels : n_z]
-        return z_last * self.y_scale + self.y_center
-
-    def discrete_dynamics(
-        self,
-        x: jax.Array,
-        u: jax.Array,
-        t: float | jax.Array,
-        dt: float | jax.Array,
-    ) -> jax.Array:
-        """Advance one sample: shift ``u`` into the control window, predict, and shift both windows.
-
-        Mirrors the incumbent MPC's ``NNSymbolicModel.f_step``: the predicted ``y_{t+1}`` is the
-        MLP output on the y-window ending at ``t`` and the u-window ending at ``t + 1`` after
-        ``u`` is shifted in, and the returned state's control window ends with ``u``.
-        """
-        del t, dt
-        n_z = self.n_y * self.n_channels
-        y_window = x[:n_z].reshape(self.n_y, self.n_channels)
-        u_window_raw = x[n_z:].reshape(self.n_u, self.n_controls)
-        u_window = jnp.concatenate([u_window_raw[1:], u.reshape(1, -1)], axis=0)
-        z_next = self._predict(y_window, (u_window - self.u_center) / self.u_scale)
-        y_window = jnp.concatenate([y_window[1:], z_next[None, :]], axis=0)
-        return jnp.concatenate([y_window.reshape(-1), u_window.reshape(-1)])
-
-    def absorb(self, state: FloatArray, y: FloatArray, u: FloatArray) -> FloatArray:
-        """Append raw measurement ``y`` and applied control ``u`` into the shift-register state."""
-        n_z = self.n_y * self.n_channels
-        state_arr = np.asarray(state, dtype=np.float64)
-        y_window = state_arr[:n_z].reshape(self.n_y, self.n_channels)
-        u_window = state_arr[n_z:].reshape(self.n_u, self.n_controls)
-        z = (np.asarray(y, dtype=np.float64).reshape(-1) - np.asarray(self.y_center)) / np.asarray(self.y_scale)
-        y_window = np.concatenate([y_window[1:], z[None, :]], axis=0)
-        u_window = np.concatenate([u_window[1:], np.asarray(u, dtype=np.float64).reshape(1, -1)], axis=0)
-        return np.concatenate([y_window.reshape(-1), u_window.reshape(-1)])
-
-    def is_ready(self, state: FloatArray) -> bool:
-        """Report whether the EEG window holds no NaN, i.e. at least ``n_y`` samples were absorbed."""
-        n_z = self.n_y * self.n_channels
-        return not bool(np.isnan(np.asarray(state, dtype=np.float64)[:n_z]).any())
-
-    def initial_state(self) -> FloatArray:
-        """NaN-padded EEG window and zero-padded control window: nothing absorbed yet."""
-        y_buf = np.full(self.n_y * self.n_channels, np.nan, dtype=np.float64)
-        u_buf = np.zeros(self.n_u * self.n_controls, dtype=np.float64)
-        return np.concatenate([y_buf, u_buf])
-
-
-class ObservableModel(DiscreteDynamics):
-    """trajopt ``DiscreteDynamics`` adapter for the one-Frame-per-step Observable predictor.
-
-    The opaque state is the history register -- ``[standardized EEG window | raw control
-    window]`` -- followed by the lifted Frame state (and the residual carry block, when the
-    checkpoint's skip is on), exactly the ``StepwiseObservableMLP`` state. One step is one
-    Frame: ``discrete_dynamics`` runs the shared transition under the Frame-mean control ``u``
-    and carries the register unchanged, matching the torch module's ``step``; the lift
-    (register -> Frame state) happens once at ``absorb``/``initial_state``. The controller
-    therefore drives this adapter on the Frame grid, and the problem's decision variables are
-    Frame-mean controls rather than per-sample ones.
-    """
-
-    n_y: int = eqx.field(static=True)
-    n_u: int = eqx.field(static=True)
-    n_channels: int = eqx.field(static=True)
-    n_controls: int = eqx.field(static=True)
-    z_dim: int = eqx.field(static=True)
-    n_values: int = eqx.field(static=True)
-    fs: float = eqx.field(static=True)
-    activation: Activation = eqx.field(static=True)
-    residual: bool = eqx.field(static=True)
-    geometry: ObservableGeometry = eqx.field(static=True)
-    lift_weights: tuple[jax.Array, ...]
-    lift_biases: tuple[jax.Array, ...]
-    transition_weights: tuple[jax.Array, ...]
-    transition_biases: tuple[jax.Array, ...]
-    readout_w: jax.Array
-    readout_b: jax.Array
-    y_center: jax.Array
-    y_scale: jax.Array
-    u_center: jax.Array
-    u_scale: jax.Array
-    l_center: jax.Array
-    l_scale: jax.Array
-
-    def __init__(self, checkpoint: ObservableCheckpoint) -> None:
-        """Copy the checkpoint's float64 buffers into Equinox arrays.
-
-        Parameters
-        ----------
-        checkpoint
-            The torch-free Observable checkpoint whose weights and standardizers become this model.
-        """
-        n_hist = checkpoint.n_y * checkpoint.n_channels + checkpoint.n_u * checkpoint.n_controls
-        carry_size = checkpoint.n_channels * checkpoint.n_values if checkpoint.residual else 0
-        super().__init__(
-            n=n_hist + checkpoint.z_dim + carry_size, m=checkpoint.n_controls, ne=n_hist + checkpoint.z_dim + carry_size
-        )
-        self.n_y = int(checkpoint.n_y)
-        self.n_u = int(checkpoint.n_u)
-        self.n_channels = int(checkpoint.n_channels)
-        self.n_controls = int(checkpoint.n_controls)
-        self.z_dim = int(checkpoint.z_dim)
-        self.n_values = int(checkpoint.n_values)
-        self.fs = float(checkpoint.fs)
-        self.activation = checkpoint.activation
-        self.residual = checkpoint.residual
-        self.geometry = checkpoint.geometry
-        self.lift_weights = tuple(jnp.asarray(weight) for weight, _ in checkpoint.lift)
-        self.lift_biases = tuple(jnp.asarray(bias) for _, bias in checkpoint.lift)
-        self.transition_weights = tuple(jnp.asarray(weight) for weight, _ in checkpoint.transition)
-        self.transition_biases = tuple(jnp.asarray(bias) for _, bias in checkpoint.transition)
-        self.readout_w, self.readout_b = (jnp.asarray(checkpoint.readout[0]), jnp.asarray(checkpoint.readout[1]))
-        self.y_center = jnp.asarray(checkpoint.y_std.center)
-        self.y_scale = jnp.asarray(checkpoint.y_std.scale)
-        self.u_center = jnp.asarray(checkpoint.u_std.center)
-        self.u_scale = jnp.asarray(checkpoint.u_std.scale)
-        self.l_center = jnp.asarray(checkpoint.l_std.center)
-        self.l_scale = jnp.asarray(checkpoint.l_std.scale)
-
-    @classmethod
-    def from_checkpoint(cls, path: str | Path) -> Self:
-        """Rebuild the model from a numpy-readable Observable checkpoint on disk (a stem)."""
-        return cls(load_observable(path))
-
-    @property
-    def _n_hist(self) -> int:
-        """Register width: the standardized EEG window plus the raw control window."""
-        return self.n_y * self.n_channels + self.n_u * self.n_controls
-
-    def n_frames(self, horizon: int) -> int:
-        """Frames the recursion emits over ``horizon`` samples at the checkpoint's geometry."""
-        return self.geometry.n_frames(horizon, self.fs)
-
-    def _activate(self, z: jax.Array) -> jax.Array:
-        """Apply the model's activation elementwise."""
-        return _apply_activation(self.activation, z)
-
-    def _mlp(self, weights: tuple[jax.Array, ...], biases: tuple[jax.Array, ...], z: jax.Array) -> jax.Array:
-        """One MLP block forward pass; the activation follows every layer except the last."""
-        for i, weight in enumerate(weights[:-1]):
-            z = self._activate(z @ weight.T + biases[i])
-        weight_last, bias_last = weights[-1], biases[-1]
-        return z @ weight_last.T + bias_last
-
-    def _lift(self, register: jax.Array) -> jax.Array:
-        """Lift a history register to the Frame state via the checkpoint's lift block."""
-        n_z = self.n_y * self.n_channels
-        u_window = register[n_z:].reshape(self.n_u, self.n_controls)
-        lift_in = jnp.concatenate([register[:n_z], ((u_window - self.u_center) / self.u_scale).reshape(-1)])
-        return self._mlp(self.lift_weights, self.lift_biases, lift_in)
-
-    def output(self, x: jax.Array) -> jax.Array:
-        """Decode the Frame level into the raw log-Observable frame ``(n_channels * n_values,)``.
-
-        With the residual skip the level is the accumulated carry block; otherwise it is the
-        readout of the lifted Frame state.
-        """
-        if self.residual:
-            l_std = x[self._n_hist + self.z_dim :]
-        else:
-            z = x[self._n_hist :]
-            l_std = z @ self.readout_w.T + self.readout_b
-        return l_std * self.l_scale + self.l_center
-
-    def discrete_dynamics(
-        self,
-        x: jax.Array,
-        u: jax.Array,
-        t: float | jax.Array,
-        dt: float | jax.Array,
-    ) -> jax.Array:
-        """Advance one Frame: run the shared transition on the carried lifted state under Frame-mean ``u``.
-
-        The register is carried unchanged -- only the lifted Frame state advances, matching the
-        torch module's ``step``.
-        """
-        del t, dt
-        z = x[self._n_hist : self._n_hist + self.z_dim]
-        v = (u - self.u_center) / self.u_scale
-        z_next = self._mlp(self.transition_weights, self.transition_biases, jnp.concatenate([z, v]))
-        if self.residual:
-            carry = x[self._n_hist + self.z_dim :] + (z_next @ self.readout_w.T + self.readout_b)
-            return jnp.concatenate([x[: self._n_hist], z_next, carry])
-        return jnp.concatenate([x[: self._n_hist], z_next])
-
-    def absorb(self, state: FloatArray, y: FloatArray, u: FloatArray) -> FloatArray:
-        """Append raw measurement ``y`` and applied control ``u`` to the register, re-lifting."""
-        state_arr = np.asarray(state, dtype=np.float64)
-        n_z = self.n_y * self.n_channels
-        y_window = state_arr[:n_z].reshape(self.n_y, self.n_channels)
-        u_window = state_arr[n_z : self._n_hist].reshape(self.n_u, self.n_controls)
-        z_new = (np.asarray(y, dtype=np.float64).reshape(-1) - np.asarray(self.y_center)) / np.asarray(self.y_scale)
-        y_window = np.concatenate([y_window[1:], z_new[None, :]], axis=0)
-        u_window = np.concatenate([u_window[1:], np.asarray(u, dtype=np.float64).reshape(1, -1)], axis=0)
-        register = np.concatenate([y_window.reshape(-1), u_window.reshape(-1)])
-        z = np.asarray(self._lift(jnp.asarray(register, dtype=jnp.float64)), dtype=np.float64)
-        state = np.concatenate([register, z])
-        if self.residual:
-            state = np.concatenate([state, np.zeros(self.n_channels * self.n_values, dtype=np.float64)])
-        return state
-
-    def is_ready(self, state: FloatArray) -> bool:
-        """Report whether the EEG window holds no NaN, i.e. at least ``n_y`` samples were absorbed."""
-        return not bool(np.isnan(np.asarray(state, dtype=np.float64)[: self.n_y * self.n_channels]).any())
-
-    def initial_state(self) -> FloatArray:
-        """NaN-padded EEG window, zero-padded control window, their (NaN) lifted Frame state, zero carry."""
-        y_buf = np.full(self.n_y * self.n_channels, np.nan, dtype=np.float64)
-        u_buf = np.zeros(self.n_u * self.n_controls, dtype=np.float64)
-        register = np.concatenate([y_buf, u_buf])
-        state = np.concatenate([register, self._lift(jnp.asarray(register, dtype=jnp.float64))])
-        if self.residual:
-            state = np.concatenate([state, np.zeros(self.n_channels * self.n_values, dtype=np.float64)])
-        return state
-
-
-@dataclasses.dataclass(frozen=True)
-class TrajOptMPCLog:
-    """Per-step diagnostics: the applied control, optimal cost, solver success, and warm-up flag."""
-
-    u: FloatArray
-    cost: float
-    success: bool
-    warmup: bool
 
 
 def kirchhoff_constraint(n: int, m: int) -> LinearConstraint:
@@ -566,7 +231,7 @@ def build_waveform_problem(  # noqa: PLR0913 -- checkpoint plus the nine MPC cos
         Add the Kirchhoff sum-to-zero equality on the controls. Off by default; the incumbent
         applies it unconditionally, so full parity sets it.
     """
-    model = WaveformMLPModel.from_checkpoint(artifact)
+    model = WaveformMLPModel.load(artifact)
     n, m = model.n, model.m
     N = horizon + 1
 
@@ -642,7 +307,7 @@ def build_observable_problem(  # noqa: PLR0913 -- checkpoint plus the nine MPC c
     kirchhoff
         Add the Kirchhoff sum-to-zero equality on the Frame-mean controls. Off by default.
     """
-    model = ObservableModel.from_checkpoint(artifact)
+    model = ObservableModel.load(artifact)
     if w_y > 0 or w_y_terminal is not None:
         msg = (
             f"w_y ({w_y}) and w_y_terminal ({w_y_terminal}) have no meaning on the observable "
@@ -717,8 +382,8 @@ class TrajOptMPCController(Controller[TrajOptMPCLog]):
         super().__init__(dt)
         self.problem = problem
         model = problem.model
-        if not isinstance(model, PredictorModel):
-            msg = f"problem.model ({type(model).__name__}) does not implement the Predictor priming seam"
+        if not isinstance(model, InferencePredictor):
+            msg = f"problem.model ({type(model).__name__}) does not implement the InferencePredictor priming seam"
             raise TypeError(msg)
         self.model = model
         self.solver = solver if solver is not None else _default_solver(problem)
@@ -735,7 +400,7 @@ class TrajOptMPCController(Controller[TrajOptMPCLog]):
 
         Follows ``TrajOptMPC.from_config``'s pattern: ``problem`` is either a Problem instance
         or a ``{class_path, ...}`` dict naming a Problem-building factory (e.g.
-        ``neuro.control.trajopt_mpc.build_waveform_problem``); ``solver`` and ``initial_state``
+        ``neuro.control.mpc.build_waveform_problem``); ``solver`` and ``initial_state``
         are optional. When ``solver`` is omitted the default is chosen from the problem's
         constraints (see ``__init__``), so a migrated ``kirchhoff: true`` config needs no
         injected solver.

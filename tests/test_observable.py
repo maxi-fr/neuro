@@ -8,18 +8,16 @@ import numpy as np
 import pytest
 import torch
 
-from neuro.checkpoint import load_observable
 from neuro.config import EegMsGeometry, EegMsSpec, StftGeometry, StftSpec
 from neuro.observable import control_means, envelope_log_reference, log_observable
+from neuro.predictor.inference import ObservableModel
 from neuro.predictor.losses import EegMsLoss, LossContext, StftLoss
-from neuro.predictor.observable_module import StepwiseObservableMLP
 from neuro.spectral import LOG_FLOOR, MsEnvelope, PsdEnvelope, compute_periodograms, windowed_mean_square
 
 if TYPE_CHECKING:
     from collections.abc import Callable
     from pathlib import Path
 
-    from neuro.checkpoint import ObservableCheckpoint
     from neuro.types import FloatArray
 
 _SEED = 23
@@ -109,25 +107,9 @@ def test_control_aggregation_averages_over_each_frames_support() -> None:
         np.testing.assert_allclose(row[start:end], 1.0 / (end - start))
 
 
-def _stepwise_module(geometry: StftGeometry, *, horizon: int, n_y: int, n_u: int) -> StepwiseObservableMLP:
-    """A randomly-initialised one-Frame-per-step module on the probe's geometry."""
-    return StepwiseObservableMLP(
-        n_y=n_y,
-        n_u=n_u,
-        horizon=horizon,
-        n_channels=2,
-        n_controls=2,
-        geometry=geometry,
-        fs=_FS,
-        z_dim=5,
-        lift_hidden=6,
-        lift_depth=2,
-        transition_hidden=6,
-        transition_depth=2,
-    )
-
-
-def test_forecast_of_a_frame_ignores_controls_landing_after_its_segment() -> None:
+def test_forecast_of_a_frame_ignores_controls_landing_after_its_segment(
+    make_observable_model: Callable[..., ObservableModel],
+) -> None:
     """Frame ``m``'s forecast is invariant to Control Currents after its Segment ends.
 
     Structurally guaranteed by the recursion, so this catches an indexing error in the control
@@ -135,49 +117,43 @@ def test_forecast_of_a_frame_ignores_controls_landing_after_its_segment() -> Non
     """
     geometry = StftGeometry(n_segment=8, n_hop=4)
     horizon = 20
-    model = _stepwise_module(geometry, horizon=horizon, n_y=3, n_u=2)
+    model = make_observable_model(geometry, horizon=horizon, n_y=3, n_u=2)
     rng = np.random.default_rng(_SEED + 1)
-
-    state = model.prime(rng.standard_normal((3, model.n_channels)), rng.standard_normal((2, model.n_controls)))
+    k = model.priming_steps
+    y_hist = rng.standard_normal((k, model.n_channels))
+    u_hist = rng.standard_normal((k, model.n_controls))
     u = rng.standard_normal((horizon, model.n_controls))
-    base = model.rollout(state, u)
+    base = np.asarray(model.free_run(y_hist[None], u_hist[None], u[None]))[0]
 
     supports = geometry.frame_supports(horizon, model.fs)
     assert len(supports) > 1, "the property is vacuous with a single frame"
     for m, (_, end) in enumerate(supports[:-1]):
         perturbed = u.copy()
         perturbed[end:] += 10.0
-        np.testing.assert_allclose(model.rollout(state, perturbed)[: m + 1], base[: m + 1], rtol=1e-12, atol=1e-12)
-        assert not np.allclose(model.rollout(state, perturbed)[m + 1 :], base[m + 1 :])
+        got = np.asarray(model.free_run(y_hist[None], u_hist[None], perturbed[None]))[0]
+        np.testing.assert_allclose(got[: m + 1], base[: m + 1], rtol=1e-12, atol=1e-12)
+        assert not np.allclose(got[m + 1 :], base[m + 1 :])
 
 
 def test_checkpoint_round_trip_preserves_weights_standardizers_and_geometry(
-    tmp_path: Path, make_observable_checkpoint: Callable[..., ObservableCheckpoint]
+    tmp_path: Path, make_observable_model: Callable[..., ObservableModel]
 ) -> None:
     """Save/load returns byte-identical weights, standardizers and the recorded Observable geometry."""
     geometry = StftGeometry(n_segment=8, n_hop=4, n_bin_pool=2, kernel="hann", kernel_width=2, band_hz=(2.0, 20.0))
-    ckpt = make_observable_checkpoint(geometry, horizon=20)
+    model = make_observable_model(geometry, horizon=20)
 
     path = tmp_path / "observable"
-    ckpt.save(path)
-    loaded = load_observable(path)
+    model.save(path)
+    loaded = ObservableModel.load(path)
 
     assert loaded.geometry == geometry
-    assert loaded.z_dim == ckpt.z_dim
-    assert loaded.n_frames() == ckpt.n_frames()
-    for saved_block, loaded_block in ((ckpt.lift, loaded.lift), (ckpt.transition, loaded.transition)):
-        for (w, b), (w2, b2) in zip(saved_block, loaded_block, strict=True):
-            np.testing.assert_array_equal(w, w2)
-            np.testing.assert_array_equal(b, b2)
-    np.testing.assert_array_equal(ckpt.readout[0], loaded.readout[0])
-    np.testing.assert_array_equal(ckpt.readout[1], loaded.readout[1])
-    for saved_std, loaded_std in (
-        (ckpt.y_std, loaded.y_std),
-        (ckpt.u_std, loaded.u_std),
-        (ckpt.l_std, loaded.l_std),
-    ):
-        np.testing.assert_array_equal(saved_std.center, loaded_std.center)
-        np.testing.assert_array_equal(saved_std.scale, loaded_std.scale)
+    assert loaded.z_dim == model.z_dim
+    assert loaded.n_frames(model.horizon) == model.n_frames(model.horizon)
+    _, got_arrays = loaded.to_checkpoint()
+    _, want_arrays = model.to_checkpoint()
+    assert set(got_arrays) == set(want_arrays)
+    for key in want_arrays:
+        np.testing.assert_array_equal(got_arrays[key], want_arrays[key])
 
 
 def test_envelope_reference_pools_power_before_the_log() -> None:

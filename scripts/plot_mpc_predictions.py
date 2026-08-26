@@ -14,8 +14,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from simulate.config import build_component, load_config
 
-from neuro.checkpoint import load_mlp
-from neuro.control.trajopt_mpc import WaveformMLPModel
+from neuro.predictor.inference import WaveformMLPModel
 
 if TYPE_CHECKING:
     from neuro.types import FloatArray
@@ -88,10 +87,9 @@ def main() -> None:
 
     print(f"Running plant open-loop for {t_end}s from {args.config} ...", flush=True)
     eeg, dt_model = run_open_loop(config, t_end)
-    model = WaveformMLPModel.from_checkpoint(artifact)
-    ckpt = load_mlp(artifact)
+    model = WaveformMLPModel.load(artifact)
 
-    n_y, horizon = model.n_y, ckpt.horizon
+    n_y, horizon = model.n_y, model.horizon
     anchors = np.linspace(n_y + 1, len(eeg) - horizon - 1, args.anchors).astype(int)
     time = np.arange(len(eeg)) * dt_model
 

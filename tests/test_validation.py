@@ -77,10 +77,10 @@ def config(tmp_path: Path) -> dict[str, Any]:
             "downsample": _DOWNSAMPLE,
         },
         "controller": {
-            "class_path": "neuro.control.trajopt_mpc.TrajOptMPCController",
+            "class_path": "neuro.control.mpc.TrajOptMPCController",
             "dt": _PLANT_DT * _DOWNSAMPLE,
             "problem": {
-                "class_path": "neuro.control.trajopt_mpc.build_waveform_problem",
+                "class_path": "neuro.control.mpc.build_waveform_problem",
                 "artifact": str(_artifact(tmp_path, provenance)),
                 "horizon": 50,
             },

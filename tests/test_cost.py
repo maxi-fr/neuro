@@ -11,8 +11,9 @@ from trajopt.problem import MPCState
 from trajopt.solvers.altro import ALTRO
 from trajopt.transcription.ipopt import Ipopt
 
-from neuro.control.trajopt_costs import L1ControlCost, SumCost
-from neuro.control.trajopt_mpc import WaveformMLPModel, build_waveform_problem
+from neuro.control.costs import L1ControlCost, SumCost
+from neuro.control.mpc import build_waveform_problem
+from neuro.predictor.inference import WaveformMLPModel
 from neuro.predictor.module import AutoregressiveMLP
 from neuro.transforms import Standardizer
 
@@ -79,7 +80,7 @@ def _build_checkpoint(
 
 def _ready_state(artifact: Path, rng: np.random.Generator) -> FloatArray:
     """A NaN-free ready model state with a random EEG window, for direct solves."""
-    probe = WaveformMLPModel.from_checkpoint(artifact)
+    probe = WaveformMLPModel.load(artifact)
     state = np.asarray(probe.initial_state())
     state[: probe.n_y * probe.n_channels] = rng.standard_normal(probe.n_y * probe.n_channels)
     return state

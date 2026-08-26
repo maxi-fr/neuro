@@ -9,7 +9,8 @@ from neuro.metrics import DEFAULT_HOP_S, METRICS
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
-    from neuro.types import FloatArray, Predictor
+    from neuro.predictor.inference import InferencePredictor
+    from neuro.types import FloatArray
 
 # Energies are mean squares in mV**2, so this floors the log of a prediction that has collapsed
 # to silence rather than of a genuinely quiet one.
@@ -17,7 +18,7 @@ _ENERGY_EPS = 1e-12
 
 
 def rollout_batches(
-    predictor: Predictor,
+    model: InferencePredictor,
     trajectories: list[tuple[FloatArray, FloatArray]],
     steps: int,
     *,
@@ -26,31 +27,33 @@ def rollout_batches(
 ) -> Iterator[tuple[FloatArray, FloatArray]]:
     """Yield ``(y_pred, y_true)`` of shape ``(n_windows, steps, n_channels)``, one batch per trajectory.
 
-    The whole t0 grid of a trajectory is primed and rolled out in one batched
-    ``prime_many``/``rollout_many`` call, so every free-run score reads the same windows off one
-    traversal rather than re-rolling per metric. ``start`` overrides the first window index, so
-    several predictors can share one t0 grid. The scores live on the sample grid -- one output
-    per position -- so the waveform MLP is the intended subject, not the observable
-    predictor, whose ``rollout`` emits one Frame per position.
+    The whole t0 grid of a trajectory is primed and rolled out in one stateless jax ``free_run``
+    call, so every free-run score reads the same windows off one traversal rather than re-rolling
+    per metric. ``start`` overrides the first window index, so several models can share one t0
+    grid. The scores live on the sample grid -- one output per position -- so the waveform MLP is
+    the intended subject, not the observable predictor, whose ``free_run`` emits one Frame per
+    position.
     """
-    grid_start = predictor.priming_steps if start is None else start
-    k = predictor.priming_steps
+    k = model.priming_steps
+    grid_start = k if start is None else start
 
     for u, y in trajectories:
         t0s = range(grid_start, len(y) - steps, stride)
         if not t0s:
             continue
 
-        states = predictor.prime_many(
-            np.stack([y[t0 - k : t0] for t0 in t0s]),
-            np.stack([u[t0 - k : t0] for t0 in t0s]),
+        y_pred = np.asarray(
+            model.free_run(
+                np.stack([y[t0 - k : t0] for t0 in t0s]),
+                np.stack([u[t0 - k : t0] for t0 in t0s]),
+                np.stack([u[t0 : t0 + steps] for t0 in t0s]),
+            )
         )
-        y_pred = predictor.rollout_many(states, np.stack([u[t0 : t0 + steps] for t0 in t0s]))
         yield y_pred, np.stack([y[t0 : t0 + steps] for t0 in t0s])
 
 
 def accumulate_rollout_errors(
-    predictor: Predictor,
+    model: InferencePredictor,
     trajectories: list[tuple[FloatArray, FloatArray]],
     steps: int,
     *,
@@ -62,7 +65,7 @@ def accumulate_rollout_errors(
     power = np.zeros(steps, dtype=np.float64)
     pred_power = np.zeros(steps, dtype=np.float64)
 
-    for y_pred, y_true in rollout_batches(predictor, trajectories, steps, stride=stride, start=start):
+    for y_pred, y_true in rollout_batches(model, trajectories, steps, stride=stride, start=start):
         sq_err += ((y_pred - y_true) ** 2).sum(axis=(0, 2))
         power += (y_true**2).sum(axis=(0, 2))
         pred_power += (y_pred**2).sum(axis=(0, 2))
@@ -83,7 +86,7 @@ def nmse(sq_err: FloatArray | float, power: FloatArray | float) -> FloatArray:
 
 
 def evaluate_free_run(
-    predictor: Predictor,
+    model: InferencePredictor,
     val_trajs: list[tuple[FloatArray, FloatArray]],
     eval_steps: int,
     fs: float,
@@ -97,8 +100,8 @@ def evaluate_free_run(
     """
     energy_window = min(max(1, round(METRICS["eeg_ms"].window_s * fs)), eval_steps)
     energy_hop = max(1, round(DEFAULT_HOP_S * fs))
-    rollout = evaluate_rollouts(predictor, val_trajs, eval_steps)
-    log_energy = evaluate_log_energy(predictor, val_trajs, eval_steps, window_steps=energy_window, hop_steps=energy_hop)
+    rollout = evaluate_rollouts(model, val_trajs, eval_steps)
+    log_energy = evaluate_log_energy(model, val_trajs, eval_steps, window_steps=energy_window, hop_steps=energy_hop)
     return rollout, log_energy
 
 
@@ -110,13 +113,13 @@ class RolloutNMSE(NamedTuple):
 
 
 def evaluate_rollouts(
-    predictor: Predictor,
+    model: InferencePredictor,
     val_trajs: list[tuple[FloatArray, FloatArray]],
     horizon: int,
     step_stride: int = 25,
 ) -> RolloutNMSE:
     """Evaluate free-run rollout NMSE per horizon step and pooled over every step and window."""
-    sq_err, power, _ = accumulate_rollout_errors(predictor, val_trajs, horizon, stride=step_stride)
+    sq_err, power, _ = accumulate_rollout_errors(model, val_trajs, horizon, stride=step_stride)
     return RolloutNMSE(pooled=float(nmse(sq_err.sum(), power.sum())), per_step=nmse(sq_err, power))
 
 
@@ -137,7 +140,7 @@ class LogEnergyError(NamedTuple):
 
 
 def evaluate_log_energy(  # noqa: PLR0913
-    predictor: Predictor,
+    model: InferencePredictor,
     val_trajs: list[tuple[FloatArray, FloatArray]],
     horizon: int,
     *,
@@ -171,7 +174,7 @@ def evaluate_log_energy(  # noqa: PLR0913
 
     total: FloatArray | None = None
     n_windows = 0
-    for y_pred, y_true in rollout_batches(predictor, val_trajs, horizon, stride=step_stride):
+    for y_pred, y_true in rollout_batches(model, val_trajs, horizon, stride=step_stride):
         log_ratio = np.log(window_energy(y_pred, window_steps, hop_steps) + _ENERGY_EPS) - np.log(
             window_energy(y_true, window_steps, hop_steps) + _ENERGY_EPS
         )
