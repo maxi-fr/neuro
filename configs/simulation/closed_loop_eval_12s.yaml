@@ -1,0 +1,45 @@
+t_end: 12.0
+
+dynamics:
+  class_path: neuro.jansen_rit.JansenRitDynamics
+  dt: 0.0001
+  seed: 69
+  initial_state: rest
+  log: lfp
+  connectome:
+    speed: 50.0
+    K: 0.60
+  stimulation:
+    model: roast_3d
+    field_projection_path: data/roast_field_projection_3d.npz
+  params:
+    sigma: 280.0
+    A: [3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25,
+      3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25,
+      3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25,
+      3.25, 3.6, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.6, 3.25, 3.25, 3.25, 3.25,
+      3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.6, 3.25, 3.25,
+      3.25, 3.25, 3.25, 3.25, 3.4, 3.25, 3.25, 3.4, 3.25, 3.25, 3.25]
+
+reference: {class_path: simulate.reference.StepReference, dt: 0.0001, step_value: 0.0}
+
+sensors:
+  class_path: simulate.sensor.GaussianSensor
+  dt: 0.0001
+  std_dev: 0.0
+  measurement:
+    class_path: neuro.eeg.EEGMeasurement
+
+estimator: {class_path: neuro.filtering.AntiAliasEstimator, dt: 0.0001, downsample: 200}
+
+controller:
+  class_path: neuro.control.mpc.TrajOptMPCController
+  dt: 0.02
+  problem:
+    class_path: neuro.control.mpc.build_waveform_problem
+    artifact: null  # Injected by sweep at runtime
+    horizon: 50
+    u_max: 2.0
+    w_y: 1.0
+    w_u: 10.0
+    kirchhoff: true

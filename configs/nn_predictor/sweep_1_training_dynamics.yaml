@@ -8,6 +8,9 @@ model:
   activation: softplus
   n_y: 15
   n_u: 10
+  hidden_size: 128
+  depth: 2
+  residual: true
 
 training:
   epochs: 250
@@ -24,19 +27,15 @@ training:
       span_s: 0.2
       curr_start: 100
       curr_end: 200
+    eeg_ms:
+      weight: 1.0
+      span_s: 1.5
 
 sweep:
-  artifact: "artifacts/sweep_nn_predictor_long"
-  n_trials: 30
-  objective: log_energy   # log_energy | val_loss | rollout_nmse | closed_loop
-  model:
-    hidden_size:
-      type: categorical
-      choices: [16, 32, 64, 128]
-    depth:
-      type: int
-      low: 0
-      high: 3
+  artifact: "artifacts/sweep_1_training_dynamics"
+  n_trials: 10
+  objective: val_loss
+  model: {}
   training:
     learning_rate:
       type: loguniform

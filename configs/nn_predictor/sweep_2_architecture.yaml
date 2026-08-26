@@ -1,0 +1,46 @@
+simulation:
+  dt: 0.0001
+  downsample: 100        # effective dt = 1e-2 s
+  n_steps: null
+  data_path: "data/experiment_excited_long/train"
+
+model:
+  activation: softplus
+  n_y: 15
+  n_u: 10
+  residual: true
+
+training:
+  epochs: 250
+  train_split: 0.8
+  seed: 1903
+  patience: 50
+  scaler: "robust"
+  global_scaling: true
+  batch_size: 256
+  eval_horizon_s: 0.2
+  learning_rate: 0.00002       # Update from best sweep_1 result
+  weight_decay: 0.0002         # Update from best sweep_1 result
+  losses:
+    curriculum_mse:
+      weight: 1.0
+      span_s: 0.2
+      curr_start: 100
+      curr_end: 200
+    eeg_ms:
+      weight: 1.0
+      span_s: 1.5
+
+sweep:
+  artifact: "artifacts/sweep_2_architecture"
+  n_trials: 10
+  objective: val_loss
+  model:
+    hidden_size:
+      type: categorical
+      choices: [32, 64, 128, 256]
+    depth:
+      type: int
+      low: 0
+      high: 3
+  training: {}

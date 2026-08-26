@@ -1,0 +1,49 @@
+simulation:
+  dt: 0.0001
+  downsample: 100
+  n_steps: null
+  data_path: "data/experiment_excited_long/train"
+
+model:
+  activation: softplus
+  n_y: 15
+  n_u: 10
+  residual: true
+  hidden_size: 128        # Update from best sweep_2 result
+  depth: 2               # Update from best sweep_2 result
+
+training:
+  epochs: 250
+  train_split: 0.8
+  seed: 1903
+  patience: 50
+  scaler: "robust"
+  global_scaling: true
+  batch_size: 256
+  eval_horizon_s: 0.2
+  learning_rate: 0.00002       # Update from best sweep_1 result
+  weight_decay: 0.0002         # Update from best sweep_1 result
+  losses:
+    curriculum_mse:
+      weight: 1.0
+      span_s: 0.2
+      curr_start: 100
+      curr_end: 200
+      start_epoch: 0
+    eeg_ms:
+      weight: 1.0
+      span_s: 1.5
+      start_epoch: 0
+
+sweep:
+  artifact: "artifacts/sweep_3_loss_curriculum_eeg_ms"
+  n_trials: 5
+  objective: closed_loop
+  model: {}
+  training: {}
+  closed_loop:
+    simulation_config: "configs/simulation/closed_loop_eval_12s.yaml"
+    seeds: [69, 70, 71]
+    t_end: 12.0
+    seizure_ptp_mv: 10.0
+    max_seizing_regions: 5
