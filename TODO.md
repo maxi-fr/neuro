@@ -5,24 +5,12 @@
 * remove all mentions of the old MPC/casadi implementation
 
 * **Monday 24.08** Start predictor sweeps: Papa in München
-  * is sweeping implemented for ObservableSpace?
-  * what are all the hyperparameters?
-  * how to split into different sweeps?
-    * check again if curriculum is actually helpful in closed loop performance?
-    * lr, weight decay, etc.
-    * ny, nu, etc.
-    * different losses
-  * In what oder to run sweeps?
-  * How to update sweeps based on the results of the prior?
-  * what optuna score do the different sweeps use?
 
 ## Refactors
 
-* is MLP residual?
-
 * is mpc hinge spectral cost function tested?
 
-* Refactor predictor + mpc setup to use trajopt package
+* potential estimator refactor: move State Absorption/Priming (the "lift") out of the model into the estimator, so the model is pure `x_{k+1} = f(x_k, u_k)`. The lift would become a shared function used by both the runtime estimator and the evaluation free_run. Deferred for now: the model owns the window, the estimator emits one native measurement (y_k / o_k).
 
 ## Not urgent
 
