@@ -69,6 +69,7 @@ class ObservableMLP(nn.Module):
         transition_hidden: int,
         transition_depth: int,
         activation: Activation = "softplus",
+        residual: bool = True,
     ) -> None:
         """Build the lift, the shared Frame transition and the log readout."""
         super().__init__()
@@ -80,7 +81,9 @@ class ObservableMLP(nn.Module):
         self.geometry = geometry
         self.fs = fs
         self.activation = activation
+        self.residual = residual
         self.n_values = geometry.n_values(fs)
+        self.n_outputs = n_channels * self.n_values
 
         n_hist = n_y * n_channels + n_u * n_controls
         self.lift = mlp_stack([n_hist, *[lift_hidden] * lift_depth, z_dim], activation)
@@ -101,7 +104,9 @@ class ObservableMLP(nn.Module):
 
         ``x`` is the incumbent history-plus-future-control row, so the two paths share one dataset
         builder. Averaging the *standardized* controls equals standardizing their mean, because both
-        maps are affine.
+        maps are affine. With the residual the readout emits each Frame's delta and the recursion
+        accumulates it, so Frame ``m`` is ``readout(z_m)`` added onto Frame ``m - 1`` (zero before
+        the first Frame -- the mean level in standardized space).
         """
         n_hist = self.n_y * self.n_channels + self.n_u * self.n_controls
         u_future = x[:, n_hist:].reshape(x.shape[0], self.horizon, self.n_controls)
@@ -109,9 +114,15 @@ class ObservableMLP(nn.Module):
 
         z = self.lift(x[:, :n_hist])
         frames = []
+        if self.residual:
+            carry = torch.zeros(x.shape[0], self.n_outputs, dtype=torch.float32, device=x.device)
         for m in range(u_bar.shape[1]):
             z = self.transition(torch.cat([z, u_bar[:, m]], dim=1))
-            frames.append(self.readout(z))
+            if self.residual:
+                carry = carry + self.readout(z)
+                frames.append(carry)
+            else:
+                frames.append(self.readout(z))
         return torch.stack(frames, dim=1)
 
 
@@ -126,11 +137,12 @@ class StepwiseObservableMLP(nn.Module):
     units only at the protocol boundary. There is no persistence hand-off: the standardizers live
     in this module as float32 buffers.
 
-    The opaque state is ``[standardized EEG window | raw control window | lifted Frame state]``:
-    the register mirrors the waveform module's shift register (``absorb``/``is_ready``), and the
-    module lifts once at ``prime``/``absorb`` so ``step``/``rollout`` only recurse on the carried
-    Frame state. The incumbent one-shot :class:`ObservableMLP` stays as the shared-weights
-    training twin; this module is the protocol-compliant replacement.
+    The opaque state is ``[standardized EEG window | raw control window | lifted Frame state]``
+    (plus a residual carry block when the skip is on): the register mirrors the waveform module's
+    shift register (``absorb``/``is_ready``), and the module lifts once at ``prime``/``absorb`` so
+    ``step``/``rollout`` only recurse on the carried Frame state. The incumbent one-shot
+    :class:`ObservableMLP` stays as the shared-weights training twin; this module is the
+    protocol-compliant replacement.
 
     Attributes
     ----------
@@ -171,6 +183,7 @@ class StepwiseObservableMLP(nn.Module):
         transition_hidden: int,
         transition_depth: int,
         activation: Activation = "softplus",
+        residual: bool = True,
         y_std: Standardizer | None = None,
         u_std: Standardizer | None = None,
         l_std: Standardizer | None = None,
@@ -179,7 +192,8 @@ class StepwiseObservableMLP(nn.Module):
 
         ``y_std``/``u_std``/``l_std`` become the module's float32 buffers; when omitted they
         default to the identity map, so a module built before the standardizers are fitted treats
-        raw units as model space.
+        raw units as model space. With the residual skip the readout emits per-Frame deltas that
+        the recursion accumulates in a carry block appended to the opaque state.
         """
         super().__init__()
         self.n_y = n_y
@@ -195,6 +209,7 @@ class StepwiseObservableMLP(nn.Module):
         self.transition_hidden = transition_hidden
         self.transition_depth = transition_depth
         self.activation = activation
+        self.residual = residual
         self.n_values = geometry.n_values(fs)
         self.n_outputs = n_channels * self.n_values
         # Recorded metadata the checkpoint persists and ``load`` restores; training sets them.
@@ -225,7 +240,8 @@ class StepwiseObservableMLP(nn.Module):
 
         ``x`` is the incumbent history-plus-future-control row, so the two paths share one dataset
         builder. Averaging the *standardized* controls equals standardizing their mean, because both
-        maps are affine.
+        maps are affine. With the residual the readout emits each Frame's delta and the recursion
+        accumulates it, exactly as :meth:`step` carries it in the opaque state.
         """
         batch = x.shape[0]
         u_future = x[:, self._n_hist :].reshape(batch, self.horizon, self.n_controls)
@@ -233,9 +249,15 @@ class StepwiseObservableMLP(nn.Module):
 
         z = self.lift(x[:, : self._n_hist])
         frames = []
+        if self.residual:
+            carry = torch.zeros(batch, self.n_outputs, dtype=torch.float32, device=x.device)
         for m in range(u_bar.shape[1]):
             z = self.transition(torch.cat([z, u_bar[:, m]], dim=1))
-            frames.append(self.readout(z))
+            if self.residual:
+                carry = carry + self.readout(z)
+                frames.append(carry)
+            else:
+                frames.append(self.readout(z))
         return torch.stack(frames, dim=1)
 
     @property
@@ -305,24 +327,25 @@ class StepwiseObservableMLP(nn.Module):
     def _step_batch(self, z: FloatArray, u_bar: FloatArray) -> tuple[FloatArray, FloatArray]:
         """Advance lifted states ``(B, z_dim)`` one Frame under raw Frame-mean controls ``(B, n_controls)``.
 
-        Returns the next lifted state ``(B, z_dim)`` and that Frame's raw log-Observable
-        ``(B, n_channels * n_values)``.
+        Returns the next lifted state ``(B, z_dim)`` and that Frame's *standardized* log-Observable
+        readout ``(B, n_channels * n_values)``; the residual recursion accumulates the readout in
+        standardized space and decodes once, so the carry never round-trips through ``l_std``.
         """
         u_std = self.u_std.transform(u_bar)
         with torch.no_grad():
             z_next = self.transition(torch.as_tensor(np.concatenate([z, u_std], axis=-1), dtype=torch.float32))
             l_std = self.readout(z_next)
-        return to_numpy(z_next), self.l_std.inverse_transform(to_numpy(l_std))
+        return to_numpy(z_next), to_numpy(l_std)
 
     def design_normal_equations(
         self, trajectories: list[tuple[FloatArray, FloatArray]]
     ) -> tuple[FloatArray, FloatArray]:
         """Harvest the per-Frame lifted states ``z_m`` and their Frame targets into ``(G, P)``.
 
-        Every window on the shared grid lifts once and recurses through the shared transition;
-        each post-transition state pairs with its Frame's standardized log-Observable target, so
-        the readout -- shared across Frames -- is fitted on every ``(z_m, target)`` pair of every
-        window. The bias column (last) is the constant-1 feature.
+        For every window on the shared grid the readout pairs with its Frame's standardized
+        log-Observable target -- or, with the residual skip, that Frame's delta from the previous
+        Frame's target, zero before the first Frame. The bias column (last) is the constant-1
+        feature.
         """
         f = self.z_dim + 1
         c = self.n_outputs
@@ -355,8 +378,12 @@ class StepwiseObservableMLP(nn.Module):
             for m in range(n_frames):
                 z = self.transition(torch.cat([z, u_bar[:, m]], dim=1))
                 H_mat[m * n_samples : (m + 1) * n_samples, : self.z_dim] = to_numpy(z)
-            # Frame-major rows, paired with the frame-major targets below.
+            # Frame-major rows, paired with the frame-major targets below. With the residual skip
+            # the readout fits Frame-to-Frame deltas rather than absolute levels.
             T_mat = targets.transpose(1, 0, 2).reshape(-1, c)
+            if self.residual:
+                T_mat = T_mat.copy()
+                T_mat[n_samples:] -= T_mat[:-n_samples]
             G += H_mat.T @ H_mat
             P += H_mat.T @ T_mat
         return G, P
@@ -372,12 +399,17 @@ class StepwiseObservableMLP(nn.Module):
 
         ``y_hist (k, n_channels)`` and ``u_hist (k, n_controls)`` both end at the same step
         ``t - 1``, so :meth:`rollout` predicts from ``t`` onwards. The register part is
-        byte-identical in layout to :meth:`neuro.predictor.module.AutoregressiveMLP.prime`.
+        byte-identical in layout to :meth:`neuro.predictor.module.AutoregressiveMLP.prime`; with
+        the residual skip the state ends in a zero carry block, the mean level in standardized
+        space before any Frame is predicted.
         """
         y_arr = np.asarray(y_hist, dtype=np.float64)
         u_arr = np.asarray(u_hist, dtype=np.float64)
         register = np.concatenate([self.encode(y_arr)[-self.n_y :].reshape(-1), u_arr[-self.n_u :].reshape(-1)])
-        return np.concatenate([register, self._lift_batch(register[None, :])[0]])
+        state = np.concatenate([register, self._lift_batch(register[None, :])[0]])
+        if self.residual:
+            state = np.concatenate([state, np.zeros(self.n_outputs, dtype=np.float64)])
+        return state
 
     def prime_many(self, y_hists: FloatArray, u_hists: FloatArray) -> FloatArray:
         """Batched :meth:`prime`: ``(B, k, n_channels)`` and ``(B, k, n_controls)`` -> ``(B, state)``."""
@@ -391,19 +423,30 @@ class StepwiseObservableMLP(nn.Module):
             ],
             axis=-1,
         )
-        return np.concatenate([register, self._lift_batch(register)], axis=-1)
+        state = np.concatenate([register, self._lift_batch(register)], axis=-1)
+        if self.residual:
+            state = np.concatenate([state, np.zeros((n_batch, self.n_outputs), dtype=np.float64)], axis=-1)
+        return state
 
     def step(self, state: FloatArray, u_bar: FloatArray) -> tuple[FloatArray, FloatArray]:
         """Advance one position (one Frame): apply raw Frame-mean control ``u_bar`` -> ``(state', output)``.
 
         ``u_bar`` is one Frame-mean ``(n_controls,)`` in raw units. The register is carried
         unchanged; only the lifted Frame state advances through the shared transition and readout.
+        With the residual skip the standardized readout is added onto the carry block, and the
+        emitted Frame is that accumulated level decoded.
         """
         state_arr = np.asarray(state, dtype=np.float64)
         u_arr = np.asarray(u_bar, dtype=np.float64).reshape(-1)
-        z = state_arr[self._n_hist :]
-        z_next, l_raw = self._step_batch(z[None, :], u_arr[None, :])
-        return np.concatenate([state_arr[: self._n_hist], z_next[0]]), l_raw[0]
+        z = state_arr[self._n_hist : self._n_hist + self.z_dim]
+        z_next, l_std = self._step_batch(z[None, :], u_arr[None, :])
+        z_next = z_next[0]
+        if self.residual:
+            carry = state_arr[self._n_hist + self.z_dim :] + l_std[0]
+            output = self.l_std.inverse_transform(carry)
+            return np.concatenate([state_arr[: self._n_hist], z_next, carry]), output
+        output = self.l_std.inverse_transform(l_std[0])
+        return np.concatenate([state_arr[: self._n_hist], z_next]), output
 
     def rollout(self, state: FloatArray, u_future: FloatArray) -> FloatArray:
         """Free-run from ``state`` under raw ``u_future`` -> raw ``(n_frames, n_channels * n_values)``.
@@ -426,7 +469,8 @@ class StepwiseObservableMLP(nn.Module):
         """Batched :meth:`rollout`: ``(B, state)`` and raw ``(B, horizon, n_controls)``.
 
         Returns ``(B, n_frames, n_channels * n_values)``. The register is constant across the
-        rollout, so only the lifted Frame states are carried between Frames.
+        rollout, so only the lifted Frame states (and the residual carry) are carried between
+        Frames.
         """
         states_arr = np.asarray(states, dtype=np.float64)
         u_arr = np.asarray(u_futures, dtype=np.float64)
@@ -434,15 +478,27 @@ class StepwiseObservableMLP(nn.Module):
         n_frames = self.geometry.n_frames(horizon, self.fs)
         u_bar = np.einsum("mt,btc->bmc", control_means(self.geometry, horizon, self.fs), u_arr)
 
-        z = states_arr[:, self._n_hist :]
+        z = states_arr[:, self._n_hist : self._n_hist + self.z_dim]
         preds = np.empty((n_batch, n_frames, self.n_outputs), dtype=np.float64)
-        for m in range(n_frames):
-            z, l_raw = self._step_batch(z, u_bar[:, m])
-            preds[:, m] = l_raw
+        if self.residual:
+            carry = states_arr[:, self._n_hist + self.z_dim :]
+            for m in range(n_frames):
+                z, l_std = self._step_batch(z, u_bar[:, m])
+                carry = carry + l_std
+                preds[:, m] = self.l_std.inverse_transform(carry)
+        else:
+            for m in range(n_frames):
+                z, l_std = self._step_batch(z, u_bar[:, m])
+                preds[:, m] = self.l_std.inverse_transform(l_std)
         return preds
 
     def absorb(self, state: FloatArray, y: FloatArray, u: FloatArray) -> FloatArray:
-        """Absorb a new raw measurement ``y`` and applied control ``u``, re-lifting the Frame state."""
+        """Absorb a new raw measurement ``y`` and applied control ``u``, re-lifting the Frame state.
+
+        The residual carry resets to zero: a fresh rollout starts from the mean level, matching
+        :meth:`prime` of the same history, because the last observed Frame never spans the whole
+        Segment the geometry reduces.
+        """
         state_arr = np.asarray(state, dtype=np.float64)
         n_z = self.n_y * self.n_channels
         y_window = state_arr[:n_z].reshape(self.n_y, self.n_channels)
@@ -452,18 +508,24 @@ class StepwiseObservableMLP(nn.Module):
         y_window = np.concatenate([y_window[1:], z_new[None, :]], axis=0)
         u_window = np.concatenate([u_window[1:], np.asarray(u, dtype=np.float64).reshape(1, -1)], axis=0)
         register = np.concatenate([y_window.reshape(-1), u_window.reshape(-1)])
-        return np.concatenate([register, self._lift_batch(register[None, :])[0]])
+        state = np.concatenate([register, self._lift_batch(register[None, :])[0]])
+        if self.residual:
+            state = np.concatenate([state, np.zeros(self.n_outputs, dtype=np.float64)])
+        return state
 
     def is_ready(self, state: FloatArray) -> bool:
         """Report whether the EEG window holds no NaN, i.e. at least ``n_y`` samples were absorbed."""
         return not np.isnan(np.asarray(state, dtype=np.float64)[: self.n_y * self.n_channels]).any()
 
     def initial_state(self) -> FloatArray:
-        """NaN-padded EEG window, zero-padded control window, and their (NaN) lifted Frame state."""
+        """NaN-padded EEG window, zero-padded control window, their (NaN) lifted Frame state, zero carry."""
         y_buf = np.full(self.n_y * self.n_channels, np.nan, dtype=np.float64)
         u_buf = np.zeros(self.n_u * self.n_controls, dtype=np.float64)
         register = np.concatenate([y_buf, u_buf])
-        return np.concatenate([register, self._lift_batch(register[None, :])[0]])
+        state = np.concatenate([register, self._lift_batch(register[None, :])[0]])
+        if self.residual:
+            state = np.concatenate([state, np.zeros(self.n_outputs, dtype=np.float64)])
+        return state
 
     def save(self, path: str | Path) -> None:
         """Persist weights, standardizer buffers and recorded metadata into one ``.npz`` checkpoint.
@@ -492,6 +554,7 @@ class StepwiseObservableMLP(nn.Module):
             "transition_depth": self.transition_depth,
             "n_lift_layers": len(linears),
             "n_transition_layers": len(transitions),
+            "residual": int(self.residual),
             "geometry": geometry_meta(self.geometry),
             **self.provenance.meta,
         }
@@ -531,6 +594,7 @@ class StepwiseObservableMLP(nn.Module):
             transition_hidden=int(meta["transition_hidden"]),
             transition_depth=int(meta["transition_depth"]),
             activation=meta["activation"],
+            residual=bool(meta.get("residual", False)),
             y_std=Standardizer.from_arrays(arrays, "y"),
             u_std=Standardizer.from_arrays(arrays, "u"),
             l_std=Standardizer.from_arrays(arrays, "l"),

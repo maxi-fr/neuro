@@ -60,6 +60,8 @@ def mlp_rollout(ckpt: MLPCheckpoint, state: FloatArray, u_future: FloatArray) ->
     preds = np.empty((steps, ckpt.n_channels), dtype=np.float64)
     for t in range(steps):
         y_next = mlp_forward(np.concatenate([y_window.reshape(-1), u_window.reshape(-1)]), ckpt.layers, ckpt.activation)
+        if ckpt.residual:
+            y_next = y_next + y_window[-1]
         y_window = np.concatenate([y_window[1:], y_next[None, :]], axis=0)
         u_window = np.concatenate([u_window[1:], w_future[t][None, :]], axis=0)
         preds[t] = y_next
@@ -131,8 +133,15 @@ def observable_forecast(ckpt: ObservableCheckpoint, state: FloatArray, u_future:
     z = mlp_forward(lift_in, ckpt.lift, ckpt.activation)
 
     frames = []
-    for m in range(len(u_bar)):
-        z = mlp_forward(np.concatenate([z, u_bar[m]]), ckpt.transition, ckpt.activation)
-        frames.append(z @ ckpt.readout[0].T + ckpt.readout[1])
+    if ckpt.residual:
+        carry = np.zeros(ckpt.n_channels * ckpt.n_values)
+        for m in range(len(u_bar)):
+            z = mlp_forward(np.concatenate([z, u_bar[m]]), ckpt.transition, ckpt.activation)
+            carry = carry + (z @ ckpt.readout[0].T + ckpt.readout[1])
+            frames.append(carry)
+    else:
+        for m in range(len(u_bar)):
+            z = mlp_forward(np.concatenate([z, u_bar[m]]), ckpt.transition, ckpt.activation)
+            frames.append(z @ ckpt.readout[0].T + ckpt.readout[1])
     stacked = ckpt.l_std.inverse_transform(np.stack(frames, axis=0))
     return stacked.reshape(len(frames), ckpt.n_channels, ckpt.n_values)

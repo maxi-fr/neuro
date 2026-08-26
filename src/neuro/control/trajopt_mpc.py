@@ -110,6 +110,7 @@ class WaveformMLPModel(DiscreteDynamics):
     n_channels: int = eqx.field(static=True)
     n_controls: int = eqx.field(static=True)
     activation: Activation = eqx.field(static=True)
+    residual: bool = eqx.field(static=True)
     y_center: jax.Array
     y_scale: jax.Array
     u_center: jax.Array
@@ -135,6 +136,7 @@ class WaveformMLPModel(DiscreteDynamics):
         self.n_channels = checkpoint.n_channels
         self.n_controls = checkpoint.n_controls
         self.activation = checkpoint.activation
+        self.residual = checkpoint.residual
         self.y_center = jnp.asarray(checkpoint.y_std.center)
         self.y_scale = jnp.asarray(checkpoint.y_std.scale)
         self.u_center = jnp.asarray(checkpoint.u_std.center)
@@ -152,12 +154,19 @@ class WaveformMLPModel(DiscreteDynamics):
         return _apply_activation(self.activation, z)
 
     def _predict(self, y_window: jax.Array, u_window: jax.Array) -> jax.Array:
-        """One MLP forward pass on standardized windows -> the next standardized sample ``(n_channels,)``."""
+        """One MLP forward pass on standardized windows -> the next standardized sample ``(n_channels,)``.
+
+        With the residual skip the MLP output adds the window's last sample, so the layers fit
+        the one-step delta exactly as the torch module does.
+        """
         z = jnp.concatenate([y_window.reshape(-1), u_window.reshape(-1)])
         for i, weight in enumerate(self.weights[:-1]):
             z = self._activate(z @ weight.T + self.biases[i])
         weight_last, bias_last = self.weights[-1], self.biases[-1]
-        return z @ weight_last.T + bias_last
+        z = z @ weight_last.T + bias_last
+        if self.residual:
+            z = z + y_window[-1]
+        return z
 
     def output(self, x: jax.Array) -> jax.Array:
         """Decode the newest standardized y-window row into the raw predicted sample ``(n_channels,)``.
@@ -327,12 +336,13 @@ class ObservableModel(DiscreteDynamics):
     """trajopt ``DiscreteDynamics`` adapter for the one-Frame-per-step Observable predictor.
 
     The opaque state is the history register -- ``[standardized EEG window | raw control
-    window]`` -- followed by the lifted Frame state, exactly the ``StepwiseObservableMLP``
-    state. One step is one Frame: ``discrete_dynamics`` runs the shared transition under the
-    Frame-mean control ``u`` and carries the register unchanged, matching the torch module's
-    ``step``; the lift (register -> Frame state) happens once at ``absorb``/``initial_state``.
-    The controller therefore drives this adapter on the Frame grid, and the problem's decision
-    variables are Frame-mean controls rather than per-sample ones.
+    window]`` -- followed by the lifted Frame state (and the residual carry block, when the
+    checkpoint's skip is on), exactly the ``StepwiseObservableMLP`` state. One step is one
+    Frame: ``discrete_dynamics`` runs the shared transition under the Frame-mean control ``u``
+    and carries the register unchanged, matching the torch module's ``step``; the lift
+    (register -> Frame state) happens once at ``absorb``/``initial_state``. The controller
+    therefore drives this adapter on the Frame grid, and the problem's decision variables are
+    Frame-mean controls rather than per-sample ones.
     """
 
     n_y: int = eqx.field(static=True)
@@ -343,6 +353,7 @@ class ObservableModel(DiscreteDynamics):
     n_values: int = eqx.field(static=True)
     fs: float = eqx.field(static=True)
     activation: Activation = eqx.field(static=True)
+    residual: bool = eqx.field(static=True)
     geometry: ObservableGeometry = eqx.field(static=True)
     lift_weights: tuple[jax.Array, ...]
     lift_biases: tuple[jax.Array, ...]
@@ -366,7 +377,10 @@ class ObservableModel(DiscreteDynamics):
             The torch-free Observable checkpoint whose weights and standardizers become this model.
         """
         n_hist = checkpoint.n_y * checkpoint.n_channels + checkpoint.n_u * checkpoint.n_controls
-        super().__init__(n=n_hist + checkpoint.z_dim, m=checkpoint.n_controls, ne=n_hist + checkpoint.z_dim)
+        carry_size = checkpoint.n_channels * checkpoint.n_values if checkpoint.residual else 0
+        super().__init__(
+            n=n_hist + checkpoint.z_dim + carry_size, m=checkpoint.n_controls, ne=n_hist + checkpoint.z_dim + carry_size
+        )
         self.n_y = int(checkpoint.n_y)
         self.n_u = int(checkpoint.n_u)
         self.n_channels = int(checkpoint.n_channels)
@@ -375,6 +389,7 @@ class ObservableModel(DiscreteDynamics):
         self.n_values = int(checkpoint.n_values)
         self.fs = float(checkpoint.fs)
         self.activation = checkpoint.activation
+        self.residual = checkpoint.residual
         self.geometry = checkpoint.geometry
         self.lift_weights = tuple(jnp.asarray(weight) for weight, _ in checkpoint.lift)
         self.lift_biases = tuple(jnp.asarray(bias) for _, bias in checkpoint.lift)
@@ -421,9 +436,16 @@ class ObservableModel(DiscreteDynamics):
         return self._mlp(self.lift_weights, self.lift_biases, lift_in)
 
     def output(self, x: jax.Array) -> jax.Array:
-        """Decode the lifted Frame state into the raw log-Observable frame ``(n_channels * n_values,)``."""
-        z = x[self._n_hist :]
-        l_std = z @ self.readout_w.T + self.readout_b
+        """Decode the Frame level into the raw log-Observable frame ``(n_channels * n_values,)``.
+
+        With the residual skip the level is the accumulated carry block; otherwise it is the
+        readout of the lifted Frame state.
+        """
+        if self.residual:
+            l_std = x[self._n_hist + self.z_dim :]
+        else:
+            z = x[self._n_hist :]
+            l_std = z @ self.readout_w.T + self.readout_b
         return l_std * self.l_scale + self.l_center
 
     def discrete_dynamics(
@@ -439,9 +461,12 @@ class ObservableModel(DiscreteDynamics):
         torch module's ``step``.
         """
         del t, dt
-        z = x[self._n_hist :]
+        z = x[self._n_hist : self._n_hist + self.z_dim]
         v = (u - self.u_center) / self.u_scale
         z_next = self._mlp(self.transition_weights, self.transition_biases, jnp.concatenate([z, v]))
+        if self.residual:
+            carry = x[self._n_hist + self.z_dim :] + (z_next @ self.readout_w.T + self.readout_b)
+            return jnp.concatenate([x[: self._n_hist], z_next, carry])
         return jnp.concatenate([x[: self._n_hist], z_next])
 
     def absorb(self, state: FloatArray, y: FloatArray, u: FloatArray) -> FloatArray:
@@ -455,18 +480,24 @@ class ObservableModel(DiscreteDynamics):
         u_window = np.concatenate([u_window[1:], np.asarray(u, dtype=np.float64).reshape(1, -1)], axis=0)
         register = np.concatenate([y_window.reshape(-1), u_window.reshape(-1)])
         z = np.asarray(self._lift(jnp.asarray(register, dtype=jnp.float64)), dtype=np.float64)
-        return np.concatenate([register, z])
+        state = np.concatenate([register, z])
+        if self.residual:
+            state = np.concatenate([state, np.zeros(self.n_channels * self.n_values, dtype=np.float64)])
+        return state
 
     def is_ready(self, state: FloatArray) -> bool:
         """Report whether the EEG window holds no NaN, i.e. at least ``n_y`` samples were absorbed."""
         return not bool(np.isnan(np.asarray(state, dtype=np.float64)[: self.n_y * self.n_channels]).any())
 
     def initial_state(self) -> FloatArray:
-        """NaN-padded EEG window, zero-padded control window, and their (NaN) lifted Frame state."""
+        """NaN-padded EEG window, zero-padded control window, their (NaN) lifted Frame state, zero carry."""
         y_buf = np.full(self.n_y * self.n_channels, np.nan, dtype=np.float64)
         u_buf = np.zeros(self.n_u * self.n_controls, dtype=np.float64)
         register = np.concatenate([y_buf, u_buf])
-        return np.concatenate([register, self._lift(jnp.asarray(register, dtype=jnp.float64))])
+        state = np.concatenate([register, self._lift(jnp.asarray(register, dtype=jnp.float64))])
+        if self.residual:
+            state = np.concatenate([state, np.zeros(self.n_channels * self.n_values, dtype=np.float64)])
+        return state
 
 
 @dataclasses.dataclass(frozen=True)

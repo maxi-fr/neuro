@@ -117,6 +117,10 @@ def _build_checkpoint(
         depth=depth,
         activation="relu",
         dt=0.01,
+        # The golden control/cost values were pinned from the incumbent CasADi controller on the
+        # plain (non-residual) semantics, so the parity artifacts keep the skip off; the residual
+        # path is pinned separately by the module-vs-adapter parity tests.
+        residual=False,
         y_std=Standardizer(center=scalers["y_mean"], scale=scalers["y_scale"]),
         u_std=Standardizer(center=scalers["u_mean"], scale=scalers["u_scale"]),
     )

@@ -229,6 +229,7 @@ def _train_observable(
         transition_hidden=obs.transition_hidden,
         transition_depth=obs.transition_depth,
         activation=obs.activation,
+        residual=obs.residual,
     ).to(device)
 
     tensors = (
@@ -312,6 +313,7 @@ def _train_observable_ridge(
         transition_hidden=obs.transition_hidden,
         transition_depth=obs.transition_depth,
         activation=obs.activation,
+        residual=obs.residual,
         y_std=data.y_std,
         u_std=data.u_std,
         l_std=data.l_std,

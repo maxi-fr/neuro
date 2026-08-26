@@ -157,6 +157,71 @@ def test_forward_is_row_independent() -> None:
     np.testing.assert_allclose(batched, singles, rtol=1e-5, atol=1e-6)
 
 
+def test_residual_skip_makes_a_zero_mlp_predict_pure_persistence() -> None:
+    """With the residual skip, a zero-weight MLP predicts the last window sample unchanged.
+
+    ``z_{t+1} = layers(x) + z_t`` degenerates to the identity when ``layers`` is zero, so the
+    whole free run is the constant last window sample -- the persistence prior the skip bakes in.
+    """
+    model = AutoregressiveMLP(
+        n_y=2,
+        n_u=1,
+        horizon=3,
+        n_channels=2,
+        n_controls=1,
+        hidden_size=4,
+        depth=2,
+        activation="softplus",
+        residual=True,
+    )
+    with torch.no_grad():
+        for module in model.layers:
+            if isinstance(module, torch.nn.Linear):
+                module.weight.zero_()
+                module.bias.zero_()
+
+    rng = np.random.default_rng(11)
+    row = rng.standard_normal(model.n_y * 2 + (model.n_u + model.horizon) * 1)
+    pred = model(torch.as_tensor(row, dtype=torch.float32)[None, :]).detach().numpy()[0]
+    z_t = row[model.n_y * 2 - 2 : model.n_y * 2]  # the last sample of the y-window
+    np.testing.assert_allclose(
+        pred.reshape(model.horizon, 2), np.broadcast_to(z_t, (model.horizon, 2)), rtol=1e-6, atol=1e-7
+    )
+
+    y_hist = rng.standard_normal((2, 2))
+    state = model.prime(
+        y_hist,
+        rng.standard_normal((2, 1)),
+    )
+    rolled = model.rollout(state, rng.standard_normal((3, 1)))
+    np.testing.assert_allclose(rolled, np.broadcast_to(model.decode(y_hist[-1]), (3, 2)), rtol=1e-6, atol=1e-7)
+
+
+def test_without_residual_a_zero_mlp_predicts_zero() -> None:
+    """Without the skip the same zero-weight MLP emits zeros: the skip is what carries the level."""
+    model = AutoregressiveMLP(
+        n_y=2,
+        n_u=1,
+        horizon=3,
+        n_channels=2,
+        n_controls=1,
+        hidden_size=4,
+        depth=2,
+        activation="softplus",
+        residual=False,
+    )
+    with torch.no_grad():
+        for module in model.layers:
+            if isinstance(module, torch.nn.Linear):
+                module.weight.zero_()
+                module.bias.zero_()
+
+    rng = np.random.default_rng(12)
+    row = rng.standard_normal(model.n_y * 2 + (model.n_u + model.horizon) * 1)
+    pred = model(torch.as_tensor(row, dtype=torch.float32)[None, :]).detach().numpy()[0]
+    np.testing.assert_array_equal(pred, np.zeros(model.horizon * 2))
+
+
 def test_module_layers_sequential() -> None:
     """The 1-step MLP is an nn.Sequential interleaving nn.Linear and activation modules."""
     model = AutoregressiveMLP(

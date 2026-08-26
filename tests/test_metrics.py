@@ -68,8 +68,13 @@ def _tiny_mlp_model(*, n_y: int, n_u: int, horizon: int, n_eeg: int, n_controls:
 
 
 def _silent_mlp_model(*, n_y: int, n_u: int, horizon: int, n_eeg: int, n_controls: int) -> AutoregressiveMLP:
-    """An MLP module whose every weight is zero, so it free-runs to exactly zero."""
+    """An MLP module whose every weight is zero, so it free-runs to exactly zero.
+
+    The residual skip is off: with it, a zero-weight stack would repeat the primed history's last
+    sample instead of staying silent, and these tests are about the metrics on a zero predictor.
+    """
     model = _tiny_mlp_model(n_y=n_y, n_u=n_u, horizon=horizon, n_eeg=n_eeg, n_controls=n_controls)
+    model.residual = False
     with torch.no_grad():
         for module in model.layers:
             if isinstance(module, torch.nn.Linear):

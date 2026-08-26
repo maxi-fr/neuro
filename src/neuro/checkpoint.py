@@ -47,6 +47,8 @@ class MLPCheckpoint:
         Downsampling factor relative to the simulation's base ``dt``.
     y_std, u_std : Standardizer
         Channel and control standardizers mapping raw units to model space.
+    residual : bool
+        Whether the layers predict the one-step delta from the window's last sample.
     provenance : TrainingProvenance
         What the training data was made of; empty on checkpoints written before it was recorded.
     """
@@ -64,6 +66,7 @@ class MLPCheckpoint:
     downsample: int
     y_std: Standardizer
     u_std: Standardizer
+    residual: bool = True
     provenance: TrainingProvenance = field(default_factory=TrainingProvenance)
 
     @property
@@ -100,6 +103,7 @@ class MLPCheckpoint:
             "dt": self.dt,
             "downsample": self.downsample,
             "n_layers": len(self.layers),
+            "residual": int(self.residual),
             **self.provenance.meta,
         }
         arrays: dict[str, FloatArray] = {}
@@ -252,6 +256,8 @@ class ObservableCheckpoint:
         The Observable grid the model was trained against.
     y_std, u_std, l_std : Standardizer
         Channel, control and log-Observable standardizers.
+    residual : bool
+        Whether the readout emits per-Frame deltas the recursion accumulates in the state.
     provenance : TrainingProvenance
         What the training data was made of.
     """
@@ -271,6 +277,7 @@ class ObservableCheckpoint:
     y_std: Standardizer
     u_std: Standardizer
     l_std: Standardizer
+    residual: bool = True
     provenance: TrainingProvenance = field(default_factory=TrainingProvenance)
 
     @property
@@ -327,6 +334,7 @@ class ObservableCheckpoint:
             "transition_depth": len(self.transition) - 1,
             "n_lift_layers": len(self.lift),
             "n_transition_layers": len(self.transition),
+            "residual": int(self.residual),
             "geometry": geometry_meta(self.geometry),
             **self.provenance.meta,
         }
@@ -373,6 +381,7 @@ def load_mlp(path: str | Path) -> MLPCheckpoint:
         downsample=int(meta["downsample"]),
         y_std=Standardizer.from_arrays(arrays, "y"),
         u_std=Standardizer.from_arrays(arrays, "u"),
+        residual=bool(meta.get("residual", False)),
         provenance=TrainingProvenance.from_meta(meta),
     )
 
@@ -447,6 +456,7 @@ def load_observable(path: str | Path) -> ObservableCheckpoint:
         y_std=Standardizer.from_arrays(arrays, "y"),
         u_std=Standardizer.from_arrays(arrays, "u"),
         l_std=Standardizer.from_arrays(arrays, "l"),
+        residual=bool(meta.get("residual", False)),
         provenance=TrainingProvenance.from_meta(meta),
     )
 

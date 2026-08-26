@@ -1,5 +1,18 @@
 # TODO list
 
+## Review refactor?
+
+* The costs dont need the model i think because MPC class can do that now
+* why is output() even extra?
+* "build_observable_problem" etc. should be fully configurable via yaml not only through these helper.
+* remove _apply_activation
+* remove all mentions of the old MPC/casadi implementation
+* how is the observable model different from the normal NN model? not at all. Arent they both just Autoregressive MLP at least on the MPC side yes. But the ingestion is still using u and y
+* what is lift? What is transition?
+* predictor protocol doesnt make sense: We assume completely different engines. One for training and one for inference/control
+  * then prime(), etc. dont have to emit FloatArray, numpy completely removed
+* remove _predictor_reference.py
+
 * **Monday 24.08** Start predictor sweeps: Papa in München
   * is sweeping implemented for ObservableSpace?
   * what are all the hyperparameters?

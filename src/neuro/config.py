@@ -51,6 +51,7 @@ class ModelConfig(StrictConfig):
     hidden_size: int = Field(default=128, ge=1)
     depth: int = Field(default=2, ge=0)
     activation: Literal["relu", "tanh", "softplus"] = "relu"
+    residual: bool = True
 
 
 class SimulationConfig(StrictConfig):
@@ -321,6 +322,7 @@ class ObservableSpec(StrictConfig):
     transition_depth: int = Field(default=2, ge=0)
     activation: Literal["relu", "tanh", "softplus"] = "softplus"
     control_blind: bool = False
+    residual: bool = True
 
     def geometry(self) -> ObservableGeometry:
         """Return the single configured Observable geometry."""

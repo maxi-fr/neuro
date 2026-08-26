@@ -44,6 +44,7 @@ def _observable_model(cfg: NNPredictorConfig, data: ObservableData) -> Observabl
         transition_hidden=obs.transition_hidden,
         transition_depth=obs.transition_depth,
         activation=obs.activation,
+        residual=obs.residual,
     )
 
 

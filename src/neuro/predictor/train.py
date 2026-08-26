@@ -230,6 +230,7 @@ def _prepare_waveform(
         hidden_size=mdl.hidden_size,
         depth=depth,
         activation=mdl.activation,
+        residual=mdl.residual,
         dt=sim.dt * sim.downsample,
         y_std=data.y_std,
         u_std=data.u_std,

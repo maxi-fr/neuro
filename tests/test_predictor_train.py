@@ -122,7 +122,10 @@ def test_training_converges_and_scores_the_rollout(files: list[str]) -> None:
     result = _wave_train(_config(), files)
 
     assert len(result.train_losses) == len(result.val_losses) == 3
-    assert result.train_losses[-1] < result.train_losses[0]
+    # The train loss is masked to the curriculum's ramping rollout prefix, so with the residual
+    # skip the first epoch's one-step persistence is nearly free and the masked curve need not
+    # fall; the validation loss trusts the full span at every epoch and must.
+    assert result.val_losses[-1] < result.val_losses[0]
     assert np.isfinite(result.rollout.pooled)
     assert np.all(np.isfinite(result.rollout.per_step))
     assert result.rollout.per_step.shape == (_HORIZON,)
@@ -232,13 +235,14 @@ def test_depth0_ridge_fit_reproduces_the_exact_one_step_lstsq(files: list[str]) 
     model = build()
     RidgeTrainer(ridge_lambda=0.0).fit(model, split.train_trajs)
 
-    # The exact 1-step least-squares, re-derived on the same standardized windows.
+    # The exact 1-step least-squares, re-derived on the same standardized windows. The residual
+    # skip makes the readout fit the delta from the window's last sample, so the targets are
+    # ``y_{k+1} - y_k`` rather than ``y_{k+1}``.
     y_len = mdl.n_y * data.n_channels
     m = data.n_controls
     X_1step = np.hstack([data.X_train[:, :y_len], data.X_train[:, y_len + m : y_len + (mdl.n_u + 1) * m]])
-    weight_bias, *_ = np.linalg.lstsq(
-        np.hstack([X_1step, np.ones((X_1step.shape[0], 1))]), data.Y_train[:, : data.n_channels], rcond=None
-    )
+    targets = data.Y_train[:, : data.n_channels] - data.X_train[:, y_len - data.n_channels : y_len]
+    weight_bias, *_ = np.linalg.lstsq(np.hstack([X_1step, np.ones((X_1step.shape[0], 1))]), targets, rcond=None)
     layer = model.layers[0]
     assert isinstance(layer, torch.nn.Linear)
     # The module's standardizers live in float32 buffers, so the ridge features differ from the

@@ -234,7 +234,10 @@ def test_mlp_prime_rollout_matches_hand_rolled_windows(tmp_path: Path) -> None:
     for t in range(max_steps):
         y_win = np.array(y_hist[-n_y:])
         u_win = w[t0 + t - n_u : t0 + t]
-        y_hist.append(mlp_forward(np.concatenate([y_win.reshape(-1), u_win.reshape(-1)]), ckpt.layers, ckpt.activation))
+        y_next = mlp_forward(np.concatenate([y_win.reshape(-1), u_win.reshape(-1)]), ckpt.layers, ckpt.activation)
+        if ckpt.residual:
+            y_next = y_next + y_win[-1]
+        y_hist.append(y_next)
     y_pred_manual = ckpt.y_std.inverse_transform(np.array(y_hist[n_y:]))
 
     # prime / rollout seam on the float32 module, versus the float64 hand-rolled loop.

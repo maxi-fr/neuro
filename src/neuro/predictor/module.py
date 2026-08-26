@@ -43,8 +43,9 @@ def design_normal_equations(
     """Fold one-step input features and next-step targets into ``(G, P)``, bias column last.
 
     For every window on the shared grid the feature row pairs the past-EEG block with the control
-    window shifted in by one step (the alignment ``forward``/``step`` use), and the target is the
-    next standardized sample.
+    window shifted in by one step (the alignment ``forward``/``step`` use). The target is the next
+    standardized sample -- or, with the residual skip, that sample's delta from the window's last
+    one, which is what the readout now predicts.
     """
     c = self.n_channels
     m = self.n_controls
@@ -63,7 +64,10 @@ def design_normal_equations(
         X_1step = np.hstack([X[:, :y_len], X[:, y_len + m : y_len + (self.n_u + 1) * m]])
         X_design = np.hstack([X_1step, np.ones((X_1step.shape[0], 1))])
         G += X_design.T @ X_design
-        P += X_design.T @ Y[:, :c]
+        targets = Y[:, :c]
+        if self.residual:
+            targets = targets - X[:, y_len - c : y_len]
+        P += X_design.T @ targets
     return G, P
 
 
@@ -98,6 +102,9 @@ class AutoregressiveMLP(nn.Module):
         Number of control channels.
     activation : Activation
         Activation applied after every layer except the last.
+    residual : bool
+        Whether the output adds the window's last standardized sample, so the layers fit the
+        one-step delta and the identity ``y_{k+1} = y_k`` stays free.
     dt : float
         The model's native time step, seconds; identity metadata only.
     y_center, y_scale, u_center, u_scale : Tensor
@@ -127,6 +134,7 @@ class AutoregressiveMLP(nn.Module):
         hidden_size: int,
         depth: int,
         activation: Activation = "relu",
+        residual: bool = True,
         dt: float = 0.0,
         y_std: Standardizer | None = None,
         u_std: Standardizer | None = None,
@@ -135,7 +143,8 @@ class AutoregressiveMLP(nn.Module):
 
         ``y_std``/``u_std`` become the module's float32 buffers; when omitted they default to the
         identity map, so a module built before the standardizers are fitted treats raw units as
-        model space.
+        model space. The residual skip ``+ z_t`` is part of the architecture: when disabled the
+        layers predict the absolute sample exactly as before.
         """
         super().__init__()
         self.n_y = n_y
@@ -144,6 +153,7 @@ class AutoregressiveMLP(nn.Module):
         self.n_channels = n_channels
         self.n_controls = n_controls
         self.activation = activation
+        self.residual = residual
         self.hidden_size = hidden_size
         self.depth = depth
         self.dt = float(dt)
@@ -176,7 +186,11 @@ class AutoregressiveMLP(nn.Module):
         self.register_buffer("u_scale", torch.as_tensor(u_std.scale, dtype=torch.float32))
 
     def forward(self, x: Tensor) -> Tensor:
-        """Roll out ``horizon`` steps: ``(B, n_y*C + (n_u + horizon)*m) -> (B, horizon*C)``."""
+        """Roll out ``horizon`` steps: ``(B, n_y*C + (n_u + horizon)*m) -> (B, horizon*C)``.
+
+        Each step adds the window's last standardized sample to the MLP output, so a zero-weight
+        stack predicts pure persistence and the layers only ever fit the one-step delta.
+        """
         batch = x.shape[0]
         n_z = self.n_y * self.n_channels
         n_u_past = self.n_u * self.n_controls
@@ -194,6 +208,8 @@ class AutoregressiveMLP(nn.Module):
             u_window = torch.cat([u_window[:, 1:], u_future[:, t : t + 1]], dim=1)
             mlp_in = torch.cat([y_window.reshape(batch, -1), u_window.reshape(batch, -1)], dim=1)
             y_next = self.layers(mlp_in)
+            if self.residual:
+                y_next = y_next + y_window[:, -1]
             y_window = torch.cat([y_window[:, 1:], y_next[:, None, :]], dim=1)
             preds.append(y_next)
 
@@ -237,7 +253,8 @@ class AutoregressiveMLP(nn.Module):
         """One-step MLP forward on standardized windows -> next standardized sample(s).
 
         ``y_window`` and ``u_window`` are ``(..., n_y, n_channels)`` and ``(..., n_u, n_controls)``
-        with a leading batch dim when present; returns ``(..., n_channels)``.
+        with a leading batch dim when present; returns ``(..., n_channels)``. With the residual
+        skip the MLP output adds the window's last sample, so a zero-weight stack is persistence.
         """
         batch = y_window.shape[:-2]
         x = np.concatenate(
@@ -249,6 +266,8 @@ class AutoregressiveMLP(nn.Module):
         )
         with torch.no_grad():
             z = self.layers(torch.as_tensor(x, dtype=torch.float32))
+        if self.residual:
+            z = z + torch.as_tensor(y_window[..., -1, :], dtype=torch.float32)
         return to_numpy(z)
 
     def prime(self, y_hist: FloatArray, u_hist: FloatArray) -> FloatArray:
@@ -365,6 +384,7 @@ class AutoregressiveMLP(nn.Module):
             "n_controls": self.n_controls,
             "hidden_size": self.hidden_size,
             "depth": self.depth,
+            "residual": int(self.residual),
             "dt": self.dt,
             "downsample": self.downsample,
             "n_layers": len(linears),
@@ -397,6 +417,7 @@ class AutoregressiveMLP(nn.Module):
             hidden_size=int(meta["hidden_size"]),
             depth=int(meta["depth"]),
             activation=meta["activation"],
+            residual=bool(meta.get("residual", False)),
             dt=float(meta["dt"]),
             y_std=Standardizer.from_arrays(arrays, "y"),
             u_std=Standardizer.from_arrays(arrays, "u"),

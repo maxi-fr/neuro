@@ -84,11 +84,13 @@ def test_mlp_reader_round_trips_weights_standardizers_and_metadata(tmp_path: Pat
         downsample=module.downsample,
         y_std=module.y_std,
         u_std=module.u_std,
+        residual=module.residual,
         provenance=module.provenance,
     )
 
     assert got.model_type == "mlp"
     assert got.activation == module.activation
+    assert got.residual == module.residual
     assert got.n_y == module.n_y
     assert got.n_u == module.n_u
     assert got.horizon == module.horizon
@@ -131,6 +133,7 @@ def test_mlp_checkpoint_save_load_round_trips_recorded_provenance(tmp_path: Path
         downsample=module.downsample,
         y_std=module.y_std,
         u_std=module.u_std,
+        residual=module.residual,
         provenance=module.provenance,
     )
     path = tmp_path / "mlp_ckpt"
@@ -138,6 +141,7 @@ def test_mlp_checkpoint_save_load_round_trips_recorded_provenance(tmp_path: Path
 
     got = load_mlp(path)
     assert got.provenance == module.provenance
+    assert got.residual == module.residual
     # The torch module loader reads the same layout the dataclass save wrote.
     assert AutoregressiveMLP.load(path).n_y == module.n_y
 
@@ -205,6 +209,7 @@ def test_observable_reader_round_trips_weights_standardizers_and_geometry(
     got = load_observable(path)
     assert got.model_type == "observable"
     assert got.geometry == ckpt.geometry
+    assert got.residual == ckpt.residual
     assert got.fs == pytest.approx(ckpt.fs)
     assert got.z_dim == ckpt.z_dim
     assert got.n_values == ckpt.n_values

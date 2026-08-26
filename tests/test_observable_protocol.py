@@ -339,6 +339,10 @@ def test_depth0_ridge_fits_the_shared_readout_on_harvested_z_m() -> None:
         z = model.transition(torch.cat([z, u_bar[:, m]], dim=1))
         H[m * n_samples : (m + 1) * n_samples, :_Z_DIM] = to_numpy(z)
     T = targets.transpose(1, 0, 2).reshape(-1, model.n_outputs)
+    # The residual readout fits per-Frame *deltas*: Frame m's target is its difference from the
+    # previous Frame's target, with a zero baseline before the first Frame.
+    T = T.copy()
+    T[n_samples:] -= T[:-n_samples]
 
     A_want = np.linalg.lstsq(H, T, rcond=None)[0].T
     installed = np.hstack([model.readout.weight.detach().numpy(), model.readout.bias.detach().numpy()[:, None]])
@@ -408,6 +412,43 @@ def _shared_weight_modules(
         one_shot.readout.weight.copy_(step.readout.weight)
         one_shot.readout.bias.copy_(step.readout.bias)
     return step, one_shot
+
+
+def test_residual_carry_accumulates_frame_deltas() -> None:
+    """With the residual the Frame forecast accumulates: a constant readout ramps per Frame.
+
+    A readout emitting a constant standardized delta makes the recursion add it once per Frame, so
+    Frame ``m`` decodes to ``(m + 1) * b`` in standardized space -- the persistence prior applied
+    to the previous Frame's prediction, not to the mean.
+    """
+    model = _model()
+    assert model.residual
+    with torch.no_grad():
+        model.readout.weight.zero_()
+        model.readout.bias.fill_(0.3)
+
+    y_hist, u_hist, u_future = _context()
+    n_frames = model.geometry.n_frames(_STEPS, _FS)
+    preds = model.rollout(model.prime(y_hist, u_hist), u_future)
+
+    want = np.stack([model.l_std.inverse_transform(np.full(model.n_outputs, 0.3 * (m + 1))) for m in range(n_frames)])
+    np.testing.assert_allclose(preds, want, rtol=1e-5, atol=1e-6)
+
+    # The carried level lives in the opaque state, after the register and the lifted Frame state.
+    state = model.prime(y_hist, u_hist)
+    n_hist = _N_Y * _N_EEG + _N_U * _N_CONTROLS
+    assert state.shape == (n_hist + _Z_DIM + model.n_outputs,)
+    np.testing.assert_array_equal(state[n_hist + _Z_DIM :], np.zeros(model.n_outputs))
+
+
+def test_without_residual_the_state_carries_no_level() -> None:
+    """A non-residual observable module keeps the old state layout: no carry block."""
+    model = _model()
+    model.residual = False
+    y_hist, u_hist, _ = _context()
+    state = model.prime(y_hist, u_hist)
+    n_hist = _N_Y * _N_EEG + _N_U * _N_CONTROLS
+    assert state.shape == (n_hist + _Z_DIM,)
 
 
 def test_step_recursion_matches_the_incumbent_one_shot_forecast() -> None:
