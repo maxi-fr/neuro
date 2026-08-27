@@ -345,7 +345,7 @@ class TrainingConfig(StrictConfig):
     patience: int = Field(default=50, ge=1)
     scaler: Literal["standard", "robust"] = "standard"
     global_scaling: bool = False
-    device: Literal["cpu", "cuda"] = "cpu"
+    device: Literal["auto", "cpu", "cuda"] = "auto"
     eval_horizon_s: float = Field(gt=0)
     # ``None`` only on the observable path, whose loss is a fixed MSE on the frame grid rather
     # than a configured set of terms; NNPredictorConfig requires one of the two.

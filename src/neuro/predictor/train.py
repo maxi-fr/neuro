@@ -249,7 +249,11 @@ def _train_waveform(cfg: NNPredictorConfig, data_files: list[str], *, seed_offse
     sim, trn = cfg.simulation, cfg.training
     seed = trn.seed + seed_offset
     torch.manual_seed(seed)
-    device = torch.device(trn.device)
+    device = (
+        torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        if trn.device == "auto"
+        else torch.device(trn.device)
+    )
     fs = cfg.fs
 
     data, model, losses = _prepare_waveform(cfg, data_files, depth=cfg.model.depth)

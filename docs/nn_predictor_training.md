@@ -810,13 +810,12 @@ out-of-range values raise `ValidationError` rather than silently defaulting.
 | `patience`                   | `50`    | early-stopping patience (epochs)                              |
 | `scaler`                     | `standard` | `standard` / `robust`                                      |
 | `global_scaling`             | `false` | one shared scalar vs. per-channel scaling                     |
-| `device`                     | `cpu`   | `cpu` / `cuda` — see the caveat below                         |
+| `device`                     | `auto`  | `auto` / `cpu` / `cuda` (`auto` selects CUDA if available)    |
 | `eval_horizon_s`             | *(required)* | evaluation rollout horizon in seconds                     |
 | `losses`                     | *(required)* | composable loss terms (at least one must be active)           |
 
-> **`device: cuda` is untested.** Only the CPU path has been exercised. The code moves the model and
-> both resident dataset tensors onto `torch.device(training.device)` in float32; treat CUDA as
-> unvalidated rather than supported.
+> **Device selection**: `device: "auto"` automatically picks CUDA when `torch.cuda.is_available()` is true,
+> falling back to CPU otherwise. Explicit `cpu` or `cuda` can also be specified.
 
 #### Loss specifications (`training.losses`)
 

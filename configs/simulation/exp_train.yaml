@@ -10,7 +10,7 @@ experiments:
       K: 0.6
     stimulation:
       model: roast_3d
-      leadfield_path: data/roast_leadfield_3d.npz
+      field_projection_path: data/roast_field_projection_3d.npz
     params:
       sigma: 280.0
       A:
@@ -104,7 +104,7 @@ experiments:
     class_path: simulate.estimator.IdentityEstimator
     dt: 0.0001
   controller:
-    class_path: neuro.control.WaveformController
+    class_path: neuro.control.schedule.ScheduleController
     dt: 0.0001
     n_u: 3
     input_type: ras

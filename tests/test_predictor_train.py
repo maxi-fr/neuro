@@ -318,3 +318,14 @@ def test_depth0_gradient_descent_starts_from_random_init_and_runs_every_epoch(fi
     assert len(linear.train_losses) == 3
     assert len(nonlinear.train_losses) == 3
     assert np.isfinite(linear.rollout.pooled)
+
+
+def test_training_device_auto_and_explicit(files: list[str]) -> None:
+    """Training succeeds with default 'auto' device and explicit 'cpu'."""
+    auto_res = _wave_train(_config(device="auto"), files)
+    assert len(auto_res.train_losses) == 3
+    assert np.isfinite(auto_res.rollout.pooled)
+
+    cpu_res = _wave_train(_config(device="cpu"), files)
+    assert len(cpu_res.train_losses) == 3
+    assert np.isfinite(cpu_res.rollout.pooled)
