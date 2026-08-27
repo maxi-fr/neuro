@@ -372,7 +372,7 @@ def _build_observable_checkpoint(
         hidden_size=5,
         depth=depth,
         activation="relu",
-        dt=0.05,
+        dt=geom.n_hop / fs,
         n_outputs=n_outputs,
         geometry=geom,
         residual=False,
@@ -527,7 +527,7 @@ def test_observable_controller_from_config(tmp_path: Path) -> None:
     )
 
     cfg = {
-        "dt": 0.05,
+        "dt": 0.10,
         "problem": {
             "class_path": "neuro.control.mpc.build_observable_problem",
             "artifact": str(artifact),
@@ -540,9 +540,65 @@ def test_observable_controller_from_config(tmp_path: Path) -> None:
         },
     }
     controller = TrajOptMPCController.from_config(cfg)
-    assert controller.dt == 0.05
+    assert controller.dt == 0.10
     assert controller.problem.N == 5
     assert controller.model.m == 2
+
+
+def test_build_observable_problem_envelope_cross_validation(tmp_path: Path) -> None:
+    """build_observable_problem validates envelope channel count, sampling rate, and geometry."""
+    artifact, geom = _build_observable_checkpoint(tmp_path, n_channels=2, n_controls=2)
+    n_values = geom.n_values(50.0)
+
+    # Mismatched channel count raises
+    bad_ch = tmp_path / "bad_ch.npz"
+    np.savez_compressed(
+        bad_ch,
+        Pref_frames=np.full((3, n_values), -2.0),
+        fs=50.0,
+        n_segment=geom.n_segment,
+        n_hop=geom.n_hop,
+        band_hz=np.asarray(geom.band_hz if geom.band_hz is not None else [-1.0, -1.0]),
+        n_bin_pool=geom.n_bin_pool,
+        kernel=geom.kernel,
+        kernel_width=geom.kernel_width,
+    )
+    with pytest.raises(ValueError, match=r"envelope channel count \(3\) does not match model channel count \(2\)"):
+        build_observable_problem(artifact, horizon=4, u_max=0.5, w_psd=1.0, psd_ref=bad_ch)
+
+    # Mismatched sampling rate raises
+    bad_fs = tmp_path / "bad_fs.npz"
+    np.savez_compressed(
+        bad_fs,
+        Pref_frames=np.full((2, geom.n_values(100.0)), -2.0),
+        fs=100.0,
+        n_segment=geom.n_segment,
+        n_hop=geom.n_hop,
+        band_hz=np.asarray(geom.band_hz if geom.band_hz is not None else [-1.0, -1.0]),
+        n_bin_pool=geom.n_bin_pool,
+        kernel=geom.kernel,
+        kernel_width=geom.kernel_width,
+    )
+    with pytest.raises(
+        ValueError, match=r"envelope sampling rate \(100 Hz\) does not match model sampling rate \(50 Hz\)"
+    ):
+        build_observable_problem(artifact, horizon=4, u_max=0.5, w_psd=1.0, psd_ref=bad_fs)
+
+    # Mismatched geometry band_hz raises
+    bad_band = tmp_path / "bad_band.npz"
+    np.savez_compressed(
+        bad_band,
+        Pref_frames=np.full((2, 2), -2.0),
+        fs=50.0,
+        n_segment=geom.n_segment,
+        n_hop=geom.n_hop,
+        band_hz=np.array([2.0, 10.0]),
+        n_bin_pool=geom.n_bin_pool,
+        kernel=geom.kernel,
+        kernel_width=geom.kernel_width,
+    )
+    with pytest.raises(ValueError, match=r"envelope band_hz \(\(2\.0, 10\.0\)\) does not match model band_hz"):
+        build_observable_problem(artifact, horizon=4, u_max=0.5, w_psd=1.0, psd_ref=bad_band)
 
 
 def test_example_observable_config_runs_simulation_start_to_finish(tmp_path: Path) -> None:

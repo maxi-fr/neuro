@@ -182,14 +182,57 @@ def ensure_solver_supports_objective(problem: Problem, solver: Solver) -> None:
         raise ValueError(msg)
 
 
+def _validate_waveform_envelope(envelope: PsdEnvelope, model: WaveformMLPModel) -> None:
+    """Ensure the healthy spectral envelope matches the predictor's channels and sampling rate."""
+    if envelope.power.shape[0] != model.n_channels:
+        msg = f"envelope channel count ({envelope.power.shape[0]}) does not match model channel count ({model.n_channels})."
+        raise ValueError(msg)
+    model_fs = 1.0 / model.dt
+    if not np.isclose(envelope.fs, model_fs, rtol=1e-9):
+        msg = f"envelope sampling rate ({envelope.fs:g} Hz) does not match model sampling rate ({model_fs:g} Hz)."
+        raise ValueError(msg)
+
+
+def _validate_observable_envelope(envelope: ObservableEnvelope, model: ObservableMLPModel) -> None:
+    """Ensure the healthy Observable envelope matches the predictor's channels, rate, and geometry."""
+    if envelope.power.shape[0] != model.n_channels:
+        msg = f"envelope channel count ({envelope.power.shape[0]}) does not match model channel count ({model.n_channels})."
+        raise ValueError(msg)
+    model_fs = model.geometry.n_hop / model.dt
+    if not np.isclose(envelope.fs, model_fs, rtol=1e-9):
+        msg = f"envelope sampling rate ({envelope.fs:g} Hz) does not match model sampling rate ({model_fs:g} Hz)."
+        raise ValueError(msg)
+    e_geom, m_geom = envelope.geometry, model.geometry
+    if e_geom.band_hz != m_geom.band_hz:
+        msg = f"envelope band_hz ({e_geom.band_hz}) does not match model band_hz ({m_geom.band_hz})."
+        raise ValueError(msg)
+    if e_geom.n_bin_pool != m_geom.n_bin_pool:
+        msg = f"envelope n_bin_pool ({e_geom.n_bin_pool}) does not match model n_bin_pool ({m_geom.n_bin_pool})."
+        raise ValueError(msg)
+    if e_geom.kernel != m_geom.kernel:
+        msg = f"envelope kernel ({e_geom.kernel!r}) does not match model kernel ({m_geom.kernel!r})."
+        raise ValueError(msg)
+    if e_geom.kernel_width != m_geom.kernel_width:
+        msg = (
+            f"envelope kernel_width ({e_geom.kernel_width}) does not match model kernel_width ({m_geom.kernel_width})."
+        )
+        raise ValueError(msg)
+    if e_geom.n_segment != m_geom.n_segment:
+        msg = f"envelope n_segment ({e_geom.n_segment}) does not match model n_segment ({m_geom.n_segment})."
+        raise ValueError(msg)
+    if e_geom.n_hop != m_geom.n_hop:
+        msg = f"envelope n_hop ({e_geom.n_hop}) does not match model n_hop ({m_geom.n_hop})."
+        raise ValueError(msg)
+
+
 def build_waveform_problem(  # noqa: PLR0913 -- checkpoint plus the nine MPC cost/bound knobs
     artifact: str | Path,
     *,
     horizon: int,
     u_max: ArrayLike,
     w_y: float = 1.0,
-    w_u: float = 0.0,
     w_y_terminal: float | None = None,
+    w_u: float = 0.0,
     w_u_l1: float = 0.0,
     w_psd: float = 0.0,
     psd_ref: str | Path | None = None,
@@ -197,45 +240,37 @@ def build_waveform_problem(  # noqa: PLR0913 -- checkpoint plus the nine MPC cos
 ) -> Problem:
     """Assemble the waveform MPC problem: model adapter, objective, box and Kirchhoff bounds.
 
-    The state cost encodes ``w_y * ||decode(z_last)||^2`` -- the incumbent's EEG-power term,
-    a quadratic in the newest standardized y-window row ``z_last`` -- plus ``w_u * ||u||^2`` on
-    every control; ``w_y_terminal`` (when given) replaces ``w_y`` on the final knot, exactly as
-    the incumbent's horizon-mean stage cost does. All three are scaled by ``1 / horizon``,
-    reproducing the incumbent's ``cost / horizon`` reduction so that the spectral hinge (which
-    is not horizon-meaned) trades against them exactly as it does in the CasADi graph. The
-    L1 sparsity penalty ``(w_u_l1 / horizon) * sum(|u|)`` and the spectral PSD hinge
-    (``w_psd`` against ``psd_ref``'s healthy envelope) join the quadratic as custom
-    ``CostFunction`` subclasses. The constraints are the control box bounds
-    ``-u_max <= u <= u_max``, plus the Kirchhoff sum-to-zero equality when ``kirchhoff`` is
-    set. The default single-shooting transcription rejects the controls-block linear equality,
-    so the full constraint set is solved with the general Ipopt transcription.
+    The objective minimizes tracking deviation from zero, quadratic and L1 control effort, and
+    one-sided log-power PSD hinges against ``psd_ref``. The constraints are the control box
+    bounds ``-u_max <= u <= u_max``, plus the Kirchhoff sum-to-zero equality when ``kirchhoff``
+    is set.
 
     Parameters
     ----------
     artifact
         Suffix-less stem of the numpy-readable MLP checkpoint.
     horizon
-        Control Horizon in steps; the trajopt horizon is ``horizon + 1`` knot points.
+        Control Horizon counted in model steps; the trajopt horizon is ``horizon + 1`` knot
+        points.
     u_max
         Per-electrode amplitude bound: a scalar shared by every electrode or a
         length-``n_controls`` vector.
     w_y
-        Weight on predicted EEG power in the cost.
-    w_u
-        Weight on control effort (quadratic) in the cost.
+        Weight on state tracking error in the stage cost.
     w_y_terminal
-        Weight on predicted EEG power at the final horizon step, replacing ``w_y`` there;
-        ``None`` (default) keeps ``w_y`` uniform over the horizon.
+        Weight on the terminal knot state tracking error. When ``None`` (default), inherits
+        ``w_y``.
+    w_u
+        Weight on control effort (quadratic) in the stage cost.
     w_u_l1
         Weight on the L1 norm of the control effort (a sparse-stimulation penalty); ``0``
-        disables it (default), leaving the pure-quadratic problem unchanged.
+        disables it (default).
     w_psd
-        Weight on the spectral cost: the mean squared amount by which the predicted EEG
-        spectrum exceeds ``psd_ref``'s healthy envelope, in log power. ``0`` (default)
-        disables it.
+        Weight on the spectral hinge cost: the mean squared amount by which predicted log-power
+        exceeds ``psd_ref``'s healthy envelope. ``0`` (default) disables it.
     psd_ref
         Path to the healthy reference envelope npz written by ``scripts/build_healthy_psd.py``.
-        Required when ``w_psd > 0``; its stored window geometry drives the cost.
+        Required when ``w_psd > 0``.
     kirchhoff
         Add the Kirchhoff sum-to-zero equality on the controls. Off by default; the incumbent
         applies it unconditionally, so full parity sets it.
@@ -253,6 +288,7 @@ def build_waveform_problem(  # noqa: PLR0913 -- checkpoint plus the nine MPC cos
         costs.append(L1ControlCost(n=n, m=m, w_l1=w_u_l1, horizon=horizon))
     envelope = _spectral_envelope(psd_ref, w_psd)
     if envelope is not None:
+        _validate_waveform_envelope(envelope, model)
         costs.append(
             SpectralHingeCost(
                 n=n,
@@ -330,6 +366,7 @@ def build_observable_problem(  # noqa: PLR0913 -- checkpoint plus the MPC cost/b
         costs.append(L1ControlCost(n=n, m=m, w_l1=w_u_l1, horizon=horizon))
     envelope = _observable_envelope(psd_ref, w_psd)
     if envelope is not None:
+        _validate_observable_envelope(envelope, model)
         costs.append(
             ObservableHingeCost(
                 n=n,

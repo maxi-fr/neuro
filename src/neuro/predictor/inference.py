@@ -205,8 +205,12 @@ class WaveformMLPModel(DiscreteDynamics, InferencePredictor):
         n_outputs: int | None = None,
         provenance: TrainingProvenance | None = None,
     ) -> None:
-        """Copy the checkpoint's float64 buffers into jax arrays."""
         n_out = int(n_outputs) if n_outputs is not None else int(n_channels)
+        y_c = np.asarray(y_center)
+        y_s = np.asarray(y_scale)
+        if len(y_c) != n_out or len(y_s) != n_out:
+            msg = f"y_center/scale length ({len(y_c)}) must equal model n_outputs ({n_out})."
+            raise ValueError(msg)
         super().__init__(
             n=int(n_y) * n_out + int(n_u) * int(n_controls),
             m=int(n_controls),
@@ -427,6 +431,11 @@ class ObservableMLPModel(DiscreteDynamics, InferencePredictor):
     ) -> None:
         """Copy the checkpoint's float64 buffers and Observable geometry into jax arrays."""
         n_out = int(n_outputs) if n_outputs is not None else int(n_channels)
+        y_c = np.asarray(y_center)
+        y_s = np.asarray(y_scale)
+        if len(y_c) != n_out or len(y_s) != n_out:
+            msg = f"y_center/scale length ({len(y_c)}) must equal model n_outputs ({n_out})."
+            raise ValueError(msg)
         super().__init__(
             n=int(n_y) * n_out + int(n_u) * int(n_controls),
             m=int(n_controls),

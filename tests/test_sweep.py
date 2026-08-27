@@ -176,7 +176,7 @@ def test_observable_optuna_sweep_ranks_on_val_log_mse(tmp_path: Path, monkeypatc
     losses = LossSpecs(curriculum_mse=CurriculumMSESpec(weight=1.0, span_s=span_s, curr_start=0, curr_end=2))
     cfg = NNPredictorConfig(
         simulation=SimulationConfig(dt=0.004, downsample=1),
-        model=ModelConfig(n_y=2, n_u=2, hidden_size=4),
+        model=ModelConfig(n_y=2, n_u=8, hidden_size=4),
         training=TrainingConfig.model_validate(
             {
                 "epochs": 3,

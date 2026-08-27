@@ -491,16 +491,22 @@ def _validate_observable_losses(losses: LossSpecs | None, geometry: StftGeometry
     if losses is None:
         return
     active = losses.active()
-    if "stft" in active or "eeg_ms" in active:
-        msg = "observable predictor does not support reduction losses ('stft', 'eeg_ms')."
+    reduction_losses = sorted(set(active.keys()) & {"stft", "eeg_ms"})
+    if reduction_losses:
+        msg = (
+            f"observable predictor does not support reduction losses ({', '.join(repr(k) for k in reduction_losses)})."
+        )
         raise ValueError(msg)
     if all(spec.start_epoch > 0 for spec in active.values()):
         msg = "At least one loss must have start_epoch = 0; otherwise epoch 0 has no gradient."
         raise ValueError(msg)
     fs_frame = fs / geometry.n_hop
-    for spec in active.values():
-        if isinstance(spec, SecondsSpanSpec) and spec.span_steps(fs_frame) < 1:
-            msg = f"loss span resolves to < 1 frame at frame rate {fs_frame} Hz."
+    for name, spec in active.items():
+        if isinstance(spec, SecondsSpanSpec) and round(spec.span_s * fs_frame) < 1:
+            msg = (
+                f"loss '{name}' span ({spec.span_s} s) resolves to {round(spec.span_s * fs_frame)} frame(s) "
+                f"at frame rate {fs_frame:g} Hz (hop={geometry.n_hop}, fs={fs:g} Hz); must hold at least 1 Frame."
+            )
             raise ValueError(msg)
 
 
@@ -552,6 +558,23 @@ class NNPredictorConfig(StrictConfig):
     def _validate_losses_and_horizon(self) -> Self:
         if self.observable is not None:
             _validate_observable_losses(self.training.losses, self.observable, self.fs)
+            min_n_u = self.observable.kernel_width - 1 + math.ceil(self.observable.n_segment / self.observable.n_hop)
+            if self.model.n_u < min_n_u:
+                msg = (
+                    f"model.n_u ({self.model.n_u}) violates the control-support rule: must be >= {min_n_u} "
+                    f"(kernel_width={self.observable.kernel_width}, segment={self.observable.n_segment}, "
+                    f"hop={self.observable.n_hop}) so the past-control window covers the Frame's sample support."
+                )
+                raise ValueError(msg)
+            fs_frame = self.fs / self.observable.n_hop
+            eval_frames = round(self.training.eval_horizon_s * fs_frame)
+            if eval_frames < 1:
+                msg = (
+                    f"training.eval_horizon_s ({self.training.eval_horizon_s} s) resolves to {eval_frames} "
+                    f"frame(s) at frame rate {fs_frame:g} Hz (hop={self.observable.n_hop}, fs={self.fs:g} Hz); "
+                    "must hold at least 1 Frame."
+                )
+                raise ValueError(msg)
         else:
             _validate_waveform_losses(self.training.losses, self.fs)
         return self

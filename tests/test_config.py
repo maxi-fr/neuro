@@ -473,6 +473,7 @@ def test_observable_predictor_rejects_reduction_losses() -> None:
 def test_observable_sweep_objective_validation() -> None:
     """An observable sweep validates its objective against observable candidates."""
     base = {
+        "model": {"n_u": 8},
         "training": _VALID_TRAINING,
         "observable": {
             "n_segment": 64,
@@ -492,5 +493,92 @@ def test_observable_sweep_objective_validation() -> None:
     assert cfg2.sweep.objective == "val_loss"
 
     # Rejects waveform-only candidate
-    with pytest.raises(ValidationError, match="not a candidate"):
+    with pytest.raises(ValidationError, match=r"sweep\.objective 'rollout_nmse' is not a candidate"):
         NNPredictorConfig.from_dict({**base, "sweep": {"objective": "rollout_nmse"}})
+
+
+def test_control_support_rule_validation() -> None:
+    """The control-support rule requires n_u >= kernel_width - 1 + ceil(segment / hop)."""
+    # segment=64, hop=16, kernel_width=5 -> min_n_u = 5 - 1 + 4 = 8
+    base = {
+        "training": _VALID_TRAINING,
+        "observable": {
+            "n_segment": 64,
+            "n_hop": 16,
+            "band_hz": [4.0, 30.0],
+            "n_bin_pool": 2,
+            "kernel_width": 5,
+        },
+    }
+    # Accepting conforming config
+    cfg = NNPredictorConfig.from_dict({**base, "model": {"n_u": 8}})
+    assert cfg.model.n_u == 8
+
+    # Rejecting violating config naming offending values
+    with pytest.raises(
+        ValidationError,
+        match=r"model\.n_u \(7\) violates the control-support rule: must be >= 8 \(kernel_width=5, segment=64, hop=16\)",
+    ):
+        NNPredictorConfig.from_dict({**base, "model": {"n_u": 7}})
+
+
+def test_curriculum_span_and_eval_horizon_must_hold_at_least_one_frame() -> None:
+    """The curriculum span and eval horizon must resolve to at least one Frame at the Frame rate."""
+    # dt = 1e-4, downsample = 200 -> fs = 50 Hz. Hop = 25 -> fs_frame = 2 Hz.
+    # At fs_frame = 2 Hz, span_s = 0.1s gives round(0.1 * 2) = 0 frames (< 1).
+    base = {
+        "simulation": {"dt": 1e-4, "downsample": 200},
+        "model": {"n_u": 3},
+        "observable": {
+            "n_segment": 50,
+            "n_hop": 25,
+            "kernel_width": 1,
+        },
+    }
+    # span_s = 0.1s -> 0 frames -> rejected naming span_s, frame rate, hop, fs
+    with pytest.raises(
+        ValidationError,
+        match=r"loss 'curriculum_mse' span \(0\.1 s\) resolves to 0 frame\(s\) at frame rate 2 Hz \(hop=25, fs=50 Hz\)",
+    ):
+        NNPredictorConfig.from_dict(
+            {
+                **base,
+                "training": {
+                    "eval_horizon_s": 1.0,
+                    "losses": {
+                        "curriculum_mse": {"weight": 1.0, "span_s": 0.1, "curr_start": 0, "curr_end": 10},
+                    },
+                },
+            }
+        )
+
+    # eval_horizon_s = 0.1s -> 0 frames -> rejected naming eval_horizon_s, frame rate, hop, fs
+    with pytest.raises(
+        ValidationError,
+        match=r"training\.eval_horizon_s \(0\.1 s\) resolves to 0 frame\(s\) at frame rate 2 Hz \(hop=25, fs=50 Hz\)",
+    ):
+        NNPredictorConfig.from_dict(
+            {
+                **base,
+                "training": {
+                    "eval_horizon_s": 0.1,
+                    "losses": {
+                        "curriculum_mse": {"weight": 1.0, "span_s": 1.0, "curr_start": 0, "curr_end": 10},
+                    },
+                },
+            }
+        )
+
+    # Conforming config with span_s = 1.0s (2 frames) and eval_horizon_s = 1.0s (2 frames) accepted
+    conforming = NNPredictorConfig.from_dict(
+        {
+            **base,
+            "training": {
+                "eval_horizon_s": 1.0,
+                "losses": {
+                    "curriculum_mse": {"weight": 1.0, "span_s": 1.0, "curr_start": 0, "curr_end": 10},
+                },
+            },
+        }
+    )
+    assert conforming.training.losses is not None

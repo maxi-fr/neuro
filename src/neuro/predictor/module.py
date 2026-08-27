@@ -234,6 +234,13 @@ class AutoregressiveMLP(nn.Module, TrainingPredictor):
             )
             self.install_readout = cast("Callable[..., None]", install_readout.__get__(self))
 
+        if y_std is not None and (len(y_std.center) != self.n_outputs or len(y_std.scale) != self.n_outputs):
+            msg = f"y_std length ({len(y_std.center)}) must equal model n_outputs ({self.n_outputs})."
+            raise ValueError(msg)
+        if u_std is not None and (len(u_std.center) != n_controls or len(u_std.scale) != n_controls):
+            msg = f"u_std length ({len(u_std.center)}) must equal model n_controls ({n_controls})."
+            raise ValueError(msg)
+
         y_std = y_std or Standardizer(center=np.zeros(self.n_outputs), scale=np.ones(self.n_outputs))
         u_std = u_std or Standardizer(center=np.zeros(n_controls), scale=np.ones(n_controls))
         self.register_buffer("y_center", torch.as_tensor(y_std.center, dtype=torch.float32))

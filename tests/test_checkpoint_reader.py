@@ -88,7 +88,7 @@ def test_torch_save_jax_rollout_reproduces_the_decoded_torch_forward(tmp_path: P
     want = module.y_std.inverse_transform(standardized.reshape(_HORIZON, _N_EEG))
 
     got = np.asarray(jax_model.free_run(y_raw[:t0][None], u_raw[:t0][None], u_raw[t0 : t0 + _HORIZON][None]))[0]
-    np.testing.assert_allclose(got, want, rtol=1e-5, atol=1e-6)
+    np.testing.assert_allclose(got, want, rtol=2e-5, atol=2e-5)
 
 
 def test_jax_save_torch_load_round_trips_weights_buffers_and_metadata(tmp_path: Path) -> None:

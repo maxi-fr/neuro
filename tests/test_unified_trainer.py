@@ -220,7 +220,7 @@ def _obs_config(**training: object) -> NNPredictorConfig:
     }
     return NNPredictorConfig(
         simulation=SimulationConfig(dt=dt, downsample=1),
-        model=ModelConfig(n_y=2, n_u=2, hidden_size=4, depth=1),
+        model=ModelConfig(n_y=2, n_u=8, hidden_size=4, depth=1),
         training=TrainingConfig.model_validate({**defaults, **training}),
         observable=geometry,
     )
@@ -248,7 +248,7 @@ def test_observable_candidates_match_the_config_kind(tmp_path: Path) -> None:
 def test_observable_ridge_fit_through_train_on_depth0_mlp(tmp_path: Path) -> None:
     """training.fit: ridge on an observable depth-0 MLP fits in closed form and records candidates."""
     files = _write_trajectories(tmp_path, dt=0.004, t=600)
-    cfg = _obs_config(fit="ridge").model_copy(update={"model": ModelConfig(n_y=2, n_u=2, hidden_size=4, depth=0)})
+    cfg = _obs_config(fit="ridge").model_copy(update={"model": ModelConfig(n_y=2, n_u=8, hidden_size=4, depth=0)})
     result = train(cfg, files)
 
     assert isinstance(result, RidgeTrainingResult)
@@ -267,6 +267,6 @@ def test_observable_ridge_fit_through_train_on_depth0_mlp(tmp_path: Path) -> Non
 def test_observable_ridge_fit_on_depth2_mlp_fails_at_build_time(tmp_path: Path) -> None:
     """training.fit: ridge on an observable depth-2 MLP fails at build time."""
     files = _write_trajectories(tmp_path, dt=0.004, t=600)
-    cfg = _obs_config(fit="ridge").model_copy(update={"model": ModelConfig(n_y=2, n_u=2, hidden_size=4, depth=2)})
+    cfg = _obs_config(fit="ridge").model_copy(update={"model": ModelConfig(n_y=2, n_u=8, hidden_size=4, depth=2)})
     with pytest.raises(ValueError, match="depth-0 MLP"):
         train(cfg, files)

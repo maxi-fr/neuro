@@ -7,6 +7,7 @@ import numpy as np
 import pytest
 import yaml
 
+from neuro.config import StftGeometry
 from neuro.predictor.module import AutoregressiveMLP
 from neuro.provenance import (
     TrainingProvenance,
@@ -60,6 +61,53 @@ def _artifact(tmp_path: Path, provenance: TrainingProvenance) -> Path:
     """Save a tiny MLP checkpoint carrying ``provenance`` and return its suffix-less stem."""
     stem = tmp_path / "model"
     _module(provenance).save(stem)
+    return stem
+
+
+def _obs_module(
+    provenance: TrainingProvenance,
+    geom: StftGeometry,
+    *,
+    dt: float = 0.10,
+    downsample: int = _DOWNSAMPLE,
+    n_u: int = 4,
+) -> AutoregressiveMLP:
+    """A tiny depth-0 observable MLP carrying ``provenance`` and ``geom``."""
+    fs = 1.0 / (_PLANT_DT * downsample)
+    n_values = geom.n_values(fs)
+    n_outputs = _N_CHANNELS * n_values
+    model = AutoregressiveMLP(
+        n_y=2,
+        n_u=n_u,
+        horizon=50,
+        n_channels=_N_CHANNELS,
+        n_controls=_N_CONTROLS,
+        n_outputs=n_outputs,
+        hidden_size=0,
+        depth=0,
+        activation="relu",
+        dt=dt,
+        geometry=geom,
+        y_std=Standardizer(center=np.zeros(n_outputs), scale=np.ones(n_outputs)),
+        u_std=Standardizer(center=np.zeros(_N_CONTROLS), scale=np.ones(_N_CONTROLS)),
+    )
+    model.downsample = downsample
+    model.provenance = provenance
+    return model
+
+
+def _obs_artifact(
+    tmp_path: Path,
+    provenance: TrainingProvenance,
+    geom: StftGeometry,
+    *,
+    dt: float = 0.10,
+    downsample: int = _DOWNSAMPLE,
+    n_u: int = 4,
+) -> Path:
+    """Save a tiny observable MLP checkpoint and return its suffix-less stem."""
+    stem = tmp_path / "obs_model"
+    _obs_module(provenance, geom, dt=dt, downsample=downsample, n_u=n_u).save(stem)
     return stem
 
 
@@ -263,7 +311,8 @@ def test_aligned_excitation_holds_are_quiet(tmp_path: Path) -> None:
 
 
 def test_observable_estimator_and_envelope_validation(tmp_path: Path) -> None:
-    """Observable estimator must run at plant rate and envelope hop dt must match controller dt."""
+    """Observable estimator must run at plant rate and controller dt must equal hop * downsample * plant_dt."""
+    geom = StftGeometry(n_segment=20, n_hop=5, band_hz=(4.0, 16.0), n_bin_pool=2, kernel="boxcar", kernel_width=1)
     env_path = tmp_path / "obs_env.npz"
     np.savez_compressed(
         env_path,
@@ -276,9 +325,9 @@ def test_observable_estimator_and_envelope_validation(tmp_path: Path) -> None:
         kernel="boxcar",
         kernel_width=1,
     )
-    # Expected dt = hop / fs = 5 / 50.0 = 0.10s.
+    # Expected dt = hop * downsample * plant_dt = 5 * 200 * 1e-4 = 0.10s.
     provenance = TrainingProvenance(cutoff_hz=25.0, plant_fingerprint=plant_fingerprint(_plant()))
-    _module(provenance, dt=0.10, downsample=200).save(tmp_path / "obs_model")
+    art = _obs_artifact(tmp_path, provenance, geom, dt=0.10, downsample=200, n_u=4)
 
     sim_cfg: dict[str, Any] = {
         **_plant(),
@@ -286,35 +335,266 @@ def test_observable_estimator_and_envelope_validation(tmp_path: Path) -> None:
             "class_path": "neuro.filtering.ObservableEstimator",
             "dt": _PLANT_DT,
             "downsample": 200,
-            "geometry": {
-                "n_segment": 20,
-                "n_hop": 5,
-                "band_hz": [4.0, 16.0],
-                "n_bin_pool": 2,
-            },
+            "geometry": geom.model_dump(),
         },
         "controller": {
             "class_path": "neuro.control.mpc.TrajOptMPCController",
             "dt": 0.10,
             "problem": {
                 "class_path": "neuro.control.mpc.build_observable_problem",
-                "artifact": str(tmp_path / "obs_model"),
+                "artifact": str(art),
                 "psd_ref": str(env_path),
             },
         },
     }
 
-    # Valid rates pass validation
+    # Valid config passes validation cleanly
     with warnings.catch_warnings():
         warnings.simplefilter("error")
         validate_simulation_config(sim_cfg)
 
-    # Mismatched estimator dt raises
+    # Mismatched estimator dt raises naming offending values
     bad_estimator_cfg = {**sim_cfg, "estimator": {**sim_cfg["estimator"], "dt": 0.01}}
-    with pytest.raises(ConfigConsistencyError, match=r"estimator.dt .* must equal dynamics.dt"):
+    with pytest.raises(ConfigConsistencyError, match=r"estimator\.dt \(0\.01\) must equal dynamics\.dt \(0\.0001\)"):
         validate_simulation_config(bad_estimator_cfg)
 
-    # Mismatched controller dt vs ObservableEnvelope expected dt raises
+    # Mismatched controller dt raises naming hop, downsample, plant_dt
     bad_controller_cfg = {**sim_cfg, "controller": {**sim_cfg["controller"], "dt": 0.05}}
-    with pytest.raises(ConfigConsistencyError, match=r"controller.dt .* must equal the predictor's native dt"):
+    with pytest.raises(
+        ConfigConsistencyError,
+        match=r"controller\.dt \(0\.05\) must equal hop \(5\) x downsample \(200\) x dynamics\.dt \(0\.0001\) = 0\.1 s",
+    ):
         validate_simulation_config(bad_controller_cfg)
+
+
+def test_observable_geometry_agreement_between_estimator_and_checkpoint(tmp_path: Path) -> None:
+    """The Observable geometry in the estimator must agree with the checkpoint geometry."""
+    geom = StftGeometry(n_segment=20, n_hop=5, band_hz=(4.0, 16.0), n_bin_pool=2, kernel="boxcar", kernel_width=1)
+    provenance = TrainingProvenance(cutoff_hz=25.0, plant_fingerprint=plant_fingerprint(_plant()))
+    art = _obs_artifact(tmp_path, provenance, geom, dt=0.10, downsample=200, n_u=4)
+
+    base_cfg: dict[str, Any] = {
+        **_plant(),
+        "estimator": {
+            "class_path": "neuro.filtering.ObservableEstimator",
+            "dt": _PLANT_DT,
+            "downsample": 200,
+            "geometry": geom.model_dump(),
+        },
+        "controller": {
+            "class_path": "neuro.control.mpc.TrajOptMPCController",
+            "dt": 0.10,
+            "problem": {
+                "class_path": "neuro.control.mpc.build_observable_problem",
+                "artifact": str(art),
+            },
+        },
+    }
+
+    # Disagreeing n_segment raises naming conflicting values
+    cfg = {**base_cfg, "estimator": {**base_cfg["estimator"], "geometry": {**geom.model_dump(), "n_segment": 40}}}
+    with pytest.raises(
+        ConfigConsistencyError, match=r"estimator geometry n_segment \(40\) does not match checkpoint \(20\)"
+    ):
+        validate_simulation_config(cfg)
+
+    # Disagreeing n_bin_pool raises naming conflicting values
+    cfg = {**base_cfg, "estimator": {**base_cfg["estimator"], "geometry": {**geom.model_dump(), "n_bin_pool": 1}}}
+    with pytest.raises(
+        ConfigConsistencyError, match=r"estimator geometry n_bin_pool \(1\) does not match checkpoint \(2\)"
+    ):
+        validate_simulation_config(cfg)
+
+
+def test_observable_envelope_geometry_agreement(tmp_path: Path) -> None:
+    """The healthy envelope's geometry must agree with the model's recorded geometry."""
+    geom = StftGeometry(n_segment=20, n_hop=5, band_hz=(4.0, 16.0), n_bin_pool=2, kernel="boxcar", kernel_width=1)
+    provenance = TrainingProvenance(cutoff_hz=25.0, plant_fingerprint=plant_fingerprint(_plant()))
+    art = _obs_artifact(tmp_path, provenance, geom, dt=0.10, downsample=200, n_u=4)
+
+    # Save envelope with mismatched band_hz
+    bad_env_path = tmp_path / "bad_env.npz"
+    np.savez_compressed(
+        bad_env_path,
+        Pref_frames=np.full((2, 2), -2.0),
+        fs=50.0,
+        n_segment=20,
+        n_hop=5,
+        band_hz=np.array([2.0, 10.0]),
+        n_bin_pool=2,
+        kernel="boxcar",
+        kernel_width=1,
+    )
+
+    sim_cfg: dict[str, Any] = {
+        **_plant(),
+        "estimator": {
+            "class_path": "neuro.filtering.ObservableEstimator",
+            "dt": _PLANT_DT,
+            "downsample": 200,
+            "geometry": geom.model_dump(),
+        },
+        "controller": {
+            "class_path": "neuro.control.mpc.TrajOptMPCController",
+            "dt": 0.10,
+            "problem": {
+                "class_path": "neuro.control.mpc.build_observable_problem",
+                "artifact": str(art),
+                "psd_ref": str(bad_env_path),
+            },
+        },
+    }
+
+    with pytest.raises(
+        ConfigConsistencyError, match=r"envelope band_hz \(\(2\.0, 10\.0\)\) must equal predictor band_hz"
+    ):
+        validate_simulation_config(sim_cfg)
+
+
+def test_envelope_channel_count_and_sampling_rate_validation(tmp_path: Path) -> None:
+    """The healthy envelope's channel count and sampling rate must agree with the model's."""
+    geom = StftGeometry(n_segment=20, n_hop=5, band_hz=(4.0, 16.0), n_bin_pool=2, kernel="boxcar", kernel_width=1)
+    provenance = TrainingProvenance(cutoff_hz=25.0, plant_fingerprint=plant_fingerprint(_plant()))
+    art = _obs_artifact(tmp_path, provenance, geom, dt=0.10, downsample=200, n_u=4)
+
+    # Envelope with 4 channels instead of 2
+    bad_ch_path = tmp_path / "bad_ch.npz"
+    np.savez_compressed(
+        bad_ch_path,
+        Pref_frames=np.full((4, 2), -2.0),
+        fs=50.0,
+        n_segment=20,
+        n_hop=5,
+        band_hz=np.array([4.0, 16.0]),
+        n_bin_pool=2,
+        kernel="boxcar",
+        kernel_width=1,
+    )
+
+    sim_cfg: dict[str, Any] = {
+        **_plant(),
+        "estimator": {
+            "class_path": "neuro.filtering.ObservableEstimator",
+            "dt": _PLANT_DT,
+            "downsample": 200,
+            "geometry": geom.model_dump(),
+        },
+        "controller": {
+            "class_path": "neuro.control.mpc.TrajOptMPCController",
+            "dt": 0.10,
+            "problem": {
+                "class_path": "neuro.control.mpc.build_observable_problem",
+                "artifact": str(art),
+                "psd_ref": str(bad_ch_path),
+            },
+        },
+    }
+
+    with pytest.raises(
+        ConfigConsistencyError, match=r"envelope channel count \(4\) must equal predictor channel count \(2\)"
+    ):
+        validate_simulation_config(sim_cfg)
+
+    # Envelope with 100 Hz fs instead of 50 Hz
+    bad_fs_path = tmp_path / "bad_fs.npz"
+    np.savez_compressed(
+        bad_fs_path,
+        Pref_frames=np.full((2, geom.n_values(100.0)), -2.0),
+        fs=100.0,
+        n_segment=20,
+        n_hop=5,
+        band_hz=np.array([4.0, 16.0]),
+        n_bin_pool=2,
+        kernel="boxcar",
+        kernel_width=1,
+    )
+    sim_cfg["controller"]["problem"]["psd_ref"] = str(bad_fs_path)
+    with pytest.raises(
+        ConfigConsistencyError, match=r"controller\.dt \(0\.1\) must match Observable reference dt \(0\.05 s"
+    ):
+        validate_simulation_config(sim_cfg)
+
+
+def test_control_support_rule_in_checkpoint_validation(tmp_path: Path) -> None:
+    """A checkpoint violating n_u >= kernel_width - 1 + ceil(segment / hop) is rejected."""
+    # segment=20, hop=5, kernel_width=1 -> min_n_u = 4. Set n_u = 2 in checkpoint.
+    geom = StftGeometry(n_segment=20, n_hop=5, band_hz=(4.0, 16.0), n_bin_pool=2, kernel="boxcar", kernel_width=1)
+    provenance = TrainingProvenance(cutoff_hz=25.0, plant_fingerprint=plant_fingerprint(_plant()))
+    bad_art = _obs_artifact(tmp_path, provenance, geom, dt=0.10, downsample=200, n_u=2)
+
+    sim_cfg: dict[str, Any] = {
+        **_plant(),
+        "estimator": {
+            "class_path": "neuro.filtering.ObservableEstimator",
+            "dt": _PLANT_DT,
+            "downsample": 200,
+            "geometry": geom.model_dump(),
+        },
+        "controller": {
+            "class_path": "neuro.control.mpc.TrajOptMPCController",
+            "dt": 0.10,
+            "problem": {
+                "class_path": "neuro.control.mpc.build_observable_problem",
+                "artifact": str(bad_art),
+            },
+        },
+    }
+
+    with pytest.raises(
+        ConfigConsistencyError,
+        match=r"predictor n_u \(2\) violates the control-support rule: must be >= 4 \(kernel_width=1, segment=20, hop=5\)",
+    ):
+        validate_simulation_config(sim_cfg)
+
+
+def test_mismatched_model_and_estimator_kinds(tmp_path: Path) -> None:
+    """Coupling an observable checkpoint to an anti-alias estimator or vice-versa is rejected."""
+    geom = StftGeometry(n_segment=20, n_hop=5, kernel="boxcar", kernel_width=1)
+    provenance = TrainingProvenance(cutoff_hz=25.0, plant_fingerprint=plant_fingerprint(_plant()))
+    obs_art = _obs_artifact(tmp_path, provenance, geom, dt=0.10, downsample=200, n_u=4)
+    wave_art = _artifact(tmp_path, provenance)
+
+    # Observable checkpoint with AntiAliasEstimator
+    bad_cfg1: dict[str, Any] = {
+        **_plant(),
+        "estimator": {
+            "class_path": "neuro.filtering.AntiAliasEstimator",
+            "dt": _PLANT_DT,
+            "downsample": 200,
+        },
+        "controller": {
+            "class_path": "neuro.control.mpc.TrajOptMPCController",
+            "dt": 0.10,
+            "problem": {
+                "class_path": "neuro.control.mpc.build_observable_problem",
+                "artifact": str(obs_art),
+            },
+        },
+    }
+    with pytest.raises(
+        ConfigConsistencyError, match=r"is an Observable model but estimator is 'neuro.filtering.AntiAliasEstimator'"
+    ):
+        validate_simulation_config(bad_cfg1)
+
+    # Waveform checkpoint with ObservableEstimator
+    bad_cfg2: dict[str, Any] = {
+        **_plant(),
+        "estimator": {
+            "class_path": "neuro.filtering.ObservableEstimator",
+            "dt": _PLANT_DT,
+            "downsample": 200,
+            "geometry": geom.model_dump(),
+        },
+        "controller": {
+            "class_path": "neuro.control.mpc.TrajOptMPCController",
+            "dt": _PLANT_DT * _DOWNSAMPLE,
+            "problem": {
+                "class_path": "neuro.control.mpc.build_waveform_problem",
+                "artifact": str(wave_art),
+            },
+        },
+    }
+    with pytest.raises(
+        ConfigConsistencyError, match=r"is a waveform model but estimator is 'neuro.filtering.ObservableEstimator'"
+    ):
+        validate_simulation_config(bad_cfg2)

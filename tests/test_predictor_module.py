@@ -22,6 +22,7 @@ _N_EEG, _N_CONTROLS, _HIDDEN = 5, 2, 6
 
 def _model(depth: int = 2, activation: Activation = "softplus") -> AutoregressiveMLP:
     """A random module with nontrivial standardizers."""
+    torch.manual_seed(_SEED)
     model = AutoregressiveMLP(
         n_y=_N_Y,
         n_u=_N_U,
@@ -191,3 +192,36 @@ def test_autoregressive_mlp_supports_distinct_output_width() -> None:
     assert pred.shape == (3 * 6,)
     z_last = row[6:12]
     np.testing.assert_allclose(pred.reshape(3, 6), np.broadcast_to(z_last, (3, 6)), rtol=1e-6, atol=1e-7)
+
+
+def test_standardizer_length_agrees_with_output_width() -> None:
+    """The standardizer's length must agree with the model's output width."""
+    from neuro.transforms import Standardizer  # noqa: PLC0415
+
+    # Conforming length passes
+    m = AutoregressiveMLP(
+        n_y=2,
+        n_u=1,
+        horizon=3,
+        n_channels=2,
+        n_controls=1,
+        n_outputs=6,
+        hidden_size=8,
+        depth=1,
+        y_std=Standardizer(center=np.zeros(6), scale=np.ones(6)),
+    )
+    assert m.n_outputs == 6
+
+    # Mismatched length raises naming the conflicting values
+    with pytest.raises(ValueError, match=r"y_std length \(4\) must equal model n_outputs \(6\)"):
+        AutoregressiveMLP(
+            n_y=2,
+            n_u=1,
+            horizon=3,
+            n_channels=2,
+            n_controls=1,
+            n_outputs=6,
+            hidden_size=8,
+            depth=1,
+            y_std=Standardizer(center=np.zeros(4), scale=np.ones(4)),
+        )
