@@ -8,6 +8,7 @@ import numpy as np
 import torch
 from torch import nn
 
+from neuro.config import StftGeometry
 from neuro.predictor.checkpoint import (
     layer_arrays,
     layers_from_arrays,
@@ -26,7 +27,6 @@ if TYPE_CHECKING:
 
     from torch import Tensor
 
-    from neuro.config import StftGeometry
     from neuro.types import Activation, FloatArray
 
 
@@ -183,9 +183,9 @@ class AutoregressiveMLP(nn.Module, TrainingPredictor):
         horizon: int,
         n_channels: int,
         n_controls: int,
+        n_outputs: int,
         hidden_size: int,
         depth: int,
-        n_outputs: int | None = None,
         activation: Activation = "relu",
         residual: bool = True,
         dt: float = 0.0,
@@ -195,10 +195,12 @@ class AutoregressiveMLP(nn.Module, TrainingPredictor):
     ) -> None:
         """Build the ``depth``-hidden-layer MLP and its standardizer buffers.
 
-        ``y_std``/``u_std`` become the module's float32 buffers; when omitted they default to the
-        identity map, so a module built before the standardizers are fitted treats raw units as
-        model space. The residual skip ``+ z_t`` is part of the architecture: when disabled the
-        layers predict the absolute sample exactly as before.
+        ``n_outputs`` is the per-position output width the kind fixes -- ``n_channels`` for the
+        waveform kind, ``n_channels * n_values`` for the observable kind -- and the core never
+        infers it. ``y_std``/``u_std`` become the module's float32 buffers; when omitted they
+        default to the identity map, so a module built before the standardizers are fitted treats
+        raw units as model space. The residual skip ``+ z_t`` is part of the architecture: when
+        disabled the layers predict the absolute sample exactly as before.
         """
         super().__init__()
         self.n_y = n_y
@@ -206,7 +208,7 @@ class AutoregressiveMLP(nn.Module, TrainingPredictor):
         self.horizon = horizon
         self.n_channels = n_channels
         self.n_controls = n_controls
-        self.n_outputs = int(n_outputs) if n_outputs is not None else int(n_channels)
+        self.n_outputs = int(n_outputs)
         self.activation = activation
         self.residual = residual
         self.hidden_size = hidden_size
@@ -326,8 +328,6 @@ class AutoregressiveMLP(nn.Module, TrainingPredictor):
     @classmethod
     def from_checkpoint(cls, meta: dict[str, Any], arrays: dict[str, FloatArray]) -> Self:
         """Rebuild the module from a ``(meta, arrays)`` pair, restoring weights, buffers and metadata."""
-        from neuro.config import StftGeometry  # noqa: PLC0415 -- deferred import
-
         require_model_type(meta, "mlp")
         require_activation(meta)
         geometry = StftGeometry.model_validate(meta["geometry"]) if "geometry" in meta else None
@@ -337,11 +337,11 @@ class AutoregressiveMLP(nn.Module, TrainingPredictor):
             horizon=int(meta["horizon"]),
             n_channels=int(meta["n_channels"]),
             n_controls=int(meta["n_controls"]),
-            n_outputs=int(meta.get("n_outputs", meta["n_channels"])),
+            n_outputs=int(meta["n_outputs"]),
             hidden_size=int(meta["hidden_size"]),
             depth=int(meta["depth"]),
             activation=meta["activation"],
-            residual=bool(meta.get("residual", False)),
+            residual=bool(meta["residual"]),
             dt=float(meta["dt"]),
             y_std=Standardizer.from_arrays(arrays, "y"),
             u_std=Standardizer.from_arrays(arrays, "u"),

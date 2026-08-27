@@ -84,9 +84,29 @@ def _check_rates(config: Mapping[str, Any]) -> None:
             raise ConfigConsistencyError(msg)
 
 
+def _model_geometry(raw: Any) -> StftGeometry:  # noqa: ANN401 -- a checkpoint mapping or an already-built geometry
+    """Rebuild the Observable geometry a checkpoint or config section carries."""
+    from neuro.config import StftGeometry  # noqa: PLC0415 -- neuro.config imports neuro.metrics, which imports this
+
+    return StftGeometry.model_validate(raw)
+
+
+def _check_geometry_matches(actual: StftGeometry, expected: StftGeometry, what: str) -> None:
+    """Raise ``ConfigConsistencyError`` naming every Observable geometry field ``what`` disagrees on."""
+    if actual == expected:
+        return
+    differing = [
+        f"{field} ({getattr(actual, field)!r} vs {getattr(expected, field)!r})"
+        for field in type(expected).model_fields
+        if getattr(actual, field) != getattr(expected, field)
+    ]
+    msg = f"{what} geometry does not match the predictor checkpoint: {', '.join(differing)}."
+    raise ConfigConsistencyError(msg)
+
+
 def _check_observable_geometry_agreement(
     estimator: Mapping[str, Any],
-    model_geom_dict: Mapping[str, Any],
+    model_geom: StftGeometry,
 ) -> None:
     """Ensure estimator geometry agrees with the predictor checkpoint's recorded geometry."""
     est_geom_raw = estimator.get("geometry")
@@ -94,58 +114,7 @@ def _check_observable_geometry_agreement(
         msg = "estimator 'neuro.filtering.ObservableEstimator' requires a 'geometry' section."
         raise ConfigConsistencyError(msg)
 
-    from neuro.config import StftGeometry  # noqa: PLC0415 -- deferred import
-
-    est_geom = est_geom_raw if isinstance(est_geom_raw, StftGeometry) else StftGeometry.model_validate(est_geom_raw)
-
-    m_n_segment = int(model_geom_dict["n_segment"])
-    m_n_hop = int(model_geom_dict["n_hop"])
-    m_band_hz = tuple(model_geom_dict["band_hz"]) if model_geom_dict.get("band_hz") is not None else None
-    m_n_bin_pool = int(model_geom_dict.get("n_bin_pool", 1))
-    m_kernel = str(model_geom_dict.get("kernel", "boxcar"))
-    m_kernel_width = int(model_geom_dict.get("kernel_width", 1))
-
-    if est_geom.n_segment != m_n_segment:
-        msg = f"estimator geometry n_segment ({est_geom.n_segment}) does not match checkpoint ({m_n_segment})."
-        raise ConfigConsistencyError(msg)
-    if est_geom.n_hop != m_n_hop:
-        msg = f"estimator geometry n_hop ({est_geom.n_hop}) does not match checkpoint ({m_n_hop})."
-        raise ConfigConsistencyError(msg)
-    if est_geom.band_hz != m_band_hz:
-        msg = f"estimator geometry band_hz ({est_geom.band_hz}) does not match checkpoint ({m_band_hz})."
-        raise ConfigConsistencyError(msg)
-    if est_geom.n_bin_pool != m_n_bin_pool:
-        msg = f"estimator geometry n_bin_pool ({est_geom.n_bin_pool}) does not match checkpoint ({m_n_bin_pool})."
-        raise ConfigConsistencyError(msg)
-    if est_geom.kernel != m_kernel:
-        msg = f"estimator geometry kernel ({est_geom.kernel!r}) does not match checkpoint ({m_kernel!r})."
-        raise ConfigConsistencyError(msg)
-    if est_geom.kernel_width != m_kernel_width:
-        msg = f"estimator geometry kernel_width ({est_geom.kernel_width}) does not match checkpoint ({m_kernel_width})."
-        raise ConfigConsistencyError(msg)
-
-
-def _check_envelope_geometry(e_geom: StftGeometry, m_geom: Mapping[str, Any]) -> None:
-    """Validate that the envelope's STFT geometry matches the predictor's recorded geometry."""
-    m_band = tuple(m_geom["band_hz"]) if m_geom.get("band_hz") is not None else None
-    if e_geom.band_hz != m_band:
-        msg = f"envelope band_hz ({e_geom.band_hz}) must equal predictor band_hz ({m_band})."
-        raise ConfigConsistencyError(msg)
-    if e_geom.n_bin_pool != int(m_geom.get("n_bin_pool", 1)):
-        msg = f"envelope n_bin_pool ({e_geom.n_bin_pool}) must equal predictor n_bin_pool ({m_geom.get('n_bin_pool', 1)})."
-        raise ConfigConsistencyError(msg)
-    if e_geom.kernel != str(m_geom.get("kernel", "boxcar")):
-        msg = f"envelope kernel ({e_geom.kernel!r}) must equal predictor kernel ({m_geom.get('kernel', 'boxcar')!r})."
-        raise ConfigConsistencyError(msg)
-    if e_geom.kernel_width != int(m_geom.get("kernel_width", 1)):
-        msg = f"envelope kernel_width ({e_geom.kernel_width}) must equal predictor kernel_width ({m_geom.get('kernel_width', 1)})."
-        raise ConfigConsistencyError(msg)
-    if e_geom.n_segment != int(m_geom["n_segment"]):
-        msg = f"envelope n_segment ({e_geom.n_segment}) must equal predictor n_segment ({m_geom['n_segment']})."
-        raise ConfigConsistencyError(msg)
-    if e_geom.n_hop != int(m_geom["n_hop"]):
-        msg = f"envelope n_hop ({e_geom.n_hop}) must equal predictor n_hop ({m_geom['n_hop']})."
-        raise ConfigConsistencyError(msg)
+    _check_geometry_matches(_model_geometry(est_geom_raw), model_geom, "estimator")
 
 
 def _check_observable_psd_reference(
@@ -172,13 +141,13 @@ def _check_observable_psd_reference(
         )
         raise ConfigConsistencyError(msg)
 
-    model_fs = float(meta["geometry"]["n_hop"]) / float(meta["dt"]) if "geometry" in meta else 1.0 / float(meta["dt"])
+    model_geom = _model_geometry(meta["geometry"])
+    model_fs = model_geom.n_hop / float(meta["dt"])
     if not math.isclose(obs_envelope.fs, model_fs, rel_tol=_REL_TOL):
         msg = f"envelope sampling rate ({obs_envelope.fs:g} Hz) must equal predictor sampling rate ({model_fs:g} Hz)."
         raise ConfigConsistencyError(msg)
 
-    if "geometry" in meta:
-        _check_envelope_geometry(obs_envelope.geometry, meta["geometry"])
+    _check_geometry_matches(obs_envelope.geometry, model_geom, "envelope")
 
 
 def _check_waveform_psd_reference(
@@ -204,27 +173,17 @@ def _check_waveform_psd_reference(
             raise ConfigConsistencyError(msg)
 
 
-def _check_psd_reference(
-    problem: Mapping[str, Any],
-    controller_dt: float,
-    meta: Mapping[str, Any] | None = None,
-    *,
-    is_observable: bool = False,
-) -> None:
-    """Validate the reference envelope path, sample rate, channel count, and geometry against the model."""
-    psd_ref_path = problem.get("psd_ref")
-    if psd_ref_path is None:
-        return
+def _envelope_path(problem: Mapping[str, Any], key: str) -> Path | None:
+    """Resolve the envelope path ``problem`` spells under ``key``, or ``None`` when it configures none."""
+    configured = problem.get(key)
+    if configured is None:
+        return None
 
-    psd_path = Path(psd_ref_path)
-    if not psd_path.exists():
-        msg = f"spectral reference envelope not found: {psd_path}"
+    path = Path(configured)
+    if not path.exists():
+        msg = f"spectral reference envelope not found: {path}"
         raise ConfigConsistencyError(msg)
-
-    if is_observable:
-        _check_observable_psd_reference(ObservableEnvelope.load(psd_path), controller_dt, meta)
-    else:
-        _check_waveform_psd_reference(PsdEnvelope.load(psd_path), controller_dt, meta)
+    return path
 
 
 def _check_observable_predictor(
@@ -240,12 +199,11 @@ def _check_observable_predictor(
         raise ConfigConsistencyError(msg)
 
     downsample = int(meta["downsample"])
-    geom_dict = meta["geometry"]
-    n_hop = int(geom_dict["n_hop"])
-    expected_dt = n_hop * downsample * plant_dt
+    model_geom = _model_geometry(meta["geometry"])
+    expected_dt = model_geom.n_hop * downsample * plant_dt
     if not math.isclose(controller_dt, expected_dt, rel_tol=_REL_TOL):
         msg = (
-            f"controller.dt ({controller_dt}) must equal hop ({n_hop}) x downsample ({downsample}) x "
+            f"controller.dt ({controller_dt}) must equal hop ({model_geom.n_hop}) x downsample ({downsample}) x "
             f"dynamics.dt ({plant_dt}) = {expected_dt:g} s: exactly one fresh Frame is absorbed per tick."
         )
         raise ConfigConsistencyError(msg)
@@ -255,17 +213,15 @@ def _check_observable_predictor(
         msg = f"predictor checkpoint {problem['artifact']!r} is an Observable model but estimator is {estimator['class_path']!r}, not 'neuro.filtering.ObservableEstimator'."
         raise ConfigConsistencyError(msg)
 
-    _check_observable_geometry_agreement(estimator, geom_dict)
+    _check_observable_geometry_agreement(estimator, model_geom)
 
     n_u = int(meta["n_u"])
-    kernel_width = int(geom_dict.get("kernel_width", 1))
-    n_segment = int(geom_dict["n_segment"])
-    min_n_u = kernel_width - 1 + math.ceil(n_segment / n_hop)
+    min_n_u = model_geom.min_past_controls()
     if n_u < min_n_u:
         msg = (
             f"predictor n_u ({n_u}) violates the control-support rule: must be >= {min_n_u} "
-            f"(kernel_width={kernel_width}, segment={n_segment}, hop={n_hop}) so the past-control window "
-            f"covers the Frame's sample support."
+            f"(kernel_width={model_geom.kernel_width}, segment={model_geom.n_segment}, hop={model_geom.n_hop}) "
+            f"so the past-control window covers the Frame's sample support."
         )
         raise ConfigConsistencyError(msg)
 
@@ -313,8 +269,14 @@ def _check_predictor(config: Mapping[str, Any]) -> None:
 
     if is_observable:
         effective_decimated_dt = _check_observable_predictor(config, problem, meta, controller_dt, plant_dt)
+        envelope_path = _envelope_path(problem, "envelope_ref")
+        if envelope_path is not None:
+            _check_observable_psd_reference(ObservableEnvelope.load(envelope_path), controller_dt, meta)
     else:
         effective_decimated_dt = _check_waveform_predictor(config, problem, controller_dt, plant_dt, downsample)
+        envelope_path = _envelope_path(problem, "psd_ref")
+        if envelope_path is not None:
+            _check_waveform_psd_reference(PsdEnvelope.load(envelope_path), controller_dt, meta)
 
     online = _estimator_cutoff_hz(config["estimator"])
     offline = _training_cutoff_hz(effective_decimated_dt, downsample, provenance)
@@ -332,8 +294,6 @@ def _check_predictor(config: Mapping[str, Any]) -> None:
             f"({meta['horizon']}); the MPC would cost a free run longer than any the model was ever fit against.",
             stacklevel=2,
         )
-
-    _check_psd_reference(problem, controller_dt, meta, is_observable=is_observable)
 
     if provenance.plant_fingerprint is not None and provenance.plant_fingerprint != plant_fingerprint(config):
         warnings.warn(

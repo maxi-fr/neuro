@@ -333,6 +333,7 @@ def test_observable_envelope_rejects_corrupted_artifact(tmp_path: Path) -> None:
         fs=50.0,
         n_segment=50,
         n_hop=25,
+        band_hz=np.asarray([-1.0, -1.0]),
         n_bin_pool=1,
         kernel="boxcar",
         kernel_width=1,

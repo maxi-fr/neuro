@@ -21,9 +21,13 @@ def test_standardizer_round_trip(kind: Literal["standard", "robust"], global_sca
     z = std.transform(x)
     np.testing.assert_allclose(std.inverse_transform(z), x, atol=1e-10)
 
-    expected_len = 1 if global_scaling else 4
-    assert std.center.shape == (expected_len,)
-    assert std.scale.shape == (expected_len,)
+    # Both scopes fit one statistic per column; global scaling pools it, then broadcasts back,
+    # so a consumer checking the fitted width against the output width never special-cases it.
+    assert std.center.shape == (4,)
+    assert std.scale.shape == (4,)
+    if global_scaling:
+        assert len(np.unique(std.center)) == 1
+        assert len(np.unique(std.scale)) == 1
 
 
 def test_standardizer_matches_standard() -> None:

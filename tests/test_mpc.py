@@ -16,6 +16,7 @@ from trajopt.transcription.single_shooting import SingleShooting
 from yaml import safe_load
 
 from neuro.config import StftGeometry
+from neuro.control.costs import ObservableHingeCost
 from neuro.control.mpc import (
     TrajOptMPCController,
     TrajOptMPCLog,
@@ -118,6 +119,7 @@ def _build_checkpoint(
         horizon=horizon,
         n_channels=n_channels,
         n_controls=n_controls,
+        n_outputs=n_channels,
         hidden_size=5,
         depth=depth,
         activation="relu",
@@ -413,11 +415,15 @@ def test_build_observable_problem_assembles_and_solves(tmp_path: Path) -> None:
         u_max=0.5,
         w_u=1.0,
         w_u_l1=0.2,
-        w_psd=5.0,
-        psd_ref=env_path,
+        w_hinge=5.0,
+        envelope_ref=env_path,
         kirchhoff=True,
     )
     assert problem.N == 5
+    # The stage trajectory carries every Frame of the Control Horizon but the last; the terminal
+    # Cost prices that one, so no predicted Frame the controls move goes unscored.
+    assert isinstance(problem.obj.terminal_cost, ObservableHingeCost)
+    assert problem.obj.terminal_cost.terminal
     assert isinstance(problem.model, ObservableMLPModel)
     assert problem.model.n_outputs == 2 * n_values
     assert problem.model.m == 2
@@ -428,7 +434,10 @@ def test_build_observable_problem_assembles_and_solves(tmp_path: Path) -> None:
     x0 = np.asarray(model.initial_state())
     x0[: model.n_y * model.n_outputs] = rng.uniform(-1.0, 1.0, model.n_y * model.n_outputs)
     state = MPCState.initial(problem, x0=jnp.asarray(x0), dt=model.dt)
-    solver = Ipopt(options={"print_level": 0, "hessian_approximation": "limited-memory"})
+    # Ipopt's 1e-8 default is below the noise floor of a float32 objective whose optimum sits
+    # inside L1ControlCost's eps=1e-3 smoothing radius, where curvature is 1/eps; the solve
+    # stalls there at a dual infeasibility of ~1e-2 with the objective already flat to 1e-6.
+    solver = Ipopt(options={"print_level": 0, "hessian_approximation": "limited-memory", "tol": 1e-3})
     solved = problem.solve(state, solver=solver)
     assert solved.status == "converged"
 
@@ -464,8 +473,8 @@ def test_observable_closed_loop_warmup_and_emission(tmp_path: Path) -> None:
         u_max=0.5,
         w_u=1.0,
         w_u_l1=0.2,
-        w_psd=5.0,
-        psd_ref=env_path,
+        w_hinge=5.0,
+        envelope_ref=env_path,
         kirchhoff=True,
     )
     # Plant fs = 1000 Hz (dt = 0.001s), downsample = 20 -> fs_decimated = 50.0 Hz.
@@ -534,8 +543,8 @@ def test_observable_controller_from_config(tmp_path: Path) -> None:
             "horizon": 4,
             "u_max": 1.0,
             "w_u": 5.0,
-            "w_psd": 2.0,
-            "psd_ref": str(env_path),
+            "w_hinge": 2.0,
+            "envelope_ref": str(env_path),
             "kirchhoff": True,
         },
     }
@@ -564,7 +573,7 @@ def test_build_observable_problem_envelope_cross_validation(tmp_path: Path) -> N
         kernel_width=geom.kernel_width,
     )
     with pytest.raises(ValueError, match=r"envelope channel count \(3\) does not match model channel count \(2\)"):
-        build_observable_problem(artifact, horizon=4, u_max=0.5, w_psd=1.0, psd_ref=bad_ch)
+        build_observable_problem(artifact, horizon=4, u_max=0.5, w_hinge=1.0, envelope_ref=bad_ch)
 
     # Mismatched sampling rate raises
     bad_fs = tmp_path / "bad_fs.npz"
@@ -579,10 +588,8 @@ def test_build_observable_problem_envelope_cross_validation(tmp_path: Path) -> N
         kernel=geom.kernel,
         kernel_width=geom.kernel_width,
     )
-    with pytest.raises(
-        ValueError, match=r"envelope sampling rate \(100 Hz\) does not match model sampling rate \(50 Hz\)"
-    ):
-        build_observable_problem(artifact, horizon=4, u_max=0.5, w_psd=1.0, psd_ref=bad_fs)
+    with pytest.raises(ValueError, match=r"envelope sampling rate \(100 Hz\) is a Frame rate of 20 Hz at hop 5"):
+        build_observable_problem(artifact, horizon=4, u_max=0.5, w_hinge=1.0, envelope_ref=bad_fs)
 
     # Mismatched geometry band_hz raises
     bad_band = tmp_path / "bad_band.npz"
@@ -597,8 +604,11 @@ def test_build_observable_problem_envelope_cross_validation(tmp_path: Path) -> N
         kernel=geom.kernel,
         kernel_width=geom.kernel_width,
     )
-    with pytest.raises(ValueError, match=r"envelope band_hz \(\(2\.0, 10\.0\)\) does not match model band_hz"):
-        build_observable_problem(artifact, horizon=4, u_max=0.5, w_psd=1.0, psd_ref=bad_band)
+    with pytest.raises(
+        ValueError,
+        match=r"envelope geometry does not match model geometry: band_hz \(\(2\.0, 10\.0\) vs \(4\.0, 16\.0\)\)",
+    ):
+        build_observable_problem(artifact, horizon=4, u_max=0.5, w_hinge=1.0, envelope_ref=bad_band)
 
 
 def test_example_observable_config_runs_simulation_start_to_finish(tmp_path: Path) -> None:

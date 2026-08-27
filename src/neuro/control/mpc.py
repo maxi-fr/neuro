@@ -22,6 +22,7 @@ from neuro.control.costs import (
     L1ControlCost,
     ObservableHingeCost,
     SpectralHingeCost,
+    StateOutputs,
     SumCost,
     has_whole_horizon_cost,
 )
@@ -96,14 +97,14 @@ def _spectral_envelope(psd_ref: str | Path | None, w_psd: float) -> PsdEnvelope 
     return PsdEnvelope.load(psd_ref)
 
 
-def _observable_envelope(psd_ref: str | Path | None, w_psd: float) -> ObservableEnvelope | None:
-    """Load the healthy Observable envelope when ``w_psd`` enables the hinge, else ``None``."""
-    if w_psd <= 0:
+def _observable_envelope(envelope_ref: str | Path | None, w_hinge: float) -> ObservableEnvelope | None:
+    """Load the healthy Observable envelope when ``w_hinge`` enables the hinge, else ``None``."""
+    if w_hinge <= 0:
         return None
-    if psd_ref is None:
-        msg = "psd_ref must be provided when w_psd > 0"
+    if envelope_ref is None:
+        msg = "envelope_ref must be provided when w_hinge > 0"
         raise ValueError(msg)
-    return ObservableEnvelope.load(psd_ref)
+    return ObservableEnvelope.load(envelope_ref)
 
 
 def _assemble_problem(
@@ -198,30 +199,21 @@ def _validate_observable_envelope(envelope: ObservableEnvelope, model: Observabl
     if envelope.power.shape[0] != model.n_channels:
         msg = f"envelope channel count ({envelope.power.shape[0]}) does not match model channel count ({model.n_channels})."
         raise ValueError(msg)
-    model_fs = model.geometry.n_hop / model.dt
-    if not np.isclose(envelope.fs, model_fs, rtol=1e-9):
-        msg = f"envelope sampling rate ({envelope.fs:g} Hz) does not match model sampling rate ({model_fs:g} Hz)."
-        raise ValueError(msg)
-    e_geom, m_geom = envelope.geometry, model.geometry
-    if e_geom.band_hz != m_geom.band_hz:
-        msg = f"envelope band_hz ({e_geom.band_hz}) does not match model band_hz ({m_geom.band_hz})."
-        raise ValueError(msg)
-    if e_geom.n_bin_pool != m_geom.n_bin_pool:
-        msg = f"envelope n_bin_pool ({e_geom.n_bin_pool}) does not match model n_bin_pool ({m_geom.n_bin_pool})."
-        raise ValueError(msg)
-    if e_geom.kernel != m_geom.kernel:
-        msg = f"envelope kernel ({e_geom.kernel!r}) does not match model kernel ({m_geom.kernel!r})."
-        raise ValueError(msg)
-    if e_geom.kernel_width != m_geom.kernel_width:
+    envelope_frame_rate = model.geometry.frame_rate(envelope.fs)
+    model_frame_rate = 1.0 / model.dt
+    if not np.isclose(envelope_frame_rate, model_frame_rate, rtol=1e-9):
         msg = (
-            f"envelope kernel_width ({e_geom.kernel_width}) does not match model kernel_width ({m_geom.kernel_width})."
+            f"envelope sampling rate ({envelope.fs:g} Hz) is a Frame rate of {envelope_frame_rate:g} Hz "
+            f"at hop {model.geometry.n_hop}, but the model steps at {model_frame_rate:g} Hz."
         )
         raise ValueError(msg)
-    if e_geom.n_segment != m_geom.n_segment:
-        msg = f"envelope n_segment ({e_geom.n_segment}) does not match model n_segment ({m_geom.n_segment})."
-        raise ValueError(msg)
-    if e_geom.n_hop != m_geom.n_hop:
-        msg = f"envelope n_hop ({e_geom.n_hop}) does not match model n_hop ({m_geom.n_hop})."
+    if envelope.geometry != model.geometry:
+        differing = ", ".join(
+            f"{field} ({getattr(envelope.geometry, field)!r} vs {getattr(model.geometry, field)!r})"
+            for field in type(model.geometry).model_fields
+            if getattr(envelope.geometry, field) != getattr(model.geometry, field)
+        )
+        msg = f"envelope geometry does not match model geometry: {differing}."
         raise ValueError(msg)
 
 
@@ -231,8 +223,8 @@ def build_waveform_problem(  # noqa: PLR0913 -- checkpoint plus the nine MPC cos
     horizon: int,
     u_max: ArrayLike,
     w_y: float = 1.0,
-    w_y_terminal: float | None = None,
     w_u: float = 0.0,
+    w_y_terminal: float | None = None,
     w_u_l1: float = 0.0,
     w_psd: float = 0.0,
     psd_ref: str | Path | None = None,
@@ -257,11 +249,11 @@ def build_waveform_problem(  # noqa: PLR0913 -- checkpoint plus the nine MPC cos
         length-``n_controls`` vector.
     w_y
         Weight on state tracking error in the stage cost.
+    w_u
+        Weight on control effort (quadratic) in the stage cost.
     w_y_terminal
         Weight on the terminal knot state tracking error. When ``None`` (default), inherits
         ``w_y``.
-    w_u
-        Weight on control effort (quadratic) in the stage cost.
     w_u_l1
         Weight on the L1 norm of the control effort (a sparse-stimulation penalty); ``0``
         disables it (default).
@@ -289,19 +281,15 @@ def build_waveform_problem(  # noqa: PLR0913 -- checkpoint plus the nine MPC cos
     envelope = _spectral_envelope(psd_ref, w_psd)
     if envelope is not None:
         _validate_waveform_envelope(envelope, model)
-        costs.append(
-            SpectralHingeCost(
-                n=n,
-                m=m,
-                n_y=model.n_y,
-                n_channels=model.n_channels,
-                y_center=model.y_center,
-                y_scale=model.y_scale,
-                envelope=envelope,
-                w_psd=w_psd,
-                horizon=horizon,
-            )
+        outputs = StateOutputs(
+            n=n,
+            m=m,
+            n_y=model.n_y,
+            n_outputs=model.n_channels,
+            center=model.y_center,
+            scale=model.y_scale,
         )
+        costs.append(SpectralHingeCost(outputs, envelope, w_psd=w_psd, horizon=horizon))
     stage_cost: CostFunction = _combine_costs(costs)
     # The terminal knot carries the horizon's final output, weighted by ``w_y_terminal`` when
     # given else ``w_y`` -- the incumbent's last-step stage cost. Always explicit, because the
@@ -322,8 +310,8 @@ def build_observable_problem(  # noqa: PLR0913 -- checkpoint plus the MPC cost/b
     u_max: ArrayLike,
     w_u: float = 0.0,
     w_u_l1: float = 0.0,
-    w_psd: float = 0.0,
-    psd_ref: str | Path | None = None,
+    w_hinge: float = 0.0,
+    envelope_ref: str | Path | None = None,
     kirchhoff: bool = False,
 ) -> Problem:
     """Assemble the observable MPC problem: model adapter, objective, box and Kirchhoff bounds.
@@ -347,12 +335,13 @@ def build_observable_problem(  # noqa: PLR0913 -- checkpoint plus the MPC cost/b
     w_u_l1
         Weight on the L1 norm of the control effort (a sparse-stimulation penalty); ``0``
         disables it (default).
-    w_psd
-        Weight on the spectral hinge cost: the mean squared amount by which predicted log-power
-        Frames exceed ``psd_ref``'s healthy envelope. ``0`` (default) disables it.
-    psd_ref
-        Path to the healthy reference envelope npz written by ``scripts/build_healthy_psd.py``.
-        Required when ``w_psd > 0``; its stored geometry drives the cost.
+    w_hinge
+        Weight on the hinge cost: the mean squared amount by which the predicted log-power
+        Frames exceed ``envelope_ref``'s healthy envelope. ``0`` (default) disables it.
+    envelope_ref
+        Path to the healthy reference Observable envelope npz written by
+        ``scripts/build_healthy_psd.py``. Required when ``w_hinge > 0``; its stored geometry
+        drives the cost.
     kirchhoff
         Add the Kirchhoff sum-to-zero equality on the controls.
     """
@@ -364,24 +353,23 @@ def build_observable_problem(  # noqa: PLR0913 -- checkpoint plus the MPC cost/b
     costs: list[CostFunction] = [ExcludeInitialKnotState(stage)]
     if w_u_l1 > 0:
         costs.append(L1ControlCost(n=n, m=m, w_l1=w_u_l1, horizon=horizon))
-    envelope = _observable_envelope(psd_ref, w_psd)
+    envelope = _observable_envelope(envelope_ref, w_hinge)
+    # The stage trajectory carries every Frame of the Control Horizon but the last, which lives
+    # only in the terminal knot; the terminal Cost scores it so no predicted Frame goes unpriced.
+    terminal: CostFunction = DiagonalCost.terminal_tracking(jnp.zeros(n), jnp.zeros(n), m)
     if envelope is not None:
         _validate_observable_envelope(envelope, model)
-        costs.append(
-            ObservableHingeCost(
-                n=n,
-                m=m,
-                n_y=model.n_y,
-                n_outputs=model.n_outputs,
-                y_center=model.y_center,
-                y_scale=model.y_scale,
-                envelope=envelope,
-                w_psd=w_psd,
-                horizon=horizon,
-            )
+        outputs = StateOutputs(
+            n=n,
+            m=m,
+            n_y=model.n_y,
+            n_outputs=model.n_outputs,
+            center=model.y_center,
+            scale=model.y_scale,
         )
+        costs.append(ObservableHingeCost(outputs, envelope, w_hinge=w_hinge, horizon=horizon))
+        terminal = ObservableHingeCost(outputs, envelope, w_hinge=w_hinge, horizon=horizon, terminal=True)
     stage_cost: CostFunction = _combine_costs(costs)
-    terminal = DiagonalCost.terminal_tracking(jnp.zeros(n), jnp.zeros(n), m)
     objective = Objective(stage_cost=stage_cost, terminal_cost=terminal, N=N)
 
     return _assemble_problem(model, objective, N=N, u_max=u_max, kirchhoff=kirchhoff)

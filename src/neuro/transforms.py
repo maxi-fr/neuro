@@ -41,7 +41,12 @@ class Standardizer:
         kind: Literal["standard", "robust"] = "standard",
         global_scaling: bool = False,
     ) -> Standardizer:
-        """Fit ``center``/``scale`` from ``(rows, C)`` data."""
+        """Fit ``center``/``scale`` from ``(rows, C)`` data, always length ``C``.
+
+        Under ``global_scaling`` the statistic is pooled over every column and then broadcast back
+        to width ``C``, so the fitted arrays are per-output whichever way they were pooled and a
+        consumer that checks their length against the output width never has to special-case them.
+        """
         data = np.asarray(x, dtype=np.float64)
         flat = data.reshape(-1, 1) if global_scaling else data
         if kind == "robust":
@@ -52,7 +57,10 @@ class Standardizer:
             center = flat.mean(axis=0)
             scale = flat.std(axis=0)
         scale = np.where(scale == 0, 1.0, scale)
-        return cls(center=np.asarray(center, dtype=np.float64), scale=np.asarray(scale, dtype=np.float64))
+        width = data.shape[-1]
+        center = np.broadcast_to(center, (width,))
+        scale = np.broadcast_to(scale, (width,))
+        return cls(center=np.array(center, dtype=np.float64), scale=np.array(scale, dtype=np.float64))
 
     def transform(self, x: TMath) -> TMath:
         """Standardize ``x``."""

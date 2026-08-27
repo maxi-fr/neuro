@@ -17,6 +17,7 @@ from neuro.control.costs import (
     L1ControlCost,
     ObservableHingeCost,
     SpectralHingeCost,
+    StateOutputs,
     SumCost,
     jax_compute_log_power_frames,
 )
@@ -69,6 +70,7 @@ def _build_checkpoint(
         horizon=horizon,
         n_channels=n_channels,
         n_controls=n_controls,
+        n_outputs=n_channels,
         hidden_size=5,
         depth=depth,
         activation="relu",
@@ -220,7 +222,7 @@ def test_spectral_hinge_jax_reduction_agrees_with_canonical_numpy() -> None:
 
 
 def test_spectral_hinge_cost_is_model_free_and_scores_stage_trajectory() -> None:
-    """SpectralHingeCost constructs without a model instance and scores stage states."""
+    """SpectralHingeCost constructs without a model instance and scores every stage Frame."""
     rng = np.random.default_rng(_SEED + 11)
     n_y, n_channels, n_u, n_controls = 4, 3, 2, 2
     horizon, window, hop, fs = 100, 50, 25, 50.0
@@ -237,23 +239,14 @@ def test_spectral_hinge_cost_is_model_free_and_scores_stage_trajectory() -> None
         hop=hop,
     )
 
-    cost = SpectralHingeCost(
-        n=n,
-        m=m,
-        n_y=n_y,
-        n_channels=n_channels,
-        y_center=y_center,
-        y_scale=y_scale,
-        envelope=envelope,
-        w_psd=10.0,
-        horizon=horizon,
-    )
+    outputs = StateOutputs(n=n, m=m, n_y=n_y, n_outputs=n_channels, center=y_center, scale=y_scale)
+    cost = SpectralHingeCost(outputs, envelope, w_psd=10.0, horizon=horizon)
 
     # evaluate returns 0 for native expansions
     x_single = jnp.asarray(rng.standard_normal(n))
     np.testing.assert_equal(float(cost.evaluate(x_single)), 0.0)
 
-    # stage_costs decodes X[1:] and scores the exact windowed hinge
+    # stage_costs decodes every stage state and scores the exact windowed hinge
     X = rng.standard_normal((horizon, n))
     U = rng.standard_normal((horizon, m))
     stage_vals = cost.stage_costs(jnp.asarray(X), jnp.asarray(U), jnp.zeros(horizon))
@@ -263,12 +256,82 @@ def test_spectral_hinge_cost_is_model_free_and_scores_stage_trajectory() -> None
 
     # Check value at index 0 against NumPy
     z_last = slice((n_y - 1) * n_channels, n_y * n_channels)
-    y_stage = X[1:, z_last] * y_scale + y_center  # (horizon - 1, n_channels)
+    y_stage = X[:, z_last] * y_scale + y_center  # (horizon, n_channels)
     geom = StftGeometry(n_segment=window, n_hop=hop)
     numpy_frames = compute_log_power_frames(y_stage, geom, fs=fs)
+    assert numpy_frames.shape[0] == (horizon - window) // hop + 1
     log_excess = numpy_frames - np.log(envelope_power[None, :, 1:])
     want_value = 10.0 * float(np.mean(np.maximum(0.0, log_excess) ** 2))
     np.testing.assert_allclose(float(stage_vals[0]), want_value, rtol=1e-10, atol=1e-12)
+
+
+def test_spectral_hinge_window_grid_spans_a_whole_control_horizon() -> None:
+    """The grid holds the ``horizon`` windows the Control Horizon implies, not ``horizon - 1``.
+
+    ``configs/simulation/mse02_psd_mpc_spectral.yaml`` runs horizon 75 at window 50, hop 25:
+    two windows. Scoring one Frame fewer silently drops the second, leaving the horizon's last
+    third unpriced.
+    """
+    rng = np.random.default_rng(_SEED + 13)
+    n_y, n_channels, n_u, n_controls = 4, 2, 2, 2
+    horizon, window, hop, fs = 75, 50, 25, 50.0
+    n = n_y * n_channels + n_u * n_controls
+
+    envelope = PsdEnvelope(
+        power=rng.uniform(0.1, 1.0, (n_channels, window // 2 + 1)),
+        fs=fs,
+        window=window,
+        hop=hop,
+    )
+    outputs = StateOutputs(
+        n=n, m=n_controls, n_y=n_y, n_outputs=n_channels, center=np.zeros(n_channels), scale=np.ones(n_channels)
+    )
+    SpectralHingeCost(outputs, envelope, w_psd=1.0, horizon=horizon)
+
+    X = jnp.asarray(rng.standard_normal((horizon, n)))
+    frames = jax_compute_log_power_frames(outputs.decode(X), fs=fs, window=window, hop=hop)
+    assert frames.shape[0] == 2
+
+    # One Frame short of the Control Horizon the grid loses a whole window, so the value moves.
+    short = jax_compute_log_power_frames(outputs.decode(X[1:]), fs=fs, window=window, hop=hop)
+    assert short.shape[0] == 1
+
+
+def test_spectral_hinge_pins_a_seeded_rollout(tmp_path: Path) -> None:
+    """Pin the hinge on a fixed seeded model rollout, guarding the window grid's anchor.
+
+    Before the model-free refactor the Cost stepped the model once more to recover the terminal
+    knot's Frame and scored ``y_1 .. y_H``; this exact rollout scored ``100.35113257399541``
+    there, over 3 windows. A Cost sees the terminal knot one state at a time, and an FFT window
+    straddling it does not split into a stage term plus a terminal term, so the grid is anchored
+    one Frame earlier and scores ``y_0 .. y_{H-1}`` -- the same 3 windows spanning the same
+    Control Horizon, shifted by one sample.
+    """
+    n_y, n_u, n_channels, n_controls = 4, 3, 2, 2
+    horizon, window, hop, fs = 100, 50, 25, 50.0
+    artifact = _build_checkpoint(
+        tmp_path, n_y=n_y, n_u=n_u, horizon=horizon, n_channels=n_channels, n_controls=n_controls
+    )
+    model = WaveformMLPModel.load(artifact)
+
+    rng = np.random.default_rng(_SEED + 21)
+    envelope = PsdEnvelope(power=rng.uniform(0.1, 1.0, (n_channels, window // 2 + 1)), fs=fs, window=window, hop=hop)
+    x0 = np.asarray(model.initial_state())
+    x0[: n_y * n_channels] = rng.standard_normal(n_y * n_channels)
+    U = jnp.asarray(rng.standard_normal((horizon, n_controls)))
+    states = [jnp.asarray(x0)]
+    for u in U:
+        states.append(model.discrete_dynamics(states[-1], u, 0.0, 0.0))
+    X = jnp.stack(states[:-1])
+
+    outputs = StateOutputs(
+        n=model.n, m=model.m, n_y=n_y, n_outputs=n_channels, center=model.y_center, scale=model.y_scale
+    )
+    cost = SpectralHingeCost(outputs, envelope, w_psd=10.0, horizon=horizon)
+    assert jax_compute_log_power_frames(outputs.decode(X), fs=fs, window=window, hop=hop).shape[0] == 3
+
+    value = float(cost.stage_costs(X, U, jnp.zeros(horizon))[0])
+    np.testing.assert_allclose(value, 95.680650452903251, rtol=1e-9)
 
 
 def test_spectral_hinge_cost_validation() -> None:
@@ -282,30 +345,17 @@ def test_spectral_hinge_cost_validation() -> None:
     # Channel count mismatch (envelope has 3, n_channels=2)
     with pytest.raises(ValueError, match="envelope has 3 channels but the model outputs 2"):
         SpectralHingeCost(
-            n=10,
-            m=2,
-            n_y=2,
-            n_channels=2,
-            y_center=np.zeros(2),
-            y_scale=np.ones(2),
-            envelope=envelope,
+            StateOutputs(n=10, m=2, n_y=2, n_outputs=2, center=np.zeros(2), scale=np.ones(2)),
+            envelope,
             w_psd=1.0,
             horizon=60,
         )
 
-    # Horizon shorter than window (horizon=40 < window=50)
+    # Horizon equal to the window still scores one whole window; anything shorter cannot.
+    outputs = StateOutputs(n=12, m=2, n_y=2, n_outputs=3, center=np.zeros(3), scale=np.ones(3))
+    assert SpectralHingeCost(outputs, envelope, w_psd=1.0, horizon=50).window == 50
     with pytest.raises(ValueError, match="horizon \\(40\\) is shorter than the envelope window \\(50\\)"):
-        SpectralHingeCost(
-            n=12,
-            m=2,
-            n_y=2,
-            n_channels=3,
-            y_center=np.zeros(3),
-            y_scale=np.ones(3),
-            envelope=envelope,
-            w_psd=1.0,
-            horizon=40,
-        )
+        SpectralHingeCost(outputs, envelope, w_psd=1.0, horizon=40)
 
 
 def test_observable_hinge_cost_matches_numpy_reference() -> None:
@@ -327,36 +377,53 @@ def test_observable_hinge_cost_matches_numpy_reference() -> None:
         geometry=geom,
     )
 
-    cost = ObservableHingeCost(
-        n=n,
-        m=m,
-        n_y=n_y,
-        n_outputs=n_outputs,
-        y_center=y_center,
-        y_scale=y_scale,
-        envelope=envelope,
-        w_psd=10.0,
-        horizon=horizon,
-    )
+    outputs = StateOutputs(n=n, m=m, n_y=n_y, n_outputs=n_outputs, center=y_center, scale=y_scale)
+    cost = ObservableHingeCost(outputs, envelope, w_hinge=10.0, horizon=horizon)
+    terminal = ObservableHingeCost(outputs, envelope, w_hinge=10.0, horizon=horizon, terminal=True)
 
-    # evaluate returns 0 for native expansions
+    # evaluate returns 0 at a stage knot, so native expansions cannot mis-score it
     x_single = jnp.asarray(rng.standard_normal(n))
     np.testing.assert_equal(float(cost.evaluate(x_single)), 0.0)
 
-    # stage_costs decodes X[1:] and scores the exact windowed hinge
+    # stage_costs decodes X[1:] and scores the predicted Frames the stage trajectory carries
     X = rng.standard_normal((horizon + 1, n))
     U = rng.standard_normal((horizon, m))
-    stage_vals = cost.stage_costs(jnp.asarray(X), jnp.asarray(U), jnp.zeros(horizon + 1))
+    stage_vals = cost.stage_costs(jnp.asarray(X[:-1]), jnp.asarray(U), jnp.zeros(horizon))
 
     # Entries past 0 must be 0
-    np.testing.assert_array_equal(np.asarray(stage_vals[1:]), np.zeros(horizon))
+    np.testing.assert_array_equal(np.asarray(stage_vals[1:]), np.zeros(horizon - 1))
 
-    # Check value at index 0 against NumPy
+    # Stage plus terminal is the NumPy mean over every Frame of the Control Horizon
+    total = float(jnp.sum(stage_vals)) + float(terminal.evaluate(jnp.asarray(X[-1])))
     z_last = slice((n_y - 1) * n_outputs, n_y * n_outputs)
-    y_stage = X[1:, z_last] * y_scale + y_center  # (horizon, n_outputs)
-    log_excess = y_stage - envelope_power.reshape(1, -1)
+    y_horizon = X[1:, z_last] * y_scale + y_center  # (horizon, n_outputs)
+    log_excess = y_horizon - envelope_power.reshape(1, -1)
     want_value = 10.0 * float(np.mean(np.maximum(0.0, log_excess) ** 2))
-    np.testing.assert_allclose(float(stage_vals[0]), want_value, rtol=1e-10, atol=1e-12)
+    np.testing.assert_allclose(total, want_value, rtol=1e-10, atol=1e-12)
+
+
+def test_observable_hinge_scores_every_control_horizon_frame() -> None:
+    """The stage and terminal Costs together price exactly ``horizon`` Frames, none dropped."""
+    horizon, n_channels, n_values, n_controls = 4, 3, 5, 2
+    n_outputs = n_channels * n_values
+    n = n_outputs + 2 * n_controls
+
+    envelope = ObservableEnvelope(
+        power=np.zeros((n_channels, n_values)),
+        fs=50.0,
+        geometry=StftGeometry(n_segment=20, n_hop=5),
+    )
+    outputs = StateOutputs(
+        n=n, m=n_controls, n_y=1, n_outputs=n_outputs, center=np.zeros(n_outputs), scale=np.ones(n_outputs)
+    )
+    stage = ObservableHingeCost(outputs, envelope, w_hinge=1.0, horizon=horizon)
+    terminal = ObservableHingeCost(outputs, envelope, w_hinge=1.0, horizon=horizon, terminal=True)
+
+    # Every Frame sits exactly one unit above the envelope, so each scored Frame adds 1 / horizon.
+    X = jnp.ones((horizon + 1, n))
+    stage_total = float(jnp.sum(stage.stage_costs(X[:-1], jnp.zeros((horizon, n_controls)), jnp.zeros(horizon))))
+    np.testing.assert_allclose(stage_total, (horizon - 1) / horizon, rtol=1e-12)
+    np.testing.assert_allclose(stage_total + float(terminal.evaluate(X[-1])), 1.0, rtol=1e-12)
 
 
 def test_observable_hinge_cost_validation() -> None:
@@ -372,27 +439,17 @@ def test_observable_hinge_cost_validation() -> None:
         ValueError, match="envelope has 3 channels and 5 values \\(15 total\\) but the model output width is 10"
     ):
         ObservableHingeCost(
-            n=20,
-            m=2,
-            n_y=2,
-            n_outputs=10,
-            y_center=np.zeros(10),
-            y_scale=np.ones(10),
-            envelope=envelope,
-            w_psd=1.0,
+            StateOutputs(n=20, m=2, n_y=2, n_outputs=10, center=np.zeros(10), scale=np.ones(10)),
+            envelope,
+            w_hinge=1.0,
             horizon=5,
         )
 
     # Horizon < 1
     with pytest.raises(ValueError, match="horizon \\(0\\) must be at least 1"):
         ObservableHingeCost(
-            n=34,
-            m=2,
-            n_y=2,
-            n_outputs=15,
-            y_center=np.zeros(15),
-            y_scale=np.ones(15),
-            envelope=envelope,
-            w_psd=1.0,
+            StateOutputs(n=34, m=2, n_y=2, n_outputs=15, center=np.zeros(15), scale=np.ones(15)),
+            envelope,
+            w_hinge=1.0,
             horizon=0,
         )

@@ -126,9 +126,10 @@ def test_training_converges_and_scores_the_rollout(files: list[str]) -> None:
     # skip the first epoch's one-step persistence is nearly free and the masked curve need not
     # fall; the validation loss trusts the full span at every epoch and must.
     assert result.val_losses[-1] < result.val_losses[0]
-    assert np.isfinite(result.rollout.pooled)
-    assert np.all(np.isfinite(result.rollout.per_step))
-    assert result.rollout.per_step.shape == (_HORIZON,)
+    assert np.isfinite(result.free_run.pooled)
+    assert np.all(np.isfinite(result.free_run.per_step))
+    assert result.free_run.per_step.shape == (_HORIZON,)
+    assert result.log_energy is not None  # the waveform arm always scores it
     assert np.isfinite(result.log_energy.pooled)
     assert np.all(np.isfinite(result.log_energy.per_position))
     assert np.isfinite(result.du_sensitivity)
@@ -155,7 +156,8 @@ def test_save_round_trip_predicts_identically(files: list[str], tmp_path: Path) 
         "log_energy_per_position",
         "du_sensitivity",
     }
-    assert stats["nmse_rollout"] == result.rollout.pooled
+    assert stats["nmse_rollout"] == result.free_run.pooled
+    assert result.log_energy is not None  # the waveform arm always scores it
     assert stats["log_energy"] == result.log_energy.pooled
 
     loaded = AutoregressiveMLP.load(artifact_dir / "model")
@@ -232,6 +234,7 @@ def test_depth0_ridge_fit_reproduces_the_exact_one_step_lstsq(files: list[str]) 
             horizon=horizon,
             n_channels=data.n_channels,
             n_controls=data.n_controls,
+            n_outputs=data.n_channels,
             hidden_size=mdl.hidden_size,
             depth=0,
             activation=mdl.activation,
@@ -317,4 +320,4 @@ def test_depth0_gradient_descent_starts_from_random_init_and_runs_every_epoch(fi
     assert len(linear.predictor.layers) == 1
     assert len(linear.train_losses) == 3
     assert len(nonlinear.train_losses) == 3
-    assert np.isfinite(linear.rollout.pooled)
+    assert np.isfinite(linear.free_run.pooled)

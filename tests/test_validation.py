@@ -45,6 +45,7 @@ def _module(
         horizon=50,
         n_channels=_N_CHANNELS,
         n_controls=_N_CONTROLS,
+        n_outputs=_N_CHANNELS,
         hidden_size=0,
         depth=0,
         activation="relu",
@@ -343,7 +344,7 @@ def test_observable_estimator_and_envelope_validation(tmp_path: Path) -> None:
             "problem": {
                 "class_path": "neuro.control.mpc.build_observable_problem",
                 "artifact": str(art),
-                "psd_ref": str(env_path),
+                "envelope_ref": str(env_path),
             },
         },
     }
@@ -394,14 +395,16 @@ def test_observable_geometry_agreement_between_estimator_and_checkpoint(tmp_path
     # Disagreeing n_segment raises naming conflicting values
     cfg = {**base_cfg, "estimator": {**base_cfg["estimator"], "geometry": {**geom.model_dump(), "n_segment": 40}}}
     with pytest.raises(
-        ConfigConsistencyError, match=r"estimator geometry n_segment \(40\) does not match checkpoint \(20\)"
+        ConfigConsistencyError,
+        match=r"estimator geometry does not match the predictor checkpoint: n_segment \(40 vs 20\)",
     ):
         validate_simulation_config(cfg)
 
     # Disagreeing n_bin_pool raises naming conflicting values
     cfg = {**base_cfg, "estimator": {**base_cfg["estimator"], "geometry": {**geom.model_dump(), "n_bin_pool": 1}}}
     with pytest.raises(
-        ConfigConsistencyError, match=r"estimator geometry n_bin_pool \(1\) does not match checkpoint \(2\)"
+        ConfigConsistencyError,
+        match=r"estimator geometry does not match the predictor checkpoint: n_bin_pool \(1 vs 2\)",
     ):
         validate_simulation_config(cfg)
 
@@ -440,13 +443,14 @@ def test_observable_envelope_geometry_agreement(tmp_path: Path) -> None:
             "problem": {
                 "class_path": "neuro.control.mpc.build_observable_problem",
                 "artifact": str(art),
-                "psd_ref": str(bad_env_path),
+                "envelope_ref": str(bad_env_path),
             },
         },
     }
 
     with pytest.raises(
-        ConfigConsistencyError, match=r"envelope band_hz \(\(2\.0, 10\.0\)\) must equal predictor band_hz"
+        ConfigConsistencyError,
+        match=r"envelope geometry does not match the predictor checkpoint: band_hz \(\(2\.0, 10\.0\) vs \(4\.0, 16\.0\)\)",
     ):
         validate_simulation_config(sim_cfg)
 
@@ -485,7 +489,7 @@ def test_envelope_channel_count_and_sampling_rate_validation(tmp_path: Path) -> 
             "problem": {
                 "class_path": "neuro.control.mpc.build_observable_problem",
                 "artifact": str(art),
-                "psd_ref": str(bad_ch_path),
+                "envelope_ref": str(bad_ch_path),
             },
         },
     }
@@ -508,7 +512,7 @@ def test_envelope_channel_count_and_sampling_rate_validation(tmp_path: Path) -> 
         kernel="boxcar",
         kernel_width=1,
     )
-    sim_cfg["controller"]["problem"]["psd_ref"] = str(bad_fs_path)
+    sim_cfg["controller"]["problem"]["envelope_ref"] = str(bad_fs_path)
     with pytest.raises(
         ConfigConsistencyError, match=r"controller\.dt \(0\.1\) must match Observable reference dt \(0\.05 s"
     ):

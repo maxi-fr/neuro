@@ -249,3 +249,18 @@ def evaluate_observable_free_run(
 
     per_step = sq_err / (n_windows * model.n_outputs)
     return ObservableFrameMSE(pooled=float(per_step.mean()), per_step=per_step)
+
+
+def free_run_stats(
+    free_run: RolloutNMSE | ObservableFrameMSE, log_energy: LogEnergyError | None
+) -> dict[str, float | list[float]]:
+    """Serialize the free-run scores under keys naming the metric the kind actually computed."""
+    prefix = "nmse_rollout" if isinstance(free_run, RolloutNMSE) else "frame_mse"
+    stats: dict[str, float | list[float]] = {
+        prefix: free_run.pooled,
+        f"{prefix}_per_step": free_run.per_step.tolist(),
+    }
+    if log_energy is not None:
+        stats["log_energy"] = log_energy.pooled
+        stats["log_energy_per_position"] = log_energy.per_position.tolist()
+    return stats

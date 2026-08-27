@@ -34,6 +34,7 @@ def _mlp_module() -> AutoregressiveMLP:
         horizon=_HORIZON,
         n_channels=_N_EEG,
         n_controls=_N_CONTROLS,
+        n_outputs=_N_EEG,
         hidden_size=_HIDDEN,
         depth=2,
         activation="softplus",

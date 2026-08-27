@@ -33,6 +33,7 @@ def _waveform_model(depth: int, activation: Activation, *, residual: bool) -> Au
         horizon=_HORIZON,
         n_channels=_N_EEG,
         n_controls=_N_CONTROLS,
+        n_outputs=_N_EEG,
         hidden_size=_HIDDEN,
         depth=depth,
         activation=activation,
@@ -73,7 +74,7 @@ def test_waveform_jax_model_is_an_inference_predictor() -> None:
 @pytest.mark.parametrize("depth", [0, 1, 2])
 @pytest.mark.parametrize("activation", ["relu", "tanh", "softplus"])
 @pytest.mark.parametrize("residual", [False, True])
-def test_waveform_cross_side_parity(depth: int, activation: Activation, residual: bool) -> None:  # noqa: FBT001
+def test_waveform_cross_side_parity(depth: int, activation: Activation, residual: bool) -> None:  # noqa: FBT001 -- pytest passes parametrized cases positionally
     """The jax ``free_run`` (raw in -> raw out) equals the unstandardized torch ``forward``.
 
     This replaces the float64 reference as the correctness pin: the torch module is handed to the
@@ -225,7 +226,7 @@ def test_observable_state_absorption_and_readiness() -> None:
 @pytest.mark.parametrize("depth", [0, 1, 2])
 @pytest.mark.parametrize("activation", ["relu", "tanh", "softplus"])
 @pytest.mark.parametrize("residual", [False, True])
-def test_observable_cross_side_parity(depth: int, activation: Activation, residual: bool) -> None:  # noqa: FBT001
+def test_observable_cross_side_parity(depth: int, activation: Activation, residual: bool) -> None:  # noqa: FBT001 -- pytest passes parametrized cases positionally
     """The jax observable free_run equals the unstandardized torch forward on raw Frames."""
     module, _ = _observable_model(depth, activation, residual=residual)
     meta, arrays = module.to_checkpoint()

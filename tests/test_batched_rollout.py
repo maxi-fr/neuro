@@ -39,6 +39,7 @@ def _model() -> WaveformMLPModel:
         horizon=_STEPS,
         n_channels=_N_EEG,
         n_controls=_N_CONTROLS,
+        n_outputs=_N_EEG,
         hidden_size=7,
         depth=1,
         activation="tanh",

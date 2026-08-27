@@ -94,9 +94,10 @@ def test_waveform_candidates_match_the_config_kind(tmp_path: Path) -> None:
     result = _wave_train(_wave_config(), _write_trajectories(tmp_path, dt=_WAVE_DT, t=_T))
 
     assert set(result.candidates) == {"log_energy", "val_loss", "rollout_nmse"}
+    assert result.log_energy is not None  # the waveform arm always scores it
     assert result.candidates["log_energy"] == result.log_energy.pooled
     assert result.candidates["val_loss"] == min(result.val_losses)
-    assert result.candidates["rollout_nmse"] == result.rollout.pooled
+    assert result.candidates["rollout_nmse"] == result.free_run.pooled
     assert all(np.isfinite(value) for value in result.candidates.values())
 
 
@@ -106,7 +107,7 @@ def test_candidates_contain_the_config_named_objective(tmp_path: Path) -> None:
         _wave_config().model_copy(update={"sweep": NNSweepConfig(objective="rollout_nmse")}),
         _write_trajectories(tmp_path, dt=_WAVE_DT, t=_T),
     )
-    assert wave.candidates["rollout_nmse"] == wave.rollout.pooled
+    assert wave.candidates["rollout_nmse"] == wave.free_run.pooled
 
 
 def test_waveform_save_round_trips_weights_standardizers_and_metadata(tmp_path: Path) -> None:
@@ -194,7 +195,8 @@ def test_ridge_fit_through_train_on_depth0_mlp(tmp_path: Path) -> None:
     assert isinstance(result.predictor, AutoregressiveMLP)
     assert result.predictor.depth == 0
     assert set(result.candidates) == {"rollout_nmse", "log_energy"}
-    assert result.candidates["rollout_nmse"] == result.rollout.pooled
+    assert result.candidates["rollout_nmse"] == result.free_run.pooled
+    assert result.log_energy is not None  # the waveform arm always scores it
     assert result.candidates["log_energy"] == result.log_energy.pooled
     assert all(np.isfinite(value) for value in result.candidates.values())
 
@@ -235,7 +237,7 @@ def test_observable_candidates_match_the_config_kind(tmp_path: Path) -> None:
     assert isinstance(result, TrainingResult)
     assert set(result.candidates) == {"val_loss", "val_log_mse"}
     assert result.candidates["val_loss"] == min(result.val_losses)
-    assert result.candidates["val_log_mse"] == result.rollout.pooled
+    assert result.candidates["val_log_mse"] == result.free_run.pooled
     assert all(np.isfinite(value) for value in result.candidates.values())
 
     # Verify save round-trip
@@ -255,7 +257,7 @@ def test_observable_ridge_fit_through_train_on_depth0_mlp(tmp_path: Path) -> Non
     assert isinstance(result.predictor, AutoregressiveMLP)
     assert result.predictor.depth == 0
     assert set(result.candidates) == {"val_loss", "val_log_mse"}
-    assert result.candidates["val_log_mse"] == result.rollout.pooled
+    assert result.candidates["val_log_mse"] == result.free_run.pooled
     assert all(np.isfinite(value) for value in result.candidates.values())
 
     art_dir = tmp_path / "obs_ridge_art"

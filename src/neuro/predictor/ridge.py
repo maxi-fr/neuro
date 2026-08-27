@@ -6,12 +6,13 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
+from neuro.predictor.evaluation import RolloutNMSE, free_run_stats
 from neuro.types import RidgeFittable
 
 if TYPE_CHECKING:
     from pathlib import Path
 
-    from neuro.predictor.evaluation import LogEnergyError, RolloutNMSE
+    from neuro.predictor.evaluation import LogEnergyError, ObservableFrameMSE
     from neuro.predictor.module import AutoregressiveMLP
     from neuro.types import FloatArray
 
@@ -79,29 +80,25 @@ class RidgeTrainingResult:
     candidates : dict[str, float]
         Every objective the sweep seam can rank this run on: ``rollout_nmse`` and ``log_energy``,
         both lower-is-better.
-    rollout : RolloutNMSE
-        Free-run rollout NMSE on ``val_trajs``, per horizon step and pooled over the horizon.
-    log_energy : LogEnergyError
-        Free-run windowed-energy log-ratio error on ``val_trajs``.
+    free_run : RolloutNMSE | ObservableFrameMSE
+        Free-run error on ``val_trajs``, per step and pooled: rollout NMSE on the waveform kind,
+        log-power Frame MSE on the observable kind.
+    log_energy : LogEnergyError | None
+        Free-run windowed-energy log-ratio error on ``val_trajs``. ``None`` on the observable kind.
     val_trajs : list[tuple[FloatArray, FloatArray]]
         The held-out ``(u, y)`` trajectories, kept whole so the caller can plot free runs.
     """
 
     predictor: AutoregressiveMLP
     candidates: dict[str, float]
-    rollout: RolloutNMSE
-    log_energy: LogEnergyError
+    free_run: RolloutNMSE | ObservableFrameMSE
+    log_energy: LogEnergyError | None
     val_trajs: list[tuple[FloatArray, FloatArray]]
 
     def save(self, artifact_dir: Path) -> None:
         """Write the numpy-checkpoint and ``training_stats.json`` into ``artifact_dir``."""
         self.predictor.save(artifact_dir / "model")
-        stats = {
-            "nmse_rollout": self.rollout.pooled,
-            "nmse_rollout_per_step": self.rollout.per_step.tolist(),
-            "log_energy": self.log_energy.pooled,
-            "log_energy_per_position": self.log_energy.per_position.tolist(),
-        }
+        stats: dict[str, object] = dict(free_run_stats(self.free_run, self.log_energy))
         if "val_loss" in self.candidates:
             stats["val_loss"] = self.candidates["val_loss"]
         (artifact_dir / "training_stats.json").write_text(json.dumps(stats, indent=2))

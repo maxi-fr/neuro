@@ -104,6 +104,7 @@ def test_checkpoint_round_trip(tmp_path: Path) -> None:
         horizon=3,
         n_channels=n_channels,
         n_controls=n_controls,
+        n_outputs=n_channels,
         hidden_size=4,
         depth=1,
         activation="relu",

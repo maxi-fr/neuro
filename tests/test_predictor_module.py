@@ -11,6 +11,7 @@ import pytest
 import torch
 
 from neuro.predictor.module import AutoregressiveMLP
+from neuro.transforms import Standardizer
 
 if TYPE_CHECKING:
     from neuro.types import Activation, FloatArray
@@ -29,6 +30,7 @@ def _model(depth: int = 2, activation: Activation = "softplus") -> Autoregressiv
         horizon=_HORIZON,
         n_channels=_N_EEG,
         n_controls=_N_CONTROLS,
+        n_outputs=_N_EEG,
         hidden_size=_HIDDEN,
         depth=depth,
         activation=activation,
@@ -74,6 +76,7 @@ def test_residual_skip_makes_a_zero_mlp_predict_pure_persistence() -> None:
         horizon=3,
         n_channels=2,
         n_controls=1,
+        n_outputs=2,
         hidden_size=4,
         depth=2,
         activation="softplus",
@@ -102,6 +105,7 @@ def test_without_residual_a_zero_mlp_predicts_zero() -> None:
         horizon=3,
         n_channels=2,
         n_controls=1,
+        n_outputs=2,
         hidden_size=4,
         depth=2,
         activation="softplus",
@@ -127,6 +131,7 @@ def test_module_layers_sequential() -> None:
         horizon=3,
         n_channels=4,
         n_controls=2,
+        n_outputs=4,
         hidden_size=8,
         depth=2,
         activation="softplus",
@@ -196,8 +201,6 @@ def test_autoregressive_mlp_supports_distinct_output_width() -> None:
 
 def test_standardizer_length_agrees_with_output_width() -> None:
     """The standardizer's length must agree with the model's output width."""
-    from neuro.transforms import Standardizer  # noqa: PLC0415
-
     # Conforming length passes
     m = AutoregressiveMLP(
         n_y=2,

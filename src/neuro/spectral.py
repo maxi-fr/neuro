@@ -72,7 +72,7 @@ def compute_log_power_frames(y: FloatArray, geometry: StftGeometry, *, fs: float
     """
     n_samples, n_channels = y.shape
     n_values = geometry.n_values(fs)
-    sample_support = (geometry.kernel_width - 1) * geometry.n_hop + geometry.n_segment
+    sample_support = geometry.sample_support_steps(fs)
     if n_samples < sample_support:
         return np.empty((0, n_channels, n_values), dtype=np.float64)
 
@@ -199,43 +199,31 @@ class ObservableEnvelope:
         from neuro.config import StftGeometry  # noqa: PLC0415 -- deferred to prevent circular import with neuro.config
 
         with np.load(path) as data:
-            if "Pref_frames" not in data and "Pref_observable" not in data:
+            if "Pref_frames" not in data:
                 msg = (
                     f"envelope at {path} carries no Observable frames array; "
                     "rebuild it with scripts/build_healthy_psd.py."
                 )
                 raise ValueError(msg)
-            key = "Pref_frames" if "Pref_frames" in data else "Pref_observable"
-            power = np.asarray(data[key], dtype=np.float64)
+            power = np.asarray(data["Pref_frames"], dtype=np.float64)
             fs = float(data["fs"])
 
-            n_segment = int(data["n_segment"]) if "n_segment" in data else int(data["L"])
-            n_hop = int(data["n_hop"]) if "n_hop" in data else int(data["R"])
+            # The writer stores an absent band as a sentinel, since npz has no None.
+            band = np.asarray(data["band_hz"])
+            band_hz = None if band[0] < 0 else (float(band[0]), float(band[1]))
 
-            band_hz: tuple[float, float] | None = None
-            if "band_hz" in data:
-                b = np.asarray(data["band_hz"])
-                if b.shape == (2,) and not (np.isnan(b[0]) or b[0] < 0):
-                    band_hz = (float(b[0]), float(b[1]))
-            elif "band_lo_hz" in data and "band_hi_hz" in data:
-                lo, hi = float(data["band_lo_hz"]), float(data["band_hi_hz"])
-                if lo >= 0 and hi > lo:
-                    band_hz = (lo, hi)
-
-            n_bin_pool = int(data["n_bin_pool"]) if "n_bin_pool" in data else 1
-            kernel_str = str(data["kernel"]) if "kernel" in data else "boxcar"
+            kernel_str = str(data["kernel"])
             if kernel_str not in ("boxcar", "triangular", "hann"):
                 msg = f"envelope at {path} has unknown kernel '{kernel_str}'."
                 raise ValueError(msg)
-            kernel_width = int(data["kernel_width"]) if "kernel_width" in data else 1
 
             geom = StftGeometry(
-                n_segment=n_segment,
-                n_hop=n_hop,
+                n_segment=int(data["n_segment"]),
+                n_hop=int(data["n_hop"]),
                 band_hz=band_hz,
-                n_bin_pool=n_bin_pool,
+                n_bin_pool=int(data["n_bin_pool"]),
                 kernel=kernel_str,
-                kernel_width=kernel_width,
+                kernel_width=int(data["kernel_width"]),
             )
 
             expected_values = geom.n_values(fs)

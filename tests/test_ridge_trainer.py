@@ -40,6 +40,7 @@ def _mlp(depth: int) -> AutoregressiveMLP:
         horizon=3,
         n_channels=2,
         n_controls=2,
+        n_outputs=2,
         hidden_size=4,
         depth=depth,
     )

@@ -332,7 +332,28 @@ def reduce_trajectory_to_frames(y: FloatArray, geometry: StftGeometry, fs: float
     return frames.reshape(n_frames, n_channels * n_values)
 
 
-def prepare_observable_datasets(  # noqa: PLR0913, PLR0917
+def frame_aligned_controls(u: FloatArray, geometry: StftGeometry, *, fs: float) -> FloatArray:
+    """Pick the control held when each Frame is emitted: the last sample of the Frame's support.
+
+    The Estimator emits the Frame whose sample support *ends* at the current tick and the controller
+    pairs it with the control held over that hop, so the offline pairing has to end-align too --
+    striding from sample 0 would hand training the control from ``sample_support - 1`` steps too
+    early, and the past-control window of decision 4 would no longer cover the Segment.
+
+    Parameters
+    ----------
+    u : FloatArray
+        Decimated control of shape ``(n_steps, n_controls)``.
+
+    Returns
+    -------
+    FloatArray
+        One control per Frame, shape ``(n_frames, n_controls)``.
+    """
+    return u[geometry.sample_support_steps(fs) - 1 :: geometry.n_hop]
+
+
+def prepare_observable_datasets(  # noqa: PLR0913, PLR0917 -- one flat call from train(); a params object would only relay
     data_files: list[str],
     n_steps_cfg: int | None,
     downsample: int,
@@ -389,7 +410,7 @@ def prepare_observable_datasets(  # noqa: PLR0913, PLR0917
         for f in files:
             u_raw, y_raw = load_trajectory(f, n_steps_cfg, downsample, dt, cutoff_hz=cutoff_hz)
             y_frames = reduce_trajectory_to_frames(y_raw, geometry, fs)
-            u_frames = u_raw[:: geometry.n_hop][: y_frames.shape[0]]
+            u_frames = frame_aligned_controls(u_raw, geometry, fs=fs)[: y_frames.shape[0]]
             min_len = min(y_frames.shape[0], u_frames.shape[0])
             trajs.append((u_frames[:min_len], y_frames[:min_len]))
         return trajs

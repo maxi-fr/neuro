@@ -59,6 +59,7 @@ def _tiny_mlp_model(*, n_y: int, n_u: int, horizon: int, n_eeg: int, n_controls:
         horizon=horizon,
         n_channels=n_eeg,
         n_controls=n_controls,
+        n_outputs=n_eeg,
         hidden_size=4,
         depth=1,
         activation="relu",

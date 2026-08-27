@@ -16,6 +16,7 @@ from neuro.filtering import (
     group_delay_s,
     lowpass_filter,
 )
+from neuro.predictor.data import frame_aligned_controls
 from neuro.spectral import compute_log_power_frames
 
 _SEED = 7
@@ -293,3 +294,26 @@ def test_group_delay_matches_the_measured_lag_of_a_slow_tone() -> None:
     lag = np.argmax([np.dot(signals[0, settled], np.roll(filtered[0], -shift)[settled]) for shift in range(200)])
 
     assert lag / _FS == pytest.approx(group_delay_s(sos, _FS), abs=1e-3)
+
+
+def test_training_control_alignment_matches_estimator_emit_step() -> None:
+    """The control the offline pipeline pairs with a Frame is the one the Estimator holds when it emits it."""
+    n_steps, n_channels = 6000, 2
+    y = _plant_signal(n_steps, n_channels)
+    geometry = StftGeometry(n_segment=20, n_hop=5, kernel="hann", kernel_width=3)
+    fs_dec = _FS / _DOWNSAMPLE
+
+    # A control that is distinct on every decimated step, so a misalignment cannot coincide.
+    n_dec = n_steps // _DOWNSAMPLE
+    u_dec = np.arange(n_dec, dtype=np.float64)[:, None]
+
+    offline_dec = antialias_filter(y, _FS, _DOWNSAMPLE)[::_DOWNSAMPLE]
+    offline_frames = compute_log_power_frames(offline_dec, geometry, fs=fs_dec)
+    u_paired = frame_aligned_controls(u_dec, geometry, fs=fs_dec)
+    assert u_paired.shape[0] == offline_frames.shape[0]
+
+    estimator = ObservableEstimator(dt=1.0 / _FS, geometry=geometry, downsample=_DOWNSAMPLE)
+    for i in range(offline_frames.shape[0]):
+        emit_step = geometry.sample_support_steps(fs_dec) - 1 + i * geometry.n_hop
+        assert u_paired[i, 0] == u_dec[emit_step, 0]
+    assert estimator.sample_support == geometry.sample_support_steps(fs_dec)

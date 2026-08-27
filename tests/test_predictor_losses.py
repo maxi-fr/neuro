@@ -41,6 +41,7 @@ def _model(
         horizon=horizon,
         n_channels=k,
         n_controls=n_controls,
+        n_outputs=k,
         hidden_size=8,
         depth=1,
         activation="tanh",

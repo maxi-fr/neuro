@@ -116,10 +116,6 @@ class ObservableGeometry(StrictConfig):
         """Spacing in samples between consecutive Segments."""
         raise NotImplementedError
 
-    def sample_support_steps(self, fs: float) -> int:
-        """Sample support in samples of a single Frame at ``fs``."""
-        raise NotImplementedError
-
     def n_frames(self, span_steps: int, fs: float) -> int:
         """Count the Observable Frames a length-``span_steps`` span holds at ``fs``."""
         raise NotImplementedError
@@ -174,6 +170,14 @@ class StftGeometry(ObservableGeometry):
     def sample_support_steps(self, fs: float) -> int:  # noqa: ARG002 -- geometry is already in samples
         """Sample support in samples of a single Frame."""
         return (self.kernel_width - 1) * self.n_hop + self.n_segment
+
+    def frame_rate(self, fs: float) -> float:
+        """Rate in Hz at which Frames are emitted, one per hop of the ``fs``-rate stream."""
+        return fs / self.n_hop
+
+    def min_past_controls(self) -> int:
+        """Smallest ``n_u`` whose past-control window spans the Segment a Frame reduces."""
+        return self.kernel_width - 1 + math.ceil(self.n_segment / self.n_hop)
 
     def n_segment_frames(self, span_steps: int) -> int:
         """Count the frames the segment grid extracts from the span, before the Frame Kernel."""
@@ -248,10 +252,6 @@ class EegMsGeometry(ObservableGeometry):
         """Window spacing in steps at ``fs``, defaulting to the metrics layer's own hop."""
         hop_s = self.hop_s if self.hop_s is not None else DEFAULT_HOP_S
         return round(hop_s * fs)
-
-    def sample_support_steps(self, fs: float) -> int:
-        """Sample support in samples of a single Frame."""
-        return self.window_steps(fs)
 
     def n_frames(self, span_steps: int, fs: float) -> int:
         """Count the trailing windows the hop grid extracts from the span."""
@@ -500,7 +500,7 @@ def _validate_observable_losses(losses: LossSpecs | None, geometry: StftGeometry
     if all(spec.start_epoch > 0 for spec in active.values()):
         msg = "At least one loss must have start_epoch = 0; otherwise epoch 0 has no gradient."
         raise ValueError(msg)
-    fs_frame = fs / geometry.n_hop
+    fs_frame = geometry.frame_rate(fs)
     for name, spec in active.items():
         if isinstance(spec, SecondsSpanSpec) and round(spec.span_s * fs_frame) < 1:
             msg = (
@@ -558,7 +558,7 @@ class NNPredictorConfig(StrictConfig):
     def _validate_losses_and_horizon(self) -> Self:
         if self.observable is not None:
             _validate_observable_losses(self.training.losses, self.observable, self.fs)
-            min_n_u = self.observable.kernel_width - 1 + math.ceil(self.observable.n_segment / self.observable.n_hop)
+            min_n_u = self.observable.min_past_controls()
             if self.model.n_u < min_n_u:
                 msg = (
                     f"model.n_u ({self.model.n_u}) violates the control-support rule: must be >= {min_n_u} "
@@ -566,7 +566,7 @@ class NNPredictorConfig(StrictConfig):
                     f"hop={self.observable.n_hop}) so the past-control window covers the Frame's sample support."
                 )
                 raise ValueError(msg)
-            fs_frame = self.fs / self.observable.n_hop
+            fs_frame = self.observable.frame_rate(self.fs)
             eval_frames = round(self.training.eval_horizon_s * fs_frame)
             if eval_frames < 1:
                 msg = (
@@ -586,7 +586,13 @@ class NNPredictorConfig(StrictConfig):
 
         _validate_sweep_overlap_and_keys(self.sweep.model, self.model, "model")
         _validate_sweep_overlap_and_keys(self.sweep.training, self.training, "training")
-        if self.observable is not None and self.sweep.observable:
+        if self.sweep.observable:
+            if self.observable is None:
+                msg = (
+                    f"sweep.observable searches {sorted(self.sweep.observable)} but no 'observable' geometry is "
+                    "configured; the Observable geometry is only swept on the observable kind."
+                )
+                raise ValueError(msg)
             _validate_sweep_overlap_and_keys(self.sweep.observable, self.observable, "observable")
         candidates = OBSERVABLE_TRAINER_CANDIDATES if self.observable is not None else WAVEFORM_TRAINER_CANDIDATES
         _validate_sweep_objective(self.sweep.objective, candidates)

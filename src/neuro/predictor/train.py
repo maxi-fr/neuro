@@ -10,9 +10,11 @@ import torch
 from neuro.predictor.data import Datasets, prepare_datasets, prepare_observable_datasets
 from neuro.predictor.evaluation import (
     LogEnergyError,
+    ObservableFrameMSE,
     RolloutNMSE,
     evaluate_free_run,
     evaluate_observable_free_run,
+    free_run_stats,
 )
 from neuro.predictor.gradient import fit_gradient_descent, float32_tensor
 from neuro.predictor.inference import ObservableMLPModel, WaveformMLPModel
@@ -26,7 +28,7 @@ if TYPE_CHECKING:
 
     from torch import Tensor, nn
 
-    from neuro.config import NNPredictorConfig
+    from neuro.config import NNPredictorConfig, StftGeometry
     from neuro.predictor.losses import Loss
     from neuro.types import FloatArray
 
@@ -49,11 +51,13 @@ class TrainingResult:
         Per-epoch loss, one entry per epoch actually run (early stopping shortens both).
     train_components, val_components : dict[str, list[float]]
         Per-epoch unweighted loss components and diagnostics.
-    rollout : RolloutNMSE
-        Free-run rollout NMSE on ``val_trajs``, per horizon step and pooled over the horizon.
-    log_energy : LogEnergyError
+    free_run : RolloutNMSE | ObservableFrameMSE
+        Free-run error on ``val_trajs``, per step and pooled: rollout NMSE on the waveform kind,
+        log-power Frame MSE on the observable kind.
+    log_energy : LogEnergyError | None
         Free-run windowed-energy log-ratio error on ``val_trajs`` -- the error in the functional
-        the MPC costs, which unlike NMSE keeps separating models past the phase horizon.
+        the MPC costs, which unlike NMSE keeps separating models past the phase horizon. ``None``
+        on the observable kind, whose Cost reads Frames the free run already scores directly.
     val_trajs : list[tuple[FloatArray, FloatArray]]
         The held-out ``(u, y)`` trajectories, kept whole so the caller can plot free runs.
     du_sensitivity : float
@@ -67,8 +71,8 @@ class TrainingResult:
     val_losses: list[float]
     train_components: dict[str, list[float]]
     val_components: dict[str, list[float]]
-    rollout: RolloutNMSE
-    log_energy: LogEnergyError
+    free_run: RolloutNMSE | ObservableFrameMSE
+    log_energy: LogEnergyError | None
     val_trajs: list[tuple[FloatArray, FloatArray]]
     du_sensitivity: float
 
@@ -80,11 +84,8 @@ class TrainingResult:
             "val_loss": self.val_losses,
             "train_components": self.train_components,
             "val_components": self.val_components,
-            "nmse_rollout": self.rollout.pooled,
-            "nmse_rollout_per_step": self.rollout.per_step.tolist(),
-            "log_energy": self.log_energy.pooled,
-            "log_energy_per_position": self.log_energy.per_position.tolist(),
             "du_sensitivity": self.du_sensitivity,
+            **free_run_stats(self.free_run, self.log_energy),
         }
         (artifact_dir / "training_stats.json").write_text(json.dumps(stats, indent=2))
 
@@ -156,26 +157,23 @@ def train(
     """
     if cfg.observable is not None:
         if cfg.training.fit == "ridge":
-            return _train_observable_ridge(cfg, data_files)
-        return _train_observable(cfg, data_files, seed_offset=seed_offset)
+            return _train_observable_ridge(cfg, data_files, cfg.observable)
+        return _train_observable(cfg, data_files, cfg.observable, seed_offset=seed_offset)
     if cfg.training.fit == "ridge":
         return _train_ridge(cfg, data_files)
     return _train_waveform(cfg, data_files, seed_offset=seed_offset)
 
 
 def _prepare_observable(
-    cfg: NNPredictorConfig, data_files: list[str], *, depth: int
+    cfg: NNPredictorConfig, data_files: list[str], geom: StftGeometry, *, depth: int
 ) -> tuple[Datasets, AutoregressiveMLP, list[Loss]]:
     """Build the prepared datasets and the autoregressive observable MLP for ``cfg``."""
-    sim, mdl, trn, geom = cfg.simulation, cfg.model, cfg.training, cfg.observable
-    if geom is None:
-        msg = "the observable arm requires 'observable' geometry in config."
-        raise ValueError(msg)
+    sim, mdl, trn = cfg.simulation, cfg.model, cfg.training
     if trn.losses is None:
         msg = "the observable arm requires 'training.losses' (for the curriculum MSE)."
         raise ValueError(msg)
     fs = cfg.fs
-    fs_frame = fs / geom.n_hop
+    fs_frame = geom.frame_rate(fs)
     losses = build_losses(trn.losses, fs_frame)
     horizon = max(loss.span_steps for loss in losses)
     data = prepare_observable_datasets(
@@ -213,18 +211,14 @@ def _prepare_observable(
     return data, model, losses
 
 
-def _train_observable_ridge(cfg: NNPredictorConfig, data_files: list[str]) -> RidgeTrainingResult:
+def _train_observable_ridge(cfg: NNPredictorConfig, data_files: list[str], geom: StftGeometry) -> RidgeTrainingResult:
     """Fit the single layer of a depth-0 observable MLP by closed-form ridge."""
     if cfg.model.depth > 0:
         msg = f"'training.fit: ridge' requires a depth-0 MLP, got model.depth = {cfg.model.depth}."
         raise ValueError(msg)
-    sim, trn, geom = cfg.simulation, cfg.training, cfg.observable
-    if geom is None:
-        msg = "the observable arm requires 'observable' geometry in config."
-        raise ValueError(msg)
-    fs = cfg.fs
-    fs_frame = fs / geom.n_hop
-    data, model, _ = _prepare_observable(cfg, data_files, depth=0)
+    sim, trn = cfg.simulation, cfg.training
+    fs_frame = geom.frame_rate(cfg.fs)
+    data, model, _ = _prepare_observable(cfg, data_files, geom, depth=0)
     RidgeTrainer(ridge_lambda=trn.ridge_lambda).fit(model, data.train_trajs)
 
     model.provenance = training_provenance(data_files, sim.cutoff_hz)
@@ -246,25 +240,23 @@ def _train_observable_ridge(cfg: NNPredictorConfig, data_files: list[str]) -> Ri
             "val_loss": val_frame_loss,
             "val_log_mse": frame_mse.pooled,
         },
-        rollout=RolloutNMSE(pooled=frame_mse.pooled, per_step=frame_mse.per_step),
-        log_energy=LogEnergyError(pooled=frame_mse.pooled, per_position=frame_mse.per_step),
+        free_run=frame_mse,
+        log_energy=None,
         val_trajs=data.val_trajs,
     )
 
 
-def _train_observable(cfg: NNPredictorConfig, data_files: list[str], *, seed_offset: int = 0) -> TrainingResult:
+def _train_observable(
+    cfg: NNPredictorConfig, data_files: list[str], geom: StftGeometry, *, seed_offset: int = 0
+) -> TrainingResult:
     """Train the autoregressive observable MLP for one config and return everything the run produced."""
-    sim, trn, geom = cfg.simulation, cfg.training, cfg.observable
-    if geom is None:
-        msg = "the observable arm requires 'observable' geometry in config."
-        raise ValueError(msg)
+    sim, trn = cfg.simulation, cfg.training
     seed = trn.seed + seed_offset
     torch.manual_seed(seed)
     device = torch.device(trn.device)
-    fs = cfg.fs
-    fs_frame = fs / geom.n_hop
+    fs_frame = geom.frame_rate(cfg.fs)
 
-    data, model, losses = _prepare_observable(cfg, data_files, depth=cfg.model.depth)
+    data, model, losses = _prepare_observable(cfg, data_files, geom, depth=cfg.model.depth)
     model = model.to(device)
     horizon = max(loss.span_steps for loss in losses)
     n_outputs = model.n_outputs
@@ -313,8 +305,8 @@ def _train_observable(cfg: NNPredictorConfig, data_files: list[str], *, seed_off
         val_losses=val_losses,
         train_components=train_comps,
         val_components=val_comps,
-        rollout=RolloutNMSE(pooled=frame_mse.pooled, per_step=frame_mse.per_step),
-        log_energy=LogEnergyError(pooled=frame_mse.pooled, per_position=frame_mse.per_step),
+        free_run=frame_mse,
+        log_energy=None,
         val_trajs=data.val_trajs,
         du_sensitivity=du_sensitivity,
     )
@@ -368,6 +360,7 @@ def _prepare_waveform(
         horizon=horizon,
         n_channels=data.n_channels,
         n_controls=data.n_controls,
+        n_outputs=data.n_channels,
         hidden_size=mdl.hidden_size,
         depth=depth,
         activation=mdl.activation,
@@ -403,7 +396,7 @@ def _train_waveform_ridge(cfg: NNPredictorConfig, data_files: list[str]) -> Ridg
             "rollout_nmse": rollout.pooled,
             "log_energy": log_energy.pooled,
         },
-        rollout=rollout,
+        free_run=rollout,
         log_energy=log_energy,
         val_trajs=data.val_trajs,
     )
@@ -467,7 +460,7 @@ def _train_waveform(cfg: NNPredictorConfig, data_files: list[str], *, seed_offse
         val_losses=val_losses,
         train_components=train_comps,
         val_components=val_comps,
-        rollout=rollout,
+        free_run=rollout,
         log_energy=log_energy,
         val_trajs=data.val_trajs,
         du_sensitivity=du_sensitivity,

@@ -213,7 +213,7 @@ class AntiAliasEstimator(LowPassEstimator):
 class ObservableEstimatorLog:
     """Log carrying the Observable log-power Frame handed to the controller."""
 
-    x_hat: np.ndarray
+    x_hat: FloatArray
 
 
 class ObservableEstimator(Estimator[ObservableEstimatorLog]):
@@ -231,22 +231,22 @@ class ObservableEstimator(Estimator[ObservableEstimatorLog]):
         self.downsample = int(downsample)
         self.geometry = geometry
         self.fs_decimated = 1.0 / (self.dt * self.downsample)
-        self.sample_support = (geometry.kernel_width - 1) * geometry.n_hop + geometry.n_segment
+        self.sample_support = geometry.sample_support_steps(self.fs_decimated)
         if self.downsample > 1 or cutoff_hz is not None:
             effective_cutoff = cutoff_hz if cutoff_hz is not None else (1.0 / self.dt) / (2 * self.downsample)
-            self.sos: np.ndarray | None = design_lowpass_sos(1.0 / self.dt, effective_cutoff)
+            self.sos: FloatArray | None = design_lowpass_sos(1.0 / self.dt, effective_cutoff)
         else:
             self.sos = None
-        self._zi: np.ndarray | None = None
-        self._decimated_buffer: list[np.ndarray] = []
+        self._zi: FloatArray | None = None
+        self._decimated_buffer: list[FloatArray] = []
         self._step: int = 0
         self._decimated_count: int = 0
-        self._current_frame: np.ndarray | None = None
+        self._current_frame: FloatArray | None = None
 
     @classmethod
     def from_config(cls, config: dict[str, Any]) -> Self:
         """Instantiate the component from a raw configuration dictionary."""
-        from neuro.config import StftGeometry  # noqa: PLC0415
+        from neuro.config import StftGeometry  # noqa: PLC0415 -- neuro.config imports this module via neuro.metrics
 
         geom_raw = config["geometry"]
         geometry = geom_raw if isinstance(geom_raw, StftGeometry) else StftGeometry.model_validate(geom_raw)
@@ -260,26 +260,21 @@ class ObservableEstimator(Estimator[ObservableEstimatorLog]):
     def update(
         self,
         t: float,  # noqa: ARG002 -- simulation time
-        y_mea: np.ndarray,
-        u: np.ndarray,  # noqa: ARG002 -- control input vector
-    ) -> tuple[np.ndarray, ObservableEstimatorLog]:
+        y_mea: FloatArray,
+        u: FloatArray,  # noqa: ARG002 -- the Estimator carries no learned parameters, so the control is inert
+    ) -> tuple[FloatArray, ObservableEstimatorLog]:
         """Advance by one plant sample, decimating and emitting Observable Frames at the hop rate.
 
         Parameters
         ----------
-        t : float
-            Simulation time.
-        y_mea : numpy.ndarray
-            Measured output vector of shape ``(n_channels,)``.
-        u : numpy.ndarray
-            Control input vector.
+        y_mea : FloatArray
+            Measured output of shape ``(n_channels,)``.
 
         Returns
         -------
-        x_hat : numpy.ndarray
-            Observable log-power Frame of shape ``(n_channels, n_values)``.
-        log : ObservableEstimatorLog
-            Log containing the emitted Frame.
+        FloatArray
+            Observable log-power Frame of shape ``(n_channels, n_values)``, NaN until the sample
+            support fills, and held between hops.
         """
         y_arr = np.atleast_1d(y_mea)
         if self.sos is not None:
