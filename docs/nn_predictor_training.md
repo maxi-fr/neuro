@@ -697,10 +697,10 @@ compare the two numbers to each other.
 A predictor can score a good rollout NMSE by modelling the EEG's autonomous dynamics and ignoring the
 stimulation entirely. Such a model is useless to the MPC, and the failure is invisible in every
 metric above. `_du_sensitivity` makes it visible in seconds instead of after a closed-loop sweep: it
-takes `torch.autograd.functional.jacobian` of the rollout with respect to the **future-control block
-only** (history held fixed), in forward mode — the cheap direction here, since that block is far
-narrower than the $N C$ rollout it drives — and reports the mean Frobenius norm over a fixed
-subsample of 8 validation windows. A full Jacobian per window would dominate the training run.
+estimates the mean Frobenius norm of the rollout's Jacobian with respect to the **future-control block
+only** (history held fixed) using the **Hutchinson trace estimator** with reverse-mode vector-Jacobian
+products (VJPs) over a fixed subsample of 8 validation windows. This evaluates the sensitivity in
+seconds without materializing large tangent graphs.
 
 **Read it within one config, never across configs.** The Jacobian is taken in **standardized space**
 on both sides, so the number scales with whatever the `y` and `u` standardizers fitted on this

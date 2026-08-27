@@ -17,9 +17,10 @@ if TYPE_CHECKING:
     from neuro.types import FloatArray, IntArray
 
 
-def float32_tensor(a: FloatArray, device: torch.device) -> Tensor:
+def float32_tensor(a: FloatArray, device: torch.device, *, pin_memory: bool = False) -> Tensor:
     """Move a NumPy array onto ``device`` as a float32 tensor."""
-    return torch.as_tensor(np.ascontiguousarray(a), dtype=torch.float32, device=device)
+    t = torch.as_tensor(np.ascontiguousarray(a), dtype=torch.float32, device=device)
+    return t.pin_memory() if pin_memory and device.type == "cpu" else t
 
 
 def lr_schedule(
@@ -47,6 +48,33 @@ def shuffled_batches(n_samples: int, batch_size: int, rng: np.random.Generator) 
         yield indices[start : start + batch_size]
 
 
+def _evaluate_validation(
+    model: nn.Module,
+    x_val: Tensor,
+    y_val: Tensor,
+    cfg: TrainingConfig,
+    loss_fn: Callable[[nn.Module, Tensor, Tensor, int | None], tuple[Tensor, dict[str, float]]],
+) -> tuple[float, dict[str, float]]:
+    """Score ``model`` over mini-batches of ``(x_val, y_val)`` and return the weighted loss and components."""
+    n_val = x_val.shape[0]
+    if n_val == 0:
+        return 0.0, {}
+    device = next(model.parameters()).device
+    val_loss_sum = 0.0
+    val_comps_sum: dict[str, float] = collections.defaultdict(float)
+    with torch.no_grad():
+        for start in range(0, n_val, cfg.batch_size):
+            end = min(start + cfg.batch_size, n_val)
+            b_size = end - start
+            xb = x_val[start:end].to(device, non_blocking=True)
+            yb = y_val[start:end].to(device, non_blocking=True)
+            b_loss, b_parts = loss_fn(model, xb, yb, None)
+            val_loss_sum += float(b_loss.detach()) * b_size
+            for key, val in b_parts.items():
+                val_comps_sum[key] += val * b_size
+    return val_loss_sum / n_val, {k: v / n_val for k, v in val_comps_sum.items()}
+
+
 def fit_gradient_descent(  # noqa: PLR0913, PLR0917 -- model, the four tensor blocks and the schedule are the loop's surface
     model: nn.Module,
     x_train: Tensor,
@@ -72,6 +100,7 @@ def fit_gradient_descent(  # noqa: PLR0913, PLR0917 -- model, the four tensor bl
     """
     rng = np.random.default_rng(seed)
     n_samples = x_train.shape[0]
+    device = next(model.parameters()).device
 
     steps_per_epoch = (n_samples + cfg.batch_size - 1) // cfg.batch_size
     total_steps = max(steps_per_epoch * cfg.epochs, 1)
@@ -94,7 +123,9 @@ def fit_gradient_descent(  # noqa: PLR0913, PLR0917 -- model, the four tensor bl
         epoch_loss, batches = 0.0, 0
         comps_sum: dict[str, float] = collections.defaultdict(float)
         for idx in shuffled_batches(n_samples, cfg.batch_size, rng):
-            loss, parts = loss_fn(model, x_train[idx], y_train[idx], epoch)
+            xb = x_train[idx].to(device, non_blocking=True)
+            yb = y_train[idx].to(device, non_blocking=True)
+            loss, parts = loss_fn(model, xb, yb, epoch)
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
@@ -106,9 +137,7 @@ def fit_gradient_descent(  # noqa: PLR0913, PLR0917 -- model, the four tensor bl
             batches += 1
 
         train_loss = epoch_loss / batches
-        with torch.no_grad():
-            val_loss_t, val_parts = loss_fn(model, x_val, y_val, None)
-            val_loss = float(val_loss_t.detach())
+        val_loss, val_parts = _evaluate_validation(model, x_val, y_val, cfg, loss_fn)
 
         train_losses.append(train_loss)
         val_losses.append(val_loss)

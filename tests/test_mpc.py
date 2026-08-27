@@ -618,8 +618,21 @@ def test_example_observable_config_runs_simulation_start_to_finish(tmp_path: Pat
     artifact, _ = _build_observable_checkpoint(
         tmp_path, n_y=2, n_u=2, horizon=4, n_channels=62, n_controls=3, geom=geom
     )
+    env_path = tmp_path / "healthy_psd.npz"
+    np.savez_compressed(
+        env_path,
+        Pref_frames=np.full((62, geom.n_values(50.0)), -2.0),
+        fs=50.0,
+        n_segment=geom.n_segment,
+        n_hop=geom.n_hop,
+        band_hz=np.asarray(geom.band_hz if geom.band_hz is not None else [-1.0, -1.0]),
+        n_bin_pool=geom.n_bin_pool,
+        kernel=geom.kernel,
+        kernel_width=geom.kernel_width,
+    )
     sim_dict["t_end"] = 0.5
     sim_dict["controller"]["problem"]["artifact"] = str(artifact)
+    sim_dict["controller"]["problem"]["envelope_ref"] = str(env_path)
     sim_dict["estimator"]["geometry"] = geom.model_dump()
     sim_dict["estimator"]["downsample"] = 200
 

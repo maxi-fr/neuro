@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING
 
 import numpy as np
 import torch
@@ -33,6 +33,7 @@ if TYPE_CHECKING:
     from neuro.types import FloatArray
 
 _DU_WINDOWS = 8
+_DU_PROBES = 5
 
 
 @dataclass(frozen=True)
@@ -102,24 +103,30 @@ class _Tensors:
     y_scale: Tensor
 
 
-def _du_sensitivity(model: AutoregressiveMLP, X_val: Tensor) -> float:
-    """Mean Frobenius norm of d(rollout)/d(future controls) over a fixed subsample of windows.
+def _du_sensitivity(model: AutoregressiveMLP, X_val: Tensor, *, n_probes: int = _DU_PROBES) -> float:
+    """Mean Frobenius norm of d(rollout)/d(future controls) estimated via reverse-mode VJPs.
 
-    Forward mode is the cheap direction: the future-control block is far narrower than the
-    ``horizon * n_channels`` rollout it drives, and one Jacobian per validation window would
-    dominate the training run.
+    Uses the Hutchinson trace estimator: for random Gaussian projections ``v ~ N(0, I)``,
+    ``E[||J^T v||^2] = ||J||_F^2``. A few reverse-mode vector-Jacobian products per validation
+    window estimate the full-horizon sensitivity in milliseconds without materializing the
+    multi-gigabyte Jacobian tensor.
     """
     n_hist = model.n_y * model.n_outputs + model.n_u * model.n_controls
     rows = X_val[:: max(X_val.shape[0] // _DU_WINDOWS, 1)][:_DU_WINDOWS]
 
-    norms = []
+    norms: list[float] = []
     for row in rows:
+        u_future = row[n_hist:].clone().detach().requires_grad_(requires_grad=True)
+        history = row[:n_hist]
+        x_in = torch.cat([history, u_future])[None, :]
+        out = model(x_in)[0]
 
-        def rollout(u_future: Tensor, history: Tensor = row[:n_hist]) -> Tensor:
-            return model(torch.cat([history, u_future])[None, :])[0]
-
-        jacobian = torch.autograd.functional.jacobian(rollout, row[n_hist:], strategy="forward-mode", vectorize=True)
-        norms.append(float(torch.linalg.norm(cast("Tensor", jacobian)).detach()))
+        probe_sq: list[float] = []
+        for _ in range(n_probes):
+            v = torch.randn_like(out)
+            grad = torch.autograd.grad(out, u_future, grad_outputs=v, retain_graph=True)[0]
+            probe_sq.append(float(torch.sum(grad**2).detach()))
+        norms.append(float(np.sqrt(np.mean(probe_sq))))
     return float(np.mean(norms))
 
 
@@ -265,11 +272,13 @@ def _train_observable(
     horizon = max(loss.span_steps for loss in losses)
     n_outputs = model.n_outputs
 
+    pin = device.type == "cuda"
+    cpu = torch.device("cpu")
     tensors = _Tensors(
-        X_train=float32_tensor(data.X_train, device),
-        Y_train=float32_tensor(data.Y_train, device).reshape(-1, horizon, n_outputs),
-        X_val=float32_tensor(data.X_val, device),
-        Y_val=float32_tensor(data.Y_val, device).reshape(-1, horizon, n_outputs),
+        X_train=float32_tensor(data.X_train, cpu, pin_memory=pin),
+        Y_train=float32_tensor(data.Y_train, cpu, pin_memory=pin).reshape(-1, horizon, n_outputs),
+        X_val=float32_tensor(data.X_val, cpu, pin_memory=pin),
+        Y_val=float32_tensor(data.Y_val, cpu, pin_memory=pin).reshape(-1, horizon, n_outputs),
         y_center=float32_tensor(data.y_std.center, device),
         y_scale=float32_tensor(data.y_std.scale, device),
     )
@@ -293,8 +302,8 @@ def _train_observable(
     )
 
     eval_steps = max(1, round(trn.eval_horizon_s * fs_frame))
-    du_sensitivity = _du_sensitivity(model, tensors.X_val)
     model = model.cpu()
+    du_sensitivity = _du_sensitivity(model, tensors.X_val)
     model.provenance = training_provenance(data_files, sim.cutoff_hz)
     model.downsample = sim.downsample
     inference = ObservableMLPModel.from_checkpoint(*model.to_checkpoint())
@@ -422,11 +431,13 @@ def _train_waveform(cfg: NNPredictorConfig, data_files: list[str], *, seed_offse
     model = model.to(device)
     horizon = max(loss.span_steps for loss in losses)
 
+    pin = device.type == "cuda"
+    cpu = torch.device("cpu")
     tensors = _Tensors(
-        X_train=float32_tensor(data.X_train, device),
-        Y_train=float32_tensor(data.Y_train, device).reshape(-1, horizon, data.n_channels),
-        X_val=float32_tensor(data.X_val, device),
-        Y_val=float32_tensor(data.Y_val, device).reshape(-1, horizon, data.n_channels),
+        X_train=float32_tensor(data.X_train, cpu, pin_memory=pin),
+        Y_train=float32_tensor(data.Y_train, cpu, pin_memory=pin).reshape(-1, horizon, data.n_channels),
+        X_val=float32_tensor(data.X_val, cpu, pin_memory=pin),
+        Y_val=float32_tensor(data.Y_val, cpu, pin_memory=pin).reshape(-1, horizon, data.n_channels),
         y_center=float32_tensor(data.y_std.center, device),
         y_scale=float32_tensor(data.y_std.scale, device),
     )
@@ -450,9 +461,9 @@ def _train_waveform(cfg: NNPredictorConfig, data_files: list[str], *, seed_offse
     )
 
     eval_steps = max(1, round(trn.eval_horizon_s * fs))
+    model = model.cpu()
     du_sensitivity = _du_sensitivity(model, tensors.X_val)
     # Free-run scoring runs on the deployed jax side, built in memory from the fitted torch model.
-    model = model.cpu()
     model.provenance = training_provenance(data_files, sim.cutoff_hz)
     model.downsample = sim.downsample
     inference = WaveformMLPModel.from_checkpoint(*model.to_checkpoint())

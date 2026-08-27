@@ -238,6 +238,8 @@ def test_observable_candidates_match_the_config_kind(tmp_path: Path) -> None:
     assert set(result.candidates) == {"val_loss", "val_log_mse"}
     assert result.candidates["val_loss"] == min(result.val_losses)
     assert result.candidates["val_log_mse"] == result.free_run.pooled
+    assert np.isfinite(result.du_sensitivity)
+    assert result.du_sensitivity > 0.0
     assert all(np.isfinite(value) for value in result.candidates.values())
 
     # Verify save round-trip
