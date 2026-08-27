@@ -42,6 +42,7 @@ def test_defaults_applied_for_missing_sections() -> None:
     assert cfg.simulation.n_steps is None
     assert cfg.model.n_y == 5
     assert cfg.training.epochs == 100
+    assert cfg.training.device == "auto"
     assert cfg.sweep is None
 
 
@@ -54,6 +55,7 @@ def test_known_keys_parsed() -> None:
             **_VALID_TRAINING,
             "epochs": 5,
             "scaler": "robust",
+            "device": "cuda",
         },
     }
     cfg = NNPredictorConfig.from_dict(raw)
@@ -63,6 +65,7 @@ def test_known_keys_parsed() -> None:
     assert cfg.model.n_y == 14
     assert cfg.model.hidden_size == 64
     assert cfg.training.scaler == "robust"
+    assert cfg.training.device == "cuda"
 
 
 @pytest.mark.parametrize(
