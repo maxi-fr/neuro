@@ -201,7 +201,6 @@ def test_prepare_observable_datasets(tmp_path: Path) -> None:
     assert data.y_std.scale.shape == (n_outputs,)
     assert data.X_train.shape[1] == n_y * n_outputs + (n_u + horizon) * n_controls
     assert data.Y_train.shape[1] == horizon * n_outputs
-    assert data.Y_raw_train.shape[1] == horizon * n_outputs
     assert len(data.train_trajs) == 1
     assert len(data.val_trajs) == 1
     assert data.train_trajs[0][1].shape[1] == n_outputs

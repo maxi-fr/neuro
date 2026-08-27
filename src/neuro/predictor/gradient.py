@@ -14,10 +14,10 @@ if TYPE_CHECKING:
     from torch import Tensor, nn
 
     from neuro.config import TrainingConfig
-    from neuro.types import FloatArray, IntArray
+    from neuro.types import Float32Array, FloatArray, IntArray
 
 
-def float32_tensor(a: FloatArray, device: torch.device, *, pin_memory: bool = False) -> Tensor:
+def float32_tensor(a: FloatArray | Float32Array, device: torch.device, *, pin_memory: bool = False) -> Tensor:
     """Move a NumPy array onto ``device`` as a float32 tensor."""
     t = torch.as_tensor(np.ascontiguousarray(a), dtype=torch.float32, device=device)
     return t.pin_memory() if pin_memory and device.type == "cpu" else t

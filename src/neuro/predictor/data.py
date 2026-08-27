@@ -11,7 +11,7 @@ from neuro.transforms import Standardizer
 
 if TYPE_CHECKING:
     from neuro.config import StftGeometry
-    from neuro.types import FloatArray, IntArray
+    from neuro.types import Float32Array, FloatArray, IntArray
 
 
 def load_trajectory(
@@ -49,13 +49,13 @@ def load_trajectory(
     with np.load(data_file) as data:
         max_idx = None if n_steps is None else n_steps * downsample
         y_full = np.asarray(data["sensor_0.y_mea"][:max_idx], dtype=np.float64)
-        u_data = data["controller.u"][:max_idx:downsample]
+        u_data = np.asarray(data["controller.u"][:max_idx:downsample], dtype=np.float64)
 
     if cutoff_hz is not None:
         y_filtered = lowpass_filter(y_full, 1.0 / dt, cutoff_hz)
     else:
         y_filtered = antialias_filter(y_full, 1.0 / dt, downsample)
-    y_data = y_filtered[::downsample]
+    y_data = np.asarray(y_filtered[::downsample], dtype=np.float64)
 
     return u_data, y_data
 
@@ -101,19 +101,9 @@ def _window_starts(T_src: int, n_y: int, n_u: int, N: int) -> IntArray:
     return np.arange(start_idx, end_idx)
 
 
-def extract_future_windows(y_data: FloatArray, n_y: int, n_u: int, N: int) -> FloatArray:
-    """Extract the future-``N`` windows the waveform targets use, in raw units.
-
-    Returns ``(samples, N * n_channels)``; the grid is :func:`build_dataset_for_trajectory`'s own, so
-    Frame targets reduced from here sit on exactly the waveform target grid.
-    """
-    y_fut_view = extract_windows_flattened(y_data, N)
-    return y_fut_view[_window_starts(y_data.shape[0], n_y, n_u, N) + 1]
-
-
 def build_dataset_for_trajectory(
     u_data: FloatArray, y_data: FloatArray, n_y: int, n_u: int, N: int
-) -> tuple[FloatArray, FloatArray]:
+) -> tuple[Float32Array, Float32Array]:
     """Build the input/output pairs for the multi-step predictor.
 
     Parameters
@@ -131,9 +121,9 @@ def build_dataset_for_trajectory(
 
     Returns
     -------
-    X : FloatArray
+    X : Float32Array
         Input features array of shape (samples, n_y * n_channels + n_u * n_controls + N * n_controls).
-    Y : FloatArray
+    Y : Float32Array
         Target labels array of shape (samples, N * n_channels).
     """
     k = _window_starts(y_data.shape[0], n_y, n_u, N)
@@ -142,10 +132,13 @@ def build_dataset_for_trajectory(
     u_past_view = extract_windows_flattened(u_data, n_u)
     u_future_view = extract_windows_flattened(u_data, N)
 
-    X = np.concatenate([y_view[k - n_y + 1], u_past_view[k - n_u], u_future_view[k]], axis=1)
+    X = np.ascontiguousarray(
+        np.concatenate([y_view[k - n_y + 1], u_past_view[k - n_u], u_future_view[k]], axis=1),
+        dtype=np.float32,
+    )
 
     y_fut_view = extract_windows_flattened(y_data, N)
-    Y = y_fut_view[k + 1]
+    Y = np.ascontiguousarray(y_fut_view[k + 1], dtype=np.float32)
 
     return X, Y
 
@@ -213,13 +206,10 @@ class Datasets:
 
     Attributes
     ----------
-    X_train, X_val : FloatArray
+    X_train, X_val : Float32Array
         Standardized input features, shape ``(samples, n_y * n_channels + (n_u + horizon) * n_controls)``.
-    Y_train, Y_val : FloatArray
+    Y_train, Y_val : Float32Array
         Standardized target labels, shape ``(samples, horizon * n_channels)``.
-    Y_raw_train, Y_raw_val : FloatArray
-        The same future windows in raw units, shape ``(samples, horizon * n_channels)``, so the
-        Observable targets reduce raw-direct on the shared window grid.
     y_std, u_std : Standardizer
         Fitted channel and control standardizers.
     train_trajs, val_trajs : list[tuple[FloatArray, FloatArray]]
@@ -229,16 +219,12 @@ class Datasets:
         Number of raw EEG output channels.
     n_controls : int
         Number of control input channels.
-    u_max : float
-        Largest absolute current the training split holds, per electrode.
     """
 
-    X_train: FloatArray
-    Y_train: FloatArray
-    Y_raw_train: FloatArray
-    X_val: FloatArray
-    Y_val: FloatArray
-    Y_raw_val: FloatArray
+    X_train: Float32Array
+    Y_train: Float32Array
+    X_val: Float32Array
+    Y_val: Float32Array
     y_std: Standardizer
     u_std: Standardizer
     train_trajs: list[tuple[FloatArray, FloatArray]]
@@ -261,11 +247,7 @@ def prepare_datasets(  # noqa: PLR0913, PLR0917
     global_scaling: bool,
     cutoff_hz: float | None = None,
 ) -> Datasets:
-    """Split ``data_files`` by trajectory, standardize, and build sliding windows on one grid.
-
-    The raw future windows ride along next to the standardized targets, so the Observable
-    projection can reduce raw-direct on the exact grid the waveform targets use.
-    """
+    """Split ``data_files`` by trajectory, standardize, and build sliding windows on one grid."""
     split = fit_standardizers(
         data_files,
         n_steps_cfg=n_steps_cfg,
@@ -278,18 +260,20 @@ def prepare_datasets(  # noqa: PLR0913, PLR0917
     )
     y_std, u_std = split.y_std, split.u_std
 
-    def windows(trajs: list[tuple[FloatArray, FloatArray]]) -> tuple[FloatArray, FloatArray, FloatArray]:
+    # TODO(perf): Option 3: Replace full sliding-window materialization with an on-the-fly PyTorch Dataset
+    # or index-based mini-batch generator. Standardized trajectories only take ~30-40 MB total;
+    # materializing all overlapping (horizon * n_channels) windows inflates RAM ~120x.
+    def windows(trajs: list[tuple[FloatArray, FloatArray]]) -> tuple[Float32Array, Float32Array]:
         pairs = [
             build_dataset_for_trajectory(u_std.transform(u), y_std.transform(y), n_y, n_u, horizon) for u, y in trajs
         ]
         return (
             np.concatenate([x for x, _ in pairs], axis=0),
             np.concatenate([y for _, y in pairs], axis=0),
-            np.concatenate([extract_future_windows(y, n_y, n_u, horizon) for _, y in trajs], axis=0),
         )
 
-    X_train, Y_train, Y_raw_train = windows(split.train_trajs)
-    X_val, Y_val, Y_raw_val = windows(split.val_trajs)
+    X_train, Y_train = windows(split.train_trajs)
+    X_val, Y_val = windows(split.val_trajs)
 
     n_channels = split.n_channels
     n_controls = (X_train.shape[1] - n_y * n_channels) // (n_u + horizon)
@@ -297,10 +281,8 @@ def prepare_datasets(  # noqa: PLR0913, PLR0917
     return Datasets(
         X_train=X_train,
         Y_train=Y_train,
-        Y_raw_train=Y_raw_train,
         X_val=X_val,
         Y_val=Y_val,
-        Y_raw_val=Y_raw_val,
         y_std=y_std,
         u_std=u_std,
         train_trajs=split.train_trajs,
@@ -329,7 +311,7 @@ def reduce_trajectory_to_frames(y: FloatArray, geometry: StftGeometry, fs: float
     """
     frames = compute_log_power_frames(y, geometry, fs=fs)
     n_frames, n_channels, n_values = frames.shape
-    return frames.reshape(n_frames, n_channels * n_values)
+    return np.asarray(frames.reshape(n_frames, n_channels * n_values), dtype=np.float64)
 
 
 def frame_aligned_controls(u: FloatArray, geometry: StftGeometry, *, fs: float) -> FloatArray:
@@ -350,7 +332,7 @@ def frame_aligned_controls(u: FloatArray, geometry: StftGeometry, *, fs: float) 
     FloatArray
         One control per Frame, shape ``(n_frames, n_controls)``.
     """
-    return u[geometry.sample_support_steps(fs) - 1 :: geometry.n_hop]
+    return np.asarray(u[geometry.sample_support_steps(fs) - 1 :: geometry.n_hop], dtype=np.float64)
 
 
 def prepare_observable_datasets(  # noqa: PLR0913, PLR0917 -- one flat call from train(); a params object would only relay
@@ -424,18 +406,19 @@ def prepare_observable_datasets(  # noqa: PLR0913, PLR0917 -- one flat call from
     y_std = Standardizer.fit(all_y_train, kind=scaler, global_scaling=global_scaling)
     u_std = Standardizer.fit(all_u_train, kind=scaler, global_scaling=global_scaling)
 
-    def windows(trajs: list[tuple[FloatArray, FloatArray]]) -> tuple[FloatArray, FloatArray, FloatArray]:
+    # TODO(perf): Option 3: Replace full sliding-window materialization with an on-the-fly PyTorch Dataset
+    # or index-based mini-batch generator.
+    def windows(trajs: list[tuple[FloatArray, FloatArray]]) -> tuple[Float32Array, Float32Array]:
         pairs = [
             build_dataset_for_trajectory(u_std.transform(u), y_std.transform(y), n_y, n_u, horizon) for u, y in trajs
         ]
         return (
             np.concatenate([x for x, _ in pairs], axis=0),
             np.concatenate([y for _, y in pairs], axis=0),
-            np.concatenate([extract_future_windows(y, n_y, n_u, horizon) for _, y in trajs], axis=0),
         )
 
-    X_train, Y_train, Y_raw_train = windows(train_trajs)
-    X_val, Y_val, Y_raw_val = windows(val_trajs)
+    X_train, Y_train = windows(train_trajs)
+    X_val, Y_val = windows(val_trajs)
 
     with np.load(data_files[0]) as data:
         n_channels = int(data["sensor_0.y_mea"].shape[1])
@@ -444,10 +427,8 @@ def prepare_observable_datasets(  # noqa: PLR0913, PLR0917 -- one flat call from
     return Datasets(
         X_train=X_train,
         Y_train=Y_train,
-        Y_raw_train=Y_raw_train,
         X_val=X_val,
         Y_val=Y_val,
-        Y_raw_val=Y_raw_val,
         y_std=y_std,
         u_std=u_std,
         train_trajs=train_trajs,
