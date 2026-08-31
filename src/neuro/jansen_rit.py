@@ -338,6 +338,7 @@ class JansenRitDynamics(Dynamics[JansenRitStateLog | JansenRitLFPLog | NoLog]):
         ``stim=None`` means unstimulated: a single control electrode that drives nothing.
         """
         super().__init__(dt, integrator=None)
+        self.conn = conn
         self.K = conn.K
         self.enforce_zero_sum_current = enforce_zero_sum_current
         self.log_mode = log
