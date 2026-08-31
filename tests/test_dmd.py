@@ -4,13 +4,17 @@ from typing import TYPE_CHECKING
 
 import jax.numpy as jnp
 import numpy as np
+import optuna
 import pytest
 
 from neuro.config import (
     CurriculumMSESpec,
+    FloatParam,
+    LogUniformParam,
     LossSpecs,
     ModelConfig,
     NNPredictorConfig,
+    NNSweepConfig,
     SimulationConfig,
     StftGeometry,
     TrainingConfig,
@@ -19,6 +23,7 @@ from neuro.predictor.dmd import DmdTrainer, dmd
 from neuro.predictor.inference import ObservableMLPModel, WaveformMLPModel
 from neuro.predictor.module import AutoregressiveMLP
 from neuro.predictor.ridge import RidgeTrainingResult
+from neuro.predictor.sweep import OptunaSweep
 from neuro.predictor.train import train
 from neuro.transforms import Standardizer
 
@@ -173,3 +178,45 @@ def test_dmd_waveform_end_to_end(tmp_path: Path) -> None:
     result.predictor.save(ckpt_path)
     inference = WaveformMLPModel.load(ckpt_path)
     assert isinstance(inference, WaveformMLPModel)
+
+
+def test_dmd_observable_optuna_sweep_end_to_end(tmp_path: Path) -> None:
+    """An Optuna trial suggesting dmd_energy/dmd_lambda reaches a real DmdTrainer fit and scores it.
+
+    Unlike ``test_sweep.py``, which stubs ``train`` to test the objective-selection wiring, this
+    exercises the real closed-form fit through ``OptunaSweep`` -- the one path no other test
+    covers for the ``fit: dmd`` arm.
+    """
+    files = _write_trajectories(tmp_path, n_samples=250)
+    dt = 1e-3
+    downsample = 1
+    fs = 1.0 / (dt * downsample)
+    geom = StftGeometry(n_segment=32, n_hop=8, kernel_width=1)
+    fs_frame = geom.frame_rate(fs)
+    min_n_u = geom.min_past_controls()
+
+    cfg = NNPredictorConfig(
+        simulation=SimulationConfig(dt=dt, downsample=downsample),
+        model=ModelConfig(n_y=2, n_u=min_n_u, depth=0),
+        training=TrainingConfig(
+            fit="dmd",
+            eval_horizon_s=4 / fs_frame,
+            losses=LossSpecs(
+                curriculum_mse=CurriculumMSESpec(weight=1.0, span_s=4 / fs_frame, curr_start=0, curr_end=1)
+            ),
+        ),
+        observable=geom,
+        sweep=NNSweepConfig(
+            objective="val_log_mse",
+            training={
+                "dmd_energy": FloatParam(type="float", low=0.9, high=0.999),
+                "dmd_lambda": LogUniformParam(type="loguniform", low=1e-6, high=1e-1),
+            },
+        ),
+    )
+    trial = optuna.trial.FixedTrial({"dmd_energy": 0.95, "dmd_lambda": 1e-3})
+
+    value = OptunaSweep(cfg, files, tmp_path).objective(trial)
+
+    assert isinstance(value, float)
+    assert trial.user_attrs.keys() == {"val_loss", "val_log_mse"}

@@ -1,0 +1,55 @@
+# Optuna sweep over Hankel-DMDc hyperparameters for the Observable predictor, at the production
+# hop (n_hop=25, dt_frame=0.5s -- see configs/simulation/observable_psd_mpc.yaml). Sibling files
+# sweep_dmd_observable_hop{10,15}.yaml repeat this at a faster decision rate; `n_segment`/`n_hop`
+# are StftGeometry fields with no default, so `sweep.observable` (config.py's overlap guard)
+# cannot vary them per trial -- comparing best trials across these sibling files is the geometry
+# sweep instead.
+#
+# `training.fit: dmd` routes through the same closed-form DmdTrainer as
+# `scripts/run_nn_predictor.py`; only `dmd_energy` and `dmd_lambda` are swept (`dmd_rank`, when
+# set, overrides `dmd_energy` in `dmd()`, so sweeping both is redundant -- energy is the
+# continuous, Optuna-friendlier of the two).
+simulation:
+  dt: 0.0001
+  downsample: 200
+  n_steps: null
+  data_path: "data/experiment_excited_long/train"
+
+model:
+  n_y: 1
+  n_u: 2  # StftGeometry(n_segment=50, n_hop=25, kernel_width=1).min_past_controls()
+  depth: 0
+
+observable:
+  n_segment: 50
+  n_hop: 25
+  band_hz: null
+  n_bin_pool: 1
+  kernel: boxcar
+  kernel_width: 1
+
+training:
+  fit: dmd
+  train_split: 0.8
+  eval_horizon_s: 2.0
+  losses:
+    curriculum_mse:
+      weight: 1.0
+      span_s: 2.0
+      curr_start: 0
+      curr_end: 1
+
+sweep:
+  artifact: "artifacts/sweep_dmd_observable_hop25"
+  n_trials: 30
+  objective: val_log_mse
+  model: {}
+  training:
+    dmd_energy:
+      type: float
+      low: 0.90
+      high: 0.999
+    dmd_lambda:
+      type: loguniform
+      low: 0.000001
+      high: 0.1

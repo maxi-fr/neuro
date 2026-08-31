@@ -1,0 +1,61 @@
+# Closed-loop seizure-suppression evaluation for the Observable predictor, paired with
+# sweep_dmd_observable_closed_loop.yaml. Dynamics/reference/sensors mirror
+# closed_loop_eval_12s.yaml (the waveform sibling); estimator/controller mirror the production
+# MPC deployment in observable_psd_mpc.yaml, at the hop25 geometry those sweep configs train for.
+t_end: 12.0
+
+dynamics:
+  class_path: neuro.jansen_rit.JansenRitDynamics
+  dt: 0.0001
+  seed: 69
+  initial_state: rest
+  log: lfp
+  connectome:
+    speed: 50.0
+    K: 0.60
+  stimulation:
+    model: roast_3d
+    field_projection_path: data/roast_field_projection_3d.npz
+  params:
+    sigma: 280.0
+    A: [3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25,
+      3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25,
+      3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25,
+      3.25, 3.6, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.6, 3.25, 3.25, 3.25, 3.25,
+      3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.6, 3.25, 3.25,
+      3.25, 3.25, 3.25, 3.25, 3.4, 3.25, 3.25, 3.4, 3.25, 3.25, 3.25]
+
+reference: {class_path: simulate.reference.StepReference, dt: 0.0001, step_value: 0.0}
+
+sensors:
+  class_path: simulate.sensor.GaussianSensor
+  dt: 0.0001
+  std_dev: 0.0
+  measurement:
+    class_path: neuro.eeg.EEGMeasurement
+
+estimator:
+  class_path: neuro.filtering.ObservableEstimator
+  dt: 0.0001
+  downsample: 200
+  geometry:
+    n_segment: 50
+    n_hop: 25
+    band_hz: null
+    n_bin_pool: 1
+    kernel: boxcar
+    kernel_width: 1
+
+controller:
+  class_path: neuro.control.mpc.TrajOptMPCController
+  dt: 0.5              # = hop * downsample * plant_dt = 25 * 200 * 0.0001
+  problem:
+    class_path: neuro.control.mpc.build_observable_problem
+    artifact: null  # Injected by sweep at runtime
+    horizon: 4
+    u_max: 2.0
+    w_u: 10.0
+    w_u_l1: 0.1
+    w_hinge: 10.0
+    envelope_ref: data/healthy_psd.npz
+    kirchhoff: true

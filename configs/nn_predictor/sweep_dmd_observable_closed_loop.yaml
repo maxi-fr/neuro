@@ -1,0 +1,57 @@
+# Closed-loop-objective follow-up to sweep_dmd_observable_hop25.yaml: once that cheap
+# val_log_mse sweep has narrowed the dmd_energy/dmd_lambda range, rerun a small number of trials
+# in that range scored on actual seizure-burden reduction (evaluate_closed_loop_suppression),
+# since the offline Frame MSE is a known-imperfect proxy for closed-loop suppression (see
+# docs/dmd_closed_loop_evaluation.md section 5). Each trial runs a full MPC simulation per seed
+# (~40s x len(seeds)), so n_trials and the search range are kept small relative to the offline
+# sweep -- narrow the ranges below from the offline sweep's best trial before running this.
+simulation:
+  dt: 0.0001
+  downsample: 200
+  n_steps: null
+  data_path: "data/experiment_excited_long/train"
+
+model:
+  n_y: 1
+  n_u: 2  # StftGeometry(n_segment=50, n_hop=25, kernel_width=1).min_past_controls()
+  depth: 0
+
+observable:
+  n_segment: 50
+  n_hop: 25
+  band_hz: null
+  n_bin_pool: 1
+  kernel: boxcar
+  kernel_width: 1
+
+training:
+  fit: dmd
+  train_split: 0.8
+  eval_horizon_s: 2.0
+  losses:
+    curriculum_mse:
+      weight: 1.0
+      span_s: 2.0
+      curr_start: 0
+      curr_end: 1
+
+sweep:
+  artifact: "artifacts/sweep_dmd_observable_closed_loop"
+  n_trials: 8
+  objective: closed_loop
+  model: {}
+  training:
+    dmd_energy:
+      type: float
+      low: 0.90
+      high: 0.999
+    dmd_lambda:
+      type: loguniform
+      low: 0.000001
+      high: 0.1
+  closed_loop:
+    simulation_config: "configs/simulation/closed_loop_eval_observable_12s.yaml"
+    seeds: [69, 70, 71]
+    t_end: 12.0
+    seizure_ptp_mv: 10.0
+    max_seizing_regions: 5
