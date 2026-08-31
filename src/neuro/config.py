@@ -351,8 +351,11 @@ class TrainingConfig(StrictConfig):
     in :func:`neuro.predictor.train.train`, not mid-fit.
     """
 
-    fit: Literal["gradient_descent", "ridge"] = "gradient_descent"
+    fit: Literal["gradient_descent", "ridge", "dmd"] = "gradient_descent"
     ridge_lambda: float = Field(default=0.0, ge=0)
+    dmd_rank: int | None = Field(default=None, ge=1)
+    dmd_energy: float | None = Field(default=None, gt=0, le=1.0)
+    dmd_lambda: float = Field(default=0.0, ge=0)
     epochs: int = Field(default=100, ge=1)
     warmup_epochs: int = Field(default=0, ge=0)
     batch_size: int = Field(default=128, ge=1)

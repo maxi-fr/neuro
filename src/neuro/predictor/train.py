@@ -8,6 +8,7 @@ import numpy as np
 import torch
 
 from neuro.predictor.data import Datasets, prepare_datasets, prepare_observable_datasets
+from neuro.predictor.dmd import DmdTrainer
 from neuro.predictor.evaluation import (
     LogEnergyError,
     ObservableFrameMSE,
@@ -165,9 +166,13 @@ def train(
     if cfg.observable is not None:
         if cfg.training.fit == "ridge":
             return _train_observable_ridge(cfg, data_files, cfg.observable)
+        if cfg.training.fit == "dmd":
+            return _train_observable_dmd(cfg, data_files, cfg.observable)
         return _train_observable(cfg, data_files, cfg.observable, seed_offset=seed_offset)
     if cfg.training.fit == "ridge":
         return _train_ridge(cfg, data_files)
+    if cfg.training.fit == "dmd":
+        return _train_waveform_dmd(cfg, data_files)
     return _train_waveform(cfg, data_files, seed_offset=seed_offset)
 
 
@@ -227,6 +232,41 @@ def _train_observable_ridge(cfg: NNPredictorConfig, data_files: list[str], geom:
     fs_frame = geom.frame_rate(cfg.fs)
     data, model, _ = _prepare_observable(cfg, data_files, geom, depth=0)
     RidgeTrainer(ridge_lambda=trn.ridge_lambda).fit(model, data.train_trajs)
+
+    model.provenance = training_provenance(data_files, sim.cutoff_hz)
+    model.downsample = sim.downsample
+    eval_steps = max(1, round(trn.eval_horizon_s * fs_frame))
+    inference = ObservableMLPModel.from_checkpoint(*model.to_checkpoint())
+    frame_mse = evaluate_observable_free_run(inference, data.val_trajs, eval_steps)
+
+    with torch.no_grad():
+        val_pred = (
+            model(torch.as_tensor(data.X_val, dtype=torch.float32)).numpy().reshape(-1, model.horizon, model.n_outputs)
+        )
+    val_true = data.Y_val.reshape(-1, model.horizon, model.n_outputs)
+    val_frame_loss = float(np.mean((val_pred - val_true) ** 2))
+
+    return RidgeTrainingResult(
+        predictor=model,
+        candidates={
+            "val_loss": val_frame_loss,
+            "val_log_mse": frame_mse.pooled,
+        },
+        free_run=frame_mse,
+        log_energy=None,
+        val_trajs=data.val_trajs,
+    )
+
+
+def _train_observable_dmd(cfg: NNPredictorConfig, data_files: list[str], geom: StftGeometry) -> RidgeTrainingResult:
+    """Fit the single layer of a depth-0 Observable MLP by closed-form Hankel-DMDc."""
+    if cfg.model.depth > 0:
+        msg = f"'training.fit: dmd' requires a depth-0 MLP, got model.depth = {cfg.model.depth}."
+        raise ValueError(msg)
+    sim, trn = cfg.simulation, cfg.training
+    fs_frame = geom.frame_rate(cfg.fs)
+    data, model, _ = _prepare_observable(cfg, data_files, geom, depth=0)
+    DmdTrainer(rank=trn.dmd_rank, energy=trn.dmd_energy, dmd_lambda=trn.dmd_lambda).fit(model, data.train_trajs)
 
     model.provenance = training_provenance(data_files, sim.cutoff_hz)
     model.downsample = sim.downsample
@@ -397,6 +437,33 @@ def _train_waveform_ridge(cfg: NNPredictorConfig, data_files: list[str]) -> Ridg
     fs = cfg.fs
     data, model, _ = _prepare_waveform(cfg, data_files, depth=0)
     RidgeTrainer(ridge_lambda=trn.ridge_lambda).fit(model, data.train_trajs)
+
+    model.provenance = training_provenance(data_files, sim.cutoff_hz)
+    model.downsample = sim.downsample
+    eval_steps = max(1, round(trn.eval_horizon_s * fs))
+    inference = WaveformMLPModel.from_checkpoint(*model.to_checkpoint())
+    rollout, log_energy = evaluate_free_run(inference, data.val_trajs, eval_steps, fs)
+    return RidgeTrainingResult(
+        predictor=model,
+        candidates={
+            "rollout_nmse": rollout.pooled,
+            "log_energy": log_energy.pooled,
+        },
+        free_run=rollout,
+        log_energy=log_energy,
+        val_trajs=data.val_trajs,
+    )
+
+
+def _train_waveform_dmd(cfg: NNPredictorConfig, data_files: list[str]) -> RidgeTrainingResult:
+    """Fit the single layer of a depth-0 waveform MLP by closed-form Hankel-DMDc."""
+    if cfg.model.depth > 0:
+        msg = f"'training.fit: dmd' requires a depth-0 MLP, got model.depth = {cfg.model.depth}."
+        raise ValueError(msg)
+    sim, trn = cfg.simulation, cfg.training
+    fs = cfg.fs
+    data, model, _ = _prepare_waveform(cfg, data_files, depth=0)
+    DmdTrainer(rank=trn.dmd_rank, energy=trn.dmd_energy, dmd_lambda=trn.dmd_lambda).fit(model, data.train_trajs)
 
     model.provenance = training_provenance(data_files, sim.cutoff_hz)
     model.downsample = sim.downsample
