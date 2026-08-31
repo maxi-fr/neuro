@@ -5,6 +5,9 @@
 # docs/dmd_closed_loop_evaluation.md section 5). Each trial runs a full MPC simulation per seed
 # (~40s x len(seeds)), so n_trials and the search range are kept small relative to the offline
 # sweep -- narrow the ranges below from the offline sweep's best trial before running this.
+#
+# Narrowed around sweep_dmd_observable_hop25.yaml's best trial (47 trials, val_log_mse=2.9588):
+# dmd_energy=0.9212, dmd_lambda=0.006042.
 simulation:
   dt: 0.0001
   downsample: 200
@@ -44,11 +47,11 @@ sweep:
     dmd_energy:
       type: float
       low: 0.90
-      high: 0.999
+      high: 0.95
     dmd_lambda:
       type: loguniform
-      low: 0.000001
-      high: 0.1
+      low: 0.001
+      high: 0.03
   closed_loop:
     simulation_config: "configs/simulation/closed_loop_eval_observable_12s.yaml"
     seeds: [69, 70, 71]

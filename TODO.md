@@ -1,5 +1,7 @@
 # TODO list
 
+* Test cost functions with JR model as the MPC predictor!!!
+
 ## Review refactor?
 
 * remove all mentions of the old MPC/casadi implementation
