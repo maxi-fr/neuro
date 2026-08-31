@@ -16,6 +16,7 @@ from neuro.config import (
     TrainingConfig,
     expand_dotted_dict,
 )
+from neuro.predictor.plotting import plot_rollout_comparison, plot_training_curves
 from neuro.predictor.train import train
 
 if TYPE_CHECKING:
@@ -81,6 +82,8 @@ def _run_trial(
             raise optuna.TrialPruned from exc
         raise
     result.save(trial_dir)
+    plot_training_curves(result, trial_dir / "loss_curve.png")
+    plot_rollout_comparison(result, trial_dir / "comparison.png")
     return score_trial(
         trial,
         candidates=result.candidates,

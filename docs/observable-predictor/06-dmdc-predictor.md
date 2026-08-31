@@ -52,7 +52,7 @@ The fitted parameters $[\mathbf{W}, \mathbf{b}]$ are installed into a `depth=0` 
 
 ### 3. Extended DMD (EDMD) Trade-Off Analysis
 
-Extended DMD (EDMD) lifts state measurements through a nonlinear dictionary $\mathbf{\psi}(\mathbf{o}_k) \in \mathbb{R}^D$ to compute finite-dimensional approximations of the linear Koopman operator.
+Extended DMD (EDMD) lifts state measurements through a nonlinear dictionary $\mathbf{\psi}(\mathbf{o}_k) \in \mathbb{R}^{D}$ to compute finite-dimensional approximations of the linear Koopman operator.
 
 #### Why Hankel-DMDc is Preferred for STFT Observables
 

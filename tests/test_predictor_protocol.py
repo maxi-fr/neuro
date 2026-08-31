@@ -27,6 +27,7 @@ _RTOL, _ATOL = 1e-5, 1e-6
 def _waveform_model(depth: int, activation: Activation, *, residual: bool) -> AutoregressiveMLP:
     """A random waveform MLP with nontrivial standardizers."""
     rng = np.random.default_rng(_SEED)
+    torch.manual_seed(_SEED)
     model = AutoregressiveMLP(
         n_y=_N_Y,
         n_u=_N_U,
@@ -109,6 +110,7 @@ def test_waveform_cross_side_parity(depth: int, activation: Activation, residual
 def test_cross_side_parity_with_distinct_output_width() -> None:
     """Torch forward and JAX free_run agree when n_outputs is wider than n_channels."""
     rng = np.random.default_rng(_SEED + 200)
+    torch.manual_seed(_SEED + 200)
     n_channels, n_outputs, n_controls = 2, 6, 2
     n_y, n_u, horizon = 3, 2, 4
     module = AutoregressiveMLP(
@@ -130,6 +132,7 @@ def test_cross_side_parity_with_distinct_output_width() -> None:
     with torch.no_grad():
         for lin in linears:
             lin.weight.normal_()
+            lin.weight.data.mul_(float(lin.in_features) ** -0.5)
             lin.bias.normal_()
 
     meta, arrays = module.to_checkpoint()
@@ -161,6 +164,7 @@ def test_cross_side_parity_with_distinct_output_width() -> None:
 def _observable_model(depth: int, activation: Activation, *, residual: bool) -> tuple[AutoregressiveMLP, StftGeometry]:
     """A random observable MLP with recorded StftGeometry and per-output standardizers."""
     rng = np.random.default_rng(_SEED + 300)
+    torch.manual_seed(_SEED + 300)
     geometry = StftGeometry(n_segment=64, n_hop=16, band_hz=[4.0, 30.0], n_bin_pool=2, kernel_width=5)
     n_values = geometry.n_values(_FS)
     n_outputs = _N_EEG * n_values

@@ -28,6 +28,7 @@ _N_EEG, _N_CONTROLS, _HIDDEN = 4, 2, 6
 def _mlp_module() -> AutoregressiveMLP:
     """A random MLP module with nontrivial standardizers and recorded provenance."""
     rng = np.random.default_rng(_SEED)
+    torch.manual_seed(_SEED)
     model = AutoregressiveMLP(
         n_y=_N_Y,
         n_u=_N_U,
