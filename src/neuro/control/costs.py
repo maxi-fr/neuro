@@ -107,6 +107,37 @@ class L1ControlCost(CostFunction):
         return (self.w_l1 / self.horizon) * jnp.sum(jnp.sqrt(u_arr**2 + self.eps**2))
 
 
+class KirchhoffPenaltyCost(CostFunction):
+    """Quadratic penalty on the Kirchhoff current sum violation ``(w_k / horizon) * (sum(u))^2``.
+
+    Enables Box-iLQR to penalize deviations from Kirchhoff's Current Law without requiring
+    coupled box-QP solvers.
+    """
+
+    w_k: jax.Array
+    horizon: int = eqx.field(static=True)
+
+    def __init__(self, *, n: int, m: int, w_k: float, horizon: int) -> None:
+        """Initialize with state/control dimensions, penalty weight, and horizon."""
+        super().__init__(n=n, m=m)
+        self.w_k = jnp.asarray(w_k)
+        self.horizon = int(horizon)
+
+    def evaluate(
+        self,
+        x: jax.Array,
+        u: jax.Array | None = None,
+        t: float | jax.Array = 0.0,
+    ) -> jax.Array:
+        """Evaluate the per-knot quadratic penalty ``(w_k / horizon) * (sum(u))^2``."""
+        del x, t
+        if u is None:
+            return jnp.zeros(())
+        u_arr = jnp.asarray(u)
+        sum_u = jnp.sum(u_arr)
+        return (self.w_k / self.horizon) * (sum_u**2)
+
+
 class StateOutputs(eqx.Module):
     """Where a knot state hides its raw outputs, and the standardizer that decodes them.
 
@@ -379,4 +410,4 @@ def has_whole_horizon_cost(cost: CostFunction) -> bool:
     """
     if isinstance(cost, SumCost):
         return any(has_whole_horizon_cost(sub) for sub in cost.costs)
-    return isinstance(cost, (SpectralHingeCost, ObservableHingeCost))
+    return isinstance(cost, SpectralHingeCost)

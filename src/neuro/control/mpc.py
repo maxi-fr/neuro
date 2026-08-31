@@ -4,6 +4,8 @@ import dataclasses
 import importlib
 from typing import TYPE_CHECKING, Any, Self
 
+import equinox as eqx
+import jax
 import jax.numpy as jnp
 import numpy as np
 from simulate.controller import Controller
@@ -13,12 +15,17 @@ from trajopt.constraints.constraint_list import ConstraintList
 from trajopt.constraints.linear import LinearConstraint
 from trajopt.costs.objective import Objective
 from trajopt.costs.quadratic import DiagonalCost
+from trajopt.dynamics.base import DiscreteDynamics
 from trajopt.problem import MPCState, Problem
+from trajopt.solvers.altro import ALTRO
+from trajopt.solvers.boxqp import BoxQP
+from trajopt.solvers.options import SolverOptions
 from trajopt.transcription.ipopt import Ipopt
 from trajopt.transcription.single_shooting import SingleShooting
 
 from neuro.control.costs import (
     ExcludeInitialKnotState,
+    KirchhoffPenaltyCost,
     L1ControlCost,
     ObservableHingeCost,
     SpectralHingeCost,
@@ -34,7 +41,6 @@ if TYPE_CHECKING:
 
     from numpy.typing import ArrayLike
     from trajopt.costs.base import CostFunction
-    from trajopt.dynamics.base import DiscreteDynamics
     from trajopt.transcription.result import Solver
 
     from neuro.types import FloatArray
@@ -125,21 +131,85 @@ def _assemble_problem(
     return Problem(model=model, obj=objective, constraints=constraints, N=N)
 
 
-def _default_solver(problem: Problem) -> Ipopt | SingleShooting:
-    """Select the default solver: single shooting over controls, falling back to Ipopt for state bounds."""
+def _default_solver(problem: Problem) -> Solver:
+    """Select the default solver: BoxQP for bipolar models, SingleShooting(Ipopt) for general problems."""
+    if isinstance(problem.model, BipolarReducedModel):
+        return BoxQP()
     ipopt = Ipopt(options={"print_level": 0, "hessian_approximation": "limited-memory"})
-    del problem
     return SingleShooting(solver=ipopt)
 
 
 def ensure_solver_supports_objective(problem: Problem, solver: Solver) -> None:
-    """Raise when a native expansion-only solver would silently drop a whole-horizon cost."""
-    if has_whole_horizon_cost(problem.obj.stage_cost):
+    """Raise when a solver does not support the problem's objective or constraints."""
+    if has_whole_horizon_cost(problem.obj.stage_cost) and not isinstance(solver, (SingleShooting, Ipopt)):
         msg = (
             f"{type(solver).__name__} expands costs per knot and cannot score the whole-horizon "
             "hinge cost; use a transcription solver (e.g. SingleShooting(Ipopt(...)))."
         )
         raise ValueError(msg)
+    if isinstance(solver, BoxQP) and sum(problem.constraints.p) > 0:
+        msg = (
+            f"BoxQP only supports uncoupled box bounds, but problem has non-box constraints "
+            f"(p={problem.constraints.p}); use ALTRO or BipolarReducedModel for Kirchhoff equality constraints."
+        )
+        raise ValueError(msg)
+
+
+def _instantiate_solver(class_path: str, cfg: dict[str, Any]) -> Solver:
+    """Import and instantiate a solver from its class_path and config."""
+    if not isinstance(class_path, str) or "." not in class_path:
+        msg = f"solver 'class_path' must be a dot-separated import path, got {class_path!r}"
+        raise ValueError(msg)
+
+    module_name, class_name = class_path.rsplit(".", 1)
+    target_cls = getattr(importlib.import_module(module_name), class_name)
+
+    if "solver" in cfg and isinstance(cfg["solver"], dict):
+        cfg["solver"] = _build_solver(cfg["solver"])
+
+    if "options" in cfg and isinstance(cfg["options"], dict) and issubclass(target_cls, (ALTRO, BoxQP)):
+        cfg["options"] = SolverOptions(**cfg["options"])
+
+    res = target_cls(**cfg) if cfg else target_cls()
+    if not isinstance(res, (ALTRO, BoxQP, SingleShooting, Ipopt)) and not hasattr(res, "solve"):
+        msg = f"Target class {class_path} does not implement Solver interface"
+        raise TypeError(msg)
+    return res
+
+
+def _build_solver(spec: dict[str, Any] | Solver | None, problem: Problem | None = None) -> Solver:
+    """Instantiate a Solver from a ``{class_path, ...}`` dict or return the benchmark default.
+
+    Parameters
+    ----------
+    spec
+        Solver instance, config dict with ``'class_path'``, or ``None``.
+    problem
+        Optional Problem instance used to select the benchmark-winning default when ``spec`` is None.
+    """
+    if spec is None:
+        if problem is None:
+            msg = "Cannot select default solver without a Problem instance"
+            raise ValueError(msg)
+        return _default_solver(problem)
+
+    if not isinstance(spec, dict):
+        if not hasattr(spec, "solve"):
+            msg = f"Invalid solver object of type {type(spec).__name__}: must be a dict with 'class_path' or implement .solve()"
+            raise TypeError(msg)
+        if problem is not None:
+            ensure_solver_supports_objective(problem, spec)
+        return spec
+
+    cfg = spec.copy()
+    if "class_path" not in cfg:
+        msg = f"solver config must contain 'class_path', got keys: {list(cfg.keys())}"
+        raise ValueError(msg)
+
+    solver_instance = _instantiate_solver(cfg.pop("class_path"), cfg)
+    if problem is not None:
+        ensure_solver_supports_objective(problem, solver_instance)
+    return solver_instance
 
 
 def _validate_waveform_envelope(envelope: PsdEnvelope, model: WaveformMLPModel) -> None:
@@ -176,7 +246,94 @@ def _validate_observable_envelope(envelope: ObservableEnvelope, model: Observabl
         raise ValueError(msg)
 
 
-def build_waveform_problem(  # noqa: PLR0913 -- checkpoint plus the nine MPC cost/bound knobs
+_BIPOLAR_CONTROLS = 2
+
+
+class BipolarReducedModel(DiscreteDynamics, InferencePredictor):
+    """DiscreteDynamics adapter mapping scalar control v in [-u_max, u_max] to bipolar u = [v, -v]^T.
+
+    Enables exact Box-iLQR on 2-electrode montages by reducing the control dimension m from 2 to 1,
+    rendering the Kirchhoff constraint identically satisfied without altering the box bounds.
+    """
+
+    base_model: InferencePredictor
+    n_y: int = eqx.field(static=True)
+    n_u: int = eqx.field(static=True)
+    n_channels: int = eqx.field(static=True)
+    n_controls: int = eqx.field(static=True)
+    n_outputs: int = eqx.field(static=True)
+    dt: float = eqx.field(static=True)
+
+    def __init__(self, base_model: InferencePredictor) -> None:
+        """Wrap a base InferencePredictor model with m=2."""
+        if base_model.m != _BIPOLAR_CONTROLS:
+            msg = f"BipolarReducedModel requires base_model with m=2, got m={base_model.m}"
+            raise ValueError(msg)
+        super().__init__(n=base_model.n, m=1, ne=base_model.ne)
+        self.base_model = base_model
+        self.n_y = int(base_model.n_y)
+        self.n_u = int(base_model.n_u)
+        self.n_channels = int(base_model.n_channels)
+        self.n_controls = 1
+        self.n_outputs = int(base_model.n_outputs)
+        self.dt = float(base_model.dt)
+
+    def discrete_dynamics(
+        self,
+        x: jax.Array,
+        u: jax.Array,
+        t: float | jax.Array,
+        dt: float | jax.Array,
+    ) -> jax.Array:
+        """Advance one step with u_full = [u[0], -u[0]]."""
+        del t, dt
+        u_val = u[0] if u.ndim > 0 else u
+        u_full = jnp.array([u_val, -u_val])
+        return self.base_model.discrete_dynamics(x, u_full, 0.0, self.dt)
+
+    def absorb(self, state: FloatArray, y: FloatArray, u: FloatArray) -> FloatArray:
+        """Absorb with u_full = [u[0], -u[0]]."""
+        u_arr = np.asarray(u, dtype=np.float64)
+        u_val = u_arr[0] if u_arr.ndim > 0 else float(u_arr)
+        u_full = np.array([u_val, -u_val], dtype=np.float64)
+        return self.base_model.absorb(state, y, u_full)
+
+    def is_ready(self, state: FloatArray) -> bool:
+        """Report readiness from base model."""
+        return self.base_model.is_ready(state)
+
+    def initial_state(self) -> FloatArray:
+        """Return base model's initial state."""
+        return self.base_model.initial_state()
+
+    def free_run(
+        self,
+        y_hists: FloatArray,
+        u_hists: FloatArray,
+        u_futures: FloatArray,
+    ) -> jax.Array:
+        """Free-run with bipolar control expansion."""
+        u_f_arr = np.asarray(u_futures, dtype=np.float64)
+        u_f_full = np.stack([u_f_arr[..., 0], -u_f_arr[..., 0]], axis=-1)
+        u_h_arr = np.asarray(u_hists, dtype=np.float64)
+        u_h_full = np.stack([u_h_arr[..., 0], -u_h_arr[..., 0]], axis=-1) if u_h_arr.shape[-1] == 1 else u_h_arr
+        return self.base_model.free_run(y_hists, u_h_full, u_f_full)
+
+    def to_checkpoint(self) -> tuple[dict[str, Any], dict[str, FloatArray]]:
+        """Return base model checkpoint."""
+        return self.base_model.to_checkpoint()
+
+    @classmethod
+    def from_checkpoint(cls, meta: dict[str, Any], arrays: dict[str, FloatArray]) -> Self:
+        """Rebuild base model then wrap."""
+        if "geometry" in meta:
+            base: InferencePredictor = ObservableMLPModel.from_checkpoint(meta, arrays)
+        else:
+            base = WaveformMLPModel.from_checkpoint(meta, arrays)
+        return cls(base)
+
+
+def build_waveform_problem(  # noqa: PLR0913 -- checkpoint plus the ten MPC cost/bound knobs
     artifact: str | Path,
     *,
     horizon: int,
@@ -188,6 +345,7 @@ def build_waveform_problem(  # noqa: PLR0913 -- checkpoint plus the nine MPC cos
     w_psd: float = 0.0,
     psd_ref: str | Path | None = None,
     kirchhoff: bool = False,
+    w_kirchhoff: float = 0.0,
 ) -> Problem:
     """Assemble the waveform MPC problem: model adapter, objective, box and Kirchhoff bounds.
 
@@ -225,6 +383,9 @@ def build_waveform_problem(  # noqa: PLR0913 -- checkpoint plus the nine MPC cos
     kirchhoff
         Add the Kirchhoff sum-to-zero equality on the controls. Off by default; the incumbent
         applies it unconditionally, so full parity sets it.
+    w_kirchhoff
+        Weight on the quadratic penalty formulation of Kirchhoff's Current Law:
+        ``(w_kirchhoff / horizon) * (sum(u))^2``. ``0`` (default) disables it.
     """
     model = WaveformMLPModel.load(artifact)
     n, m = model.n, model.m
@@ -237,6 +398,8 @@ def build_waveform_problem(  # noqa: PLR0913 -- checkpoint plus the nine MPC cos
     costs: list[CostFunction] = [ExcludeInitialKnotState(stage)]
     if w_u_l1 > 0:
         costs.append(L1ControlCost(n=n, m=m, w_l1=w_u_l1, horizon=horizon))
+    if w_kirchhoff > 0:
+        costs.append(KirchhoffPenaltyCost(n=n, m=m, w_k=w_kirchhoff, horizon=horizon))
     envelope = _spectral_envelope(psd_ref, w_psd)
     if envelope is not None:
         _validate_waveform_envelope(envelope, model)
@@ -262,6 +425,49 @@ def build_waveform_problem(  # noqa: PLR0913 -- checkpoint plus the nine MPC cos
     return _assemble_problem(model, objective, N=N, u_max=u_max, kirchhoff=kirchhoff)
 
 
+def build_bipolar_waveform_problem(  # noqa: PLR0913 -- checkpoint plus cost knobs
+    artifact: str | Path,
+    *,
+    horizon: int,
+    u_max: float | ArrayLike,
+    w_y: float = 1.0,
+    w_u: float = 0.0,
+    w_y_terminal: float | None = None,
+    w_u_l1: float = 0.0,
+) -> Problem:
+    """Assemble the 1D reduced bipolar waveform MPC problem for Box-iLQR.
+
+    The scalar control ``v`` in ``[-u_max, u_max]`` is mapped to bipolar currents ``u = [v, -v]^T``,
+    satisfying Kirchhoff's Current Law exactly without requiring coupled constraints.
+    """
+    base_model = WaveformMLPModel.load(artifact)
+    model = BipolarReducedModel(base_model)
+    n, m = model.n, model.m  # m = 1
+    N = horizon + 1
+
+    z_last = slice((base_model.n_y - 1) * base_model.n_channels, base_model.n_y * base_model.n_channels)
+    Q = jnp.zeros(n).at[z_last].set(2.0 * w_y * base_model.y_scale**2 / horizon)
+    xf = jnp.zeros(n).at[z_last].set(-base_model.y_center / base_model.y_scale)
+    # Quadratic control on [v, -v] is v^2 + (-v)^2 = 2 * v^2, so diagonal weight is 2 * (2 * w_u / horizon)
+    R_diag = jnp.full(m, 4.0 * w_u / horizon)
+    stage = DiagonalCost.tracking(Q, R_diag, xf, jnp.zeros(m))
+    costs: list[CostFunction] = [ExcludeInitialKnotState(stage)]
+    if w_u_l1 > 0:
+        # L1 norm on [v, -v] is |v| + |-v| = 2 * |v|, so weight is 2 * w_u_l1
+        costs.append(L1ControlCost(n=n, m=m, w_l1=2.0 * w_u_l1, horizon=horizon))
+    stage_cost: CostFunction = _combine_costs(costs)
+
+    w_y_final = w_y_terminal if w_y_terminal is not None else w_y
+    Q_f = jnp.zeros(n).at[z_last].set(2.0 * w_y_final * base_model.y_scale**2 / horizon)
+    terminal = DiagonalCost.terminal_tracking(Q_f, xf, m)
+    objective = Objective(stage_cost=stage_cost, terminal_cost=terminal, N=N)
+
+    u_max_val = float(np.atleast_1d(np.asarray(u_max))[0])
+    constraints = ConstraintList(n=n, m=m, N=N)
+    constraints.add_constraint(ControlBound(n=n, m=m, u_min=[-u_max_val], u_max=[u_max_val]), range(N - 1))
+    return Problem(model=model, obj=objective, constraints=constraints, N=N)
+
+
 def build_observable_problem(  # noqa: PLR0913 -- checkpoint plus the MPC cost/bound knobs
     artifact: str | Path,
     *,
@@ -272,6 +478,7 @@ def build_observable_problem(  # noqa: PLR0913 -- checkpoint plus the MPC cost/b
     w_hinge: float = 0.0,
     envelope_ref: str | Path | None = None,
     kirchhoff: bool = False,
+    w_kirchhoff: float = 0.0,
 ) -> Problem:
     """Assemble the observable MPC problem: model adapter, objective, box and Kirchhoff bounds.
 
@@ -303,6 +510,9 @@ def build_observable_problem(  # noqa: PLR0913 -- checkpoint plus the MPC cost/b
         drives the cost.
     kirchhoff
         Add the Kirchhoff sum-to-zero equality on the controls.
+    w_kirchhoff
+        Weight on the quadratic penalty formulation of Kirchhoff's Current Law:
+        ``(w_kirchhoff / horizon) * (sum(u))^2``. ``0`` (default) disables it.
     """
     model = ObservableMLPModel.load(artifact)
     n, m = model.n, model.m
@@ -312,6 +522,8 @@ def build_observable_problem(  # noqa: PLR0913 -- checkpoint plus the MPC cost/b
     costs: list[CostFunction] = [ExcludeInitialKnotState(stage)]
     if w_u_l1 > 0:
         costs.append(L1ControlCost(n=n, m=m, w_l1=w_u_l1, horizon=horizon))
+    if w_kirchhoff > 0:
+        costs.append(KirchhoffPenaltyCost(n=n, m=m, w_k=w_kirchhoff, horizon=horizon))
     envelope = _observable_envelope(envelope_ref, w_hinge)
     # The stage trajectory carries every Frame of the Control Horizon but the last, which lives
     # only in the terminal knot; the terminal Cost scores it so no predicted Frame goes unpriced.
@@ -348,7 +560,7 @@ class TrajOptMPCController(Controller[TrajOptMPCLog]):
         self,
         dt: float,
         problem: Problem,
-        solver: Solver | None = None,
+        solver: Solver | dict[str, Any] | None = None,
         initial_state: MPCState | None = None,
     ) -> None:
         """Initialize the controller and its persistent MPC state.
@@ -360,10 +572,10 @@ class TrajOptMPCController(Controller[TrajOptMPCLog]):
         problem
             The trajopt optimal-control problem: model adapter + objective + constraint list.
         solver
-            Solver backend (e.g. ``SingleShooting(Ipopt(...))``); overrides the default. When
-            omitted, the default is the general Ipopt transcription if the constraint list
-            carries a non-box knot constraint (the Kirchhoff linear equality), else
-            single-shooting Ipopt -- both with printing off.
+            Solver backend instance or ``{class_path, ...}`` config dict. When omitted, the
+            benchmark-winning default is selected: ``BoxQP`` for bipolar models,
+            ``SingleShooting(Ipopt)`` for non-separable whole-horizon costs, and ``ALTRO``
+            for general problems.
         initial_state
             Initial MPC warm-start state; defaults to one built from the unprimed model state,
             with the NaN padding of the unprimed EEG window replaced by zeros so the seed is
@@ -377,7 +589,7 @@ class TrajOptMPCController(Controller[TrajOptMPCLog]):
             msg = f"problem.model ({type(model).__name__}) does not implement the InferencePredictor priming seam"
             raise TypeError(msg)
         self.model = model
-        self.solver = solver if solver is not None else _default_solver(problem)
+        self.solver = _build_solver(solver, problem)
 
         unprimed = jnp.nan_to_num(jnp.asarray(self.model.initial_state()), nan=0.0)
         self.state = initial_state if initial_state is not None else MPCState.initial(problem, x0=unprimed, dt=dt)
@@ -386,20 +598,21 @@ class TrajOptMPCController(Controller[TrajOptMPCLog]):
 
     @classmethod
     def from_config(cls, config: dict[str, Any]) -> Self:
-        """Instantiate from a config dict, dispatching the Problem to a ``{class_path, ...}`` factory.
+        """Instantiate from a config dict, dispatching the Problem and Solver factories.
 
-        Follows ``TrajOptMPC.from_config``'s pattern: ``problem`` is either a Problem instance
+        Follows the standard ``{class_path, ...}`` pattern: ``problem`` is either a Problem instance
         or a ``{class_path, ...}`` dict naming a Problem-building factory (e.g.
-        ``neuro.control.mpc.build_waveform_problem``); ``solver`` and ``initial_state``
-        are optional. When ``solver`` is omitted the default is chosen from the problem's
-        constraints (see ``__init__``), so a migrated ``kirchhoff: true`` config needs no
-        injected solver.
+        ``neuro.control.mpc.build_waveform_problem``); ``solver`` is an optional
+        ``{class_path, ...}`` dict naming a solver backend (e.g. ``trajopt.solvers.altro.ALTRO``);
+        ``initial_state`` is optional. When ``solver`` is omitted, the benchmark-winning default
+        is selected automatically.
         """
         problem, initial_state = _build_problem(config["problem"])
+        solver = _build_solver(config.get("solver"), problem)
         return cls(
             dt=float(config["dt"]),
             problem=problem,
-            solver=config.get("solver"),
+            solver=solver,
             initial_state=initial_state or config.get("initial_state"),
         )
 

@@ -11,7 +11,10 @@ import torch
 from simulate.config import load_config as load_sim_config
 from simulate.simulation import Simulation
 from trajopt.problem import MPCState
+from trajopt.solvers.altro import ALTRO
+from trajopt.solvers.boxqp import BoxQP
 from trajopt.transcription.ipopt import Ipopt
+from trajopt.transcription.osqp import OSQP
 from trajopt.transcription.single_shooting import SingleShooting
 from yaml import safe_load
 
@@ -20,6 +23,8 @@ from neuro.control.costs import ObservableHingeCost
 from neuro.control.mpc import (
     TrajOptMPCController,
     TrajOptMPCLog,
+    _default_solver,
+    build_bipolar_waveform_problem,
     build_observable_problem,
     build_waveform_problem,
 )
@@ -637,3 +642,165 @@ def test_example_observable_config_runs_simulation_start_to_finish(tmp_path: Pat
     us = sim.logger.signal("controller", "u")
     assert us.shape[0] > 0
     assert np.isfinite(us).all()
+
+
+def test_default_solver_selection(tmp_path: Path) -> None:
+    """_default_solver chooses BoxQP for bipolar and SingleShooting for general problems."""
+    art_wf = _build_checkpoint(tmp_path / "wf", depth=0, n_y=3, n_u=2, horizon=4, n_channels=2, n_controls=2)
+
+    # 1. Bipolar reduced waveform OCP -> BoxQP
+    prob_bip = build_bipolar_waveform_problem(art_wf, horizon=4, u_max=0.5, w_y=1.0)
+    assert isinstance(_default_solver(prob_bip), BoxQP)
+
+    # 2. Standard waveform OCP -> SingleShooting(Ipopt)
+    prob_wf = build_waveform_problem(art_wf, horizon=4, u_max=0.5, w_y=1.0, kirchhoff=True)
+    assert isinstance(_default_solver(prob_wf), SingleShooting)
+
+    # 3. Whole-horizon PSD cost -> SingleShooting(Ipopt)
+    psd_ref = tmp_path / "psd_ref.npz"
+    np.savez_compressed(psd_ref, Pref=np.full((2, 3), -2.0), fs=100.0, L=4, R=2)
+    prob_psd = build_waveform_problem(art_wf, horizon=4, u_max=0.5, w_psd=1.0, psd_ref=psd_ref)
+    default_psd = _default_solver(prob_psd)
+    assert isinstance(default_psd, SingleShooting)
+    assert isinstance(default_psd.solver, Ipopt)
+
+
+def test_controller_from_config_solver_variants(tmp_path: Path) -> None:
+    """TrajOptMPCController.from_config dispatches class_path solver configs across backends."""
+    art = _build_checkpoint(tmp_path, depth=0, n_y=3, n_u=2, horizon=4, n_channels=2, n_controls=2)
+
+    # 1. Default (omitted solver on waveform model -> SingleShooting)
+    cfg_default = {
+        "dt": 0.01,
+        "problem": {
+            "class_path": "neuro.control.mpc.build_waveform_problem",
+            "artifact": str(art),
+            "horizon": 4,
+            "u_max": 0.5,
+        },
+    }
+    ctrl_def = TrajOptMPCController.from_config(cfg_default)
+    assert isinstance(ctrl_def.solver, SingleShooting)
+
+    # 2. Explicit ALTRO with options
+    cfg_altro = {
+        "dt": 0.01,
+        "solver": {
+            "class_path": "trajopt.solvers.altro.ALTRO",
+            "options": {"constraint_tolerance": 1e-4, "cost_tolerance": 1e-4},
+        },
+        "problem": {
+            "class_path": "neuro.control.mpc.build_waveform_problem",
+            "artifact": str(art),
+            "horizon": 4,
+            "u_max": 0.5,
+            "kirchhoff": True,
+        },
+    }
+    ctrl_altro = TrajOptMPCController.from_config(cfg_altro)
+    assert isinstance(ctrl_altro.solver, ALTRO)
+    assert ctrl_altro.solver.options.constraint_tolerance == 1e-4
+
+    # 3. Explicit OSQP with options
+    cfg_osqp = {
+        "dt": 0.01,
+        "solver": {
+            "class_path": "trajopt.transcription.osqp.OSQP",
+            "options": {"eps_abs": 1e-5},
+        },
+        "problem": {
+            "class_path": "neuro.control.mpc.build_waveform_problem",
+            "artifact": str(art),
+            "horizon": 4,
+            "u_max": 0.5,
+        },
+    }
+    ctrl_osqp = TrajOptMPCController.from_config(cfg_osqp)
+    assert isinstance(ctrl_osqp.solver, OSQP)
+
+    # 4. Nested SingleShooting(solver=Ipopt(...))
+    cfg_ss = {
+        "dt": 0.01,
+        "solver": {
+            "class_path": "trajopt.transcription.single_shooting.SingleShooting",
+            "solver": {
+                "class_path": "trajopt.transcription.ipopt.Ipopt",
+                "options": {"print_level": 0},
+            },
+        },
+        "problem": {
+            "class_path": "neuro.control.mpc.build_waveform_problem",
+            "artifact": str(art),
+            "horizon": 4,
+            "u_max": 0.5,
+        },
+    }
+    ctrl_ss = TrajOptMPCController.from_config(cfg_ss)
+    assert isinstance(ctrl_ss.solver, SingleShooting)
+    assert isinstance(ctrl_ss.solver.solver, Ipopt)
+
+
+def test_controller_from_config_loud_validation_errors(tmp_path: Path) -> None:
+    """from_config raises immediately on malformed configs or incompatible solvers."""
+    art = _build_checkpoint(tmp_path, depth=0, n_y=3, n_u=2, horizon=4, n_channels=2, n_controls=2)
+
+    # 1. Missing class_path in solver dict raises ValueError
+    cfg_missing = {
+        "dt": 0.01,
+        "solver": {"name": "altro"},
+        "problem": {
+            "class_path": "neuro.control.mpc.build_waveform_problem",
+            "artifact": str(art),
+            "horizon": 4,
+            "u_max": 0.5,
+        },
+    }
+    with pytest.raises(ValueError, match="solver config must contain 'class_path'"):
+        TrajOptMPCController.from_config(cfg_missing)
+
+    # 2. String instead of dict raises TypeError
+    cfg_str = {
+        "dt": 0.01,
+        "solver": "altro",
+        "problem": {
+            "class_path": "neuro.control.mpc.build_waveform_problem",
+            "artifact": str(art),
+            "horizon": 4,
+            "u_max": 0.5,
+        },
+    }
+    with pytest.raises(TypeError, match="must be a dict with 'class_path'"):
+        TrajOptMPCController.from_config(cfg_str)
+
+    # 3. Expansion solver on whole-horizon PSD cost raises ValueError
+    psd_ref = tmp_path / "psd_ref.npz"
+    np.savez_compressed(psd_ref, Pref=np.full((2, 3), -2.0), fs=100.0, L=4, R=2)
+    cfg_incompatible = {
+        "dt": 0.01,
+        "solver": {"class_path": "trajopt.solvers.altro.ALTRO"},
+        "problem": {
+            "class_path": "neuro.control.mpc.build_waveform_problem",
+            "artifact": str(art),
+            "horizon": 4,
+            "u_max": 0.5,
+            "w_psd": 1.0,
+            "psd_ref": str(psd_ref),
+        },
+    }
+    with pytest.raises(ValueError, match="cannot score the whole-horizon hinge cost"):
+        TrajOptMPCController.from_config(cfg_incompatible)
+
+    # 4. BoxQP on unhandled coupled linear equality constraints raises ValueError
+    cfg_boxqp_coupled = {
+        "dt": 0.01,
+        "solver": {"class_path": "trajopt.solvers.boxqp.BoxQP"},
+        "problem": {
+            "class_path": "neuro.control.mpc.build_waveform_problem",
+            "artifact": str(art),
+            "horizon": 4,
+            "u_max": 0.5,
+            "kirchhoff": True,
+        },
+    }
+    with pytest.raises(ValueError, match="BoxQP only supports uncoupled box bounds"):
+        TrajOptMPCController.from_config(cfg_boxqp_coupled)

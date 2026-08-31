@@ -50,6 +50,10 @@ estimator:
 controller:
   class_path: neuro.control.mpc.TrajOptMPCController
   dt: 0.5              # = hop * downsample * plant_dt = 25 * 200 * 0.0001
+  solver:
+    class_path: trajopt.solvers.altro.ALTRO
+    options:
+      constraint_tolerance: 1.0e-4
   problem:
     class_path: neuro.control.mpc.build_observable_problem
     artifact: artifacts/observable_model
