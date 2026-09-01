@@ -1,0 +1,56 @@
+# Arm B of the predictor comparison: the Observable Predictor fitted by gradient descent, at the
+# hop5 geometry every observable arm shares.
+#
+# This config exists to be run on a separate machine; nothing else in the comparison depends on
+# where it runs, only on the checkpoint it writes to `artifact`.
+#
+# Held identical to observable_dmd_hop5.yaml: the geometry, n_y, n_u, the data split and the
+# curriculum span. The only differences are `fit` and the knobs a gradient fit needs, so a
+# difference in closed-loop outcome between arms B and C is attributable to the Trainer.
+#
+# hidden_size is 512 rather than the 128 the waveform arm uses because the Observable readout is
+# 1550-wide: at 128 the model would be a rank-128 bottleneck against DMDc's rank-r linear map and
+# the comparison would measure capacity, not the Trainer. At 512 the two carry comparable
+# parameter counts (~1.9M against ~2.4M).
+simulation:
+  dt: 0.0001
+  downsample: 200
+  n_steps: null
+  data_path: "data/experiment_excited_long/train"
+
+model:
+  n_y: 1
+  n_u: 10  # StftGeometry(n_segment=50, n_hop=5, kernel_width=1).min_past_controls()
+  hidden_size: 512
+  depth: 2
+  activation: relu
+  residual: true
+
+observable:
+  n_segment: 50
+  n_hop: 5
+  band_hz: null
+  n_bin_pool: 1
+  kernel: boxcar
+  kernel_width: 1
+
+training:
+  fit: gradient_descent
+  train_split: 0.8
+  eval_horizon_s: 1.5   # = the Control Horizon the arm is evaluated at
+  epochs: 200
+  batch_size: 128
+  learning_rate: 0.001
+  weight_decay: 0.0001
+  patience: 50
+  scaler: standard
+  device: auto
+  seed: 69
+  losses:
+    curriculum_mse:
+      weight: 1.0
+      span_s: 1.5     # 15 Frames at the 10 Hz Frame rate
+      curr_start: 5   # epochs over which the trusted Rollout ramps to the full Span
+      curr_end: 80
+
+artifact: "artifacts/cmp_observable_mlp_hop5"

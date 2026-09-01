@@ -1,0 +1,66 @@
+# Arms B and C of the predictor comparison: the Observable Predictor at a 1.5 s Control Horizon.
+#
+# Shared by both observable arms -- scripts/run_predictor_comparison.py injects the checkpoint,
+# so the gradient-trained model (artifacts/cmp_observable_mlp_hop5) and the DMDc model
+# (artifacts/cmp_observable_dmd_hop5) run through this identical loop and differ only in Trainer.
+#
+# Geometry is hop5: 0.1 s Frames, so 15 Frames reach the same 1.5 s the waveform arm plans over.
+# controller.dt = n_hop * downsample * plant_dt = 5 * 200 * 0.0001 = 0.1 s, which validation
+# enforces so exactly one fresh Frame is absorbed per tick.
+t_end: 12.0
+
+dynamics:
+  class_path: neuro.jansen_rit.JansenRitDynamics
+  dt: 0.0001
+  seed: 69
+  initial_state: rest
+  log: lfp
+  connectome:
+    speed: 50.0
+    K: 0.60
+  stimulation:
+    model: roast_3d
+    field_projection_path: data/roast_field_projection_3d.npz
+  params:
+    sigma: 280.0
+    A: [3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25,
+      3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25,
+      3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25,
+      3.25, 3.6, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.6, 3.25, 3.25, 3.25, 3.25,
+      3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.6, 3.25, 3.25,
+      3.25, 3.25, 3.25, 3.25, 3.4, 3.25, 3.25, 3.4, 3.25, 3.25, 3.25]
+
+reference: {class_path: simulate.reference.StepReference, dt: 0.0001, step_value: 0.0}
+
+sensors:
+  class_path: simulate.sensor.GaussianSensor
+  dt: 0.0001
+  std_dev: 0.0
+  measurement:
+    class_path: neuro.eeg.EEGMeasurement
+
+estimator:
+  class_path: neuro.filtering.ObservableEstimator
+  dt: 0.0001
+  downsample: 200
+  geometry:
+    n_segment: 50
+    n_hop: 5
+    band_hz: null
+    n_bin_pool: 1
+    kernel: boxcar
+    kernel_width: 1
+
+controller:
+  class_path: neuro.control.mpc.TrajOptMPCController
+  dt: 0.1                # = n_hop * downsample * plant_dt = 5 * 200 * 0.0001
+  problem:
+    class_path: neuro.control.mpc.build_observable_problem
+    artifact: null       # injected per arm by scripts/run_predictor_comparison.py
+    horizon: 15          # 15 * 0.1 s = 1.5 s
+    u_max: 2.0
+    w_u: 10.0
+    w_u_l1: 0.1
+    w_hinge: 10.0
+    envelope_ref: data/healthy_psd_hop5.npz
+    kirchhoff: true

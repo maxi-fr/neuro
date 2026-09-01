@@ -1,0 +1,56 @@
+# Arm A of the predictor comparison: the Waveform Predictor at a 1.5 s Control Horizon.
+#
+# The Plant block is identical to cmp_observable_1p5s.yaml, so the arms differ only in the
+# Estimator, the Predictor and the decision rate. The Cost is the same functional in both:
+# the mean squared one-sided log excess over a healthy envelope, plus the same effort penalties.
+#
+# The Control Horizon is 75 knots x 0.02 s = 1.5 s, matching the checkpoint's trained Rollout
+# span (configs/nn_predictor/waveform_mlp_1p5s.yaml, eval_horizon_s 1.5) so no arm extrapolates.
+t_end: 12.0
+
+dynamics:
+  class_path: neuro.jansen_rit.JansenRitDynamics
+  dt: 0.0001
+  seed: 69
+  initial_state: rest
+  log: lfp
+  connectome:
+    speed: 50.0
+    K: 0.60
+  stimulation:
+    model: roast_3d
+    field_projection_path: data/roast_field_projection_3d.npz
+  params:
+    sigma: 280.0
+    A: [3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25,
+      3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25,
+      3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25,
+      3.25, 3.6, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.6, 3.25, 3.25, 3.25, 3.25,
+      3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.6, 3.25, 3.25,
+      3.25, 3.25, 3.25, 3.25, 3.4, 3.25, 3.25, 3.4, 3.25, 3.25, 3.25]
+
+reference: {class_path: simulate.reference.StepReference, dt: 0.0001, step_value: 0.0}
+
+sensors:
+  class_path: simulate.sensor.GaussianSensor
+  dt: 0.0001
+  std_dev: 0.0
+  measurement:
+    class_path: neuro.eeg.EEGMeasurement
+
+estimator: {class_path: neuro.filtering.AntiAliasEstimator, dt: 0.0001, downsample: 200}
+
+controller:
+  class_path: neuro.control.mpc.TrajOptMPCController
+  dt: 0.02               # = downsample * plant_dt
+  problem:
+    class_path: neuro.control.mpc.build_waveform_problem
+    artifact: artifacts/cmp_waveform_mlp_1p5s/model
+    horizon: 75          # 75 * 0.02 s = 1.5 s
+    u_max: 2.0
+    w_y: 0.0             # pure hinge: build_observable_problem carries no tracking term to match
+    w_u: 10.0
+    w_u_l1: 0.1
+    w_psd: 10.0
+    psd_ref: data/healthy_psd.npz
+    kirchhoff: true

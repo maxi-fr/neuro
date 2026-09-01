@@ -1,0 +1,48 @@
+# Arm A of the predictor comparison: the Waveform MLP, retrained.
+#
+# The shipped checkpoint (artifacts/nonlinear_mse02_psd) cannot serve this
+# comparison: its meta predates the observable-predictor refactor so it no
+# longer loads, its `psd` loss key no longer exists in the schema, and the
+# dataset it was fitted on (data/experiment_excited_roast_8s) is not on disk.
+# This config reproduces that recipe against the same training split arms B
+# and C use, at the matched 1.5 s horizon.
+
+simulation:
+  dt: 0.0001
+  downsample: 200          # controller dt = 0.02 s, so horizon 75 steps = 1.5 s
+  n_steps: null
+  data_path: "data/experiment_excited_long/train"
+
+model:
+  n_y: 15
+  n_u: 10
+  hidden_size: 128
+  depth: 2
+  activation: softplus
+  residual: true
+
+training:
+  epochs: 300
+  batch_size: 128
+  learning_rate: 0.00001
+  weight_decay: 0.0005
+  train_split: 0.8
+  seed: 69
+  patience: 100
+  scaler: "robust"
+  global_scaling: true
+  eval_horizon_s: 1.5      # matched to the observable arms
+  losses:
+    curriculum_mse:
+      weight: 1.0
+      span_s: 0.2
+      curr_start: 20
+      curr_end: 80
+    stft:
+      weight: 1.0
+      n_segment: 50        # 1.0 s window at 50 Hz, the healthy-envelope geometry
+      n_hop: 5             # 0.1 s hop, matching the observable arms
+      n_span: 75           # 1.5 s: the full MPC horizon, 6 frames
+      start_epoch: 80      # the rollout must survive before its spectrum is scored
+
+artifact: "artifacts/cmp_waveform_mlp_1p5s"
