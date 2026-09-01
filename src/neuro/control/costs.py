@@ -9,11 +9,12 @@ import numpy as np
 from scipy.signal.windows import hann
 from trajopt.costs.base import CostFunction
 
-from neuro.spectral import LOG_FLOOR
+from neuro.spectral import LOG_FLOOR, _frame_kernel_weights
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
+    from neuro.config import StftGeometry
     from neuro.spectral import ObservableEnvelope, PsdEnvelope
 
 
@@ -282,6 +283,130 @@ def jax_compute_log_power_frames(
     return jnp.log(power[..., 1:] + LOG_FLOOR)
 
 
+def jax_compute_observable_frames(y: jax.Array, geometry: StftGeometry, *, fs: float) -> jax.Array:
+    """Log-power Frames of ``y`` ``(H, n_channels)`` under an Observable geometry, differentiably.
+
+    The jax twin of :func:`neuro.spectral.compute_log_power_frames`, stage for stage: periodic
+    Hann periodogram, band slice, bin pooling, Frame Kernel, log. Returns
+    ``(n_frames, n_channels, n_values)``.
+    """
+    n_segment, n_hop = geometry.n_segment, geometry.n_hop
+    n_raw_frames = (y.shape[0] - n_segment) // n_hop + 1
+    w_hann = jnp.asarray(hann(n_segment, sym=False))
+    segments = jnp.stack([y[m * n_hop : m * n_hop + n_segment] for m in range(n_raw_frames)])
+    spectrum = jnp.fft.rfft(segments * w_hann[None, :, None], axis=1)
+
+    fold = np.full(n_segment // 2 + 1, 2.0)
+    fold[0] = 1.0
+    if n_segment % 2 == 0:
+        fold[-1] = 1.0
+    power = jnp.abs(spectrum) ** 2 * jnp.asarray(fold)[None, :, None] / (fs * jnp.sum(w_hann**2))
+    power = jnp.moveaxis(power, 2, 1)  # (n_raw_frames, n_channels, n_bins)
+
+    bin_lo, bin_hi = geometry.bin_range(fs)
+    power = power[:, :, bin_lo:bin_hi]
+    if geometry.n_bin_pool > 1:
+        n_groups = power.shape[-1] // geometry.n_bin_pool
+        power = power[:, :, : n_groups * geometry.n_bin_pool].reshape(
+            power.shape[0], power.shape[1], n_groups, geometry.n_bin_pool
+        )
+        power = power.mean(axis=-1)
+
+    if geometry.kernel_width > 1:
+        weights = jnp.asarray(_frame_kernel_weights(geometry.kernel, geometry.kernel_width))
+        n_frames = n_raw_frames - geometry.kernel_width + 1
+        power = jnp.stack(
+            [jnp.sum(power[i : i + geometry.kernel_width] * weights[:, None, None], axis=0) for i in range(n_frames)]
+        )
+
+    return jnp.log(power + LOG_FLOOR)
+
+
+class ObservableFrameHingeCost(CostFunction):
+    """Mean squared one-sided log excess of the predicted waveform's Observable Frames over a healthy envelope.
+
+    The Observable adapter for a Predictor whose knot carries a waveform sample rather than a
+    Frame: it runs the :class:`~neuro.config.StftGeometry` reduction over the stage trajectory
+    itself, so a Frame-domain envelope scores a waveform-domain model and
+    :class:`ObservableHingeCost`'s Observable joins a comparison of Costs on one Predictor.
+
+    Whole-horizon, for the reason :class:`SpectralHingeCost` is: a Frame pools
+    ``sample_support_steps`` knots, so no single knot holds one. ``evaluate`` returns ``0`` and
+    ``stage_costs`` carries the exact value, which the transcription path scores and a native
+    per-knot expansion would drop -- hence the :func:`has_whole_horizon_cost` registration.
+
+    The Frame grid spans the stage trajectory's ``horizon`` samples, anchored one sample before
+    the Control Horizon's last knot: a Frame straddling the terminal knot does not split into a
+    stage term plus a terminal term.
+    """
+
+    outputs: StateOutputs
+    geometry: StftGeometry = eqx.field(static=True)
+    fs: float = eqx.field(static=True)
+    w: jax.Array
+    power: jax.Array
+
+    def __init__(
+        self,
+        outputs: StateOutputs,
+        envelope: ObservableEnvelope,
+        *,
+        w_hinge: float,
+        horizon: int,
+    ) -> None:
+        """Initialize from the state output layout, the healthy Observable envelope and the weight.
+
+        Parameters
+        ----------
+        outputs
+            Where the knot state hides its raw waveform outputs and how to decode them.
+        envelope
+            The healthy Observable envelope, log power of shape ``(n_channels, n_values)``; its
+            geometry drives the reduction.
+        w_hinge
+            Weight on the hinge Cost; ``0`` disables it.
+        horizon
+            Control Horizon in knots, which is the sample count the stage trajectory carries;
+            must cover one Frame's sample support.
+        """
+        super().__init__(n=outputs.n, m=outputs.m)
+        if envelope.power.shape[0] != outputs.n_outputs:
+            msg = f"envelope has {envelope.power.shape[0]} channels but the model outputs {outputs.n_outputs}"
+            raise ValueError(msg)
+        support = envelope.geometry.sample_support_steps(envelope.fs)
+        if horizon < support:
+            msg = f"horizon ({horizon}) is shorter than the sample support of one Frame ({support})"
+            raise ValueError(msg)
+        self.outputs = outputs
+        self.geometry = envelope.geometry
+        self.fs = float(envelope.fs)
+        self.w = jnp.asarray(w_hinge)
+        self.power = jnp.asarray(envelope.power)
+
+    def evaluate(
+        self,
+        x: jax.Array,
+        u: jax.Array | None = None,
+        t: float | jax.Array = 0.0,
+    ) -> jax.Array:
+        """Return ``0``: the hinge is whole-horizon and is scored by :meth:`stage_costs`."""
+        del x, u, t
+        return jnp.zeros(())
+
+    def stage_costs(self, X: jax.Array, U: jax.Array, t: jax.Array) -> jax.Array:
+        """Evaluate the hinge over the Frames the stage waveform carries, concentrated in entry 0.
+
+        Parameters
+        ----------
+        X
+            Stage states ``(horizon, n)``, one waveform sample each.
+        """
+        del U, t
+        frames = jax_compute_observable_frames(self.outputs.decode(X), self.geometry, fs=self.fs)
+        hinge = jnp.maximum(0.0, frames - self.power[None]) ** 2
+        return jnp.zeros(X.shape[0]).at[0].set(self.w * jnp.mean(hinge))
+
+
 class ObservableHingeCost(CostFunction):
     """Mean squared one-sided log excess of predicted Frames over a healthy Observable envelope.
 
@@ -410,4 +535,4 @@ def has_whole_horizon_cost(cost: CostFunction) -> bool:
     """
     if isinstance(cost, SumCost):
         return any(has_whole_horizon_cost(sub) for sub in cost.costs)
-    return isinstance(cost, SpectralHingeCost)
+    return isinstance(cost, SpectralHingeCost | ObservableFrameHingeCost)

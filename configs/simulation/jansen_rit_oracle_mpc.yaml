@@ -1,0 +1,69 @@
+# Oracle-handover MPC: the Predictor IS the Plant's Jansen-Rit dynamics, so model-to-plant
+# mismatch is zero and any difference between runs is attributable to the Cost alone.
+#
+# This is the base arm (A1, pure tracking). scripts/run_cost_comparison.py merges the Cost,
+# horizon and seed overrides onto it; edit the shared blocks here, never per arm.
+#
+# The handover is deliberately not deployable: FullStateSensor reads the Plant's (6, n_nodes)
+# state and JansenRitOracleEstimator packs it straight into the Predictor. It is the upper
+# bound a real Estimator is measured against.
+#
+# Three grids, and they are coupled -- validate_simulation_config enforces all three:
+#   plant dt        1e-4  integration of the stochastic Heun Plant
+#   predictor dt    1e-3  = estimator.dt; deterministic Heun inside the Rollout
+#   knot dt         2e-2  = controller.dt = substeps * predictor dt; one control per knot
+t_end: 12.0
+
+_plant_connectome: &connectome
+  speed: 50.0
+  K: 0.60
+
+_plant_params: &params
+  sigma: 280.0
+  A: [3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25,
+    3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25,
+    3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25,
+    3.25, 3.6, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.6, 3.25, 3.25, 3.25, 3.25,
+    3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.6, 3.25, 3.25,
+    3.25, 3.25, 3.25, 3.25, 3.4, 3.25, 3.25, 3.4, 3.25, 3.25, 3.25]
+
+_plant_stimulation: &stimulation
+  model: roast_3d
+  field_projection_path: data/roast_field_projection_3d.npz
+
+dynamics:
+  class_path: neuro.jansen_rit.JansenRitDynamics
+  dt: 0.0001
+  seed: 69
+  initial_state: rest
+  log: lfp              # region LFP, so seizure spread is scorable after the run
+  connectome: *connectome
+  stimulation: *stimulation
+  params: *params
+
+reference: {class_path: simulate.reference.StepReference, dt: 0.0001, step_value: 0.0}
+
+# The oracle path replaces the EEG sensor: the state itself is handed over, not a measurement.
+sensors: {class_path: neuro.predictor.oracle.FullStateSensor, dt: 0.0001}
+
+estimator:
+  class_path: neuro.predictor.oracle.JansenRitOracleEstimator
+  dt: 0.001             # = problem.dt; the delay buffer is filled on the Predictor's grid
+  connectome: *connectome
+  params: *params
+
+controller:
+  class_path: neuro.control.mpc.TrajOptMPCController
+  dt: 0.02              # = 20 * 0.001, one Control Horizon knot
+  problem:
+    class_path: neuro.predictor.jansen_rit.build_jansen_rit_problem
+    dt: 0.001
+    substeps: 20
+    horizon: 50         # 1 s Control Horizon
+    u_max: 2.0
+    w_y: 1.0
+    w_u: 0.0
+    kirchhoff: true
+    connectome: *connectome
+    stimulation: *stimulation
+    params: *params

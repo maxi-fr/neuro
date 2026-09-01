@@ -19,10 +19,11 @@ from neuro.control.costs import (
     ExcludeInitialKnotState,
     KirchhoffPenaltyCost,
     L1ControlCost,
+    ObservableFrameHingeCost,
     SpectralHingeCost,
     StateOutputs,
 )
-from neuro.control.mpc import _combine_costs, _spectral_envelope, kirchhoff_constraint
+from neuro.control.mpc import _combine_costs, _observable_envelope, _spectral_envelope, kirchhoff_constraint
 from neuro.jansen_rit import JansenRitDynamics, JansenRitParams
 from neuro.predictor.inference import InferencePredictor
 from neuro.stimulation import build_stimulation
@@ -33,7 +34,7 @@ if TYPE_CHECKING:
 
     from numpy.typing import ArrayLike
 
-    from neuro.spectral import PsdEnvelope
+    from neuro.spectral import ObservableEnvelope, PsdEnvelope
     from neuro.types import FloatArray, IntArray
 
 
@@ -94,6 +95,7 @@ class JansenRitModel(DiscreteDynamics, InferencePredictor):
     n_outputs: int = eqx.field(static=True)
     n_y: int = eqx.field(static=True)
     n_u: int = eqx.field(static=True)
+    substeps: int = eqx.field(static=True)
     _init_x0: jax.Array | None = None
 
     def __init__(  # noqa: PLR0913 -- physical parameter leaves and static metadata
@@ -118,9 +120,17 @@ class JansenRitModel(DiscreteDynamics, InferencePredictor):
         gamma: jax.Array,
         delay_steps: IntArray,
         dt: float,
+        substeps: int = 1,
         x0: FloatArray | None = None,
     ) -> None:
-        """Initialize the model adapter directly from arrays and metadata."""
+        """Initialize the model adapter directly from arrays and metadata.
+
+        Parameters
+        ----------
+        substeps : int
+            Integration steps of size ``dt`` held under one Control Horizon knot, so a knot
+            spans ``substeps * dt`` seconds.
+        """
         n_nodes = int(w_weights.shape[0])
         delays_arr = np.asarray(delay_steps, dtype=np.int64).reshape(n_nodes, n_nodes)
         max_history_len = int(delays_arr.max()) + 1
@@ -157,6 +167,12 @@ class JansenRitModel(DiscreteDynamics, InferencePredictor):
         self.n_outputs = self.n_channels
         self.n_y = 1
         self.n_u = 1
+        self.substeps = int(substeps)
+
+    @property
+    def knot_dt(self) -> float:
+        """Seconds spanned by one Control Horizon knot, ``substeps * dt``."""
+        return self.substeps * self.dt
 
     @property
     def delay_steps(self) -> IntArray:
@@ -173,9 +189,10 @@ class JansenRitModel(DiscreteDynamics, InferencePredictor):
         dt: float = 1e-4,
         n_nodes: int = 1,
         *,
+        substeps: int = 1,
         x0: FloatArray | None = None,
     ) -> JansenRitModel:
-        """Build :class:`JansenRitModel` from modern decoupled domain components."""
+        """Build :class:`JansenRitModel` from modern decoupled domain components, ``substeps`` steps per knot."""
         if conn is not None:
             n_nodes = conn.weights.shape[0]
             w_weights = jnp.asarray(conn.weights, dtype=jnp.float64)
@@ -224,6 +241,7 @@ class JansenRitModel(DiscreteDynamics, InferencePredictor):
             gamma=gamma,
             delay_steps=delay_steps,
             dt=dt,
+            substeps=substeps,
             x0=x0,
         )
 
@@ -232,6 +250,8 @@ class JansenRitModel(DiscreteDynamics, InferencePredictor):
         cls,
         dyn: JansenRitDynamics,
         leadfield: FloatArray | None = None,
+        *,
+        substeps: int = 1,
     ) -> JansenRitModel:
         """Construct a :class:`JansenRitModel` directly from a live Plant instance."""
         return cls.from_plant_components(
@@ -241,6 +261,7 @@ class JansenRitModel(DiscreteDynamics, InferencePredictor):
             leadfield=leadfield,
             dt=dyn.dt,
             n_nodes=dyn.x.shape[1],
+            substeps=substeps,
             x0=dyn.x,
         )
 
@@ -249,9 +270,11 @@ class JansenRitModel(DiscreteDynamics, InferencePredictor):
         cls,
         dyn: JansenRitDynamics,
         leadfield: FloatArray | None = None,
+        *,
+        substeps: int = 1,
     ) -> JansenRitModel:
         """Alias for :meth:`from_dynamics` for 0 model-Plant mismatch."""
-        return cls.from_dynamics(dyn, leadfield=leadfield)
+        return cls.from_dynamics(dyn, leadfield=leadfield, substeps=substeps)
 
     def rhs(self, x: jax.Array, coupling: jax.Array | float, u_tes: jax.Array | float) -> jax.Array:
         """Continuous-time right-hand side of the Jansen-Rit network."""
@@ -332,16 +355,19 @@ class JansenRitModel(DiscreteDynamics, InferencePredictor):
         t: float | jax.Array,
         dt: float | jax.Array,
     ) -> jax.Array:
-        """Advance one deterministic Heun step under Control Current ``u`` -> ``x'``."""
+        """Advance one Control Horizon knot -- ``substeps`` deterministic Heun steps holding ``u``."""
         del t, dt
         x_ode, history, k = self.unpack_state(x)
-        k_int = k.astype(jnp.int64)
-
         u_node = project_control_jax(u, self.gamma)
-        coupling, next_history = self.update_history_and_coupling(x_ode, history, k_int)
-        next_x_ode = self.heun_step(x_ode, u_node, coupling, self.dt)
-        next_k = k + 1.0
 
+        def step(
+            carry: tuple[jax.Array, jax.Array, jax.Array], _: None
+        ) -> tuple[tuple[jax.Array, jax.Array, jax.Array], None]:
+            x_sub, hist, k_sub = carry
+            coupling, hist = self.update_history_and_coupling(x_sub, hist, k_sub.astype(jnp.int64))
+            return (self.heun_step(x_sub, u_node, coupling, self.dt), hist, k_sub + 1.0), None
+
+        (next_x_ode, next_history, next_k), _ = jax.lax.scan(step, (x_ode, history, k), None, length=self.substeps)
         return self.pack_state(next_x_ode, next_history, next_k)
 
     def initial_state(self) -> FloatArray:
@@ -379,6 +405,12 @@ class JansenRitModel(DiscreteDynamics, InferencePredictor):
             z[-1] = float(k_val + 1)
         elif y_arr.size == self.n:
             z[:] = y_arr
+        else:
+            msg = (
+                f"cannot absorb a measurement of size {y_arr.size}: expected the ODE state "
+                f"({6 * self.n_nodes}) or the packed Predictor state ({self.n})."
+            )
+            raise ValueError(msg)
         return z
 
     def forward_rollout(self, x0: jax.Array, controls_node: jax.Array, dt: float) -> tuple[jax.Array, jax.Array]:
@@ -423,6 +455,7 @@ class JansenRitModel(DiscreteDynamics, InferencePredictor):
             "dt": self.dt,
             "n_nodes": self.n_nodes,
             "max_history_len": self.max_history_len,
+            "substeps": self.substeps,
             "n_channels": self.n_channels,
             "n_controls": self.n_controls,
         }
@@ -471,6 +504,7 @@ class JansenRitModel(DiscreteDynamics, InferencePredictor):
             gamma=jnp.asarray(arrays["gamma"], dtype=jnp.float64),
             delay_steps=np.asarray(arrays["delay_steps"], dtype=np.int64),
             dt=float(meta["dt"]),
+            substeps=int(meta.get("substeps", 1)),
         )
 
 
@@ -496,8 +530,9 @@ def _resolve_model(  # noqa: PLR0913, PLR0917 -- model resolution parameters
     stimulation: StimulationModel | dict[str, Any] | None,
     leadfield: FloatArray | None,
     dt: float,
+    substeps: int,
 ) -> JansenRitModel:
-    """Resolve or construct the JansenRitModel instance."""
+    """Resolve or construct the JansenRitModel instance, integrating ``substeps`` steps per knot."""
     if model is not None:
         return model
     if artifact is not None:
@@ -526,6 +561,7 @@ def _resolve_model(  # noqa: PLR0913, PLR0917 -- model resolution parameters
         leadfield=leadfield,
         dt=dt,
         n_nodes=n_nodes,
+        substeps=substeps,
     )
 
 
@@ -601,14 +637,19 @@ class JansenRitStateOutputs(StateOutputs):
         return lfp @ self.eeg_gain.T
 
 
-def _validate_jansen_rit_envelope(envelope: PsdEnvelope, model: JansenRitModel) -> None:
-    """Ensure the healthy spectral envelope matches the Jansen-Rit Predictor's channels and rate."""
+def _validate_jansen_rit_envelope(envelope: PsdEnvelope | ObservableEnvelope, model: JansenRitModel) -> None:
+    """Ensure the healthy envelope matches the Jansen-Rit Predictor's channels and knot rate.
+
+    The stage trajectory a hinge Cost reduces carries one sample per Control Horizon knot, so the
+    envelope must have been measured at ``1 / knot_dt`` -- the integration rate only when
+    ``substeps == 1``.
+    """
     if envelope.power.shape[0] != model.n_channels:
         msg = f"envelope channel count ({envelope.power.shape[0]}) does not match model channel count ({model.n_channels})."
         raise ValueError(msg)
-    model_fs = 1.0 / model.dt
-    if not np.isclose(envelope.fs, model_fs, rtol=1e-9):
-        msg = f"envelope sampling rate ({envelope.fs:g} Hz) does not match model sampling rate ({model_fs:g} Hz)."
+    knot_fs = 1.0 / model.knot_dt
+    if not np.isclose(envelope.fs, knot_fs, rtol=1e-9):
+        msg = f"envelope sampling rate ({envelope.fs:g} Hz) does not match the knot rate ({knot_fs:g} Hz)."
         raise ValueError(msg)
 
 
@@ -618,6 +659,7 @@ def build_jansen_rit_problem(  # noqa: PLR0913 -- problem construction arguments
     horizon: int,
     u_max: ArrayLike,
     dt: float = 1e-4,
+    substeps: int = 1,
     params: JansenRitParams | dict[str, Any] | None = None,
     connectome: Connectome | dict[str, Any] | None = None,
     stimulation: StimulationModel | dict[str, Any] | None = None,
@@ -629,11 +671,13 @@ def build_jansen_rit_problem(  # noqa: PLR0913 -- problem construction arguments
     w_u_l1: float = 0.0,
     w_psd: float = 0.0,
     psd_ref: str | Path | None = None,
+    w_hinge: float = 0.0,
+    envelope_ref: str | Path | None = None,
     kirchhoff: bool = False,
     w_kirchhoff: float = 0.0,
 ) -> Problem:
-    """Assemble a trajopt MPC Problem for the Jansen-Rit model adapter."""
-    resolved_model = _resolve_model(model, artifact, params, connectome, stimulation, leadfield, dt)
+    """Assemble a trajopt MPC Problem for the Jansen-Rit model adapter, one knot per ``substeps`` steps."""
+    resolved_model = _resolve_model(model, artifact, params, connectome, stimulation, leadfield, dt, substeps)
     n, m = resolved_model.n, resolved_model.m
     N = horizon + 1
     n_nodes = resolved_model.n_nodes
@@ -658,9 +702,9 @@ def build_jansen_rit_problem(  # noqa: PLR0913 -- problem construction arguments
     if w_kirchhoff > 0:
         costs.append(KirchhoffPenaltyCost(n=n, m=m, w_k=w_kirchhoff, horizon=horizon))
 
-    envelope = _spectral_envelope(psd_ref, w_psd)
-    if envelope is not None:
-        _validate_jansen_rit_envelope(envelope, resolved_model)
+    psd_envelope = _spectral_envelope(psd_ref, w_psd)
+    obs_envelope = _observable_envelope(envelope_ref, w_hinge)
+    if psd_envelope is not None or obs_envelope is not None:
         outputs = JansenRitStateOutputs(
             n=n,
             m=m,
@@ -668,7 +712,12 @@ def build_jansen_rit_problem(  # noqa: PLR0913 -- problem construction arguments
             n_outputs=resolved_model.n_channels,
             eeg_gain=resolved_model.eeg_gain,
         )
-        costs.append(SpectralHingeCost(outputs, envelope, w_psd=w_psd, horizon=horizon))
+        if psd_envelope is not None:
+            _validate_jansen_rit_envelope(psd_envelope, resolved_model)
+            costs.append(SpectralHingeCost(outputs, psd_envelope, w_psd=w_psd, horizon=horizon))
+        if obs_envelope is not None:
+            _validate_jansen_rit_envelope(obs_envelope, resolved_model)
+            costs.append(ObservableFrameHingeCost(outputs, obs_envelope, w_hinge=w_hinge, horizon=horizon))
 
     stage_cost: CostFunction = _combine_costs(costs)
     w_y_final = w_y_terminal if w_y_terminal is not None else w_y

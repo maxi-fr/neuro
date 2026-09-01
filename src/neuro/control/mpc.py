@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import dataclasses
 import importlib
+import time
 from typing import TYPE_CHECKING, Any, Self
 
 import equinox as eqx
@@ -48,12 +49,13 @@ if TYPE_CHECKING:
 
 @dataclasses.dataclass(frozen=True)
 class TrajOptMPCLog:
-    """Per-step diagnostics: the applied control, optimal cost, solver success, and warm-up flag."""
+    """Per-step diagnostics: the applied control, optimal cost, solver success, solve time, warm-up flag."""
 
     u: FloatArray
     cost: float
     success: bool
     warmup: bool
+    solve_time: float
 
 
 def _build_problem(spec: dict[str, Any] | Problem) -> tuple[Problem, MPCState | None]:
@@ -628,10 +630,12 @@ class TrajOptMPCController(Controller[TrajOptMPCLog]):
         if not self.model.is_ready(self._state):
             u_zero = np.zeros(self.model.m, dtype=np.float64)
             self._u_last = u_zero
-            return u_zero, TrajOptMPCLog(u=u_zero, cost=0.0, success=True, warmup=True)
+            return u_zero, TrajOptMPCLog(u=u_zero, cost=0.0, success=True, warmup=True, solve_time=0.0)
 
         state = self.state.with_measurement(jnp.asarray(self._state), t=t)
+        started = time.perf_counter()
         solved = self.problem.solve(state, solver=self.solver)
+        solve_time = time.perf_counter() - started
         u_cmd = np.asarray(solved.controls[0], dtype=np.float64)
         self.state = solved.shift(self.dt)
         self._u_last = u_cmd
@@ -640,4 +644,5 @@ class TrajOptMPCController(Controller[TrajOptMPCLog]):
             cost=float(self.problem.cost(solved)),
             success=solved.status == "converged",
             warmup=False,
+            solve_time=solve_time,
         )

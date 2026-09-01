@@ -403,3 +403,48 @@ def test_build_healthy_psd_computes_observable_quantile_and_legacy(tmp_path: Pat
 
     ms_env = MsEnvelope.load(output_path)
     assert ms_env.power.shape == (n_channels,)
+
+
+def test_build_healthy_psd_strides_raw_at_the_knot_rate(tmp_path: Path) -> None:
+    """``knot_dt`` decimates by raw striding, the way a Predictor knot samples the Plant."""
+    script_path = Path(__file__).resolve().parent.parent / "scripts" / "build_healthy_psd.py"
+    spec = importlib.util.spec_from_file_location("build_healthy_psd_knot_mod", script_path)
+    assert spec is not None
+    assert spec.loader is not None
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    rng = np.random.default_rng(_SEED + 6)
+    data_dir = tmp_path / "data"
+    data_dir.mkdir(parents=True)
+    n_samples, n_channels, n_controls = 2000, 3, 2
+    y_raw = rng.standard_normal((n_samples, n_channels))
+    np.savez(
+        data_dir / "traj_0.npz",
+        allow_pickle=True,
+        **{"sensor_0.y_mea": y_raw, "controller.u": rng.standard_normal((n_samples, n_controls))},
+    )
+
+    config_path = tmp_path / "cfg.yaml"
+    config_path.write_text(
+        yaml.dump({"experiments": [{"dynamics": {"dt": 0.001}, "estimator": {"downsample": 20}}]}),
+        encoding="utf-8",
+    )
+    output_path = tmp_path / "healthy_knot.npz"
+    geom = StftGeometry(n_segment=20, n_hop=10)
+
+    mod.build_healthy_psd(
+        config_path=config_path,
+        data_dir=data_dir,
+        output_path=output_path,
+        quantile=0.9,
+        geometry=geom,
+        knot_dt=0.01,
+    )
+
+    obs_env = ObservableEnvelope.load(output_path)
+    assert obs_env.fs == 100.0
+
+    want_frames = compute_log_power_frames(y_raw[::10], geom, fs=100.0)
+    want = np.quantile(want_frames, 0.9, axis=0)
+    np.testing.assert_allclose(obs_env.power, want, rtol=1e-10, atol=1e-12)

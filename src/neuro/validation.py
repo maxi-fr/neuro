@@ -18,6 +18,8 @@ _FILTERING_ESTIMATORS = frozenset(
     {"neuro.filtering.AntiAliasEstimator", "neuro.filtering.LowPassEstimator", "neuro.filtering.ObservableEstimator"}
 )
 _PREDICTIVE_CONTROLLERS = frozenset({"neuro.control.mpc.TrajOptMPCController"})
+_JANSEN_RIT_PROBLEM = "neuro.predictor.jansen_rit.build_jansen_rit_problem"
+_ORACLE_ESTIMATOR = "neuro.predictor.oracle.JansenRitOracleEstimator"
 _REL_TOL = 1e-9
 
 
@@ -252,6 +254,47 @@ def _check_waveform_predictor(
     return controller_dt
 
 
+def _check_jansen_rit(config: Mapping[str, Any], problem: Mapping[str, Any], controller_dt: float) -> None:
+    """Require the Control Horizon knot period and the oracle handover to agree with the Predictor.
+
+    The Jansen-Rit Predictor is the Plant's own dynamics rather than an identified checkpoint, so the
+    training-provenance checks have nothing to compare against. What can still disagree silently is
+    the knot grid -- a controller off it holds each control for a span the Rollout never priced --
+    and the oracle Estimator, which fills the delay buffer at its own ``dt`` from its own network.
+    """
+    knot_dt = float(problem.get("dt", 1e-4)) * int(problem.get("substeps", 1))
+    if not math.isclose(controller_dt, knot_dt, rel_tol=_REL_TOL):
+        msg = (
+            f"controller.dt ({controller_dt}) must equal the knot period ({knot_dt} = "
+            f"{problem.get('substeps', 1)} steps of {problem.get('dt', 1e-4)}): the Rollout prices each "
+            f"control over one knot, and the loop would hold it for another span."
+        )
+        raise ConfigConsistencyError(msg)
+
+    estimator = config["estimator"]
+    if estimator["class_path"] != _ORACLE_ESTIMATOR:
+        return
+
+    estimator_dt = float(estimator["dt"])
+    predictor_dt = float(problem.get("dt", 1e-4))
+    if not math.isclose(estimator_dt, predictor_dt, rel_tol=_REL_TOL):
+        msg = (
+            f"estimator.dt ({estimator_dt}) must equal the Predictor's integration step ({predictor_dt}): "
+            f"the handover's delay buffer is sampled once per Estimator step and read back once per "
+            f"integration step."
+        )
+        raise ConfigConsistencyError(msg)
+
+    for key in ("connectome", "params"):
+        if estimator.get(key) != config["dynamics"].get(key):
+            what = "Connectome" if key == "connectome" else "parameters"
+            msg = (
+                f"estimator.{key} does not match dynamics.{key}: the oracle handover would build the "
+                f"{what} of a different network than the Plant it observes."
+            )
+            raise ConfigConsistencyError(msg)
+
+
 def _check_predictor(config: Mapping[str, Any]) -> None:
     """Require the loop's rate, anti-alias filter, horizon, plant and geometry to match the predictor's."""
     controller = config["controller"]
@@ -259,6 +302,10 @@ def _check_predictor(config: Mapping[str, Any]) -> None:
         return
 
     problem = controller["problem"]
+    if problem.get("class_path") == _JANSEN_RIT_PROBLEM:
+        _check_jansen_rit(config, problem, float(controller["dt"]))
+        return
+
     meta = load_meta(problem["artifact"])
     provenance = TrainingProvenance.from_meta(meta)
     plant_dt = float(config["dynamics"]["dt"])

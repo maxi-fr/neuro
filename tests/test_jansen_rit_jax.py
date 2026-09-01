@@ -1,13 +1,18 @@
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import equinox as eqx
 import jax
 import jax.numpy as jnp
 import numpy as np
+import pytest
 from trajopt.transcription.ipopt import Ipopt
 from trajopt.transcription.single_shooting import SingleShooting
 
+from neuro.config import StftGeometry
 from neuro.connectome import Connectome
+from neuro.control.costs import has_whole_horizon_cost
 from neuro.control.mpc import TrajOptMPCController
 from neuro.jansen_rit import (
     JansenRitDynamics,
@@ -30,6 +35,9 @@ from neuro.predictor.jansen_rit import (
 )
 from neuro.stimulation.analytical import AnalyticalStim
 from neuro.stimulation.base import _AnalyticalConfig
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 enable_x64()
 
@@ -399,3 +407,102 @@ def test_multi_step_closed_loop_solve_with_delayed_connectome() -> None:
     # Controller internal state step index should be at 5
     _, _, k_final = model.unpack_state(jnp.asarray(controller._state))  # noqa: SLF001 -- inspect internal state
     np.testing.assert_allclose(float(k_final), 5.0)
+
+
+def test_substeps_matches_repeated_single_steps() -> None:
+    """One knot of a substepped model equals ``substeps`` single Heun steps under Zero-Order Hold."""
+    params, conn = _toy_plant(3, sigma=0.0)
+    dyn = JansenRitDynamics(dt=_DT, params=params, conn=conn, seed=_SEED)
+    fine = JansenRitModel.from_plant(dyn)
+    coarse = JansenRitModel.from_plant(dyn, substeps=5)
+
+    assert fine.n == coarse.n
+    assert coarse.knot_dt == 5 * _DT
+    assert fine.knot_dt == _DT
+
+    u = jnp.array([0.7] * coarse.m)
+    z_fine = jnp.asarray(fine.initial_state())
+    for _ in range(5):
+        z_fine = fine.discrete_dynamics(z_fine, u, 0.0, _DT)
+    z_coarse = coarse.discrete_dynamics(jnp.asarray(coarse.initial_state()), u, 0.0, coarse.knot_dt)
+
+    np.testing.assert_allclose(np.asarray(z_coarse), np.asarray(z_fine), rtol=1e-12, atol=1e-14)
+
+
+def test_substeps_knot_grid_matches_plant() -> None:
+    """A substepped knot Rollout tracks the deterministic Plant sampled at the knot rate."""
+    params, conn = _toy_plant(3, sigma=0.0)
+    dyn = JansenRitDynamics(dt=_DT, params=params, conn=conn, seed=_SEED)
+    model = JansenRitModel.from_plant(dyn, substeps=4)
+
+    z = jnp.asarray(model.initial_state())
+    u_plant = np.zeros(dyn.n_controls)
+    for knot in range(3):
+        z = model.discrete_dynamics(z, jnp.zeros(model.m), 0.0, model.knot_dt)
+        for sub in range(4):
+            dyn.evaluate((knot * 4 + sub) * _DT, u_plant)
+        x_ode, _, k = model.unpack_state(z)
+        np.testing.assert_allclose(float(k), float(4 * (knot + 1)))
+        np.testing.assert_allclose(np.asarray(x_ode), dyn.x, rtol=1e-10, atol=1e-12)
+
+
+def _write_observable_envelope(path: Path, geom: StftGeometry, *, fs: float, n_channels: int, level: float) -> None:
+    """Write a flat healthy Observable envelope in the layout ``scripts/build_healthy_psd.py`` emits."""
+    np.savez_compressed(
+        path,
+        Pref_frames=np.full((n_channels, geom.n_values(fs)), level),
+        fs=fs,
+        n_segment=geom.n_segment,
+        n_hop=geom.n_hop,
+        band_hz=np.asarray(geom.band_hz if geom.band_hz is not None else [-1.0, -1.0]),
+        n_bin_pool=geom.n_bin_pool,
+        kernel=geom.kernel,
+        kernel_width=geom.kernel_width,
+    )
+
+
+def test_jansen_rit_problem_wires_the_observable_frame_hinge_at_the_knot_rate(tmp_path: Path) -> None:
+    """The Observable arm builds against an envelope measured at ``1 / knot_dt`` and solves."""
+    params, conn = _toy_plant(2, sigma=0.0)
+    cfg = _AnalyticalConfig(model="analytical", electrodes=["F3", "F4"])
+    stim = AnalyticalStim(cfg, conn.centres)
+    dyn = JansenRitDynamics(dt=_DT, params=params, conn=conn, stim=stim, seed=_SEED)
+    substeps = 5
+    model = JansenRitModel.from_plant(dyn, substeps=substeps)
+    knot_fs = 1.0 / model.knot_dt
+
+    geom = StftGeometry(n_segment=8, n_hop=4)
+    env_path = tmp_path / "obs_env.npz"
+    _write_observable_envelope(env_path, geom, fs=knot_fs, n_channels=model.n_channels, level=5.0)
+
+    problem = build_jansen_rit_problem(
+        model,
+        horizon=16,
+        u_max=2.0,
+        w_y=0.0,
+        w_u=0.01,
+        w_hinge=10.0,
+        envelope_ref=env_path,
+    )
+    assert has_whole_horizon_cost(problem.obj.stage_cost)
+
+    solver = SingleShooting(solver=Ipopt(options={"print_level": 0, "max_iter": 20}))
+    controller = TrajOptMPCController(dt=model.knot_dt, problem=problem, solver=solver)
+    u_cmd, log = controller.update(0.0, np.zeros(dyn.x.shape), dyn.x)
+    assert u_cmd.shape == (2,)
+    assert np.all(np.isfinite(u_cmd))
+    assert log.success
+
+
+def test_jansen_rit_envelope_must_match_the_knot_rate(tmp_path: Path) -> None:
+    """An envelope measured at the integration rate is rejected once a knot spans several steps."""
+    params, conn = _toy_plant(2, sigma=0.0)
+    dyn = JansenRitDynamics(dt=_DT, params=params, conn=conn, seed=_SEED)
+    model = JansenRitModel.from_plant(dyn, substeps=5)
+
+    geom = StftGeometry(n_segment=8, n_hop=4)
+    env_path = tmp_path / "obs_env.npz"
+    _write_observable_envelope(env_path, geom, fs=1.0 / _DT, n_channels=model.n_channels, level=5.0)
+
+    with pytest.raises(ValueError, match="does not match the knot rate"):
+        build_jansen_rit_problem(model, horizon=16, u_max=2.0, w_hinge=1.0, envelope_ref=env_path)

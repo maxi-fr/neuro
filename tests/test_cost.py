@@ -15,11 +15,14 @@ from trajopt.transcription.ipopt import Ipopt
 from neuro.config import StftGeometry
 from neuro.control.costs import (
     L1ControlCost,
+    ObservableFrameHingeCost,
     ObservableHingeCost,
     SpectralHingeCost,
     StateOutputs,
     SumCost,
+    has_whole_horizon_cost,
     jax_compute_log_power_frames,
+    jax_compute_observable_frames,
 )
 from neuro.control.mpc import build_waveform_problem
 from neuro.predictor.inference import WaveformMLPModel
@@ -453,3 +456,113 @@ def test_observable_hinge_cost_validation() -> None:
             w_hinge=1.0,
             horizon=0,
         )
+
+
+def _observable_geometry() -> StftGeometry:
+    """A pooled, kernel-smoothed geometry, so the test exercises every reduction stage."""
+    return StftGeometry(
+        n_segment=32,
+        n_hop=16,
+        band_hz=(4.0, 30.0),
+        n_bin_pool=2,
+        kernel="hann",
+        kernel_width=3,
+    )
+
+
+def test_observable_frame_jax_reduction_agrees_with_canonical_numpy() -> None:
+    """The jax Observable reduction reproduces :func:`compute_log_power_frames` stage for stage."""
+    rng = np.random.default_rng(_SEED + 20)
+    geom = _observable_geometry()
+    fs = 100.0
+    y = rng.standard_normal((200, 4))
+
+    numpy_frames = compute_log_power_frames(y, geom, fs=fs)
+    jax_frames = jax_compute_observable_frames(jnp.asarray(y), geom, fs=fs)
+
+    assert jax_frames.shape == numpy_frames.shape
+    np.testing.assert_allclose(np.asarray(jax_frames), numpy_frames, rtol=1e-10, atol=1e-12)
+
+
+def test_observable_frame_hinge_cost_scores_the_stage_waveform() -> None:
+    """ObservableFrameHingeCost reduces the stage waveform to Frames and hinges them, whole-horizon."""
+    rng = np.random.default_rng(_SEED + 21)
+    geom = _observable_geometry()
+    n_y, n_channels, n_u, n_controls = 4, 3, 2, 2
+    horizon, fs = 200, 100.0
+    n = n_y * n_channels + n_u * n_controls
+    m = n_controls
+
+    y_center = rng.uniform(-1.0, 1.0, n_channels)
+    y_scale = rng.uniform(0.5, 2.0, n_channels)
+    envelope = ObservableEnvelope(
+        power=rng.uniform(-2.0, 2.0, (n_channels, geom.n_values(fs))),
+        fs=fs,
+        geometry=geom,
+    )
+    outputs = StateOutputs(n=n, m=m, n_y=n_y, n_outputs=n_channels, center=y_center, scale=y_scale)
+    cost = ObservableFrameHingeCost(outputs, envelope, w_hinge=10.0, horizon=horizon)
+
+    np.testing.assert_equal(float(cost.evaluate(jnp.asarray(rng.standard_normal(n)))), 0.0)
+
+    X = rng.standard_normal((horizon, n))
+    stage_vals = cost.stage_costs(jnp.asarray(X), jnp.asarray(rng.standard_normal((horizon, m))), jnp.zeros(horizon))
+    np.testing.assert_array_equal(np.asarray(stage_vals[1:]), np.zeros(horizon - 1))
+
+    newest = slice((n_y - 1) * n_channels, n_y * n_channels)
+    y_stage = X[:, newest] * y_scale + y_center
+    numpy_frames = compute_log_power_frames(y_stage, geom, fs=fs)
+    want = 10.0 * float(np.mean(np.maximum(0.0, numpy_frames - envelope.power[None]) ** 2))
+    np.testing.assert_allclose(float(stage_vals[0]), want, rtol=1e-10, atol=1e-12)
+
+
+def test_observable_frame_hinge_is_zero_under_the_envelope_and_registered_whole_horizon() -> None:
+    """The hinge vanishes when every Frame sits under the envelope, and the solver guard sees it."""
+    rng = np.random.default_rng(_SEED + 22)
+    geom = _observable_geometry()
+    n_channels, horizon, fs = 2, 200, 100.0
+    n, m = n_channels, 1
+
+    outputs = StateOutputs(
+        n=n,
+        m=m,
+        n_y=1,
+        n_outputs=n_channels,
+        center=np.zeros(n_channels),
+        scale=np.ones(n_channels),
+    )
+    X = 1e-3 * rng.standard_normal((horizon, n))
+    quiet = ObservableEnvelope(
+        power=np.full((n_channels, geom.n_values(fs)), 10.0),
+        fs=fs,
+        geometry=geom,
+    )
+    cost = ObservableFrameHingeCost(outputs, quiet, w_hinge=1.0, horizon=horizon)
+    stage_vals = cost.stage_costs(jnp.asarray(X), jnp.zeros((horizon, m)), jnp.zeros(horizon))
+    np.testing.assert_allclose(float(stage_vals[0]), 0.0, atol=0.0)
+
+    assert has_whole_horizon_cost(cost)
+    assert has_whole_horizon_cost(SumCost([L1ControlCost(n=n, m=m, w_l1=1.0, horizon=horizon), cost]))
+
+
+def test_observable_frame_hinge_cost_validation() -> None:
+    """The cost rejects envelopes of the wrong width and horizons shorter than one Frame's support."""
+    geom = _observable_geometry()
+    fs = 100.0
+    n_channels = 3
+    outputs = StateOutputs(
+        n=n_channels,
+        m=1,
+        n_y=1,
+        n_outputs=n_channels,
+        center=np.zeros(n_channels),
+        scale=np.ones(n_channels),
+    )
+    envelope = ObservableEnvelope(power=np.zeros((n_channels, geom.n_values(fs))), fs=fs, geometry=geom)
+
+    with pytest.raises(ValueError, match="shorter than the sample support"):
+        ObservableFrameHingeCost(outputs, envelope, w_hinge=1.0, horizon=geom.sample_support_steps(fs) - 1)
+
+    wide = ObservableEnvelope(power=np.zeros((n_channels + 1, geom.n_values(fs))), fs=fs, geometry=geom)
+    with pytest.raises(ValueError, match="channels but the model outputs"):
+        ObservableFrameHingeCost(outputs, wide, w_hinge=1.0, horizon=200)

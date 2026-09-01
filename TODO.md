@@ -18,6 +18,15 @@
 
 * MPC metric: solver iterations, pred error along horizon
 
+* quadratic tracking Costs drive the Observable to zero, but zero is not the healthy operating
+  point. Jansen-Rit LFP `x2 - x3` sits at +1.5 mV with a healthy fluctuation std of 0.16 mV, so
+  99% of `sum(y^2)` in healthy background is the operating point and only 1% is the dynamics the
+  Cost is meant to shape. The controller spends its authority on a DC offset it cannot null under
+  the amplitude bound, and it penalises healthy activity as hard as seizure activity. Costs should
+  track a reference, `y - y_ref`, with `y_ref` the healthy per-region mean; this is general, not
+  Jansen-Rit specific -- any Observable with a nonzero operating point has it. Note the hinge
+  Costs do not: they score log excess over a healthy envelope and skip the DC bin.
+
 * EEG sensors shouldnt run at 10kHz, find realistic value (maybe just same as MPC)
 
 * investigate running controller slower than predictor model. Less decision variables but still prediction model with high resolution

@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import shutil
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import numpy as np
 import yaml
@@ -14,6 +15,9 @@ from neuro.predictor.data import load_trajectory
 from neuro.provenance import data_plant_fingerprint, plant_fingerprint
 from neuro.spectral import compute_log_power_frames, compute_periodograms, windowed_mean_square
 from neuro.validation import validate_simulation_config
+
+if TYPE_CHECKING:
+    from neuro.types import FloatArray
 
 
 def _batch_configs(config: dict) -> list[dict]:
@@ -36,6 +40,47 @@ def run_healthy_simulation(config_path: Path, output_dir: Path, workers: int) ->
     ExperimentManager(output_dir).run_batch(configs, max_num_processes=workers, use_mmap=True)
 
 
+def _knot_signal(data_file: Path, downsample: int, signal: str) -> FloatArray:
+    """Stride a healthy signal the way a Predictor knot samples it: raw, with no anti-alias filter."""
+    with np.load(data_file) as data:
+        return np.asarray(data[signal][::downsample], dtype=np.float64)
+
+
+def _pool_reductions(  # noqa: PLR0913, PLR0917 -- one reduction geometry, spelled out
+    data_files: list[Path],
+    geometry: StftGeometry,
+    dt_plant: float,
+    downsample: int,
+    fs: float,
+    window: int,
+    hop: int,
+    knot_dt: float | None,
+    signal: str,
+) -> tuple[FloatArray, FloatArray, FloatArray]:
+    """Pool periodograms, Segment mean squares and log-power Frames over the healthy trajectories."""
+    all_windows, all_ms_windows, all_frames = [], [], []
+    for f in data_files:
+        if knot_dt is not None:
+            y = _knot_signal(f, downsample, signal)
+        else:
+            _, y = load_trajectory(str(f), n_steps=None, downsample=downsample, dt=dt_plant)
+        p_windows = compute_periodograms(y, fs=fs, window=window, hop=hop)
+        frames = compute_log_power_frames(y, geometry, fs=fs)
+        if len(p_windows) > 0:
+            all_windows.append(p_windows)
+            all_ms_windows.append(windowed_mean_square(y, window=window, hop=hop))
+        if len(frames) > 0:
+            all_frames.append(frames)
+    if not all_windows or not all_frames:
+        msg = "No valid windows extracted from trajectory files."
+        raise RuntimeError(msg)
+    return (
+        np.concatenate(all_windows, axis=0),
+        np.concatenate(all_ms_windows, axis=0),
+        np.concatenate(all_frames, axis=0),
+    )
+
+
 def build_healthy_psd(  # noqa: PLR0913
     config_path: Path,
     data_dir: Path,
@@ -45,16 +90,31 @@ def build_healthy_psd(  # noqa: PLR0913
     window_s: float = 1.0,
     hop_s: float = 0.5,
     geometry: StftGeometry | None = None,
+    knot_dt: float | None = None,
+    signal: str = "sensor_0.y_mea",
     workers: int = 1,
 ) -> Path:
     """Pool healthy periodograms and log-power Frames into quantile envelopes and save to npz.
 
     The same npz carries ``Pref`` for the waveform spectral hinge, ``Pref_ms`` for the
     ``eeg_ms`` Observable, and ``Pref_frames`` for the Observable hinge.
+
+    Parameters
+    ----------
+    knot_dt : float | None
+        Control Horizon knot period in seconds. Given, the healthy EEG is decimated by raw
+        striding at that period -- the operation a Predictor knot performs on the Plant -- so the
+        envelope is measured through the same reduction the Cost scores. Omitted, the config's
+        ``estimator.downsample`` and its anti-alias filter set the rate, as the identified
+        Predictors were trained on.
+    signal : str
+        Logged signal the envelope is pooled from, ``(n_samples, n_channels)``. The default
+        ``sensor_0.y_mea`` is the 62-channel EEG; ``dynamics.lfp`` is the 76-region LFP that an
+        identity-gain Predictor scores. Only used when ``knot_dt`` sets the rate.
     """
     first_cfg = _batch_configs(yaml.safe_load(config_path.read_text(encoding="utf-8")))[0]
     dt_plant = float(first_cfg["dynamics"]["dt"])
-    downsample = int(first_cfg["estimator"]["downsample"])
+    downsample = round(knot_dt / dt_plant) if knot_dt is not None else int(first_cfg["estimator"]["downsample"])
     fs = 1.0 / (dt_plant * downsample)
     if geometry is None:
         window = round(window_s * fs)
@@ -73,26 +133,11 @@ def build_healthy_psd(  # noqa: PLR0913
         msg = f"No simulation data files found or generated in {data_dir}"
         raise RuntimeError(msg)
 
-    all_windows = []
-    all_ms_windows = []
-    all_frames = []
-    for f in data_files:
-        _, y = load_trajectory(str(f), n_steps=None, downsample=downsample, dt=dt_plant)
-        p_windows = compute_periodograms(y, fs=fs, window=window, hop=hop)
-        frames = compute_log_power_frames(y, geometry, fs=fs)
-        if len(p_windows) > 0:
-            all_windows.append(p_windows)
-            all_ms_windows.append(windowed_mean_square(y, window=window, hop=hop))
-        if len(frames) > 0:
-            all_frames.append(frames)
-    if not all_windows or not all_frames:
-        msg = "No valid windows extracted from trajectory files."
-        raise RuntimeError(msg)
-
-    stacked = np.concatenate(all_windows, axis=0)  # (total_windows, n_channels, n_bins)
+    stacked, stacked_ms, stacked_frames = _pool_reductions(
+        data_files, geometry, dt_plant, downsample, fs, window, hop, knot_dt, signal
+    )
     reference = np.quantile(stacked, quantile, axis=0)  # (n_channels, n_bins)
-    reference_ms = np.quantile(np.concatenate(all_ms_windows, axis=0), quantile, axis=0)  # (n_channels,)
-    stacked_frames = np.concatenate(all_frames, axis=0)  # (total_frames, n_channels, n_values)
+    reference_ms = np.quantile(stacked_ms, quantile, axis=0)  # (n_channels,)
     reference_frames = np.quantile(stacked_frames, quantile, axis=0)  # (n_channels, n_values)
 
     fp = data_plant_fingerprint(data_dir) or plant_fingerprint(first_cfg)
@@ -207,6 +252,17 @@ def parse_args() -> argparse.Namespace:
         help="STFT hop size in samples (overrides --hop-s).",
     )
     parser.add_argument(
+        "--knot-dt",
+        type=float,
+        default=None,
+        help="Control Horizon knot period in seconds; decimates by raw striding instead of anti-aliasing.",
+    )
+    parser.add_argument(
+        "--signal",
+        default="sensor_0.y_mea",
+        help="Logged signal to pool (default: the 62-channel EEG; dynamics.lfp is the 76-region LFP).",
+    )
+    parser.add_argument(
         "--workers",
         type=int,
         default=4,
@@ -229,7 +285,9 @@ def main() -> None:
     ):
         first_cfg = _batch_configs(yaml.safe_load(args.config.read_text(encoding="utf-8")))[0]
         dt_plant = float(first_cfg["dynamics"]["dt"])
-        downsample = int(first_cfg["estimator"]["downsample"])
+        downsample = (
+            round(args.knot_dt / dt_plant) if args.knot_dt is not None else int(first_cfg["estimator"]["downsample"])
+        )
         fs = 1.0 / (dt_plant * downsample)
         n_seg = args.segment_steps if args.segment_steps is not None else round(args.window_s * fs)
         n_hp = args.hop_steps if args.hop_steps is not None else round(args.hop_s * fs)
@@ -251,6 +309,8 @@ def main() -> None:
         window_s=args.window_s,
         hop_s=args.hop_s,
         geometry=geom,
+        knot_dt=args.knot_dt,
+        signal=args.signal,
         workers=args.workers,
     )
 

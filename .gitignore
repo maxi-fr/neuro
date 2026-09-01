@@ -34,5 +34,5 @@ notebooks/assets/
 *.exe
 matlab/roast-4.0/
 scratch/
-
+results/
 .claude/worktrees/
