@@ -1,6 +1,8 @@
 # Scientific writing
 
-Conventions for drafting and editing thesis prose. Applies to the writing itself, independent of the technical subject matter.
+## Latex
+
+Use pdflatex -> biber -> pdflatex -> pdflatex to compile into out/
 
 ## Titles and headings
 
@@ -44,6 +46,8 @@ Keep code and math notation separate in running text — write `A^{-1}b`, not `A
 Introduce every variable in the surrounding text, including each element of a vector.
 Use `\linebreak` rather than let a formula split awkwardly across a line.
 Organize abbreviations with the `acro` package: spell one out on first use, abbreviate it from then on; don't introduce more than the reader needs, since a page thick with acronyms breaks the flow.
+
+Always update the symbols and acronyms table
 
 ## Figures
 

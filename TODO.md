@@ -48,12 +48,11 @@
 
 * allow for cross component config validation (like i've done here)
 
-## MPC package
+## MPC package (trajopt)
 
-* investigate if it could be used well here
-* investigate what parts could maybe be simplified, etc.
 * make fully yaml configurable - also cost functions, constraints, etc.
 * compare to MPC implementation here
+* Add output function y = g(x). Would simplify cost fucntions etc.
 
 ## python-project-template
 

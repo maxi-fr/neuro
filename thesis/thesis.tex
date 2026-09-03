@@ -1,0 +1,137 @@
+\documentclass[
+    english,
+	ruledheaders=section,%Ebene bis zu der die Überschriften mit Linien abgetrennt werden, vgl. DEMO-TUDaPub
+	class=report,% Basisdokumentenklasse. Wählt die Korrespondierende KOMA-Script Klasse
+	thesis={type=master},% Dokumententyp Thesis (projektseminar, proseminar, bachelor, master)
+	accentcolor=2c, % Akzentfarbe FG rtm
+	custommargins=false,
+	marginpar=false,
+	BCOR=10mm, % Bindekorrektur (etwas größere mittlere Ränder)
+	parskip=half-, % Absatzkennzeichnung durch Abstand vgl. KOMA-Sript
+	fontsize=11pt, % Basisschriftgröße laut Corporate Design ist mit 9pt häufig zu klein
+  	twoside,
+  	numbers=noendperiod,
+  	fleqn,
+  	captions=oneline, % Einzeilige Captions zentrieren
+	captions=tableheading, % Für besseren Abstand bei TabellenÜBERschriften
+  	IMRAD=false
+]{tudapub}
+
+
+% Der folgende Block ist nur bei pdfTeX auf Versionen vor April 2018 notwendig
+\usepackage{iftex}
+\ifPDFTeX
+\usepackage[utf8]{inputenc}%kompatibilität mit TeX Versionen vor April 2018
+\fi
+
+%%%%%%%%%%%%%%%%%%%
+%Sprachanpassung & Verbesserte Trennregeln
+%%%%%%%%%%%%%%%%%%%
+\usepackage[main=english, ngerman]{babel}
+\usepackage[autostyle]{csquotes}% Anführungszeichen vereinfacht
+\usepackage{microtype}
+
+
+%%%%%%%%%%%%%%%%%%%
+% Literaturverzeichnis
+%%%%%%%%%%%%%%%%%%%
+\catcode30=12  % Workaround for current biblatex problem (https://tex.stackexchange.com/questions/564990/error-after-miktex-reinstall-text-line-contains-an-invalid-character)
+\usepackage[backend=biber,style=ieee,bibencoding=utf8]{biblatex}
+\addbibresource{literature.bib}
+
+% Additional Packages
+\usepackage{acro} % Acronym management
+\usepackage{amsmath, amssymb}
+\usepackage{booktabs} % Professional table formatting
+\usepackage{siunitx}
+\usepackage{tikz}
+\usepackage{graphicx} % for pdf, bitmapped graphics files
+%\usepackage{cleveref} % Smart cross-referencing (load late)
+
+% Acronym definitions (acro package)
+\DeclareAcronym{mpc}{
+  short = MPC ,
+  long  = Model Predictive Control ,
+}
+
+\begin{document}
+
+\Metadata{
+	title=Eine minimale LaTeX-Vorlage für schriftliche (Abschluss-)Arbeiten am IAT,
+	author=Rudi Ratlos,
+	keywords={TU Darmstadt \sep Corporate Design \sep LaTeX},
+}
+
+\title{Eine minimale \LaTeX-Vorlage für schriftliche (Abschluss-)Arbeiten am IAT}
+\subtitle{\textmd{Electrical Engineering and Information Technology program}}
+\author[R. Ratlos]{Rudi Ratlos}
+\reviewer*[First Examiner,Supervisor]{Prof. Dr.-Ing. Rolf Findeisen \and NameGoesHere}
+
+\department{etit}
+
+\addTitleBox{\includegraphics[width=\linewidth]{figures/CCPS_logo}}
+
+%\date{\today}
+\submissiondate{1. April 2020}
+
+\lowertitleback{
+	Technische Universität Darmstadt\\
+	Institut für Automatisierungstechnik und Mechatronik\\
+	Fachgebiet Regelungstechnik und Cyber-Physische Systeme\\
+	Prof. Dr.-Ing. Rolf Findeisen\\
+}
+
+\frontmatter
+\maketitle
+
+\clearpage
+\setcounter{page}{1}
+\section*{Task Description}
+
+	Provided by supervisor
+
+ \vspace{0.5cm}
+\begin{tabular}{ll}
+	Start date: 	& ------ \\
+	End date: 		& ------ \\
+	Date of the colloquium: 	& ------ \\
+\end{tabular}
+\clearpage
+
+\affidavit[digital]
+
+\section*{Abstract}
+	% Abstract structure (increasing scope):
+	% 1. Context (current state of the topic)
+	% 2. Problem or open research points
+	% 3. Solution
+	% 4. Key takeaway
+
+\section*{Zusammenfassung}
+	Additional abstract in German.
+
+\cleardoublepage
+
+\tableofcontents
+\cleardoublepage
+
+\mainmatter
+
+\input{chapters/01_symbols_and_acronyms.tex}
+\input{chapters/02_introduction.tex}
+\input{chapters/03_foundations.tex}
+\input{chapters/04_methodology.tex}
+\input{chapters/05_experiments.tex}
+\input{chapters/06_conclusion.tex}
+
+\cite{Duden}
+
+\appendix
+
+\cleardoublepage
+\phantomsection
+\addcontentsline{toc}{chapter}{\bibname}
+
+\printbibliography
+
+\end{document}
