@@ -7,13 +7,23 @@ import copy
 import csv
 import json
 import multiprocessing
+import os
 import tempfile
 import time
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+# One simulation spends its time in small BLAS calls that do not parallelise: measured at 12 sim s,
+# a run took 59.5 s/sim s while holding seven cores and 57.3 s/sim s pinned to one. The seven cores
+# bought nothing. Pinning here, before torch is imported anywhere below, turns each worker into one
+# core so the Pool actually scales.
+os.environ.setdefault("OMP_NUM_THREADS", "1")
+os.environ.setdefault("MKL_NUM_THREADS", "1")
+os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
+
 import numpy as np
+import torch
 from simulate.config import load_config
 from simulate.simulation import Simulation
 
@@ -229,6 +239,9 @@ def score_run(config: dict[str, Any], u_max: float) -> dict[str, float]:
 
 def _run_worker(cell: dict[str, Any]) -> dict[str, Any]:
     """Score one grid cell; a failure is recorded as a row rather than sinking the batch."""
+    # The env vars set at import get torch most of the way, but a probe still measured 2.6 cores
+    # per run. Saying it directly leaves nothing for the workers to fight over.
+    torch.set_num_threads(1)
     row: dict[str, Any] = {"run": cell["run"], "arm": cell["arm"], "seed": cell["seed"], "error": ""}
     try:
         row |= score_run(cell["config"], cell["u_max"])
@@ -274,7 +287,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--baselines", nargs="*", default=list(BASELINES), choices=list(BASELINES))
     parser.add_argument("--seeds", type=int, nargs="*", default=list(SEEDS), help="Plant seeds, paired across arms.")
     parser.add_argument("--t-end", type=float, default=None, help="Override the run length in seconds.")
-    parser.add_argument("--workers", type=int, default=1, help="Parallel simulation processes.")
+    parser.add_argument("--workers", type=int, default=1, help="Parallel simulation processes, a floor; see main.")
     parser.add_argument("--dry-run", action="store_true", help="Validate every cell and list the grid, run nothing.")
     return parser.parse_args()
 
@@ -298,8 +311,13 @@ def main() -> None:
     # Each finished run is flushed to rows.csv immediately: the grid takes hours, and a crash
     # part-way through must not cost the runs that already succeeded.
     rows: list[dict[str, Any]] = []
-    if args.workers > 1:
-        with multiprocessing.Pool(processes=min(args.workers, len(grid))) as pool:
+    # Workers are pinned to one thread each, so anything short of the core count leaves cores idle.
+    # --workers is therefore a floor, not a cap: raising it above the core count is still honoured,
+    # lowering it below is not.
+    n_workers = min(len(grid), max(args.workers, (os.cpu_count() or 4) - 2))
+    if n_workers > 1:
+        print(f"{n_workers} workers, one thread each", flush=True)
+        with multiprocessing.Pool(processes=n_workers) as pool:
             for row in pool.imap_unordered(_run_worker, grid):
                 rows.append(row)
                 _write_rows(rows, out_dir / "rows.csv")

@@ -1,1 +1,58 @@
 \chapter{List of Symbols and Acronyms}
+
+\section*{Symbols}
+
+Matrices are set bold and uppercase, vectors bold and lowercase, and scalars italic and
+lowercase. A running index is italic, a naming index upright.
+
+\begin{tabular}{lll}
+    \toprule
+    Symbol & Description & Unit \\
+    \midrule
+    \multicolumn{3}{l}{\itshape Indices and dimensions} \\
+    $i, j$ & Brain region index & -- \\
+    $N$ & Number of brain regions & -- \\
+    $m$ & \ac{eeg} channel index & -- \\
+    $M$ & Number of \ac{eeg} channels & -- \\
+    $p$ & Stimulation electrode index & -- \\
+    $P$ & Number of stimulation electrodes & -- \\
+    \midrule
+    \multicolumn{3}{l}{\itshape Plant state and dynamics} \\
+    $x_{i,1}, x_{i,2}, x_{i,3}$ & Pyramidal, excitatory and inhibitory \ac{psp} of region $i$ & \si{\milli\volt} \\
+    $x_{i,4}, x_{i,5}, x_{i,6}$ & Time derivatives of the three \acp{psp} & \si{\milli\volt\per\second} \\
+    $\mathbf{x}$ & Full plant state, $6N$ entries & -- \\
+    $h_\mathrm{e}, h_\mathrm{i}$ & Excitatory and inhibitory \ac{psp} impulse response & \si{\milli\volt\per\second} \\
+    $S(v)$ & Wave-to-pulse sigmoid & \si{\per\second} \\
+    $A_i$ & Regional excitatory synaptic gain & \si{\milli\volt} \\
+    $B$ & Inhibitory synaptic gain & \si{\milli\volt} \\
+    $a, b$ & Excitatory and inhibitory rate constant & \si{\per\second} \\
+    $\tau_\mathrm{e}, \tau_\mathrm{i}$ & Excitatory and inhibitory time constant & \si{\milli\second} \\
+    $c_1, \dots, c_4$ & Intra-columnar synaptic contact numbers & -- \\
+    $e_0$ & Half the maximum population firing rate & \si{\per\second} \\
+    $v_0$ & Sigmoid midpoint potential & \si{\milli\volt} \\
+    $r$ & Sigmoid steepness & \si{\per\milli\volt} \\
+    $I$ & Constant excitatory background input & \si{\per\second} \\
+    $\zeta_i$ & Gaussian white noise on the excitatory loop & \si{\milli\volt\per\second} \\
+    $\sigma$ & Noise intensity & \si{\per\second} \\
+    \midrule
+    \multicolumn{3}{l}{\itshape Network} \\
+    $\mathbf{W}$, $w_{ij}$ & Structural connectivity matrix and its entries & -- \\
+    $K$ & Global coupling factor & -- \\
+    $\ell_{ij}$ & Fibre tract length between regions $i$ and $j$ & \si{\milli\metre} \\
+    $c$ & Axonal conduction speed & \si{\milli\metre\per\milli\second} \\
+    $\mathbf{D}$, $d_{ij}$ & Conduction delay matrix and its entries & \si{\milli\second} \\
+    $I_{\mathrm{coup},i}$ & Network coupling input to region $i$ & \si{\per\second} \\
+    \midrule
+    \multicolumn{3}{l}{\itshape Electrical interfaces} \\
+    $y_{\mathrm{LFP},i}$, $\mathbf{y}_\mathrm{LFP}$ & Regional \ac{lfp} and its stacked vector & \si{\milli\volt} \\
+    $\mathbf{y}_\mathrm{EEG}$ & Scalp \ac{eeg} channel amplitudes & -- \\
+    $\mathbf{L}_\mathrm{EEG}$ & \ac{eeg} lead field, $M \times N$ & -- \\
+    $\mathbf{L}_\mathrm{stim}$ & Stimulation lead field, $N \times P$ & -- \\
+    $\mathbf{u}$ & Control current per stimulation electrode & \si{\milli\ampere} \\
+    $\mathbf{s}$, $s_i$ & Stimulation drive and its regional entries & \si{\milli\volt} \\
+    \bottomrule
+\end{tabular}
+
+\section*{Acronyms}
+
+\printacronyms[heading=none]

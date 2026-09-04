@@ -1,4 +1,32 @@
 \chapter{Methodology}
+\label{ch:methodology}
+
 \section{Closed-Loop Neurostimulation Architecture}
-\section{Surrogate Model Training and CasADi Integration}
+% Deferred here from Section 3.1 (Whole-Brain Biophysical Modeling):
+% - Pin the symbolic dimensions to the concrete setup: N = 76 regions (TVB default
+%   connectome), M = 62 EEG channels, P stimulation electrodes.
+% - EZ / PZ region assignment: which named regions carry A_i = 3.6 and A_i = 3.4, and how
+%   that choice follows Yu et al. The mechanism itself is already in Section 3.1.2.
+% - Numerical integration: Heun predictor-corrector, step size dt, ring-buffer
+%   implementation of the delayed history, and why Euler-Maruyama noise is applied on the
+%   Heun step.
+% - Construction of L_EEG: TVB boundary-element surface projection (62 x 16384) collapsed
+%   to region level (62 x 76) via the region mapping, plus the sagittal-mirror row/label
+%   correction.
+% - Construction of L_stim: ROAST finite-element field solve, reduction of the 3D field
+%   along the cortical normal at each region centroid.
+% - Why reciprocity is not exploited to reuse L_EEG^T as L_stim: the TVB EEG projection
+%   does not contain the electrodes used for stimulation, so L_stim must be solved
+%   separately. Section 3.1.4 sets up this tension and points here.
+% - Recalibration of K = 0.60 and sigma = 280 against the values of Yu et al. (0.75 and
+%   500). Table 3.1 in Foundations already carries the values used here and points here
+%   for the justification.
+% - Amplitude units: the TVB projection matrix is unitless and the Jansen-Rit dipole scale
+%   is undetermined, so y_EEG is in arbitrary units. State that thresholds and cost weights
+%   are therefore relative to the model's own background level. Section 3.1.4 flags this.
+
+\section{Prediction Model Training and Inference}
+
 \section{MPC Controller and Cost Function Design}
+
+\subsection{Nonlinear ARX (NARX) Formulation}

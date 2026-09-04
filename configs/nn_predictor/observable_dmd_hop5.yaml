@@ -1,29 +1,20 @@
-# Arm C of the predictor comparison: the Observable Predictor fitted in closed form by
-# Hankel-DMDc, at the hop5 geometry every observable arm shares.
+# Arm C of the predictor comparison: the Observable Hankel-DMDc Predictor at n_hop=5.
 #
-# Geometry rationale (n_hop=5, dt_frame=0.1s): the comparison holds the Control Horizon at 1.5s
-# across all three arms, and only hops that divide 1.5s land on an integer number of steps.
-# n_hop=10 is excluded arithmetically (1.5 / 0.2 = 7.5); n_hop=25 gives 3 steps and n_hop=15
-# gives 5, so n_hop=5 is the one that reaches 1.5s with a decision rate (10 Hz, 15 steps)
-# comparable to the waveform arm's.
+# One step advances one Frame of 0.1 s, so the matched 1.5 s Control Horizon is 15 knots.
+# n_u = 10 is forced by the control-support rule, ceil(n_segment / n_hop) = ceil(50 / 5).
 #
-# n_y and n_u are identical to the observable MLP arm (observable_mlp_hop5.yaml), so the only
-# difference between arms B and C is the Trainer: backprop against closed-form SVD.
-#
-# dmd_energy/dmd_lambda are extrapolated from the hop25/hop15/hop10 sweeps, whose optima trend
-# upward in energy as the hop shortens (0.921 -> 0.964 -> 0.990). The fit costs seconds, so
-# prefer sweep_dmd_observable_hop5.yaml over this guessed point if there is time for it.
+# dmd_energy and dmd_lambda come from sweep_dmd_observable_hop5.yaml (30 trials, best
+# val_log_mse 2.1017), not from the hop25/15/10 trend I first extrapolated them from.
+# The comments below were stripped by the sweep's automated patch; the values are the swept ones.
 simulation:
   dt: 0.0001
   downsample: 200
   n_steps: null
-  data_path: "data/experiment_excited_long/train"
-
+  data_path: data/experiment_excited_long/train
 model:
   n_y: 1
-  n_u: 10  # StftGeometry(n_segment=50, n_hop=5, kernel_width=1).min_past_controls()
+  n_u: 10
   depth: 0
-
 observable:
   n_segment: 50
   n_hop: 5
@@ -31,18 +22,16 @@ observable:
   n_bin_pool: 1
   kernel: boxcar
   kernel_width: 1
-
 training:
   fit: dmd
   train_split: 0.8
-  eval_horizon_s: 1.5   # = the Control Horizon the arm is evaluated at
-  dmd_energy: 0.99
-  dmd_lambda: 0.002
+  eval_horizon_s: 1.5
+  dmd_energy: 0.9987293041394881
+  dmd_lambda: 1.0561385971447783e-06
   losses:
     curriculum_mse:
       weight: 1.0
       span_s: 1.5
       curr_start: 0
       curr_end: 1
-
-artifact: "artifacts/cmp_observable_dmd_hop5"
+artifact: artifacts/cmp_observable_dmd_hop5

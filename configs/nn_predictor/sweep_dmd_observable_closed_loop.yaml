@@ -54,7 +54,7 @@ sweep:
       high: 0.03
   closed_loop:
     simulation_config: "configs/simulation/closed_loop_eval_observable_12s.yaml"
-    seeds: [69, 70, 71]
+    seeds: [5001, 5002, 5003]
     t_end: 12.0
     seizure_ptp_mv: 5.0
     max_seizing_regions: 5

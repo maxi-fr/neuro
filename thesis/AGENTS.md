@@ -10,13 +10,7 @@ Use american capitalization convention for titles and section heads — headline
 
 ## Structure
 
-Tell the story of the problem and how it was solved, the way a paper does — not an enumeration of technical facts like a report.
-Write the introduction as narrative prose. Do not carve it into subheadings.
-
-Scope order:
-
-- Abstract: increasing scope — context, then the open problem, then the solution, then the key takeaway.
-- Introduction: decreasing scope — context, the open problem, the solution, the contributions, then the structure of the document.
+Tell the story of the problem and how it was solved — not an enumeration of technical facts like a report.
 
 Bridge every section into the next with a transition; a reader should never land in a new section without knowing why it follows the last one.
 End every section, subsection, and subsubsection on a sentence, never on an equation.
@@ -28,6 +22,7 @@ The conclusion states no new results — only a summary of the key results and, 
 No comma before a restrictive "that".
 Never let "This" stand alone as a subject — name what it refers to: "This $SUBJECT is stupid" not "This is stupid."
 Fold an equation into the grammar of the sentence it belongs to; never end a sentence with a colon before the equation.
+Use the /unslop skill to avoid AI sounding language
 
 ## Claims and citations
 
@@ -51,6 +46,12 @@ Always update the symbols and acronyms table
 
 ## Figures
 
+A generated figure keeps its generating script next to it, sharing its name:
+`figures/03_foundations/excitability_regimes.py` writes `excitability_regimes.pdf` into its
+own directory (`Path(__file__).with_suffix(".pdf")`). Run it from the repo root with `uv
+run`.
+
+Every figure needs to have a grid on the background
 Every figure floats, carries a long caption, and is referenced from the text.
 Label every axis with its unit, and add a legend when a plot holds more than one curve.
 Write the caption so the figure is understandable on its own; end it with a full stop.

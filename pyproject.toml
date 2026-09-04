@@ -107,6 +107,10 @@ convention = "numpy"
     "INP001", # Not a package — standalone runnable demos
     "T201",   # print() is fine in CLI scripts
 ]
+"thesis/figures/**" = [
+    "INP001", # Not a package — one standalone script per figure
+    "T201",   # print() reports the written figure path
+]
 "{notebooks,Presentations}/**" = [
     "INP001",  # Not a package
     "B018",    # Useless expression (Marimo displays last expression)

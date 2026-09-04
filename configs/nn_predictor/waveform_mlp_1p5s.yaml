@@ -22,7 +22,7 @@ model:
   residual: true
 
 training:
-  epochs: 300
+  epochs: 170        # cut from 300 to fit the 08:30 deadline; see results/predictor_comparison/RUN_STATUS.md
   batch_size: 128
   learning_rate: 0.00001
   weight_decay: 0.0005
