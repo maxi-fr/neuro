@@ -22,7 +22,7 @@ The conclusion states no new results — only a summary of the key results and, 
 No comma before a restrictive "that".
 Never let "This" stand alone as a subject — name what it refers to: "This $SUBJECT is stupid" not "This is stupid."
 Fold an equation into the grammar of the sentence it belongs to; never end a sentence with a colon before the equation.
-Use the /unslop skill to avoid AI sounding language
+Always use the /unslop skill for writing
 
 ## Claims and citations
 

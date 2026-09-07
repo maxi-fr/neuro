@@ -1,5 +1,7 @@
 \chapter{Foundations}
 
+% need introduction here
+
 \section{Whole-Brain Biophysical Modeling}
 
 The controllers designed in this work need to be evaluated through simulations against a ground thruth model plant.
@@ -11,7 +13,7 @@ This section develops that model from the single cortical column to the network,
 
 A neural mass model abandons the individual neuron and describes a cortical macro-column
 by the mean membrane potential and mean firing rate of whole populations, an approximation
-justified when the quantity of interest --- the extracellular field --- is itself a
+justified when the quantity of interest --- the extracellular field --- is itself a % no em dash
 spatial average over millions of cells \cite{LopesDaSilva1974,Nunez2006}. Lopes da Silva
 et al.\ introduced the formalism to explain the thalamic alpha rhythm \cite{LopesDaSilva1974},
 and Jansen and Rit gave it the three-population form used here, which reproduces both
@@ -276,16 +278,390 @@ How the two lead fields are obtained in practice is taken up in Chapter~\ref{ch:
 The Plant is now fully specified, and with it the difficulty the rest of the thesis
 addresses. The controller must regulate a $6N$-dimensional delayed stochastic system while
 observing only $M$ linear mixtures of it and acting only through $P$ scalp currents, and it
-must do so fast enough to intervene before recruitment spreads. Solving the plant equations
-online is out of reach, so the following section turns to identifying a dynamics model from
-data.
+must do so fast enough to intervene before recruitment spreads. The following section
+develops the control formulation meeting those requirements, and states in doing so what it
+demands of a prediction model; Section~
+ef{sec:sysid} then turns to identifying such a
+model from data, since solving the plant equations online is out of reach.
+
+\section{Model Predictive Control}
+\label{sec:mpc}
+
+\Ac{mpc} chooses the electrode currents by solving, at every sampling instant, an \ac{ocp}
+over a finite window of the future, applying the first input of the solution, and repeating
+the computation one step later from the new measurement. Two properties suit it to this
+application. The first is optimality. The controller has to suppress pathological activity
+on as little delivered current as it can manage, and in neurostimulation that economy is an
+objective of its own, since the delivered charge bounds both the exposure of the tissue and
+the energy the device draws. \Ac{mpc} minimises that objective directly, where a fixed
+feedback law spends whatever effort its gain dictates. The second is constraint handling.
+Scalp stimulation is bounded by a Control Budget on per-electrode and total current, and
+Kirchhoff's law of \eqref{eq:stim} forces the currents to sum to zero at every instant. \Ac{mpc} enforces both inside the optimisation, whereas a
+fixed feedback law can only be clipped after the fact \cite{Rawlings2017,Mayne2000}.
+
+\subsection{Receding Horizon Control}
+\label{sec:rhc}
+
+Let the prediction model be a discrete-time map
+%
+\begin{equation*}
+    \mathbf{x}_{k+1} = \mathbf{f}(\mathbf{x}_k, \mathbf{u}_k),
+\end{equation*}
+%
+with $\mathbf{x}_k \in \mathbb{R}^{n_x}$ the model state at step $k$, $\mathbf{u}_k \in
+\mathbb{R}^{n_u}$ the input applied over the interval following that step, and $\mathbf{f}$
+the one-step transition. Throughout this section $\mathbf{x}$ denotes the state of the
+prediction model and not the plant state of Section~\ref{sec:connectome}. The two coincide
+only in the hypothetical case of a controller given the plant equations; for a model
+identified from data they need not share a dimension, let alone a physical meaning, and
+Section~\ref{sec:output_feedback} gives a model whose state is a window of past
+measurements.
+
+At step $k$ the controller solves, over the Control Horizon of $H$ steps, the \ac{ocp}
+%
+\begin{align}
+    \min_{\mathbf{u}_{0|k}, \dots, \mathbf{u}_{H-1|k}} \quad
+    & J = \sum_{j=0}^{H-1} \ell\!\left(\mathbf{x}_{j|k}, \mathbf{u}_{j|k}\right)
+      + V_\mathrm{f}\!\left(\mathbf{x}_{H|k}\right) \nonumber \\
+    \text{s.t.} \quad
+    & \mathbf{x}_{j+1|k} = \mathbf{f}\!\left(\mathbf{x}_{j|k}, \mathbf{u}_{j|k}\right),
+      \qquad j = 0, \dots, H-1, \nonumber \\
+    & \mathbf{x}_{0|k} = \hat{\mathbf{x}}_k, \label{eq:ocp} \\
+    & \mathbf{g}\!\left(\mathbf{x}_{j|k}, \mathbf{u}_{j|k}\right) = \mathbf{0}, \nonumber \\
+    & \mathbf{h}\!\left(\mathbf{x}_{j|k}, \mathbf{u}_{j|k}\right) \leq \mathbf{0}, \nonumber
+\end{align}
+%
+in which the double index $j|k$ denotes the quantity predicted $j$ steps ahead from the
+information available at step $k$, $\hat{\mathbf{x}}_k$ is the state the controller believes
+the system to be in, $\ell$ is the stage cost, $V_\mathrm{f}$ the terminal cost, and
+$\mathbf{g}$ and $\mathbf{h}$ collect the equality and inequality constraints. Simple bounds
+$\mathbf{u} \in \mathbb{U}$ and $\mathbf{x} \in \mathbb{X}$ are the special case of
+$\mathbf{h}$ used most often, and the zero-sum condition on the electrode currents is an
+instance of $\mathbf{g}$. Writing $\mathbf{u}^\star_{0|k}, \dots, \mathbf{u}^\star_{H-1|k}$
+for the minimiser, the controller discards all but the first element and applies
+%
+\begin{equation*}
+    \mathbf{u}_k = \mathbf{u}^\star_{0|k},
+\end{equation*}
+%
+then advances to step $k+1$, takes a fresh measurement, and solves \eqref{eq:ocp} again over
+a window shifted one step into the future. Figure~\ref{fig:receding_horizon} shows the
+mechanism over three consecutive steps.
+
+\begin{figure}[tb]
+    \centering
+    \includegraphics[width=0.9\linewidth]{figures/03_foundations/receding_horizon}
+    \caption{The receding horizon principle over three consecutive control steps. At each
+    step the controller plans an input sequence over the Control Horizon of $H$ steps and
+    the trajectory it predicts, applies only the first input of that sequence, and discards
+    the rest. One step later the window has moved forward and the plan is recomputed from
+    the new measurement, so the realised trajectory is stitched together from the first step
+    of many different plans and never follows any one of them to its end. The plans depart
+    from the realised trajectory because the planner uses a nominal model while the plant is
+    disturbed, which is the mismatch the repetition corrects. The input is held constant
+    across a sampling interval and respects the bound $\mathbb{U}$ at every step. The
+    example uses a scalar system and serves only to illustrate the bookkeeping.}
+    \label{fig:receding_horizon}
+\end{figure}
+
+Solving \eqref{eq:ocp} once yields an open-loop input sequence. Feedback arises only from
+the repetition: because $\hat{\mathbf{x}}_k$ is refreshed from measurement before every
+solve, a deviation between what the model predicted and what the plant did is corrected at
+the next step rather than accumulating over the horizon. Two of the difficulties in this
+work are absorbed by that mechanism. The plant of Section~\ref{sec:connectome} is driven by
+the noise $\zeta_i$, while the controller optimises a single noise-free rollout of its
+model. Replacing the stochastic system by the deterministic one obtained from setting every
+future disturbance to its expected value is the certainty-equivalent approximation, and it
+is only an approximation, because the cost of the expected trajectory is not the expected
+cost of the trajectory whenever the dynamics or the cost are nonlinear. Stochastic and
+robust \ac{mpc} instead propagate the disturbance distribution or a worst-case tube through
+the horizon and tighten the constraints accordingly \cite{Mesbah2016}, at a cost in problem
+size not taken on here. The second difficulty is model mismatch. The prediction model is
+identified from data and is wrong in ways no disturbance model captures, so its rollout
+degrades with $j$; the receding horizon limits the damage by acting on the near end of the
+horizon, where the prediction is most trustworthy, and re-planning before the far end is
+reached \cite{Hewing2020}.
+
+Repetition alone establishes no stability guarantee. Nominal stability results for \ac{mpc}
+are built on terminal ingredients, a terminal cost $V_\mathrm{f}$ chosen as a local control
+Lyapunov function together with a terminal set the state is constrained to reach, which make
+the optimal cost a Lyapunov function of the closed loop and give recursive feasibility
+\cite{Mayne2000}. Constructing them requires an equilibrium to build the terminal set around
+and a model accurate enough for that set to remain invariant under the true dynamics.
+Neither is available to a data-driven controller acting on a seizure, so the closed loop of
+this work carries no certificate and its stability is assessed empirically, in
+closed-loop simulation. The relevant theory for that setting is the
+analysis of receding horizon control without terminal ingredients, where closed-loop
+performance is bounded in terms of the horizon length and a controllability condition, and a
+sufficiently long horizon recovers a fraction of the infinite-horizon performance
+\cite{Gruene2017}. Horizon length thus carries the burden terminal ingredients would
+otherwise carry, which is why Chapter~\ref{ch:methodology} treats it as a tuning parameter
+rather than fixing it by design.
+
+\subsection{Linear and Nonlinear MPC}
+
+The character of \eqref{eq:ocp} is decided by $\mathbf{f}$ and $\ell$. If the model is
+linear, $\mathbf{x}_{k+1} = \mathbf{A}\mathbf{x}_k + \mathbf{B}\mathbf{u}_k$ with the system
+matrix $\mathbf{A}$ and input matrix $\mathbf{B}$, the stage cost quadratic,
+$\ell(\mathbf{x}, \mathbf{u}) = \mathbf{x}^\top \mathbf{Q} \mathbf{x} + \mathbf{u}^\top
+\mathbf{R} \mathbf{u}$ with the weights $\mathbf{Q} \succeq 0$ and $\mathbf{R} \succ 0$, and
+the constraints affine, then the predicted states are affine in the input sequence and can
+be substituted out. What remains is a \ac{qp} in the inputs alone: convex, with a single
+global minimiser a solver reaches reliably and in a number of iterations that can be bounded
+in advance \cite{Rawlings2017}.
+
+Those properties are worth striving for, and the obstacle is that the plant is not linear.
+The Jansen-Rit node is nonlinear through the sigmoid of \eqref{eq:sigmoid}, and the
+stimulation drive enters inside that sigmoid. Nonlinear dynamics do not by themselves force
+a nonlinear controller, however, because linearity is a property of the coordinates the
+model is written in as much as of the system. Koopman operator theory makes the point
+precise. The flow of a nonlinear system acts linearly on functions of its state, so a model
+predicting a suitably chosen set of observables forward can be linear even though the
+underlying dynamics are not \cite{Rowley2009,Brunton2016}. A linear model in such a lifted
+space returns \eqref{eq:ocp} to a \ac{qp}, and Section~\ref{sec:sysid} takes up the question
+of whether one identified from data predicts well enough over a whole Control Horizon.
+
+Where no such model is available, \eqref{eq:ocp} is a nonconvex \ac{nlp} and \ac{nmpc} loses
+every property the linear case supplies: a solver returns a local minimiser whose quality
+depends on the initial guess, several such minimisers may exist, and the number of
+iterations needed to reach one is not known in advance \cite{Findeisen2002}. Choosing
+between the two formulations trades the reliability of the optimisation against the fidelity
+of the model, and this work implements both to see where each of them falls.
+
+\subsection{Transcription and Numerical Solution}
+\label{sec:transcription}
+
+Turning \eqref{eq:ocp} into something a numerical solver accepts is called transcription,
+and the choice is which of the predicted quantities become decision variables.
+
+In direct single shooting the inputs alone are optimised. The dynamics are used to simulate
+the trajectory forward from $\hat{\mathbf{x}}_k$, so that every predicted state is an
+explicit function $\boldsymbol{\varphi}_j$ of the initial state and the inputs preceding it,
+%
+\begin{equation*}
+    \boldsymbol{\varphi}_0 = \hat{\mathbf{x}}_k, \qquad
+    \boldsymbol{\varphi}_{j+1}\!\left(\hat{\mathbf{x}}_k, \mathbf{u}_{0|k}, \dots,
+    \mathbf{u}_{j|k}\right)
+    = \mathbf{f}\!\left(\boldsymbol{\varphi}_j, \mathbf{u}_{j|k}\right),
+\end{equation*}
+%
+and substituting it into \eqref{eq:ocp} leaves
+%
+\begin{align}
+    \min_{\mathbf{u}_{0|k}, \dots, \mathbf{u}_{H-1|k}} \quad
+    & \sum_{j=0}^{H-1} \ell\!\left(\boldsymbol{\varphi}_j, \mathbf{u}_{j|k}\right)
+      + V_\mathrm{f}\!\left(\boldsymbol{\varphi}_H\right) \nonumber \\
+    \text{s.t.} \quad
+    & \mathbf{g}\!\left(\boldsymbol{\varphi}_j, \mathbf{u}_{j|k}\right) = \mathbf{0},
+      \label{eq:single_shooting} \\
+    & \mathbf{h}\!\left(\boldsymbol{\varphi}_j, \mathbf{u}_{j|k}\right) \leq \mathbf{0},
+      \nonumber
+\end{align}
+%
+in $H n_u$ variables. The dynamic constraints have disappeared, satisfied by construction,
+so every solver iterate is already a valid trajectory of the model.
+
+In direct multiple shooting the horizon is cut into intervals and the state at the start of
+each interval joins the decision vector, with continuity imposed as an explicit equality
+constraint \cite{Bock1984}. Taking every step as an interval, the problem is
+%
+\begin{align}
+    \min_{\mathbf{x}_{0|k}, \dots, \mathbf{x}_{H|k},\; \mathbf{u}_{0|k}, \dots,
+    \mathbf{u}_{H-1|k}} \quad
+    & \sum_{j=0}^{H-1} \ell\!\left(\mathbf{x}_{j|k}, \mathbf{u}_{j|k}\right)
+      + V_\mathrm{f}\!\left(\mathbf{x}_{H|k}\right) \nonumber \\
+    \text{s.t.} \quad
+    & \mathbf{x}_{j+1|k} - \mathbf{f}\!\left(\mathbf{x}_{j|k}, \mathbf{u}_{j|k}\right)
+      = \mathbf{0}, \qquad
+      \mathbf{x}_{0|k} - \hat{\mathbf{x}}_k = \mathbf{0}, \label{eq:multiple_shooting} \\
+    & \mathbf{g}\!\left(\mathbf{x}_{j|k}, \mathbf{u}_{j|k}\right) = \mathbf{0}, \qquad
+      \mathbf{h}\!\left(\mathbf{x}_{j|k}, \mathbf{u}_{j|k}\right) \leq \mathbf{0}, \nonumber
+\end{align}
+%
+in $H n_u + (H+1) n_x$ variables. The continuity equalities hold only at convergence, so an
+intermediate iterate consists of trajectory pieces separated by gaps at the interval
+boundaries, as Figure~\ref{fig:shooting} contrasts with the single unbroken rollout of
+\eqref{eq:single_shooting}.
+
+The path constraints $\mathbf{g}$ and $\mathbf{h}$ appear in both transcriptions in different
+forms. Multiple shooting imposes them on decision variables directly, so a bound on a
+predicted state is a bound on a variable and the Jacobian of the constraint set is block
+banded, each block coupling one interval to the next. Under single shooting the states are
+not variables. A constraint on $\boldsymbol{\varphi}_j$ is a nonlinear function of the $j$
+inputs preceding it, its Jacobian row fills in as the horizon advances, and a simple state
+bound late in the horizon ends up a dense nonlinear inequality. Constraints on the input
+escape this. Kirchhoff's law of \eqref{eq:stim} and the Control Budget involve no predicted
+state, so single shooting leaves them the simple bounds and linear equalities they were.
+
+The sensitivities behave the same way. A single shooting rollout compounds them across the
+whole horizon, so the gradient of the cost with respect to an early input passes through
+every subsequent step and grows or vanishes exponentially in unstable or stiff systems,
+whereas multiple shooting confines each sensitivity to one interval. Multiple shooting
+therefore buys conditioning and cheap state constraints with a larger and sparser problem,
+and single shooting is preferable where the horizon is short enough for the compounding to
+stay benign and the constraints bear on the input alone.
+
+\begin{figure}[tb]
+    \centering
+    \includegraphics[width=0.9\linewidth]{figures/03_foundations/shooting}
+    \caption{Direct single shooting against direct multiple shooting over one Control
+    Horizon. Under single shooting the trajectory is one continuous rollout from the initial
+    state and only the inputs are decision variables, so the dynamics hold at every iterate.
+    Under multiple shooting the horizon is split into intervals, the state at the start of
+    each interval is a decision variable of its own, and the gaps between the resulting
+    trajectory pieces close only as the solver converges. The intermediate iterate drawn for
+    the multiple shooting case is therefore not a valid trajectory of the system.}
+    \label{fig:shooting}
+\end{figure}
+
+Whichever transcription is used, the result is an \ac{nlp} in finitely many variables,
+solved by one of two families. \Ac{sqp} methods approximate the problem at the current
+iterate by a \ac{qp} with a quadratic model of the Lagrangian and linearised constraints,
+solve it for a step, and repeat, which suits receding horizon control because a warm start
+from the previous solve often leaves few active-set changes to resolve. Interior-point
+methods instead replace the inequality constraints by a barrier term and drive the barrier
+parameter to zero, following a central path to the solution \cite{Waechter2006}. Interior-point methods scale
+better with the number of constraints and are less able to exploit a warm start, since they
+require a strictly feasible interior point and the previous solution typically sits on the
+boundary \cite{Nocedal2006}.
+
+\subsection{Output Feedback and Input-Output Models}
+\label{sec:output_feedback}
+
+The formulation \eqref{eq:ocp} assumes the initial state $\hat{\mathbf{x}}_k$ is known, and
+in this application it is not. The plant carries $6N$ states plus the history of the delay
+term, and the controller sees $M$ linear mixtures of a subset of them through
+\eqref{eq:eeg}. The classical remedy places an observer in front of the controller,
+estimates the state from the measurement sequence, and hands the estimate to the \ac{ocp} as
+though it were exact. For linear systems the separation principle makes the arrangement
+sound, but under nonlinear dynamics and active constraints no such principle holds, and
+stability results for output-feedback \ac{nmpc} rest instead on the observer error decaying
+fast enough relative to the controller \cite{Findeisen2003}. The construction also needs the
+plant equations the observer is built from, which a data-driven setting does not provide.
+
+The alternative taken here removes the estimation problem instead of solving it. An
+input-output model of \ac{narx} type predicts the next measurement from a finite window of
+past measurements and past inputs \cite{Chen1989}, so that
+%
+\begin{equation*}
+    \mathbf{y}_{k+1} = \mathbf{f}_\mathrm{NARX}\!\left(\mathbf{y}_k, \dots,
+    \mathbf{y}_{k-n_\mathrm{y}+1},\; \mathbf{u}_k, \dots, \mathbf{u}_{k-n_\mathrm{u}+1}\right),
+\end{equation*}
+%
+with $\mathbf{y}_k$ the measurement at step $k$ and $n_\mathrm{y}$ and $n_\mathrm{u}$ the
+numbers of past outputs and inputs retained. The window is the model state, $\mathbf{x}_k =
+\left[\mathbf{y}_k, \dots, \mathbf{u}_{k-n_\mathrm{u}+1}\right]$, and it is assembled from
+quantities the controller has recorded rather than inferred, so $\hat{\mathbf{x}}_k$ is
+available exactly and neither an observer nor a separation argument is needed. Two
+requirements replace the ones the observer imposed. The window has to be long enough to
+carry the information about the plant state the model needs, which the delayed coupling of
+\eqref{eq:coupling} makes concrete, and the model must be filled with a valid history before
+its first prediction is meaningful. Chapter~\ref{ch:methodology} treats that Priming
+requirement as part of the closed-loop schedule.
+
+\subsection{Cost Function Design}
+\label{sec:cost_design}
+
+The stage cost decides what the controller considers success, and it separates into two
+terms answering different questions,
+%
+\begin{equation*}
+    \ell(\mathbf{x}, \mathbf{u}) = \ell_\mathrm{x}(\mathbf{x}) + \ell_\mathrm{u}(\mathbf{u}),
+\end{equation*}
+%
+one scoring the predicted state or output and one scoring the input. The first expresses
+what suppression means, the second what the stimulation is allowed to cost, and the two are
+designed independently of each other.
+
+For the state term the standard choice is tracking, a quadratic penalty on the distance
+between the predicted quantity and a reference. Seizure suppression admits no single
+reference trajectory, because any output waveform staying within the amplitude and spectral
+envelope of healthy activity is acceptable and the many such waveforms are not ranked
+against each other. A cost expressing a performance criterion directly rather than the
+distance to a precomputed setpoint is called economic \cite{Ellis2014}, and a criterion
+scoring how far a predicted quantity leaves a healthy envelope, while leaving it free
+inside, is of that kind. Both forms are used in Chapter~\ref{ch:methodology}: quadratic
+tracking terms drive predicted quantities towards zero wherever a meaningful target exists,
+and economic terms take over wherever the objective is an envelope rather than a value.
+
+The input term is the second half of the stage cost, and its choice does more than trade
+effort against performance. Writing the input penalty as an $\ell_p$ norm of the input,
+%
+\begin{equation}
+    \ell_\mathrm{u}(\mathbf{u}) = w \, \|\mathbf{u}\|_p^p,
+    \label{eq:input_penalty}
+\end{equation}
+%
+with $w > 0$ the weight, the quadratic case $p = 2$ penalises large currents quadratically
+and small ones hardly at all, so its minimisers spread a small current over the whole
+horizon and every electrode. The case $p = 1$ penalises with a constant slope down to zero
+and drives components exactly to zero instead, the sparsity mechanism the lasso is built on
+\cite{Tibshirani1996}. The limit of the sequence is the $\ell_0$ pseudo-norm counting the
+nonzero entries, which is what a sparsity requirement actually means and which is neither
+convex nor differentiable. The link between the two is that on a bounded set the $\ell_1$
+norm is the convex envelope of $\ell_0$, the largest convex function bounding it from below
+\cite{Boyd2004}, so $\ell_1$ is the tightest convex surrogate for sparsity available rather
+than a merely convenient smooth stand-in. Under the sparsity motivation of
+Section~\ref{sec:mi_mpc}, where the quantity to be economised is delivered charge, the
+progression from $p = 2$ through $p = 1$ to the $\ell_0$ limit forms a single axis along
+which the controller is asked for progressively more concentrated stimulation.
+
+\subsection{Mixed-Integer MPC}
+\label{sec:mi_mpc}
+
+Taking the $\ell_0$ limit seriously changes the class of the optimisation problem. A
+stimulation waveform delivering charge only in isolated bursts is described by a binary
+decision per step, $\delta_{j|k} \in \{0, 1\}$, indicating whether a pulse is applied,
+together with a continuous amplitude admissible only when $\delta_{j|k} = 1$. The coupling
+between the two is the standard big-$M$ implication
+%
+\begin{equation*}
+    -\delta_{j|k} \, u_\mathrm{max} \leq u_{p,j|k} \leq \delta_{j|k} \, u_\mathrm{max},
+    \qquad p = 1, \dots, P,
+\end{equation*}
+%
+with $u_{p,j|k}$ the predicted current at electrode $p$ and $u_\mathrm{max}$ the
+per-electrode bound, which forces the amplitude to zero on steps the controller elects not
+to stimulate and leaves it free otherwise. A budget of $n_\mathrm{p}$ pulses per horizon is
+then the linear constraint $\sum_{j=0}^{H-1} \delta_{j|k} \leq n_\mathrm{p}$, and the
+sparsity the $\ell_1$ penalty of \eqref{eq:input_penalty} only encourages becomes something
+the problem enforces exactly. Systems mixing continuous dynamics with logical decisions of
+this kind are the subject of the mixed logical dynamical framework \cite{Bemporad1999}.
+
+Problem~\eqref{eq:ocp} extended this way is a \ac{miqp} when the underlying problem is a
+\ac{qp} and a \ac{minlp} in the nonlinear case treated here. Both are solved by
+branch-and-bound: a relaxation with the integrality dropped supplies a lower bound, a
+fractional variable is selected and the problem split into the two subproblems fixing it to
+zero and to one, and subtrees whose bound is worse than the best known integer solution are
+pruned \cite{Belotti2013}. Pruning is what makes the method usable, but it guarantees
+nothing, and the worst case remains the $2^H$ binary combinations over the horizon. The cost
+is far more damaging in receding horizon control than in offline planning, because the
+problem is solved not once but at every sampling instant, and because a \ac{minlp} node
+relaxation is itself a nonconvex \ac{nlp} whose local minimiser is not a valid bound. Move
+blocking, which constrains the input to be constant across groups of consecutive steps and
+so reduces the number of binary variables below $H$, is the usual lever for keeping the tree
+small enough \cite{Cagienard2007}.
+
+The alternative to solving the integer problem is to relax it, solve the resulting
+continuous problem, and recover a binary solution from the relaxed one. Relaxing
+$\delta_{j|k} \in \{0,1\}$ to $\delta_{j|k} \in [0,1]$ returns the \ac{minlp} to an \ac{nlp}
+of the kind Section~\ref{sec:transcription} already handles, at the price of a solution
+physically meaningless where it is fractional, a pulse being either delivered or not. A
+rounding scheme has to follow, and its value rests on whether the trajectory of the rounded
+solution can be bounded against that of the relaxed one; bounds of this kind exist for
+mixed-integer optimal control and tighten as the discretisation is refined \cite{Sager2012}.
+Which relaxation and rounding to adopt is left open here, because the choice interacts with
+the prediction model: a relaxation over pulse timing rather than pulse presence needs a
+model evaluable between sampling instants, which a discrete-time predictor is not.
+Chapter~\ref{ch:methodology} returns to the question once the prediction model is fixed.
 
 \section{Data-Driven Dynamics Identification}
+\label{sec:sysid}
 
 \subsection{Multilayer Perceptrons (MLP)}
 
-\section{Model Predictive Control (MPC)}
 
-\subsection{Fundamentals of Receding Horizon Control}
+\section{Short-Time-Fourier Transform} % location of this section not sure
 
-\subsection{Mixed-Integer MPC}
+
+% the whole pipeline: windowing hop, kernel smooting, frequency resolution, etc.
