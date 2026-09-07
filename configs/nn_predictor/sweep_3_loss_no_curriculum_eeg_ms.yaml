@@ -9,8 +9,8 @@ model:
   n_y: 15
   n_u: 10
   residual: true
-  hidden_size: 128        # Update from best sweep_2 result
-  depth: 2               # Update from best sweep_2 result
+  hidden_size: 256        # From best sweep_2 result
+  depth: 1               # From best sweep_2 result
 
 training:
   epochs: 250
@@ -19,10 +19,10 @@ training:
   patience: 50
   scaler: "robust"
   global_scaling: true
-  batch_size: 256
+  batch_size: 1024
   eval_horizon_s: 0.2
-  learning_rate: 0.00002       # Update from best sweep_1 result
-  weight_decay: 0.0002         # Update from best sweep_1 result
+  learning_rate: 6.650153060902405e-05       # From best sweep_1 result
+  weight_decay: 9.925538634530832e-06        # From best sweep_1 result
   losses:
     curriculum_mse:
       weight: 1.0
