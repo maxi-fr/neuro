@@ -58,9 +58,9 @@ lowercase. A running index is italic, a naming index upright.
     Symbol & Description & Unit \\
     \midrule
     \multicolumn{3}{l}{\itshape Model predictive control} \\
-    $k$ & Discrete control step index & -- \\
-    $j$ & Step offset within the Control Horizon & -- \\
-    $H$ & Control Horizon length & -- \\
+    $k$ & Sample index, and the control step index & -- \\
+    $j$ & Step offset within the control horizon & -- \\
+    $H$ & control horizon length & -- \\
     $\mathbf{x}$, $n_x$ & Prediction model state and its dimension & -- \\
     $\hat{\mathbf{x}}_k$ & Model state the horizon starts from & -- \\
     $n_u$ & Input dimension & -- \\
@@ -71,7 +71,7 @@ lowercase. A running index is italic, a naming index upright.
     $\ell$ & Stage cost & -- \\
     $\ell_\mathrm{x}$, $\ell_\mathrm{u}$ & State and input term of the stage cost & -- \\
     $V_\mathrm{f}$ & Terminal cost & -- \\
-    $J$ & Cost over the Control Horizon & -- \\
+    $J$ & Cost over the control horizon & -- \\
     $\mathbf{Q}$, $\mathbf{R}$ & Weights of a quadratic stage cost & -- \\
     $w$ & Weight of the input penalty & -- \\
     $\ell_p$ & Input penalty norm, order $p \in \{0, 1, 2\}$ & -- \\
@@ -81,7 +81,28 @@ lowercase. A running index is italic, a naming index upright.
     $\mathbf{I}_n$ & Identity matrix of size $n \times n$ & -- \\
     $\delta_{j|k}$ & Binary pulse indicator & -- \\
     $u_\mathrm{max}$ & Per-electrode current bound & \si{\milli\ampere} \\
-    $n_\mathrm{p}$ & Pulse budget per Control Horizon & -- \\
+    $n_\mathrm{p}$ & Pulse budget per control horizon & -- \\
+    \bottomrule
+\end{tabular}
+
+\begin{tabular}{lll}
+    \toprule
+    Symbol & Description & Unit \\
+    \midrule
+    \multicolumn{3}{l}{\itshape Short-time Fourier transform} \\
+    $f_\mathrm{s}$ & Sampling rate of the segmented signal & \si{\hertz} \\
+    $\Delta t$, $t_k$ & Sampling interval and the time of sample $k$ & \si{\second} \\
+    $n$ & Sample index within a segment & -- \\
+    $q$ & Segment index on the hop grid & -- \\
+    $L_\mathrm{s}$ & Segment length & -- \\
+    $H_\mathrm{s}$ & Hop between consecutive segments & -- \\
+    $g_n$ & Hann taper applied to a segment & -- \\
+    $\nu$, $f_\nu$ & Frequency bin index and the frequency it sits at & --, \si{\hertz} \\
+    $\Delta f$ & Bin spacing, $f_\mathrm{s} / L_\mathrm{s}$ & \si{\hertz} \\
+    $Y_q(f_\nu)$ & \Ac{stft} coefficient of segment $q$ & -- \\
+    $\hat{\Phi}_q$, $\bar{\Phi}_q$ & Periodogram and its trailing average & -- \\
+    $\alpha_\nu$ & One-sided folding factor of the periodogram & -- \\
+    $\kappa_{q'}$, $L_\mathrm{k}$ & Averaging kernel weights and width & -- \\
     \bottomrule
 \end{tabular}
 

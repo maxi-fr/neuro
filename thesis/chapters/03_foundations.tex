@@ -132,14 +132,17 @@ $A_i = 3.6\,\si{\milli\volt}$ and oscillates autonomously, needing no input from
 network to seize. The \ac{pz} takes the intermediate $A_i = 3.4\,\si{\milli\volt}$, which
 leaves it below its own bifurcation but close enough that coupling from an active \ac{ez}
 recruits it.
-Figure~\ref{fig:bifurcation} shows the three levels as time series and power spectra, and contrasts a \ac{pz} node in isolation with the same node embedded in the network.
+Figure~\ref{fig:bifurcation} shows the three levels as time series and Welch power
+spectra, the estimator Section~\ref{sec:stft} develops, and contrasts a \ac{pz} node in
+isolation with the same node embedded in the network.
 
 \begin{figure}[tb]
     \centering
     \includegraphics[width=0.9\linewidth]{figures/03_foundations/excitability_regimes}
     \caption{Jansen-Rit dynamics at the three excitability levels. Left, the local field
     potential $y_\mathrm{LFP}$ over \SI{4}{\second} of simulation following a
-    \SI{4}{\second} transient; right, the corresponding power spectral density. Rows (a),
+    \SI{4}{\second} transient; right, the corresponding Welch power spectral density,
+    averaged over three segments of $2^{14}$ samples. Rows (a),
     (b) and (d) are uncoupled nodes: background tissue and the \ac{pz} both fluctuate
     around their fixed point at low amplitude, while the \ac{ez} has crossed into a
     large-amplitude spike-wave limit cycle with pronounced harmonics. Row (c) is the same
@@ -278,11 +281,183 @@ How the two lead fields are obtained in practice is taken up in Chapter~\ref{ch:
 The Plant is now fully specified, and with it the difficulty the rest of the thesis
 addresses. The controller must regulate a $6N$-dimensional delayed stochastic system while
 observing only $M$ linear mixtures of it and acting only through $P$ scalp currents, and it
-must do so fast enough to intervene before recruitment spreads. The following section
-develops the control formulation meeting those requirements, and states in doing so what it
-demands of a prediction model; Section~
-ef{sec:sysid} then turns to identifying such a
-model from data, since solving the plant equations online is out of reach.
+must do so fast enough to intervene before recruitment spreads. Those $M$ mixtures reach the
+controller as raw voltage traces, and the following section develops the spectral estimate
+that turns them into the quantity the loop acts on. Section~\ref{sec:mpc} then develops the control formulation, and states in
+doing so what it demands of a prediction model; Section~\ref{sec:sysid} turns to identifying
+such a model from data, since solving the plant equations online is out of reach.
+
+\section{The Short-Time Fourier Transform}
+\label{sec:stft}
+
+Reading \ac{eeg} through its power spectrum is standard practice, and
+Figure~\ref{fig:bifurcation} already did so: the seizing nodes there carry some three orders of
+magnitude more power below \SI{10}{\hertz} than the background node and roll off steeply above
+\SI{20}{\hertz}, where the background spectrum decays gradually across the whole band. The
+estimate behind that figure averages over the whole four-second record, so it reports one
+number per frequency for an interval during which the network may have changed regime several
+times. Recovering the time axis means computing the same kind of estimate from a short
+trailing stretch of signal and refreshing it as the signal arrives. The \ac{stft} is that
+construction. It is used throughout the predictor and controller design of this thesis, and
+this section develops it once, from the segmentation of the sampled signal to the averaged
+spectra the later chapters work with.
+
+Only one channel is treated here. Every operation below acts on each channel of
+$\mathbf{y}_\mathrm{EEG}$ separately, so the channel index is dropped throughout the section
+and restored where the channels are stacked again.
+
+\subsection{Segmentation and the Time-Frequency Trade-off}
+\label{sec:stft_grid}
+
+The plant evolves in continuous time, while everything downstream of the electrodes reads it
+on a sampling grid. Fixing a sampling interval $\Delta t = 1 /
+f_\mathrm{s}$ and writing $t_k = k \, \Delta t$, the sampled channel is
+%
+\begin{equation}
+    y_k = y_\mathrm{EEG}(t_k), \qquad k \in \mathbb{Z},
+    \label{eq:sampling}
+\end{equation}
+%
+and $k$ indexes both the measurements and, from Section~\ref{sec:mpc} on, the steps at which
+the controller acts. The \ac{stft} cuts that stream into segments of $L_\mathrm{s}$ samples
+spaced $H_\mathrm{s}$ samples apart, multiplies each segment by a taper $g_n$, and transforms
+it. Segment $q$ starts at sample $q H_\mathrm{s}$, so with $n$ counting samples from the start
+of a segment its coefficients are
+%
+\begin{equation}
+    Y_q(f_\nu) = \sum_{n=0}^{L_\mathrm{s}-1} g_n \, y_{q H_\mathrm{s} + n}
+    \, \mathrm{e}^{-\mathrm{i} 2 \pi \nu n / L_\mathrm{s}},
+    \qquad f_\nu = \nu \, f_\mathrm{s} / L_\mathrm{s},
+    \label{eq:stft}
+\end{equation}
+%
+where $\nu = 0, \dots, L_\mathrm{s}/2$ indexes the frequency bins of the real-input transform
+and $f_\nu$ is the frequency each bin sits at. The segment length $L_\mathrm{s}$ and the hop
+$H_\mathrm{s}$ are the two integers that fix the grid, and Figure~\ref{fig:stft_geometry}
+draws it.
+
+The segment length settles two things at once. Segment $q$ ends at sample
+$q H_\mathrm{s} + L_\mathrm{s} - 1$ and uses no sample after it, so the transform runs online,
+though not before that sample has arrived: each spectrum lags the oldest sample it carries by
+$L_\mathrm{s} \, \Delta t$ seconds, and anything acting on those spectra inherits the lag. The
+same length also fixes the resolution. Bins are spaced $\Delta f = f_\mathrm{s}/L_\mathrm{s}$
+apart, which is also the width of the central peak the finite segment convolves the true
+spectrum with, so two components closer together than $\Delta f$ are reported as one
+\cite{Oppenheim2010}. Resolving finer structure means a longer segment, and a longer segment
+means a longer delay.
+
+The taper $g_n$ is the remaining freedom. Taking a segment without one multiplies the signal
+by a rectangular window, whose transform has ripples flanking the central peak, the sidelobes,
+decaying only as $1/f$. A strong low-frequency component then leaks power across the whole
+band and buries weaker structure. Tapering the segment edges smoothly to zero suppresses the
+sidelobes and widens the central peak to roughly twice $\Delta f$ in exchange
+\cite{Oppenheim2010}. This thesis uses the periodic Hann taper throughout, in the training
+loss and in the controller alike.
+
+\begin{figure}[tb]
+    \centering
+    \includegraphics[width=0.9\linewidth]{figures/03_foundations/stft_geometry}
+    \caption{The grid an \ac{stft} imposes, drawn on a linear chirp sweeping
+    \SIrange{4}{45}{\hertz} over \SI{3}{\second} at $f_\mathrm{s} = \SI{200}{\hertz}$. Top,
+    the signal with the first four segments drawn as the Hann taper $g_n$ that weights them.
+    Consecutive segments are $L_\mathrm{s} = 64$ samples long and start $H_\mathrm{s} = 32$
+    samples apart, so each overlaps its neighbour by half. Bottom, the resulting spectra, each
+    plotted at the instant its segment ends, since no earlier instant has the samples it
+    needs. The arrow marks the $L_\mathrm{s}$ samples the first spectrum waits for.}
+    \label{fig:stft_geometry}
+\end{figure}
+
+\subsection{Power Estimation and Averaging}
+\label{sec:stft_power}
+
+Only the magnitude of \eqref{eq:stft} is carried further. The phase records where within a
+segment each component sits, and that shifts with every hop even when the spectrum itself does
+not move, whereas what separates the regimes of Figure~\ref{fig:bifurcation} is how much power
+sits where. Each segment is therefore reduced to the one-sided power spectral density
+%
+\begin{equation}
+    \hat{\Phi}_q(f_\nu) = \frac{\alpha_\nu \, |Y_q(f_\nu)|^2}
+    {f_\mathrm{s} \sum_{n=0}^{L_\mathrm{s}-1} g_n^2},
+    \qquad
+    \alpha_\nu =
+    \begin{cases}
+        1, & \nu \in \{0, \, L_\mathrm{s}/2\}, \\
+        2, & \text{otherwise},
+    \end{cases}
+    \label{eq:periodogram}
+\end{equation}
+%
+the periodogram of segment $q$. The factor $\alpha_\nu$ folds the negative frequencies onto
+the positive ones, sparing the two bins that have no partner. The denominator holds the taper
+energy $\sum_n g_n^2$, which the Hann definition does not normalise to one, and dividing it
+out makes the result a density per hertz whose value does not depend on how long the segment
+was or on how much the taper attenuated it \cite{Oppenheim2010}. Without that normalisation a
+comparison between two segment lengths would confound a change of resolution with a change of
+scale.
+
+Equation~\eqref{eq:periodogram} is a poor estimator, and poor in a way lengthening the segment
+does not repair. For a stationary Gaussian process the real and imaginary parts of $Y_q(f_\nu)$
+are asymptotically independent and Gaussian with variance proportional to the true density
+$\Phi(f_\nu)$, so $\hat{\Phi}_q$ is that density scaled by a chi-squared variable with two
+degrees of freedom \cite{Oppenheim2010}. Its standard deviation therefore equals its mean,
+whatever $L_\mathrm{s}$ is. Doubling the segment doubles the number of bins and leaves the
+scatter within each of them untouched, which is why a single periodogram of a long record
+looks like noise drawn around the shape it is meant to reveal. Averaging is the only remedy.
+The mean of $L_\mathrm{k}$ periodograms of independent segments has $2 L_\mathrm{k}$ degrees
+of freedom and $L_\mathrm{k}$ times less variance, at no cost in resolution. Averaging the
+periodograms of every segment in a record is Welch's method, and it is what produced the
+spectra of Figure~\ref{fig:bifurcation}.
+
+Welch's average over a whole record returns a single spectrum and so gives up the time axis
+again. Averaging over a trailing group of segments instead keeps it,
+%
+\begin{equation}
+    \bar{\Phi}_q(f_\nu) = \sum_{q'=0}^{L_\mathrm{k}-1} \kappa_{q'} \,
+    \hat{\Phi}_{q-q'}(f_\nu),
+    \label{eq:frame_kernel}
+\end{equation}
+%
+with non-negative weights $\kappa_{q'}$ summing to one over a width of $L_\mathrm{k}$
+segments. Uniform weights make \eqref{eq:frame_kernel} a Welch estimate over the trailing
+$L_\mathrm{k}$ segments, recomputed at every hop. A triangular or Hann weighting instead
+discounts older segments, which is the sensible choice when the spectrum is expected to move.
+The kernel costs a further $(L_\mathrm{k} - 1) H_\mathrm{s}$ samples of delay and leaves
+$\Delta f$ untouched, so it buys degrees of freedom rather than resolution and is a knob
+separate from the segment length. Figure~\ref{fig:stft_resolution} separates the two effects.
+
+\begin{figure}[tb]
+    \centering
+    \includegraphics[width=0.98\linewidth]{figures/03_foundations/stft_resolution}
+    \caption{The two knobs, on the \ac{lfp} of an uncoupled \ac{ez} node decimated to
+    $f_\mathrm{s} = \SI{50}{\hertz}$. Left, periodograms at three segment lengths, each
+    averaged over eight spectra so that only the resolution differs, with markers at the bin
+    centres. At $L_\mathrm{s} = 25$ the six bins below \SI{12}{\hertz} cannot represent the
+    shape of the seizure band, and the estimate decays monotonically where the finer grids
+    show a trough near \SI{1}{\hertz} and a peak near \SI{3}{\hertz}. Right, three kernel
+    widths at a fixed $L_\mathrm{s} = 200$. The unaveraged periodogram swings over two
+    decades between neighbouring bins, and widening the kernel pulls the curve towards the
+    shape underneath it without moving a single bin.}
+    \label{fig:stft_resolution}
+\end{figure}
+
+Figure~\ref{fig:stft_spectrogram} runs the whole construction on a node being recruited into a
+seizure. What $L_\mathrm{s}$, $H_\mathrm{s}$ and $L_\mathrm{k}$ should be is left open here,
+because the answer depends on how fast the loop has to close and on what a prediction model
+can be expected to forecast. The next section develops the control formulation that settles
+the first of those questions.
+
+\begin{figure}[tb]
+    \centering
+    \includegraphics[width=0.9\linewidth]{figures/03_foundations/stft_spectrogram}
+    \caption{Spectra of a \ac{pz} node recruited by the \ac{ez}, from the 76-region network of
+    Table~\ref{tab:jr_params} started at the healthy fixed point and decimated to
+    $f_\mathrm{s} = \SI{50}{\hertz}$. Top, the \ac{lfp}, which leaves its resting level shortly
+    after \SI{2.5}{\second}. Bottom, the periodograms \eqref{eq:periodogram} at
+    $L_\mathrm{s} = 50$ and $H_\mathrm{s} = 25$, one every \SI{0.5}{\second}, with no
+    averaging over segments and on a decibel colour scale. Recruitment appears as a step in
+    the low-frequency bins within one hop of the transition in the trace.}
+    \label{fig:stft_spectrogram}
+\end{figure}
 
 \section{Model Predictive Control}
 \label{sec:mpc}
@@ -317,7 +492,7 @@ identified from data they need not share a dimension, let alone a physical meani
 Section~\ref{sec:output_feedback} gives a model whose state is a window of past
 measurements.
 
-At step $k$ the controller solves, over the Control Horizon of $H$ steps, the \ac{ocp}
+At step $k$ the controller solves, over the control horizon of $H$ steps, the \ac{ocp}
 %
 \begin{align}
     \min_{\mathbf{u}_{0|k}, \dots, \mathbf{u}_{H-1|k}} \quad
@@ -352,7 +527,7 @@ mechanism over three consecutive steps.
     \centering
     \includegraphics[width=0.9\linewidth]{figures/03_foundations/receding_horizon}
     \caption{The receding horizon principle over three consecutive control steps. At each
-    step the controller plans an input sequence over the Control Horizon of $H$ steps and
+    step the controller plans an input sequence over the control horizon of $H$ steps and
     the trajectory it predicts, applies only the first input of that sequence, and discards
     the rest. One step later the window has moved forward and the plan is recomputed from
     the new measurement, so the realised trajectory is stitched together from the first step
@@ -419,7 +594,7 @@ precise. The flow of a nonlinear system acts linearly on functions of its state,
 predicting a suitably chosen set of observables forward can be linear even though the
 underlying dynamics are not \cite{Rowley2009,Brunton2016}. A linear model in such a lifted
 space returns \eqref{eq:ocp} to a \ac{qp}, and Section~\ref{sec:sysid} takes up the question
-of whether one identified from data predicts well enough over a whole Control Horizon.
+of whether one identified from data predicts well enough over a whole control horizon.
 
 Where no such model is available, \eqref{eq:ocp} is a nonconvex \ac{nlp} and \ac{nmpc} loses
 every property the linear case supplies: a solver returns a local minimiser whose quality
@@ -575,12 +750,11 @@ designed independently of each other.
 
 For the state term the standard choice is tracking, a quadratic penalty on the distance
 between the predicted quantity and a reference. Seizure suppression admits no single
-reference trajectory, because any output waveform staying within the amplitude and spectral
-envelope of healthy activity is acceptable and the many such waveforms are not ranked
-against each other. A cost expressing a performance criterion directly rather than the
-distance to a precomputed setpoint is called economic \cite{Ellis2014}, and a criterion
-scoring how far a predicted quantity leaves a healthy envelope, while leaving it free
-inside, is of that kind. Both forms are used in Chapter~\ref{ch:methodology}: quadratic
+reference trajectory, because any output waveform whose spectra stay within the envelope of
+healthy activity is acceptable and the many such waveforms are not ranked against each other.
+A cost expressing a performance criterion directly rather than the distance to a precomputed
+setpoint is called economic \cite{Ellis2014}, and a criterion scoring how far a predicted
+spectrum rises above such an envelope, while leaving it free underneath, is of that kind. Both forms are used in Chapter~\ref{ch:methodology}: quadratic
 tracking terms drive predicted quantities towards zero wherever a meaningful target exists,
 and economic terms take over wherever the objective is an envelope rather than a value.
 
@@ -659,9 +833,3 @@ Chapter~\ref{ch:methodology} returns to the question once the prediction model i
 \label{sec:sysid}
 
 \subsection{Multilayer Perceptrons (MLP)}
-
-
-\section{Short-Time-Fourier Transform} % location of this section not sure
-
-
-% the whole pipeline: windowing hop, kernel smooting, frequency resolution, etc.
