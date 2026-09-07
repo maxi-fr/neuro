@@ -957,6 +957,7 @@ numpy==2.5.2 \
     #   osqp
     #   pandas
     #   pandas-stubs
+    #   qdldl
     #   scipy
     #   seaborn
     #   simulate
@@ -1350,6 +1351,33 @@ pyzmq==27.1.0 \
     #   ipykernel
     #   jupyter-client
     #   marimo
+qdldl==0.1.9.post1 \
+    --hash=sha256:00331a5e45cc60bf6f75f027ae2a2c137295de0b5e1a0af358a37aaa07427476 \
+    --hash=sha256:0cb2e82b4f40cb18638da47adf491a016d76d0d82f25377c4c330453a8785f94 \
+    --hash=sha256:0d69a8d011f47f287c5e7668b92b9e3574798b9687bc751af6f89c15037aa26e \
+    --hash=sha256:0db9f197fb51c6fa96ff1964707e2ba9a89b7b0d91c305e6e0b668e1bcb66fbf \
+    --hash=sha256:0fba64949c3197c6691c8fe4c3fbcb4f95d6e85b314824ba75981efcdf06d98c \
+    --hash=sha256:1922c11ddb59419ab969cd1a069e85da9e37db9b14d92b0900e73be94d25c318 \
+    --hash=sha256:1ddd5b43b760ffb4cc85ca1acfb0eb139bff78bcc7bd30cad4c55564074685d4 \
+    --hash=sha256:213f6125564f61d9597d5d36c5556d4c898225bc31a99f8c87fd549b2e65b60a \
+    --hash=sha256:25da2bcd44dd272435db3b4208b47943837503f43db4d24c02e5e15b7d5ddf33 \
+    --hash=sha256:27b02a730c39b2dba205bb5c08dca5deb994f655f6eeacee687ac006c50b3366 \
+    --hash=sha256:31296314679c6ccfad8760704dbc9e25b5e49fd442f803638a2aaa1886724f7d \
+    --hash=sha256:496bebf154c002fb7a36443b9a26cc0f7251e8e9251d3742590300cd2edec7a8 \
+    --hash=sha256:547f73046ef615827317fbedb21b5e1b11f5082d304e8d775e9e17d6c447a598 \
+    --hash=sha256:576edaf8b847d087806e3d2a860a06d52a435aa3192b21bbc39e69a55187805d \
+    --hash=sha256:98a13e234ea335484cf76441b95638d0f9ecdd43242dd5a073f77c758977d980 \
+    --hash=sha256:9a2aed01dbdc705bcab71270ce20753a016bd7b112ea7e06d1166d897e7483cb \
+    --hash=sha256:9adb8625012e96ceb6c24a8278b8aa9477727ae8fde35dee730988747ab95144 \
+    --hash=sha256:bc0f30e521da345d25e4fa5308fda4964e25beacd10e8de9f08d084a600a42e2 \
+    --hash=sha256:da2016d541c26cefc79bca4d8b5bebfa00f35db19704abb20efbd1c08df3b4c7 \
+    --hash=sha256:dbfb46f7290917146b076449fb3fee1eefdf018e710c7033c11739ae1723da07 \
+    --hash=sha256:dd08bbb431f138c2946a0d99cb70fbfe67435c8b3dc1dbf23e4e80edfd2b1456 \
+    --hash=sha256:e3438e9cb3f8a26531a24f25bb05152a7446112f4c8ff62d537debfb8147435c \
+    --hash=sha256:e881f51dc779441c0910dc5a9d89bfd40a459daaf8088934aebf6f4c84adf1e0 \
+    --hash=sha256:e8c0148de01346722ef07ce9434485b97b8f3aa7042cac5c341b58a728fe7588 \
+    --hash=sha256:fcc2184cac1e502ed624efe7f00c1c215b95cfd324a8cacf7f0053c00fa524f5
+    # via trajopt
 ruff==0.16.3 \
     --hash=sha256:09571e6d1288ed9be475207a3ac04ada404f1cd898104be0f6ab8d7df438575b \
     --hash=sha256:0c5710e247a58a4521e66e124ba9a74655b414f61ba3a2e9e3811e11098f48f7 \
@@ -1407,6 +1435,7 @@ scipy==1.18.0 \
     #   jaxlib
     #   neuro
     #   osqp
+    #   qdldl
     #   trajopt
     #   tvb-library
 seaborn==0.13.2 \
@@ -1490,7 +1519,7 @@ traitlets==5.16.1 \
     #   jupyter-client
     #   jupyter-core
     #   matplotlib-inline
-trajopt @ git+https://github.com/maxi-fr/trajopt.git@2b7b953202bd1f7538ad3e34cc235e00e0257214
+trajopt @ git+https://github.com/maxi-fr/trajopt.git@08fd88db022b22912d4fccb12af9927b76d052f6
     # via neuro
 tvb-data==3.0.0 \
     --hash=sha256:681e9fb1fd807b57f9b55c7fd147ac7563ded90c978d42eeae1bb150adab0b12 \

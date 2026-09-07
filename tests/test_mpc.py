@@ -10,7 +10,7 @@ import pytest
 import torch
 from simulate.config import load_config as load_sim_config
 from simulate.simulation import Simulation
-from trajopt.problem import MPCState
+from trajopt.mpc import MPC
 from trajopt.solvers.altro import ALTRO
 from trajopt.solvers.boxqp import BoxQP
 from trajopt.transcription.ipopt import Ipopt
@@ -21,12 +21,13 @@ from yaml import safe_load
 from neuro.config import StftGeometry
 from neuro.control.costs import ObservableHingeCost
 from neuro.control.mpc import (
+    CanonicalDuals,
     TrajOptMPCController,
     TrajOptMPCLog,
     _default_solver,
-    build_bipolar_waveform_problem,
     build_observable_problem,
     build_waveform_problem,
+    canonicalize_duals,
 )
 from neuro.filtering import ObservableEstimator
 from neuro.predictor.inference import ObservableMLPModel, WaveformMLPModel
@@ -231,7 +232,7 @@ def test_from_config_dispatches_problem_factory(tmp_path: Path) -> None:
         }
     )
     assert controller.dt == 0.01
-    assert controller.problem.N == 6  # horizon + 1 knot points
+    assert controller.mpc.program.problem.N == 6  # horizon + 1 knot points
     assert controller.model.m == 2
 
 
@@ -259,7 +260,7 @@ def test_controller_keeps_absorbed_state_private(tmp_path: Path) -> None:
     assert not log_last.warmup
     assert not np.isnan(controller._state[:n_z]).any()  # noqa: SLF001 -- the test inspects the absorbed state it owns
     np.testing.assert_array_equal(controller._u_last, u_last)  # noqa: SLF001 -- the test verifies the private u_last persistence
-    seed = controller.state.x0
+    seed = controller.mpc.x0
     assert not np.array_equal(np.asarray(seed), controller._state)  # noqa: SLF001 -- absorbed state vs post-solve seed
 
 
@@ -433,15 +434,14 @@ def test_build_observable_problem_assembles_and_solves(tmp_path: Path) -> None:
     model = ObservableMLPModel.load(artifact)
     x0 = np.asarray(model.initial_state())
     x0[: model.n_y * model.n_outputs] = rng.uniform(-1.0, 1.0, model.n_y * model.n_outputs)
-    state = MPCState.initial(problem, x0=jnp.asarray(x0), dt=model.dt)
     # Ipopt's 1e-8 default is below the noise floor of a float32 objective whose optimum sits
     # inside L1ControlCost's eps=1e-3 smoothing radius, where curvature is 1/eps; the solve
     # stalls there at a dual infeasibility of ~1e-2 with the objective already flat to 1e-6.
     solver = Ipopt(options={"print_level": 0, "hessian_approximation": "limited-memory", "tol": 1e-3})
-    solved = problem.solve(state, solver=solver)
-    assert solved.status == "converged"
+    mpc = MPC(problem, solver, x0=jnp.asarray(x0))
+    assert mpc.solve().success
 
-    controls = np.asarray(solved.controls)
+    controls = np.asarray(mpc.controls)
     assert controls.shape == (4, 2)
     assert np.all(np.abs(controls) <= 0.5 + 1e-6)
     np.testing.assert_allclose(np.sum(controls, axis=1), np.zeros(4), atol=1e-5)
@@ -550,7 +550,7 @@ def test_observable_controller_from_config(tmp_path: Path) -> None:
     }
     controller = TrajOptMPCController.from_config(cfg)
     assert controller.dt == 0.10
-    assert controller.problem.N == 5
+    assert controller.mpc.program.problem.N == 5
     assert controller.model.m == 2
 
 
@@ -645,24 +645,20 @@ def test_example_observable_config_runs_simulation_start_to_finish(tmp_path: Pat
 
 
 def test_default_solver_selection(tmp_path: Path) -> None:
-    """_default_solver chooses BoxQP for bipolar and SingleShooting for general problems."""
-    art_wf = _build_checkpoint(tmp_path / "wf", depth=0, n_y=3, n_u=2, horizon=4, n_channels=2, n_controls=2)
+    """_default_solver picks SingleShooting(Ipopt) for every deployed formulation."""
+    art_wf = _build_checkpoint(tmp_path / "wf", depth=0, n_y=3, n_u=2, horizon=4, n_channels=2, n_controls=3)
 
-    # 1. Bipolar reduced waveform OCP -> BoxQP
-    prob_bip = build_bipolar_waveform_problem(art_wf, horizon=4, u_max=0.5, w_y=1.0)
-    assert isinstance(_default_solver(prob_bip), BoxQP)
-
-    # 2. Standard waveform OCP -> SingleShooting(Ipopt)
-    prob_wf = build_waveform_problem(art_wf, horizon=4, u_max=0.5, w_y=1.0, kirchhoff=True)
-    assert isinstance(_default_solver(prob_wf), SingleShooting)
-
-    # 3. Whole-horizon PSD cost -> SingleShooting(Ipopt)
     psd_ref = tmp_path / "psd_ref.npz"
     np.savez_compressed(psd_ref, Pref=np.full((2, 3), -2.0), fs=100.0, L=4, R=2)
-    prob_psd = build_waveform_problem(art_wf, horizon=4, u_max=0.5, w_psd=1.0, psd_ref=psd_ref)
-    default_psd = _default_solver(prob_psd)
-    assert isinstance(default_psd, SingleShooting)
-    assert isinstance(default_psd.solver, Ipopt)
+    problems = (
+        build_waveform_problem(art_wf, horizon=4, u_max=0.5, w_y=1.0, kirchhoff=True),
+        build_waveform_problem(art_wf, horizon=4, u_max=0.5, w_y=1.0, reduce_kirchhoff=True),
+        build_waveform_problem(art_wf, horizon=4, u_max=0.5, w_psd=1.0, psd_ref=psd_ref),
+    )
+    for problem in problems:
+        solver = _default_solver(problem)
+        assert isinstance(solver, SingleShooting)
+        assert isinstance(solver.solver, Ipopt)
 
 
 def test_controller_from_config_solver_variants(tmp_path: Path) -> None:
@@ -804,3 +800,95 @@ def test_controller_from_config_loud_validation_errors(tmp_path: Path) -> None:
     }
     with pytest.raises(ValueError, match="BoxQP only supports uncoupled box bounds"):
         TrajOptMPCController.from_config(cfg_boxqp_coupled)
+
+
+def test_problem_carries_the_predictors_step_as_its_time_grid(tmp_path: Path) -> None:
+    """The horizon's dt lives on the Problem, and it is the Predictor's own step, not the loop's."""
+    art = _build_checkpoint(tmp_path, depth=0, n_y=3, n_u=2, horizon=4, n_channels=2, n_controls=3)
+    model_dt = WaveformMLPModel.load(art).dt
+
+    for problem in (
+        build_waveform_problem(art, horizon=4, u_max=0.5, kirchhoff=True),
+        build_waveform_problem(art, horizon=4, u_max=0.5, reduce_kirchhoff=True),
+    ):
+        np.testing.assert_allclose(np.asarray(problem.dt), model_dt)
+
+    # The controller decides at its config dt, which is free to differ from the grid it plans on.
+    controller = TrajOptMPCController.from_config(
+        {
+            "dt": 10.0 * model_dt,
+            "problem": {
+                "class_path": "neuro.control.mpc.build_waveform_problem",
+                "artifact": str(art),
+                "horizon": 4,
+                "u_max": 0.5,
+            },
+        }
+    )
+    assert controller.dt == pytest.approx(10.0 * model_dt)
+    np.testing.assert_allclose(np.asarray(controller.mpc.program.problem.dt), model_dt)
+
+
+def test_canonicalize_duals_wraps_only_the_ipopt_backends(tmp_path: Path) -> None:
+    """The adapter covers the shifted-layout backends and returns every other solver untouched.
+
+    trajopt classifies solvers by ``isinstance``, so wrapping one it can still see through is the
+    difference between a correct benchmark row and a mislabelled one.
+    """
+    assert isinstance(canonicalize_duals(SingleShooting(solver=Ipopt())), CanonicalDuals)
+    assert isinstance(canonicalize_duals(Ipopt()), CanonicalDuals)
+    for solver in (ALTRO(), BoxQP()):
+        assert canonicalize_duals(solver) is solver
+
+    # SingleShooting eliminates the states, so Ipopt's bound duals are (N-1)*m long where the
+    # canonical Primal Vector is N*n + (N-1)*m: the adapter must blank them or the next shift dies.
+    art = _build_checkpoint(tmp_path, depth=0, n_y=3, n_u=2, horizon=4, n_channels=2, n_controls=3)
+    problem = build_waveform_problem(art, horizon=4, u_max=0.5, w_y=1.0, kirchhoff=True)
+    x0 = jnp.asarray(np.random.default_rng(7).standard_normal(problem.model.n))
+
+    bare = MPC(problem, SingleShooting(solver=Ipopt(options={"print_level": 0})), x0=x0)
+    res_bare = bare.solve()
+    N, n, m = int(problem.N), int(problem.model.n), int(problem.model.m)
+    assert len(res_bare.mu) not in (0, N * n + (N - 1) * m)
+
+    wrapped = MPC(problem, canonicalize_duals(SingleShooting(solver=Ipopt(options={"print_level": 0}))), x0=x0)
+    res_wrapped = wrapped.solve()
+    assert res_wrapped.success
+    assert len(res_wrapped.mu) == 0
+    np.testing.assert_allclose(np.asarray(res_wrapped.trajectory.U), np.asarray(res_bare.trajectory.U), atol=1e-8)
+
+
+def test_controller_emits_electrode_currents_under_nullspace_reduction(tmp_path: Path) -> None:
+    """A reduced controller commands the m expanded currents, not the m-1 reduced controls it solves in.
+
+    The Nullspace Frame drops the decision variable to ``m - 1``; the Plant still takes one current
+    per electrode, so the boundary has to expand through Z -- and the expansion is what makes
+    Kirchhoff hold exactly on what is actually applied.
+    """
+    n_controls = 3
+    art = _build_checkpoint(tmp_path, depth=0, n_y=2, n_u=2, horizon=3, n_channels=2, n_controls=n_controls)
+    cfg = {
+        "dt": 0.01,
+        "problem": {
+            "class_path": "neuro.control.mpc.build_waveform_problem",
+            "artifact": str(art),
+            "horizon": 3,
+            "u_max": 0.5,
+            "w_y": 1.0,
+            "w_u": 0.1,
+            "reduce_kirchhoff": True,
+        },
+    }
+    controller = TrajOptMPCController.from_config(cfg)
+    assert controller.model.m == n_controls - 1
+    assert controller.n_electrodes == n_controls
+
+    rng = np.random.default_rng(21)
+    for step in range(6):
+        u, log = controller.update(step * 0.01, np.zeros(2), rng.standard_normal(2))
+        assert u.shape == (n_controls,)
+        assert log.u.shape == (n_controls,)
+        np.testing.assert_allclose(u.sum(), 0.0, atol=1e-12)
+        assert np.abs(u).max() <= 0.5 + 1e-6
+    assert not log.warmup
+    assert np.abs(u).max() > 0.0

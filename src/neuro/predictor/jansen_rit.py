@@ -17,7 +17,6 @@ from trajopt.problem import Problem
 from neuro.connectome import Connectome
 from neuro.control.costs import (
     ExcludeInitialKnotState,
-    KirchhoffPenaltyCost,
     L1ControlCost,
     ObservableFrameHingeCost,
     SpectralHingeCost,
@@ -674,7 +673,6 @@ def build_jansen_rit_problem(  # noqa: PLR0913 -- problem construction arguments
     w_hinge: float = 0.0,
     envelope_ref: str | Path | None = None,
     kirchhoff: bool = False,
-    w_kirchhoff: float = 0.0,
 ) -> Problem:
     """Assemble a trajopt MPC Problem for the Jansen-Rit model adapter, one knot per ``substeps`` steps."""
     resolved_model = _resolve_model(model, artifact, params, connectome, stimulation, leadfield, dt, substeps)
@@ -699,8 +697,6 @@ def build_jansen_rit_problem(  # noqa: PLR0913 -- problem construction arguments
     costs: list[CostFunction] = [ExcludeInitialKnotState(tracking_stage), control_stage]
     if w_u_l1 > 0:
         costs.append(L1ControlCost(n=n, m=m, w_l1=w_u_l1, horizon=horizon))
-    if w_kirchhoff > 0:
-        costs.append(KirchhoffPenaltyCost(n=n, m=m, w_k=w_kirchhoff, horizon=horizon))
 
     psd_envelope = _spectral_envelope(psd_ref, w_psd)
     obs_envelope = _observable_envelope(envelope_ref, w_hinge)
@@ -738,4 +734,4 @@ def build_jansen_rit_problem(  # noqa: PLR0913 -- problem construction arguments
     if kirchhoff:
         constraints.add_constraint(kirchhoff_constraint(n, m), range(N - 1))
 
-    return Problem(model=resolved_model, obj=objective, constraints=constraints, N=N)
+    return Problem(model=resolved_model, obj=objective, constraints=constraints, N=N, dt=resolved_model.knot_dt)

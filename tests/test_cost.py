@@ -8,7 +8,7 @@ import numpy as np
 import pytest
 import torch
 from trajopt.constraints.linear import LinearConstraint
-from trajopt.problem import MPCState
+from trajopt.mpc import MPC
 from trajopt.solvers.altro import ALTRO
 from trajopt.transcription.ipopt import Ipopt
 
@@ -17,6 +17,7 @@ from neuro.control.costs import (
     L1ControlCost,
     ObservableFrameHingeCost,
     ObservableHingeCost,
+    ReducedEffortCost,
     SpectralHingeCost,
     StateOutputs,
     SumCost,
@@ -24,7 +25,7 @@ from neuro.control.costs import (
     jax_compute_log_power_frames,
     jax_compute_observable_frames,
 )
-from neuro.control.mpc import build_waveform_problem
+from neuro.control.mpc import build_waveform_problem, kirchhoff_basis
 from neuro.predictor.inference import WaveformMLPModel
 from neuro.predictor.module import AutoregressiveMLP
 from neuro.spectral import ObservableEnvelope, PsdEnvelope, compute_log_power_frames
@@ -153,10 +154,9 @@ def test_kirchhoff_constraint_registered_and_enforced(tmp_path: Path) -> None:
 
     rng = np.random.default_rng(_SEED + 4)
     x0 = _ready_state(artifact, rng)
-    state = MPCState.initial(with_kirchhoff, x0=jnp.asarray(x0), dt=0.01)
-    solved = with_kirchhoff.solve(state, solver=_full_parity_solver())
-    assert solved.status == "converged"
-    np.testing.assert_allclose(np.sum(np.asarray(solved.controls), axis=1), np.zeros(6), atol=1e-6)
+    mpc = MPC(with_kirchhoff, _full_parity_solver(), x0=jnp.asarray(x0))
+    assert mpc.solve().success
+    np.testing.assert_allclose(np.sum(np.asarray(mpc.controls), axis=1), np.zeros(6), atol=1e-6)
 
 
 def test_native_solver_converges_on_smooth_l1(tmp_path: Path) -> None:
@@ -173,10 +173,9 @@ def test_native_solver_converges_on_smooth_l1(tmp_path: Path) -> None:
     )
     rng = np.random.default_rng(_SEED + 7)
     x0 = _ready_state(artifact, rng)
-    state = MPCState.initial(problem, x0=jnp.asarray(x0), dt=0.01)
-    solved = problem.solve(state, solver=ALTRO())
-    assert solved.status == "converged"
-    np.testing.assert_allclose(np.sum(np.asarray(solved.controls), axis=1), np.zeros(horizon), atol=1e-4)
+    mpc = MPC(problem, ALTRO(), x0=jnp.asarray(x0))
+    assert mpc.solve().success
+    np.testing.assert_allclose(np.sum(np.asarray(mpc.controls), axis=1), np.zeros(horizon), atol=1e-4)
 
 
 def test_l1_cost_stage_values_match_epigraph() -> None:
@@ -566,3 +565,17 @@ def test_observable_frame_hinge_cost_validation() -> None:
     wide = ObservableEnvelope(power=np.zeros((n_channels + 1, geom.n_values(fs))), fs=fs, geometry=geom)
     with pytest.raises(ValueError, match="channels but the model outputs"):
         ObservableFrameHingeCost(outputs, wide, w_hinge=1.0, horizon=200)
+
+
+def test_reduced_effort_cost_prices_the_expanded_currents() -> None:
+    """ReducedEffortCost scores ``||Z v||^2``, not ``||v||^2``, so reduction reprices nothing."""
+    rng = np.random.default_rng(11)
+    for m in (2, 3, 5):
+        Z = np.asarray(kirchhoff_basis(m))
+        cost = ReducedEffortCost(n=4, m=m - 1, w_u=0.7, horizon=5)
+        for v in rng.standard_normal((6, m - 1)):
+            expected = 0.7 / 5 * float((Z @ v) @ (Z @ v))
+            assert float(cost.evaluate(jnp.zeros(4), jnp.asarray(v))) == pytest.approx(expected, rel=1e-10)
+
+    # The terminal knot carries no control, and the cost has to be finite there.
+    assert float(ReducedEffortCost(n=4, m=2, w_u=1.0, horizon=5).evaluate(jnp.zeros(4))) == 0.0

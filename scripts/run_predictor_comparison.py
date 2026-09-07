@@ -1,4 +1,4 @@
-"""Compare Waveform against Observable Predictors on the closed loop at a matched Control Horizon."""
+# Compare Waveform against Observable Predictors on the closed loop at a matched Control Horizon.
 
 from __future__ import annotations
 
@@ -42,8 +42,7 @@ OBSERVABLE_CONFIG = Path("configs/simulation/cmp_observable_1p5s.yaml")
 # Every arm plans over the same 1.5 s of Plant time, so the Control Horizon is not a confound:
 # the waveform arm reaches it with 75 knots of 0.02 s, the observable arms with 15 Frames of
 # 0.1 s. Only the Predictor and the rate it decides at differ.
-HORIZON_S = 1.5
-
+#
 # Each arm is one Predictor dropped into an otherwise identical loop. Arms `observable_mlp` and
 # `observable_dmd` share a config and a geometry and differ only in the Trainer that produced the
 # checkpoint, so a gap between those two is attributable to backprop against closed-form SVD.
@@ -105,6 +104,12 @@ def _arm_config(arm: str, t_end: float | None) -> dict[str, Any]:
     if t_end is not None:
         cfg["t_end"] = t_end
     return cfg
+
+
+def _horizon_s(arm: str) -> float:
+    """Read one arm's Control Horizon in seconds off its config, so the record cannot drift from it."""
+    controller = _arm_config(arm, None)["controller"]
+    return float(controller["dt"]) * int(controller["problem"]["horizon"])
 
 
 def build_grid(
@@ -330,7 +335,11 @@ def main() -> None:
     summary = summarize(rows)
     _write_rows(summary, out_dir / "summary.csv")
     (out_dir / "grid.json").write_text(
-        json.dumps({"arms": args.arms, "seeds": args.seeds, "horizon_s": HORIZON_S}, indent=2), encoding="utf-8"
+        json.dumps(
+            {"arms": args.arms, "seeds": args.seeds, "horizon_s": {arm: _horizon_s(arm) for arm in args.arms}},
+            indent=2,
+        ),
+        encoding="utf-8",
     )
     print(f"Wrote {out_dir}/rows.csv ({len(rows)} runs) and summary.csv ({len(summary)} cells)")
     for entry in summary:

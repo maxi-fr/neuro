@@ -3,7 +3,7 @@ from __future__ import annotations
 import dataclasses
 import importlib
 import time
-from typing import TYPE_CHECKING, Any, Self
+from typing import TYPE_CHECKING, Any, Self, cast
 
 import equinox as eqx
 import jax
@@ -17,18 +17,20 @@ from trajopt.constraints.linear import LinearConstraint
 from trajopt.costs.objective import Objective
 from trajopt.costs.quadratic import DiagonalCost
 from trajopt.dynamics.base import DiscreteDynamics
-from trajopt.problem import MPCState, Problem
+from trajopt.mpc import MPC
+from trajopt.problem import Problem
 from trajopt.solvers.altro import ALTRO
 from trajopt.solvers.boxqp import BoxQP
 from trajopt.solvers.options import SolverOptions
 from trajopt.transcription.ipopt import Ipopt
+from trajopt.transcription.result import constraint_row_count
 from trajopt.transcription.single_shooting import SingleShooting
 
 from neuro.control.costs import (
     ExcludeInitialKnotState,
-    KirchhoffPenaltyCost,
     L1ControlCost,
     ObservableHingeCost,
+    ReducedEffortCost,
     SpectralHingeCost,
     StateOutputs,
     SumCost,
@@ -42,7 +44,9 @@ if TYPE_CHECKING:
 
     from numpy.typing import ArrayLike
     from trajopt.costs.base import CostFunction
-    from trajopt.transcription.result import Solver
+    from trajopt.problem import BoundaryConditions
+    from trajopt.program import Program, WarmStart
+    from trajopt.transcription.result import Solver, SolverResult
 
     from neuro.types import FloatArray
 
@@ -58,19 +62,15 @@ class TrajOptMPCLog:
     solve_time: float
 
 
-def _build_problem(spec: dict[str, Any] | Problem) -> tuple[Problem, MPCState | None]:
-    """Instantiate a Problem from an instance or a ``{class_path, ...}`` dict, plus an optional MPCState."""
+def _build_problem(spec: dict[str, Any] | Problem) -> Problem:
+    """Instantiate a Problem from an instance or a ``{class_path, ...}`` dict naming a factory."""
     if isinstance(spec, Problem):
-        return spec, None
+        return spec
     cfg = spec.copy()
     class_path: str = cfg.pop("class_path")
     module_name, func_name = class_path.rsplit(".", 1)
     target = getattr(importlib.import_module(module_name), func_name)
-    res = target(**cfg) if cfg else target()
-    if isinstance(res, tuple):
-        state = res[1] if len(res) > 1 and isinstance(res[1], MPCState) else None
-        return res[0], state
-    return res, None
+    return target(**cfg) if cfg else target()
 
 
 def kirchhoff_constraint(n: int, m: int) -> LinearConstraint:
@@ -115,30 +115,65 @@ def _observable_envelope(envelope_ref: str | Path | None, w_hinge: float) -> Obs
     return ObservableEnvelope.load(envelope_ref)
 
 
-def _assemble_problem(
+def _reduced_control_constraint(n: int, basis: jax.Array, u_max_arr: FloatArray) -> LinearConstraint:
+    """Express the per-electrode limit ``|Z v| <= u_max`` as the polytope ``[Z; -Z] v - u_max <= 0``.
+
+    The limit is a box on the electrode currents ``u``, but ``u = Z v`` shears it into a polytope
+    on the reduced controls, so it is carried as coupled inequality rows rather than as bounds.
+    """
+    m_red = int(basis.shape[1])
+    return LinearConstraint(
+        n=n,
+        m=m_red,
+        A=jnp.concatenate([basis, -basis], axis=0),
+        b=jnp.concatenate([jnp.asarray(u_max_arr), jnp.asarray(u_max_arr)]),
+        inds=range(n, n + m_red),
+    )
+
+
+def _assemble_problem(  # noqa: PLR0913 -- the horizon's grid joins the five it already took
     model: DiscreteDynamics,
     objective: Objective,
     *,
     N: int,
+    dt: float,
     u_max: ArrayLike,
     kirchhoff: bool,
+    reduce_kirchhoff: bool = False,
 ) -> Problem:
-    """Add the control box bounds (and optional Kirchhoff equality) and build the ``Problem``."""
+    """Add the control bounds (and optional Kirchhoff equality) and build the ``Problem``.
+
+    ``dt`` is the horizon's time grid, which trajopt now carries structurally on the Problem
+    rather than per-step on the driver, so it is the Predictor's own step. Under
+    ``reduce_kirchhoff`` the model is already a :class:`NullspaceReducedModel`, so ``u_max``
+    is broadcast over the *electrode* count rather than over the reduced control count.
+    """
     n, m = model.n, model.m
+    if reduce_kirchhoff:
+        if not isinstance(model, NullspaceReducedModel):
+            msg = "reduce_kirchhoff requires the model to be wrapped in NullspaceReducedModel"
+            raise TypeError(msg)
+        u_max_arr = np.broadcast_to(np.atleast_1d(np.asarray(u_max, dtype=np.float64)), (m + 1,))
+        constraints = ConstraintList(n=n, m=m, N=N)
+        constraints.add_constraint(_reduced_control_constraint(n, model.basis, u_max_arr), range(N - 1))
+        return Problem(model=model, obj=objective, constraints=constraints, N=N, dt=dt)
     u_max_arr = np.broadcast_to(np.atleast_1d(np.asarray(u_max, dtype=np.float64)), (m,))
     constraints = ConstraintList(n=n, m=m, N=N)
     constraints.add_constraint(ControlBound(n=n, m=m, u_min=-u_max_arr, u_max=u_max_arr), range(N - 1))
     if kirchhoff:
         constraints.add_constraint(kirchhoff_constraint(n, m), range(N - 1))
-    return Problem(model=model, obj=objective, constraints=constraints, N=N)
+    return Problem(model=model, obj=objective, constraints=constraints, N=N, dt=dt)
 
 
 def _default_solver(problem: Problem) -> Solver:
-    """Select the default solver: BoxQP for bipolar models, SingleShooting(Ipopt) for general problems."""
-    if isinstance(problem.model, BipolarReducedModel):
-        return BoxQP()
-    ipopt = Ipopt(options={"print_level": 0, "hessian_approximation": "limited-memory"})
-    return SingleShooting(solver=ipopt)
+    """Select SingleShooting(Ipopt), the only backend every deployed formulation admits.
+
+    Both Kirchhoff formulations couple the controls -- the hard equality as an equality row, the
+    null-space reduction as the polytope carrying the per-electrode limit -- so the DDP backends,
+    which clamp elementwise, are eligible for neither.
+    """
+    del problem
+    return SingleShooting(solver=Ipopt(options={"print_level": 0, "hessian_approximation": "limited-memory"}))
 
 
 def ensure_solver_supports_objective(problem: Problem, solver: Solver) -> None:
@@ -152,7 +187,7 @@ def ensure_solver_supports_objective(problem: Problem, solver: Solver) -> None:
     if isinstance(solver, BoxQP) and sum(problem.constraints.p) > 0:
         msg = (
             f"BoxQP only supports uncoupled box bounds, but problem has non-box constraints "
-            f"(p={problem.constraints.p}); use ALTRO or BipolarReducedModel for Kirchhoff equality constraints."
+            f"(p={problem.constraints.p}); use ALTRO or Ipopt for Kirchhoff's law in either formulation."
         )
         raise ValueError(msg)
 
@@ -214,6 +249,59 @@ def _build_solver(spec: dict[str, Any] | Solver | None, problem: Problem | None 
     return solver_instance
 
 
+_NO_DUALS = np.zeros(0, dtype=np.float64)
+
+
+@dataclasses.dataclass(frozen=True)
+class CanonicalDuals:
+    """Solver adapter dropping duals a backend reports in a layout the warm start cannot shift.
+
+    ``SingleShooting`` eliminates the states, so its primal is the control trajectory alone and
+    Ipopt hands back bound duals of length ``(N - 1) * m`` and constraint duals over the user rows
+    only. ``WarmStart`` is defined over the full Primal Vector and the canonical row order, and
+    trajopt folds the backend's duals in without checking, so the next ``MPC.shift`` fails on the
+    bound duals' shape and would mis-gather the constraint duals. Replacing a mismatched vector
+    with the empty one puts the backend in the case the driver already handles: it returned no
+    duals, so the warm start keeps its own.
+
+    Only the backends that actually report a shifted layout are wrapped, because the adapter hides
+    the backend's own type: trajopt classifies a solver by ``isinstance`` -- for the benchmark's
+    ``linearizing`` column and for `ensure_solver_supports_objective` -- and a wrapper it cannot
+    see through would misreport every solver it covers.
+    """
+
+    solver: Solver
+
+    def solve(self, program: Program, bc: BoundaryConditions, ws: WarmStart) -> SolverResult:
+        """Solve through the wrapped backend, blanking duals whose length is not the canonical one."""
+        res = self.solver.solve(program, bc, ws)
+        problem = program.problem
+        N, n, m = int(problem.N), int(problem.model.n), int(problem.model.m)
+        lam_ok = len(res.lam) in (0, constraint_row_count(problem))
+        mu_ok = len(res.mu) in (0, N * n + (N - 1) * m)
+        if lam_ok and mu_ok:
+            return res
+        # ``_replace`` carries every other field of the backend's own NamedTuple through untouched,
+        # including ones the SolverResult Protocol does not name -- ALTRO's ``al`` among them, which
+        # the driver reads back off the result to restore its multipliers.
+        # ``SolverResult`` is a Protocol, so ``_replace`` is not on it; every backend satisfying
+        # it is a NamedTuple, which is what makes the copy possible.
+        return cast("Any", res)._replace(
+            lam=res.lam if lam_ok else _NO_DUALS,
+            mu=res.mu if mu_ok else _NO_DUALS,
+        )
+
+
+def canonicalize_duals(solver: Solver) -> Solver:
+    """Wrap `solver` in :class:`CanonicalDuals` when its backend reports duals in a shifted layout.
+
+    Only the Ipopt-backed transcriptions do. Every other backend is returned as it came, so trajopt
+    can still classify it by ``isinstance`` -- which is what decides the benchmark's ``linearizing``
+    column and what `ensure_solver_supports_objective` reads.
+    """
+    return CanonicalDuals(solver) if isinstance(solver, (SingleShooting, Ipopt)) else solver
+
+
 def _validate_waveform_envelope(envelope: PsdEnvelope, model: WaveformMLPModel) -> None:
     """Ensure the healthy spectral envelope matches the predictor's channels and sampling rate."""
     if envelope.power.shape[0] != model.n_channels:
@@ -248,17 +336,32 @@ def _validate_observable_envelope(envelope: ObservableEnvelope, model: Observabl
         raise ValueError(msg)
 
 
-_BIPOLAR_CONTROLS = 2
+_MIN_ELECTRODES = 2
 
 
-class BipolarReducedModel(DiscreteDynamics, InferencePredictor):
-    """DiscreteDynamics adapter mapping scalar control v in [-u_max, u_max] to bipolar u = [v, -v]^T.
+def kirchhoff_basis(m: int) -> jax.Array:
+    """Basis Z of shape ``(m, m - 1)`` spanning ``null(1^T)``, so ``u = Z v`` satisfies ``sum(u) = 0``.
 
-    Enables exact Box-iLQR on 2-electrode montages by reducing the control dimension m from 2 to 1,
-    rendering the Kirchhoff constraint identically satisfied without altering the box bounds.
+    Eliminates the last electrode: ``v`` carries the first ``m - 1`` currents and
+    ``u[m - 1] = -sum(v)``. At ``m = 2`` this is the bipolar pair ``[v, -v]^T``.
+    """
+    if m < _MIN_ELECTRODES:
+        msg = f"Kirchhoff reduction needs at least {_MIN_ELECTRODES} electrodes, got m={m}"
+        raise ValueError(msg)
+    return jnp.concatenate([jnp.eye(m - 1), -jnp.ones((1, m - 1))], axis=0)
+
+
+class NullspaceReducedModel(DiscreteDynamics, InferencePredictor):
+    """DiscreteDynamics adapter mapping reduced controls ``v`` to electrode currents ``u = Z v``.
+
+    ``Z`` is `kirchhoff_basis`, a basis of ``null(1^T)``, so Kirchhoff's Current Law holds
+    identically for every ``v``: the equality leaves the constraint set entirely and the control
+    dimension drops from ``m`` to ``m - 1``. The box bounds do not survive the map, since
+    ``|Z v| <= u_max`` is a polytope in ``v``, which is what `_reduced_control_constraint` resolves.
     """
 
     base_model: InferencePredictor
+    basis: jax.Array
     n_y: int = eqx.field(static=True)
     n_u: int = eqx.field(static=True)
     n_channels: int = eqx.field(static=True)
@@ -267,16 +370,14 @@ class BipolarReducedModel(DiscreteDynamics, InferencePredictor):
     dt: float = eqx.field(static=True)
 
     def __init__(self, base_model: InferencePredictor) -> None:
-        """Wrap a base InferencePredictor model with m=2."""
-        if base_model.m != _BIPOLAR_CONTROLS:
-            msg = f"BipolarReducedModel requires base_model with m=2, got m={base_model.m}"
-            raise ValueError(msg)
-        super().__init__(n=base_model.n, m=1, ne=base_model.ne)
+        """Wrap a base InferencePredictor over the last-electrode elimination basis."""
+        super().__init__(n=base_model.n, m=base_model.m - 1, ne=base_model.ne)
         self.base_model = base_model
+        self.basis = kirchhoff_basis(base_model.m)
         self.n_y = int(base_model.n_y)
         self.n_u = int(base_model.n_u)
         self.n_channels = int(base_model.n_channels)
-        self.n_controls = 1
+        self.n_controls = int(base_model.m - 1)
         self.n_outputs = int(base_model.n_outputs)
         self.dt = float(base_model.dt)
 
@@ -287,17 +388,14 @@ class BipolarReducedModel(DiscreteDynamics, InferencePredictor):
         t: float | jax.Array,
         dt: float | jax.Array,
     ) -> jax.Array:
-        """Advance one step with u_full = [u[0], -u[0]]."""
+        """Advance one step with the expanded currents u_full = Z v."""
         del t, dt
-        u_val = u[0] if u.ndim > 0 else u
-        u_full = jnp.array([u_val, -u_val])
+        u_full = self.basis @ jnp.atleast_1d(u)
         return self.base_model.discrete_dynamics(x, u_full, 0.0, self.dt)
 
     def absorb(self, state: FloatArray, y: FloatArray, u: FloatArray) -> FloatArray:
-        """Absorb with u_full = [u[0], -u[0]]."""
-        u_arr = np.asarray(u, dtype=np.float64)
-        u_val = u_arr[0] if u_arr.ndim > 0 else float(u_arr)
-        u_full = np.array([u_val, -u_val], dtype=np.float64)
+        """Absorb with the expanded currents u_full = Z v."""
+        u_full = np.asarray(self.basis) @ np.atleast_1d(np.asarray(u, dtype=np.float64))
         return self.base_model.absorb(state, y, u_full)
 
     def is_ready(self, state: FloatArray) -> bool:
@@ -314,11 +412,11 @@ class BipolarReducedModel(DiscreteDynamics, InferencePredictor):
         u_hists: FloatArray,
         u_futures: FloatArray,
     ) -> jax.Array:
-        """Free-run with bipolar control expansion."""
-        u_f_arr = np.asarray(u_futures, dtype=np.float64)
-        u_f_full = np.stack([u_f_arr[..., 0], -u_f_arr[..., 0]], axis=-1)
+        """Free-run with the reduced controls expanded through Z; histories may already be full."""
+        Z_T = np.asarray(self.basis).T
+        u_f_full = np.asarray(u_futures, dtype=np.float64) @ Z_T
         u_h_arr = np.asarray(u_hists, dtype=np.float64)
-        u_h_full = np.stack([u_h_arr[..., 0], -u_h_arr[..., 0]], axis=-1) if u_h_arr.shape[-1] == 1 else u_h_arr
+        u_h_full = u_h_arr @ Z_T if u_h_arr.shape[-1] == self.m else u_h_arr
         return self.base_model.free_run(y_hists, u_h_full, u_f_full)
 
     def to_checkpoint(self) -> tuple[dict[str, Any], dict[str, FloatArray]]:
@@ -347,7 +445,7 @@ def build_waveform_problem(  # noqa: PLR0913 -- checkpoint plus the ten MPC cost
     w_psd: float = 0.0,
     psd_ref: str | Path | None = None,
     kirchhoff: bool = False,
-    w_kirchhoff: float = 0.0,
+    reduce_kirchhoff: bool = False,
 ) -> Problem:
     """Assemble the waveform MPC problem: model adapter, objective, box and Kirchhoff bounds.
 
@@ -385,33 +483,47 @@ def build_waveform_problem(  # noqa: PLR0913 -- checkpoint plus the ten MPC cost
     kirchhoff
         Add the Kirchhoff sum-to-zero equality on the controls. Off by default; the incumbent
         applies it unconditionally, so full parity sets it.
-    w_kirchhoff
-        Weight on the quadratic penalty formulation of Kirchhoff's Current Law:
-        ``(w_kirchhoff / horizon) * (sum(u))^2``. ``0`` (default) disables it.
+    reduce_kirchhoff
+        Satisfy Kirchhoff's law by construction instead, parameterizing the currents as ``u = Z v``
+        over `kirchhoff_basis`. The per-electrode limit is carried exactly, as the polytope
+        ``[Z; -Z] v <= u_max``. Excludes ``kirchhoff``.
     """
-    model = WaveformMLPModel.load(artifact)
+    base = WaveformMLPModel.load(artifact)
+    if reduce_kirchhoff:
+        if kirchhoff:
+            msg = "reduce_kirchhoff satisfies Kirchhoff by construction; drop kirchhoff"
+            raise ValueError(msg)
+        if w_u_l1 > 0:
+            # ||Z v||_1 is not a weighted ||v||_1, so the L1 term has no reduced-coordinate form.
+            msg = "reduce_kirchhoff does not support w_u_l1"
+            raise ValueError(msg)
+    model: DiscreteDynamics = NullspaceReducedModel(base) if reduce_kirchhoff else base
     n, m = model.n, model.m
     N = horizon + 1
 
-    z_last = slice((model.n_y - 1) * model.n_channels, model.n_y * model.n_channels)
-    Q = jnp.zeros(n).at[z_last].set(2.0 * w_y * model.y_scale**2 / horizon)
-    xf = jnp.zeros(n).at[z_last].set(-model.y_center / model.y_scale)
-    stage = DiagonalCost.tracking(Q, jnp.full(m, 2.0 * w_u / horizon), xf, jnp.zeros(m))
+    z_last = slice((base.n_y - 1) * base.n_channels, base.n_y * base.n_channels)
+    Q = jnp.zeros(n).at[z_last].set(2.0 * w_y * base.y_scale**2 / horizon)
+    xf = jnp.zeros(n).at[z_last].set(-base.y_center / base.y_scale)
+    # Under reduction the effort is coupled (``||u||^2 = v^T Z^T Z v``), so it moves out of the
+    # quadratic's ``R`` and into a control-only cost; folding it into ``R`` would promote the
+    # diagonal state weight to a dense ``(n, n)`` matrix for no gain.
+    R = jnp.zeros(m) if reduce_kirchhoff else jnp.full(m, 2.0 * w_u / horizon)
+    stage = DiagonalCost.tracking(Q, R, xf, jnp.zeros(m))
     costs: list[CostFunction] = [ExcludeInitialKnotState(stage)]
+    if reduce_kirchhoff:
+        costs.append(ReducedEffortCost(n=n, m=m, w_u=w_u, horizon=horizon))
     if w_u_l1 > 0:
         costs.append(L1ControlCost(n=n, m=m, w_l1=w_u_l1, horizon=horizon))
-    if w_kirchhoff > 0:
-        costs.append(KirchhoffPenaltyCost(n=n, m=m, w_k=w_kirchhoff, horizon=horizon))
     envelope = _spectral_envelope(psd_ref, w_psd)
     if envelope is not None:
-        _validate_waveform_envelope(envelope, model)
+        _validate_waveform_envelope(envelope, base)
         outputs = StateOutputs(
             n=n,
             m=m,
-            n_y=model.n_y,
-            n_outputs=model.n_channels,
-            center=model.y_center,
-            scale=model.y_scale,
+            n_y=base.n_y,
+            n_outputs=base.n_channels,
+            center=base.y_center,
+            scale=base.y_scale,
         )
         costs.append(SpectralHingeCost(outputs, envelope, w_psd=w_psd, horizon=horizon))
     stage_cost: CostFunction = _combine_costs(costs)
@@ -420,54 +532,19 @@ def build_waveform_problem(  # noqa: PLR0913 -- checkpoint plus the ten MPC cost
     # composite's derived terminal (``SumCost.as_terminal``) would otherwise carry the
     # control-only L1 and whole-horizon hinge into a knot that has no control.
     w_y_final = w_y_terminal if w_y_terminal is not None else w_y
-    Q_f = jnp.zeros(n).at[z_last].set(2.0 * w_y_final * model.y_scale**2 / horizon)
+    Q_f = jnp.zeros(n).at[z_last].set(2.0 * w_y_final * base.y_scale**2 / horizon)
     terminal = DiagonalCost.terminal_tracking(Q_f, xf, m)
     objective = Objective(stage_cost=stage_cost, terminal_cost=terminal, N=N)
 
-    return _assemble_problem(model, objective, N=N, u_max=u_max, kirchhoff=kirchhoff)
-
-
-def build_bipolar_waveform_problem(  # noqa: PLR0913 -- checkpoint plus cost knobs
-    artifact: str | Path,
-    *,
-    horizon: int,
-    u_max: float | ArrayLike,
-    w_y: float = 1.0,
-    w_u: float = 0.0,
-    w_y_terminal: float | None = None,
-    w_u_l1: float = 0.0,
-) -> Problem:
-    """Assemble the 1D reduced bipolar waveform MPC problem for Box-iLQR.
-
-    The scalar control ``v`` in ``[-u_max, u_max]`` is mapped to bipolar currents ``u = [v, -v]^T``,
-    satisfying Kirchhoff's Current Law exactly without requiring coupled constraints.
-    """
-    base_model = WaveformMLPModel.load(artifact)
-    model = BipolarReducedModel(base_model)
-    n, m = model.n, model.m  # m = 1
-    N = horizon + 1
-
-    z_last = slice((base_model.n_y - 1) * base_model.n_channels, base_model.n_y * base_model.n_channels)
-    Q = jnp.zeros(n).at[z_last].set(2.0 * w_y * base_model.y_scale**2 / horizon)
-    xf = jnp.zeros(n).at[z_last].set(-base_model.y_center / base_model.y_scale)
-    # Quadratic control on [v, -v] is v^2 + (-v)^2 = 2 * v^2, so diagonal weight is 2 * (2 * w_u / horizon)
-    R_diag = jnp.full(m, 4.0 * w_u / horizon)
-    stage = DiagonalCost.tracking(Q, R_diag, xf, jnp.zeros(m))
-    costs: list[CostFunction] = [ExcludeInitialKnotState(stage)]
-    if w_u_l1 > 0:
-        # L1 norm on [v, -v] is |v| + |-v| = 2 * |v|, so weight is 2 * w_u_l1
-        costs.append(L1ControlCost(n=n, m=m, w_l1=2.0 * w_u_l1, horizon=horizon))
-    stage_cost: CostFunction = _combine_costs(costs)
-
-    w_y_final = w_y_terminal if w_y_terminal is not None else w_y
-    Q_f = jnp.zeros(n).at[z_last].set(2.0 * w_y_final * base_model.y_scale**2 / horizon)
-    terminal = DiagonalCost.terminal_tracking(Q_f, xf, m)
-    objective = Objective(stage_cost=stage_cost, terminal_cost=terminal, N=N)
-
-    u_max_val = float(np.atleast_1d(np.asarray(u_max))[0])
-    constraints = ConstraintList(n=n, m=m, N=N)
-    constraints.add_constraint(ControlBound(n=n, m=m, u_min=[-u_max_val], u_max=[u_max_val]), range(N - 1))
-    return Problem(model=model, obj=objective, constraints=constraints, N=N)
+    return _assemble_problem(
+        model,
+        objective,
+        N=N,
+        dt=base.dt,
+        u_max=u_max,
+        kirchhoff=kirchhoff,
+        reduce_kirchhoff=reduce_kirchhoff,
+    )
 
 
 def build_observable_problem(  # noqa: PLR0913 -- checkpoint plus the MPC cost/bound knobs
@@ -480,7 +557,7 @@ def build_observable_problem(  # noqa: PLR0913 -- checkpoint plus the MPC cost/b
     w_hinge: float = 0.0,
     envelope_ref: str | Path | None = None,
     kirchhoff: bool = False,
-    w_kirchhoff: float = 0.0,
+    reduce_kirchhoff: bool = False,
 ) -> Problem:
     """Assemble the observable MPC problem: model adapter, objective, box and Kirchhoff bounds.
 
@@ -512,50 +589,62 @@ def build_observable_problem(  # noqa: PLR0913 -- checkpoint plus the MPC cost/b
         drives the cost.
     kirchhoff
         Add the Kirchhoff sum-to-zero equality on the controls.
-    w_kirchhoff
-        Weight on the quadratic penalty formulation of Kirchhoff's Current Law:
-        ``(w_kirchhoff / horizon) * (sum(u))^2``. ``0`` (default) disables it.
+    reduce_kirchhoff
+        Satisfy Kirchhoff's law by construction instead, parameterizing the currents as ``u = Z v``
+        over `kirchhoff_basis`. Excludes ``kirchhoff``.
     """
-    model = ObservableMLPModel.load(artifact)
+    base = ObservableMLPModel.load(artifact)
+    if reduce_kirchhoff and kirchhoff:
+        msg = "reduce_kirchhoff satisfies Kirchhoff by construction; drop kirchhoff"
+        raise ValueError(msg)
+    model = NullspaceReducedModel(base) if reduce_kirchhoff else base
     n, m = model.n, model.m
     N = horizon + 1
 
-    stage = DiagonalCost.tracking(jnp.zeros(n), jnp.full(m, 2.0 * w_u / horizon), jnp.zeros(n), jnp.zeros(m))
+    R = jnp.zeros(m) if reduce_kirchhoff else jnp.full(m, 2.0 * w_u / horizon)
+    stage = DiagonalCost.tracking(jnp.zeros(n), R, jnp.zeros(n), jnp.zeros(m))
     costs: list[CostFunction] = [ExcludeInitialKnotState(stage)]
+    if reduce_kirchhoff:
+        costs.append(ReducedEffortCost(n=n, m=m, w_u=w_u, horizon=horizon))
     if w_u_l1 > 0:
         costs.append(L1ControlCost(n=n, m=m, w_l1=w_u_l1, horizon=horizon))
-    if w_kirchhoff > 0:
-        costs.append(KirchhoffPenaltyCost(n=n, m=m, w_k=w_kirchhoff, horizon=horizon))
     envelope = _observable_envelope(envelope_ref, w_hinge)
     # The stage trajectory carries every Frame of the Control Horizon but the last, which lives
     # only in the terminal knot; the terminal Cost scores it so no predicted Frame goes unpriced.
     terminal: CostFunction = DiagonalCost.terminal_tracking(jnp.zeros(n), jnp.zeros(n), m)
     if envelope is not None:
-        _validate_observable_envelope(envelope, model)
+        _validate_observable_envelope(envelope, base)
         outputs = StateOutputs(
             n=n,
             m=m,
-            n_y=model.n_y,
-            n_outputs=model.n_outputs,
-            center=model.y_center,
-            scale=model.y_scale,
+            n_y=base.n_y,
+            n_outputs=base.n_outputs,
+            center=base.y_center,
+            scale=base.y_scale,
         )
         costs.append(ObservableHingeCost(outputs, envelope, w_hinge=w_hinge, horizon=horizon))
         terminal = ObservableHingeCost(outputs, envelope, w_hinge=w_hinge, horizon=horizon, terminal=True)
     stage_cost: CostFunction = _combine_costs(costs)
     objective = Objective(stage_cost=stage_cost, terminal_cost=terminal, N=N)
 
-    return _assemble_problem(model, objective, N=N, u_max=u_max, kirchhoff=kirchhoff)
+    return _assemble_problem(
+        model,
+        objective,
+        N=N,
+        dt=base.dt,
+        u_max=u_max,
+        kirchhoff=kirchhoff,
+        reduce_kirchhoff=reduce_kirchhoff,
+    )
 
 
 class TrajOptMPCController(Controller[TrajOptMPCLog]):
-    """Receding-horizon MPC for the waveform predictor, built directly on trajopt primitives.
+    """Receding-horizon MPC for the Waveform Predictor, driven by trajopt's :class:`~trajopt.mpc.MPC`.
 
-    Owns the true absorbed predictor state and ``u_last`` as private instance attributes, and
-    reproduces the incumbent MPC ``update`` loop shape -- ``absorb``, then
-    ``with_measurement``, ``problem.solve``, extract the first control, ``shift`` -- without
-    instantiating ``TrajOptMPC``. ``TrajOptMPC.update`` is the reference for how ``Problem``,
-    ``MPCState`` and the solver compose, not a dependency.
+    The driver owns the horizon's boundary conditions and warm start, and holds one compiled
+    ``Program`` for the life of the run, so the solver's cores are built once rather than per
+    step. This controller owns what the driver does not: the true State-Absorbed Predictor state and
+    ``u_last``, which are what turn a measurement into the driver's ``x0``.
     """
 
     def __init__(
@@ -563,29 +652,20 @@ class TrajOptMPCController(Controller[TrajOptMPCLog]):
         dt: float,
         problem: Problem,
         solver: Solver | dict[str, Any] | None = None,
-        initial_state: MPCState | None = None,
     ) -> None:
-        """Initialize the controller and its persistent MPC state.
+        """Initialize the controller and its persistent MPC driver.
 
         Parameters
         ----------
         dt
-            Controller update step in seconds; should equal the predictor's native dt.
+            Controller update step in seconds; should equal the Predictor's native dt.
         problem
             The trajopt optimal-control problem: model adapter + objective + constraint list.
         solver
-            Solver backend instance or ``{class_path, ...}`` config dict. When omitted, the
-            benchmark-winning default is selected: ``BoxQP`` for bipolar models,
-            ``SingleShooting(Ipopt)`` for non-separable whole-horizon costs, and ``ALTRO``
-            for general problems.
-        initial_state
-            Initial MPC warm-start state; defaults to one built from the unprimed model state,
-            with the NaN padding of the unprimed EEG window replaced by zeros so the seed is
-            finite for every solver (the multiple-shooting transcription starts from the full
-            state trajectory, not just the controls).
+            Solver backend instance or ``{class_path, ...}`` config dict. When omitted,
+            `_default_solver` picks ``SingleShooting(Ipopt)``.
         """
         super().__init__(dt)
-        self.problem = problem
         model = problem.model
         if not isinstance(model, InferencePredictor):
             msg = f"problem.model ({type(model).__name__}) does not implement the InferencePredictor priming seam"
@@ -593,10 +673,16 @@ class TrajOptMPCController(Controller[TrajOptMPCLog]):
         self.model = model
         self.solver = _build_solver(solver, problem)
 
+        # The unprimed EEG window is NaN padding; the driver seeds a full state trajectory from
+        # x0, not just the controls, so it is zeroed to keep that seed finite for every solver.
         unprimed = jnp.nan_to_num(jnp.asarray(self.model.initial_state()), nan=0.0)
-        self.state = initial_state if initial_state is not None else MPCState.initial(problem, x0=unprimed, dt=dt)
+        self.mpc = MPC(problem, canonicalize_duals(self.solver), x0=unprimed)
         self._state = np.asarray(self.model.initial_state(), dtype=np.float64)
-        self._u_last = np.zeros(problem.model.m, dtype=np.float64)
+        self._u_last = np.zeros(model.m, dtype=np.float64)
+        # Under reduction the decision variable is ``v``, one shorter than the montage; the Plant
+        # takes electrode currents, so the basis is kept here to expand at the boundary.
+        self._basis = np.asarray(model.basis, dtype=np.float64) if isinstance(model, NullspaceReducedModel) else None
+        self.n_electrodes = model.m + 1 if self._basis is not None else model.m
 
     @classmethod
     def from_config(cls, config: dict[str, Any]) -> Self:
@@ -605,17 +691,14 @@ class TrajOptMPCController(Controller[TrajOptMPCLog]):
         Follows the standard ``{class_path, ...}`` pattern: ``problem`` is either a Problem instance
         or a ``{class_path, ...}`` dict naming a Problem-building factory (e.g.
         ``neuro.control.mpc.build_waveform_problem``); ``solver`` is an optional
-        ``{class_path, ...}`` dict naming a solver backend (e.g. ``trajopt.solvers.altro.ALTRO``);
-        ``initial_state`` is optional. When ``solver`` is omitted, the benchmark-winning default
-        is selected automatically.
+        ``{class_path, ...}`` dict naming a solver backend (e.g. ``trajopt.solvers.altro.ALTRO``).
+        When ``solver`` is omitted, the benchmark-winning default is selected automatically.
         """
-        problem, initial_state = _build_problem(config["problem"])
-        solver = _build_solver(config.get("solver"), problem)
+        problem = _build_problem(config["problem"])
         return cls(
             dt=float(config["dt"]),
             problem=problem,
-            solver=solver,
-            initial_state=initial_state or config.get("initial_state"),
+            solver=_build_solver(config.get("solver"), problem),
         )
 
     def update(
@@ -624,25 +707,33 @@ class TrajOptMPCController(Controller[TrajOptMPCLog]):
         ref: FloatArray,  # noqa: ARG002 -- the goal is baked into the objective
         x_hat: FloatArray,
     ) -> tuple[FloatArray, TrajOptMPCLog]:
-        """Ingest the current EEG measurement, solve the receding-horizon problem, emit the first control."""
+        """Ingest the EEG measurement, solve the receding-horizon problem, emit the first electrode currents.
+
+        The emitted control is always the ``(n_electrodes,)`` physical currents: under a Nullspace
+        Frame the solver decides in the reduced ``v``, which is expanded through ``Z`` here.
+        """
         self._state = np.asarray(self.model.absorb(self._state, np.asarray(x_hat).reshape(-1), self._u_last))
 
         if not self.model.is_ready(self._state):
-            u_zero = np.zeros(self.model.m, dtype=np.float64)
-            self._u_last = u_zero
+            self._u_last = np.zeros(self.model.m, dtype=np.float64)
+            u_zero = np.zeros(self.n_electrodes, dtype=np.float64)
             return u_zero, TrajOptMPCLog(u=u_zero, cost=0.0, success=True, warmup=True, solve_time=0.0)
 
-        state = self.state.with_measurement(jnp.asarray(self._state), t=t)
+        self.mpc.measure(jnp.asarray(self._state), t)
         started = time.perf_counter()
-        solved = self.problem.solve(state, solver=self.solver)
+        solved = self.mpc.solve()
         solve_time = time.perf_counter() - started
-        u_cmd = np.asarray(solved.controls[0], dtype=np.float64)
-        self.state = solved.shift(self.dt)
-        self._u_last = u_cmd
+        u_solved = np.asarray(self.mpc.controls[0], dtype=np.float64)
+        cost = float(self.mpc.cost())
+        self.mpc.shift(self.dt)
+        # ``_u_last`` feeds ``model.absorb``, which expands for itself, so the state keeps the
+        # solver's own coordinates while the Plant and the log get the electrode currents.
+        self._u_last = u_solved
+        u_cmd = u_solved if self._basis is None else self._basis @ u_solved
         return u_cmd, TrajOptMPCLog(
             u=u_cmd.copy(),
-            cost=float(self.problem.cost(solved)),
-            success=solved.status == "converged",
+            cost=cost,
+            success=bool(solved.success),
             warmup=False,
             solve_time=solve_time,
         )

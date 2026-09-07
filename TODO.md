@@ -2,11 +2,7 @@
 
 * Test cost functions with JR model as the MPC predictor!!!
 
-## Review refactor?
-
-* remove all mentions of the old MPC/casadi implementation
-
-* **Monday 24.08** Start predictor sweeps: Papa in München
+* write/refactor closed loop comparison script
 
 ## Refactors
 
@@ -40,9 +36,6 @@
   > in other branch: perf/predictor-rollout-optimization
 
 ## Other
-
-* write chapter on Jansen-Rit model
-* figure out GPU training
 
 ## Simulate package
 
