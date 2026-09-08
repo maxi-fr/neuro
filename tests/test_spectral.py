@@ -15,6 +15,7 @@ from neuro.control.costs import jax_compute_log_power_frames
 from neuro.predictor.losses import LossContext, StftLoss
 from neuro.spectral import (
     LOG_FLOOR,
+    HealthyReference,
     MsEnvelope,
     ObservableEnvelope,
     PsdEnvelope,
@@ -448,3 +449,86 @@ def test_build_healthy_psd_strides_raw_at_the_knot_rate(tmp_path: Path) -> None:
     want_frames = compute_log_power_frames(y_raw[::10], geom, fs=100.0)
     want = np.quantile(want_frames, 0.9, axis=0)
     np.testing.assert_allclose(obs_env.power, want, rtol=1e-10, atol=1e-12)
+
+
+def test_healthy_reference_in_memory_construction() -> None:
+    """HealthyReference can be constructed directly from in-memory arrays and exposes read-only properties."""
+    lfp_mean = np.array([1.5, 1.6, 1.7])
+    eeg_mean = np.array([0.2, 0.3])
+    psd = PsdEnvelope(power=np.ones((2, 11)), fs=50.0, window=20, hop=10)
+    geom = StftGeometry(n_segment=20, n_hop=10)
+    obs = ObservableEnvelope(power=np.ones((2, geom.n_values(50.0))), fs=50.0, geometry=geom)
+    ms = MsEnvelope(power=np.ones(2), fs=50.0, window=20, hop=10)
+
+    ref = HealthyReference(lfp_mean=lfp_mean, eeg_mean=eeg_mean, psd=psd, observable=obs, ms=ms)
+
+    np.testing.assert_array_equal(ref.lfp_mean, lfp_mean)
+    np.testing.assert_array_equal(ref.eeg_mean, eeg_mean)
+    assert ref.psd is psd
+    assert ref.observable is obs
+    assert ref.ms is ms
+
+
+def test_healthy_reference_serialization_round_trip(tmp_path: Path) -> None:
+    """Healthy reference pipeline calculates exact analytical means and round-trips all envelopes."""
+    script_path = Path(__file__).resolve().parent.parent / "scripts" / "build_healthy_psd.py"
+    spec = importlib.util.spec_from_file_location("build_healthy_psd_mod", script_path)
+    assert spec is not None
+    assert spec.loader is not None
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    rng = np.random.default_rng(_SEED + 10)
+    data_dir = tmp_path / "data"
+    data_dir.mkdir(parents=True)
+    n_samples, n_regions, n_channels, n_controls = 500, 4, 3, 2
+
+    # Multi-seed synthetic trajectories with known sample averages
+    all_lfp = []
+    all_eeg = []
+    for i in range(3):
+        lfp = rng.standard_normal((n_samples, n_regions)) + (i + 1) * 0.5
+        eeg = rng.standard_normal((n_samples, n_channels)) - (i + 1) * 0.2
+        all_lfp.append(lfp)
+        all_eeg.append(eeg)
+        np.savez(
+            data_dir / f"traj_{i}.npz",
+            allow_pickle=True,
+            **{
+                "dynamics.lfp": lfp,
+                "sensor_0.y_mea": eeg,
+                "controller.u": rng.standard_normal((n_samples, n_controls)),
+            },
+        )
+
+    expected_lfp_mean = np.mean(np.concatenate(all_lfp, axis=0), axis=0)
+    expected_eeg_mean = np.mean(np.concatenate(all_eeg, axis=0), axis=0)
+
+    config_path = tmp_path / "cfg.yaml"
+    config_path.write_text(
+        yaml.dump({"experiments": [{"dynamics": {"dt": 0.02}, "estimator": {"downsample": 1}}]}),
+        encoding="utf-8",
+    )
+    output_path = tmp_path / "healthy_reference.npz"
+    geom = StftGeometry(n_segment=40, n_hop=20, band_hz=(3.0, 15.0), n_bin_pool=2)
+
+    mod.build_healthy_psd(
+        config_path=config_path,
+        data_dir=data_dir,
+        output_path=output_path,
+        quantile=0.85,
+        geometry=geom,
+    )
+
+    ref = HealthyReference.load(output_path)
+    assert ref.lfp_mean is not None
+    assert ref.eeg_mean is not None
+    assert ref.psd is not None
+    assert ref.observable is not None
+    assert ref.ms is not None
+
+    np.testing.assert_allclose(ref.lfp_mean, expected_lfp_mean, rtol=1e-12, atol=1e-14)
+    np.testing.assert_allclose(ref.eeg_mean, expected_eeg_mean, rtol=1e-12, atol=1e-14)
+    assert ref.psd.power.shape == (n_channels, geom.n_segment // 2 + 1)
+    assert ref.observable.power.shape == (n_channels, geom.n_values(50.0))
+    assert ref.ms.power.shape == (n_channels,)

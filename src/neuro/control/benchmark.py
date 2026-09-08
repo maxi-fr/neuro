@@ -35,6 +35,8 @@ if TYPE_CHECKING:
 
     from trajopt.transcription.result import Solver
 
+    from neuro.spectral import HealthyReference
+
 logger = logging.getLogger(__name__)
 
 # An infeasible transcription can grind rather than fail, so every Ipopt backend is capped: a row
@@ -231,6 +233,7 @@ def run_waveform_benchmark(  # noqa: PLR0913 -- benchmark configuration knobs
     u_max: float = 0.5,
     w_y: float = 1.0,
     w_u: float = 0.1,
+    reference: HealthyReference | None = None,
     kirchhoff: bool = True,
     reduce_kirchhoff: bool = False,
     n_repeats: int = 5,
@@ -250,6 +253,8 @@ def run_waveform_benchmark(  # noqa: PLR0913 -- benchmark configuration knobs
         Tracking cost weight.
     w_u
         Quadratic control effort weight.
+    reference
+        :class:`~neuro.spectral.HealthyReference` container carrying empirical channel means.
     kirchhoff
         Whether to enforce Kirchhoff Current Law as a hard equality constraint.
     reduce_kirchhoff
@@ -266,6 +271,7 @@ def run_waveform_benchmark(  # noqa: PLR0913 -- benchmark configuration knobs
         u_max=u_max,
         w_y=w_y,
         w_u=w_u,
+        reference=reference,
         kirchhoff=kirchhoff,
         reduce_kirchhoff=reduce_kirchhoff,
     )
@@ -291,7 +297,7 @@ def run_waveform_benchmark(  # noqa: PLR0913 -- benchmark configuration knobs
 
 def run_observable_benchmark(  # noqa: PLR0913 -- benchmark configuration knobs
     artifact: str | Path,
-    envelope_ref: str | Path,
+    reference: HealthyReference | None = None,
     *,
     horizon: int = 4,
     u_max: float = 0.5,
@@ -307,8 +313,8 @@ def run_observable_benchmark(  # noqa: PLR0913 -- benchmark configuration knobs
     ----------
     artifact
         Path to the Observable Predictor checkpoint.
-    envelope_ref
-        Path to the healthy Observable envelope npz.
+    reference
+        :class:`~neuro.spectral.HealthyReference` container carrying healthy Observable envelope.
     horizon
         Control Horizon in Frames.
     u_max
@@ -330,7 +336,7 @@ def run_observable_benchmark(  # noqa: PLR0913 -- benchmark configuration knobs
         u_max=u_max,
         w_u=w_u,
         w_hinge=w_hinge,
-        envelope_ref=envelope_ref,
+        reference=reference,
         kirchhoff=kirchhoff,
     )
     model = problem.model

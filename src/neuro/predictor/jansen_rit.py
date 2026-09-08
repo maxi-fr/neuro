@@ -22,7 +22,7 @@ from neuro.control.costs import (
     SpectralHingeCost,
     StateOutputs,
 )
-from neuro.control.mpc import _combine_costs, _observable_envelope, _spectral_envelope, kirchhoff_constraint
+from neuro.control.mpc import _combine_costs, kirchhoff_constraint
 from neuro.jansen_rit import JansenRitDynamics, JansenRitParams
 from neuro.predictor.inference import InferencePredictor
 from neuro.stimulation import build_stimulation
@@ -33,7 +33,7 @@ if TYPE_CHECKING:
 
     from numpy.typing import ArrayLike
 
-    from neuro.spectral import ObservableEnvelope, PsdEnvelope
+    from neuro.spectral import HealthyReference, ObservableEnvelope, PsdEnvelope
     from neuro.types import FloatArray, IntArray
 
 
@@ -569,10 +569,11 @@ class JansenRitTrackingCost(CostFunction):
 
     n_nodes: int = eqx.field(static=True)
     eeg_gain: jax.Array
+    target: jax.Array
     w_y: jax.Array
     horizon: int = eqx.field(static=True)
 
-    def __init__(  # noqa: PLR0913 -- tracking cost dimensions and weights
+    def __init__(  # noqa: PLR0913 -- tracking cost dimensions, target and weights
         self,
         *,
         n: int,
@@ -581,12 +582,28 @@ class JansenRitTrackingCost(CostFunction):
         eeg_gain: jax.Array,
         w_y: float,
         horizon: int,
+        target: FloatArray | jax.Array | None = None,
         terminal: bool = False,
     ) -> None:
-        """Initialize the Jansen-Rit quadratic tracking Cost."""
+        """Initialize the Jansen-Rit quadratic tracking Cost.
+
+        Parameters
+        ----------
+        target : FloatArray | jax.Array | None
+            Healthy operating point target vector of shape ``(n_outputs,)``.
+        """
         super().__init__(n=n, m=m, terminal=terminal)
         self.n_nodes = int(n_nodes)
         self.eeg_gain = jnp.asarray(eeg_gain, dtype=jnp.float64)
+        n_outputs = self.eeg_gain.shape[0]
+        if target is None:
+            self.target = jnp.zeros(n_outputs, dtype=jnp.float64)
+        else:
+            t_arr = jnp.asarray(target, dtype=jnp.float64)
+            if t_arr.shape[-1] != n_outputs:
+                msg = f"target shape {t_arr.shape} does not match model output dimension ({n_outputs})"
+                raise ValueError(msg)
+            self.target = t_arr
         self.w_y = jnp.asarray(w_y, dtype=jnp.float64)
         self.horizon = int(horizon)
 
@@ -596,12 +613,12 @@ class JansenRitTrackingCost(CostFunction):
         u: jax.Array | None = None,
         t: float | jax.Array = 0.0,
     ) -> jax.Array:
-        """Evaluate the per-knot quadratic tracking Cost ``(w_y / horizon) * ||eeg_gain @ (x2 - x3)||^2``."""
+        """Evaluate the per-knot quadratic tracking Cost ``(w_y / horizon) * ||eeg_gain @ (x2 - x3) - target||^2``."""
         del u, t
         x_ode = x[..., : 6 * self.n_nodes].reshape(*x.shape[:-1], 6, self.n_nodes)
         lfp = x_ode[..., 1, :] - x_ode[..., 2, :]
         y = lfp @ self.eeg_gain.T
-        return (self.w_y / self.horizon) * jnp.sum(y**2)
+        return (self.w_y / self.horizon) * jnp.sum((y - self.target) ** 2)
 
 
 class JansenRitStateOutputs(StateOutputs):
@@ -652,6 +669,71 @@ def _validate_jansen_rit_envelope(envelope: PsdEnvelope | ObservableEnvelope, mo
         raise ValueError(msg)
 
 
+def _resolve_jansen_rit_target(
+    ref: HealthyReference | None,
+    resolved_model: JansenRitModel,
+    *,
+    is_identity_leadfield: bool,
+    w_y: float,
+    w_y_terminal: float | None,
+) -> FloatArray | jax.Array | None:
+    """Resolve the tracking target vector from the healthy reference to match model outputs."""
+    if ref is None or (w_y <= 0 and (w_y_terminal is None or w_y_terminal <= 0)):
+        return None
+    if is_identity_leadfield:
+        if ref.lfp_mean is None:
+            msg = "reference does not carry an LFP mean vector for source-space tracking"
+            raise ValueError(msg)
+        if len(ref.lfp_mean) != resolved_model.n_channels:
+            msg = f"reference LFP mean channel count ({len(ref.lfp_mean)}) does not match model ({resolved_model.n_channels})"
+            raise ValueError(msg)
+        return ref.lfp_mean
+    if ref.eeg_mean is not None and len(ref.eeg_mean) == resolved_model.n_channels:
+        return ref.eeg_mean
+    if ref.lfp_mean is not None and len(ref.lfp_mean) == resolved_model.n_nodes:
+        return np.asarray(resolved_model.eeg_gain @ ref.lfp_mean)
+    msg = f"reference cannot be resolved to match model channels ({resolved_model.n_channels})"
+    raise ValueError(msg)
+
+
+def _resolve_jansen_rit_envelopes(
+    ref: HealthyReference | None,
+    *,
+    w_psd: float,
+    w_hinge: float,
+) -> tuple[PsdEnvelope | None, ObservableEnvelope | None]:
+    """Extract and validate spectral envelopes from the healthy reference."""
+    psd_envelope = ref.psd if ref is not None and w_psd > 0 else None
+    if w_psd > 0 and psd_envelope is None:
+        msg = "reference does not carry a PSD envelope required when w_psd > 0"
+        raise ValueError(msg)
+    obs_envelope = ref.observable if ref is not None and w_hinge > 0 else None
+    if w_hinge > 0 and obs_envelope is None:
+        msg = "reference does not carry an Observable envelope required when w_hinge > 0"
+        raise ValueError(msg)
+    return psd_envelope, obs_envelope
+
+
+def _check_healthy_reference(
+    ref: HealthyReference | None,
+    *,
+    tracking_active: bool,
+    w_psd: float,
+    w_hinge: float,
+) -> HealthyReference | None:
+    """Validate presence of the HealthyReference container."""
+    if tracking_active and ref is None:
+        msg = "reference must be provided when w_y > 0"
+        raise ValueError(msg)
+    if w_psd > 0 and ref is None:
+        msg = "reference must be provided when w_psd > 0"
+        raise ValueError(msg)
+    if w_hinge > 0 and ref is None:
+        msg = "reference must be provided when w_hinge > 0"
+        raise ValueError(msg)
+    return ref
+
+
 def build_jansen_rit_problem(  # noqa: PLR0913 -- problem construction arguments
     model: JansenRitModel | None = None,
     *,
@@ -669,9 +751,8 @@ def build_jansen_rit_problem(  # noqa: PLR0913 -- problem construction arguments
     w_y_terminal: float | None = None,
     w_u_l1: float = 0.0,
     w_psd: float = 0.0,
-    psd_ref: str | Path | None = None,
     w_hinge: float = 0.0,
-    envelope_ref: str | Path | None = None,
+    reference: HealthyReference | None = None,
     kirchhoff: bool = False,
 ) -> Problem:
     """Assemble a trajopt MPC Problem for the Jansen-Rit model adapter, one knot per ``substeps`` steps."""
@@ -680,6 +761,22 @@ def build_jansen_rit_problem(  # noqa: PLR0913 -- problem construction arguments
     N = horizon + 1
     n_nodes = resolved_model.n_nodes
 
+    tracking_active = w_y > 0 or (w_y_terminal is not None and w_y_terminal > 0)
+    ref = _check_healthy_reference(
+        reference,
+        tracking_active=tracking_active,
+        w_psd=w_psd,
+        w_hinge=w_hinge,
+    )
+    is_identity = (
+        leadfield is None
+        and resolved_model.eeg_gain.shape == (resolved_model.n_nodes, resolved_model.n_nodes)
+        and np.allclose(resolved_model.eeg_gain, np.eye(resolved_model.n_nodes))
+    )
+    target = _resolve_jansen_rit_target(
+        ref, resolved_model, is_identity_leadfield=is_identity, w_y=w_y, w_y_terminal=w_y_terminal
+    )
+
     tracking_stage = JansenRitTrackingCost(
         n=n,
         m=m,
@@ -687,6 +784,7 @@ def build_jansen_rit_problem(  # noqa: PLR0913 -- problem construction arguments
         eeg_gain=resolved_model.eeg_gain,
         w_y=w_y,
         horizon=horizon,
+        target=target,
     )
     control_stage = DiagonalCost.tracking(
         jnp.zeros(n),
@@ -698,8 +796,8 @@ def build_jansen_rit_problem(  # noqa: PLR0913 -- problem construction arguments
     if w_u_l1 > 0:
         costs.append(L1ControlCost(n=n, m=m, w_l1=w_u_l1, horizon=horizon))
 
-    psd_envelope = _spectral_envelope(psd_ref, w_psd)
-    obs_envelope = _observable_envelope(envelope_ref, w_hinge)
+    psd_envelope, obs_envelope = _resolve_jansen_rit_envelopes(ref, w_psd=w_psd, w_hinge=w_hinge)
+
     if psd_envelope is not None or obs_envelope is not None:
         outputs = JansenRitStateOutputs(
             n=n,
@@ -724,6 +822,7 @@ def build_jansen_rit_problem(  # noqa: PLR0913 -- problem construction arguments
         eeg_gain=resolved_model.eeg_gain,
         w_y=w_y_final,
         horizon=horizon,
+        target=target,
         terminal=True,
     )
     objective = Objective(stage_cost=stage_cost, terminal_cost=terminal, N=N)

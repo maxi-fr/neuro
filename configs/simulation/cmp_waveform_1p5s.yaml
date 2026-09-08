@@ -52,5 +52,5 @@ controller:
     w_u: 10.0
     w_u_l1: 0.1
     w_psd: 10.0
-    psd_ref: data/healthy_psd.npz
+    reference: data/healthy_psd.npz
     kirchhoff: true

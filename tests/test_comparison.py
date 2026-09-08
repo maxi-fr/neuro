@@ -148,7 +148,8 @@ def test_shipped_manifests_expand_into_valid_paired_grids() -> None:
     for path in sorted((_ROOT / "configs" / "comparison").glob("*.yaml")):
         grid = expand_grid(load_manifest(path))
         check_arms_are_paired(grid)
-        validate_simulation_config(grid[0].config)
+        for cell in grid:
+            validate_simulation_config(cell.config)
 
 
 def _seizing_lfp(dt: float, connectome: Connectome, regions: list[str]) -> FloatArray:

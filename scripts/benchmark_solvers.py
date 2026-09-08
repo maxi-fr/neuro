@@ -11,6 +11,7 @@ from neuro.control.benchmark import (
     run_observable_benchmark,
     run_waveform_benchmark,
 )
+from neuro.spectral import HealthyReference
 
 # The deployed Predictors and horizons, not synthetic stand-ins: the transcriptions differ by how
 # their decision-variable count scales with the Predictor's trailing window, so a toy checkpoint
@@ -18,6 +19,7 @@ from neuro.control.benchmark import (
 # controller config deploys, on that Predictor's own grid.
 _WAVEFORM_ARTIFACT = "artifacts/cmp_waveform_mlp_1p5s/model"  # n_y=15, n_u=10, 62 ch, 3 electrodes
 _WAVEFORM_HORIZON = 50  # 50 * 0.02 s = 1 s, as configs/simulation/mse02_psd_mpc.yaml deploys
+_WAVEFORM_REFERENCE = "data/healthy_psd.npz"
 _OBSERVABLE_LINEAR = "artifacts/cmp_observable_dmd_hop5/model"  # depth-0, so the OCP is a convex QP
 _OBSERVABLE_NONLINEAR = "artifacts/cmp_observable_mlp_hop5/model"
 _OBSERVABLE_HORIZON = 10  # 10 * 0.1 s = 1 s on the n_hop=5 Frame grid
@@ -52,7 +54,7 @@ def main() -> None:
     logging.getLogger("neuro.control.benchmark").setLevel(logging.INFO)
     logging.getLogger("cyipopt").setLevel(logging.WARNING)
 
-    required = [_WAVEFORM_ARTIFACT]
+    required = [_WAVEFORM_ARTIFACT, _WAVEFORM_REFERENCE]
     if not args.waveform_only:
         required += [_OBSERVABLE_LINEAR, _OBSERVABLE_NONLINEAR, _OBSERVABLE_ENVELOPE]
     _require_artifacts(*required)
@@ -74,6 +76,7 @@ def main() -> None:
             u_max=2.0,
             w_y=1.0,
             w_u=10.0,
+            reference=HealthyReference.load(_WAVEFORM_REFERENCE),
             kirchhoff=kirchhoff,
             reduce_kirchhoff=reduce_kirchhoff,
             n_repeats=args.repeats,
@@ -95,7 +98,7 @@ def main() -> None:
         print("=" * 80)
         open_comp_obs, closed_comp_obs = run_observable_benchmark(
             artifact,
-            _OBSERVABLE_ENVELOPE,
+            reference=HealthyReference.load(_OBSERVABLE_ENVELOPE),
             horizon=_OBSERVABLE_HORIZON,
             u_max=2.0,
             w_u=10.0,

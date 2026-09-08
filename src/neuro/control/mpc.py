@@ -3,6 +3,7 @@ from __future__ import annotations
 import dataclasses
 import importlib
 import time
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Self, cast
 
 import equinox as eqx
@@ -37,11 +38,9 @@ from neuro.control.costs import (
     has_whole_horizon_cost,
 )
 from neuro.predictor.inference import InferencePredictor, ObservableMLPModel, WaveformMLPModel
-from neuro.spectral import ObservableEnvelope, PsdEnvelope
+from neuro.spectral import HealthyReference, ObservableEnvelope, PsdEnvelope
 
 if TYPE_CHECKING:
-    from pathlib import Path
-
     from numpy.typing import ArrayLike
     from trajopt.costs.base import CostFunction
     from trajopt.problem import BoundaryConditions
@@ -67,6 +66,8 @@ def _build_problem(spec: dict[str, Any] | Problem) -> Problem:
     if isinstance(spec, Problem):
         return spec
     cfg = spec.copy()
+    if "reference" in cfg and isinstance(cfg["reference"], (str, Path)):
+        cfg["reference"] = HealthyReference.load(cfg["reference"])
     class_path: str = cfg.pop("class_path")
     module_name, func_name = class_path.rsplit(".", 1)
     target = getattr(importlib.import_module(module_name), func_name)
@@ -95,24 +96,36 @@ def _combine_costs(costs: list[CostFunction]) -> CostFunction:
     return SumCost(costs) if len(costs) > 1 else costs[0]
 
 
-def _spectral_envelope(psd_ref: str | Path | None, w_psd: float) -> PsdEnvelope | None:
-    """Load the healthy PSD envelope when ``w_psd`` enables the spectral hinge, else ``None``."""
+def _spectral_envelope(
+    reference: HealthyReference | None,
+    w_psd: float,
+) -> PsdEnvelope | None:
+    """Extract the healthy PSD envelope when ``w_psd`` enables the spectral hinge, else ``None``."""
     if w_psd <= 0:
         return None
-    if psd_ref is None:
-        msg = "psd_ref must be provided when w_psd > 0"
+    if reference is None:
+        msg = "reference must be provided when w_psd > 0"
         raise ValueError(msg)
-    return PsdEnvelope.load(psd_ref)
+    if reference.psd is None:
+        msg = "reference does not carry a healthy PSD envelope"
+        raise ValueError(msg)
+    return reference.psd
 
 
-def _observable_envelope(envelope_ref: str | Path | None, w_hinge: float) -> ObservableEnvelope | None:
-    """Load the healthy Observable envelope when ``w_hinge`` enables the hinge, else ``None``."""
+def _observable_envelope(
+    reference: HealthyReference | None,
+    w_hinge: float,
+) -> ObservableEnvelope | None:
+    """Extract the healthy Observable envelope when ``w_hinge`` enables the hinge, else ``None``."""
     if w_hinge <= 0:
         return None
-    if envelope_ref is None:
-        msg = "envelope_ref must be provided when w_hinge > 0"
+    if reference is None:
+        msg = "reference must be provided when w_hinge > 0"
         raise ValueError(msg)
-    return ObservableEnvelope.load(envelope_ref)
+    if reference.observable is None:
+        msg = "reference contains no Observable envelope"
+        raise ValueError(msg)
+    return reference.observable
 
 
 def _reduced_control_constraint(n: int, basis: jax.Array, u_max_arr: FloatArray) -> LinearConstraint:
@@ -433,6 +446,32 @@ class NullspaceReducedModel(DiscreteDynamics, InferencePredictor):
         return cls(base)
 
 
+def _resolve_waveform_target(
+    ref: HealthyReference | None,
+    base: WaveformMLPModel,
+    *,
+    tracking_active: bool,
+    w_psd: float,
+) -> FloatArray | None:
+    """Resolve and validate the state-space tracking target from a HealthyReference."""
+    if tracking_active and ref is None:
+        msg = "reference must be provided when w_y > 0"
+        raise ValueError(msg)
+    if w_psd > 0 and ref is None:
+        msg = "reference must be provided when w_psd > 0"
+        raise ValueError(msg)
+    if not tracking_active or ref is None:
+        return None
+    if ref.eeg_mean is not None and len(ref.eeg_mean) == base.n_channels:
+        y_ref = ref.eeg_mean
+    elif ref.lfp_mean is not None and len(ref.lfp_mean) == base.n_channels:
+        y_ref = ref.lfp_mean
+    else:
+        msg = f"reference mean vector does not match model channel count ({base.n_channels})"
+        raise ValueError(msg)
+    return (y_ref - base.y_center) / base.y_scale
+
+
 def build_waveform_problem(  # noqa: PLR0913 -- checkpoint plus the ten MPC cost/bound knobs
     artifact: str | Path,
     *,
@@ -443,16 +482,16 @@ def build_waveform_problem(  # noqa: PLR0913 -- checkpoint plus the ten MPC cost
     w_y_terminal: float | None = None,
     w_u_l1: float = 0.0,
     w_psd: float = 0.0,
-    psd_ref: str | Path | None = None,
+    reference: HealthyReference | None = None,
     kirchhoff: bool = False,
     reduce_kirchhoff: bool = False,
 ) -> Problem:
     """Assemble the waveform MPC problem: model adapter, objective, box and Kirchhoff bounds.
 
-    The objective minimizes tracking deviation from zero, quadratic and L1 control effort, and
-    one-sided log-power PSD hinges against ``psd_ref``. The constraints are the control box
-    bounds ``-u_max <= u <= u_max``, plus the Kirchhoff sum-to-zero equality when ``kirchhoff``
-    is set.
+    The objective minimizes tracking deviation from the healthy reference operating point,
+    quadratic and L1 control effort, and one-sided log-power PSD hinges against ``reference``.
+    The constraints are the control box bounds ``-u_max <= u <= u_max``, plus the Kirchhoff
+    sum-to-zero equality when ``kirchhoff`` is set.
 
     Parameters
     ----------
@@ -476,10 +515,10 @@ def build_waveform_problem(  # noqa: PLR0913 -- checkpoint plus the ten MPC cost
         disables it (default).
     w_psd
         Weight on the spectral hinge cost: the mean squared amount by which predicted log-power
-        exceeds ``psd_ref``'s healthy envelope. ``0`` (default) disables it.
-    psd_ref
-        Path to the healthy reference envelope npz written by ``scripts/build_healthy_psd.py``.
-        Required when ``w_psd > 0``.
+        exceeds ``reference``'s healthy envelope. ``0`` (default) disables it.
+    reference
+        :class:`~neuro.spectral.HealthyReference` container carrying empirical channel
+        means and/or PSD envelope. Required when ``w_y > 0`` or ``w_psd > 0``.
     kirchhoff
         Add the Kirchhoff sum-to-zero equality on the controls. Off by default; the incumbent
         applies it unconditionally, so full parity sets it.
@@ -501,9 +540,13 @@ def build_waveform_problem(  # noqa: PLR0913 -- checkpoint plus the ten MPC cost
     n, m = model.n, model.m
     N = horizon + 1
 
+    w_y_final = w_y_terminal if w_y_terminal is not None else w_y
+    target_state = _resolve_waveform_target(reference, base, tracking_active=(w_y > 0 or w_y_final > 0), w_psd=w_psd)
+
     z_last = slice((base.n_y - 1) * base.n_channels, base.n_y * base.n_channels)
     Q = jnp.zeros(n).at[z_last].set(2.0 * w_y * base.y_scale**2 / horizon)
-    xf = jnp.zeros(n).at[z_last].set(-base.y_center / base.y_scale)
+    xf = jnp.zeros(n) if target_state is None else jnp.zeros(n).at[z_last].set(target_state)
+
     # Under reduction the effort is coupled (``||u||^2 = v^T Z^T Z v``), so it moves out of the
     # quadratic's ``R`` and into a control-only cost; folding it into ``R`` would promote the
     # diagonal state weight to a dense ``(n, n)`` matrix for no gain.
@@ -514,7 +557,7 @@ def build_waveform_problem(  # noqa: PLR0913 -- checkpoint plus the ten MPC cost
         costs.append(ReducedEffortCost(n=n, m=m, w_u=w_u, horizon=horizon))
     if w_u_l1 > 0:
         costs.append(L1ControlCost(n=n, m=m, w_l1=w_u_l1, horizon=horizon))
-    envelope = _spectral_envelope(psd_ref, w_psd)
+    envelope = _spectral_envelope(reference, w_psd)
     if envelope is not None:
         _validate_waveform_envelope(envelope, base)
         outputs = StateOutputs(
@@ -531,7 +574,6 @@ def build_waveform_problem(  # noqa: PLR0913 -- checkpoint plus the ten MPC cost
     # given else ``w_y`` -- the incumbent's last-step stage cost. Always explicit, because the
     # composite's derived terminal (``SumCost.as_terminal``) would otherwise carry the
     # control-only L1 and whole-horizon hinge into a knot that has no control.
-    w_y_final = w_y_terminal if w_y_terminal is not None else w_y
     Q_f = jnp.zeros(n).at[z_last].set(2.0 * w_y_final * base.y_scale**2 / horizon)
     terminal = DiagonalCost.terminal_tracking(Q_f, xf, m)
     objective = Objective(stage_cost=stage_cost, terminal_cost=terminal, N=N)
@@ -555,7 +597,7 @@ def build_observable_problem(  # noqa: PLR0913 -- checkpoint plus the MPC cost/b
     w_u: float = 0.0,
     w_u_l1: float = 0.0,
     w_hinge: float = 0.0,
-    envelope_ref: str | Path | None = None,
+    reference: HealthyReference | None = None,
     kirchhoff: bool = False,
     reduce_kirchhoff: bool = False,
 ) -> Problem:
@@ -582,11 +624,10 @@ def build_observable_problem(  # noqa: PLR0913 -- checkpoint plus the MPC cost/b
         disables it (default).
     w_hinge
         Weight on the hinge cost: the mean squared amount by which the predicted log-power
-        Frames exceed ``envelope_ref``'s healthy envelope. ``0`` (default) disables it.
-    envelope_ref
-        Path to the healthy reference Observable envelope npz written by
-        ``scripts/build_healthy_psd.py``. Required when ``w_hinge > 0``; its stored geometry
-        drives the cost.
+        Frames exceed ``reference``'s healthy envelope. ``0`` (default) disables it.
+    reference
+        :class:`~neuro.spectral.HealthyReference` container carrying the healthy Observable envelope.
+        Required when ``w_hinge > 0``.
     kirchhoff
         Add the Kirchhoff sum-to-zero equality on the controls.
     reduce_kirchhoff
@@ -601,6 +642,10 @@ def build_observable_problem(  # noqa: PLR0913 -- checkpoint plus the MPC cost/b
     n, m = model.n, model.m
     N = horizon + 1
 
+    if w_hinge > 0 and reference is None:
+        msg = "reference must be provided when w_hinge > 0"
+        raise ValueError(msg)
+
     R = jnp.zeros(m) if reduce_kirchhoff else jnp.full(m, 2.0 * w_u / horizon)
     stage = DiagonalCost.tracking(jnp.zeros(n), R, jnp.zeros(n), jnp.zeros(m))
     costs: list[CostFunction] = [ExcludeInitialKnotState(stage)]
@@ -608,7 +653,7 @@ def build_observable_problem(  # noqa: PLR0913 -- checkpoint plus the MPC cost/b
         costs.append(ReducedEffortCost(n=n, m=m, w_u=w_u, horizon=horizon))
     if w_u_l1 > 0:
         costs.append(L1ControlCost(n=n, m=m, w_l1=w_u_l1, horizon=horizon))
-    envelope = _observable_envelope(envelope_ref, w_hinge)
+    envelope = _observable_envelope(reference, w_hinge)
     # The stage trajectory carries every Frame of the Control Horizon but the last, which lives
     # only in the terminal knot; the terminal Cost scores it so no predicted Frame goes unpriced.
     terminal: CostFunction = DiagonalCost.terminal_tracking(jnp.zeros(n), jnp.zeros(n), m)

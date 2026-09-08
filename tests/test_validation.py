@@ -112,11 +112,23 @@ def _obs_artifact(
     return stem
 
 
+def _reference_npz(tmp_path: Path, *, n_channels: int = _N_CHANNELS) -> Path:
+    """Save a synthetic healthy reference npz with eeg_mean."""
+    ref_path = tmp_path / "healthy_ref.npz"
+    ref_path.parent.mkdir(parents=True, exist_ok=True)
+    np.savez(
+        ref_path,
+        eeg_mean=np.zeros(n_channels),
+    )
+    return ref_path
+
+
 @pytest.fixture
 def config(tmp_path: Path) -> dict[str, Any]:
     """A closed-loop config that agrees with its predictor on every coupling."""
     cfg = _plant()
     provenance = TrainingProvenance(cutoff_hz=None, plant_fingerprint=plant_fingerprint(cfg))
+    ref_path = _reference_npz(tmp_path, n_channels=_N_CHANNELS)
     return {
         "t_end": 1.0,
         **cfg,
@@ -132,6 +144,7 @@ def config(tmp_path: Path) -> dict[str, Any]:
                 "class_path": "neuro.control.mpc.build_waveform_problem",
                 "artifact": str(_artifact(tmp_path, provenance)),
                 "horizon": 50,
+                "reference": str(ref_path),
             },
         },
     }
@@ -213,7 +226,21 @@ def _psd_npz(tmp_path: Path, *, fs: float = 50.0, L: int = 50, R: int = 25) -> P
 
 def test_consistent_psd_reference_passes(config: dict[str, Any], tmp_path: Path) -> None:
     """A PSD reference agreeing on rate passes cleanly."""
-    config["controller"]["problem"]["psd_ref"] = str(_psd_npz(tmp_path, fs=50.0, L=50, R=25))
+    ref_path = tmp_path / "healthy_ref_psd.npz"
+    np.savez(
+        ref_path,
+        eeg_mean=np.zeros(_N_CHANNELS),
+        Pref=np.ones((2, 26)),
+        freqs=np.linspace(0, 25.0, 26),
+        fs=50.0,
+        L=50,
+        R=25,
+        quantile=0.9,
+        n_windows=100,
+        plant_fingerprint="dummy",
+    )
+    config["controller"]["problem"]["reference"] = str(ref_path)
+    config["controller"]["problem"]["w_psd"] = 1.0
     with warnings.catch_warnings():
         warnings.simplefilter("error")
         validate_simulation_config(config)
@@ -221,14 +248,28 @@ def test_consistent_psd_reference_passes(config: dict[str, Any], tmp_path: Path)
 
 def test_missing_psd_reference_raises(config: dict[str, Any], tmp_path: Path) -> None:
     """A missing PSD reference npz raises ConfigConsistencyError."""
-    config["controller"]["problem"]["psd_ref"] = str(tmp_path / "absent.npz")
-    with pytest.raises(ConfigConsistencyError, match="spectral reference envelope not found"):
+    config["controller"]["problem"]["reference"] = str(tmp_path / "absent.npz")
+    with pytest.raises(ConfigConsistencyError, match="healthy reference file not found"):
         validate_simulation_config(config)
 
 
 def test_psd_reference_rate_mismatch_raises(config: dict[str, Any], tmp_path: Path) -> None:
     """A sampling rate mismatch between controller and PSD reference raises ConfigConsistencyError."""
-    config["controller"]["problem"]["psd_ref"] = str(_psd_npz(tmp_path, fs=100.0))
+    ref_path = tmp_path / "healthy_ref_bad_rate.npz"
+    np.savez(
+        ref_path,
+        eeg_mean=np.zeros(_N_CHANNELS),
+        Pref=np.ones((2, 26)),
+        freqs=np.linspace(0, 50.0, 26),
+        fs=100.0,
+        L=50,
+        R=25,
+        quantile=0.9,
+        n_windows=100,
+        plant_fingerprint="dummy",
+    )
+    config["controller"]["problem"]["reference"] = str(ref_path)
+    config["controller"]["problem"]["w_psd"] = 1.0
     with pytest.raises(ConfigConsistencyError, match="must match spectral reference dt"):
         validate_simulation_config(config)
 
@@ -344,7 +385,7 @@ def test_observable_estimator_and_envelope_validation(tmp_path: Path) -> None:
             "problem": {
                 "class_path": "neuro.control.mpc.build_observable_problem",
                 "artifact": str(art),
-                "envelope_ref": str(env_path),
+                "reference": str(env_path),
             },
         },
     }
@@ -443,7 +484,7 @@ def test_observable_envelope_geometry_agreement(tmp_path: Path) -> None:
             "problem": {
                 "class_path": "neuro.control.mpc.build_observable_problem",
                 "artifact": str(art),
-                "envelope_ref": str(bad_env_path),
+                "reference": str(bad_env_path),
             },
         },
     }
@@ -489,7 +530,7 @@ def test_envelope_channel_count_and_sampling_rate_validation(tmp_path: Path) -> 
             "problem": {
                 "class_path": "neuro.control.mpc.build_observable_problem",
                 "artifact": str(art),
-                "envelope_ref": str(bad_ch_path),
+                "reference": str(bad_ch_path),
             },
         },
     }
@@ -512,7 +553,7 @@ def test_envelope_channel_count_and_sampling_rate_validation(tmp_path: Path) -> 
         kernel="boxcar",
         kernel_width=1,
     )
-    sim_cfg["controller"]["problem"]["envelope_ref"] = str(bad_fs_path)
+    sim_cfg["controller"]["problem"]["reference"] = str(bad_fs_path)
     with pytest.raises(
         ConfigConsistencyError, match=r"controller\.dt \(0\.1\) must match Observable reference dt \(0\.05 s"
     ):
@@ -633,6 +674,7 @@ def _jansen_rit_loop(*, substeps: int = 20, controller_dt: float = 0.02, estimat
                 "u_max": 2.0,
                 "connectome": connectome,
                 "params": params,
+                "reference": "data/healthy_lfp_knot20ms_frame500ms.npz",
             },
         },
     }
@@ -641,6 +683,29 @@ def _jansen_rit_loop(*, substeps: int = 20, controller_dt: float = 0.02, estimat
 def test_jansen_rit_oracle_loop_validates_without_a_checkpoint() -> None:
     """A Jansen-Rit problem carries no trained artifact, so the checkpoint checks do not apply."""
     validate_simulation_config(_jansen_rit_loop())
+
+
+def test_jansen_rit_requires_reference_when_wy_positive() -> None:
+    """Jansen-Rit oracle config with w_y > 0 strictly requires a reference file."""
+    cfg = _jansen_rit_loop()
+    del cfg["controller"]["problem"]["reference"]
+    with pytest.raises(ConfigConsistencyError, match=r"controller\.problem\.reference must be provided when w_y > 0"):
+        validate_simulation_config(cfg)
+
+
+def test_waveform_predictor_requires_reference_when_wy_positive(config: dict[str, Any]) -> None:
+    """Waveform predictor config with w_y > 0 strictly requires a reference file."""
+    del config["controller"]["problem"]["reference"]
+    with pytest.raises(ConfigConsistencyError, match=r"controller\.problem\.reference must be provided when w_y > 0"):
+        validate_simulation_config(config)
+
+
+def test_waveform_predictor_reference_channel_count_mismatch(config: dict[str, Any], tmp_path: Path) -> None:
+    """Waveform predictor reference with mismatched channel count is rejected."""
+    bad_ref = _reference_npz(tmp_path / "bad", n_channels=_N_CHANNELS + 2)
+    config["controller"]["problem"]["reference"] = str(bad_ref)
+    with pytest.raises(ConfigConsistencyError, match="reference mean channel count"):
+        validate_simulation_config(config)
 
 
 def test_jansen_rit_controller_dt_must_equal_the_knot_period() -> None:
@@ -663,3 +728,44 @@ def test_jansen_rit_oracle_estimator_must_share_the_plant_network() -> None:
     cfg["estimator"]["connectome"] = {"speed": 10.0, "K": 0.6}
     with pytest.raises(ConfigConsistencyError, match="Connectome"):
         validate_simulation_config(cfg)
+
+
+def test_jansen_rit_missing_lfp_mean_raises(tmp_path: Path) -> None:
+    """Source-space Jansen-Rit tracking rejects a reference missing an LFP mean vector."""
+    ref_path = tmp_path / "eeg_only_ref.npz"
+    np.savez(ref_path, eeg_mean=np.zeros(20))
+    cfg = _jansen_rit_loop()
+    cfg["controller"]["problem"]["reference"] = str(ref_path)
+    with pytest.raises(ConfigConsistencyError, match="does not carry an LFP mean vector"):
+        validate_simulation_config(cfg)
+
+
+def test_jansen_rit_mismatched_lfp_channels_raises(tmp_path: Path) -> None:
+    """Source-space Jansen-Rit tracking rejects reference whose LFP channel count differs from node count."""
+    ref_path = tmp_path / "wrong_lfp_ref.npz"
+    np.savez(ref_path, lfp_mean=np.zeros(10))
+    cfg = _jansen_rit_loop()
+    cfg["controller"]["problem"]["reference"] = str(ref_path)
+    cfg["controller"]["problem"]["params"] = {"A": [3.25] * 76}
+    with pytest.raises(ConfigConsistencyError, match="must equal Jansen-Rit node count"):
+        validate_simulation_config(cfg)
+
+
+def test_jansen_rit_leadfield_dimension_mismatch_raises(tmp_path: Path) -> None:
+    """Projection-space Jansen-Rit tracking rejects reference matching neither EEG nor source dimensions."""
+    ref_path = tmp_path / "bad_leadfield_ref.npz"
+    np.savez(ref_path, eeg_mean=np.zeros(5), lfp_mean=np.zeros(50))
+    cfg = _jansen_rit_loop()
+    cfg["controller"]["problem"]["reference"] = str(ref_path)
+    cfg["controller"]["problem"]["leadfield"] = np.zeros((10, 76)).tolist()
+    with pytest.raises(ConfigConsistencyError, match="cannot be resolved to match leadfield dimensions"):
+        validate_simulation_config(cfg)
+
+
+def test_waveform_predictor_reference_without_mean_raises(config: dict[str, Any], tmp_path: Path) -> None:
+    """Waveform tracking with w_y > 0 rejects a reference without an empirical mean vector."""
+    ref_path = tmp_path / "no_mean_ref.npz"
+    np.savez(ref_path, dummy=np.zeros(1))
+    config["controller"]["problem"]["reference"] = str(ref_path)
+    with pytest.raises(ConfigConsistencyError, match="does not carry an empirical mean vector"):
+        validate_simulation_config(config)

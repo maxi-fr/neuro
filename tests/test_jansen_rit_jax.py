@@ -7,6 +7,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
+from trajopt.mpc import MPC
 from trajopt.transcription.ipopt import Ipopt
 from trajopt.transcription.single_shooting import SingleShooting
 
@@ -33,6 +34,7 @@ from neuro.predictor.jansen_rit import (
     project_control_jax,
     sigmoid_jax,
 )
+from neuro.spectral import HealthyReference
 from neuro.stimulation.analytical import AnalyticalStim
 from neuro.stimulation.base import _AnalyticalConfig
 
@@ -263,6 +265,7 @@ def test_jansen_rit_mpc_problem_solve() -> None:
         w_y=1.0,
         w_u=0.1,
         kirchhoff=True,
+        reference=HealthyReference(lfp_mean=np.zeros(2)),
     )
 
     solver = SingleShooting(solver=Ipopt(options={"print_level": 0, "max_iter": 50}))
@@ -286,6 +289,7 @@ def test_jansen_rit_mpc_problem_from_config_dict() -> None:
         stimulation={"model": "none"},
         w_y=1.0,
         w_u=0.1,
+        reference=HealthyReference(lfp_mean=np.zeros(76)),
     )
     assert isinstance(problem.model, JansenRitModel)
     assert problem.model.n_nodes == 76
@@ -321,6 +325,143 @@ def test_jansen_rit_tracking_cost_eval() -> None:
     y = leadfield @ lfp
     want = float((w_y / horizon) * np.sum(y**2))
     np.testing.assert_allclose(got, want, rtol=1e-10, atol=1e-12)
+
+
+def test_jansen_rit_tracking_cost_eval_with_target() -> None:
+    """Evaluate JansenRitTrackingCost matches manual quadratic residual from target."""
+    n_nodes = 3
+    leadfield = np.array([[1.0, -0.5, 0.2], [0.0, 1.0, -0.5]])
+    params, conn = _toy_plant(n_nodes, sigma=0.0)
+    model = JansenRitModel.from_plant_components(params, conn=conn, leadfield=leadfield, dt=_DT)
+
+    w_y = 2.0
+    horizon = 5
+    target = np.array([1.5, -0.5])
+    cost = JansenRitTrackingCost(
+        n=model.n,
+        m=model.m,
+        n_nodes=n_nodes,
+        eeg_gain=model.eeg_gain,
+        w_y=w_y,
+        horizon=horizon,
+        target=target,
+    )
+
+    rng = np.random.default_rng(_SEED + 10)
+    x_ode = rng.standard_normal((6, n_nodes))
+    hist = model.seed_history(jnp.asarray(x_ode))
+    z = model.pack_state(jnp.asarray(x_ode), hist, 0.0)
+
+    got = float(cost.evaluate(z))
+    lfp = x_ode[1] - x_ode[2]
+    y = leadfield @ lfp
+    want = float((w_y / horizon) * np.sum((y - target) ** 2))
+    np.testing.assert_allclose(got, want, rtol=1e-10, atol=1e-12)
+
+
+def test_jansen_rit_build_problem_requires_reference_when_wy_positive() -> None:
+    """Attempting to assemble Jansen-Rit MPC problem with w_y > 0 without reference raises ValueError."""
+    params, conn = _toy_plant(2, sigma=0.0)
+    dyn = JansenRitDynamics(dt=_DT, params=params, conn=conn, seed=_SEED)
+    model = JansenRitModel.from_plant(dyn)
+
+    with pytest.raises(ValueError, match="reference must be provided when w_y > 0"):
+        build_jansen_rit_problem(model, horizon=5, u_max=2.0, w_y=1.0, reference=None)
+
+
+def test_jansen_rit_zero_control_at_healthy_operating_point() -> None:
+    """Optimal Control Current is zero when initialized at the healthy operating point."""
+    n_nodes = 2
+    params, conn = _toy_plant(n_nodes, sigma=0.0)
+    cfg = _AnalyticalConfig(model="analytical", electrodes=["F3", "F4"])
+    stim = AnalyticalStim(cfg, conn.centres)
+    dyn = JansenRitDynamics(dt=_DT, params=params, conn=conn, stim=stim, seed=_SEED)
+    model = JansenRitModel.from_plant(dyn)
+
+    y_ref = np.array([1.5, 1.5])
+    x_ode = np.zeros((6, n_nodes))
+    x_ode[1] = y_ref
+    hist = model.seed_history(jnp.asarray(x_ode))
+    z0 = model.pack_state(jnp.asarray(x_ode), hist, 0.0)
+
+    ref = HealthyReference(lfp_mean=y_ref)
+    problem = build_jansen_rit_problem(
+        model,
+        horizon=5,
+        u_max=2.0,
+        w_y=1.0,
+        w_u=0.1,
+        kirchhoff=True,
+        reference=ref,
+    )
+
+    solver = SingleShooting(solver=Ipopt(options={"print_level": 0, "max_iter": 50}))
+    mpc = MPC(problem, solver, x0=z0)
+    res = mpc.solve()
+    assert res.success
+    np.testing.assert_allclose(np.asarray(mpc.controls), np.zeros((5, 2)), atol=1e-5)
+
+
+def test_jansen_rit_active_suppression_under_seizure_deviation() -> None:
+    """Nonzero Control Current is mobilized when state deviates from healthy operating point."""
+    n_nodes = 2
+    params, conn = _toy_plant(n_nodes, sigma=0.0)
+    cfg = _AnalyticalConfig(model="analytical", electrodes=["F3", "F4"])
+    stim = AnalyticalStim(cfg, conn.centres)
+    dyn = JansenRitDynamics(dt=_DT, params=params, conn=conn, stim=stim, seed=_SEED)
+    model = JansenRitModel.from_plant(dyn)
+
+    y_ref = np.array([1.5, 1.5])
+    x_ode = np.zeros((6, n_nodes))
+    x_ode[1] = np.array([10.0, 10.0])
+    hist = model.seed_history(jnp.asarray(x_ode))
+    z0 = model.pack_state(jnp.asarray(x_ode), hist, 0.0)
+
+    ref = HealthyReference(lfp_mean=y_ref)
+    problem = build_jansen_rit_problem(
+        model,
+        horizon=5,
+        u_max=2.0,
+        w_y=1.0,
+        w_u=0.01,
+        kirchhoff=True,
+        reference=ref,
+    )
+
+    solver = SingleShooting(solver=Ipopt(options={"print_level": 0, "max_iter": 50}))
+    mpc = MPC(problem, solver, x0=z0)
+    res = mpc.solve()
+    assert res.success
+    ctrls = np.asarray(mpc.controls)
+    assert np.max(np.abs(ctrls)) > 1e-5
+
+
+def test_jansen_rit_model_space_reference_resolution() -> None:
+    """Jansen-Rit problem resolves regional LFP reference for identity gain and EEG reference for Leadfield."""
+    n_nodes = 3
+    params, conn = _toy_plant(n_nodes, sigma=0.0)
+    lfp_mean = np.array([1.5, 1.6, 1.7])
+    eeg_mean = np.array([0.5, -0.3])
+    leadfield = np.array([[1.0, -0.5, 0.2], [0.0, 1.0, -0.5]])
+
+    # 1. Identity leadfield -> uses lfp_mean
+    model_id = JansenRitModel.from_plant_components(params, conn=conn, dt=_DT)
+    ref = HealthyReference(lfp_mean=lfp_mean, eeg_mean=eeg_mean)
+    prob_id = build_jansen_rit_problem(model_id, horizon=4, u_max=1.0, w_y=1.0, reference=ref)
+    assert isinstance(prob_id.obj.terminal_cost, JansenRitTrackingCost)
+    np.testing.assert_allclose(np.asarray(prob_id.obj.terminal_cost.target), lfp_mean)
+
+    # 2. Projection leadfield -> uses eeg_mean
+    model_proj = JansenRitModel.from_plant_components(params, conn=conn, leadfield=leadfield, dt=_DT)
+    prob_proj = build_jansen_rit_problem(model_proj, horizon=4, u_max=1.0, w_y=1.0, reference=ref)
+    assert isinstance(prob_proj.obj.terminal_cost, JansenRitTrackingCost)
+    np.testing.assert_allclose(np.asarray(prob_proj.obj.terminal_cost.target), eeg_mean)
+
+    # 3. Projection leadfield without eeg_mean -> projects lfp_mean through leadfield
+    ref_lfp_only = HealthyReference(lfp_mean=lfp_mean)
+    prob_proj2 = build_jansen_rit_problem(model_proj, horizon=4, u_max=1.0, w_y=1.0, reference=ref_lfp_only)
+    assert isinstance(prob_proj2.obj.terminal_cost, JansenRitTrackingCost)
+    np.testing.assert_allclose(np.asarray(prob_proj2.obj.terminal_cost.target), leadfield @ lfp_mean)
 
 
 def test_absorb_step_index_and_delay_history_advancement() -> None:
@@ -391,6 +532,7 @@ def test_multi_step_closed_loop_solve_with_delayed_connectome() -> None:
         w_y_terminal=2.0,
         w_u_l1=0.01,
         kirchhoff=True,
+        reference=HealthyReference(lfp_mean=np.zeros(2)),
     )
 
     solver = SingleShooting(solver=Ipopt(options={"print_level": 0, "max_iter": 50}))
@@ -482,7 +624,7 @@ def test_jansen_rit_problem_wires_the_observable_frame_hinge_at_the_knot_rate(tm
         w_y=0.0,
         w_u=0.01,
         w_hinge=10.0,
-        envelope_ref=env_path,
+        reference=HealthyReference.load(env_path),
     )
     assert has_whole_horizon_cost(problem.obj.stage_cost)
 
@@ -505,4 +647,6 @@ def test_jansen_rit_envelope_must_match_the_knot_rate(tmp_path: Path) -> None:
     _write_observable_envelope(env_path, geom, fs=1.0 / _DT, n_channels=model.n_channels, level=5.0)
 
     with pytest.raises(ValueError, match="does not match the knot rate"):
-        build_jansen_rit_problem(model, horizon=16, u_max=2.0, w_hinge=1.0, envelope_ref=env_path)
+        build_jansen_rit_problem(
+            model, horizon=16, u_max=2.0, w_y=0.0, w_hinge=1.0, reference=HealthyReference.load(env_path)
+        )

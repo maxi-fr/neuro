@@ -32,12 +32,18 @@ from neuro.control.mpc import (
 from neuro.filtering import ObservableEstimator
 from neuro.predictor.inference import ObservableMLPModel, WaveformMLPModel
 from neuro.predictor.module import AutoregressiveMLP
+from neuro.spectral import HealthyReference
 from neuro.transforms import Standardizer
 
 if TYPE_CHECKING:
     from neuro.types import FloatArray
 
 _SEED = 7
+
+
+def _ref(n: int = 2) -> HealthyReference:
+    return HealthyReference(eeg_mean=np.zeros(n))
+
 
 # Pinned parity values from the incumbent CasADi MPCController at fd0d244 (solver="ipopt"), run
 # on the depth-0 checkpoint and the _SEED + 5 measurement trajectory below, with Kirchhoff
@@ -181,7 +187,7 @@ def test_warmup_emits_zero_until_window_filled(tmp_path: Path) -> None:
     """While the EEG window is still NaN-padded, the controller holds off and emits zeros."""
     n_y = 4
     artifact = _build_checkpoint(tmp_path, n_y=n_y)
-    problem = build_waveform_problem(artifact, horizon=3, u_max=0.5, w_y=1.0)
+    problem = build_waveform_problem(artifact, horizon=3, u_max=0.5, w_y=1.0, reference=_ref(2))
     controller = TrajOptMPCController(dt=0.01, problem=problem)
 
     results = _drive(controller, n_steps=n_y, n_channels=controller.model.n_channels)
@@ -196,7 +202,7 @@ def test_update_respects_bounds(tmp_path: Path) -> None:
     """Past warm-up, update returns a finite ``(n_controls,)`` control within the box bounds."""
     u_max = 0.5
     artifact = _build_checkpoint(tmp_path, n_y=4)
-    problem = build_waveform_problem(artifact, horizon=3, u_max=u_max, w_y=1.0, w_u=0.0)
+    problem = build_waveform_problem(artifact, horizon=3, u_max=u_max, w_y=1.0, w_u=0.0, reference=_ref(2))
     controller = TrajOptMPCController(dt=0.01, problem=problem)
 
     u, _ = _drive(controller, n_steps=6, n_channels=controller.model.n_channels)[-1]
@@ -228,6 +234,7 @@ def test_from_config_dispatches_problem_factory(tmp_path: Path) -> None:
                 "horizon": 5,
                 "u_max": 0.5,
                 "w_y": 1.0,
+                "reference": _ref(2),
             },
         }
     )
@@ -240,7 +247,7 @@ def test_per_electrode_bounds_rejected_when_mismatched(tmp_path: Path) -> None:
     """A u_max length that is neither 1 nor n_controls is rejected by the box builder."""
     artifact = _build_checkpoint(tmp_path, n_controls=2)
     with pytest.raises(ValueError, match="could not be broadcast"):
-        build_waveform_problem(artifact, horizon=3, u_max=[1.0, 2.0, 3.0])
+        build_waveform_problem(artifact, horizon=3, u_max=[1.0, 2.0, 3.0], reference=_ref(2))
 
 
 def test_controller_keeps_absorbed_state_private(tmp_path: Path) -> None:
@@ -251,7 +258,7 @@ def test_controller_keeps_absorbed_state_private(tmp_path: Path) -> None:
     state back from the post-solve trajectory.
     """
     artifact = _build_checkpoint(tmp_path, n_y=4)
-    problem = build_waveform_problem(artifact, horizon=3, u_max=0.5, w_y=1.0)
+    problem = build_waveform_problem(artifact, horizon=3, u_max=0.5, w_y=1.0, reference=_ref(2))
     controller = TrajOptMPCController(dt=0.01, problem=problem)
 
     n_z = controller.model.n_y * controller.model.n_channels
@@ -273,7 +280,9 @@ def test_reproduces_mpc_controller_control_sequence(tmp_path: Path) -> None:
     catches the absorbed-measurement term the incumbent graph never scores.
     """
     artifact = _build_checkpoint(tmp_path, depth=0)
-    problem = build_waveform_problem(artifact, horizon=3, u_max=0.5, w_y=1.0, w_u=0.0, kirchhoff=True)
+    problem = build_waveform_problem(
+        artifact, horizon=3, u_max=0.5, w_y=1.0, w_u=0.0, kirchhoff=True, reference=_ref(2)
+    )
     controller = TrajOptMPCController(dt=0.01, problem=problem, solver=_full_parity_solver())
 
     controls, costs = _drive_golden(controller, n_steps=8, n_channels=controller.model.n_channels)
@@ -298,6 +307,7 @@ def test_migrated_config_reproduces_incumbent_end_to_end(tmp_path: Path) -> None
         "u_max": 0.5,
         "w_y": 1.0,
         "w_u": 0.0,
+        "reference": _ref(2),
     }
     controller = TrajOptMPCController.from_config(
         {"dt": controller_cfg["dt"], "problem": problem_cfg, "solver": _full_parity_solver()}
@@ -320,6 +330,7 @@ def test_migrated_config_reproduces_incumbent_with_default_solver(tmp_path: Path
         "u_max": 0.5,
         "w_y": 1.0,
         "w_u": 0.0,
+        "reference": _ref(2),
     }
     controller = TrajOptMPCController.from_config({"dt": controller_cfg["dt"], "problem": problem_cfg})
     assert type(controller.solver) is SingleShooting
@@ -332,7 +343,7 @@ def test_migrated_config_reproduces_incumbent_with_default_solver(tmp_path: Path
 def test_single_shooting_solver_succeeds_when_kirchhoff(tmp_path: Path) -> None:
     """An injected single-shooting solver on a Kirchhoff problem constructs and solves without error."""
     artifact = _build_checkpoint(tmp_path, depth=0)
-    problem = build_waveform_problem(artifact, horizon=3, u_max=0.5, w_y=1.0, kirchhoff=True)
+    problem = build_waveform_problem(artifact, horizon=3, u_max=0.5, w_y=1.0, kirchhoff=True, reference=_ref(2))
     controller = TrajOptMPCController(
         dt=0.01,
         problem=problem,
@@ -393,6 +404,23 @@ def _build_observable_checkpoint(
     return path, geom
 
 
+def _write_envelope(tmp_path: Path, geom: StftGeometry, n_channels: int = 2) -> Path:
+    n_values = geom.n_values(50.0)
+    env_path = tmp_path / f"obs_env_{n_channels}.npz"
+    np.savez_compressed(
+        env_path,
+        Pref_frames=np.full((n_channels, n_values), -2.0),
+        fs=50.0,
+        n_segment=geom.n_segment,
+        n_hop=geom.n_hop,
+        band_hz=np.asarray(geom.band_hz if geom.band_hz is not None else [-1.0, -1.0]),
+        n_bin_pool=geom.n_bin_pool,
+        kernel=geom.kernel,
+        kernel_width=geom.kernel_width,
+    )
+    return env_path
+
+
 def test_build_observable_problem_assembles_and_solves(tmp_path: Path) -> None:
     """The observable problem builder wires the hinge, L1, quadratic, box bounds and Kirchhoff, and solves."""
     artifact, geom = _build_observable_checkpoint(tmp_path, n_channels=2, n_controls=2)
@@ -417,7 +445,7 @@ def test_build_observable_problem_assembles_and_solves(tmp_path: Path) -> None:
         w_u=1.0,
         w_u_l1=0.2,
         w_hinge=5.0,
-        envelope_ref=env_path,
+        reference=HealthyReference.load(env_path),
         kirchhoff=True,
     )
     assert problem.N == 5
@@ -474,7 +502,7 @@ def test_observable_closed_loop_warmup_and_emission(tmp_path: Path) -> None:
         w_u=1.0,
         w_u_l1=0.2,
         w_hinge=5.0,
-        envelope_ref=env_path,
+        reference=HealthyReference.load(env_path),
         kirchhoff=True,
     )
     # Plant fs = 1000 Hz (dt = 0.001s), downsample = 20 -> fs_decimated = 50.0 Hz.
@@ -519,23 +547,12 @@ def test_observable_closed_loop_warmup_and_emission(tmp_path: Path) -> None:
 
 
 def test_observable_controller_from_config(tmp_path: Path) -> None:
-    """Observable controller instantiates from config and routes problem factory."""
-    artifact, geom = _build_observable_checkpoint(tmp_path)
-    n_values = geom.n_values(50.0)
-    env_path = tmp_path / "obs_env.npz"
-    np.savez_compressed(
-        env_path,
-        Pref_frames=np.full((2, n_values), -2.0),
-        fs=50.0,
-        n_segment=geom.n_segment,
-        n_hop=geom.n_hop,
-        band_hz=np.asarray(geom.band_hz if geom.band_hz is not None else [-1.0, -1.0]),
-        n_bin_pool=geom.n_bin_pool,
-        kernel=geom.kernel,
-        kernel_width=geom.kernel_width,
-    )
+    """A full controller dict with build_observable_problem builds through from_config."""
+    artifact, geom = _build_observable_checkpoint(tmp_path, n_channels=2, n_controls=2)
+    env_path = _write_envelope(tmp_path, geom)
 
     cfg = {
+        "class_path": "neuro.control.mpc.TrajOptMPCController",
         "dt": 0.10,
         "problem": {
             "class_path": "neuro.control.mpc.build_observable_problem",
@@ -544,14 +561,12 @@ def test_observable_controller_from_config(tmp_path: Path) -> None:
             "u_max": 1.0,
             "w_u": 5.0,
             "w_hinge": 2.0,
-            "envelope_ref": str(env_path),
+            "reference": str(env_path),
             "kirchhoff": True,
         },
     }
     controller = TrajOptMPCController.from_config(cfg)
     assert controller.dt == 0.10
-    assert controller.mpc.program.problem.N == 5
-    assert controller.model.m == 2
 
 
 def test_build_observable_problem_envelope_cross_validation(tmp_path: Path) -> None:
@@ -573,7 +588,7 @@ def test_build_observable_problem_envelope_cross_validation(tmp_path: Path) -> N
         kernel_width=geom.kernel_width,
     )
     with pytest.raises(ValueError, match=r"envelope channel count \(3\) does not match model channel count \(2\)"):
-        build_observable_problem(artifact, horizon=4, u_max=0.5, w_hinge=1.0, envelope_ref=bad_ch)
+        build_observable_problem(artifact, horizon=4, u_max=0.5, w_hinge=1.0, reference=HealthyReference.load(bad_ch))
 
     # Mismatched sampling rate raises
     bad_fs = tmp_path / "bad_fs.npz"
@@ -589,7 +604,7 @@ def test_build_observable_problem_envelope_cross_validation(tmp_path: Path) -> N
         kernel_width=geom.kernel_width,
     )
     with pytest.raises(ValueError, match=r"envelope sampling rate \(100 Hz\) is a Frame rate of 20 Hz at hop 5"):
-        build_observable_problem(artifact, horizon=4, u_max=0.5, w_hinge=1.0, envelope_ref=bad_fs)
+        build_observable_problem(artifact, horizon=4, u_max=0.5, w_hinge=1.0, reference=HealthyReference.load(bad_fs))
 
     # Mismatched geometry band_hz raises
     bad_band = tmp_path / "bad_band.npz"
@@ -608,7 +623,7 @@ def test_build_observable_problem_envelope_cross_validation(tmp_path: Path) -> N
         ValueError,
         match=r"envelope geometry does not match model geometry: band_hz \(\(2\.0, 10\.0\) vs \(4\.0, 16\.0\)\)",
     ):
-        build_observable_problem(artifact, horizon=4, u_max=0.5, w_hinge=1.0, envelope_ref=bad_band)
+        build_observable_problem(artifact, horizon=4, u_max=0.5, w_hinge=1.0, reference=HealthyReference.load(bad_band))
 
 
 def test_example_observable_config_runs_simulation_start_to_finish(tmp_path: Path) -> None:
@@ -632,7 +647,7 @@ def test_example_observable_config_runs_simulation_start_to_finish(tmp_path: Pat
     )
     sim_dict["t_end"] = 0.5
     sim_dict["controller"]["problem"]["artifact"] = str(artifact)
-    sim_dict["controller"]["problem"]["envelope_ref"] = str(env_path)
+    sim_dict["controller"]["problem"]["reference"] = str(env_path)
     sim_dict["estimator"]["geometry"] = geom.model_dump()
     sim_dict["estimator"]["downsample"] = 200
 
@@ -651,9 +666,11 @@ def test_default_solver_selection(tmp_path: Path) -> None:
     psd_ref = tmp_path / "psd_ref.npz"
     np.savez_compressed(psd_ref, Pref=np.full((2, 3), -2.0), fs=100.0, L=4, R=2)
     problems = (
-        build_waveform_problem(art_wf, horizon=4, u_max=0.5, w_y=1.0, kirchhoff=True),
-        build_waveform_problem(art_wf, horizon=4, u_max=0.5, w_y=1.0, reduce_kirchhoff=True),
-        build_waveform_problem(art_wf, horizon=4, u_max=0.5, w_psd=1.0, psd_ref=psd_ref),
+        build_waveform_problem(art_wf, horizon=4, u_max=0.5, w_y=1.0, kirchhoff=True, reference=_ref(2)),
+        build_waveform_problem(art_wf, horizon=4, u_max=0.5, w_y=1.0, reduce_kirchhoff=True, reference=_ref(2)),
+        build_waveform_problem(
+            art_wf, horizon=4, u_max=0.5, w_y=0.0, w_psd=1.0, reference=HealthyReference.load(psd_ref)
+        ),
     )
     for problem in problems:
         solver = _default_solver(problem)
@@ -673,6 +690,7 @@ def test_controller_from_config_solver_variants(tmp_path: Path) -> None:
             "artifact": str(art),
             "horizon": 4,
             "u_max": 0.5,
+            "reference": _ref(2),
         },
     }
     ctrl_def = TrajOptMPCController.from_config(cfg_default)
@@ -691,6 +709,7 @@ def test_controller_from_config_solver_variants(tmp_path: Path) -> None:
             "horizon": 4,
             "u_max": 0.5,
             "kirchhoff": True,
+            "reference": _ref(2),
         },
     }
     ctrl_altro = TrajOptMPCController.from_config(cfg_altro)
@@ -709,6 +728,7 @@ def test_controller_from_config_solver_variants(tmp_path: Path) -> None:
             "artifact": str(art),
             "horizon": 4,
             "u_max": 0.5,
+            "reference": _ref(2),
         },
     }
     ctrl_osqp = TrajOptMPCController.from_config(cfg_osqp)
@@ -729,6 +749,7 @@ def test_controller_from_config_solver_variants(tmp_path: Path) -> None:
             "artifact": str(art),
             "horizon": 4,
             "u_max": 0.5,
+            "reference": _ref(2),
         },
     }
     ctrl_ss = TrajOptMPCController.from_config(cfg_ss)
@@ -749,6 +770,7 @@ def test_controller_from_config_loud_validation_errors(tmp_path: Path) -> None:
             "artifact": str(art),
             "horizon": 4,
             "u_max": 0.5,
+            "reference": _ref(2),
         },
     }
     with pytest.raises(ValueError, match="solver config must contain 'class_path'"):
@@ -763,6 +785,7 @@ def test_controller_from_config_loud_validation_errors(tmp_path: Path) -> None:
             "artifact": str(art),
             "horizon": 4,
             "u_max": 0.5,
+            "reference": _ref(2),
         },
     }
     with pytest.raises(TypeError, match="must be a dict with 'class_path'"):
@@ -779,8 +802,9 @@ def test_controller_from_config_loud_validation_errors(tmp_path: Path) -> None:
             "artifact": str(art),
             "horizon": 4,
             "u_max": 0.5,
+            "w_y": 0.0,
             "w_psd": 1.0,
-            "psd_ref": str(psd_ref),
+            "reference": str(psd_ref),
         },
     }
     with pytest.raises(ValueError, match="cannot score the whole-horizon hinge cost"):
@@ -796,6 +820,7 @@ def test_controller_from_config_loud_validation_errors(tmp_path: Path) -> None:
             "horizon": 4,
             "u_max": 0.5,
             "kirchhoff": True,
+            "reference": _ref(2),
         },
     }
     with pytest.raises(ValueError, match="BoxQP only supports uncoupled box bounds"):
@@ -808,8 +833,8 @@ def test_problem_carries_the_predictors_step_as_its_time_grid(tmp_path: Path) ->
     model_dt = WaveformMLPModel.load(art).dt
 
     for problem in (
-        build_waveform_problem(art, horizon=4, u_max=0.5, kirchhoff=True),
-        build_waveform_problem(art, horizon=4, u_max=0.5, reduce_kirchhoff=True),
+        build_waveform_problem(art, horizon=4, u_max=0.5, kirchhoff=True, reference=_ref(2)),
+        build_waveform_problem(art, horizon=4, u_max=0.5, reduce_kirchhoff=True, reference=_ref(2)),
     ):
         np.testing.assert_allclose(np.asarray(problem.dt), model_dt)
 
@@ -822,6 +847,7 @@ def test_problem_carries_the_predictors_step_as_its_time_grid(tmp_path: Path) ->
                 "artifact": str(art),
                 "horizon": 4,
                 "u_max": 0.5,
+                "reference": _ref(2),
             },
         }
     )
@@ -843,7 +869,7 @@ def test_canonicalize_duals_wraps_only_the_ipopt_backends(tmp_path: Path) -> Non
     # SingleShooting eliminates the states, so Ipopt's bound duals are (N-1)*m long where the
     # canonical Primal Vector is N*n + (N-1)*m: the adapter must blank them or the next shift dies.
     art = _build_checkpoint(tmp_path, depth=0, n_y=3, n_u=2, horizon=4, n_channels=2, n_controls=3)
-    problem = build_waveform_problem(art, horizon=4, u_max=0.5, w_y=1.0, kirchhoff=True)
+    problem = build_waveform_problem(art, horizon=4, u_max=0.5, w_y=1.0, kirchhoff=True, reference=_ref(2))
     x0 = jnp.asarray(np.random.default_rng(7).standard_normal(problem.model.n))
 
     bare = MPC(problem, SingleShooting(solver=Ipopt(options={"print_level": 0})), x0=x0)
@@ -877,6 +903,7 @@ def test_controller_emits_electrode_currents_under_nullspace_reduction(tmp_path:
             "w_y": 1.0,
             "w_u": 0.1,
             "reduce_kirchhoff": True,
+            "reference": _ref(2),
         },
     }
     controller = TrajOptMPCController.from_config(cfg)

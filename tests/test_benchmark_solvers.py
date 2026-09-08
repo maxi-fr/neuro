@@ -27,6 +27,7 @@ from neuro.control.mpc import (
     kirchhoff_basis,
 )
 from neuro.predictor.inference import InferencePredictor, WaveformMLPModel
+from neuro.spectral import HealthyReference
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -45,9 +46,10 @@ def test_get_benchmark_solver_instantiation() -> None:
 
 
 def test_osqp_exact_linear_predictor_optimality(tmp_path: Path) -> None:
-    """On a linear predictor with quadratic cost, OSQP matches IPOPT Single Shooting to high precision."""
+    """On a linear Predictor with quadratic cost, OSQP matches IPOPT Single Shooting to high precision."""
     art = _build_checkpoint(tmp_path, depth=0, n_y=4, n_u=3, horizon=4, n_channels=2, n_controls=2)
-    problem = build_waveform_problem(art, horizon=4, u_max=0.5, w_y=1.0, w_u=0.1, kirchhoff=True)
+    ref = HealthyReference(eeg_mean=np.zeros(2))
+    problem = build_waveform_problem(art, horizon=4, u_max=0.5, w_y=1.0, w_u=0.1, kirchhoff=True, reference=ref)
     model = problem.model
     assert isinstance(model, InferencePredictor)
 
@@ -111,10 +113,12 @@ def test_nullspace_reduced_model_methods(tmp_path: Path) -> None:
 def test_run_waveform_benchmark_integration(tmp_path: Path) -> None:
     """run_waveform_benchmark runs open-loop and closed-loop comparisons across solvers."""
     art = _build_checkpoint(tmp_path, depth=0, n_y=3, n_u=2, horizon=3, n_channels=2, n_controls=2)
+    ref = HealthyReference(eeg_mean=np.zeros(2))
     open_comp, closed_comp = run_waveform_benchmark(
         art,
         horizon=3,
         u_max=0.5,
+        reference=ref,
         n_repeats=2,
         num_steps=3,
     )
@@ -150,7 +154,7 @@ def test_run_observable_benchmark_integration(tmp_path: Path) -> None:
 
     open_comp, closed_comp = run_observable_benchmark(
         art,
-        env_path,
+        reference=HealthyReference.load(env_path),
         horizon=3,
         u_max=0.5,
         w_u=1.0,
@@ -184,8 +188,9 @@ def test_nullspace_reduction_matches_hard_equality(tmp_path: Path) -> None:
     # u_max is tight enough that the per-electrode limit is active at the optimum: with it slack,
     # any Z-shaped polytope passes, so an active bound is what actually tests the reduced rows.
     u_max = 0.02
-    hard = build_waveform_problem(art, horizon=6, u_max=u_max, w_y=1.0, w_u=0.0, kirchhoff=True)
-    poly = build_waveform_problem(art, horizon=6, u_max=u_max, w_y=1.0, w_u=0.0, reduce_kirchhoff=True)
+    ref = HealthyReference(eeg_mean=np.zeros(4))
+    hard = build_waveform_problem(art, horizon=6, u_max=u_max, w_y=1.0, w_u=0.0, kirchhoff=True, reference=ref)
+    poly = build_waveform_problem(art, horizon=6, u_max=u_max, w_y=1.0, w_u=0.0, reduce_kirchhoff=True, reference=ref)
 
     assert poly.model.m == hard.model.m - 1
     # The exact current limit is a polytope in the reduced coordinates, carried as coupled rows.

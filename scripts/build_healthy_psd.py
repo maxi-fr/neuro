@@ -3,7 +3,7 @@ from __future__ import annotations
 import argparse
 import shutil
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import yaml
@@ -56,10 +56,25 @@ def _pool_reductions(  # noqa: PLR0913, PLR0917 -- one reduction geometry, spell
     hop: int,
     knot_dt: float | None,
     signal: str,
-) -> tuple[FloatArray, FloatArray, FloatArray]:
-    """Pool periodograms, Segment mean squares and log-power Frames over the healthy trajectories."""
+) -> tuple[FloatArray, FloatArray, FloatArray, FloatArray | None, FloatArray | None]:
+    """Pool periodograms, Segment mean squares, log-power Frames, and empirical mean vectors over healthy Rollouts."""
     all_windows, all_ms_windows, all_frames = [], [], []
+    lfp_sum: FloatArray | None = None
+    lfp_samples = 0
+    eeg_sum: FloatArray | None = None
+    eeg_samples = 0
+
     for f in data_files:
+        with np.load(f) as data:
+            if "dynamics.lfp" in data:
+                lfp_raw = np.asarray(data["dynamics.lfp"], dtype=np.float64)
+                lfp_sum = lfp_raw.sum(axis=0) if lfp_sum is None else lfp_sum + lfp_raw.sum(axis=0)
+                lfp_samples += len(lfp_raw)
+            if "sensor_0.y_mea" in data:
+                eeg_raw = np.asarray(data["sensor_0.y_mea"], dtype=np.float64)
+                eeg_sum = eeg_raw.sum(axis=0) if eeg_sum is None else eeg_sum + eeg_raw.sum(axis=0)
+                eeg_samples += len(eeg_raw)
+
         if knot_dt is not None:
             y = _knot_signal(f, downsample, signal)
         else:
@@ -74,10 +89,16 @@ def _pool_reductions(  # noqa: PLR0913, PLR0917 -- one reduction geometry, spell
     if not all_windows or not all_frames:
         msg = "No valid windows extracted from trajectory files."
         raise RuntimeError(msg)
+
+    lfp_mean = (lfp_sum / lfp_samples) if lfp_sum is not None and lfp_samples > 0 else None
+    eeg_mean = (eeg_sum / eeg_samples) if eeg_sum is not None and eeg_samples > 0 else None
+
     return (
         np.concatenate(all_windows, axis=0),
         np.concatenate(all_ms_windows, axis=0),
         np.concatenate(all_frames, axis=0),
+        lfp_mean,
+        eeg_mean,
     )
 
 
@@ -94,10 +115,11 @@ def build_healthy_psd(  # noqa: PLR0913
     signal: str = "sensor_0.y_mea",
     workers: int = 1,
 ) -> Path:
-    """Pool healthy periodograms and log-power Frames into quantile envelopes and save to npz.
+    """Pool healthy periodograms, log-power Frames, and empirical channel mean vectors into envelopes and save to npz.
 
     The same npz carries ``Pref`` for the waveform spectral hinge, ``Pref_ms`` for the
-    ``eeg_ms`` Observable, and ``Pref_frames`` for the Observable hinge.
+    ``eeg_ms`` Observable, ``Pref_frames`` for the Observable hinge, and empirical ``lfp_mean``
+    and ``eeg_mean`` vectors for healthy reference tracking.
 
     Parameters
     ----------
@@ -133,7 +155,7 @@ def build_healthy_psd(  # noqa: PLR0913
         msg = f"No simulation data files found or generated in {data_dir}"
         raise RuntimeError(msg)
 
-    stacked, stacked_ms, stacked_frames = _pool_reductions(
+    stacked, stacked_ms, stacked_frames, lfp_mean, eeg_mean = _pool_reductions(
         data_files, geometry, dt_plant, downsample, fs, window, hop, knot_dt, signal
     )
     reference = np.quantile(stacked, quantile, axis=0)  # (n_channels, n_bins)
@@ -142,26 +164,31 @@ def build_healthy_psd(  # noqa: PLR0913
 
     fp = data_plant_fingerprint(data_dir) or plant_fingerprint(first_cfg)
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    np.savez_compressed(
-        output_path,
-        Pref=reference,
-        Pref_ms=reference_ms,
-        Pref_frames=reference_frames,
-        freqs=np.fft.rfftfreq(window, 1.0 / fs),
-        fs=fs,
-        L=window,
-        R=hop,
-        quantile=quantile,
-        n_windows=len(stacked),
-        n_frames=len(stacked_frames),
-        n_segment=geometry.n_segment,
-        n_hop=geometry.n_hop,
-        band_hz=np.asarray(geometry.band_hz if geometry.band_hz is not None else [-1.0, -1.0]),
-        n_bin_pool=geometry.n_bin_pool,
-        kernel=geometry.kernel,
-        kernel_width=geometry.kernel_width,
-        plant_fingerprint=str(fp) if fp is not None else "",
-    )
+    save_dict: dict[str, Any] = {
+        "Pref": reference,
+        "Pref_ms": reference_ms,
+        "Pref_frames": reference_frames,
+        "freqs": np.fft.rfftfreq(window, 1.0 / fs),
+        "fs": fs,
+        "L": window,
+        "R": hop,
+        "quantile": quantile,
+        "n_windows": len(stacked),
+        "n_frames": len(stacked_frames),
+        "n_segment": geometry.n_segment,
+        "n_hop": geometry.n_hop,
+        "band_hz": np.asarray(geometry.band_hz if geometry.band_hz is not None else [-1.0, -1.0]),
+        "n_bin_pool": geometry.n_bin_pool,
+        "kernel": geometry.kernel,
+        "kernel_width": geometry.kernel_width,
+        "plant_fingerprint": str(fp) if fp is not None else "",
+    }
+    if lfp_mean is not None:
+        save_dict["lfp_mean"] = lfp_mean
+    if eeg_mean is not None:
+        save_dict["eeg_mean"] = eeg_mean
+
+    np.savez_compressed(output_path, **save_dict)
     print(f"Saved healthy PSD reference to {output_path}:")
     print(f"  Shape: {reference.shape} (channels={reference.shape[0]}, bins={reference.shape[1]})")
     print(

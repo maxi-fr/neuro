@@ -40,7 +40,6 @@ arms:
           w_y: 0.0
           w_u: 10.0
           w_psd: 1000.0
-          psd_ref: data/healthy_lfp_knot20ms_frame500ms.npz
   observable_hinge:
     patch:
       controller:
@@ -49,4 +48,3 @@ arms:
           w_y: 0.0
           w_u: 10.0
           w_hinge: 10.0
-          envelope_ref: data/healthy_lfp_knot20ms_frame500ms.npz

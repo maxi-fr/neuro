@@ -55,6 +55,7 @@ controller:
     u_max: 2.0
     w_y: 1.0
     w_u: 0.0
+    reference: data/healthy_lfp_knot20ms_frame500ms.npz
     kirchhoff: true
     connectome: *connectome
     stimulation: *stimulation
