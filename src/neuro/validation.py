@@ -5,14 +5,17 @@ import warnings
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+import numpy as np
+
 from neuro.predictor.checkpoint import load_meta
 from neuro.provenance import TrainingProvenance, plant_fingerprint
-from neuro.spectral import ObservableEnvelope, PsdEnvelope
+from neuro.spectral import HealthyReference, ObservableEnvelope
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
     from neuro.config import StftGeometry
+    from neuro.spectral import PsdEnvelope
 
 _FILTERING_ESTIMATORS = frozenset(
     {"neuro.filtering.AntiAliasEstimator", "neuro.filtering.LowPassEstimator", "neuro.filtering.ObservableEstimator"}
@@ -175,15 +178,14 @@ def _check_waveform_psd_reference(
             raise ConfigConsistencyError(msg)
 
 
-def _envelope_path(problem: Mapping[str, Any], key: str) -> Path | None:
-    """Resolve the envelope path ``problem`` spells under ``key``, or ``None`` when it configures none."""
-    configured = problem.get(key)
+def _reference_path(problem: Mapping[str, Any]) -> Path | None:
+    """Resolve the healthy reference path under ``reference``, or ``None``."""
+    configured = problem.get("reference")
     if configured is None:
         return None
-
     path = Path(configured)
     if not path.exists():
-        msg = f"spectral reference envelope not found: {path}"
+        msg = f"healthy reference file not found: {path}"
         raise ConfigConsistencyError(msg)
     return path
 
@@ -254,14 +256,45 @@ def _check_waveform_predictor(
     return controller_dt
 
 
-def _check_jansen_rit(config: Mapping[str, Any], problem: Mapping[str, Any], controller_dt: float) -> None:
-    """Require the Control Horizon knot period and the oracle handover to agree with the Predictor.
+def _check_jansen_rit_reference(config: Mapping[str, Any], problem: Mapping[str, Any]) -> None:
+    """Validate tracking reference for Jansen-Rit problems."""
+    w_y = float(problem.get("w_y", 1.0))
+    w_y_terminal = problem.get("w_y_terminal")
+    w_y_final = float(w_y_terminal) if w_y_terminal is not None else w_y
+    if w_y <= 0 and w_y_final <= 0:
+        return
+    ref_path = _reference_path(problem)
+    if ref_path is None:
+        msg = "controller.problem.reference must be provided when w_y > 0"
+        raise ConfigConsistencyError(msg)
 
-    The Jansen-Rit Predictor is the Plant's own dynamics rather than an identified checkpoint, so the
-    training-provenance checks have nothing to compare against. What can still disagree silently is
-    the knot grid -- a controller off it holds each control for a span the Rollout never priced --
-    and the oracle Estimator, which fills the delay buffer at its own ``dt`` from its own network.
-    """
+    ref = HealthyReference.load(ref_path)
+    dyn = config.get("dynamics", {})
+    leadfield = problem.get("leadfield")
+    params = problem.get("params") or dyn.get("params", {})
+    if leadfield is None:
+        if ref.lfp_mean is None:
+            msg = "reference does not carry an LFP mean vector for source-space tracking"
+            raise ConfigConsistencyError(msg)
+        n_nodes: int | None = None
+        if isinstance(params, dict) and isinstance(params.get("A"), (list, tuple)):
+            n_nodes = len(params["A"])
+        if n_nodes is not None and len(ref.lfp_mean) != n_nodes:
+            msg = f"reference LFP mean channel count ({len(ref.lfp_mean)}) must equal Jansen-Rit node count ({n_nodes})"
+            raise ConfigConsistencyError(msg)
+    else:
+        leadfield_arr = np.asarray(leadfield)
+        n_eeg, n_nodes = leadfield_arr.shape
+        if ref.eeg_mean is not None and len(ref.eeg_mean) == n_eeg:
+            return
+        if ref.lfp_mean is not None and len(ref.lfp_mean) == n_nodes:
+            return
+        msg = f"reference cannot be resolved to match leadfield dimensions ({leadfield_arr.shape})"
+        raise ConfigConsistencyError(msg)
+
+
+def _check_jansen_rit(config: Mapping[str, Any], problem: Mapping[str, Any], controller_dt: float) -> None:
+    """Require the Control Horizon knot period, oracle handover, and reference to agree with the Predictor."""
     knot_dt = float(problem.get("dt", 1e-4)) * int(problem.get("substeps", 1))
     if not math.isclose(controller_dt, knot_dt, rel_tol=_REL_TOL):
         msg = (
@@ -272,31 +305,79 @@ def _check_jansen_rit(config: Mapping[str, Any], problem: Mapping[str, Any], con
         raise ConfigConsistencyError(msg)
 
     estimator = config["estimator"]
-    if estimator["class_path"] != _ORACLE_ESTIMATOR:
-        return
-
-    estimator_dt = float(estimator["dt"])
-    predictor_dt = float(problem.get("dt", 1e-4))
-    if not math.isclose(estimator_dt, predictor_dt, rel_tol=_REL_TOL):
-        msg = (
-            f"estimator.dt ({estimator_dt}) must equal the Predictor's integration step ({predictor_dt}): "
-            f"the handover's delay buffer is sampled once per Estimator step and read back once per "
-            f"integration step."
-        )
-        raise ConfigConsistencyError(msg)
-
-    for key in ("connectome", "params"):
-        if estimator.get(key) != config["dynamics"].get(key):
-            what = "Connectome" if key == "connectome" else "parameters"
+    if estimator["class_path"] == _ORACLE_ESTIMATOR:
+        estimator_dt = float(estimator["dt"])
+        predictor_dt = float(problem.get("dt", 1e-4))
+        if not math.isclose(estimator_dt, predictor_dt, rel_tol=_REL_TOL):
             msg = (
-                f"estimator.{key} does not match dynamics.{key}: the oracle handover would build the "
-                f"{what} of a different network than the Plant it observes."
+                f"estimator.dt ({estimator_dt}) must equal the Predictor's integration step ({predictor_dt}): "
+                f"the handover's delay buffer is sampled once per Estimator step and read back once per "
+                f"integration step."
             )
             raise ConfigConsistencyError(msg)
 
+        for key in ("connectome", "params"):
+            if estimator.get(key) != config["dynamics"].get(key):
+                what = "Connectome" if key == "connectome" else "parameters"
+                msg = (
+                    f"estimator.{key} does not match dynamics.{key}: the oracle handover would build the "
+                    f"{what} of a different network than the Plant it observes."
+                )
+                raise ConfigConsistencyError(msg)
+
+    _check_jansen_rit_reference(config, problem)
+
+
+def _check_observable_reference(problem: Mapping[str, Any], meta: Mapping[str, Any], controller_dt: float) -> None:
+    """Validate observable healthy reference / envelope."""
+    ref_path = _reference_path(problem)
+    w_hinge = float(problem.get("w_hinge", 0.0))
+    if w_hinge > 0 and ref_path is None:
+        msg = "controller.problem.reference must be provided when w_hinge > 0"
+        raise ConfigConsistencyError(msg)
+    if ref_path is not None:
+        ref = HealthyReference.load(ref_path)
+        obs_env = ref.observable if ref.observable is not None else ObservableEnvelope.load(ref_path)
+        _check_observable_psd_reference(obs_env, controller_dt, meta)
+
+
+def _check_waveform_reference(problem: Mapping[str, Any], meta: Mapping[str, Any], controller_dt: float) -> None:
+    """Validate healthy reference and PSD envelopes for waveform predictors."""
+    w_y = float(problem.get("w_y", 1.0))
+    w_y_terminal = problem.get("w_y_terminal")
+    w_y_final = float(w_y_terminal) if w_y_terminal is not None else w_y
+    w_psd = float(problem.get("w_psd", 0.0))
+    ref_path = _reference_path(problem)
+    if (w_y > 0 or w_y_final > 0) and ref_path is None:
+        msg = "controller.problem.reference must be provided when w_y > 0"
+        raise ConfigConsistencyError(msg)
+    if w_psd > 0 and ref_path is None:
+        msg = "controller.problem.reference must be provided when w_psd > 0"
+        raise ConfigConsistencyError(msg)
+    if ref_path is None:
+        return
+
+    ref = HealthyReference.load(ref_path)
+    if w_y > 0 or w_y_final > 0:
+        mean_vec = ref.eeg_mean if ref.eeg_mean is not None else ref.lfp_mean
+        if mean_vec is None:
+            msg = f"reference does not carry an empirical mean vector for tracking ({ref_path})"
+            raise ConfigConsistencyError(msg)
+        if len(mean_vec) != int(meta["n_channels"]):
+            msg = (
+                f"reference mean channel count ({len(mean_vec)}) must equal "
+                f"predictor channel count ({int(meta['n_channels'])})."
+            )
+            raise ConfigConsistencyError(msg)
+    if w_psd > 0:
+        if ref.psd is None:
+            msg = "reference does not carry a healthy PSD envelope required when w_psd > 0"
+            raise ConfigConsistencyError(msg)
+        _check_waveform_psd_reference(ref.psd, controller_dt, meta)
+
 
 def _check_predictor(config: Mapping[str, Any]) -> None:
-    """Require the loop's rate, anti-alias filter, horizon, plant and geometry to match the predictor's."""
+    """Require the loop's rate, anti-alias filter, horizon, plant, geometry, and reference to match the predictor's."""
     controller = config["controller"]
     if controller["class_path"] not in _PREDICTIVE_CONTROLLERS:
         return
@@ -316,14 +397,10 @@ def _check_predictor(config: Mapping[str, Any]) -> None:
 
     if is_observable:
         effective_decimated_dt = _check_observable_predictor(config, problem, meta, controller_dt, plant_dt)
-        envelope_path = _envelope_path(problem, "envelope_ref")
-        if envelope_path is not None:
-            _check_observable_psd_reference(ObservableEnvelope.load(envelope_path), controller_dt, meta)
+        _check_observable_reference(problem, meta, controller_dt)
     else:
         effective_decimated_dt = _check_waveform_predictor(config, problem, controller_dt, plant_dt, downsample)
-        envelope_path = _envelope_path(problem, "psd_ref")
-        if envelope_path is not None:
-            _check_waveform_psd_reference(PsdEnvelope.load(envelope_path), controller_dt, meta)
+        _check_waveform_reference(problem, meta, controller_dt)
 
     online = _estimator_cutoff_hz(config["estimator"])
     offline = _training_cutoff_hz(effective_decimated_dt, downsample, provenance)

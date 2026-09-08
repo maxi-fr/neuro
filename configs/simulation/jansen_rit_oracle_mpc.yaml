@@ -1,17 +1,9 @@
 # Oracle-handover MPC: the Predictor IS the Plant's Jansen-Rit dynamics, so model-to-plant
 # mismatch is zero and any difference between runs is attributable to the Cost alone.
 #
-# This is the base arm (A1, pure tracking). scripts/run_cost_comparison.py merges the Cost,
-# horizon and seed overrides onto it; edit the shared blocks here, never per arm.
-#
-# The handover is deliberately not deployable: FullStateSensor reads the Plant's (6, n_nodes)
-# state and JansenRitOracleEstimator packs it straight into the Predictor. It is the upper
-# bound a real Estimator is measured against.
-#
-# Three grids, and they are coupled -- validate_simulation_config enforces all three:
-#   plant dt        1e-4  integration of the stochastic Heun Plant
-#   predictor dt    1e-3  = estimator.dt; deterministic Heun inside the Rollout
-#   knot dt         2e-2  = controller.dt = substeps * predictor dt; one control per knot
+# This is the base arm (A1, pure tracking). configs/comparison/costs.yaml merges the Cost and
+# horizon overrides onto it; edit the shared blocks here, never per arm.
+
 t_end: 12.0
 
 _plant_connectome: &connectome
@@ -63,6 +55,7 @@ controller:
     u_max: 2.0
     w_y: 1.0
     w_u: 0.0
+    reference: data/healthy_lfp_knot20ms_frame500ms.npz
     kirchhoff: true
     connectome: *connectome
     stimulation: *stimulation

@@ -8,15 +8,17 @@ import numpy as np
 import pytest
 import torch
 from trajopt.constraints.linear import LinearConstraint
-from trajopt.problem import MPCState
+from trajopt.mpc import MPC
 from trajopt.solvers.altro import ALTRO
 from trajopt.transcription.ipopt import Ipopt
+from trajopt.transcription.single_shooting import SingleShooting
 
 from neuro.config import StftGeometry
 from neuro.control.costs import (
     L1ControlCost,
     ObservableFrameHingeCost,
     ObservableHingeCost,
+    ReducedEffortCost,
     SpectralHingeCost,
     StateOutputs,
     SumCost,
@@ -24,10 +26,10 @@ from neuro.control.costs import (
     jax_compute_log_power_frames,
     jax_compute_observable_frames,
 )
-from neuro.control.mpc import build_waveform_problem
+from neuro.control.mpc import build_waveform_problem, kirchhoff_basis
 from neuro.predictor.inference import WaveformMLPModel
 from neuro.predictor.module import AutoregressiveMLP
-from neuro.spectral import ObservableEnvelope, PsdEnvelope, compute_log_power_frames
+from neuro.spectral import HealthyReference, ObservableEnvelope, PsdEnvelope, compute_log_power_frames
 from neuro.transforms import Standardizer
 
 if TYPE_CHECKING:
@@ -57,8 +59,9 @@ def _build_checkpoint(
     n_channels: int = 2,
     n_controls: int = 2,
     depth: int = 0,
+    equilibrium_at: FloatArray | None = None,
 ) -> Path:
-    """Save a tiny synthetic (linear when ``depth=0``) MLP checkpoint and return its stem."""
+    """Save a tiny synthetic (linear when ``depth=0``) MLP checkpoint with optional ``equilibrium_at`` and return its stem."""
     rng = np.random.default_rng(_SEED)
     in_size = n_y * n_channels + n_u * n_controls
     scalers = {
@@ -84,9 +87,22 @@ def _build_checkpoint(
     linears = [m for m in model.layers if isinstance(m, torch.nn.Linear)]
     sizes = [in_size, *([5] * depth), n_channels]
     with torch.no_grad():
-        for lin, (w, b) in zip(linears, _random_layers(rng, sizes), strict=True):
-            lin.weight.copy_(torch.as_tensor(w, dtype=torch.float32))
-            lin.bias.copy_(torch.as_tensor(b, dtype=torch.float32))
+        if equilibrium_at is not None and depth == 0:
+            u_0_std = (np.zeros(n_controls) - scalers["u_mean"]) / scalers["u_scale"]
+            w = np.zeros((n_channels, in_size), dtype=np.float64)
+            b_mat = np.zeros((n_channels, n_controls), dtype=np.float64)
+            b_mat[0, 0] = 1.0
+            b_mat[0, 1] = -1.0
+            b_mat[1, 0] = -1.0
+            b_mat[1, 1] = 1.0
+            w[:, in_size - n_controls : in_size] = b_mat
+            b = -b_mat @ u_0_std
+            linears[0].weight.copy_(torch.as_tensor(w, dtype=torch.float32))
+            linears[0].bias.copy_(torch.as_tensor(b, dtype=torch.float32))
+        else:
+            for lin, (w, b) in zip(linears, _random_layers(rng, sizes), strict=True):
+                lin.weight.copy_(torch.as_tensor(w, dtype=torch.float32))
+                lin.bias.copy_(torch.as_tensor(b, dtype=torch.float32))
     path = tmp_path / "art"
     model.save(path)
     return path
@@ -136,10 +152,11 @@ def test_kirchhoff_constraint_registered_and_enforced(tmp_path: Path) -> None:
             for con in evaluator.constraints
         )
 
-    without = build_waveform_problem(artifact, horizon=6, u_max=0.8, kirchhoff=False)
+    ref = HealthyReference(eeg_mean=np.zeros(2))
+    without = build_waveform_problem(artifact, horizon=6, u_max=0.8, kirchhoff=False, reference=ref)
     assert not _has_linear(without.constraints)
 
-    with_kirchhoff = build_waveform_problem(artifact, horizon=6, u_max=0.8, kirchhoff=True)
+    with_kirchhoff = build_waveform_problem(artifact, horizon=6, u_max=0.8, kirchhoff=True, reference=ref)
     linear = [
         con
         for evaluator in with_kirchhoff.constraints.knot_evaluators
@@ -153,10 +170,9 @@ def test_kirchhoff_constraint_registered_and_enforced(tmp_path: Path) -> None:
 
     rng = np.random.default_rng(_SEED + 4)
     x0 = _ready_state(artifact, rng)
-    state = MPCState.initial(with_kirchhoff, x0=jnp.asarray(x0), dt=0.01)
-    solved = with_kirchhoff.solve(state, solver=_full_parity_solver())
-    assert solved.status == "converged"
-    np.testing.assert_allclose(np.sum(np.asarray(solved.controls), axis=1), np.zeros(6), atol=1e-6)
+    mpc = MPC(with_kirchhoff, _full_parity_solver(), x0=jnp.asarray(x0))
+    assert mpc.solve().success
+    np.testing.assert_allclose(np.sum(np.asarray(mpc.controls), axis=1), np.zeros(6), atol=1e-6)
 
 
 def test_native_solver_converges_on_smooth_l1(tmp_path: Path) -> None:
@@ -168,15 +184,15 @@ def test_native_solver_converges_on_smooth_l1(tmp_path: Path) -> None:
     """
     horizon = 6
     artifact = _build_checkpoint(tmp_path, horizon=horizon, depth=0)
+    ref = HealthyReference(eeg_mean=np.zeros(2))
     problem = build_waveform_problem(
-        artifact, horizon=horizon, u_max=0.8, w_y=1.0, w_u=0.05, w_u_l1=0.5, kirchhoff=True
+        artifact, horizon=horizon, u_max=0.8, w_y=1.0, w_u=0.05, w_u_l1=0.5, kirchhoff=True, reference=ref
     )
     rng = np.random.default_rng(_SEED + 7)
     x0 = _ready_state(artifact, rng)
-    state = MPCState.initial(problem, x0=jnp.asarray(x0), dt=0.01)
-    solved = problem.solve(state, solver=ALTRO())
-    assert solved.status == "converged"
-    np.testing.assert_allclose(np.sum(np.asarray(solved.controls), axis=1), np.zeros(horizon), atol=1e-4)
+    mpc = MPC(problem, ALTRO(), x0=jnp.asarray(x0))
+    assert mpc.solve().success
+    np.testing.assert_allclose(np.sum(np.asarray(mpc.controls), axis=1), np.zeros(horizon), atol=1e-4)
 
 
 def test_l1_cost_stage_values_match_epigraph() -> None:
@@ -566,3 +582,104 @@ def test_observable_frame_hinge_cost_validation() -> None:
     wide = ObservableEnvelope(power=np.zeros((n_channels + 1, geom.n_values(fs))), fs=fs, geometry=geom)
     with pytest.raises(ValueError, match="channels but the model outputs"):
         ObservableFrameHingeCost(outputs, wide, w_hinge=1.0, horizon=200)
+
+
+def test_reduced_effort_cost_prices_the_expanded_currents() -> None:
+    """ReducedEffortCost scores ``||Z v||^2``, not ``||v||^2``, so reduction reprices nothing."""
+    rng = np.random.default_rng(11)
+    for m in (2, 3, 5):
+        Z = np.asarray(kirchhoff_basis(m))
+        cost = ReducedEffortCost(n=4, m=m - 1, w_u=0.7, horizon=5)
+        for v in rng.standard_normal((6, m - 1)):
+            expected = 0.7 / 5 * float((Z @ v) @ (Z @ v))
+            assert float(cost.evaluate(jnp.zeros(4), jnp.asarray(v))) == pytest.approx(expected, rel=1e-10)
+
+    # The terminal knot carries no control, and the cost has to be finite there.
+    assert float(ReducedEffortCost(n=4, m=2, w_u=1.0, horizon=5).evaluate(jnp.zeros(4))) == 0.0
+
+
+def test_waveform_problem_requires_reference_when_wy_positive(tmp_path: Path) -> None:
+    """Attempting to assemble waveform MPC problem with w_y > 0 without reference raises ValueError."""
+    artifact = _build_checkpoint(tmp_path, horizon=6, n_channels=2)
+    with pytest.raises(ValueError, match="reference must be provided when w_y > 0"):
+        build_waveform_problem(artifact, horizon=6, u_max=0.8, w_y=1.0, reference=None)
+
+
+def test_waveform_problem_state_space_reference_translation(tmp_path: Path) -> None:
+    """Waveform MPC maps physical healthy reference through standardizer center and scale into state space."""
+    artifact = _build_checkpoint(tmp_path, horizon=6, n_channels=2)
+    model = WaveformMLPModel.load(artifact)
+    y_ref = np.array([1.5, -0.5])
+    ref = HealthyReference(eeg_mean=y_ref)
+
+    problem = build_waveform_problem(artifact, horizon=6, u_max=0.8, w_y=2.0, reference=ref)
+    expected_xf_y = (y_ref - model.y_center) / model.y_scale
+    z_last = slice((model.n_y - 1) * model.n_channels, model.n_y * model.n_channels)
+
+    # Functional test: evaluate tracking cost at standardized target state
+    stage_cost = problem.obj.stage_cost
+    inner_cost = getattr(stage_cost, "inner", stage_cost)
+    terminal_cost = problem.obj.terminal_cost
+
+    x_target = np.zeros(model.n)
+    x_target[z_last] = expected_xf_y
+    u_zero = np.zeros(model.m)
+
+    # Cost is zero at healthy reference target
+    np.testing.assert_allclose(float(inner_cost.evaluate(jnp.asarray(x_target), jnp.asarray(u_zero))), 0.0, atol=1e-12)
+    np.testing.assert_allclose(
+        float(terminal_cost.evaluate(jnp.asarray(x_target), jnp.asarray(u_zero))), 0.0, atol=1e-12
+    )
+
+    # Cost is positive when deviating from healthy reference
+    x_deviation = np.zeros(model.n)
+    assert float(inner_cost.evaluate(jnp.asarray(x_deviation), jnp.asarray(u_zero))) > 0.0
+    assert float(terminal_cost.evaluate(jnp.asarray(x_deviation), jnp.asarray(u_zero))) > 0.0
+
+
+def test_waveform_problem_zero_control_at_healthy_operating_point(tmp_path: Path) -> None:
+    """At the healthy operating point without disturbances, optimal control is zero and stage cost is zero."""
+    horizon = 4
+    y_ref = np.array([1.2, -0.8])
+    artifact = _build_checkpoint(tmp_path, horizon=horizon, depth=0, n_channels=2, n_controls=2, equilibrium_at=y_ref)
+    model = WaveformMLPModel.load(artifact)
+    ref = HealthyReference(eeg_mean=y_ref)
+
+    problem = build_waveform_problem(
+        artifact, horizon=horizon, u_max=0.5, w_y=1.0, w_u=0.1, kirchhoff=True, reference=ref
+    )
+
+    # Initialize state at y_ref for all history windows
+    x0 = np.tile((y_ref - model.y_center) / model.y_scale, model.n_y)
+    x0 = np.concatenate([x0, np.zeros(model.n_u * model.n_controls)])
+
+    solver = SingleShooting(solver=Ipopt(options={"print_level": 0}))
+    mpc = MPC(problem, solver, x0=jnp.asarray(x0))
+    res = mpc.solve()
+    assert res.success
+    np.testing.assert_allclose(np.asarray(mpc.controls), np.zeros((horizon, 2)), atol=1e-5)
+
+
+def test_waveform_problem_active_suppression_under_seizure_deviation(tmp_path: Path) -> None:
+    """Under a seizure excursion away from y_ref, nonzero Control Current is mobilized."""
+    horizon = 4
+    y_ref = np.array([1.2, -0.8])
+    artifact = _build_checkpoint(tmp_path, horizon=horizon, depth=0, n_channels=2, n_controls=2, equilibrium_at=y_ref)
+    model = WaveformMLPModel.load(artifact)
+    ref = HealthyReference(eeg_mean=y_ref)
+
+    problem = build_waveform_problem(
+        artifact, horizon=horizon, u_max=0.5, w_y=1.0, w_u=0.01, kirchhoff=True, reference=ref
+    )
+
+    # Displace initial state away from y_ref (simulated seizure)
+    y_seizure = y_ref + np.array([5.0, -5.0])
+    x0 = np.tile((y_seizure - model.y_center) / model.y_scale, model.n_y)
+    x0 = np.concatenate([x0, np.zeros(model.n_u * model.n_controls)])
+
+    solver = SingleShooting(solver=Ipopt(options={"print_level": 0}))
+    mpc = MPC(problem, solver, x0=jnp.asarray(x0))
+    res = mpc.solve()
+    assert res.success
+    ctrls = np.asarray(mpc.controls)
+    assert np.max(np.abs(ctrls)) > 1e-4

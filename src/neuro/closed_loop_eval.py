@@ -1,16 +1,13 @@
 from __future__ import annotations
 
-import gc
-import tempfile
 from copy import deepcopy
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 import numpy as np
 from simulate.config import load_config as load_sim_config
-from simulate.simulation import Simulation
 
-from neuro.seizure import spread_profile_from_lfp, spread_profile_from_states
+from neuro.comparison import control_bound, score_run
 from neuro.validation import validate_simulation_config
 
 if TYPE_CHECKING:
@@ -29,6 +26,16 @@ def evaluate_closed_loop_suppression(trial_dir: Path, eval_cfg: ClosedLoopEvalCo
     over the run rather than reading the terminal window also rewards suppressing early, which the
     terminal count cannot see. ``max_seizing_regions`` still defines the reported
     ``suppressed_seeds`` diagnostic; it no longer drives the score.
+
+    The per-run reduction is :func:`neuro.comparison.score_run`, the one the comparison tables use,
+    so the sweep cannot optimize a Seizure Burden that means something else than the reported one.
+    ``score_run`` also forces the region-LFP log the spread metrics read, so an eval config need not
+    ask for it.
+
+    Raises
+    ------
+    FileNotFoundError
+        If the simulation config or the trial's trained checkpoint is missing.
     """
     base_sim_path = Path(eval_cfg.simulation_config)
     if not base_sim_path.exists():
@@ -43,69 +50,33 @@ def evaluate_closed_loop_suppression(trial_dir: Path, eval_cfg: ClosedLoopEvalCo
 
     base_sim_dict["t_end"] = eval_cfg.t_end
     base_sim_dict["controller"]["problem"]["artifact"] = str(model_checkpoint_path)
-    if base_sim_dict["dynamics"].get("log", "none") == "none":
-        base_sim_dict["dynamics"]["log"] = "lfp"
     # The seeds differ only in the plant realisation, so the wiring is the same for all of them.
     validate_simulation_config(base_sim_dict)
 
-    suppressed_count = 0
-    amplitudes: list[float] = []
-    delivered_charges: list[float] = []
-    seizing_counts: list[int] = []
-    burdens: list[float] = []
+    # Same reader the comparison grid normalises effort by, so a sweep and a table cannot disagree
+    # about what an arm's Control Budget was.
+    u_max = control_bound(base_sim_dict) or 1.0
 
+    runs = []
     for seed in eval_cfg.seeds:
         sim_dict = deepcopy(base_sim_dict)
         sim_dict["dynamics"]["seed"] = seed
+        runs.append(score_run(sim_dict, u_max, threshold=eval_cfg.seizure_ptp_mv))
 
-        sim = Simulation.from_config(sim_dict)
-        # Log to a scratch directory so the full state trajectory never becomes resident, and
-        # is discarded with the directory rather than kept around.
-        with tempfile.TemporaryDirectory(prefix="closed_loop_eval_", ignore_cleanup_errors=True) as log_dir:
-            sim.run(output_dir=log_dir, use_mmap=True)
+    def mean(key: str) -> float:
+        return float(np.mean([run[key] for run in runs]))
 
-            if sim.logger is None:
-                msg = "Simulation logger is missing after run."
-                raise RuntimeError(msg)
-
-            # The trajopt MPC carries the amplitude bound in its problem config, not on the
-            # controller object, so it is read here from the same dict the simulation was built from.
-            u_max = np.asarray(base_sim_dict["controller"]["problem"]["u_max"], dtype=np.float64)
-
-            us = np.asarray(sim.logger.signal("controller", "u"))
-            amplitudes.append(float(np.mean(np.abs(us) / u_max)))
-            delivered_charges.append(float(np.sum(np.abs(us)) * sim.dt))
-
-            # One of the two region-space logs is always present: the config is coerced to "lfp"
-            # above unless it already asked for "state".
-            if ("dynamics", "lfp") in set(sim.logger.signals()):
-                y_reg = np.asarray(sim.logger.signal("dynamics", "lfp"))
-                profile = spread_profile_from_lfp(y_reg.T, sim.dt, threshold=eval_cfg.seizure_ptp_mv)
-            else:
-                x_traj = np.asarray(sim.logger.signal("dynamics", "x"))
-                profile = spread_profile_from_states(x_traj, sim.dt, threshold=eval_cfg.seizure_ptp_mv)
-
-            del sim
-            gc.collect()
-
-        burdens.append(profile.burden())
-        n_seizing_final = int(profile.n_seizing()[-1])
-        seizing_counts.append(n_seizing_final)
-        if n_seizing_final <= eval_cfg.max_seizing_regions:
-            suppressed_count += 1
-
-    mean_amplitude = float(np.mean(amplitudes))
-    mean_delivered_charge = float(np.mean(delivered_charges))
-    mean_burden = float(np.mean(burdens))
-    score = mean_burden + eval_cfg.amplitude_weight * mean_amplitude
+    mean_amplitude = mean("mean_amplitude")
+    mean_burden = mean("seizure_burden")
+    suppressed = sum(run["n_seizing_final"] <= eval_cfg.max_seizing_regions for run in runs)
 
     summary = {
-        "score": score,
+        "score": mean_burden + eval_cfg.amplitude_weight * mean_amplitude,
         "seizure_burden": mean_burden,
-        "suppressed_seeds": float(suppressed_count),
+        "suppressed_seeds": float(suppressed),
         "total_seeds": float(len(eval_cfg.seeds)),
         "mean_amplitude": mean_amplitude,
-        "mean_delivered_charge": mean_delivered_charge,
-        "mean_seizing_regions": float(np.mean(seizing_counts)),
+        "mean_delivered_charge": mean("delivered_charge"),
+        "mean_seizing_regions": mean("n_seizing_final"),
     }
-    return score, summary
+    return summary["score"], summary

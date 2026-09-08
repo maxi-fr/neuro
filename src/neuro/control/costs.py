@@ -108,20 +108,24 @@ class L1ControlCost(CostFunction):
         return (self.w_l1 / self.horizon) * jnp.sum(jnp.sqrt(u_arr**2 + self.eps**2))
 
 
-class KirchhoffPenaltyCost(CostFunction):
-    """Quadratic penalty on the Kirchhoff current sum violation ``(w_k / horizon) * (sum(u))^2``.
+class ReducedEffortCost(CostFunction):
+    """Quadratic effort ``(w_u / horizon) * ||Z v||^2`` on the reduced controls of a Nullspace Frame.
 
-    Enables Box-iLQR to penalize deviations from Kirchhoff's Current Law without requiring
-    coupled box-QP solvers.
+    The reduced controls ``v`` are not the physical currents: the electrodes carry ``u = Z v``
+    over the last-electrode elimination basis, so scoring ``||v||^2`` would price a different
+    quantity than the unreduced problem does. For that basis ``Z^T Z = I + 1 1^T`` exactly, which
+    is this cost's closed form. Writing it as a control-only cost rather than folding ``Z^T Z``
+    into a quadratic cost's ``R`` keeps the state weight diagonal, which at deployment scale is a
+    ``(n,)`` vector rather than the dense ``(n, n)`` matrix trajopt would promote it to.
     """
 
-    w_k: jax.Array
+    w_u: jax.Array
     horizon: int = eqx.field(static=True)
 
-    def __init__(self, *, n: int, m: int, w_k: float, horizon: int) -> None:
-        """Initialize with state/control dimensions, penalty weight, and horizon."""
+    def __init__(self, *, n: int, m: int, w_u: float, horizon: int) -> None:
+        """Initialize with the reduced state/control dimensions, effort weight, and horizon."""
         super().__init__(n=n, m=m)
-        self.w_k = jnp.asarray(w_k)
+        self.w_u = jnp.asarray(w_u)
         self.horizon = int(horizon)
 
     def evaluate(
@@ -130,13 +134,12 @@ class KirchhoffPenaltyCost(CostFunction):
         u: jax.Array | None = None,
         t: float | jax.Array = 0.0,
     ) -> jax.Array:
-        """Evaluate the per-knot quadratic penalty ``(w_k / horizon) * (sum(u))^2``."""
+        """Evaluate ``(w_u / horizon) * (sum(v^2) + (sum v)^2)``, the expanded currents' squared norm."""
         del x, t
         if u is None:
             return jnp.zeros(())
-        u_arr = jnp.asarray(u)
-        sum_u = jnp.sum(u_arr)
-        return (self.w_k / self.horizon) * (sum_u**2)
+        v = jnp.asarray(u)
+        return (self.w_u / self.horizon) * (jnp.sum(v**2) + jnp.sum(v) ** 2)
 
 
 class StateOutputs(eqx.Module):

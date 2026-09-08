@@ -242,3 +242,92 @@ class ObservableEnvelope:
                 raise ValueError(msg)
 
             return cls(power=power, fs=fs, geometry=geom)
+
+
+@dataclasses.dataclass(frozen=True)
+class HealthyReference:
+    """Unified container for healthy reference envelopes and operating point mean vectors.
+
+    Encapsulates the healthy reference archive and exposes read-only properties for:
+    - the source-space Local Field Potential mean vector (``lfp_mean``),
+    - the sensor-space EEG mean vector (``eeg_mean``),
+    - the raw-waveform PSD envelope (``psd``),
+    - the Observable log-power Frame envelope (``observable``), and
+    - the time-domain mean-square envelope (``ms``).
+    """
+
+    lfp_mean: FloatArray | None = None
+    eeg_mean: FloatArray | None = None
+    psd: PsdEnvelope | None = None
+    observable: ObservableEnvelope | None = None
+    ms: MsEnvelope | None = None
+
+    @classmethod
+    def load(cls, path: str | Path) -> HealthyReference:
+        """Read a unified healthy reference archive from an NPZ file."""
+        from neuro.config import StftGeometry  # noqa: PLC0415 -- deferred to prevent circular import with neuro.config
+
+        with np.load(path) as data:
+            lfp_mean = np.asarray(data["lfp_mean"], dtype=np.float64) if "lfp_mean" in data else None
+            eeg_mean = np.asarray(data["eeg_mean"], dtype=np.float64) if "eeg_mean" in data else None
+
+            psd = None
+            if "Pref" in data:
+                psd = PsdEnvelope(
+                    power=np.asarray(data["Pref"], dtype=np.float64),
+                    fs=float(data["fs"]),
+                    window=int(data["L"]),
+                    hop=int(data["R"]),
+                )
+                expected_bins = psd.window // 2 + 1
+                if psd.power.shape[1] != expected_bins:
+                    msg = (
+                        f"envelope at {path} has {psd.power.shape[1]} bins but its window "
+                        f"({psd.window}) implies {expected_bins}; the cost must not subset bins."
+                    )
+                    raise ValueError(msg)
+
+            observable = None
+            if "Pref_frames" in data:
+                power = np.asarray(data["Pref_frames"], dtype=np.float64)
+                fs = float(data["fs"])
+                band = np.asarray(data["band_hz"])
+                band_hz = None if band[0] < 0 else (float(band[0]), float(band[1]))
+                kernel_str = str(data["kernel"])
+                if kernel_str not in ("boxcar", "triangular", "hann"):
+                    msg = f"envelope at {path} has unknown kernel '{kernel_str}'."
+                    raise ValueError(msg)
+
+                geom = StftGeometry(
+                    n_segment=int(data["n_segment"]),
+                    n_hop=int(data["n_hop"]),
+                    band_hz=band_hz,
+                    n_bin_pool=int(data["n_bin_pool"]),
+                    kernel=kernel_str,
+                    kernel_width=int(data["kernel_width"]),
+                )
+                expected_values = geom.n_values(fs)
+                if power.shape[1] != expected_values:
+                    msg = (
+                        f"envelope at {path} has {power.shape[1]} values per channel but its geometry "
+                        f"implies {expected_values}."
+                    )
+                    raise ValueError(msg)
+                observable = ObservableEnvelope(power=power, fs=fs, geometry=geom)
+
+            ms = None
+            if "Pref_ms" in data:
+                ms = MsEnvelope(
+                    power=np.asarray(data["Pref_ms"], dtype=np.float64),
+                    fs=float(data["fs"]),
+                    window=int(data["L"]),
+                    hop=int(data["R"]),
+                )
+
+            return cls(
+                lfp_mean=lfp_mean,
+                eeg_mean=eeg_mean,
+                psd=psd,
+                observable=observable,
+                ms=ms,
+            )

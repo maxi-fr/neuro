@@ -6,7 +6,7 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 from test_mpc import _build_checkpoint, _build_observable_checkpoint
-from trajopt.problem import MPCState
+from trajopt.mpc import MPC
 from trajopt.solvers.altro import ALTRO
 from trajopt.solvers.boxqp import BoxQP
 from trajopt.transcription.ipopt import Ipopt
@@ -21,11 +21,13 @@ from neuro.control.benchmark import (
     run_waveform_benchmark,
 )
 from neuro.control.mpc import (
-    BipolarReducedModel,
-    build_bipolar_waveform_problem,
+    CanonicalDuals,
+    NullspaceReducedModel,
     build_waveform_problem,
+    kirchhoff_basis,
 )
 from neuro.predictor.inference import InferencePredictor, WaveformMLPModel
+from neuro.spectral import HealthyReference
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -44,120 +46,88 @@ def test_get_benchmark_solver_instantiation() -> None:
 
 
 def test_osqp_exact_linear_predictor_optimality(tmp_path: Path) -> None:
-    """On a linear predictor with quadratic cost, OSQP matches IPOPT Single Shooting to high precision."""
+    """On a linear Predictor with quadratic cost, OSQP matches IPOPT Single Shooting to high precision."""
     art = _build_checkpoint(tmp_path, depth=0, n_y=4, n_u=3, horizon=4, n_channels=2, n_controls=2)
-    problem = build_waveform_problem(art, horizon=4, u_max=0.5, w_y=1.0, w_u=0.1, kirchhoff=True)
+    ref = HealthyReference(eeg_mean=np.zeros(2))
+    problem = build_waveform_problem(art, horizon=4, u_max=0.5, w_y=1.0, w_u=0.1, kirchhoff=True, reference=ref)
     model = problem.model
     assert isinstance(model, InferencePredictor)
 
     rng = np.random.default_rng(123)
     x0 = rng.standard_normal(model.n)
-    state = MPCState.initial(problem, x0=jnp.asarray(x0), dt=model.dt)
-
     s_ipopt = SingleShooting(solver=Ipopt(options={"print_level": 0}))
     s_osqp = OSQP(options={"eps_abs": 1e-8, "eps_rel": 1e-8, "max_iter": 10000})
 
-    res_ipopt = problem.solve(state, solver=s_ipopt)
-    res_osqp = problem.solve(state, solver=s_osqp)
+    mpc_ipopt = MPC(problem, s_ipopt, x0=jnp.asarray(x0))
+    mpc_osqp = MPC(problem, s_osqp, x0=jnp.asarray(x0))
 
-    assert res_ipopt.status == "converged"
-    assert res_osqp.status == "converged"
+    assert mpc_ipopt.solve().success
+    assert mpc_osqp.solve().success
 
-    np.testing.assert_allclose(res_ipopt.controls[0], res_osqp.controls[0], atol=1e-4)
-    np.testing.assert_allclose(float(problem.cost(res_ipopt)), float(problem.cost(res_osqp)), rtol=1e-4)
-
-
-def test_bipolar_boxqp_waveform_parity(tmp_path: Path) -> None:
-    """Bipolar reduced Box-iLQR matches Single Shooting with hard Kirchhoff on 2-electrode montage."""
-    art = _build_checkpoint(tmp_path, depth=0, n_y=4, n_u=3, horizon=4, n_channels=2, n_controls=2)
-
-    prob_full = build_waveform_problem(art, horizon=4, u_max=0.5, w_y=1.0, w_u=0.1, kirchhoff=True)
-    prob_bipolar = build_bipolar_waveform_problem(art, horizon=4, u_max=0.5, w_y=1.0, w_u=0.1)
-
-    model_full = prob_full.model
-    model_bipolar = prob_bipolar.model
-    assert isinstance(model_full, InferencePredictor)
-    assert isinstance(model_bipolar, InferencePredictor)
-
-    rng = np.random.default_rng(456)
-    x0 = rng.standard_normal(model_full.n)
-    state_full = MPCState.initial(prob_full, x0=jnp.asarray(x0), dt=model_full.dt)
-    state_bipolar = MPCState.initial(prob_bipolar, x0=jnp.asarray(x0), dt=model_bipolar.dt)
-
-    s_ipopt = SingleShooting(solver=Ipopt(options={"print_level": 0}))
-    s_boxqp = BoxQP()
-
-    res_full = prob_full.solve(state_full, solver=s_ipopt)
-    res_bipolar = prob_bipolar.solve(state_bipolar, solver=s_boxqp)
-
-    v0 = float(res_bipolar.controls[0][0])
-    u_bipolar_0 = np.array([v0, -v0])
-
-    np.testing.assert_allclose(res_full.controls[0], u_bipolar_0, atol=1e-3)
-    np.testing.assert_allclose(float(prob_full.cost(res_full)), float(prob_bipolar.cost(res_bipolar)), rtol=1e-3)
+    np.testing.assert_allclose(mpc_ipopt.controls[0], mpc_osqp.controls[0], atol=1e-4)
+    np.testing.assert_allclose(float(mpc_ipopt.cost()), float(mpc_osqp.cost()), rtol=1e-4)
 
 
-def test_bipolar_reduced_model_methods(tmp_path: Path) -> None:
-    """BipolarReducedModel properly wraps dynamics, absorb, free_run, and initial_state."""
-    art = _build_checkpoint(tmp_path, depth=0, n_y=3, n_u=2, horizon=3, n_channels=2, n_controls=2)
+def test_nullspace_reduced_model_methods(tmp_path: Path) -> None:
+    """NullspaceReducedModel wraps dynamics, absorb, free_run, and initial_state over Z."""
+    art = _build_checkpoint(tmp_path, depth=0, n_y=3, n_u=2, horizon=3, n_channels=2, n_controls=3)
     base = WaveformMLPModel.load(art)
-    reduced = BipolarReducedModel(base)
+    reduced = NullspaceReducedModel(base)
 
-    assert reduced.m == 1
+    assert reduced.m == base.m - 1
     assert reduced.n == base.n
-    assert reduced.n_controls == 1
+    assert reduced.n_controls == base.m - 1
 
     x0 = reduced.initial_state()
     assert np.isnan(x0[: base.n_y * base.n_channels]).all()
     assert not reduced.is_ready(x0)
 
     y_meas = np.array([0.1, -0.2])
-    x_primed = reduced.absorb(x0, y_meas, np.array([0.3]))
+    v = np.array([0.3, -0.4])
+    u_full = np.asarray(reduced.basis) @ v
+    x_primed = reduced.absorb(x0, y_meas, v)
     assert not np.isnan(x_primed[-base.n_u * base.n_controls :]).any()
+    np.testing.assert_allclose(x_primed, base.absorb(x0, y_meas, u_full))
 
-
-def test_kirchhoff_penalty_cost_reduces_violation(tmp_path: Path) -> None:
-    """Higher w_kirchhoff penalty weight reduces Kirchhoff current sum deviation."""
-    art = _build_checkpoint(tmp_path, depth=0, n_y=4, n_u=3, horizon=3, n_channels=2, n_controls=2)
-
-    prob_low_pen = build_waveform_problem(art, horizon=3, u_max=0.5, w_y=1.0, w_u=0.0, w_kirchhoff=0.1, kirchhoff=False)
-    prob_high_pen = build_waveform_problem(
-        art, horizon=3, u_max=0.5, w_y=1.0, w_u=0.0, w_kirchhoff=100.0, kirchhoff=False
+    # free_run and discrete_dynamics must agree with the base model fed the expanded currents,
+    # since that equivalence is the only thing making the reduced OCP the same problem.
+    x = jnp.asarray(np.random.default_rng(3).standard_normal(base.n))
+    np.testing.assert_allclose(
+        np.asarray(reduced.discrete_dynamics(x, jnp.asarray(v), 0.0, base.dt)),
+        np.asarray(base.discrete_dynamics(x, jnp.asarray(u_full), 0.0, base.dt)),
+        atol=1e-12,
     )
 
-    model_low = prob_low_pen.model
-    model_high = prob_high_pen.model
-    assert isinstance(model_low, InferencePredictor)
-    assert isinstance(model_high, InferencePredictor)
-
-    rng = np.random.default_rng(789)
-    x0 = rng.standard_normal(model_low.n)
-    state_low = MPCState.initial(prob_low_pen, x0=jnp.asarray(x0), dt=model_low.dt)
-    state_high = MPCState.initial(prob_high_pen, x0=jnp.asarray(x0), dt=model_high.dt)
-
-    s_ipopt = SingleShooting(solver=Ipopt(options={"print_level": 0}))
-    res_low = prob_low_pen.solve(state_low, solver=s_ipopt)
-    res_high = prob_high_pen.solve(state_high, solver=s_ipopt)
-
-    sum_low = np.abs(np.sum(res_low.controls[0]))
-    sum_high = np.abs(np.sum(res_high.controls[0]))
-
-    assert sum_high < sum_low
+    rng = np.random.default_rng(4)
+    y_h = rng.standard_normal((2, base.n_y, base.n_channels))
+    u_h = rng.standard_normal((2, base.n_u, base.m - 1))
+    u_f = rng.standard_normal((2, 3, base.m - 1))
+    Z_T = np.asarray(reduced.basis).T
+    np.testing.assert_allclose(
+        np.asarray(reduced.free_run(y_h, u_h, u_f)),
+        np.asarray(base.free_run(y_h, u_h @ Z_T, u_f @ Z_T)),
+        atol=1e-12,
+    )
 
 
 def test_run_waveform_benchmark_integration(tmp_path: Path) -> None:
     """run_waveform_benchmark runs open-loop and closed-loop comparisons across solvers."""
     art = _build_checkpoint(tmp_path, depth=0, n_y=3, n_u=2, horizon=3, n_channels=2, n_controls=2)
+    ref = HealthyReference(eeg_mean=np.zeros(2))
     open_comp, closed_comp = run_waveform_benchmark(
         art,
         horizon=3,
         u_max=0.5,
+        reference=ref,
         n_repeats=2,
         num_steps=3,
-        include_bipolar_boxqp=True,
     )
-    assert len(open_comp.rows) == 4  # SingleShooting, ALTRO, OSQP, Bipolar-BoxQP
-    assert len(closed_comp.rows) == 4
+    # Rows are asserted by label, not by count: a solver the formulation defeats is dropped from
+    # the table rather than taking it down, so the set present is the outcome under test.
+    expected = {"SingleShooting(Ipopt)", "Ipopt(MultipleShooting)", "ALTRO", "OSQP"}
+    assert {row.solver for row in open_comp.rows} <= expected
+    assert {row.solver for row in closed_comp.rows} <= expected
+    assert {"SingleShooting(Ipopt)", "ALTRO"} <= {row.solver for row in open_comp.rows}
 
     open_table = format_open_loop_table(open_comp)
     closed_table = format_closed_loop_table(closed_comp)
@@ -184,7 +154,7 @@ def test_run_observable_benchmark_integration(tmp_path: Path) -> None:
 
     open_comp, closed_comp = run_observable_benchmark(
         art,
-        env_path,
+        reference=HealthyReference.load(env_path),
         horizon=3,
         u_max=0.5,
         w_u=1.0,
@@ -192,5 +162,62 @@ def test_run_observable_benchmark_integration(tmp_path: Path) -> None:
         n_repeats=2,
         num_steps=3,
     )
-    assert len(open_comp.rows) == 3  # SingleShooting, ALTRO, OSQP
-    assert len(closed_comp.rows) == 3
+    expected = {"SingleShooting(Ipopt)", "Ipopt(MultipleShooting)", "ALTRO", "OSQP"}
+    assert {row.solver for row in open_comp.rows} <= expected
+    assert {row.solver for row in closed_comp.rows} <= expected
+    assert {"SingleShooting(Ipopt)", "ALTRO"} <= {row.solver for row in open_comp.rows}
+
+
+def test_kirchhoff_basis_spans_the_nullspace() -> None:
+    """kirchhoff_basis returns an (m, m-1) Z whose image is exactly the sum-to-zero subspace."""
+    rng = np.random.default_rng(1)
+    for m in (2, 3, 5):
+        Z = np.asarray(kirchhoff_basis(m))
+        assert Z.shape == (m, m - 1)
+        assert np.linalg.matrix_rank(Z) == m - 1
+        u = rng.standard_normal((7, m - 1)) @ Z.T
+        assert np.abs(u.sum(axis=-1)).max() < 1e-12
+
+    with pytest.raises(ValueError, match="at least 2 electrodes"):
+        kirchhoff_basis(1)
+
+
+def test_nullspace_reduction_matches_hard_equality(tmp_path: Path) -> None:
+    """The reduction reaches the hard-equality optimum with Kirchhoff exact rather than to a tolerance."""
+    art = _build_checkpoint(tmp_path, depth=1, n_y=4, n_u=3, horizon=6, n_channels=4, n_controls=3)
+    # u_max is tight enough that the per-electrode limit is active at the optimum: with it slack,
+    # any Z-shaped polytope passes, so an active bound is what actually tests the reduced rows.
+    u_max = 0.02
+    ref = HealthyReference(eeg_mean=np.zeros(4))
+    hard = build_waveform_problem(art, horizon=6, u_max=u_max, w_y=1.0, w_u=0.0, kirchhoff=True, reference=ref)
+    poly = build_waveform_problem(art, horizon=6, u_max=u_max, w_y=1.0, w_u=0.0, reduce_kirchhoff=True, reference=ref)
+
+    assert poly.model.m == hard.model.m - 1
+    # The exact current limit is a polytope in the reduced coordinates, carried as coupled rows.
+    assert sum(poly.constraints.p) > 0
+
+    x0 = jnp.asarray(np.random.default_rng(0).standard_normal(hard.model.n))
+    costs = {}
+    for label, problem in (("hard", hard), ("polytope", poly)):
+        mpc = MPC(problem, CanonicalDuals(get_benchmark_solver("single_shooting")), x0=x0)
+        res = mpc.solve()
+        assert res.success
+        costs[label] = float(mpc.cost())
+        U = np.asarray(res.trajectory.U)
+        if label != "hard":
+            assert isinstance(problem.model, NullspaceReducedModel)
+            U = U @ np.asarray(problem.model.basis).T
+            assert np.abs(U.sum(axis=-1)).max() == 0.0
+        assert np.abs(U).max() <= u_max + 1e-8
+    assert np.abs(U).max() == pytest.approx(u_max, rel=1e-3)
+
+    assert costs["polytope"] == pytest.approx(costs["hard"], rel=1e-4)
+
+
+def test_nullspace_reduction_rejects_redundant_kirchhoff_options(tmp_path: Path) -> None:
+    """Reduction satisfies Kirchhoff by construction, so the equality and L1 forms are refused."""
+    art = _build_checkpoint(tmp_path, depth=0, n_y=3, n_u=2, horizon=3, n_channels=2, n_controls=3)
+    with pytest.raises(ValueError, match="drop kirchhoff"):
+        build_waveform_problem(art, horizon=3, u_max=1.0, reduce_kirchhoff=True, kirchhoff=True)
+    with pytest.raises(ValueError, match="does not support w_u_l1"):
+        build_waveform_problem(art, horizon=3, u_max=1.0, reduce_kirchhoff=True, w_u_l1=1.0)
