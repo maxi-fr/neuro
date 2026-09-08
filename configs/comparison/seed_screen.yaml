@@ -1,0 +1,12 @@
+# The seed screen: run the candidate Plant realisations unstimulated and see which ones seize.
+#
+# A seed whose seizure never leaves the focus gives every arm a burden near zero and no contrast
+# to measure, so it is not evidence about a controller. Running the screen through the same code
+# as the comparison means the screen's burden and the table's burden are the same number.
+base: configs/simulation/uncontrolled.yaml
+t_end: 12.0
+seeds: [7000, 7001, 7002, 7003, 7004, 7005, 7006, 7007, 7008, 7009,
+        7010, 7011, 7012, 7013, 7014, 7015, 7016, 7017, 7018, 7019]
+
+arms:
+  uncontrolled: {}

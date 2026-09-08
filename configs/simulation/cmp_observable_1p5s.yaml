@@ -1,12 +1,9 @@
 # Arms B and C of the predictor comparison: the Observable Predictor at a 1.5 s Control Horizon.
 #
-# Shared by both observable arms -- scripts/run_predictor_comparison.py injects the checkpoint,
+# Shared by both observable arms -- configs/comparison/controllers.yaml injects the checkpoint,
 # so the gradient-trained model (artifacts/cmp_observable_mlp_hop5) and the DMDc model
 # (artifacts/cmp_observable_dmd_hop5) run through this identical loop and differ only in Trainer.
-#
-# Geometry is hop5: 0.1 s Frames, so 15 Frames reach the same 1.5 s the waveform arm plans over.
-# controller.dt = n_hop * downsample * plant_dt = 5 * 200 * 0.0001 = 0.1 s, which validation
-# enforces so exactly one fresh Frame is absorbed per tick.
+
 t_end: 12.0
 
 dynamics:
@@ -56,7 +53,7 @@ controller:
   dt: 0.1                # = n_hop * downsample * plant_dt = 5 * 200 * 0.0001
   problem:
     class_path: neuro.control.mpc.build_observable_problem
-    artifact: null       # injected per arm by scripts/run_predictor_comparison.py
+    artifact: null       # injected per arm by configs/comparison/controllers.yaml
     horizon: 15          # 15 * 0.1 s = 1.5 s
     u_max: 2.0
     w_u: 10.0

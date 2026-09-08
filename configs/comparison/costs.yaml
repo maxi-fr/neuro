@@ -1,0 +1,52 @@
+# The Cost comparison, on the oracle-handover loop: the Predictor IS the Plant, so model mismatch
+# is zero and a difference between arms is attributable to the Cost term alone.
+#
+# Each arm differs from `tracking` in exactly one Cost term. w_u is held at 10.0 wherever effort is
+# not itself the variable. The `tracking_h*` arms sweep the Control Horizon on that one Cost, which
+# answers how far ahead the Rollout has to see without paying for the cross-product.
+#
+# The hinge Costs score a Frame, so their Rollout has to span at least one Segment: 25 knots of
+# 20 ms is the 500 ms Frame the envelope was pooled over. That is why every non-tracking arm sits
+# at horizon 25 and no hinge arm appears below it.
+base: configs/simulation/jansen_rit_oracle_mpc.yaml
+t_end: 12.0
+seeds: [7000, 7001, 7002, 7004, 7005]
+
+# The Predictor scores the 76-region LFP through an identity gain, so the healthy envelope the
+# hinge arms are held to is pooled from the same regional signal at the same 20 ms knot stride:
+# data/healthy_lfp_knot20ms_frame500ms.npz.
+arms:
+  uncontrolled:
+    config: configs/simulation/uncontrolled.yaml
+  tracking:
+    patch: {controller: {problem: {horizon: 25, w_y: 1.0, w_u: 10.0}}}
+  tracking_h2:
+    patch: {controller: {problem: {horizon: 2, w_y: 1.0, w_u: 10.0}}}
+  tracking_h5:
+    patch: {controller: {problem: {horizon: 5, w_y: 1.0, w_u: 10.0}}}
+  tracking_h10:
+    patch: {controller: {problem: {horizon: 10, w_y: 1.0, w_u: 10.0}}}
+  tracking_no_effort:
+    patch: {controller: {problem: {horizon: 25, w_y: 1.0, w_u: 0.0}}}
+  l1_effort:
+    patch: {controller: {problem: {horizon: 25, w_y: 1.0, w_u: 0.0, w_u_l1: 10.0}}}
+  terminal:
+    patch: {controller: {problem: {horizon: 25, w_y: 1.0, w_u: 10.0, w_y_terminal: 10.0}}}
+  psd_hinge:
+    patch:
+      controller:
+        problem:
+          horizon: 25
+          w_y: 0.0
+          w_u: 10.0
+          w_psd: 1000.0
+          psd_ref: data/healthy_lfp_knot20ms_frame500ms.npz
+  observable_hinge:
+    patch:
+      controller:
+        problem:
+          horizon: 25
+          w_y: 0.0
+          w_u: 10.0
+          w_hinge: 10.0
+          envelope_ref: data/healthy_lfp_knot20ms_frame500ms.npz

@@ -1,0 +1,33 @@
+# The controller comparison: what does closing the loop buy, and which Predictor closes it best.
+#
+# Every arm integrates the same Plant on the same held-out seeds, so the arms are paired and
+# seed-to-seed variance drops out. run_comparison enforces that: the arms' dynamics blocks must
+# agree (bar `stimulation`, which the unstimulated arm drops), as must u_max and kirchhoff.
+#
+# The three learned-Predictor arms share one Cost -- the mean squared one-sided log excess over a
+# healthy envelope, plus the same effort penalties -- and one 1.5 s Control Horizon, so a gap
+# between them is the Predictor. The oracle arm cannot join that: its Predictor is the Plant's
+# state-space dynamics, so it runs a state-tracking Cost. It is a ceiling on the Predictor axis,
+# not a fourth point on it.
+base: configs/simulation/cmp_observable_1p5s.yaml
+t_end: 12.0
+
+# Held-out Plant realisations, screened on an uncontrolled run: seizure ignites in the EZ, fully
+# recruits the PZ, and reaches half the left hemisphere inside the run. See docs/seed_screen.md.
+seeds: [7000, 7001, 7002, 7004, 7005]
+
+arms:
+  uncontrolled:
+    config: configs/simulation/uncontrolled.yaml
+  threshold:
+    config: configs/simulation/threshold_control.yaml
+  oracle_mpc:
+    config: configs/simulation/jansen_rit_oracle_mpc.yaml
+  waveform_mlp:
+    config: configs/simulation/cmp_waveform_1p5s.yaml
+  observable_mlp:
+    patch:
+      controller: {problem: {artifact: artifacts/cmp_observable_mlp_hop5/model}}
+  observable_dmd:
+    patch:
+      controller: {problem: {artifact: artifacts/cmp_observable_dmd_hop5/model}}

@@ -2,8 +2,6 @@
 
 * Test cost functions with JR model as the MPC predictor!!!
 
-* write/refactor closed loop comparison script
-
 ## Refactors
 
 * is mpc hinge spectral cost function tested?
