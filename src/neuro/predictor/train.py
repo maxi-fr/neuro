@@ -348,6 +348,8 @@ def _train_observable(
     model.downsample = sim.downsample
     inference = ObservableMLPModel.from_checkpoint(*model.to_checkpoint())
     frame_mse = evaluate_observable_free_run(inference, data.val_trajs, eval_steps)
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
     return TrainingResult(
         predictor=model,
         candidates={

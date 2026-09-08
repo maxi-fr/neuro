@@ -142,11 +142,11 @@ class StftGeometry(ObservableGeometry):
 
     kind: ClassVar[str] = "stft"
 
-    n_segment: int = Field(gt=0)
-    n_hop: int = Field(gt=0)
+    n_segment: int = Field(default=50, gt=0)
+    n_hop: int = Field(default=5, gt=0)
     band_hz: tuple[float, float] | None = None
     n_bin_pool: int = Field(default=1, ge=1)
-    kernel: Literal["boxcar", "triangular", "hann"] = "boxcar"
+    kernel: Literal["boxcar", "triangular", "hann", "exponential", "linear"] = "boxcar"
     kernel_width: int = Field(default=1, ge=1)
 
     def bin_range(self, fs: float) -> tuple[int, int]:

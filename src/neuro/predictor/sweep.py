@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 import optuna
+import torch
 import yaml
 from simulate.config import deep_merge
 
@@ -69,16 +70,16 @@ def _run_trial(
 ) -> float:
     """Train one trial at ``config``, persist it under ``trial_dir`` and return the named objective.
 
-    Shared body of the two sweep objectives; a NaN training loss prunes the trial instead of
-    failing the study.
+    Shared body of the two sweep objectives; a NaN loss or memory error prunes the trial.
     """
     trial_dir.mkdir(parents=True, exist_ok=True)
     with (trial_dir / "trial_config.yaml").open("w") as f:
         yaml.dump(config.model_dump(exclude={"sweep"}), f)
     try:
         result = train(config, data_files, seed_offset=trial.number)
-    except ValueError as exc:
-        if "NaN" in str(exc):
+    except (ValueError, RuntimeError, torch.AcceleratorError) as exc:
+        err_msg = str(exc).lower()
+        if "nan" in err_msg or "out of memory" in err_msg or "cuda" in err_msg:
             raise optuna.TrialPruned from exc
         raise
     result.save(trial_dir)

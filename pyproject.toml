@@ -25,6 +25,7 @@ dependencies = [
     "setuptools>=81.0.0",
     "wheel>=0.48.0",
     "trajopt[solvers]",
+    "tabulate>=0.10.0",
 ]
 
 

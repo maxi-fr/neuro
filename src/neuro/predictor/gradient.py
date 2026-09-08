@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import collections
-import copy
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -20,7 +19,12 @@ if TYPE_CHECKING:
 def float32_tensor(a: FloatArray | Float32Array, device: torch.device, *, pin_memory: bool = False) -> Tensor:
     """Move a NumPy array onto ``device`` as a float32 tensor."""
     t = torch.as_tensor(np.ascontiguousarray(a), dtype=torch.float32, device=device)
-    return t.pin_memory() if pin_memory and device.type == "cpu" else t
+    if pin_memory and device.type == "cpu":
+        try:
+            return t.pin_memory()
+        except (RuntimeError, torch.AcceleratorError):
+            return t
+    return t
 
 
 def lr_schedule(
@@ -110,8 +114,8 @@ def fit_gradient_descent(  # noqa: PLR0913, PLR0917 -- model, the four tensor bl
     scheduler = lr_schedule(optimizer, warmup_steps=warmup_steps, total_steps=total_steps)
 
     best_val_loss = float("inf")
-    # A torch module is mutable, so the best-so-far snapshot has to be a copy, not an alias.
-    best_state = copy.deepcopy(model.state_dict())
+    # A torch module is mutable, so the best-so-far snapshot has to be a copy on CPU, not an alias on GPU.
+    best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
     epochs_without_improvement = 0
     train_losses: list[float] = []
     val_losses: list[float] = []
@@ -152,7 +156,7 @@ def fit_gradient_descent(  # noqa: PLR0913, PLR0917 -- model, the four tensor bl
 
         if val_loss < best_val_loss:
             best_val_loss = val_loss
-            best_state = copy.deepcopy(model.state_dict())
+            best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
             epochs_without_improvement = 0
         else:
             epochs_without_improvement += 1
@@ -161,5 +165,5 @@ def fit_gradient_descent(  # noqa: PLR0913, PLR0917 -- model, the four tensor bl
         if epochs_without_improvement >= cfg.patience:
             break
 
-    model.load_state_dict(best_state)
+    model.load_state_dict({k: v.to(device) for k, v in best_state.items()})
     return train_losses, val_losses, dict(train_components), dict(val_components)
