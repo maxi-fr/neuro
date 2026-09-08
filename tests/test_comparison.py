@@ -19,7 +19,9 @@ from neuro.comparison import (
     lfp_logging,
     load_manifest,
     manifest_hash,
+    read_progress,
     read_rows,
+    record_progress,
     spread_metrics,
     summarize,
     write_rows,
@@ -150,6 +152,17 @@ def test_shipped_manifests_expand_into_valid_paired_grids() -> None:
         check_arms_are_paired(grid)
         for cell in grid:
             validate_simulation_config(cell.config)
+
+
+def test_progress_records_say_what_is_in_flight_and_what_finished(tmp_path: Path) -> None:
+    running, finished = expand_grid(_manifest())[:2]
+    record_progress(tmp_path, running, started="2026-09-08T09:00:00+00:00", state="running")
+    record_progress(tmp_path, finished, started="2026-09-08T09:01:00+00:00", state="done", elapsed_s=61.0)
+
+    records = read_progress(tmp_path)
+
+    assert [record["state"] for record in records] == ["running", "done"]  # oldest first
+    assert records[1]["elapsed_s"] == pytest.approx(61.0)
 
 
 def _seizing_lfp(dt: float, connectome: Connectome, regions: list[str]) -> FloatArray:

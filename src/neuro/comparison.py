@@ -11,6 +11,7 @@ import json
 import tempfile
 import time
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -123,14 +124,14 @@ def expand_grid(manifest: ComparisonManifest) -> list[Cell]:
 
 
 def check_arms_are_paired(grid: list[Cell]) -> None:
-    """Reject a grid whose arms do not share a Plant, a Control Budget, or a Kirchhoff constraint.
+    """Reject a grid whose arms do not share a Plant, a Control Budget, or a Kirchhoff rule.
 
     Paired seeds only cancel seed-to-seed variance if every arm integrates the same Plant, so the
     dynamics blocks must agree everywhere except ``stimulation``, which an unstimulated arm drops
-    by design, and ``log``, which chooses what is recorded rather than what is integrated. The budget check stops an arm winning because it was handed more current: it covers
-    the threshold arm's burst amplitude too, and compares peak magnitudes so that arms differing
-    only in ``n_u`` still pair. Kirchhoff is an MPC-only constraint and is compared among the arms
-    that have one.
+    by design, and ``log``, which chooses what is recorded rather than what is integrated. The
+    budget check stops an arm winning because it was handed more current: it covers the threshold
+    arm's burst amplitude too, and compares peak magnitudes so that arms differing only in ``n_u``
+    still pair. Kirchhoff is an MPC-only constraint and is compared among the arms that have one.
 
     Raises
     ------
@@ -158,11 +159,8 @@ def check_arms_are_paired(grid: list[Cell]) -> None:
         msg = f"Arms disagree on the Control Budget: {budgets}."
         raise ValueError(msg)
 
-    kirchhoff = {
-        arm: config["controller"]["problem"].get("kirchhoff")
-        for arm, config in by_arm.items()
-        if "problem" in config["controller"]
-    }
+    mpc = {arm: config["controller"] for arm, config in by_arm.items() if "problem" in config["controller"]}
+    kirchhoff = {arm: controller["problem"].get("kirchhoff") for arm, controller in mpc.items()}
     if len(set(kirchhoff.values())) > 1:
         msg = f"Arms disagree on the Kirchhoff constraint: {kirchhoff}."
         raise ValueError(msg)
@@ -275,13 +273,45 @@ def score_run(config: dict[str, Any], u_max: float, *, threshold: float = SEIZUR
         }
 
 
-def score_cell(cell: Cell, *, threshold: float = SEIZURE_PTP_MV) -> dict[str, Any]:
+def record_progress(progress_dir: Path, cell: Cell, **fields: Any) -> None:  # noqa: ANN401 -- the record is free-form status
+    """Stamp one cell's status file, so a grid that runs for hours can be checked in on.
+
+    One file per cell, written only by the worker that owns it: the grid is a process Pool, and
+    interleaved appends to a shared log would tear. Nothing reads these to make decisions -- they
+    exist so a person can see which runs are in flight and how long they have been going.
+    """
+    progress_dir.mkdir(parents=True, exist_ok=True)
+    record = {"run": cell.run, "arm": cell.arm, "seed": cell.seed, **fields}
+    (progress_dir / f"{cell.run}.json").write_text(json.dumps(record, indent=2), encoding="utf-8")
+
+
+def read_progress(progress_dir: Path) -> list[dict[str, Any]]:
+    """Read every cell's status file, newest activity last."""
+    if not progress_dir.exists():
+        return []
+    records = [json.loads(path.read_text(encoding="utf-8")) for path in progress_dir.glob("*.json")]
+    return sorted(records, key=lambda record: record["started"])
+
+
+def score_cell(cell: Cell, *, threshold: float = SEIZURE_PTP_MV, progress_dir: Path | None = None) -> dict[str, Any]:
     """Score one Cell; a failure is recorded as a row rather than sinking the whole grid."""
     row: dict[str, Any] = {"run": cell.run, "arm": cell.arm, "seed": cell.seed, "error": ""}
+    started = datetime.now(UTC).astimezone()
+    if progress_dir is not None:
+        record_progress(progress_dir, cell, started=started.isoformat(), state="running")
     try:
         row |= score_run(cell.config, cell.u_max, threshold=threshold)
     except Exception as exc:  # noqa: BLE001 -- one diverged arm must not lose the rest of the grid
         row["error"] = f"{type(exc).__name__}: {exc}"
+    if progress_dir is not None:
+        record_progress(
+            progress_dir,
+            cell,
+            started=started.isoformat(),
+            state="failed" if row["error"] else "done",
+            elapsed_s=round((datetime.now(UTC).astimezone() - started).total_seconds(), 1),
+            note=row["error"] or f"burden={row['seizure_burden']:.3f}",
+        )
     return row
 
 

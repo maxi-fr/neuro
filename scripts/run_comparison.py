@@ -32,20 +32,38 @@ if TYPE_CHECKING:
     from neuro.comparison import Cell, ComparisonManifest
 
 _THRESHOLD_MV = 0.0
+_PROGRESS_DIR: Path | None = None
 
 
-def _init_worker(threshold: float) -> None:
-    """Pin each worker to one thread and hand it the Seizure Threshhold the manifest set."""
+def _init_worker(threshold: float, progress_dir: Path) -> None:
+    """Pin each worker to one thread and hand it the Seizure Threshhold and progress directory."""
     # The env vars set at import get torch most of the way, but a probe still measured 2.6 cores
     # per run. Saying it directly leaves nothing for the workers to fight over.
     torch.set_num_threads(1)
-    global _THRESHOLD_MV  # noqa: PLW0603 -- a Pool initializer has no other way to seed its workers
+    global _THRESHOLD_MV, _PROGRESS_DIR  # noqa: PLW0603 -- a Pool initializer has no other way to seed its workers
     _THRESHOLD_MV = threshold
+    _PROGRESS_DIR = progress_dir
 
 
 def _score(cell: Cell) -> dict[str, Any]:
     """Score one Cell at the worker's configured Seizure Threshhold."""
-    return comparison.score_cell(cell, threshold=_THRESHOLD_MV)
+    return comparison.score_cell(cell, threshold=_THRESHOLD_MV, progress_dir=_PROGRESS_DIR)
+
+
+def _print_status(out_dir: Path) -> None:
+    """Print what the grid in ``out_dir`` has finished and what is still in flight."""
+    records = comparison.read_progress(out_dir / "progress")
+    if not records:
+        print(f"No progress recorded in {out_dir}.")
+        return
+    now = datetime.now(UTC).astimezone()
+    for record in records:
+        started = datetime.fromisoformat(record["started"])
+        elapsed = record.get("elapsed_s", (now - started).total_seconds())
+        note = record.get("note", "")
+        print(f"  {record['state']:>8s} {record['run']:>24s} {elapsed / 60:6.1f} min  {note}")
+    running = [record for record in records if record["state"] == "running"]
+    print(f"{len(records) - len(running)} finished, {len(running)} in flight")
 
 
 def _git_sha() -> str:
@@ -121,15 +139,20 @@ def _run_grid(
         comparison.write_rows(rows, out_dir / "rows.csv")
         note = row["error"] or f"burden={row['seizure_burden']:.3f}"
         print(f"  [{len(rows)}/{total}] {row['run']}: {note}", flush=True)
+        # A run can take hours, so say what is still out rather than leaving a silent terminal.
+        outstanding = [cell.run for cell in pending if cell.run not in {done["run"] for done in rows}]
+        if outstanding:
+            print(f"      still running: {', '.join(outstanding)}", flush=True)
 
+    progress_dir = out_dir / "progress"
     if workers > 1 and pending:
         with multiprocessing.Pool(
-            processes=min(workers, len(pending)), initializer=_init_worker, initargs=(threshold,)
+            processes=min(workers, len(pending)), initializer=_init_worker, initargs=(threshold, progress_dir)
         ) as pool:
             for row in pool.imap_unordered(_score, pending):
                 record(row)
         return
-    _init_worker(threshold)
+    _init_worker(threshold, progress_dir)
     for cell in pending:
         record(_score(cell))
 
@@ -162,12 +185,19 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--workers", type=int, default=1, help="Parallel simulation processes.")
     parser.add_argument("--resume", action="store_true", help="Skip the (arm, seed) cells --output-dir already has.")
     parser.add_argument("--dry-run", action="store_true", help="Validate every cell and list the grid, run nothing.")
+    parser.add_argument("--status", action="store_true", help="Print --output-dir's progress and exit.")
     return parser.parse_args()
 
 
 def main() -> None:
     """Expand the manifest, run its grid, and write the per-run and per-arm metric tables."""
     args = parse_args()
+    if args.status:
+        if args.output_dir is None:
+            msg = "--status needs the --output-dir of the grid to report on."
+            raise ValueError(msg)
+        _print_status(args.output_dir)
+        return
     manifest = comparison.load_manifest(args.manifest)
     if args.arms is not None:
         manifest = manifest.model_copy(update={"arms": _subset(manifest.arms, args.arms, "arms")})
@@ -194,6 +224,7 @@ def main() -> None:
     _write_provenance(out_dir, manifest)
     if done:
         print(f"resuming: {len(done)} runs already scored, {len(pending)} to go")
+    print(f"check in with: uv run python {Path(__file__).name} {args.manifest} --status --output-dir {out_dir}")
 
     _run_grid(pending, rows, out_dir=out_dir, threshold=manifest.seizure_ptp_mv, workers=args.workers)
 
