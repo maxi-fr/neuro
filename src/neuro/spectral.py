@@ -41,15 +41,22 @@ def compute_periodograms(y: FloatArray, *, fs: float, window: int, hop: int) -> 
 
 
 def _frame_kernel_weights(kernel: str, width: int) -> FloatArray:
-    """Normalised non-negative smoothing weights along the Frame axis."""
+    """Normalised non-negative smoothing weights along the Frame axis, with recency kernels favoring current time."""
     if width == 1:
         return np.ones(1, dtype=np.float64)
     if kernel == "boxcar":
         weights = np.ones(width, dtype=np.float64)
     elif kernel == "triangular":
         weights = bartlett(width + 2, sym=True)[1:-1]
-    else:
+    elif kernel == "hann":
         weights = hann(width + 2, sym=True)[1:-1]
+    elif kernel == "exponential":
+        weights = np.exp(np.linspace(-1.0, 0.0, width))
+    elif kernel == "linear":
+        weights = np.arange(1, width + 1, dtype=np.float64)
+    else:
+        msg = f"Unknown frame kernel: {kernel!r}"
+        raise ValueError(msg)
     return np.asarray(weights / np.sum(weights), dtype=np.float64)
 
 

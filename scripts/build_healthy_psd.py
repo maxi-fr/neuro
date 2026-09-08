@@ -229,7 +229,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--kernel",
         type=str,
-        choices=["boxcar", "triangular", "hann"],
+        choices=["boxcar", "triangular", "hann", "exponential", "linear"],
         default="boxcar",
         help="Frame Kernel type (default: boxcar).",
     )

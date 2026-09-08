@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import gc
 import tempfile
 from copy import deepcopy
 from pathlib import Path
@@ -71,18 +72,21 @@ def evaluate_closed_loop_suppression(trial_dir: Path, eval_cfg: ClosedLoopEvalCo
             # controller object, so it is read here from the same dict the simulation was built from.
             u_max = np.asarray(base_sim_dict["controller"]["problem"]["u_max"], dtype=np.float64)
 
-            us = sim.logger.signal("controller", "u")
+            us = np.asarray(sim.logger.signal("controller", "u"))
             amplitudes.append(float(np.mean(np.abs(us) / u_max)))
             delivered_charges.append(float(np.sum(np.abs(us)) * sim.dt))
 
             # One of the two region-space logs is always present: the config is coerced to "lfp"
             # above unless it already asked for "state".
             if ("dynamics", "lfp") in set(sim.logger.signals()):
-                y_reg = sim.logger.signal("dynamics", "lfp")
+                y_reg = np.asarray(sim.logger.signal("dynamics", "lfp"))
                 profile = spread_profile_from_lfp(y_reg.T, sim.dt, threshold=eval_cfg.seizure_ptp_mv)
             else:
-                x_traj = sim.logger.signal("dynamics", "x")
+                x_traj = np.asarray(sim.logger.signal("dynamics", "x"))
                 profile = spread_profile_from_states(x_traj, sim.dt, threshold=eval_cfg.seizure_ptp_mv)
+
+            del sim
+            gc.collect()
 
         burdens.append(profile.burden())
         n_seizing_final = int(profile.n_seizing()[-1])
