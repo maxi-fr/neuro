@@ -1,0 +1,82 @@
+# Waveform MLP follow-up combining the three campaign results:
+# - shallow, wider networks from both MLP campaigns;
+# - the Observable MLP's W25/H3/boxcar-5 fast STFT geometry;
+# - an EEG mean-square energy anchor and delayed spectral loss, which protect control sensitivity
+#   from the raw short-window STFT failure documented in the waveform/kernel investigations.
+# Geometry is fixed because required StftSpec fields cannot be varied safely by the generic sweep
+# schema. The study spends its trials on capacity and training dynamics at that geometry instead.
+
+simulation:
+  dt: 0.0001
+  downsample: 200          # fs = 50 Hz, matching the Observable campaign and comparison controller.
+  n_steps: null
+  data_path: "data/experiment_excited_long/train"
+
+model:
+  n_y: 15
+  n_u: 10
+  depth: 1                # Every useful MLP campaign winner was shallow.
+  residual: true
+
+training:
+  fit: gradient_descent
+  epochs: 250
+  train_split: 0.8
+  seed: 1903
+  patience: 50
+  scaler: robust
+  global_scaling: true
+  device: auto
+  eval_horizon_s: 1.5
+  losses:
+    curriculum_mse:
+      weight: 1.0
+      span_s: 0.2
+      curr_start: 20
+      curr_end: 80
+      start_epoch: 0
+    eeg_ms:
+      weight: 1.0
+      span_s: 1.5
+      start_epoch: 80     # Add the energy anchor once the short rollout is stable.
+    stft:
+      weight: 1.0
+      n_segment: 25       # 0.50 s Segment.
+      n_hop: 3            # 0.06 s Frame spacing.
+      n_span: 75          # Full 1.5 s Control Horizon, leaving 13 smoothed Frames.
+      band_hz: [1.0, 25.0]
+      n_bin_pool: 1
+      kernel: boxcar
+      kernel_width: 5
+      start_epoch: 80     # Avoid short-window log-power gradients during early training.
+
+sweep:
+  artifact: "artifacts/waveform_mlp_campaign/sweeps/4_fast_stft"
+  n_trials: 12            # Each trial runs five full closed-loop evaluations.
+  objective: closed_loop  # Offline spectral error did not preserve control authority reliably.
+  model:
+    hidden_size:
+      type: categorical
+      choices: [256, 512, 768]
+    activation:
+      type: categorical
+      choices: [tanh, softplus]
+  training:
+    batch_size:
+      type: categorical
+      choices: [128, 256, 512]
+    learning_rate:
+      type: loguniform
+      low: 0.00005
+      high: 0.0005
+    weight_decay:
+      type: loguniform
+      low: 0.00001
+      high: 0.0002
+  closed_loop:
+    simulation_config: "configs/simulation/cmp_waveform_1p5s.yaml"
+    seeds: [5000, 5001, 5002, 5003, 5004]
+    t_end: 12.0
+    seizure_ptp_mv: 5.0
+    max_seizing_regions: 5
+    amplitude_weight: 0.0

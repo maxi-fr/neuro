@@ -1,0 +1,51 @@
+# Retune Hankel-DMDc after transferring the Observable MLP campaign's best STFT geometry.
+# The earlier DMD campaign improved monotonically as the hop fell from 25 to 5 samples. Its
+# hop-5 optimum also hit the high-energy and low-regularization edges of the old search space.
+# This study therefore fixes the stronger W25/H3/boxcar-5 geometry and searches only the two
+# parameters that affect the closed-form fit. Geometry is fixed so trials remain comparable.
+
+simulation:
+  dt: 0.0001
+  downsample: 200          # fs = 50 Hz
+  n_steps: null
+  data_path: "data/experiment_excited_long/train"
+
+model:
+  n_y: 1                  # More Observable history did not help the MLP campaign.
+  n_u: 13                 # 5 - 1 + ceil(25 / 3): full smoothed-Frame control support.
+  depth: 0
+
+observable:
+  n_segment: 25           # 0.50 s, half the old DMD Segment latency.
+  n_hop: 3                # 0.06 s between Frames.
+  band_hz: [1.0, 25.0]    # Predictor-accuracy winner from the Observable MLP campaign.
+  n_bin_pool: 1
+  kernel: boxcar
+  kernel_width: 5         # 0.24 s between first and last pooled Frame starts.
+
+training:
+  fit: dmd
+  train_split: 0.8
+  eval_horizon_s: 1.5
+  losses:
+    curriculum_mse:
+      weight: 1.0
+      span_s: 1.5
+      curr_start: 0
+      curr_end: 1
+
+sweep:
+  artifact: "artifacts/observable_dmd_campaign/sweeps/fast_geometry"
+  n_trials: 30            # DMD trials are closed-form SVD fits, so keep the cheap broad screen.
+  objective: val_log_mse
+  model: {}
+  training:
+    dmd_energy:
+      type: float
+      low: 0.97           # Covers the hop-10 optimum while resolving the hop-5 upper edge.
+      high: 0.9999
+    dmd_lambda:
+      type: loguniform
+      low: 0.0000001      # Hop 5 selected 1.06e-6, the old lower boundary.
+      high: 0.01
+

@@ -1,11 +1,11 @@
 # Comprehensive Report: Observable MLP Predictor Optimization Campaign & Closed-Loop Benchmark
 
-**Project**: Closed-Loop Control of Epileptic Neural Mass Dynamics on Structural Connectomes  
-**Author**: Antigravity AI & Engineering Team  
-**Date**: September 8, 2026  
-**Campaign Artifact Directory**: [`artifacts/observable_mlp_campaign/`](file:///C:/Users/Max/closed-loop-neurostimulation/artifacts/observable_mlp_campaign/)  
-**Grand Champion Model Checkpoint**: [`artifacts/observable_mlp_campaign/checkpoints/champion_predictor_fast_geom.npz`](file:///C:/Users/Max/closed-loop-neurostimulation/artifacts/observable_mlp_campaign/checkpoints/champion_predictor_fast_geom.npz)  
-**Champion Controller Checkpoint**: [`artifacts/observable_mlp_campaign/checkpoints/champion_controller_band3_12.npz`](file:///C:/Users/Max/closed-loop-neurostimulation/artifacts/observable_mlp_campaign/checkpoints/champion_controller_band3_12.npz)  
+**Project**: Closed-Loop Control of Epileptic Neural Mass Dynamics on Structural Connectomes
+**Author**: Antigravity AI & Engineering Team
+**Date**: September 8, 2026
+**Campaign Artifact Directory**: [`artifacts/observable_mlp_campaign/`](file:///C:/Users/Max/closed-loop-neurostimulation/artifacts/observable_mlp_campaign/)
+**Grand Champion Model Checkpoint**: [`artifacts/observable_mlp_campaign/checkpoints/champion_predictor_fast_geom.npz`](file:///C:/Users/Max/closed-loop-neurostimulation/artifacts/observable_mlp_campaign/checkpoints/champion_predictor_fast_geom.npz)
+**Champion Controller Checkpoint**: [`artifacts/observable_mlp_campaign/checkpoints/champion_controller_band3_12.npz`](file:///C:/Users/Max/closed-loop-neurostimulation/artifacts/observable_mlp_campaign/checkpoints/champion_controller_band3_12.npz)
 
 ---
 
@@ -18,6 +18,7 @@ Unlike raw waveform models that predict 62 scalp channels at sample rates ($50\,
 Through sequential Optuna sweeps over network capacity, history lookback, frequency band geometry, Frame Kernel temporal smoothing, and batch dynamics, we discovered the **Grand Champion Observable Predictor** ([Sweep 4, Trial 14](file:///C:/Users/Max/closed-loop-neurostimulation/artifacts/sweep_observable_mlp_recency_kernels/trial_14/)).
 
 ### Key Milestones & Breakthroughs
+
 1. **Multi-Step Free-Run Accuracy Progression**:
    * *Overview Sweep Baseline*: Free-run log MSE = **`2.3674`** (`hidden_size: 256`, `depth: 1`, `softplus`, 10 bins, raw frames).
    * *Sweep 1 (Capacity Search)*: Free-run log MSE = **`2.0018`** (`hidden_size: 1024`, `depth: 1`, `tanh`).
@@ -59,6 +60,7 @@ flowchart LR
 ```
 
 ### 2.1 Observable Geometry
+
 * **Sampling & Decimation**: Plant $\Delta t_{\text{plant}} = 10^{-4}\,\text{s}$, decimated by $200 \implies f_s = 50\,\text{Hz}$ ($\text{Nyquist} = 25\,\text{Hz}$).
 * **Segment Length**: $n_{\text{segment}} = 50$ samples ($1.0\,\text{s}$), $\Delta f = 1.0\,\text{Hz}$ spectral resolution.
 * **Hop & Frame Rate**: $n_{\text{hop}} = 5$ samples ($0.1\,\text{s}$) $\implies f_{\text{frame}} = 10\,\text{Hz}$.
@@ -67,8 +69,10 @@ flowchart LR
 * **Control Support Constraint**: $n_u \ge \text{kernel\_width} - 1 + \lceil n_{\text{segment}} / n_{\text{hop}} \rceil = 3 - 1 + 10 = 12 \le 15$.
 
 ### 2.2 Autoregressive Predictor Formulation
+
 The network models the one-step vector field in standardized log-power space with a persistent skip connection:
 $$\hat{y}_{t+1} = y_t + f_\theta\Big(y_t,\, u_{t-n_u+1:t}\Big)$$
+
 * $y_t \in \mathbb{R}^{1550}$: Standardized STFT log-power Frame at time step $t$.
 * $u_t \in \mathbb{R}^3$: Applied 3-channel stimulation current.
 * $f_\theta$: Single-layer neural vector field parameterizing spectral deltas.
@@ -78,26 +82,31 @@ $$\hat{y}_{t+1} = y_t + f_\theta\Big(y_t,\, u_{t-n_u+1:t}\Big)$$
 ## 3. Sequential Sweep Progression & Empirical Insights
 
 ### 3.1 Sweep 1: Capacity & Activation Search
+
 * **Objective**: Explore hidden widths ($256 \to 1024$), depths ($1 \to 2$), activations (`softplus`, `relu`, `tanh`), and learning rates.
 * **Key Finding**: `depth: 1` strictly outperformed `depth: 2` across every trial. `tanh` and `softplus` produced continuous, non-saturating Jacobian fields, while `relu` caused dead neurons and drift during recursive rollouts.
 * **Top Trial**: Trial 12 (`hidden: 1024, depth: 1, tanh, lr: 2.62e-4`, MSE = `2.0018`).
 
 ### 3.2 Sweep 2: Extended Capacity & Training Dynamics
+
 * **Objective**: Probe wider networks ($256, 384, 512, 768, 1024, 1536$) and batch sizes ($64, 128, 256$) with `n_y: 1` fixed.
 * **Key Finding**: Discovered monotonic performance scaling with width ($2.451 \to 2.253 \to 2.139 \to 2.075 \to 2.068 \to 2.001$).
 * **Top Trial**: Trial 14 (`hidden: 1536, depth: 1, tanh, batch_size: 128, lr: 2.44e-4, wd: 1.11e-4`, MSE = `2.0013`).
 
 ### 3.3 Sweep 3: STFT Geometry & Temporal Smoothing
+
 * **Objective**: Compare frequency bands (`3-12 Hz`, `2-15 Hz`, `1-20 Hz`) and Frame Kernel temporal smoothing (`kernel_width: 1` vs `2`).
 * **Key Finding**: Temporal convolution across consecutive STFT frames dramatically filtered estimation variance, reducing log MSE from $2.0013 \to \mathbf{1.6988}$ ($16.3\%$ error drop).
 * **Top Trial**: Trial 7 (`band: [1.0, 20.0], kernel_width: 2, hidden: 1536`, MSE = `1.6988`).
 
 #### 3.4 Sweep 4: Causal Recency Kernels & Broadband Exploration
+
 * **Objective**: Test recency-weighted causal kernels (`linear`, `exponential`, `boxcar`, `hann`), widths ($1, 2, 3$), and larger batch sizes ($128, 256, 512$) on full 1.0–25.0 Hz broadband (1,550 outputs).
 * **Key Finding**: `batch_size: 512` accelerated training throughput while providing highly stable gradient estimates over 1,550 outputs, allowing learning rates up to $4.5 \times 10^{-4}$ to achieve **`1.6448`** multi-step free-run MSE.
 * **Top Trial**: Trial 14 (`hidden: 512, batch_size: 512, kernel: boxcar, kernel_width: 3, lr: 4.45e-4, wd: 1.52e-4`, MSE = `1.6448`).
 
 ### 3.5 Sweep 5: Fast-Rate STFT Geometry Exploration
+
 * **Objective**: Investigate faster STFT update rates ($n_{\text{hop}} \in [2, 3] \implies 25\,\text{Hz} \text{ and } 16.67\,\text{Hz}$ Frame rates), reduced segment lengths ($n_{\text{segment}} \in [25, 30] \implies 0.5\,\text{s} \text{ and } 0.6\,\text{s}$ FFT windows), and deeper Frame Kernel temporal smoothing ($K \in [3, 4, 5]$).
 * **Key Finding**: Fast-rate STFT geometry achieved a breakthrough in multi-step prediction accuracy:
   * Halving the FFT segment window from $1.0\,\text{s} \to 0.5\,\text{s}$ cut estimator latency in half.

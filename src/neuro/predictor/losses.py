@@ -262,7 +262,7 @@ def pool_bins(power: Tensor, n_bin_pool: int) -> Tensor:
 
 
 def frame_kernel(kernel: str, width: int, like: Tensor) -> Tensor:
-    """Normalised non-negative smoothing weights along the frame axis.
+    """Return normalized non-negative smoothing weights along the frame axis.
 
     Endpoints are kept strictly positive, so a width-``n`` taper really pools ``n`` frames.
     """
@@ -272,8 +272,15 @@ def frame_kernel(kernel: str, width: int, like: Tensor) -> Tensor:
         weights = torch.ones(width, dtype=like.dtype, device=like.device)
     elif kernel == "triangular":
         weights = torch.bartlett_window(width + 2, periodic=False, dtype=like.dtype, device=like.device)[1:-1]
-    else:
+    elif kernel == "hann":
         weights = torch.hann_window(width + 2, periodic=False, dtype=like.dtype, device=like.device)[1:-1]
+    elif kernel == "exponential":
+        weights = torch.exp(torch.linspace(-1.0, 0.0, width, dtype=like.dtype, device=like.device))
+    elif kernel == "linear":
+        weights = torch.arange(1, width + 1, dtype=like.dtype, device=like.device)
+    else:
+        msg = f"Unknown frame kernel: {kernel!r}"
+        raise ValueError(msg)
     return weights / weights.sum()
 
 

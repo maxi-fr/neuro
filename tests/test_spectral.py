@@ -210,12 +210,15 @@ def test_frame_sample_support_and_counts() -> None:
 
 @pytest.mark.parametrize("band_hz", [None, (3.0, 12.0), (8.0, 20.0)])
 @pytest.mark.parametrize("n_bin_pool", [1, 2, 3])
-@pytest.mark.parametrize(("kernel", "width"), [("boxcar", 1), ("triangular", 2), ("hann", 4)])
+@pytest.mark.parametrize(
+    ("kernel", "width"),
+    [("boxcar", 1), ("triangular", 2), ("hann", 4), ("linear", 5), ("exponential", 5)],
+)
 @pytest.mark.parametrize("n_segment", [32, 33])
 def test_torch_reduction_agrees_with_canonical_numpy(
     band_hz: tuple[float, float] | None,
     n_bin_pool: int,
-    kernel: Literal["boxcar", "triangular", "hann"],
+    kernel: Literal["boxcar", "triangular", "hann", "linear", "exponential"],
     width: int,
     n_segment: int,
 ) -> None:

@@ -1,0 +1,57 @@
+# Follow up the fast-geometry winner at the boundary of the original kernel-width search.
+# Hold its Predictor and optimizer settings fixed so this Sweep measures the Frame Kernel alone.
+# Boxcar gives the strongest variance reduction; linear trades some effective averaging for more
+# weight on recent Frames. Widths 7 and 9 test whether the width-5 winner was still under-smoothed.
+
+simulation:
+  dt: 0.0001
+  downsample: 200          # fs = 50 Hz
+  n_steps: null
+  data_path: "data/experiment_excited_long/train"
+
+model:
+  n_y: 1
+  n_u: 17                 # 9 - 1 + ceil(25 / 3): covers every candidate's Frame support.
+  hidden_size: 768
+  depth: 1
+  activation: tanh
+  residual: true
+
+observable:
+  n_segment: 25           # 0.50 s Segment from the fast-geometry winner.
+  n_hop: 3                # 0.06 s Frame spacing.
+  band_hz: [1.0, 25.0]
+  n_bin_pool: 1
+
+training:
+  fit: gradient_descent
+  train_split: 0.8
+  eval_horizon_s: 1.5
+  epochs: 150
+  batch_size: 256
+  learning_rate: 0.00021465782719955632
+  weight_decay: 0.00006342479352898671
+  patience: 35
+  scaler: standard
+  device: auto
+  seed: 69
+  losses:
+    curriculum_mse:
+      weight: 1.0
+      span_s: 1.5
+      curr_start: 10
+      curr_end: 80
+
+sweep:
+  artifact: "artifacts/observable_mlp_campaign/sweeps/6_large_kernels"
+  n_trials: 18            # Three trials per geometry on average; trial offsets vary training seeds.
+  objective: val_log_mse
+  model: {}
+  observable:
+    kernel:
+      type: categorical
+      choices: [boxcar, linear]
+    kernel_width:
+      type: categorical
+      choices: [5, 7, 9]
+  training: {}
