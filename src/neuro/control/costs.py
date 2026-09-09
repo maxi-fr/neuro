@@ -376,6 +376,12 @@ class ObservableFrameHingeCost(CostFunction):
         if envelope.power.shape[0] != outputs.n_outputs:
             msg = f"envelope has {envelope.power.shape[0]} channels but the model outputs {outputs.n_outputs}"
             raise ValueError(msg)
+        expected_values = envelope.geometry.n_values(envelope.fs)
+        if envelope.power.shape[1] != expected_values:
+            msg = (
+                f"envelope has {envelope.power.shape[1]} values per channel but its geometry implies {expected_values}"
+            )
+            raise ValueError(msg)
         support = envelope.geometry.sample_support_steps(envelope.fs)
         if horizon < support:
             msg = f"horizon ({horizon}) is shorter than the sample support of one Frame ({support})"

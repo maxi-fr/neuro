@@ -220,7 +220,7 @@ class ObservableEnvelope:
             band_hz = None if band[0] < 0 else (float(band[0]), float(band[1]))
 
             kernel_str = str(data["kernel"])
-            if kernel_str not in ("boxcar", "triangular", "hann"):
+            if kernel_str not in ("boxcar", "triangular", "hann", "exponential", "linear"):
                 msg = f"envelope at {path} has unknown kernel '{kernel_str}'."
                 raise ValueError(msg)
 
@@ -294,7 +294,7 @@ class HealthyReference:
                 band = np.asarray(data["band_hz"])
                 band_hz = None if band[0] < 0 else (float(band[0]), float(band[1]))
                 kernel_str = str(data["kernel"])
-                if kernel_str not in ("boxcar", "triangular", "hann"):
+                if kernel_str not in ("boxcar", "triangular", "hann", "exponential", "linear"):
                     msg = f"envelope at {path} has unknown kernel '{kernel_str}'."
                     raise ValueError(msg)
 

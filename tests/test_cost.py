@@ -583,6 +583,10 @@ def test_observable_frame_hinge_cost_validation() -> None:
     with pytest.raises(ValueError, match="channels but the model outputs"):
         ObservableFrameHingeCost(outputs, wide, w_hinge=1.0, horizon=200)
 
+    wrong_values = ObservableEnvelope(power=np.zeros((n_channels, geom.n_values(fs) + 1)), fs=fs, geometry=geom)
+    with pytest.raises(ValueError, match="values per channel but its geometry implies"):
+        ObservableFrameHingeCost(outputs, wrong_values, w_hinge=1.0, horizon=200)
+
 
 def test_reduced_effort_cost_prices_the_expanded_currents() -> None:
     """ReducedEffortCost scores ``||Z v||^2``, not ``||v||^2``, so reduction reprices nothing."""

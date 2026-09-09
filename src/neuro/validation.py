@@ -15,7 +15,6 @@ if TYPE_CHECKING:
     from collections.abc import Mapping
 
     from neuro.config import StftGeometry
-    from neuro.spectral import PsdEnvelope
 
 _FILTERING_ESTIMATORS = frozenset(
     {"neuro.filtering.AntiAliasEstimator", "neuro.filtering.LowPassEstimator", "neuro.filtering.ObservableEstimator"}
@@ -155,27 +154,35 @@ def _check_observable_psd_reference(
     _check_geometry_matches(obs_envelope.geometry, model_geom, "envelope")
 
 
-def _check_waveform_psd_reference(
-    envelope: PsdEnvelope,
+def _check_waveform_observable_reference(
+    envelope: ObservableEnvelope,
     controller_dt: float,
-    meta: Mapping[str, Any] | None,
+    meta: Mapping[str, Any],
+    horizon: int,
 ) -> None:
-    """Validate waveform PSD envelope sample rate and channels against the model."""
-    if not math.isclose(controller_dt, 1.0 / envelope.fs, rel_tol=_REL_TOL):
-        msg = f"controller.dt ({controller_dt}) must match spectral reference dt ({1.0 / envelope.fs:g} s from fs={envelope.fs:g} Hz)."
+    """Validate a waveform Cost's Observable envelope against its Predictor and Control Horizon."""
+    expected_dt = 1.0 / envelope.fs
+    if not math.isclose(controller_dt, expected_dt, rel_tol=_REL_TOL):
+        msg = (
+            f"controller.dt ({controller_dt}) must match Observable reference dt "
+            f"({expected_dt:g} s from fs={envelope.fs:g} Hz)."
+        )
         raise ConfigConsistencyError(msg)
 
-    if meta is not None:
-        n_channels = int(meta["n_channels"])
-        if envelope.power.shape[0] != n_channels:
-            msg = (
-                f"envelope channel count ({envelope.power.shape[0]}) must equal predictor channel count ({n_channels})."
-            )
-            raise ConfigConsistencyError(msg)
-        model_fs = 1.0 / float(meta["dt"])
-        if not math.isclose(envelope.fs, model_fs, rel_tol=_REL_TOL):
-            msg = f"envelope sampling rate ({envelope.fs:g} Hz) must equal predictor sampling rate ({model_fs:g} Hz)."
-            raise ConfigConsistencyError(msg)
+    n_channels = int(meta["n_channels"])
+    if envelope.power.shape[0] != n_channels:
+        msg = f"envelope channel count ({envelope.power.shape[0]}) must equal predictor channel count ({n_channels})."
+        raise ConfigConsistencyError(msg)
+
+    model_fs = 1.0 / float(meta["dt"])
+    if not math.isclose(envelope.fs, model_fs, rel_tol=_REL_TOL):
+        msg = f"envelope sampling rate ({envelope.fs:g} Hz) must equal predictor sampling rate ({model_fs:g} Hz)."
+        raise ConfigConsistencyError(msg)
+
+    support = envelope.geometry.sample_support_steps(envelope.fs)
+    if horizon < support:
+        msg = f"Control Horizon ({horizon}) is shorter than the sample support of one Frame ({support})."
+        raise ConfigConsistencyError(msg)
 
 
 def _reference_path(problem: Mapping[str, Any]) -> Path | None:
@@ -342,17 +349,17 @@ def _check_observable_reference(problem: Mapping[str, Any], meta: Mapping[str, A
 
 
 def _check_waveform_reference(problem: Mapping[str, Any], meta: Mapping[str, Any], controller_dt: float) -> None:
-    """Validate healthy reference and PSD envelopes for waveform predictors."""
+    """Validate healthy reference and Observable envelopes for waveform predictors."""
     w_y = float(problem.get("w_y", 1.0))
     w_y_terminal = problem.get("w_y_terminal")
     w_y_final = float(w_y_terminal) if w_y_terminal is not None else w_y
-    w_psd = float(problem.get("w_psd", 0.0))
+    w_hinge = float(problem.get("w_hinge", 0.0))
     ref_path = _reference_path(problem)
     if (w_y > 0 or w_y_final > 0) and ref_path is None:
         msg = "controller.problem.reference must be provided when w_y > 0"
         raise ConfigConsistencyError(msg)
-    if w_psd > 0 and ref_path is None:
-        msg = "controller.problem.reference must be provided when w_psd > 0"
+    if w_hinge > 0 and ref_path is None:
+        msg = "controller.problem.reference must be provided when w_hinge > 0"
         raise ConfigConsistencyError(msg)
     if ref_path is None:
         return
@@ -369,11 +376,11 @@ def _check_waveform_reference(problem: Mapping[str, Any], meta: Mapping[str, Any
                 f"predictor channel count ({int(meta['n_channels'])})."
             )
             raise ConfigConsistencyError(msg)
-    if w_psd > 0:
-        if ref.psd is None:
-            msg = "reference does not carry a healthy PSD envelope required when w_psd > 0"
+    if w_hinge > 0:
+        if ref.observable is None:
+            msg = "reference does not carry a healthy Observable envelope required when w_hinge > 0"
             raise ConfigConsistencyError(msg)
-        _check_waveform_psd_reference(ref.psd, controller_dt, meta)
+        _check_waveform_observable_reference(ref.observable, controller_dt, meta, int(problem["horizon"]))
 
 
 def _check_predictor(config: Mapping[str, Any]) -> None:

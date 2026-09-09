@@ -32,7 +32,7 @@ from neuro.control.mpc import (
 from neuro.filtering import ObservableEstimator
 from neuro.predictor.inference import ObservableMLPModel, WaveformMLPModel
 from neuro.predictor.module import AutoregressiveMLP
-from neuro.spectral import HealthyReference
+from neuro.spectral import HealthyReference, ObservableEnvelope
 from neuro.transforms import Standardizer
 
 if TYPE_CHECKING:
@@ -663,13 +663,18 @@ def test_default_solver_selection(tmp_path: Path) -> None:
     """_default_solver picks SingleShooting(Ipopt) for every deployed formulation."""
     art_wf = _build_checkpoint(tmp_path / "wf", depth=0, n_y=3, n_u=2, horizon=4, n_channels=2, n_controls=3)
 
-    psd_ref = tmp_path / "psd_ref.npz"
-    np.savez_compressed(psd_ref, Pref=np.full((2, 3), -2.0), fs=100.0, L=4, R=2)
+    geometry = StftGeometry(n_segment=4, n_hop=2)
+    envelope = ObservableEnvelope(power=np.full((2, 2), -2.0), fs=100.0, geometry=geometry)
     problems = (
         build_waveform_problem(art_wf, horizon=4, u_max=0.5, w_y=1.0, kirchhoff=True, reference=_ref(2)),
         build_waveform_problem(art_wf, horizon=4, u_max=0.5, w_y=1.0, reduce_kirchhoff=True, reference=_ref(2)),
         build_waveform_problem(
-            art_wf, horizon=4, u_max=0.5, w_y=0.0, w_psd=1.0, reference=HealthyReference.load(psd_ref)
+            art_wf,
+            horizon=4,
+            u_max=0.5,
+            w_y=0.0,
+            w_hinge=1.0,
+            reference=HealthyReference(observable=envelope),
         ),
     )
     for problem in problems:
@@ -792,8 +797,19 @@ def test_controller_from_config_loud_validation_errors(tmp_path: Path) -> None:
         TrajOptMPCController.from_config(cfg_str)
 
     # 3. Expansion solver on whole-horizon PSD cost raises ValueError
-    psd_ref = tmp_path / "psd_ref.npz"
-    np.savez_compressed(psd_ref, Pref=np.full((2, 3), -2.0), fs=100.0, L=4, R=2)
+    geometry = StftGeometry(n_segment=4, n_hop=2)
+    obs_ref = tmp_path / "observable_ref.npz"
+    np.savez_compressed(
+        obs_ref,
+        Pref_frames=np.full((2, geometry.n_values(100.0)), -2.0),
+        fs=100.0,
+        n_segment=geometry.n_segment,
+        n_hop=geometry.n_hop,
+        band_hz=np.asarray([-1.0, -1.0]),
+        n_bin_pool=geometry.n_bin_pool,
+        kernel=geometry.kernel,
+        kernel_width=geometry.kernel_width,
+    )
     cfg_incompatible = {
         "dt": 0.01,
         "solver": {"class_path": "trajopt.solvers.altro.ALTRO"},
@@ -803,8 +819,8 @@ def test_controller_from_config_loud_validation_errors(tmp_path: Path) -> None:
             "horizon": 4,
             "u_max": 0.5,
             "w_y": 0.0,
-            "w_psd": 1.0,
-            "reference": str(psd_ref),
+            "w_hinge": 1.0,
+            "reference": str(obs_ref),
         },
     }
     with pytest.raises(ValueError, match="cannot score the whole-horizon hinge cost"):

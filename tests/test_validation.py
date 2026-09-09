@@ -207,70 +207,69 @@ def test_horizon_beyond_trained_horizon_warns(config: dict[str, Any]) -> None:
         validate_simulation_config(config)
 
 
-def _psd_npz(tmp_path: Path, *, fs: float = 50.0, L: int = 50, R: int = 25) -> Path:
-    """Save a synthetic healthy PSD reference npz."""
-    npz_path = tmp_path / "healthy_psd.npz"
+def _observable_npz(
+    tmp_path: Path,
+    *,
+    fs: float = 50.0,
+    geometry: StftGeometry | None = None,
+) -> Path:
+    """Save a synthetic healthy Observable reference npz."""
+    geom = geometry or StftGeometry(n_segment=50, n_hop=25)
+    npz_path = tmp_path / "healthy_observable.npz"
     np.savez(
         npz_path,
-        Pref=np.ones((2, L // 2 + 1)),
-        freqs=np.linspace(0, fs / 2, L // 2 + 1),
+        eeg_mean=np.zeros(_N_CHANNELS),
+        Pref_frames=np.ones((2, geom.n_values(fs))),
         fs=fs,
-        L=L,
-        R=R,
+        n_segment=geom.n_segment,
+        n_hop=geom.n_hop,
+        band_hz=np.asarray(geom.band_hz if geom.band_hz is not None else [-1.0, -1.0]),
+        n_bin_pool=geom.n_bin_pool,
+        kernel=geom.kernel,
+        kernel_width=geom.kernel_width,
         quantile=0.9,
-        n_windows=100,
+        n_frames=100,
         plant_fingerprint="dummy",
     )
     return npz_path
 
 
-def test_consistent_psd_reference_passes(config: dict[str, Any], tmp_path: Path) -> None:
-    """A PSD reference agreeing on rate passes cleanly."""
-    ref_path = tmp_path / "healthy_ref_psd.npz"
-    np.savez(
-        ref_path,
-        eeg_mean=np.zeros(_N_CHANNELS),
-        Pref=np.ones((2, 26)),
-        freqs=np.linspace(0, 25.0, 26),
-        fs=50.0,
-        L=50,
-        R=25,
-        quantile=0.9,
-        n_windows=100,
-        plant_fingerprint="dummy",
-    )
+def test_consistent_waveform_observable_reference_passes(config: dict[str, Any], tmp_path: Path) -> None:
+    """A waveform spectral Cost accepts a geometry-bearing envelope at the sample rate."""
+    ref_path = _observable_npz(tmp_path)
     config["controller"]["problem"]["reference"] = str(ref_path)
-    config["controller"]["problem"]["w_psd"] = 1.0
+    config["controller"]["problem"]["w_hinge"] = 1.0
     with warnings.catch_warnings():
         warnings.simplefilter("error")
         validate_simulation_config(config)
 
 
-def test_missing_psd_reference_raises(config: dict[str, Any], tmp_path: Path) -> None:
-    """A missing PSD reference npz raises ConfigConsistencyError."""
+def test_missing_healthy_reference_raises(config: dict[str, Any], tmp_path: Path) -> None:
+    """A missing healthy reference npz raises ConfigConsistencyError."""
     config["controller"]["problem"]["reference"] = str(tmp_path / "absent.npz")
     with pytest.raises(ConfigConsistencyError, match="healthy reference file not found"):
         validate_simulation_config(config)
 
 
-def test_psd_reference_rate_mismatch_raises(config: dict[str, Any], tmp_path: Path) -> None:
-    """A sampling rate mismatch between controller and PSD reference raises ConfigConsistencyError."""
-    ref_path = tmp_path / "healthy_ref_bad_rate.npz"
-    np.savez(
-        ref_path,
-        eeg_mean=np.zeros(_N_CHANNELS),
-        Pref=np.ones((2, 26)),
-        freqs=np.linspace(0, 50.0, 26),
-        fs=100.0,
-        L=50,
-        R=25,
-        quantile=0.9,
-        n_windows=100,
-        plant_fingerprint="dummy",
-    )
+def test_waveform_observable_reference_rate_mismatch_raises(config: dict[str, Any], tmp_path: Path) -> None:
+    """A waveform Cost rejects an envelope measured at another sample rate."""
+    ref_path = _observable_npz(tmp_path, fs=100.0)
     config["controller"]["problem"]["reference"] = str(ref_path)
-    config["controller"]["problem"]["w_psd"] = 1.0
-    with pytest.raises(ConfigConsistencyError, match="must match spectral reference dt"):
+    config["controller"]["problem"]["w_hinge"] = 1.0
+    with pytest.raises(ConfigConsistencyError, match="must match Observable reference dt"):
+        validate_simulation_config(config)
+
+
+def test_waveform_observable_reference_must_fit_control_horizon(config: dict[str, Any], tmp_path: Path) -> None:
+    """A waveform Cost rejects a Control Horizon shorter than one geometry Frame."""
+    geom = StftGeometry(n_segment=40, n_hop=10, kernel_width=2)
+    config["controller"]["problem"].update(
+        reference=str(_observable_npz(tmp_path, geometry=geom)),
+        horizon=49,
+        w_hinge=1.0,
+    )
+
+    with pytest.raises(ConfigConsistencyError, match=r"sample support of one Frame \(50\)"):
         validate_simulation_config(config)
 
 

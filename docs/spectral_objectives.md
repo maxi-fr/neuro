@@ -2,7 +2,7 @@
 
 The loop has two spectral objectives, and they are not the same object. One trains the predictor
 offline against a recorded trajectory; the other is minimised online against a fixed healthy
-envelope. They share a geometry vocabulary and a log floor, and differ in almost everything else.
+envelope. They share the complete STFT reduction and differ in their reference and direction.
 This note takes both apart dimension by dimension. It expands §6.2 of
 [`nn_predictor_training.md`](nn_predictor_training.md); for *why* the training term is time-resolved
 at all and what remains unmeasured, see [`spectrogram_loss_guide.md`](spectrogram_loss_guide.md).
@@ -11,10 +11,10 @@ Source of truth:
 
 - Training loss: [`StftLoss`, `spectrogram`, `pool_bins`, `frame_kernel`, `smooth_frames`](../src/neuro/predictor/losses.py)
 - Loss config and its validation: [`StftSpec`](../src/neuro/config.py)
-- MPC stage cost: [`_spectral_hinge_cost`](../src/neuro/control/nlp.py)
+- MPC waveform adapter and Frame cost: [`ObservableFrameHingeCost`](../src/neuro/control/costs.py)
 - Envelope type and analysis-side periodograms: [`src/neuro/spectral.py`](../src/neuro/spectral.py)
 - Envelope construction: [`scripts/build_healthy_psd.py`](../scripts/build_healthy_psd.py)
-- Geometry consistency checks: [`_check_psd_reference`](../src/neuro/validation.py)
+- Geometry consistency checks: [`_check_waveform_observable_reference`](../src/neuro/validation.py)
 
 ---
 
@@ -181,7 +181,8 @@ that gap is understood.
 ### 3.1 What it is
 
 A one-sided hinge on how far the *predicted* spectrum rises above a fixed healthy envelope, added to
-the stage cost when `w_psd > 0`:
+the stage cost when `w_hinge > 0`. Waveform Predictors first reduce their predicted samples through
+the envelope's complete `StftGeometry`, the same Frame definition used by Observable Predictors:
 
 $$J_\text{PSD} = \frac{1}{M\,C\,(n_\text{bins} - 1)} \sum_{m,c,f>0} \Big[\max\big(0,\; \log(P_{m,c,f} + \varepsilon) - \log P^\text{ref}_{c,f}\big)\Big]^2 .$$
 
@@ -192,64 +193,44 @@ objective is satisfied.
 
 ### 3.2 Every dimension, in order
 
-Everything here is symbolic CasADi built once at solver-construction time, not a tensor.
+For a waveform Predictor, JAX performs the reduction over its predicted sample trajectory.
 
 | step | operation | shape |
 | :--- | :--- | :--- |
-| 0 | predicted outputs over the horizon, `horzcat` of the rollout nodes | `(C, horizon)` |
-| 1 | slice segment $m$: `[:, m*R : m*R + L]` | `(C, L)` |
-| 2 | multiply by a periodic Hann taper — no detrend | `(C, L)` |
-| 3 | two dense DFT matmuls (cos, sin), squared and summed, density-scaled and folded | `(C, n_bins)` |
-| 4 | drop DC: `power[:, 1:]` scored against `log P_ref[:, 1:]` | `(C, n_bins - 1)` |
-| 5 | `fmax(0, log(P + LOG_FLOOR) − log P_ref)`, squared | `(C, n_bins - 1)` |
-| 6 | summed into the running total; repeat for each of the $M$ segments | scalar |
-| 7 | divide by $M \cdot C \cdot (n_\text{bins} - 1)$ | scalar |
+| 0 | predicted outputs over the Control Horizon | `(horizon, C)` |
+| 1 | cut Segments on the geometry's hop grid | `(M, W, C)` |
+| 2 | periodic Hann, `rfft`, one-sided density scaling | `(M, C, W//2 + 1)` |
+| 3 | drop DC, apply `band_hz`, pool bins | `(M, C, F')` |
+| 4 | apply the Frame Kernel to power | `(M_out, C, F')` |
+| 5 | add `LOG_FLOOR` and take the log | `(M_out, C, F')` |
+| 6 | positive excess over `Pref_frames`, squared and averaged | scalar |
 
-with $L$ and $R$ the envelope's own segment length and hop, and
-$M = \lfloor (\text{horizon} - L)/R \rfloor + 1$. The build raises if `horizon < L`, if the envelope's
-channel count differs from the model's, or (in `PsdEnvelope.load`) if the stored bin count does not
-match $L/2 + 1$ — the envelope must carry every bin, so that dropping DC stays a decision the cost
-makes explicitly at its use site rather than one an under-sized npz makes silently.
-
-CasADi has no FFT, so step 3 is an explicit $(C, L) \times (L, n_\text{bins})$ product, twice, per
-segment. Solver graph size therefore scales with $M \times n_\text{bins}$, which is the practical
-limit on controller-side geometry.
+The build raises if the Control Horizon cannot hold one Frame's full sample support, if the envelope
+channel count differs from the model, or if its stored value count disagrees with its geometry.
 
 ### 3.3 Parameters
 
 | field | type | default | meaning |
 | :--- | :--- | :--- | :--- |
-| `w_psd` | `float ≥ 0` | `0.0` | weight on the hinge; `0` disables it entirely |
-| `psd_ref` | path or `None` | `None` | the envelope npz; required when `w_psd > 0` |
-| `psd_window_s` | `float` or `None` | `None` | declared segment length, in seconds |
-| `psd_hop_s` | `float` or `None` | `None` | declared segment spacing, in seconds |
+| `w_hinge` | `float ≥ 0` | `0.0` | weight on the hinge; `0` disables it entirely |
+| `reference` | path or `None` | `None` | the geometry-bearing envelope npz; required when `w_hinge > 0` |
 
-The two `*_s` fields do **not** configure the cost. The envelope npz is the single source of truth
-for $L$ and $R$; the YAML fields exist so the config states the geometry it expects, and
-[`_check_psd_reference`](../src/neuro/validation.py) raises when the two disagree — as it does when
-`controller.dt` does not match the envelope's $1/f_s$.
+The envelope npz is the single source of truth for Segment length, hop, band, bin pooling and Frame
+Kernel. [`_check_waveform_observable_reference`](../src/neuro/validation.py) checks its sample rate,
+channel count and sample support against the waveform Predictor and Control Horizon.
 
 ### 3.4 The reference envelope
 
-[`build_healthy_psd.py`](../scripts/build_healthy_psd.py) runs healthy simulations, computes every
-hopped periodogram over every trajectory with
-[`compute_periodograms`](../src/neuro/spectral.py) (no detrend, periodic Hann, one-sided,
-density-scaled — the training loss's convention), pools them across segments *and* trajectories, and takes a per-$(c, f)$ quantile —
-0.90 by default. The stored npz carries `Pref`, `freqs`, `fs`, `L`, `R`, the quantile, the pooled
-window count and a plant fingerprint. Defaults are `window_s = 1.0`, `hop_s = 0.5`, i.e. $L = 50$,
-$R = 25$ at 50 Hz. The decimation is read from the simulation config rather than passed in, so the
-envelope is always measured at the rate the loop runs the cost at. Every bin including DC is
-stored: the cost declines to score DC, but the envelope stays a complete description of healthy
-power for analysis code that wants it.
-
-Because the reference is a fixed quantile of measured healthy power, it is deterministic — and the
-predicted rollout is deterministic given $u$. There is no $\chi^2$ noise on either side of the hinge,
-so none of §2.4's variance-reduction machinery belongs here.
+[`build_healthy_psd.py`](../scripts/build_healthy_psd.py) runs healthy simulations, applies
+`compute_log_power_frames` with the selected `StftGeometry`, and takes a per-Frame-value quantile.
+The stored npz carries `Pref_frames`, `fs`, every geometry field, the quantile, the Frame count and a
+plant fingerprint. Waveform and Observable Predictors use this same array as their controller
+threshold.
 
 ### 3.5 Normalisation
 
 The hinge is a **mean** over $(m, c, f)$, never a sum over segments, so a hot segment cannot be
-cancelled by a cold one and `w_psd` stays independent of the segment count. The stagewise part of the
+cancelled by a cold one and `w_hinge` stays independent of the Frame count. The stagewise part of the
 cost is likewise divided by the horizon. Both are means, so weights stay comparable when the horizon
 or the envelope geometry changes.
 
@@ -266,11 +247,11 @@ or the envelope geometry changes.
 | log floor | `LOG_FLOOR` on both sides | `LOG_FLOOR` on the prediction; the envelope is strictly positive |
 | per-segment detrend | **no** | **no** |
 | DC bin | dropped | dropped (the envelope still stores it) |
-| band | optional `band_hz` | all bins to Nyquist |
-| pre-log pooling | bins and frames, configurable | none |
+| band | optional `band_hz` | the envelope's `band_hz` |
+| pre-log pooling | bins and Frames, configurable | the envelope's bin pool and Frame Kernel |
 | reduction | mean over $(b, c, m, f)$ after the square | mean over $(m, c, f)$ after the square |
-| geometry source | `StftSpec`, in samples | the envelope npz, in samples, declared in seconds |
-| transform | `torch.fft.rfft` | dense DFT matmul (CasADi has no FFT) |
+| geometry source | `StftSpec`, in samples | the envelope's `StftGeometry` |
+| transform | `torch.fft.rfft` | `jax.numpy.fft.rfft` for waveform Predictors |
 | differentiable w.r.t. | model parameters | the control sequence $u$ |
 | evaluated | once per training batch | once per solver iteration, per control step |
 
@@ -289,17 +270,16 @@ pooling and `band_hz`.
    and then score the resulting ~0 DC bin, while the training loss did neither and dropped DC. The
    training-side convention won: a per-segment detrend is a high-pass whose corner moves with the
    segment length, which would contaminate any segment-length sweep. `compute_periodograms` now
-   passes `detrend=False`, `_spectral_hinge_cost` tapers the raw segment and slices bin 0 off both
-   the power and the log reference, and `data/healthy_psd.npz` was rebuilt at the same geometry
+   passes `detrend=False`, `compute_log_power_frames` drops DC through `StftGeometry.bin_range`, and
+   `data/healthy_psd.npz` was rebuilt at the same geometry
    ($L = 50$, $R = 25$, $q = 0.90$, 1190 pooled windows). Only envelope bins 0 and 1 moved — a Hann
    taper spreads a removed constant over those two bins and no further — so the 3–12 Hz band is
-   numerically identical and no tuned `w_psd` is invalidated. The envelope still stores all
-   $L/2 + 1$ bins and `PsdEnvelope.load` still rejects one that does not.
+   numerically identical.
 2. **Training geometry and controller geometry need not match, and currently do not have to.** Whether
    they *should* is open question 5 of the guide. The envelope's own geometry ($L = 50$, $R = 25$) is
    equally open and can be re-derived.
 3. **The weights are not comparable across objectives.** Both are means, so each is insensitive to
-   its own geometry — but `w_psd: 1000` against `w_u: 10` still does not mean what it looks like,
+   its own geometry — but `w_hinge: 1000` against `w_u: 10` still does not mean what it looks like,
    because the quantities they scale have different natural magnitudes.
 4. **The predictor loss is symmetric; the controller's hinge is not.** A training loss that treats
    over- and under-prediction alike does not prioritise the bins that actually drive control. That is
