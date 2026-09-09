@@ -51,6 +51,6 @@ controller:
     w_y: 0.0             # pure hinge: build_observable_problem carries no tracking term to match
     w_u: 10.0
     w_u_l1: 0.1
-    w_psd: 10.0
+    w_hinge: 10.0
     reference: data/healthy_psd.npz
     kirchhoff: true

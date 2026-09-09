@@ -1,7 +1,7 @@
 # Closed-loop seizure suppression with the spectral (healthy-envelope) MPC cost.
 # Matched pair with mse02_psd_mpc.yaml -- the ONLY difference is the cost block:
 #   - w_y: 0.0 (stagewise power cost replaced by spectral envelope cost);
-#   - w_psd: 1000.0 with data/healthy_psd.npz;
+#   - w_hinge: 1000.0 with data/healthy_psd.npz;
 #   - horizon: 75 (1.5 s horizon, M=2 windows of L=50, R=25 at 50 Hz).
 t_end: 20.0
 
@@ -51,6 +51,6 @@ controller:
     u_max: 2.0
     w_y: 0.0
     w_u: 10.0
-    w_psd: 1000.0
+    w_hinge: 1000.0
     reference: data/healthy_psd.npz
     kirchhoff: true
