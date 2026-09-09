@@ -52,6 +52,21 @@ class InferencePredictor(ABC):
     m: int
     n: int
     ne: int
+    p: int
+
+    @abstractmethod
+    def output(
+        self,
+        x: jax.Array,
+        u: jax.Array | None = None,
+        t: float | jax.Array = 0.0,
+    ) -> jax.Array:
+        """Evaluate physical output y = g(x, u, t) of shape ``(p,)``."""
+        ...
+
+    def has_control_feedthrough(self) -> bool:
+        """Report whether the physical output depends on Control Current feedthrough ``u``."""
+        return False
 
     @property
     def priming_steps(self) -> int:
@@ -218,6 +233,7 @@ class ShiftRegisterMLPModel(DiscreteDynamics, InferencePredictor):
             n=int(n_y) * n_out + int(n_u) * int(n_controls),
             m=int(n_controls),
             ne=int(n_y) * n_out + int(n_u) * int(n_controls),
+            p=n_out,
         )
         self.n_y = int(n_y)
         self.n_u = int(n_u)
@@ -238,6 +254,17 @@ class ShiftRegisterMLPModel(DiscreteDynamics, InferencePredictor):
         self.u_scale = jnp.asarray(u_scale)
         self.weights = tuple(jnp.asarray(weight) for weight in weights)
         self.biases = tuple(jnp.asarray(bias) for bias in biases)
+
+    def output(
+        self,
+        x: jax.Array,
+        u: jax.Array | None = None,
+        t: float | jax.Array = 0.0,
+    ) -> jax.Array:
+        """Evaluate physical output y = g(x, u, t) of shape ``(n_outputs,)``."""
+        del u, t
+        newest = x[..., (self.n_y - 1) * self.n_outputs : self.n_y * self.n_outputs]
+        return newest * self.y_scale + self.y_center
 
     def _predict(self, y_window: jax.Array, u_window: jax.Array) -> jax.Array:
         """One MLP forward pass on standardized windows -> the next standardized output ``(n_outputs,)``.
@@ -385,7 +412,11 @@ class ShiftRegisterMLPModel(DiscreteDynamics, InferencePredictor):
 
 
 class WaveformMLPModel(ShiftRegisterMLPModel):
-    """The core on the sample grid: one position is one raw EEG sample, and there is no geometry to carry."""
+    """The core on the sample grid: one position is one Raw EEG sample, and there is no geometry to carry."""
+
+    def __init__(self, **core: Any) -> None:  # noqa: ANN401 -- forwarded verbatim to the core's own typed signature
+        """Copy the checkpoint's float64 buffers into jax arrays."""
+        super().__init__(**core)
 
 
 class ObservableMLPModel(ShiftRegisterMLPModel):

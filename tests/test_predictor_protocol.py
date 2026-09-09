@@ -68,8 +68,8 @@ def test_waveform_jax_model_is_an_inference_predictor() -> None:
     assert model.n_outputs == _N_EEG
     assert model.n_channels == _N_EEG
     assert model.n_controls == _N_CONTROLS
-    assert not hasattr(InferencePredictor, "output")
-    assert not hasattr(model, "output")
+    assert hasattr(InferencePredictor, "output")
+    assert hasattr(model, "output")
 
 
 @pytest.mark.parametrize("depth", [0, 1, 2])

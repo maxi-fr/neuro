@@ -8,8 +8,8 @@ import jax.numpy as jnp
 import numpy as np
 from trajopt.constraints.bounds import ControlBound
 from trajopt.constraints.constraint_list import ConstraintList
-from trajopt.costs.base import CostFunction
 from trajopt.costs.objective import Objective
+from trajopt.costs.output import OutputCost
 from trajopt.costs.quadratic import DiagonalCost
 from trajopt.dynamics.base import DiscreteDynamics
 from trajopt.problem import Problem
@@ -20,7 +20,6 @@ from neuro.control.costs import (
     L1ControlCost,
     ObservableFrameHingeCost,
     SpectralHingeCost,
-    StateOutputs,
 )
 from neuro.control.mpc import _combine_costs, kirchhoff_constraint
 from neuro.jansen_rit import JansenRitDynamics, JansenRitParams
@@ -32,6 +31,7 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from numpy.typing import ArrayLike
+    from trajopt.costs.base import CostFunction
 
     from neuro.spectral import HealthyReference, ObservableEnvelope, PsdEnvelope
     from neuro.types import FloatArray, IntArray
@@ -136,7 +136,7 @@ class JansenRitModel(DiscreteDynamics, InferencePredictor):
         n_states = 6 * n_nodes + max_history_len * n_nodes + 1
         n_controls = int(gamma.shape[0])
 
-        super().__init__(n=n_states, m=n_controls, ne=n_states)
+        super().__init__(n=n_states, m=n_controls, ne=n_states, p=int(eeg_gain.shape[0]))
 
         self.A = A
         self.B = B
@@ -167,6 +167,18 @@ class JansenRitModel(DiscreteDynamics, InferencePredictor):
         self.n_y = 1
         self.n_u = 1
         self.substeps = int(substeps)
+
+    def output(
+        self,
+        x: jax.Array,
+        u: jax.Array | None = None,
+        t: float | jax.Array = 0.0,
+    ) -> jax.Array:
+        """Evaluate sensor-space Raw EEG output y = g(x, u, t) of shape ``(n_channels,)``."""
+        del u, t
+        x_ode = x[..., : 6 * self.n_nodes].reshape(*x.shape[:-1], 6, self.n_nodes)
+        lfp = x_ode[..., 1, :] - x_ode[..., 2, :]
+        return lfp @ self.eeg_gain.T
 
     @property
     def knot_dt(self) -> float:
@@ -564,95 +576,6 @@ def _resolve_model(  # noqa: PLR0913, PLR0917 -- model resolution parameters
     )
 
 
-class JansenRitTrackingCost(CostFunction):
-    """Quadratic output tracking Cost on Raw EEG / Local Field Potential ``y = eeg_gain @ (x2 - x3)``."""
-
-    n_nodes: int = eqx.field(static=True)
-    eeg_gain: jax.Array
-    target: jax.Array
-    w_y: jax.Array
-    horizon: int = eqx.field(static=True)
-
-    def __init__(  # noqa: PLR0913 -- tracking cost dimensions, target and weights
-        self,
-        *,
-        n: int,
-        m: int,
-        n_nodes: int,
-        eeg_gain: jax.Array,
-        w_y: float,
-        horizon: int,
-        target: FloatArray | jax.Array | None = None,
-        terminal: bool = False,
-    ) -> None:
-        """Initialize the Jansen-Rit quadratic tracking Cost.
-
-        Parameters
-        ----------
-        target : FloatArray | jax.Array | None
-            Healthy operating point target vector of shape ``(n_outputs,)``.
-        """
-        super().__init__(n=n, m=m, terminal=terminal)
-        self.n_nodes = int(n_nodes)
-        self.eeg_gain = jnp.asarray(eeg_gain, dtype=jnp.float64)
-        n_outputs = self.eeg_gain.shape[0]
-        if target is None:
-            self.target = jnp.zeros(n_outputs, dtype=jnp.float64)
-        else:
-            t_arr = jnp.asarray(target, dtype=jnp.float64)
-            if t_arr.shape[-1] != n_outputs:
-                msg = f"target shape {t_arr.shape} does not match model output dimension ({n_outputs})"
-                raise ValueError(msg)
-            self.target = t_arr
-        self.w_y = jnp.asarray(w_y, dtype=jnp.float64)
-        self.horizon = int(horizon)
-
-    def evaluate(
-        self,
-        x: jax.Array,
-        u: jax.Array | None = None,
-        t: float | jax.Array = 0.0,
-    ) -> jax.Array:
-        """Evaluate the per-knot quadratic tracking Cost ``(w_y / horizon) * ||eeg_gain @ (x2 - x3) - target||^2``."""
-        del u, t
-        x_ode = x[..., : 6 * self.n_nodes].reshape(*x.shape[:-1], 6, self.n_nodes)
-        lfp = x_ode[..., 1, :] - x_ode[..., 2, :]
-        y = lfp @ self.eeg_gain.T
-        return (self.w_y / self.horizon) * jnp.sum((y - self.target) ** 2)
-
-
-class JansenRitStateOutputs(StateOutputs):
-    """Where a Jansen-Rit knot state hides its outputs, and the projection that decodes them."""
-
-    n_nodes: int = eqx.field(static=True)
-    eeg_gain: jax.Array
-
-    def __init__(
-        self,
-        *,
-        n: int,
-        m: int,
-        n_nodes: int,
-        n_outputs: int,
-        eeg_gain: jax.Array,
-    ) -> None:
-        """Initialize the Jansen-Rit StateOutputs adapter."""
-        self.n = n
-        self.m = m
-        self.n_y = 1
-        self.n_outputs = n_outputs
-        self.center = jnp.zeros(n_outputs, dtype=jnp.float64)
-        self.scale = jnp.ones(n_outputs, dtype=jnp.float64)
-        self.n_nodes = n_nodes
-        self.eeg_gain = eeg_gain
-
-    def decode(self, X: jax.Array) -> jax.Array:
-        """Decode the Raw EEG outputs ``(..., n_outputs)`` from Jansen-Rit state trajectories ``X``."""
-        x_ode = X[..., : 6 * self.n_nodes].reshape(*X.shape[:-1], 6, self.n_nodes)
-        lfp = x_ode[..., 1, :] - x_ode[..., 2, :]
-        return lfp @ self.eeg_gain.T
-
-
 def _validate_jansen_rit_envelope(envelope: PsdEnvelope | ObservableEnvelope, model: JansenRitModel) -> None:
     """Ensure the healthy envelope matches the Jansen-Rit Predictor's channels and knot rate.
 
@@ -759,7 +682,6 @@ def build_jansen_rit_problem(  # noqa: PLR0913 -- problem construction arguments
     resolved_model = _resolve_model(model, artifact, params, connectome, stimulation, leadfield, dt, substeps)
     n, m = resolved_model.n, resolved_model.m
     N = horizon + 1
-    n_nodes = resolved_model.n_nodes
 
     tracking_active = w_y > 0 or (w_y_terminal is not None and w_y_terminal > 0)
     ref = _check_healthy_reference(
@@ -777,54 +699,32 @@ def build_jansen_rit_problem(  # noqa: PLR0913 -- problem construction arguments
         ref, resolved_model, is_identity_leadfield=is_identity, w_y=w_y, w_y_terminal=w_y_terminal
     )
 
-    tracking_stage = JansenRitTrackingCost(
-        n=n,
-        m=m,
-        n_nodes=n_nodes,
-        eeg_gain=resolved_model.eeg_gain,
-        w_y=w_y,
-        horizon=horizon,
-        target=target,
-    )
-    control_stage = DiagonalCost.tracking(
-        jnp.zeros(n),
-        jnp.full(m, 2.0 * w_u / horizon),
-        jnp.zeros(n),
-        jnp.zeros(m),
-    )
-    costs: list[CostFunction] = [ExcludeInitialKnotState(tracking_stage), control_stage]
+    target_arr = jnp.zeros(resolved_model.p) if target is None else jnp.asarray(target, dtype=jnp.float64)
+    Q = jnp.full(resolved_model.p, 2.0 * w_y / horizon)
+    R = jnp.full(m, 2.0 * w_u / horizon)
+    stage_tracking = DiagonalCost.tracking(Q, R, target_arr, jnp.zeros(m))
+    output_stage = OutputCost(resolved_model, stage_tracking)
+    costs: list[CostFunction] = [ExcludeInitialKnotState(output_stage)]
     if w_u_l1 > 0:
         costs.append(L1ControlCost(n=n, m=m, w_l1=w_u_l1, horizon=horizon))
 
     psd_envelope, obs_envelope = _resolve_jansen_rit_envelopes(ref, w_psd=w_psd, w_hinge=w_hinge)
 
-    if psd_envelope is not None or obs_envelope is not None:
-        outputs = JansenRitStateOutputs(
-            n=n,
-            m=m,
-            n_nodes=n_nodes,
-            n_outputs=resolved_model.n_channels,
-            eeg_gain=resolved_model.eeg_gain,
-        )
-        if psd_envelope is not None:
-            _validate_jansen_rit_envelope(psd_envelope, resolved_model)
-            costs.append(SpectralHingeCost(outputs, psd_envelope, w_psd=w_psd, horizon=horizon))
-        if obs_envelope is not None:
-            _validate_jansen_rit_envelope(obs_envelope, resolved_model)
-            costs.append(ObservableFrameHingeCost(outputs, obs_envelope, w_hinge=w_hinge, horizon=horizon))
+    if psd_envelope is not None:
+        _validate_jansen_rit_envelope(psd_envelope, resolved_model)
+        costs.append(SpectralHingeCost(resolved_model, psd_envelope, w_psd=w_psd, horizon=horizon))
+    if obs_envelope is not None:
+        _validate_jansen_rit_envelope(obs_envelope, resolved_model)
+        costs.append(ObservableFrameHingeCost(resolved_model, obs_envelope, w_hinge=w_hinge, horizon=horizon))
 
     stage_cost: CostFunction = _combine_costs(costs)
     w_y_final = w_y_terminal if w_y_terminal is not None else w_y
-    terminal = JansenRitTrackingCost(
-        n=n,
-        m=m,
-        n_nodes=n_nodes,
-        eeg_gain=resolved_model.eeg_gain,
-        w_y=w_y_final,
-        horizon=horizon,
-        target=target,
-        terminal=True,
-    )
+    if w_y_terminal is not None and w_y_terminal != w_y:
+        Q_f = jnp.full(resolved_model.p, 2.0 * w_y_final / horizon)
+        terminal_tracking = DiagonalCost.terminal_tracking(Q_f, target_arr, m=m)
+        terminal = OutputCost(resolved_model, terminal_tracking)
+    else:
+        terminal = output_stage.as_terminal()
     objective = Objective(stage_cost=stage_cost, terminal_cost=terminal, N=N)
 
     u_max_arr = np.broadcast_to(np.atleast_1d(np.asarray(u_max, dtype=np.float64)), (m,))

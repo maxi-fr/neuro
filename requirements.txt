@@ -1523,7 +1523,7 @@ traitlets==5.16.1 \
     #   jupyter-client
     #   jupyter-core
     #   matplotlib-inline
-trajopt @ git+https://github.com/maxi-fr/trajopt.git@08fd88db022b22912d4fccb12af9927b76d052f6
+trajopt @ git+https://github.com/maxi-fr/trajopt.git@b58edb9a58b7b71da2c8fc3e4c5230072c5c3b27
     # via neuro
 tvb-data==3.0.0 \
     --hash=sha256:681e9fb1fd807b57f9b55c7fd147ac7563ded90c978d42eeae1bb150adab0b12 \

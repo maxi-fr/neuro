@@ -7,6 +7,8 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
+from trajopt.costs.output import OutputCost
+from trajopt.costs.quadratic import DiagonalCost
 from trajopt.mpc import MPC
 from trajopt.transcription.ipopt import Ipopt
 from trajopt.transcription.single_shooting import SingleShooting
@@ -26,7 +28,6 @@ from neuro.jansen_rit import (
 )
 from neuro.predictor.jansen_rit import (
     JansenRitModel,
-    JansenRitTrackingCost,
     build_jansen_rit_problem,
     eeg_jax,
     enable_x64,
@@ -298,7 +299,7 @@ def test_jansen_rit_mpc_problem_from_config_dict() -> None:
 
 
 def test_jansen_rit_tracking_cost_eval() -> None:
-    """Evaluate JansenRitTrackingCost matches manual quadratic tracking formulation."""
+    """Evaluate OutputCost with JansenRitModel matches manual quadratic tracking formulation."""
     n_nodes = 3
     leadfield = np.array([[1.0, -0.5, 0.2], [0.0, 1.0, -0.5]])
     params, conn = _toy_plant(n_nodes, sigma=0.0)
@@ -306,14 +307,9 @@ def test_jansen_rit_tracking_cost_eval() -> None:
 
     w_y = 2.0
     horizon = 5
-    cost = JansenRitTrackingCost(
-        n=model.n,
-        m=model.m,
-        n_nodes=n_nodes,
-        eeg_gain=model.eeg_gain,
-        w_y=w_y,
-        horizon=horizon,
-    )
+    Q = jnp.full(model.p, 2.0 * w_y / horizon)
+    stage = DiagonalCost.tracking(Q, jnp.zeros(model.m), jnp.zeros(model.p), jnp.zeros(model.m))
+    cost = OutputCost(model, stage)
 
     rng = np.random.default_rng(_SEED + 10)
     x_ode = rng.standard_normal((6, n_nodes))
@@ -328,7 +324,7 @@ def test_jansen_rit_tracking_cost_eval() -> None:
 
 
 def test_jansen_rit_tracking_cost_eval_with_target() -> None:
-    """Evaluate JansenRitTrackingCost matches manual quadratic residual from target."""
+    """Evaluate OutputCost with JansenRitModel matches manual quadratic residual from target."""
     n_nodes = 3
     leadfield = np.array([[1.0, -0.5, 0.2], [0.0, 1.0, -0.5]])
     params, conn = _toy_plant(n_nodes, sigma=0.0)
@@ -337,15 +333,9 @@ def test_jansen_rit_tracking_cost_eval_with_target() -> None:
     w_y = 2.0
     horizon = 5
     target = np.array([1.5, -0.5])
-    cost = JansenRitTrackingCost(
-        n=model.n,
-        m=model.m,
-        n_nodes=n_nodes,
-        eeg_gain=model.eeg_gain,
-        w_y=w_y,
-        horizon=horizon,
-        target=target,
-    )
+    Q = jnp.full(model.p, 2.0 * w_y / horizon)
+    stage = DiagonalCost.tracking(Q, jnp.zeros(model.m), jnp.asarray(target), jnp.zeros(model.m))
+    cost = OutputCost(model, stage)
 
     rng = np.random.default_rng(_SEED + 10)
     x_ode = rng.standard_normal((6, n_nodes))
@@ -448,20 +438,29 @@ def test_jansen_rit_model_space_reference_resolution() -> None:
     model_id = JansenRitModel.from_plant_components(params, conn=conn, dt=_DT)
     ref = HealthyReference(lfp_mean=lfp_mean, eeg_mean=eeg_mean)
     prob_id = build_jansen_rit_problem(model_id, horizon=4, u_max=1.0, w_y=1.0, reference=ref)
-    assert isinstance(prob_id.obj.terminal_cost, JansenRitTrackingCost)
-    np.testing.assert_allclose(np.asarray(prob_id.obj.terminal_cost.target), lfp_mean)
+    assert isinstance(prob_id.obj.terminal_cost, OutputCost)
+    assert isinstance(prob_id.obj.terminal_cost.cost, DiagonalCost)
+    np.testing.assert_allclose(
+        np.asarray(-prob_id.obj.terminal_cost.cost.q / prob_id.obj.terminal_cost.cost.Q), lfp_mean
+    )
 
     # 2. Projection leadfield -> uses eeg_mean
     model_proj = JansenRitModel.from_plant_components(params, conn=conn, leadfield=leadfield, dt=_DT)
     prob_proj = build_jansen_rit_problem(model_proj, horizon=4, u_max=1.0, w_y=1.0, reference=ref)
-    assert isinstance(prob_proj.obj.terminal_cost, JansenRitTrackingCost)
-    np.testing.assert_allclose(np.asarray(prob_proj.obj.terminal_cost.target), eeg_mean)
+    assert isinstance(prob_proj.obj.terminal_cost, OutputCost)
+    assert isinstance(prob_proj.obj.terminal_cost.cost, DiagonalCost)
+    np.testing.assert_allclose(
+        np.asarray(-prob_proj.obj.terminal_cost.cost.q / prob_proj.obj.terminal_cost.cost.Q), eeg_mean
+    )
 
     # 3. Projection leadfield without eeg_mean -> projects lfp_mean through leadfield
     ref_lfp_only = HealthyReference(lfp_mean=lfp_mean)
     prob_proj2 = build_jansen_rit_problem(model_proj, horizon=4, u_max=1.0, w_y=1.0, reference=ref_lfp_only)
-    assert isinstance(prob_proj2.obj.terminal_cost, JansenRitTrackingCost)
-    np.testing.assert_allclose(np.asarray(prob_proj2.obj.terminal_cost.target), leadfield @ lfp_mean)
+    assert isinstance(prob_proj2.obj.terminal_cost, OutputCost)
+    assert isinstance(prob_proj2.obj.terminal_cost.cost, DiagonalCost)
+    np.testing.assert_allclose(
+        np.asarray(-prob_proj2.obj.terminal_cost.cost.q / prob_proj2.obj.terminal_cost.cost.Q), leadfield @ lfp_mean
+    )
 
 
 def test_absorb_step_index_and_delay_history_advancement() -> None:

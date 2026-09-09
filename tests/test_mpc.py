@@ -10,6 +10,7 @@ import pytest
 import torch
 from simulate.config import load_config as load_sim_config
 from simulate.simulation import Simulation
+from trajopt.costs.output import OutputCost
 from trajopt.mpc import MPC
 from trajopt.solvers.altro import ALTRO
 from trajopt.solvers.boxqp import BoxQP
@@ -451,7 +452,8 @@ def test_build_observable_problem_assembles_and_solves(tmp_path: Path) -> None:
     assert problem.N == 5
     # The stage trajectory carries every Frame of the Control Horizon but the last; the terminal
     # Cost prices that one, so no predicted Frame the controls move goes unscored.
-    assert isinstance(problem.obj.terminal_cost, ObservableHingeCost)
+    assert isinstance(problem.obj.terminal_cost, OutputCost)
+    assert isinstance(problem.obj.terminal_cost.cost, ObservableHingeCost)
     assert problem.obj.terminal_cost.terminal
     assert isinstance(problem.model, ObservableMLPModel)
     assert problem.model.n_outputs == 2 * n_values

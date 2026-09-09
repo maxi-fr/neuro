@@ -16,6 +16,7 @@ from trajopt.constraints.bounds import ControlBound
 from trajopt.constraints.constraint_list import ConstraintList
 from trajopt.constraints.linear import LinearConstraint
 from trajopt.costs.objective import Objective
+from trajopt.costs.output import OutputCost
 from trajopt.costs.quadratic import DiagonalCost
 from trajopt.dynamics.base import DiscreteDynamics
 from trajopt.mpc import MPC
@@ -33,7 +34,6 @@ from neuro.control.costs import (
     ObservableFrameHingeCost,
     ObservableHingeCost,
     ReducedEffortCost,
-    StateOutputs,
     SumCost,
     has_whole_horizon_cost,
 )
@@ -367,8 +367,8 @@ class NullspaceReducedModel(DiscreteDynamics, InferencePredictor):
     dt: float = eqx.field(static=True)
 
     def __init__(self, base_model: InferencePredictor) -> None:
-        """Wrap a base InferencePredictor over the last-electrode elimination basis."""
-        super().__init__(n=base_model.n, m=base_model.m - 1, ne=base_model.ne)
+        """Wrap a base InferencePredictor over the last-electrode elimination basis, inheriting output dimension ``p``."""
+        super().__init__(n=base_model.n, m=base_model.m - 1, ne=base_model.ne, p=base_model.p)
         self.base_model = base_model
         self.basis = kirchhoff_basis(base_model.m)
         self.n_y = int(base_model.n_y)
@@ -377,6 +377,20 @@ class NullspaceReducedModel(DiscreteDynamics, InferencePredictor):
         self.n_controls = int(base_model.m - 1)
         self.n_outputs = int(base_model.n_outputs)
         self.dt = float(base_model.dt)
+
+    def output(
+        self,
+        x: jax.Array,
+        u: jax.Array | None = None,
+        t: float | jax.Array = 0.0,
+    ) -> jax.Array:
+        """Evaluate physical output, projecting reduced Control Currents when feedthrough is present."""
+        u_full = self.basis @ jnp.atleast_1d(u) if u is not None and self.base_model.has_control_feedthrough() else None
+        return self.base_model.output(x, u_full, t)
+
+    def has_control_feedthrough(self) -> bool:
+        """Whether the base model's output function depends directly on Control Current ``u``."""
+        return self.base_model.has_control_feedthrough()
 
     def discrete_dynamics(
         self,
@@ -437,7 +451,7 @@ def _resolve_waveform_target(
     tracking_active: bool,
     w_hinge: float,
 ) -> FloatArray | None:
-    """Resolve and validate the state-space tracking target from a HealthyReference."""
+    """Resolve and validate the physical tracking target from a HealthyReference."""
     if tracking_active and ref is None:
         msg = "reference must be provided when w_y > 0"
         raise ValueError(msg)
@@ -453,7 +467,7 @@ def _resolve_waveform_target(
     else:
         msg = f"reference mean vector does not match model channel count ({base.n_channels})"
         raise ValueError(msg)
-    return (y_ref - base.y_center) / base.y_scale
+    return np.asarray(y_ref, dtype=np.float64)
 
 
 def build_waveform_problem(  # noqa: PLR0913 -- checkpoint plus the ten MPC cost/bound knobs
@@ -488,14 +502,14 @@ def build_waveform_problem(  # noqa: PLR0913 -- checkpoint plus the ten MPC cost
         Per-electrode amplitude bound: a scalar shared by every electrode or a
         length-``n_controls`` vector.
     w_y
-        Weight on state tracking error in the stage cost.
+        Weight on Raw EEG output tracking error in the stage Cost.
     w_u
-        Weight on control effort (quadratic) in the stage cost.
+        Weight on Control Current effort (quadratic) in the stage Cost.
     w_y_terminal
-        Weight on the terminal knot state tracking error. When ``None`` (default), inherits
+        Weight on the terminal knot Raw EEG output tracking error. When ``None`` (default), inherits
         ``w_y``.
     w_u_l1
-        Weight on the L1 norm of the control effort (a sparse-stimulation penalty); ``0``
+        Weight on the L1 norm of the Control Current effort (a sparse-stimulation penalty); ``0``
         disables it (default).
     w_hinge
         Weight on the spectral hinge Cost: the mean squared amount by which predicted log-power Frames
@@ -525,23 +539,22 @@ def build_waveform_problem(  # noqa: PLR0913 -- checkpoint plus the ten MPC cost
     N = horizon + 1
 
     w_y_final = w_y_terminal if w_y_terminal is not None else w_y
-    target_state = _resolve_waveform_target(
+    target_val = _resolve_waveform_target(
         reference,
         base,
         tracking_active=(w_y > 0 or w_y_final > 0),
         w_hinge=w_hinge,
     )
 
-    z_last = slice((base.n_y - 1) * base.n_channels, base.n_y * base.n_channels)
-    Q = jnp.zeros(n).at[z_last].set(2.0 * w_y * base.y_scale**2 / horizon)
-    xf = jnp.zeros(n) if target_state is None else jnp.zeros(n).at[z_last].set(target_state)
-
+    target = jnp.zeros(model.p) if target_val is None else jnp.asarray(target_val)
+    Q = jnp.full(model.p, 2.0 * w_y / horizon)
     # Under reduction the effort is coupled (``||u||^2 = v^T Z^T Z v``), so it moves out of the
     # quadratic's ``R`` and into a control-only cost; folding it into ``R`` would promote the
     # diagonal state weight to a dense ``(n, n)`` matrix for no gain.
     R = jnp.zeros(m) if reduce_kirchhoff else jnp.full(m, 2.0 * w_u / horizon)
-    stage = DiagonalCost.tracking(Q, R, xf, jnp.zeros(m))
-    costs: list[CostFunction] = [ExcludeInitialKnotState(stage)]
+    stage = DiagonalCost.tracking(Q, R, target, jnp.zeros(m))
+    output_stage = OutputCost(model, stage)
+    costs: list[CostFunction] = [ExcludeInitialKnotState(output_stage)]
     if reduce_kirchhoff:
         costs.append(ReducedEffortCost(n=n, m=m, w_u=w_u, horizon=horizon))
     if w_u_l1 > 0:
@@ -549,22 +562,13 @@ def build_waveform_problem(  # noqa: PLR0913 -- checkpoint plus the ten MPC cost
     envelope = _observable_envelope(reference, w_hinge)
     if envelope is not None:
         _validate_waveform_envelope(envelope, base)
-        outputs = StateOutputs(
-            n=n,
-            m=m,
-            n_y=base.n_y,
-            n_outputs=base.n_channels,
-            center=base.y_center,
-            scale=base.y_scale,
-        )
-        costs.append(ObservableFrameHingeCost(outputs, envelope, w_hinge=w_hinge, horizon=horizon))
+        costs.append(ObservableFrameHingeCost(model, envelope, w_hinge=w_hinge, horizon=horizon))
     stage_cost: CostFunction = _combine_costs(costs)
-    # The terminal knot carries the horizon's final output, weighted by ``w_y_terminal`` when
-    # given else ``w_y`` -- the incumbent's last-step stage cost. Always explicit, because the
-    # composite's derived terminal (``SumCost.as_terminal``) would otherwise carry the
-    # control-only L1 and whole-horizon hinge into a knot that has no control.
-    Q_f = jnp.zeros(n).at[z_last].set(2.0 * w_y_final * base.y_scale**2 / horizon)
-    terminal = DiagonalCost.terminal_tracking(Q_f, xf, m)
+    if w_y_terminal is not None and w_y_terminal != w_y:
+        Q_f = jnp.full(model.p, 2.0 * w_y_final / horizon)
+        terminal = OutputCost(model, DiagonalCost.terminal_tracking(Q_f, target, m=m))
+    else:
+        terminal = output_stage.as_terminal()
     objective = Objective(stage_cost=stage_cost, terminal_cost=terminal, N=N)
 
     return _assemble_problem(
@@ -607,12 +611,12 @@ def build_observable_problem(  # noqa: PLR0913 -- checkpoint plus the MPC cost/b
         Per-electrode amplitude bound: a scalar shared by every electrode or a
         length-``n_controls`` vector.
     w_u
-        Weight on control effort (quadratic) in the cost.
+        Weight on Control Current effort (quadratic) in the Cost.
     w_u_l1
-        Weight on the L1 norm of the control effort (a sparse-stimulation penalty); ``0``
+        Weight on the L1 norm of the Control Current effort (a sparse-stimulation penalty); ``0``
         disables it (default).
     w_hinge
-        Weight on the hinge cost: the mean squared amount by which the predicted log-power
+        Weight on the hinge Cost: the mean squared amount by which the predicted log-power
         Frames exceed ``reference``'s healthy envelope. ``0`` (default) disables it.
     reference
         :class:`~neuro.spectral.HealthyReference` container carrying the healthy Observable envelope.
@@ -648,16 +652,10 @@ def build_observable_problem(  # noqa: PLR0913 -- checkpoint plus the MPC cost/b
     terminal: CostFunction = DiagonalCost.terminal_tracking(jnp.zeros(n), jnp.zeros(n), m)
     if envelope is not None:
         _validate_observable_envelope(envelope, base)
-        outputs = StateOutputs(
-            n=n,
-            m=m,
-            n_y=base.n_y,
-            n_outputs=base.n_outputs,
-            center=base.y_center,
-            scale=base.y_scale,
-        )
-        costs.append(ObservableHingeCost(outputs, envelope, w_hinge=w_hinge, horizon=horizon))
-        terminal = ObservableHingeCost(outputs, envelope, w_hinge=w_hinge, horizon=horizon, terminal=True)
+        hinge = ObservableHingeCost(envelope, w_hinge=w_hinge, horizon=horizon)
+        output_hinge = OutputCost(model, hinge)
+        costs.append(ExcludeInitialKnotState(output_hinge))
+        terminal = output_hinge.as_terminal()
     stage_cost: CostFunction = _combine_costs(costs)
     objective = Objective(stage_cost=stage_cost, terminal_cost=terminal, N=N)
 
