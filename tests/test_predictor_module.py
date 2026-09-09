@@ -44,23 +44,40 @@ def _model(depth: int = 2, activation: Activation = "softplus") -> Autoregressiv
     return model
 
 
-def _context(seed: int) -> FloatArray:
-    """One model-space input row: standardized history plus standardized future controls."""
+def _context(seed: int) -> tuple[FloatArray, FloatArray, FloatArray]:
+    """One model-space input: standardized history plus standardized future controls."""
     rng = np.random.default_rng(seed)
-    return rng.standard_normal(_N_Y * _N_EEG + (_N_U + _HORIZON) * _N_CONTROLS).astype(np.float64)
+    return (
+        rng.standard_normal((_N_Y, _N_EEG)).astype(np.float64),
+        rng.standard_normal((_N_U, _N_CONTROLS)).astype(np.float64),
+        rng.standard_normal((_HORIZON, _N_CONTROLS)).astype(np.float64),
+    )
 
 
 def test_forward_is_row_independent() -> None:
     """Stacking two contexts into one batch predicts the same as running them one at a time."""
     model = _model(2, "tanh")
 
-    rows = [_context(_SEED + offset) for offset in (2, 3)]
-    batched = model(torch.as_tensor(np.stack(rows), dtype=torch.float32)).detach().numpy()
-    singles = np.concatenate(
-        [model(torch.as_tensor(row, dtype=torch.float32)[None, :]).detach().numpy() for row in rows]
+    items = [_context(_SEED + offset) for offset in (2, 3)]
+    y_hist_b = torch.as_tensor(np.stack([c[0] for c in items]), dtype=torch.float32)
+    u_hist_b = torch.as_tensor(np.stack([c[1] for c in items]), dtype=torch.float32)
+    u_future_b = torch.as_tensor(np.stack([c[2] for c in items]), dtype=torch.float32)
+    batched = model(y_hist_b, u_hist_b, u_future_b).detach().numpy()
+
+    singles = np.stack(
+        [
+            model(
+                torch.as_tensor(c[0][None], dtype=torch.float32),
+                torch.as_tensor(c[1][None], dtype=torch.float32),
+                torch.as_tensor(c[2][None], dtype=torch.float32),
+            )
+            .detach()
+            .numpy()[0]
+            for c in items
+        ]
     )
 
-    assert batched.shape == (2, _HORIZON * _N_EEG)
+    assert batched.shape == (2, _HORIZON, _N_EEG)
     np.testing.assert_allclose(batched, singles, rtol=1e-5, atol=1e-6)
 
 
@@ -89,12 +106,13 @@ def test_residual_skip_makes_a_zero_mlp_predict_pure_persistence() -> None:
                 module.bias.zero_()
 
     rng = np.random.default_rng(11)
-    row = rng.standard_normal(model.n_y * 2 + (model.n_u + model.horizon) * 1)
-    pred = model(torch.as_tensor(row, dtype=torch.float32)[None, :]).detach().numpy()[0]
-    z_t = row[model.n_y * 2 - 2 : model.n_y * 2]  # the last sample of the y-window
-    np.testing.assert_allclose(
-        pred.reshape(model.horizon, 2), np.broadcast_to(z_t, (model.horizon, 2)), rtol=1e-6, atol=1e-7
-    )
+    y_hist = torch.as_tensor(rng.standard_normal((1, 2, 2)), dtype=torch.float32)
+    u_hist = torch.as_tensor(rng.standard_normal((1, 1, 1)), dtype=torch.float32)
+    u_future = torch.as_tensor(rng.standard_normal((1, 3, 1)), dtype=torch.float32)
+    pred = model(y_hist, u_hist, u_future).detach().numpy()[0]
+    z_t = y_hist[0, -1].numpy()
+    assert pred.shape == (3, 2)
+    np.testing.assert_allclose(pred, np.broadcast_to(z_t, (3, 2)), rtol=1e-6, atol=1e-7)
 
 
 def test_without_residual_a_zero_mlp_predicts_zero() -> None:
@@ -118,9 +136,11 @@ def test_without_residual_a_zero_mlp_predicts_zero() -> None:
                 module.bias.zero_()
 
     rng = np.random.default_rng(12)
-    row = rng.standard_normal(model.n_y * 2 + (model.n_u + model.horizon) * 1)
-    pred = model(torch.as_tensor(row, dtype=torch.float32)[None, :]).detach().numpy()[0]
-    np.testing.assert_array_equal(pred, np.zeros(model.horizon * 2))
+    y_hist = torch.as_tensor(rng.standard_normal((1, 2, 2)), dtype=torch.float32)
+    u_hist = torch.as_tensor(rng.standard_normal((1, 1, 1)), dtype=torch.float32)
+    u_future = torch.as_tensor(rng.standard_normal((1, 3, 1)), dtype=torch.float32)
+    pred = model(y_hist, u_hist, u_future).detach().numpy()[0]
+    np.testing.assert_array_equal(pred, np.zeros((3, 2)))
 
 
 def test_module_layers_sequential() -> None:
@@ -148,7 +168,6 @@ def test_module_layers_sequential() -> None:
 @pytest.mark.parametrize(
     "module",
     [
-        "neuro.predictor.data",
         "neuro.predictor.checkpoint",
         "neuro.predictor.inference",
         "neuro.control",
@@ -192,11 +211,13 @@ def test_autoregressive_mlp_supports_distinct_output_width() -> None:
                 module.bias.zero_()
 
     rng = np.random.default_rng(42)
-    row = rng.standard_normal(model.n_y * 6 + (model.n_u + model.horizon) * 1)
-    pred = model(torch.as_tensor(row, dtype=torch.float32)[None, :]).detach().numpy()[0]
-    assert pred.shape == (3 * 6,)
-    z_last = row[6:12]
-    np.testing.assert_allclose(pred.reshape(3, 6), np.broadcast_to(z_last, (3, 6)), rtol=1e-6, atol=1e-7)
+    y_hist = torch.as_tensor(rng.standard_normal((1, 2, 6)), dtype=torch.float32)
+    u_hist = torch.as_tensor(rng.standard_normal((1, 1, 1)), dtype=torch.float32)
+    u_future = torch.as_tensor(rng.standard_normal((1, 3, 1)), dtype=torch.float32)
+    pred = model(y_hist, u_hist, u_future).detach().numpy()[0]
+    assert pred.shape == (3, 6)
+    z_last = y_hist[0, -1].numpy()
+    np.testing.assert_allclose(pred, np.broadcast_to(z_last, (3, 6)), rtol=1e-6, atol=1e-7)
 
 
 def test_standardizer_length_agrees_with_output_width() -> None:

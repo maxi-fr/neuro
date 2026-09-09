@@ -3,12 +3,14 @@
 ## Problem Statement
 
 Optimal control problems in `trajopt` historically evaluated objectives and constraints directly on state coordinates $\mathbf{x} \in \mathbb{R}^n$ and control coordinates $\mathbf{u} \in \mathbb{R}^m$. In closed-loop neurostimulation, however, Predictor models maintain state representations that pack internal execution memory:
+
 - Autoregressive models pack sliding history windows of standardized measurements and applied Control Currents into states with dimensions up to $\mathbf{x} \in \mathbb{R}^{1580}$.
 - Biophysical whole-brain Jansen-Rit models pack differential equation states, delayed axonal coupling buffers, and simulation step indices into states with dimensions exceeding $\mathbf{x} \in \mathbb{R}^{600}$.
 
 In both paradigms, the physical quantities of clinical interest—sensor-space Raw EEG, regional Local Field Potentials (LFPs), and spectral Observable log-power Frames—are lower-dimensional observations $\mathbf{y} = g(\mathbf{x}, \mathbf{u}, t) \in \mathbb{R}^p$.
 
 Lacking first-class output function support in `trajopt`, the codebase implemented several ad-hoc workarounds:
+
 1. Padded state-space weights: Tracking costs on the Waveform Predictor required constructing dense or diagonal weight vectors of dimension $n$ (e.g. 960) filled with zeros except for the newest measurement slice, scaling diagonal entries by squared standardizer scales to counteract state standardization, and mapping physical target references into standardized state coordinates.
 2. Bespoke state-space tracking costs: The Jansen-Rit Predictor required a dedicated 55-line cost class (`JansenRitTrackingCost`) to manually unpack ODE states, compute LFPs, project through the Leadfield gain matrix, and evaluate quadratic tracking error.
 3. Auxiliary decoding wrappers: Whole-horizon spectral costs (`SpectralHingeCost`, `ObservableFrameHingeCost`) required separate adapter classes (`StateOutputs`, `JansenRitStateOutputs`) to extract and rescale output trajectories from state trajectories.
@@ -75,11 +77,13 @@ Every discrete Predictor model implementing `DiscreteDynamics` will define its c
 ## Testing Decisions
 
 ### Test Characteristics and Integrity
+
 - Tests must assert external numerical behavior and optimization invariants, never internal implementation details.
 - Parity with established baselines: Controller-commanded Control Currents and reported Cost values on fixed benchmark trajectories must match incumbent golden values within tight float tolerances ($10^{-4}$ or better).
 - Dynamic consistency: Linearization Jacobians derived via automatic differentiation through `output_state_jacobian` must match finite-difference checks.
 
 ### Modules to Test
+
 1. **Predictor Output Seams**:
    - Verify `output()` on `WaveformMLPModel`, `ObservableMLPModel`, and `JansenRitModel` matches canonical decoding from known states.
    - Verify `NullspaceReducedModel.output()` agrees with the base model under expanded Control Currents.
@@ -91,6 +95,7 @@ Every discrete Predictor model implementing `DiscreteDynamics` will define its c
    - Run existing golden MPC solve tests (`test_reproduces_mpc_controller_control_sequence`, `test_migrated_config_reproduces_incumbent_end_to_end`, `test_jansen_rit_mpc_problem_solve`) to ensure zero regression in closed-loop execution.
 
 ### Prior Art
+
 - `tests/test_mpc.py`: Golden control sequence and reported cost parity tests against pinned CasADi and single-shooting baselines.
 - `tests/test_cost.py`: Unit verification of spectral hinge, Observable Frame hinge, and smooth L1 control penalty reductions.
 - `tests/test_jansen_rit_jax.py`: Verification of Jansen-Rit state packing, Heun integration, tracking cost evaluation, and closed-loop MPC stepping.

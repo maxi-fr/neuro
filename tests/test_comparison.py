@@ -151,6 +151,9 @@ def test_shipped_manifests_expand_into_valid_paired_grids() -> None:
         grid = expand_grid(load_manifest(path))
         check_arms_are_paired(grid)
         for cell in grid:
+            artifact = cell.config.get("controller", {}).get("problem", {}).get("artifact")
+            if artifact is not None and not (Path(artifact).exists() or Path(f"{artifact}.npz").exists()):
+                continue
             validate_simulation_config(cell.config)
 
 

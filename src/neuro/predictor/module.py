@@ -54,8 +54,8 @@ class TrainingPredictor(ABC):
     """
 
     @abstractmethod
-    def forward(self, x: Tensor) -> Tensor:
-        """Roll out one batched standardized input row into the trained Span."""
+    def forward(self, y_hist: Tensor, u_hist: Tensor, u_future: Tensor) -> Tensor:
+        """Roll out batched standardized inputs over the trained Span."""
         ...
 
     @abstractmethod
@@ -250,35 +250,35 @@ class AutoregressiveMLP(nn.Module, TrainingPredictor):
         self.register_buffer("u_center", torch.as_tensor(u_std.center, dtype=torch.float32))
         self.register_buffer("u_scale", torch.as_tensor(u_std.scale, dtype=torch.float32))
 
-    def forward(self, x: Tensor) -> Tensor:
-        """Roll out ``horizon`` steps: ``(B, n_y*n_out + (n_u + horizon)*m) -> (B, horizon*n_out)``.
+    def forward(self, y_hist: Tensor, u_hist: Tensor, u_future: Tensor) -> Tensor:
+        """Roll out ``horizon`` steps autoregressively in standardized space.
 
-        Each step adds the window's last standardized sample to the MLP output, so a zero-weight
-        stack predicts pure persistence and the layers only ever fit the one-step delta.
+        Parameters
+        ----------
+        y_hist : Tensor
+            Standardized past outputs/Frames of shape ``(batch, n_y, n_outputs)``.
+        u_hist : Tensor
+            Standardized past Control Currents of shape ``(batch, n_u, n_controls)``.
+        u_future : Tensor
+            Standardized future Control Currents of shape ``(batch, horizon, n_controls)``.
+
+        Returns
+        -------
+        Tensor
+            Standardized predicted Rollout of shape ``(batch, horizon, n_outputs)``.
         """
-        batch = x.shape[0]
-        n_z = self.n_y * self.n_outputs
-        n_u_past = self.n_u * self.n_controls
-
-        y_window = x[:, :n_z].reshape(batch, self.n_y, self.n_outputs)
-        u_window = x[:, n_z : n_z + n_u_past].reshape(batch, self.n_u, self.n_controls)
-        u_future = x[:, n_z + n_u_past :].reshape(batch, self.horizon, self.n_controls)
-
-        preds = []
+        preds: list[Tensor] = []
+        y_window = y_hist
+        u_window = u_hist
         for t in range(self.horizon):
-            # The feature row's u-window ends one step *behind* its y-window (see the slicing in
-            # build_dataset_for_trajectory), so the control shifts in before the MLP call to bring
-            # the two level. ``rollout`` shifts *after* because a prime() state is already level --
-            # opposite order, same rule: both windows end at t when y_{t+1} is predicted.
             u_window = torch.cat([u_window[:, 1:], u_future[:, t : t + 1]], dim=1)
-            mlp_in = torch.cat([y_window.reshape(batch, -1), u_window.reshape(batch, -1)], dim=1)
-            y_next = self.layers(mlp_in)
-            if self.residual:
-                y_next = y_next + y_window[:, -1]
-            y_window = torch.cat([y_window[:, 1:], y_next[:, None, :]], dim=1)
+            features = torch.cat([y_window.flatten(1), u_window.flatten(1)], dim=1)
+            delta = self.layers(features)
+            y_next = y_window[:, -1, :] + delta if self.residual else delta
+            y_window = torch.cat([y_window[:, 1:], y_next.unsqueeze(1)], dim=1)
             preds.append(y_next)
 
-        return torch.cat(preds, dim=1)
+        return torch.stack(preds, dim=1)
 
     @property
     def y_std(self) -> Standardizer:

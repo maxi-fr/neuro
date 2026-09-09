@@ -8,12 +8,13 @@ import torch
 from tqdm import tqdm
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterator
+    from collections.abc import Callable
 
     from torch import Tensor, nn
+    from torch.utils.data import DataLoader
 
     from neuro.config import TrainingConfig
-    from neuro.types import Float32Array, FloatArray, IntArray
+    from neuro.types import Float32Array, FloatArray
 
 
 def float32_tensor(a: FloatArray | Float32Array, device: torch.device, *, pin_memory: bool = False) -> Tensor:
@@ -45,68 +46,63 @@ def lr_schedule(
     return torch.optim.lr_scheduler.SequentialLR(optimizer, [warmup, cosine], milestones=[warmup_steps])
 
 
-def shuffled_batches(n_samples: int, batch_size: int, rng: np.random.Generator) -> Iterator[IntArray]:
-    """Yield index batches covering one freshly shuffled pass over the training set."""
-    indices = rng.permutation(n_samples)
-    for start in range(0, n_samples, batch_size):
-        yield indices[start : start + batch_size]
-
-
 def _evaluate_validation(
     model: nn.Module,
-    x_val: Tensor,
-    y_val: Tensor,
-    cfg: TrainingConfig,
-    loss_fn: Callable[[nn.Module, Tensor, Tensor, int | None], tuple[Tensor, dict[str, float]]],
+    val_loader: DataLoader[tuple[Tensor, Tensor, Tensor, Tensor]],
+    loss_fn: Callable[[nn.Module, Tensor, Tensor, Tensor, Tensor, int | None], tuple[Tensor, dict[str, float]]],
 ) -> tuple[float, dict[str, float]]:
-    """Score ``model`` over mini-batches of ``(x_val, y_val)`` and return the weighted loss and components."""
-    n_val = x_val.shape[0]
-    if n_val == 0:
+    """Score ``model`` over mini-batches of ``val_loader`` and return the weighted loss and components."""
+    if len(val_loader) == 0:
         return 0.0, {}
     device = next(model.parameters()).device
     val_loss_sum = 0.0
     val_comps_sum: dict[str, float] = collections.defaultdict(float)
+    total_samples = 0
     with torch.no_grad():
-        for start in range(0, n_val, cfg.batch_size):
-            end = min(start + cfg.batch_size, n_val)
-            b_size = end - start
-            xb = x_val[start:end].to(device, non_blocking=True)
-            yb = y_val[start:end].to(device, non_blocking=True)
-            b_loss, b_parts = loss_fn(model, xb, yb, None)
+        for y_hist, u_hist, u_future, y_target in val_loader:
+            b_size = y_hist.shape[0]
+            total_samples += b_size
+            b_loss, b_parts = loss_fn(
+                model,
+                y_hist.to(device, non_blocking=True),
+                u_hist.to(device, non_blocking=True),
+                u_future.to(device, non_blocking=True),
+                y_target.to(device, non_blocking=True),
+                None,
+            )
             val_loss_sum += float(b_loss.detach()) * b_size
             for key, val in b_parts.items():
                 val_comps_sum[key] += val * b_size
-    return val_loss_sum / n_val, {k: v / n_val for k, v in val_comps_sum.items()}
+    if total_samples == 0:
+        return 0.0, {}
+    return val_loss_sum / total_samples, {k: v / total_samples for k, v in val_comps_sum.items()}
 
 
-def fit_gradient_descent(  # noqa: PLR0913, PLR0917 -- model, the four tensor blocks and the schedule are the loop's surface
+def fit_gradient_descent(  # noqa: PLR0913 -- model, data loaders and config
     model: nn.Module,
-    x_train: Tensor,
-    y_train: Tensor,
-    x_val: Tensor,
-    y_val: Tensor,
+    train_loader: DataLoader[tuple[Tensor, Tensor, Tensor, Tensor]],
+    val_loader: DataLoader[tuple[Tensor, Tensor, Tensor, Tensor]],
     cfg: TrainingConfig,
     *,
     seed: int,
-    loss_fn: Callable[[nn.Module, Tensor, Tensor, int | None], tuple[Tensor, dict[str, float]]],
+    loss_fn: Callable[[nn.Module, Tensor, Tensor, Tensor, Tensor, int | None], tuple[Tensor, dict[str, float]]],
     desc: str = "Training",
 ) -> tuple[list[float], list[float], dict[str, list[float]], dict[str, list[float]]]:
     """Run the gradient-descent training loop, leaving ``model`` holding the best-validation weights.
 
-    Generic over any torch module: ``loss_fn`` maps ``(model, x, y, epoch)`` to that batch's loss
-    and its unweighted component diagnostics. ``epoch`` is ``None`` for the validation score, so a
-    curriculum schedule can trust its full span there. AdamW with the shared warmup-cosine
-    schedule, a best-validation snapshot and patience-based early stopping are the same for every
-    module.
+    Generic over any torch module: ``loss_fn`` maps ``(model, y_hist, u_hist, u_future, y_target, epoch)``
+    to that batch's loss and its unweighted component diagnostics. ``epoch`` is ``None`` for the
+    validation score, so a curriculum schedule can trust its full span there. AdamW with the shared
+    warmup-cosine schedule, a best-validation snapshot and patience-based early stopping are the same
+    for every module.
 
     Returns ``(train_losses, val_losses, train_components, val_components)``, one entry per epoch
     actually run; the component dicts hold per-epoch unweighted means keyed by loss name.
     """
-    rng = np.random.default_rng(seed)
-    n_samples = x_train.shape[0]
+    torch.manual_seed(seed)
     device = next(model.parameters()).device
 
-    steps_per_epoch = (n_samples + cfg.batch_size - 1) // cfg.batch_size
+    steps_per_epoch = len(train_loader)
     total_steps = max(steps_per_epoch * cfg.epochs, 1)
     warmup_steps = min(steps_per_epoch * cfg.warmup_epochs, total_steps - 1)
 
@@ -126,10 +122,15 @@ def fit_gradient_descent(  # noqa: PLR0913, PLR0917 -- model, the four tensor bl
     for epoch in pbar:
         epoch_loss, batches = 0.0, 0
         comps_sum: dict[str, float] = collections.defaultdict(float)
-        for idx in shuffled_batches(n_samples, cfg.batch_size, rng):
-            xb = x_train[idx].to(device, non_blocking=True)
-            yb = y_train[idx].to(device, non_blocking=True)
-            loss, parts = loss_fn(model, xb, yb, epoch)
+        for y_hist, u_hist, u_future, y_target in train_loader:
+            loss, parts = loss_fn(
+                model,
+                y_hist.to(device, non_blocking=True),
+                u_hist.to(device, non_blocking=True),
+                u_future.to(device, non_blocking=True),
+                y_target.to(device, non_blocking=True),
+                epoch,
+            )
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
@@ -140,13 +141,13 @@ def fit_gradient_descent(  # noqa: PLR0913, PLR0917 -- model, the four tensor bl
                 comps_sum[key] += val
             batches += 1
 
-        train_loss = epoch_loss / batches
-        val_loss, val_parts = _evaluate_validation(model, x_val, y_val, cfg, loss_fn)
+        train_loss = epoch_loss / max(batches, 1)
+        val_loss, val_parts = _evaluate_validation(model, val_loader, loss_fn)
 
         train_losses.append(train_loss)
         val_losses.append(val_loss)
         for key, val in comps_sum.items():
-            train_components[key].append(val / batches)
+            train_components[key].append(val / max(batches, 1))
         for key, val in val_parts.items():
             val_components[key].append(val)
 

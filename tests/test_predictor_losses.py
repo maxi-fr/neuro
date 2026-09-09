@@ -200,11 +200,11 @@ def test_stft_is_gated_off_until_start_epoch() -> None:
     n_y, n_u, horizon, c, n_controls, batch, w_stft = 2, 2, 6, 5, 2, 32, 0.1
     model = _model(n_y, n_u, horizon, c, n_controls)
 
-    x = torch.as_tensor(
-        rng.standard_normal((batch, n_y * c + n_u * n_controls + horizon * n_controls)), dtype=torch.float32
-    )
+    y_hist = torch.as_tensor(rng.standard_normal((batch, n_y, c)), dtype=torch.float32)
+    u_hist = torch.as_tensor(rng.standard_normal((batch, n_u, n_controls)), dtype=torch.float32)
+    u_future = torch.as_tensor(rng.standard_normal((batch, horizon, n_controls)), dtype=torch.float32)
     true_traj = torch.as_tensor(rng.standard_normal((batch, horizon, c)), dtype=torch.float32)
-    pred_traj = model(x).reshape(batch, horizon, c)
+    pred_traj = model(y_hist, u_hist, u_future)
 
     losses: list[Loss] = [
         CurriculumMSE(weight=1.0, span_steps=horizon, start_epoch=0, curr_start=0, curr_end=0),

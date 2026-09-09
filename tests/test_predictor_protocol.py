@@ -91,16 +91,12 @@ def test_waveform_cross_side_parity(depth: int, activation: Activation, residual
     u_raw = rng.standard_normal((t0 + _HORIZON, _N_CONTROLS))
     k = t0 - 1
 
-    row = np.concatenate(
-        [
-            module.y_std.transform(y_raw[k - _N_Y + 1 : k + 1]).reshape(-1),
-            module.u_std.transform(u_raw[k - _N_U : k]).reshape(-1),
-            module.u_std.transform(u_raw[k : k + _HORIZON]).reshape(-1),
-        ]
-    )
+    y_hist = torch.as_tensor(module.y_std.transform(y_raw[k - _N_Y + 1 : k + 1]), dtype=torch.float32).unsqueeze(0)
+    u_hist = torch.as_tensor(module.u_std.transform(u_raw[k - _N_U : k]), dtype=torch.float32).unsqueeze(0)
+    u_future = torch.as_tensor(module.u_std.transform(u_raw[k : k + _HORIZON]), dtype=torch.float32).unsqueeze(0)
     with torch.no_grad():
-        standardized = module(torch.as_tensor(row, dtype=torch.float32)[None, :]).numpy()[0]
-    want = module.y_std.inverse_transform(standardized.reshape(_HORIZON, _N_EEG))
+        standardized = module(y_hist, u_hist, u_future).numpy()[0]
+    want = module.y_std.inverse_transform(standardized)
 
     got = np.asarray(jax_model.free_run(y_raw[:t0][None], u_raw[:t0][None], u_raw[t0 : t0 + _HORIZON][None]))[0]
     assert got.shape == (_HORIZON, _N_EEG)
@@ -145,16 +141,12 @@ def test_cross_side_parity_with_distinct_output_width() -> None:
     u_raw = rng.standard_normal((t0 + horizon, n_controls))
     k = t0 - 1
 
-    row = np.concatenate(
-        [
-            module.y_std.transform(y_raw[k - n_y + 1 : k + 1]).reshape(-1),
-            module.u_std.transform(u_raw[k - n_u : k]).reshape(-1),
-            module.u_std.transform(u_raw[k : k + horizon]).reshape(-1),
-        ]
-    )
+    y_hist = torch.as_tensor(module.y_std.transform(y_raw[k - n_y + 1 : k + 1]), dtype=torch.float32).unsqueeze(0)
+    u_hist = torch.as_tensor(module.u_std.transform(u_raw[k - n_u : k]), dtype=torch.float32).unsqueeze(0)
+    u_future = torch.as_tensor(module.u_std.transform(u_raw[k : k + horizon]), dtype=torch.float32).unsqueeze(0)
     with torch.no_grad():
-        standardized = module(torch.as_tensor(row, dtype=torch.float32)[None, :]).numpy()[0]
-    want = module.y_std.inverse_transform(standardized.reshape(horizon, n_outputs))
+        standardized = module(y_hist, u_hist, u_future).numpy()[0]
+    want = module.y_std.inverse_transform(standardized)
 
     got = np.asarray(jax_model.free_run(y_raw[:t0][None], u_raw[:t0][None], u_raw[t0 : t0 + horizon][None]))[0]
     assert got.shape == (horizon, n_outputs)
@@ -242,16 +234,12 @@ def test_observable_cross_side_parity(depth: int, activation: Activation, residu
     u_raw = rng.standard_normal((t0 + _HORIZON, _N_CONTROLS))
     k = t0 - 1
 
-    row = np.concatenate(
-        [
-            module.y_std.transform(y_raw[k - _N_Y + 1 : k + 1]).reshape(-1),
-            module.u_std.transform(u_raw[k - _N_U : k]).reshape(-1),
-            module.u_std.transform(u_raw[k : k + _HORIZON]).reshape(-1),
-        ]
-    )
+    y_hist = torch.as_tensor(module.y_std.transform(y_raw[k - _N_Y + 1 : k + 1]), dtype=torch.float32).unsqueeze(0)
+    u_hist = torch.as_tensor(module.u_std.transform(u_raw[k - _N_U : k]), dtype=torch.float32).unsqueeze(0)
+    u_future = torch.as_tensor(module.u_std.transform(u_raw[k : k + _HORIZON]), dtype=torch.float32).unsqueeze(0)
     with torch.no_grad():
-        standardized = module(torch.as_tensor(row, dtype=torch.float32)[None, :]).numpy()[0]
-    want = module.y_std.inverse_transform(standardized.reshape(_HORIZON, module.n_outputs))
+        standardized = module(y_hist, u_hist, u_future).numpy()[0]
+    want = module.y_std.inverse_transform(standardized)
 
     got = np.asarray(jax_model.free_run(y_raw[:t0][None], u_raw[:t0][None], u_raw[t0 : t0 + _HORIZON][None]))[0]
     assert got.shape == (_HORIZON, module.n_outputs)

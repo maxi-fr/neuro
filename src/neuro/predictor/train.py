@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 import torch
+from torch.utils.data import DataLoader
 
 from neuro.predictor.data import Datasets, prepare_datasets, prepare_observable_datasets
 from neuro.predictor.dmd import DmdTrainer
@@ -63,7 +64,7 @@ class TrainingResult:
     val_trajs : list[tuple[FloatArray, FloatArray]]
         The held-out ``(u, y)`` trajectories, kept whole so the caller can plot free runs.
     du_sensitivity : float
-        Mean Frobenius norm of the rollout's Jacobian with respect to the future controls. A
+        Mean Frobenius norm of the Rollout's Jacobian with respect to future Control Currents. A
         value near zero means the model predicts EEG while ignoring stimulation.
     """
 
@@ -92,43 +93,71 @@ class TrainingResult:
         (artifact_dir / "training_stats.json").write_text(json.dumps(stats, indent=2))
 
 
-@dataclass(frozen=True)
-class _Tensors:
-    """Model-space inputs and standardized-channel targets ``(samples, horizon, n_channels)``."""
-
-    X_train: Tensor
-    Y_train: Tensor
-    X_val: Tensor
-    Y_val: Tensor
-    y_center: Tensor
-    y_scale: Tensor
-
-
-def _du_sensitivity(model: AutoregressiveMLP, X_val: Tensor, *, n_probes: int = _DU_PROBES) -> float:
-    """Mean Frobenius norm of d(rollout)/d(future controls) estimated via reverse-mode VJPs.
+def _du_sensitivity(
+    model: AutoregressiveMLP,
+    val_loader: DataLoader[tuple[Tensor, Tensor, Tensor, Tensor]],
+    *,
+    n_probes: int = _DU_PROBES,
+) -> float:
+    """Mean Frobenius norm of d(Rollout)/d(future Control Currents) estimated via reverse-mode VJPs.
 
     Uses the Hutchinson trace estimator: for random Gaussian projections ``v ~ N(0, I)``,
-    ``E[||J^T v||^2] = ||J||_F^2``. A few reverse-mode vector-Jacobian products per validation
-    window estimate the full-horizon sensitivity in milliseconds without materializing the
-    multi-gigabyte Jacobian tensor.
+    ``E[||J^T v||^2] = ||J||_F^2``. Reverse-mode vector-Jacobian products on batched representative
+    validation windows estimate the full-horizon sensitivity in milliseconds without materializing
+    the multi-gigabyte Jacobian tensor.
     """
-    n_hist = model.n_y * model.n_outputs + model.n_u * model.n_controls
-    rows = X_val[:: max(X_val.shape[0] // _DU_WINDOWS, 1)][:_DU_WINDOWS]
+    if len(val_loader) == 0:
+        return 0.0
 
-    norms: list[float] = []
-    for row in rows:
-        u_future = row[n_hist:].clone().detach().requires_grad_(requires_grad=True)
-        history = row[:n_hist]
-        x_in = torch.cat([history, u_future])[None, :]
-        out = model(x_in)[0]
+    dataset = getattr(val_loader, "dataset", None)
+    if dataset is not None and hasattr(dataset, "__len__") and hasattr(dataset, "__getitem__") and len(dataset) > 0:
+        n_total = len(dataset)
+        indices = (
+            list(range(n_total))
+            if n_total <= _DU_WINDOWS
+            else np.linspace(0, n_total - 1, _DU_WINDOWS, dtype=int).tolist()
+        )
+        samples = [dataset[i] for i in indices]
+        y_hist = torch.stack([s[0] for s in samples])
+        u_hist = torch.stack([s[1] for s in samples])
+        u_future = torch.stack([s[2] for s in samples])
+    else:
+        y_hist_list: list[Tensor] = []
+        u_hist_list: list[Tensor] = []
+        u_future_list: list[Tensor] = []
+        for y_hist_b, u_hist_b, u_future_b, _ in val_loader:
+            stride = max(1, y_hist_b.shape[0] // max(1, _DU_WINDOWS - len(y_hist_list)))
+            for i in range(0, y_hist_b.shape[0], stride):
+                y_hist_list.append(y_hist_b[i])
+                u_hist_list.append(u_hist_b[i])
+                u_future_list.append(u_future_b[i])
+                if len(y_hist_list) >= _DU_WINDOWS:
+                    break
+            if len(y_hist_list) >= _DU_WINDOWS:
+                break
+        if not y_hist_list:
+            return 0.0
+        y_hist = torch.stack(y_hist_list)
+        u_hist = torch.stack(u_hist_list)
+        u_future = torch.stack(u_future_list)
 
-        probe_sq: list[float] = []
-        for _ in range(n_probes):
-            v = torch.randn_like(out)
-            grad = torch.autograd.grad(out, u_future, grad_outputs=v, retain_graph=True)[0]
-            probe_sq.append(float(torch.sum(grad**2).detach()))
-        norms.append(float(np.sqrt(np.mean(probe_sq))))
-    return float(np.mean(norms))
+    device = next(model.parameters()).device
+    y_hist = y_hist.to(device)
+    u_hist = u_hist.to(device)
+    u_future = u_future.to(device).clone().detach().requires_grad_()
+
+    out = model(y_hist, u_hist, u_future)
+    batch_size = out.shape[0]
+
+    probe_sq_list: list[Tensor] = []
+    for p in range(n_probes):
+        v = torch.randn_like(out)
+        grad = torch.autograd.grad(out, u_future, grad_outputs=v, retain_graph=(p < n_probes - 1))[0]
+        probe_sq_list.append(torch.sum(grad.reshape(batch_size, -1) ** 2, dim=1))
+
+    mean_probe_sq = torch.mean(torch.stack(probe_sq_list, dim=0), dim=0)
+    frob_norms = torch.sqrt(mean_probe_sq)
+    return float(torch.mean(frob_norms).detach().cpu())
 
 
 def train(
@@ -179,7 +208,7 @@ def train(
 def _prepare_observable(
     cfg: NNPredictorConfig, data_files: list[str], geom: StftGeometry, *, depth: int
 ) -> tuple[Datasets, AutoregressiveMLP, list[Loss]]:
-    """Build the prepared datasets and the autoregressive observable MLP for ``cfg``."""
+    """Build the prepared datasets and the autoregressive Observable MLP for ``cfg``."""
     sim, mdl, trn = cfg.simulation, cfg.model, cfg.training
     if trn.losses is None:
         msg = "the observable arm requires 'training.losses' (for the curriculum MSE)."
@@ -223,8 +252,34 @@ def _prepare_observable(
     return data, model, losses
 
 
+def _evaluate_val_mse(
+    model: nn.Module,
+    val_loader: DataLoader[tuple[Tensor, Tensor, Tensor, Tensor]],
+) -> float:
+    """Score ``model`` over mini-batches of ``val_loader`` with sample-weighted mean squared error."""
+    if len(val_loader) == 0:
+        return 0.0
+    device = next(model.parameters()).device
+    val_loss_sum = 0.0
+    total_samples = 0
+    with torch.no_grad():
+        for y_hist, u_hist, u_future, y_target in val_loader:
+            b_size = y_hist.shape[0]
+            total_samples += b_size
+            pred = model(
+                y_hist.to(device, non_blocking=True),
+                u_hist.to(device, non_blocking=True),
+                u_future.to(device, non_blocking=True),
+            )
+            loss = torch.mean((pred - y_target.to(device, non_blocking=True)) ** 2)
+            val_loss_sum += float(loss.detach()) * b_size
+    if total_samples == 0:
+        return 0.0
+    return val_loss_sum / total_samples
+
+
 def _train_observable_ridge(cfg: NNPredictorConfig, data_files: list[str], geom: StftGeometry) -> RidgeTrainingResult:
-    """Fit the single layer of a depth-0 observable MLP by closed-form ridge."""
+    """Fit the single layer of a depth-0 Observable MLP by closed-form ridge."""
     if cfg.model.depth > 0:
         msg = f"'training.fit: ridge' requires a depth-0 MLP, got model.depth = {cfg.model.depth}."
         raise ValueError(msg)
@@ -239,12 +294,10 @@ def _train_observable_ridge(cfg: NNPredictorConfig, data_files: list[str], geom:
     inference = ObservableMLPModel.from_checkpoint(*model.to_checkpoint())
     frame_mse = evaluate_observable_free_run(inference, data.val_trajs, eval_steps)
 
-    with torch.no_grad():
-        val_pred = (
-            model(torch.as_tensor(data.X_val, dtype=torch.float32)).numpy().reshape(-1, model.horizon, model.n_outputs)
-        )
-    val_true = data.Y_val.reshape(-1, model.horizon, model.n_outputs)
-    val_frame_loss = float(np.mean((val_pred - val_true) ** 2))
+    val_loader: DataLoader[tuple[Tensor, Tensor, Tensor, Tensor]] = DataLoader(
+        data.val_dataset, batch_size=trn.batch_size, shuffle=False, num_workers=0
+    )
+    val_frame_loss = _evaluate_val_mse(model, val_loader)
 
     return RidgeTrainingResult(
         predictor=model,
@@ -274,12 +327,10 @@ def _train_observable_dmd(cfg: NNPredictorConfig, data_files: list[str], geom: S
     inference = ObservableMLPModel.from_checkpoint(*model.to_checkpoint())
     frame_mse = evaluate_observable_free_run(inference, data.val_trajs, eval_steps)
 
-    with torch.no_grad():
-        val_pred = (
-            model(torch.as_tensor(data.X_val, dtype=torch.float32)).numpy().reshape(-1, model.horizon, model.n_outputs)
-        )
-    val_true = data.Y_val.reshape(-1, model.horizon, model.n_outputs)
-    val_frame_loss = float(np.mean((val_pred - val_true) ** 2))
+    val_loader: DataLoader[tuple[Tensor, Tensor, Tensor, Tensor]] = DataLoader(
+        data.val_dataset, batch_size=trn.batch_size, shuffle=False, num_workers=0
+    )
+    val_frame_loss = _evaluate_val_mse(model, val_loader)
 
     return RidgeTrainingResult(
         predictor=model,
@@ -296,7 +347,7 @@ def _train_observable_dmd(cfg: NNPredictorConfig, data_files: list[str], geom: S
 def _train_observable(
     cfg: NNPredictorConfig, data_files: list[str], geom: StftGeometry, *, seed_offset: int = 0
 ) -> TrainingResult:
-    """Train the autoregressive observable MLP for one config and return everything the run produced."""
+    """Train the autoregressive Observable MLP for one config and return everything the run produced."""
     sim, trn = cfg.simulation, cfg.training
     seed = trn.seed + seed_offset
     torch.manual_seed(seed)
@@ -309,32 +360,44 @@ def _train_observable(
 
     data, model, losses = _prepare_observable(cfg, data_files, geom, depth=cfg.model.depth)
     model = model.to(device)
-    horizon = max(loss.span_steps for loss in losses)
-    n_outputs = model.n_outputs
 
     pin = device.type == "cuda"
-    cpu = torch.device("cpu")
-    tensors = _Tensors(
-        X_train=float32_tensor(data.X_train, cpu, pin_memory=pin),
-        Y_train=float32_tensor(data.Y_train, cpu, pin_memory=pin).reshape(-1, horizon, n_outputs),
-        X_val=float32_tensor(data.X_val, cpu, pin_memory=pin),
-        Y_val=float32_tensor(data.Y_val, cpu, pin_memory=pin).reshape(-1, horizon, n_outputs),
-        y_center=float32_tensor(data.y_std.center, device),
-        y_scale=float32_tensor(data.y_std.scale, device),
+    y_center = float32_tensor(data.y_std.center, device)
+    y_scale = float32_tensor(data.y_std.scale, device)
+
+    train_loader: DataLoader[tuple[Tensor, Tensor, Tensor, Tensor]] = DataLoader(
+        data.train_dataset,
+        batch_size=trn.batch_size,
+        shuffle=True,
+        pin_memory=pin,
+        num_workers=0,
+        generator=torch.Generator().manual_seed(seed),
+    )
+    val_loader: DataLoader[tuple[Tensor, Tensor, Tensor, Tensor]] = DataLoader(
+        data.val_dataset,
+        batch_size=trn.batch_size,
+        shuffle=False,
+        pin_memory=pin,
+        num_workers=0,
     )
 
-    def batch_loss(model: nn.Module, x: Tensor, y: Tensor, epoch: int | None) -> tuple[Tensor, dict[str, float]]:
-        """Roll ``x`` out and score it against the standardized-frame targets ``y``."""
-        ctx = LossContext(y_center=tensors.y_center, y_scale=tensors.y_scale, fs=fs_frame, epoch=epoch)
-        pred_traj = model(x).reshape(x.shape[0], horizon, n_outputs)
-        return total_loss(losses, pred_traj, y, ctx)
+    def batch_loss(  # noqa: PLR0913, PLR0917 -- closure signature matches fit_gradient_descent loss_fn
+        model: nn.Module,
+        y_hist: Tensor,
+        u_hist: Tensor,
+        u_future: Tensor,
+        y_target: Tensor,
+        epoch: int | None,
+    ) -> tuple[Tensor, dict[str, float]]:
+        """Roll out and score against the standardized Frame targets."""
+        ctx = LossContext(y_center=y_center, y_scale=y_scale, fs=fs_frame, epoch=epoch)
+        pred_traj = model(y_hist, u_hist, u_future)
+        return total_loss(losses, pred_traj, y_target, ctx)
 
     train_losses, val_losses, train_comps, val_comps = fit_gradient_descent(
         model,
-        tensors.X_train,
-        tensors.Y_train,
-        tensors.X_val,
-        tensors.Y_val,
+        train_loader,
+        val_loader,
         trn,
         seed=seed,
         loss_fn=batch_loss,
@@ -343,7 +406,7 @@ def _train_observable(
 
     eval_steps = max(1, round(trn.eval_horizon_s * fs_frame))
     model = model.cpu()
-    du_sensitivity = _du_sensitivity(model, tensors.X_val)
+    du_sensitivity = _du_sensitivity(model, val_loader)
     model.provenance = training_provenance(data_files, sim.cutoff_hz)
     model.downsample = sim.downsample
     inference = ObservableMLPModel.from_checkpoint(*model.to_checkpoint())
@@ -498,31 +561,44 @@ def _train_waveform(cfg: NNPredictorConfig, data_files: list[str], *, seed_offse
 
     data, model, losses = _prepare_waveform(cfg, data_files, depth=cfg.model.depth)
     model = model.to(device)
-    horizon = max(loss.span_steps for loss in losses)
 
     pin = device.type == "cuda"
-    cpu = torch.device("cpu")
-    tensors = _Tensors(
-        X_train=float32_tensor(data.X_train, cpu, pin_memory=pin),
-        Y_train=float32_tensor(data.Y_train, cpu, pin_memory=pin).reshape(-1, horizon, data.n_channels),
-        X_val=float32_tensor(data.X_val, cpu, pin_memory=pin),
-        Y_val=float32_tensor(data.Y_val, cpu, pin_memory=pin).reshape(-1, horizon, data.n_channels),
-        y_center=float32_tensor(data.y_std.center, device),
-        y_scale=float32_tensor(data.y_std.scale, device),
+    y_center = float32_tensor(data.y_std.center, device)
+    y_scale = float32_tensor(data.y_std.scale, device)
+
+    train_loader: DataLoader[tuple[Tensor, Tensor, Tensor, Tensor]] = DataLoader(
+        data.train_dataset,
+        batch_size=trn.batch_size,
+        shuffle=True,
+        pin_memory=pin,
+        num_workers=0,
+        generator=torch.Generator().manual_seed(seed),
+    )
+    val_loader: DataLoader[tuple[Tensor, Tensor, Tensor, Tensor]] = DataLoader(
+        data.val_dataset,
+        batch_size=trn.batch_size,
+        shuffle=False,
+        pin_memory=pin,
+        num_workers=0,
     )
 
-    def batch_loss(model: nn.Module, x: Tensor, y: Tensor, epoch: int | None) -> tuple[Tensor, dict[str, float]]:
-        """Roll ``x`` out and score it against the standardized-channel targets ``y``."""
-        ctx = LossContext(y_center=tensors.y_center, y_scale=tensors.y_scale, fs=fs, epoch=epoch)
-        pred_traj = model(x).reshape(x.shape[0], horizon, data.n_channels)
-        return total_loss(losses, pred_traj, y, ctx)
+    def batch_loss(  # noqa: PLR0913, PLR0917 -- closure signature matches fit_gradient_descent loss_fn
+        model: nn.Module,
+        y_hist: Tensor,
+        u_hist: Tensor,
+        u_future: Tensor,
+        y_target: Tensor,
+        epoch: int | None,
+    ) -> tuple[Tensor, dict[str, float]]:
+        """Roll out and score against the standardized waveform targets."""
+        ctx = LossContext(y_center=y_center, y_scale=y_scale, fs=fs, epoch=epoch)
+        pred_traj = model(y_hist, u_hist, u_future)
+        return total_loss(losses, pred_traj, y_target, ctx)
 
     train_losses, val_losses, train_comps, val_comps = fit_gradient_descent(
         model,
-        tensors.X_train,
-        tensors.Y_train,
-        tensors.X_val,
-        tensors.Y_val,
+        train_loader,
+        val_loader,
         trn,
         seed=seed,
         loss_fn=batch_loss,
@@ -531,7 +607,7 @@ def _train_waveform(cfg: NNPredictorConfig, data_files: list[str], *, seed_offse
 
     eval_steps = max(1, round(trn.eval_horizon_s * fs))
     model = model.cpu()
-    du_sensitivity = _du_sensitivity(model, tensors.X_val)
+    du_sensitivity = _du_sensitivity(model, val_loader)
     # Free-run scoring runs on the deployed jax side, built in memory from the fitted torch model.
     model.provenance = training_provenance(data_files, sim.cutoff_hz)
     model.downsample = sim.downsample

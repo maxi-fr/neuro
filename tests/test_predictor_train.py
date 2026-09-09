@@ -17,7 +17,7 @@ from neuro.config import (
     SimulationConfig,
     TrainingConfig,
 )
-from neuro.predictor.data import fit_standardizers, prepare_datasets
+from neuro.predictor.data import build_dataset_for_trajectory, fit_standardizers, prepare_datasets
 from neuro.predictor.gradient import lr_schedule
 from neuro.predictor.losses import LossContext, build_losses, total_loss
 from neuro.predictor.module import AutoregressiveMLP
@@ -105,11 +105,20 @@ def _validation_loss(cfg: NNPredictorConfig, files: list[str], model: Autoregres
         global_scaling=cfg.training.global_scaling,
     )
 
-    pred = model(torch.as_tensor(data.X_val, dtype=torch.float32)).reshape(-1, horizon, model.n_channels)
-    target = torch.as_tensor(data.Y_val, dtype=torch.float32).reshape(-1, horizon, data.n_channels)
+    val_loader = torch.utils.data.DataLoader(data.val_dataset, batch_size=cfg.training.batch_size, shuffle=False)
     ctx = LossContext(y_center=model.y_center, y_scale=model.y_scale, fs=fs, epoch=None)
-    loss, _ = total_loss(losses, pred, target, ctx)
-    return float(loss.detach())
+    batch_losses: list[float] = []
+    batch_sizes: list[int] = []
+    with torch.no_grad():
+        for y_hist, u_hist, u_future, y_future in val_loader:
+            b_size = y_hist.shape[0]
+            pred = model(y_hist, u_hist, u_future)
+            loss, _ = total_loss(losses, pred, y_future, ctx)
+            batch_losses.append(float(loss.detach()))
+            batch_sizes.append(b_size)
+    if not batch_losses:
+        return 0.0
+    return float(np.average(batch_losses, weights=batch_sizes))
 
 
 @pytest.fixture
@@ -163,17 +172,14 @@ def test_save_round_trip_predicts_identically(files: list[str], tmp_path: Path) 
     loaded = AutoregressiveMLP.load(artifact_dir / "model")
 
     u, y = result.val_trajs[0]
-    k = max(result.predictor.n_y, result.predictor.n_u)
-    row = np.concatenate(
-        [
-            result.predictor.y_std.transform(y[:k]).reshape(-1),
-            result.predictor.u_std.transform(u[:k]).reshape(-1),
-            result.predictor.u_std.transform(u[k : k + _HORIZON]).reshape(-1),
-        ]
-    )
+    n_y, n_u = result.predictor.n_y, result.predictor.n_u
+    k = max(n_y, n_u)
+    y_hist = torch.as_tensor(result.predictor.y_std.transform(y[k - n_y : k]), dtype=torch.float32).unsqueeze(0)
+    u_hist = torch.as_tensor(result.predictor.u_std.transform(u[k - n_u : k]), dtype=torch.float32).unsqueeze(0)
+    u_future = torch.as_tensor(result.predictor.u_std.transform(u[k : k + _HORIZON]), dtype=torch.float32).unsqueeze(0)
     with torch.no_grad():
-        want = result.predictor(torch.as_tensor(row, dtype=torch.float32)[None, :])
-        got = loaded(torch.as_tensor(row, dtype=torch.float32)[None, :])
+        want = result.predictor(y_hist, u_hist, u_future)
+        got = loaded(y_hist, u_hist, u_future)
     np.testing.assert_array_equal(got.numpy(), want.numpy())
 
 
@@ -251,8 +257,21 @@ def test_depth0_ridge_fit_reproduces_the_exact_one_step_lstsq(files: list[str]) 
     # ``y_{k+1} - y_k`` rather than ``y_{k+1}``.
     y_len = mdl.n_y * data.n_channels
     m = data.n_controls
-    X_1step = np.hstack([data.X_train[:, :y_len], data.X_train[:, y_len + m : y_len + (mdl.n_u + 1) * m]])
-    targets = data.Y_train[:, : data.n_channels] - data.X_train[:, y_len - data.n_channels : y_len]
+    X_list, Y_list = [], []
+    for u_raw, y_raw in split.train_trajs:
+        X_traj, Y_traj = build_dataset_for_trajectory(
+            data.u_std.transform(np.asarray(u_raw, dtype=np.float64)),
+            data.y_std.transform(np.asarray(y_raw, dtype=np.float64)),
+            mdl.n_y,
+            mdl.n_u,
+            horizon,
+        )
+        X_list.append(X_traj)
+        Y_list.append(Y_traj)
+    X_all = np.vstack(X_list)
+    Y_all = np.vstack(Y_list)
+    X_1step = np.hstack([X_all[:, :y_len], X_all[:, y_len + m : y_len + (mdl.n_u + 1) * m]])
+    targets = Y_all[:, : data.n_channels] - X_all[:, y_len - data.n_channels : y_len]
     weight_bias, *_ = np.linalg.lstsq(np.hstack([X_1step, np.ones((X_1step.shape[0], 1))]), targets, rcond=None)
     layer = model.layers[0]
     assert isinstance(layer, torch.nn.Linear)

@@ -48,4 +48,3 @@ sweep:
       type: loguniform
       low: 0.0000001      # Hop 5 selected 1.06e-6, the old lower boundary.
       high: 0.01
-

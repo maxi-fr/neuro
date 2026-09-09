@@ -78,16 +78,12 @@ def test_torch_save_jax_rollout_reproduces_the_decoded_torch_forward(tmp_path: P
     y_raw, u_raw = _waveform_context(_SEED + 9)
     t0 = max(_N_Y, _N_U) + 3
     k = t0 - 1
-    row = np.concatenate(
-        [
-            module.y_std.transform(y_raw[k - _N_Y + 1 : k + 1]).reshape(-1),
-            module.u_std.transform(u_raw[k - _N_U : k]).reshape(-1),
-            module.u_std.transform(u_raw[k : k + _HORIZON]).reshape(-1),
-        ]
-    )
+    y_hist = torch.as_tensor(module.y_std.transform(y_raw[k - _N_Y + 1 : k + 1]), dtype=torch.float32).unsqueeze(0)
+    u_hist = torch.as_tensor(module.u_std.transform(u_raw[k - _N_U : k]), dtype=torch.float32).unsqueeze(0)
+    u_future = torch.as_tensor(module.u_std.transform(u_raw[k : k + _HORIZON]), dtype=torch.float32).unsqueeze(0)
     with torch.no_grad():
-        standardized = module(torch.as_tensor(row, dtype=torch.float32)[None, :]).numpy()[0]
-    want = module.y_std.inverse_transform(standardized.reshape(_HORIZON, _N_EEG))
+        standardized = module(y_hist, u_hist, u_future).numpy()[0]
+    want = module.y_std.inverse_transform(standardized)
 
     got = np.asarray(jax_model.free_run(y_raw[:t0][None], u_raw[:t0][None], u_raw[t0 : t0 + _HORIZON][None]))[0]
     np.testing.assert_allclose(got, want, rtol=2e-5, atol=2e-5)

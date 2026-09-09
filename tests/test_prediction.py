@@ -49,15 +49,19 @@ def test_prepare_datasets_builds_standardized_windows(tmp_path: Path) -> None:
 
     assert data.n_channels == n_eeg
     assert data.n_controls == n_controls
-    assert data.X_train.shape[1] == n_y * n_eeg + n_u * n_controls + horizon * n_controls
     assert len(data.val_trajs) == 1
 
     u, y = load_trajectory(files[0], n_steps, 1, 1e-4)
     x_manual, y_manual = build_dataset_for_trajectory(
         data.u_std.transform(u), data.y_std.transform(y), n_y, n_u, horizon
     )
-    np.testing.assert_allclose(data.X_train, x_manual, atol=1e-12)
-    np.testing.assert_allclose(data.Y_train, y_manual, atol=1e-12)
+    assert len(data.train_dataset) == x_manual.shape[0]
+    for idx in range(len(data.train_dataset)):
+        y_hist, u_hist, u_future, y_target = data.train_dataset[idx]
+        x_rec = np.concatenate([y_hist.numpy().reshape(-1), u_hist.numpy().reshape(-1), u_future.numpy().reshape(-1)])
+        y_rec = y_target.numpy().reshape(-1)
+        np.testing.assert_allclose(x_rec, x_manual[idx], atol=1e-6)
+        np.testing.assert_allclose(y_rec, y_manual[idx], atol=1e-6)
 
 
 def test_prepare_datasets_supports_optional_n_steps(tmp_path: Path) -> None:
@@ -72,7 +76,7 @@ def test_prepare_datasets_supports_optional_n_steps(tmp_path: Path) -> None:
 
     data = prepare_datasets(files, None, 1, n_y, n_u, horizon, 1e-4, 0.5, scaler="standard", global_scaling=False)
     assert data.n_channels == n_eeg
-    assert data.X_train.shape[0] == n_steps - horizon - max(n_y - 1, n_u)
+    assert len(data.train_dataset) == n_steps - horizon - max(n_y - 1, n_u)
 
 
 def test_prepare_datasets_holds_out_the_validation_trajectories(tmp_path: Path) -> None:
@@ -88,8 +92,13 @@ def test_prepare_datasets_holds_out_the_validation_trajectories(tmp_path: Path) 
     x_manual, y_manual = build_dataset_for_trajectory(
         data.u_std.transform(u_val), data.y_std.transform(y_val), n_y, n_u, horizon
     )
-    np.testing.assert_allclose(data.X_val, x_manual, atol=1e-12)
-    np.testing.assert_allclose(data.Y_val, y_manual, atol=1e-12)
+    assert len(data.val_dataset) == x_manual.shape[0]
+    for idx in range(len(data.val_dataset)):
+        y_hist, u_hist, u_future, y_target = data.val_dataset[idx]
+        x_rec = np.concatenate([y_hist.numpy().reshape(-1), u_hist.numpy().reshape(-1), u_future.numpy().reshape(-1)])
+        y_rec = y_target.numpy().reshape(-1)
+        np.testing.assert_allclose(x_rec, x_manual[idx], atol=1e-6)
+        np.testing.assert_allclose(y_rec, y_manual[idx], atol=1e-6)
 
 
 def test_checkpoint_round_trip(tmp_path: Path) -> None:
@@ -149,8 +158,13 @@ def test_load_trajectory_and_prepare_datasets_with_cutoff_hz(tmp_path: Path) -> 
     x_manual, y_manual = build_dataset_for_trajectory(
         data.u_std.transform(u), data.y_std.transform(y), n_y, n_u, horizon
     )
-    np.testing.assert_allclose(data.X_train, x_manual, atol=1e-12)
-    np.testing.assert_allclose(data.Y_train, y_manual, atol=1e-12)
+    assert len(data.train_dataset) == x_manual.shape[0]
+    for idx in range(len(data.train_dataset)):
+        y_hist, u_hist, u_future, y_target = data.train_dataset[idx]
+        x_rec = np.concatenate([y_hist.numpy().reshape(-1), u_hist.numpy().reshape(-1), u_future.numpy().reshape(-1)])
+        y_rec = y_target.numpy().reshape(-1)
+        np.testing.assert_allclose(x_rec, x_manual[idx], atol=1e-6)
+        np.testing.assert_allclose(y_rec, y_manual[idx], atol=1e-6)
 
 
 def test_reduce_trajectory_to_frames() -> None:
@@ -168,9 +182,12 @@ def test_reduce_trajectory_to_frames() -> None:
 
     assert frames.shape == (expected_frames, n_channels * n_values)
 
+    frames_offset = reduce_trajectory_to_frames(y, geometry, fs, offset=4)
+    assert frames_offset.shape[1] == n_channels * n_values
+
 
 def test_prepare_observable_datasets(tmp_path: Path) -> None:
-    """prepare_observable_datasets builds Frame-grid standardized windows and fits per-output standardizers."""
+    """prepare_observable_datasets builds Frame-grid datasets with subhop expansion and fits standardizers."""
     n_eeg, n_controls, n_steps = 3, 2, 500
     n_y, n_u, horizon = 3, 2, 4
     geometry = StftGeometry(n_segment=64, n_hop=16, band_hz=[4.0, 30.0], n_bin_pool=2, kernel_width=5)
@@ -193,14 +210,36 @@ def test_prepare_observable_datasets(tmp_path: Path) -> None:
         geometry,
         scaler="standard",
         global_scaling=False,
+        subhop_offsets=True,
     )
 
     assert data.n_channels == n_eeg
     assert data.n_controls == n_controls
     assert data.y_std.center.shape == (n_outputs,)
     assert data.y_std.scale.shape == (n_outputs,)
-    assert data.X_train.shape[1] == n_y * n_outputs + (n_u + horizon) * n_controls
-    assert data.Y_train.shape[1] == horizon * n_outputs
-    assert len(data.train_trajs) == 1
+    assert len(data.train_trajs) == geometry.n_hop
     assert len(data.val_trajs) == 1
     assert data.train_trajs[0][1].shape[1] == n_outputs
+    assert len(data.train_dataset) > 0
+    assert len(data.val_dataset) > 0
+    y_hist, u_hist, u_future, y_target = data.train_dataset[0]
+    assert y_hist.shape == (n_y, n_outputs)
+    assert u_hist.shape == (n_u, n_controls)
+    assert u_future.shape == (horizon, n_controls)
+    assert y_target.shape == (horizon, n_outputs)
+
+    data_no_subhop = prepare_observable_datasets(
+        files,
+        n_steps,
+        1,
+        n_y,
+        n_u,
+        horizon,
+        dt,
+        0.5,
+        geometry,
+        scaler="standard",
+        global_scaling=False,
+        subhop_offsets=False,
+    )
+    assert len(data_no_subhop.train_trajs) == 1

@@ -164,14 +164,40 @@ def test_gradient_descent_serves_any_torch_module() -> None:
     )
 
     def mse(
-        model: nn.Module, xb: torch.Tensor, yb: torch.Tensor, epoch: int | None
+        model: nn.Module,
+        y_hist: torch.Tensor,
+        u_hist: torch.Tensor,
+        u_future: torch.Tensor,
+        y_target: torch.Tensor,
+        epoch: int | None,
     ) -> tuple[torch.Tensor, dict[str, float]]:
-        return torch.mean((model(xb) - yb) ** 2), {}
+        return torch.mean((model(y_hist) - y_target) ** 2), {}
+
+    class _TupleDataset(torch.utils.data.Dataset[tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]]):
+        def __init__(self, y_h: torch.Tensor, u_h: torch.Tensor, u_f: torch.Tensor, y_t: torch.Tensor) -> None:
+            self.tensors = (y_h, u_h, u_f, y_t)
+
+        def __len__(self) -> int:
+            return len(self.tensors[0])
+
+        def __getitem__(self, index: int) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+            return (self.tensors[0][index], self.tensors[1][index], self.tensors[2][index], self.tensors[3][index])
+
+    dummy_u_train = torch.zeros((200, 1), dtype=torch.float32)
+    dummy_u_val = torch.zeros((56, 1), dtype=torch.float32)
+    train_loader = torch.utils.data.DataLoader(
+        _TupleDataset(x[:200], dummy_u_train, dummy_u_train, y[:200]),
+        batch_size=cfg.batch_size,
+        shuffle=True,
+    )
+    val_loader = torch.utils.data.DataLoader(
+        _TupleDataset(x[200:], dummy_u_val, dummy_u_val, y[200:]),
+        batch_size=cfg.batch_size,
+        shuffle=False,
+    )
 
     model = _TinyNet(n_in, n_out)
-    train_losses, val_losses, _, _ = fit_gradient_descent(
-        model, x[:200], y[:200], x[200:], y[200:], cfg, seed=_SEED, loss_fn=mse
-    )
+    train_losses, val_losses, _, _ = fit_gradient_descent(model, train_loader, val_loader, cfg, seed=_SEED, loss_fn=mse)
 
     assert len(train_losses) == len(val_losses) == 20
     assert train_losses[-1] < train_losses[0]
