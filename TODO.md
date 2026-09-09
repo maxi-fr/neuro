@@ -2,6 +2,8 @@
 
 * Test cost functions with JR model as the MPC predictor!!!
 
+* waveform mlp at 0.1s time steps?? used to be 0.2s no? Have to change back
+
 ## Refactors
 
 * is mpc hinge spectral cost function tested?
