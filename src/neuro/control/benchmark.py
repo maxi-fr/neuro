@@ -23,6 +23,7 @@ from trajopt.transcription.osqp import OSQP
 from trajopt.transcription.single_shooting import SingleShooting
 
 from neuro.control.mpc import (
+    IPOPT_DEFAULTS,
     build_observable_problem,
     build_waveform_problem,
     canonicalize_duals,
@@ -38,10 +39,6 @@ if TYPE_CHECKING:
     from neuro.spectral import HealthyReference
 
 logger = logging.getLogger(__name__)
-
-# An infeasible transcription can grind rather than fail, so every Ipopt backend is capped: a row
-# that hits the cap is reported as a non-converged solver instead of hanging the benchmark.
-_IPOPT_DEFAULTS = {"print_level": 0, "hessian_approximation": "limited-memory", "max_iter": 300}
 
 _LABELS = {
     "single_shooting": "SingleShooting(Ipopt)",
@@ -70,9 +67,9 @@ def get_benchmark_solver(
     name_lower = name.lower()
     opts_dict: dict[str, Any] = options if isinstance(options, dict) else {}
     if name_lower in ("single_shooting", "ss"):
-        return SingleShooting(solver=Ipopt(options={**_IPOPT_DEFAULTS, **opts_dict}))
+        return SingleShooting(solver=Ipopt(options={**IPOPT_DEFAULTS, **opts_dict}))
     if name_lower == "ipopt":
-        return Ipopt(options={**_IPOPT_DEFAULTS, **opts_dict})
+        return Ipopt(options={**IPOPT_DEFAULTS, **opts_dict})
     if name_lower == "altro":
         solver_options = options if isinstance(options, SolverOptions) else SolverOptions(**opts_dict)
         return ALTRO(options=solver_options)
