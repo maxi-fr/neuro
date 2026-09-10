@@ -25,6 +25,8 @@
 %   is undetermined, so y_EEG is in arbitrary units. State that thresholds and cost weights
 %   are therefore relative to the model's own background level. Section 3.1.4 flags this.
 
+
+\subsection{Filtering}
 \section{Prediction Model Training and Inference}
 
 \subsection{Waveform Predictor}
@@ -35,7 +37,28 @@
 
 % Dynamic Mode Decomposition - Koopman connection
 
+\subsection{Training}
+
+% Training Dataset generation
+
+% Loss functions
+
 
 \section{MPC Controller and Cost Function Design}
 
-\subsection{Nonlinear ARX (NARX) Formulation}
+\subsection{Mixed-integer formulation}
+
+% From my notes:
+%
+% * (Mixed)-Integer problem:
+%  
+%   * Binary decision variable at every time-step wheter a pulse is applied or not.
+%   * Extension: also optimize amplitude and duty cycle per time step
+%
+% * Continuous relaxation:
+%  
+%   * mpc chooses time point when a pulse is applied
+%   * continuous (not integer) problem
+%   * would need not a discrete but a continuous (ode) prediction model
+%
+% This then compared to: L2 and L1-loss behaviour
