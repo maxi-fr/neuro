@@ -6,7 +6,7 @@
 
 The controllers designed in this work need to be evaluated through simulations against a ground thruth model plant.
 The plant used throughout this work is a whole-brain network of Jansen-Rit neural masses coupled
-through a structural connectome, following the epilepsy model of Yu et al.\ \cite{Yu2024}.
+through a structural connectome, following the epilepsy model of Yu et al.~\cite{Yu2024}.
 This section develops that model from the single cortical column to the network, and closes with the two electrical interfaces the controller acts through: the scalp \ac{eeg} it measures and the stimulation drive it applies.
 
 \subsection{The Jansen-Rit Neural Mass Model}
@@ -14,16 +14,15 @@ This section develops that model from the single cortical column to the network,
 A neural mass model abandons the individual neuron and describes a cortical macro-column
 by the mean membrane potential and mean firing rate of whole populations, an approximation
 justified when the quantity of interest --- the extracellular field --- is itself a % no em dash
-spatial average over millions of cells \cite{LopesDaSilva1974,Nunez2006}. Lopes da Silva
-et al.\ introduced the formalism to explain the thalamic alpha rhythm \cite{LopesDaSilva1974},
+spatial average over millions of cells~\cite{LopesDaSilva1974,Nunez2006}. Lopes da Silva
+et al.\ introduced the formalism to explain the thalamic alpha rhythm~\cite{LopesDaSilva1974},
 and Jansen and Rit gave it the three-population form used here, which reproduces both
-resting alpha activity and visual evoked potentials from one parameter set
-\cite{Jansen1995}.
+resting alpha activity and visual evoked potentials from one parameter set~\cite{Jansen1995}.
 Its appeal for this work is the combination of physiological
-interpretability as well as the ability to produce waveforms characteristic of epileptic seizures \cite{Wendling2002,Yu2024}.
+interpretability as well as the ability to produce waveforms characteristic of epileptic seizures~\cite{Wendling2002,Yu2024}.
 This differentiates it from simpler models such as Wilson-Cowan or FitzHugh-Nagumo, both only two instead of six states, separate excitation from inhibition but collapse the synaptic filtering setting the frequency of the resulting
 rhythm, and produce oscillations without the spike-wave morphology making a simulated
-seizure recognisable \cite{David2003}.
+seizure recognisable~\cite{David2003}.
 
 Each node $i$ comprises a population of \acp{py} that projects to, and receives
 feedback from, a population of \acp{ein} and a population of \acp{iin}, wired as shown in
@@ -33,7 +32,7 @@ branch a negative one, and the competition between the two produces the oscillat
 model is built to explain. The strengths of the four intra-columnar projections are the
 average synaptic contact numbers $c_1$ to $c_4$, held at the standard proportions
 $c_2 = 0.8\,c_1$ and $c_3 = c_4 = 0.25\,c_1$ so that a single number $c_1$ scales the
-whole microcircuit \cite{Jansen1995}.
+whole microcircuit~\cite{Jansen1995}.
 
 \begin{figure}[tb]
     \centering
@@ -57,7 +56,7 @@ with the impulse response
 %
 \begin{equation}
     h_\mathrm{e}(t) = A\,a\,t\,\mathrm{e}^{-a t}, \qquad
-    h_\mathrm{i}(t) = B\,b\,t\,\mathrm{e}^{-b t}, \qquad t \geq 0,
+    h_\mathrm{i}(t) = B\,b\,t\,\mathrm{e}^{-b t}, \qquad t \geq 0 \,,
     \label{eq:psp_kernel}
 \end{equation}
 %
@@ -68,7 +67,7 @@ wave-to-pulse operator mapping the mean membrane potential $v$ of a population o
 mean firing rate through the sigmoid
 %
 \begin{equation}
-    S(v) = \frac{2 e_0}{1 + \exp\!\big(r (v_0 - v)\big)},
+    S(v) = \frac{2 e_0}{1 + \exp\!\big(r (v_0 - v)\big)} \,,
     \label{eq:sigmoid}
 \end{equation}
 %
@@ -76,7 +75,7 @@ whose ceiling $2 e_0$ is the maximum population firing rate, whose midpoint $v_0
 potential at which half the population fires, and whose steepness $r$ reflects the spread of
 firing thresholds across the cells of the population.
 
-Because the kernel in \eqref{eq:psp_kernel} is the Green's function of a second-order linear
+Because the kernel in~\eqref{eq:psp_kernel} is the Green's function of a second-order linear
 operator, the convolution can be written as a pair of first-order differential equations, and
 the three populations together give the six states $x_{i,1}$ to $x_{i,6}$ per node. The
 potentials $x_{i,1}$, $x_{i,2}$ and $x_{i,3}$ are the \ac{psp} of the pyramidal, excitatory and
@@ -89,7 +88,7 @@ the node obeys
     \dot{x}_{i,2} &= x_{i,5}, \nonumber \\
     \dot{x}_{i,5} &= A_i a \left[ I + c_2 S\!\left(c_1 x_{i,1}\right) + I_{\mathrm{coup},i} \right] - 2 a\, x_{i,5} - a^2 x_{i,2} + \zeta_i, \label{eq:jr_node} \\
     \dot{x}_{i,3} &= x_{i,6}, \nonumber \\
-    \dot{x}_{i,6} &= B b\, c_4 S\!\left(c_3 x_{i,1}\right) - 2 b\, x_{i,6} - b^2 x_{i,3}, \nonumber
+    \dot{x}_{i,6} &= B b\, c_4 S\!\left(c_3 x_{i,1}\right) - 2 b\, x_{i,6} - b^2 x_{i,3} \,, \nonumber
 \end{align}
 %
 where $I$ is the constant excitatory background input standing in for afferents the model does
@@ -99,42 +98,36 @@ The term $\zeta_i$ is Gaussian white noise of intensity $\sigma$ entering the ex
 The noise is a necessary component. A node sitting just below its bifurcation has two
 coexisting attractors, and only the noise pushes it from the quiet one into the
 oscillating one, so the noise is the mechanism by which
-seizures start at irregular times and by which repeated runs of one configuration differ
-\cite{Yu2024}. Table~\ref{tab:jr_params} collects the parameter values, which are those of the
-original single-column fit \cite{Jansen1995} except where the network model of Yu et al.\
-prescribes otherwise \cite{Yu2024}.
+seizures start at irregular times and by which repeated runs of one configuration differ~\cite{Yu2024}. Table~\ref{tab:jr_params} collects the parameter values, which are those of the
+original single-column fit~\cite{Jansen1995} except where the network model of Yu et al.\
+prescribes otherwise~\cite{Yu2024}.
 
 The quantity read out of a node is the net depolarisation of the pyramidal population,
 %
 \begin{equation}
-    y_{\mathrm{LFP},i}(t) = x_{i,2}(t) - x_{i,3}(t),
+    y_{\mathrm{LFP},i}(t) = x_{i,2}(t) - x_{i,3}(t) \,,
     \label{eq:lfp}
 \end{equation}
 %
 the difference between the excitatory and inhibitory \ac{psp} arriving at the pyramidal
 soma. Its physical interpretation is taken up in Section~\ref{sec:electro}; for the dynamics
-it matters that $y_{\mathrm{LFP},i}$ is also the argument of the pyramidal sigmoid in
-\eqref{eq:jr_node}, so the output of a node and its own feedback are the same signal.
+it matters that $y_{\mathrm{LFP},i}$ is also the argument of the pyramidal sigmoid in~\eqref{eq:jr_node}, so the output of a node and its own feedback are the same signal.
 
 \subsection{Regional Excitability and Seizure Onset}
 \label{sec:excitability}
 
 The excitatory synaptic gain $A_i$ is the parameter deciding which regime a node
 settles into, which is why it carries a regional index while every other
-parameter in \eqref{eq:jr_node} is shared. Increasing $A_i$ strengthens the excitatory
+parameter in~\eqref{eq:jr_node} is shared. Increasing $A_i$ strengthens the excitatory
 feedback loop relative to the inhibitory one, and the node passes through a Hopf
 bifurcation from a stable fixed point, around which noise produces low-amplitude alpha-band
 fluctuations, to a large-amplitude limit cycle of spike-wave morphology. Following the
-excitability partition established for whole-brain epilepsy models
-\cite{Yu2024}, three levels are used. Healthy background tissue takes
+excitability partition established for whole-brain epilepsy models~\cite{Yu2024}, three levels are used. Healthy background tissue takes
 $A_i = 3.25\,\si{\milli\volt}$ and rests at the fixed point. The \ac{ez} takes
 $A_i = 3.6\,\si{\milli\volt}$ and oscillates autonomously, needing no input from the
 network to seize. The \ac{pz} takes the intermediate $A_i = 3.4\,\si{\milli\volt}$, which
 leaves it below its own bifurcation but close enough that coupling from an active \ac{ez}
 recruits it.
-Figure~\ref{fig:bifurcation} shows the three levels as time series and Welch power
-spectra, the estimator Section~\ref{sec:stft} develops, and contrasts a \ac{pz} node in
-isolation with the same node embedded in the network.
 
 \begin{figure}[tb]
     \centering
@@ -153,6 +146,10 @@ isolation with the same node embedded in the network.
     \label{fig:bifurcation}
 \end{figure}
 
+Figure~\ref{fig:bifurcation} shows the three levels as time series and Welch power
+spectra, the estimator Section~\ref{sec:stft} develops, and contrasts a \ac{pz} node in
+isolation with the same node embedded in the network.
+
 \subsection{Connectome Coupling and Conduction Delays}
 \label{sec:connectome}
 
@@ -161,7 +158,7 @@ strongly, and how long the signal takes to arrive. The first two are carried by 
 structural connectivity matrix $\mathbf{W} \in \mathbb{R}^{N \times N}$ over $N$ regions,
 whose entry $w_{ij}$ is the density of fibres between regions $i$ and $j$; the matrix is
 symmetric, since diffusion-weighted tractography and the tracer collations it is validated
-against recover fibre bundles without their direction \cite{Kotter2004,SanzLeon2013}. A
+against recover fibre bundles without their direction~\cite{Kotter2004,SanzLeon2013}. A
 single global coupling factor $K$ scales the whole matrix and is the one free network
 parameter, $\mathbf{W}$ itself being measured rather than fitted.
 
@@ -170,16 +167,16 @@ is a firing rate rather than a potential, and it arrives late. The delay follows
 fibre length $\ell_{ij}$ between the two regions and a conduction speed $c$ assumed uniform
 across the white matter, giving the delay matrix $\mathbf{D} \in \mathbb{R}^{N \times N}$
 with entries $d_{ij} = \ell_{ij} / c$. Delayed presynaptic firing enters the excitatory
-\ac{psp} channel of the receiving node, so the coupling term of \eqref{eq:jr_node} is
+\ac{psp} channel of the receiving node, so the coupling term of~\eqref{eq:jr_node} is
 %
 \begin{equation}
-    I_{\mathrm{coup},i}(t) = K \sum_{j=1}^{N} w_{ij}\, S\!\big(y_{\mathrm{LFP},j}(t - d_{ij})\big).
+    I_{\mathrm{coup},i}(t) = K \sum_{j=1}^{N} w_{ij}\, S\!\big(y_{\mathrm{LFP},j}(t - d_{ij})\big) \,.
     \label{eq:coupling}
 \end{equation}
 %
-Together, \eqref{eq:jr_node} and \eqref{eq:coupling} constitute a stochastic delay
+Together,~\eqref{eq:jr_node} and~\eqref{eq:coupling} constitute a stochastic delay
 differential equation in the $6N$-dimensional state
-$\mathbf{x}(t) = \big[x_{1,1}(t), \dots, x_{N,6}(t)\big]^\top$, whose solution from a given
+$\mathbf{x}(t) = \big[x_{1, 1}(t), \dots, x_{N, 6}(t)\big]^\top$, whose solution from a given
 initial history is the Plant every later chapter treats as ground truth.
 
 With $\ell_{ij}$ on the order of \SI{100}{\milli\metre} and $c$ on the order of
@@ -195,12 +192,12 @@ synaptic currents entering the apical dendrites of a pyramidal population, toget
 the return currents at the soma, form a current dipole oriented along the somato-dendritic
 axis of the cell; because pyramidal cells are aligned perpendicular to the cortical
 sheet, these dipoles sum coherently across a region instead of cancelling, and they, not
-the action potentials, dominate the extracellular field \cite{Nunez2006}. The net somatic depolarisation $x_{i,2} - x_{i,3}$ is the only variable of the model tracking
+the action potentials, dominate the extracellular field~\cite{Nunez2006}. The net somatic depolarisation $x_{i,2} - x_{i,3}$ is the only variable of the model tracking
 that current balance, and it is taken as a proxy for the regional dipole moment up to an
 undetermined constant of proportionality, the convention throughout neural mass modelling
-of \ac{eeg} \cite{David2003,SanzLeon2015}. The convention is a modelling choice rather
+of \ac{eeg}~\cite{David2003,SanzLeon2015}. The convention is a modelling choice rather
 than a derivation: the model carries no cortical geometry, so it fixes neither the sign
-nor the scale of the dipole, and \eqref{eq:lfp} therefore predicts the waveform of the
+nor the scale of the dipole, and~\eqref{eq:lfp} therefore predicts the waveform of the
 regional \ac{lfp} but not its absolute amplitude.
 
 Scalp \ac{eeg} follows from the \ac{lfp} by volume conduction through the head. Quasi-static
@@ -209,13 +206,12 @@ $\mathbf{y}_\mathrm{LFP}(t) \in \mathbb{R}^{N}$ collecting the regional \acp{lfp
 channel voltages are
 %
 \begin{equation}
-    \mathbf{y}_\mathrm{EEG}(t) = \mathbf{L}_\mathrm{EEG}\, \mathbf{y}_\mathrm{LFP}(t),
+    \mathbf{y}_\mathrm{EEG}(t) = \mathbf{L}_\mathrm{EEG}\, \mathbf{y}_\mathrm{LFP}(t) \,,
     \label{eq:eeg}
 \end{equation}
 %
 where the \ac{eeg} lead field $\mathbf{L}_\mathrm{EEG} \in \mathbb{R}^{M \times N}$ holds in
-entry $(m,i)$ the voltage electrode $m$ records per unit dipole moment in region $i$
-\cite{SanzLeon2015}. The dipole scale being undetermined, $\mathbf{y}_\mathrm{EEG}$ carries
+entry $(m,i)$ the voltage electrode $m$ records per unit dipole moment in region $i$~\cite{SanzLeon2015}. The dipole scale being undetermined, $\mathbf{y}_\mathrm{EEG}$ carries
 the arbitrary amplitude units of $\mathbf{y}_\mathrm{LFP}$ rather than volts, which is why
 every threshold and cost in the later chapters is stated relative to the background level
 of the model itself.
@@ -223,34 +219,32 @@ of the model itself.
 Stimulation runs in the opposite direction. Transcranial currents injected at $P$ scalp
 electrodes produce an electric field in the head, and the component of that field along the
 somato-dendritic axis polarises the pyramidal membrane, shifting its operating point on the
-sigmoid without injecting a firing rate of its own. The perturbation therefore enters
-\eqref{eq:jr_node} inside the pyramidal sigmoid as the additive drive $s_i$, the
+sigmoid without injecting a firing rate of its own. The perturbation therefore enters~\eqref{eq:jr_node} inside the pyramidal sigmoid as the additive drive $s_i$, the
 macroscopic $\lambda_\mathrm{E}$ formulation of \ac{tes} adopted by large-scale modelling
-studies \cite{Kunze2016,Merlet2013,Yu2024}. Collecting the electrode currents in
+studies~\cite{Kunze2016,Merlet2013,Yu2024}. Collecting the electrode currents in
 $\mathbf{u} \in \mathbb{R}^{P}$ and the regional drives in $\mathbf{s} \in \mathbb{R}^{N}$,
 the drive is
 %
 \begin{equation}
     \mathbf{s}(t) = \mathbf{L}_\mathrm{stim}\, \mathbf{u}(t), \qquad
-    \mathbf{1}^\top \mathbf{u}(t) = 0,
+    \mathbf{1}^\top \mathbf{u}(t) = 0 \,,
     \label{eq:stim}
 \end{equation}
 %
 with the stimulation lead field $\mathbf{L}_\mathrm{stim} \in \mathbb{R}^{N \times P}$ and
 the zero-sum constraint imposed by Kirchhoff's current law, which forbids current from accumulating in the head.
 
-The two lead fields in \eqref{eq:eeg} and \eqref{eq:stim} describe the same physics viewed
+The two lead fields in~\eqref{eq:eeg} and~\eqref{eq:stim} describe the same physics viewed
 from opposite ends. Helmholtz reciprocity states that the lead field relating a source in
 the brain to a pair of scalp electrodes is identical to the field the same electrode pair
-would produce in the brain when driven by unit current \cite{Malmivuo1995}, so
+would produce in the brain when driven by unit current~\cite{Malmivuo1995}, so
 $\mathbf{L}_\mathrm{stim}$ and $\mathbf{L}_\mathrm{EEG}^\top$ ought to agree up to scaling.
 How the two lead fields are obtained in practice is taken up in Chapter~\ref{ch:methodology}.
 
 \begin{table}[tb]
     \centering
     \caption{Parameters of the Jansen-Rit network model. Values follow the original
-    single-column fit \cite{Jansen1995} and the whole-brain epilepsy model of Yu et al.\
-    \cite{Yu2024}. The global coupling factor $K$ and the noise intensity $\sigma$ deviate
+    single-column fit~\cite{Jansen1995} and the whole-brain epilepsy model of Yu et al.~\cite{Yu2024}. The global coupling factor $K$ and the noise intensity $\sigma$ deviate
     from the values of Yu et al.\ and were recalibrated for the connectome used here, as
     Chapter~\ref{ch:methodology} sets out. Rate constants are given both as inverse time
     constants and as the corresponding time constants.}
@@ -306,17 +300,16 @@ Only one channel is treated here. Every operation below acts on each channel of
 $\mathbf{y}_\mathrm{EEG}$ separately, so the channel index is dropped throughout the section
 and restored where the channels are stacked again.
 
-\subsection{Segmentation and the Time-Frequency Trade-off}
+\subsection{Segmentation and the Time-Frequency Trade-Off}
 \label{sec:stft_grid}
 
 The plant evolves in continuous time, while everything downstream of the electrodes reads it
 on a sampling grid. Fixing a sampling interval $\Delta t = 1 /
 f_\mathrm{s}$ and writing $t_k = k \, \Delta t$, the sampled channel is
 %
-\begin{equation}
-    y_k = y_\mathrm{EEG}(t_k), \qquad k \in \mathbb{Z},
-    \label{eq:sampling}
-\end{equation}
+\begin{equation*}
+    y_k = y_\mathrm{EEG}(t_k), \qquad k \in \mathbb{Z} \,,
+\end{equation*}
 %
 and $k$ indexes both the measurements and, from Section~\ref{sec:mpc} on, the steps at which
 the controller acts. The \ac{stft} cuts that stream into segments of $L_\mathrm{s}$ samples
@@ -327,7 +320,7 @@ of a segment its coefficients are
 \begin{equation}
     Y_q(f_\nu) = \sum_{n=0}^{L_\mathrm{s}-1} g_n \, y_{q H_\mathrm{s} + n}
     \, \mathrm{e}^{-\mathrm{i} 2 \pi \nu n / L_\mathrm{s}},
-    \qquad f_\nu = \nu \, f_\mathrm{s} / L_\mathrm{s},
+    \qquad f_\nu = \nu \, f_\mathrm{s} / L_\mathrm{s} \,,
     \label{eq:stft}
 \end{equation}
 %
@@ -335,24 +328,6 @@ where $\nu = 0, \dots, L_\mathrm{s}/2$ indexes the frequency bins of the real-in
 and $f_\nu$ is the frequency each bin sits at. The segment length $L_\mathrm{s}$ and the hop
 $H_\mathrm{s}$ are the two integers that fix the grid, and Figure~\ref{fig:stft_geometry}
 draws it.
-
-The segment length settles two things at once. Segment $q$ ends at sample
-$q H_\mathrm{s} + L_\mathrm{s} - 1$ and uses no sample after it, so the transform runs online,
-though not before that sample has arrived: each spectrum lags the oldest sample it carries by
-$L_\mathrm{s} \, \Delta t$ seconds, and anything acting on those spectra inherits the lag. The
-same length also fixes the resolution. Bins are spaced $\Delta f = f_\mathrm{s}/L_\mathrm{s}$
-apart, which is also the width of the central peak the finite segment convolves the true
-spectrum with, so two components closer together than $\Delta f$ are reported as one
-\cite{Oppenheim2010}. Resolving finer structure means a longer segment, and a longer segment
-means a longer delay.
-
-The taper $g_n$ is the remaining freedom. Taking a segment without one multiplies the signal
-by a rectangular window, whose transform has ripples flanking the central peak, the sidelobes,
-decaying only as $1/f$. A strong low-frequency component then leaks power across the whole
-band and buries weaker structure. Tapering the segment edges smoothly to zero suppresses the
-sidelobes and widens the central peak to roughly twice $\Delta f$ in exchange
-\cite{Oppenheim2010}. This thesis uses the periodic Hann taper throughout, in the training
-loss and in the controller alike.
 
 \begin{figure}[tb]
     \centering
@@ -367,10 +342,26 @@ loss and in the controller alike.
     \label{fig:stft_geometry}
 \end{figure}
 
+The segment length settles two things at once. Segment $q$ ends at sample
+$q H_\mathrm{s} + L_\mathrm{s} - 1$ and uses no sample after it, so the transform runs online,
+though not before that sample has arrived: each spectrum lags the oldest sample it carries by
+$L_\mathrm{s} \, \Delta t$ seconds, and anything acting on those spectra inherits the lag. The
+same length also fixes the resolution. Bins are spaced $\Delta f = f_\mathrm{s}/L_\mathrm{s}$
+apart, which is also the width of the central peak the finite segment convolves the true
+spectrum with, so two components closer together than $\Delta f$ are reported as one~\cite{Oppenheim2010}. Resolving finer structure means a longer segment, and a longer segment
+means a longer delay.
+
+The taper $g_n$ is the remaining freedom. Taking a segment without one multiplies the signal
+by a rectangular window, whose transform has ripples flanking the central peak, the sidelobes,
+decaying only as $1/f$. A strong low-frequency component then leaks power across the whole
+band and buries weaker structure. Tapering the segment edges smoothly to zero suppresses the
+sidelobes and widens the central peak to roughly twice $\Delta f$ in exchange~\cite{Oppenheim2010}. This thesis uses the periodic Hann taper throughout, in the training
+loss and in the controller alike.
+
 \subsection{Power Estimation and Averaging}
 \label{sec:stft_power}
 
-Only the magnitude of \eqref{eq:stft} is carried further. The phase records where within a
+Only the magnitude of~\eqref{eq:stft} is carried further. The phase records where within a
 segment each component sits, and that shifts with every hop even when the spectrum itself does
 not move, whereas what separates the regimes of Figure~\ref{fig:bifurcation} is how much power
 sits where. Each segment is therefore reduced to the one-sided power spectral density
@@ -383,7 +374,7 @@ sits where. Each segment is therefore reduced to the one-sided power spectral de
     \begin{cases}
         1, & \nu \in \{0, \, L_\mathrm{s}/2\}, \\
         2, & \text{otherwise},
-    \end{cases}
+    \end{cases} \,,
     \label{eq:periodogram}
 \end{equation}
 %
@@ -391,7 +382,7 @@ the periodogram of segment $q$. The factor $\alpha_\nu$ folds the negative frequ
 the positive ones, sparing the two bins that have no partner. The denominator holds the taper
 energy $\sum_n g_n^2$, which the Hann definition does not normalise to one, and dividing it
 out makes the result a density per hertz whose value does not depend on how long the segment
-was or on how much the taper attenuated it \cite{Oppenheim2010}. Without that normalisation a
+was or on how much the taper attenuated it~\cite{Oppenheim2010}. Without that normalisation a
 comparison between two segment lengths would confound a change of resolution with a change of
 scale.
 
@@ -399,7 +390,7 @@ Equation~\eqref{eq:periodogram} is a poor estimator, and poor in a way lengtheni
 does not repair. For a stationary Gaussian process the real and imaginary parts of $Y_q(f_\nu)$
 are asymptotically independent and Gaussian with variance proportional to the true density
 $\Phi(f_\nu)$, so $\hat{\Phi}_q$ is that density scaled by a chi-squared variable with two
-degrees of freedom \cite{Oppenheim2010}. Its standard deviation therefore equals its mean,
+degrees of freedom~\cite{Oppenheim2010}. Its standard deviation therefore equals its mean,
 whatever $L_\mathrm{s}$ is. Doubling the segment doubles the number of bins and leaves the
 scatter within each of them untouched, which is why a single periodogram of a long record
 looks like noise drawn around the shape it is meant to reveal. Averaging is the only remedy.
@@ -413,12 +404,12 @@ again. Averaging over a trailing group of segments instead keeps it,
 %
 \begin{equation}
     \bar{\Phi}_q(f_\nu) = \sum_{q'=0}^{L_\mathrm{k}-1} \kappa_{q'} \,
-    \hat{\Phi}_{q-q'}(f_\nu),
+    \hat{\Phi}_{q-q'}(f_\nu) \,,
     \label{eq:frame_kernel}
 \end{equation}
 %
 with non-negative weights $\kappa_{q'}$ summing to one over a width of $L_\mathrm{k}$
-segments. Uniform weights make \eqref{eq:frame_kernel} a Welch estimate over the trailing
+segments. Uniform weights make~\eqref{eq:frame_kernel} a Welch estimate over the trailing
 $L_\mathrm{k}$ segments, recomputed at every hop. A triangular or Hann weighting instead
 discounts older segments, which is the sensible choice when the spectrum is expected to move.
 The kernel costs a further $(L_\mathrm{k} - 1) H_\mathrm{s}$ samples of delay and leaves
@@ -440,24 +431,24 @@ separate from the segment length. Figure~\ref{fig:stft_resolution} separates the
     \label{fig:stft_resolution}
 \end{figure}
 
-Figure~\ref{fig:stft_spectrogram} runs the whole construction on a node being recruited into a
-seizure. What $L_\mathrm{s}$, $H_\mathrm{s}$ and $L_\mathrm{k}$ should be is left open here,
-because the answer depends on how fast the loop has to close and on what a prediction model
-can be expected to forecast. The next section develops the control formulation that settles
-the first of those questions.
-
 \begin{figure}[tb]
     \centering
     \includegraphics[width=0.9\linewidth]{figures/03_foundations/stft_spectrogram}
     \caption{Spectra of a \ac{pz} node recruited by the \ac{ez}, from the 76-region network of
     Table~\ref{tab:jr_params} started at the healthy fixed point and decimated to
     $f_\mathrm{s} = \SI{50}{\hertz}$. Top, the \ac{lfp}, which leaves its resting level shortly
-    after \SI{2.5}{\second}. Bottom, the periodograms \eqref{eq:periodogram} at
+    after \SI{2.5}{\second}. Bottom, the periodograms~\eqref{eq:periodogram} at
     $L_\mathrm{s} = 50$ and $H_\mathrm{s} = 25$, one every \SI{0.5}{\second}, with no
     averaging over segments and on a decibel colour scale. Recruitment appears as a step in
     the low-frequency bins within one hop of the transition in the trace.}
     \label{fig:stft_spectrogram}
 \end{figure}
+
+Figure~\ref{fig:stft_spectrogram} runs the whole construction on a node being recruited into a
+seizure. What $L_\mathrm{s}$, $H_\mathrm{s}$ and $L_\mathrm{k}$ should be is left open here,
+because the answer depends on how fast the loop has to close and on what a prediction model
+can be expected to forecast. The next section develops the control formulation that settles
+the first of those questions.
 
 \section{Model Predictive Control}
 \label{sec:mpc}
@@ -471,8 +462,8 @@ objective of its own, since the delivered charge bounds both the exposure of the
 the energy the device draws. \Ac{mpc} minimises that objective directly, where a fixed
 feedback law spends whatever effort its gain dictates. The second is constraint handling.
 Scalp stimulation is bounded by a Control Budget on per-electrode and total current, and
-Kirchhoff's law of \eqref{eq:stim} forces the currents to sum to zero at every instant. \Ac{mpc} enforces both inside the optimisation, whereas a
-fixed feedback law can only be clipped after the fact \cite{Rawlings2017,Mayne2000}.
+Kirchhoff's law of~\eqref{eq:stim} forces the currents to sum to zero at every instant. \Ac{mpc} enforces both inside the optimisation, whereas a
+fixed feedback law can only be clipped after the fact~\cite{Rawlings2017,Mayne2000}.
 
 \subsection{Receding Horizon Control}
 \label{sec:rhc}
@@ -480,7 +471,7 @@ fixed feedback law can only be clipped after the fact \cite{Rawlings2017,Mayne20
 Let the prediction model be a discrete-time map
 %
 \begin{equation*}
-    \mathbf{x}_{k+1} = \mathbf{f}(\mathbf{x}_k, \mathbf{u}_k),
+    \mathbf{x}_{k+1} = \mathbf{f}(\mathbf{x}_k, \mathbf{u}_k) \,,
 \end{equation*}
 %
 with $\mathbf{x}_k \in \mathbb{R}^{n_x}$ the model state at step $k$, $\mathbf{u}_k \in
@@ -503,7 +494,7 @@ At step $k$ the controller solves, over the control horizon of $H$ steps, the \a
       \qquad j = 0, \dots, H-1, \nonumber \\
     & \mathbf{x}_{0|k} = \hat{\mathbf{x}}_k, \label{eq:ocp} \\
     & \mathbf{g}\!\left(\mathbf{x}_{j|k}, \mathbf{u}_{j|k}\right) = \mathbf{0}, \nonumber \\
-    & \mathbf{h}\!\left(\mathbf{x}_{j|k}, \mathbf{u}_{j|k}\right) \leq \mathbf{0}, \nonumber
+    & \mathbf{h}\!\left(\mathbf{x}_{j|k}, \mathbf{u}_{j|k}\right) \leq \mathbf{0} \,, \nonumber
 \end{align}
 %
 in which the double index $j|k$ denotes the quantity predicted $j$ steps ahead from the
@@ -516,10 +507,10 @@ instance of $\mathbf{g}$. Writing $\mathbf{u}^\star_{0|k}, \dots, \mathbf{u}^\st
 for the minimiser, the controller discards all but the first element and applies
 %
 \begin{equation*}
-    \mathbf{u}_k = \mathbf{u}^\star_{0|k},
+    \mathbf{u}_k = \mathbf{u}^\star_{0|k} \,,
 \end{equation*}
 %
-then advances to step $k+1$, takes a fresh measurement, and solves \eqref{eq:ocp} again over
+then advances to step $k+1$, takes a fresh measurement, and solves~\eqref{eq:ocp} again over
 a window shifted one step into the future. Figure~\ref{fig:receding_horizon} shows the
 mechanism over three consecutive steps.
 
@@ -539,7 +530,7 @@ mechanism over three consecutive steps.
     \label{fig:receding_horizon}
 \end{figure}
 
-Solving \eqref{eq:ocp} once yields an open-loop input sequence. Feedback arises only from
+Solving~\eqref{eq:ocp} once yields an open-loop input sequence. Feedback arises only from
 the repetition: because $\hat{\mathbf{x}}_k$ is refreshed from measurement before every
 solve, a deviation between what the model predicted and what the plant did is corrected at
 the next step rather than accumulating over the horizon. Two of the difficulties in this
@@ -550,32 +541,30 @@ future disturbance to its expected value is the certainty-equivalent approximati
 is only an approximation, because the cost of the expected trajectory is not the expected
 cost of the trajectory whenever the dynamics or the cost are nonlinear. Stochastic and
 robust \ac{mpc} instead propagate the disturbance distribution or a worst-case tube through
-the horizon and tighten the constraints accordingly \cite{Mesbah2016}, at a cost in problem
+the horizon and tighten the constraints accordingly~\cite{Mesbah2016}, at a cost in problem
 size not taken on here. The second difficulty is model mismatch. The prediction model is
 identified from data and is wrong in ways no disturbance model captures, so its rollout
 degrades with $j$; the receding horizon limits the damage by acting on the near end of the
 horizon, where the prediction is most trustworthy, and re-planning before the far end is
-reached \cite{Hewing2020}.
+reached~\cite{Hewing2020}.
 
 Repetition alone establishes no stability guarantee. Nominal stability results for \ac{mpc}
 are built on terminal ingredients, a terminal cost $V_\mathrm{f}$ chosen as a local control
 Lyapunov function together with a terminal set the state is constrained to reach, which make
-the optimal cost a Lyapunov function of the closed loop and give recursive feasibility
-\cite{Mayne2000}. Constructing them requires an equilibrium to build the terminal set around
+the optimal cost a Lyapunov function of the closed loop and give recursive feasibility~\cite{Mayne2000}. Constructing them requires an equilibrium to build the terminal set around
 and a model accurate enough for that set to remain invariant under the true dynamics.
 Neither is available to a data-driven controller acting on a seizure, so the closed loop of
 this work carries no certificate and its stability is assessed empirically, in
 closed-loop simulation. The relevant theory for that setting is the
 analysis of receding horizon control without terminal ingredients, where closed-loop
 performance is bounded in terms of the horizon length and a controllability condition, and a
-sufficiently long horizon recovers a fraction of the infinite-horizon performance
-\cite{Gruene2017}. Horizon length thus carries the burden terminal ingredients would
+sufficiently long horizon recovers a fraction of the infinite-horizon performance~\cite{Gruene2017}. Horizon length thus carries the burden terminal ingredients would
 otherwise carry, which is why Chapter~\ref{ch:methodology} treats it as a tuning parameter
 rather than fixing it by design.
 
 \subsection{Linear and Nonlinear MPC}
 
-The character of \eqref{eq:ocp} is decided by $\mathbf{f}$ and $\ell$. If the model is
+The character of~\eqref{eq:ocp} is decided by $\mathbf{f}$ and $\ell$. If the model is
 linear, $\mathbf{x}_{k+1} = \mathbf{A}\mathbf{x}_k + \mathbf{B}\mathbf{u}_k$ with the system
 matrix $\mathbf{A}$ and input matrix $\mathbf{B}$, the stage cost quadratic,
 $\ell(\mathbf{x}, \mathbf{u}) = \mathbf{x}^\top \mathbf{Q} \mathbf{x} + \mathbf{u}^\top
@@ -583,30 +572,30 @@ $\ell(\mathbf{x}, \mathbf{u}) = \mathbf{x}^\top \mathbf{Q} \mathbf{x} + \mathbf{
 the constraints affine, then the predicted states are affine in the input sequence and can
 be substituted out. What remains is a \ac{qp} in the inputs alone: convex, with a single
 global minimiser a solver reaches reliably and in a number of iterations that can be bounded
-in advance \cite{Rawlings2017}.
+in advance~\cite{Rawlings2017}.
 
 Those properties are worth striving for, and the obstacle is that the plant is not linear.
-The Jansen-Rit node is nonlinear through the sigmoid of \eqref{eq:sigmoid}, and the
+The Jansen-Rit node is nonlinear through the sigmoid of~\eqref{eq:sigmoid}, and the
 stimulation drive enters inside that sigmoid. Nonlinear dynamics do not by themselves force
 a nonlinear controller, however, because linearity is a property of the coordinates the
 model is written in as much as of the system. Koopman operator theory makes the point
 precise. The flow of a nonlinear system acts linearly on functions of its state, so a model
 predicting a suitably chosen set of observables forward can be linear even though the
-underlying dynamics are not \cite{Rowley2009,Brunton2016}. A linear model in such a lifted
-space returns \eqref{eq:ocp} to a \ac{qp}, and Section~\ref{sec:sysid} takes up the question
+underlying dynamics are not~\cite{Rowley2009,Brunton2016}. A linear model in such a lifted
+space returns~\eqref{eq:ocp} to a \ac{qp}, and Section~\ref{sec:sysid} takes up the question
 of whether one identified from data predicts well enough over a whole control horizon.
 
-Where no such model is available, \eqref{eq:ocp} is a nonconvex \ac{nlp} and \ac{nmpc} loses
+Where no such model is available,~\eqref{eq:ocp} is a nonconvex \ac{nlp} and \ac{nmpc} loses
 every property the linear case supplies: a solver returns a local minimiser whose quality
 depends on the initial guess, several such minimisers may exist, and the number of
-iterations needed to reach one is not known in advance \cite{Findeisen2002}. Choosing
+iterations needed to reach one is not known in advance~\cite{Findeisen2002}. Choosing
 between the two formulations trades the reliability of the optimisation against the fidelity
 of the model, and this work implements both to see where each of them falls.
 
 \subsection{Transcription and Numerical Solution}
 \label{sec:transcription}
 
-Turning \eqref{eq:ocp} into something a numerical solver accepts is called transcription,
+Turning~\eqref{eq:ocp} into something a numerical solver accepts is called transcription,
 and the choice is which of the predicted quantities become decision variables.
 
 In direct single shooting the inputs alone are optimised. The dynamics are used to simulate
@@ -617,10 +606,10 @@ explicit function $\boldsymbol{\varphi}_j$ of the initial state and the inputs p
     \boldsymbol{\varphi}_0 = \hat{\mathbf{x}}_k, \qquad
     \boldsymbol{\varphi}_{j+1}\!\left(\hat{\mathbf{x}}_k, \mathbf{u}_{0|k}, \dots,
     \mathbf{u}_{j|k}\right)
-    = \mathbf{f}\!\left(\boldsymbol{\varphi}_j, \mathbf{u}_{j|k}\right),
+    = \mathbf{f}\!\left(\boldsymbol{\varphi}_j, \mathbf{u}_{j|k}\right) \,,
 \end{equation*}
 %
-and substituting it into \eqref{eq:ocp} leaves
+and substituting it into~\eqref{eq:ocp} leaves
 %
 \begin{align}
     \min_{\mathbf{u}_{0|k}, \dots, \mathbf{u}_{H-1|k}} \quad
@@ -629,7 +618,7 @@ and substituting it into \eqref{eq:ocp} leaves
     \text{s.t.} \quad
     & \mathbf{g}\!\left(\boldsymbol{\varphi}_j, \mathbf{u}_{j|k}\right) = \mathbf{0},
       \label{eq:single_shooting} \\
-    & \mathbf{h}\!\left(\boldsymbol{\varphi}_j, \mathbf{u}_{j|k}\right) \leq \mathbf{0},
+    & \mathbf{h}\!\left(\boldsymbol{\varphi}_j, \mathbf{u}_{j|k}\right) \leq \mathbf{0} \,,
       \nonumber
 \end{align}
 %
@@ -638,7 +627,7 @@ so every solver iterate is already a valid trajectory of the model.
 
 In direct multiple shooting the horizon is cut into intervals and the state at the start of
 each interval joins the decision vector, with continuity imposed as an explicit equality
-constraint \cite{Bock1984}. Taking every step as an interval, the problem is
+constraint~\cite{Bock1984}. Taking every step as an interval, the problem is
 %
 \begin{align}
     \min_{\mathbf{x}_{0|k}, \dots, \mathbf{x}_{H|k},\; \mathbf{u}_{0|k}, \dots,
@@ -650,13 +639,12 @@ constraint \cite{Bock1984}. Taking every step as an interval, the problem is
       = \mathbf{0}, \qquad
       \mathbf{x}_{0|k} - \hat{\mathbf{x}}_k = \mathbf{0}, \label{eq:multiple_shooting} \\
     & \mathbf{g}\!\left(\mathbf{x}_{j|k}, \mathbf{u}_{j|k}\right) = \mathbf{0}, \qquad
-      \mathbf{h}\!\left(\mathbf{x}_{j|k}, \mathbf{u}_{j|k}\right) \leq \mathbf{0}, \nonumber
+      \mathbf{h}\!\left(\mathbf{x}_{j|k}, \mathbf{u}_{j|k}\right) \leq \mathbf{0} \,, \nonumber
 \end{align}
 %
 in $H n_u + (H+1) n_x$ variables. The continuity equalities hold only at convergence, so an
 intermediate iterate consists of trajectory pieces separated by gaps at the interval
-boundaries, as Figure~\ref{fig:shooting} contrasts with the single unbroken rollout of
-\eqref{eq:single_shooting}.
+boundaries, as Figure~\ref{fig:shooting} contrasts~\eqref{eq:multiple_shooting} with the single unbroken rollout of~\eqref{eq:single_shooting}.
 
 The path constraints $\mathbf{g}$ and $\mathbf{h}$ appear in both transcriptions in different
 forms. Multiple shooting imposes them on decision variables directly, so a bound on a
@@ -665,7 +653,7 @@ banded, each block coupling one interval to the next. Under single shooting the 
 not variables. A constraint on $\boldsymbol{\varphi}_j$ is a nonlinear function of the $j$
 inputs preceding it, its Jacobian row fills in as the horizon advances, and a simple state
 bound late in the horizon ends up a dense nonlinear inequality. Constraints on the input
-escape this. Kirchhoff's law of \eqref{eq:stim} and the Control Budget involve no predicted
+escape this. Kirchhoff's law of~\eqref{eq:stim} and the Control Budget involve no predicted
 state, so single shooting leaves them the simple bounds and linear equalities they were.
 
 The sensitivities behave the same way. A single shooting rollout compounds them across the
@@ -695,32 +683,31 @@ iterate by a \ac{qp} with a quadratic model of the Lagrangian and linearised con
 solve it for a step, and repeat, which suits receding horizon control because a warm start
 from the previous solve often leaves few active-set changes to resolve. Interior-point
 methods instead replace the inequality constraints by a barrier term and drive the barrier
-parameter to zero, following a central path to the solution \cite{Waechter2006}. Interior-point methods scale
+parameter to zero, following a central path to the solution~\cite{Waechter2006}. Interior-point methods scale
 better with the number of constraints and are less able to exploit a warm start, since they
 require a strictly feasible interior point and the previous solution typically sits on the
-boundary \cite{Nocedal2006}.
+boundary~\cite{Nocedal2006}.
 
 \subsection{Output Feedback and Input-Output Models}
 \label{sec:output_feedback}
 
-The formulation \eqref{eq:ocp} assumes the initial state $\hat{\mathbf{x}}_k$ is known, and
+The formulation~\eqref{eq:ocp} assumes the initial state $\hat{\mathbf{x}}_k$ is known, and
 in this application it is not. The plant carries $6N$ states plus the history of the delay
-term, and the controller sees $M$ linear mixtures of a subset of them through
-\eqref{eq:eeg}. The classical remedy places an observer in front of the controller,
+term, and the controller sees $M$ linear mixtures of a subset of them through~\eqref{eq:eeg}. The classical remedy places an observer in front of the controller,
 estimates the state from the measurement sequence, and hands the estimate to the \ac{ocp} as
 though it were exact. For linear systems the separation principle makes the arrangement
 sound, but under nonlinear dynamics and active constraints no such principle holds, and
 stability results for output-feedback \ac{nmpc} rest instead on the observer error decaying
-fast enough relative to the controller \cite{Findeisen2003}. The construction also needs the
+fast enough relative to the controller~\cite{Findeisen2003}. The construction also needs the
 plant equations the observer is built from, which a data-driven setting does not provide.
 
 The alternative taken here removes the estimation problem instead of solving it. An
 input-output model of \ac{narx} type predicts the next measurement from a finite window of
-past measurements and past inputs \cite{Chen1989}, so that
+past measurements and past inputs~\cite{Chen1989}, so that
 %
 \begin{equation*}
     \mathbf{y}_{k+1} = \mathbf{f}_\mathrm{NARX}\!\left(\mathbf{y}_k, \dots,
-    \mathbf{y}_{k-n_\mathrm{y}+1},\; \mathbf{u}_k, \dots, \mathbf{u}_{k-n_\mathrm{u}+1}\right),
+    \mathbf{y}_{k-n_\mathrm{y}+1},\; \mathbf{u}_k, \dots, \mathbf{u}_{k-n_\mathrm{u}+1}\right) \,,
 \end{equation*}
 %
 with $\mathbf{y}_k$ the measurement at step $k$ and $n_\mathrm{y}$ and $n_\mathrm{u}$ the
@@ -729,8 +716,7 @@ numbers of past outputs and inputs retained. The window is the model state, $\ma
 quantities the controller has recorded rather than inferred, so $\hat{\mathbf{x}}_k$ is
 available exactly and neither an observer nor a separation argument is needed. Two
 requirements replace the ones the observer imposed. The window has to be long enough to
-carry the information about the plant state the model needs, which the delayed coupling of
-\eqref{eq:coupling} makes concrete, and the model must be filled with a valid history before
+carry the information about the plant state the model needs, which the delayed coupling of~\eqref{eq:coupling} makes concrete, and the model must be filled with a valid history before
 its first prediction is meaningful. Chapter~\ref{ch:methodology} treats that Priming
 requirement as part of the closed-loop schedule.
 
@@ -741,7 +727,7 @@ The stage cost decides what the controller considers success, and it separates i
 terms answering different questions,
 %
 \begin{equation*}
-    \ell(\mathbf{x}, \mathbf{u}) = \ell_\mathrm{x}(\mathbf{x}) + \ell_\mathrm{u}(\mathbf{u}),
+    \ell(\mathbf{x}, \mathbf{u}) = \ell_\mathrm{x}(\mathbf{x}) + \ell_\mathrm{u}(\mathbf{u}) \,,
 \end{equation*}
 %
 one scoring the predicted state or output and one scoring the input. The first expresses
@@ -753,7 +739,7 @@ between the predicted quantity and a reference. Seizure suppression admits no si
 reference trajectory, because any output waveform whose spectra stay within the envelope of
 healthy activity is acceptable and the many such waveforms are not ranked against each other.
 A cost expressing a performance criterion directly rather than the distance to a precomputed
-setpoint is called economic \cite{Ellis2014}, and a criterion scoring how far a predicted
+setpoint is called economic~\cite{Ellis2014}, and a criterion scoring how far a predicted
 spectrum rises above such an envelope, while leaving it free underneath, is of that kind. Both forms are used in Chapter~\ref{ch:methodology}: quadratic
 tracking terms drive predicted quantities towards zero wherever a meaningful target exists,
 and economic terms take over wherever the objective is an envelope rather than a value.
@@ -762,19 +748,17 @@ The input term is the second half of the stage cost, and its choice does more th
 effort against performance. Writing the input penalty as an $\ell_p$ norm of the input,
 %
 \begin{equation}
-    \ell_\mathrm{u}(\mathbf{u}) = w \, \|\mathbf{u}\|_p^p,
+    \ell_\mathrm{u}(\mathbf{u}) = w \, \|\mathbf{u}\|_p^p \,,
     \label{eq:input_penalty}
 \end{equation}
 %
 with $w > 0$ the weight, the quadratic case $p = 2$ penalises large currents quadratically
 and small ones hardly at all, so its minimisers spread a small current over the whole
 horizon and every electrode. The case $p = 1$ penalises with a constant slope down to zero
-and drives components exactly to zero instead, the sparsity mechanism the lasso is built on
-\cite{Tibshirani1996}. The limit of the sequence is the $\ell_0$ pseudo-norm counting the
+and drives components exactly to zero instead, the sparsity mechanism the lasso is built on~\cite{Tibshirani1996}. The limit of the sequence is the $\ell_0$ pseudo-norm counting the
 nonzero entries, which is what a sparsity requirement actually means and which is neither
 convex nor differentiable. The link between the two is that on a bounded set the $\ell_1$
-norm is the convex envelope of $\ell_0$, the largest convex function bounding it from below
-\cite{Boyd2004}, so $\ell_1$ is the tightest convex surrogate for sparsity available rather
+norm is the convex envelope of $\ell_0$, the largest convex function bounding it from below~\cite{Boyd2004}, so $\ell_1$ is the tightest convex surrogate for sparsity available rather
 than a merely convenient smooth stand-in. Under the sparsity motivation of
 Section~\ref{sec:mi_mpc}, where the quantity to be economised is delivered charge, the
 progression from $p = 2$ through $p = 1$ to the $\ell_0$ limit forms a single axis along
@@ -791,39 +775,39 @@ between the two is the standard big-$M$ implication
 %
 \begin{equation*}
     -\delta_{j|k} \, u_\mathrm{max} \leq u_{p,j|k} \leq \delta_{j|k} \, u_\mathrm{max},
-    \qquad p = 1, \dots, P,
+    \qquad p = 1, \dots, P \,,
 \end{equation*}
 %
 with $u_{p,j|k}$ the predicted current at electrode $p$ and $u_\mathrm{max}$ the
 per-electrode bound, which forces the amplitude to zero on steps the controller elects not
 to stimulate and leaves it free otherwise. A budget of $n_\mathrm{p}$ pulses per horizon is
 then the linear constraint $\sum_{j=0}^{H-1} \delta_{j|k} \leq n_\mathrm{p}$, and the
-sparsity the $\ell_1$ penalty of \eqref{eq:input_penalty} only encourages becomes something
+sparsity the $\ell_1$ penalty of~\eqref{eq:input_penalty} only encourages becomes something
 the problem enforces exactly. Systems mixing continuous dynamics with logical decisions of
-this kind are the subject of the mixed logical dynamical framework \cite{Bemporad1999}.
+this kind are the subject of the mixed logical dynamical framework~\cite{Bemporad1999}.
 
 Problem~\eqref{eq:ocp} extended this way is a \ac{miqp} when the underlying problem is a
 \ac{qp} and a \ac{minlp} in the nonlinear case treated here. Both are solved by
 branch-and-bound: a relaxation with the integrality dropped supplies a lower bound, a
 fractional variable is selected and the problem split into the two subproblems fixing it to
 zero and to one, and subtrees whose bound is worse than the best known integer solution are
-pruned \cite{Belotti2013}. Pruning is what makes the method usable, but it guarantees
+pruned~\cite{Belotti2013}. Pruning is what makes the method usable, but it guarantees
 nothing, and the worst case remains the $2^H$ binary combinations over the horizon. The cost
 is far more damaging in receding horizon control than in offline planning, because the
 problem is solved not once but at every sampling instant, and because a \ac{minlp} node
 relaxation is itself a nonconvex \ac{nlp} whose local minimiser is not a valid bound. Move
 blocking, which constrains the input to be constant across groups of consecutive steps and
 so reduces the number of binary variables below $H$, is the usual lever for keeping the tree
-small enough \cite{Cagienard2007}.
+small enough~\cite{Cagienard2007}.
 
 The alternative to solving the integer problem is to relax it, solve the resulting
 continuous problem, and recover a binary solution from the relaxed one. Relaxing
-$\delta_{j|k} \in \{0,1\}$ to $\delta_{j|k} \in [0,1]$ returns the \ac{minlp} to an \ac{nlp}
+$\delta_{j|k} \in \{0, 1\}$ to $\delta_{j|k} \in [0, 1]$ returns the \ac{minlp} to an \ac{nlp}
 of the kind Section~\ref{sec:transcription} already handles, at the price of a solution
 physically meaningless where it is fractional, a pulse being either delivered or not. A
 rounding scheme has to follow, and its value rests on whether the trajectory of the rounded
 solution can be bounded against that of the relaxed one; bounds of this kind exist for
-mixed-integer optimal control and tighten as the discretisation is refined \cite{Sager2012}.
+mixed-integer optimal control and tighten as the discretisation is refined~\cite{Sager2012}.
 Which relaxation and rounding to adopt is left open here, because the choice interacts with
 the prediction model: a relaxation over pulse timing rather than pulse presence needs a
 model evaluable between sampling instants, which a discrete-time predictor is not.
@@ -832,4 +816,4 @@ Chapter~\ref{ch:methodology} returns to the question once the prediction model i
 \section{Data-Driven Dynamics Identification}
 \label{sec:sysid}
 
-\subsection{Multilayer Perceptrons (MLP)}
+\subsection{Multilayer Perceptrons (MLP)} % latex-lint: ignore=STRUC-03

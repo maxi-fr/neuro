@@ -1,23 +1,154 @@
 \chapter{Experiments and Evaluation}
+\label{ch:experiments}
+
+% Generally: Each experiment should have its own question, setup, results, and interpretation.
+% what follows is just an idea. Don't take too rigidly
+% need to prove how purely waveform prediction - cost and cost fails
+% --------
 
 
-\section{Single Shooting vs. Multiple shooting}
-\subsection{Nonlinear ARX (NARX) Formulation}
-\subsection{PCMS}
-% Present NARX formulation and PCMS
+% Chapter introduction:
+% - Explain how the experiments answer the design questions formulated in Chapter 4.
+% - Establish the sequence: select geometry and training settings, compare Predictors
+%   and numerical methods, then evaluate closed-loop stimulation.
+% - End each study with the evidence supporting the choices used in subsequent studies.
+% Editorial boundary: refer to Chapter 4 for method definitions. Give experimental
+% settings, search spaces/budgets, results, and interpretation here.
+% For each comparison, state the question, what varies, what is held fixed, and the
+% criterion for judging the outcome. Do not assume that the expected improvement occurs.
 
+\section{Experimental Setup and Evaluation Criteria}
 
-\section{Seizure Metrics}
+\subsection{Simulation Scenarios and Data Splits}
+% Specify Plant configurations, simulation durations, stimulation scenarios, dataset
+% sizes, and independent repetitions. Refer to Chapter 4 for construction of the Plant.
+% Describe healthy and unstimulated seizure activity as reference conditions.
+% Include evidence for Plant calibration here if that calibration is an empirical study.
+% State which trajectories/seeds are used for training, selection, and final evaluation.
+% Use matched conditions across methods where possible and report variability across runs.
+% QUESTION: Which seizure regimes and stimulation conditions must the conclusions cover?
 
-% predictability, etc.
+\subsection{Prediction Accuracy and Seizure Metrics}
+% Define evaluation measures and aggregation over channels, time, and repetitions.
+% Include waveform and spectral prediction errors, Seizure State, and Seizure Burden
+% as relevant. Distinguish sensor-space scores from regional ground truth.
+% Assess prediction error over physical forecast duration, not just the number of steps.
+% Keep training Loss, controller Cost, and Closed-Loop Evaluation Score distinct.
+% QUESTION: What operational criterion defines a useful prediction duration for control?
 
-\section{Different Loss Functions experiment}
+\subsection{Stimulation Use and Computational Performance}
+% Define measures for current magnitude, stimulation duration, distinct pulse count,
+% and constraint satisfaction according to the formulations in Chapter 4.
+% State the computational setup and how solve time, failures, and solution quality are measured.
+% QUESTION: Is a controller update deadline part of the study, or is runtime a comparison
+% measure only? Do not claim real-time feasibility without testing a stated deadline.
 
-% with the focus on result of STFT vs curriculum + STFT
+\section{Selection of Spectral Observable Geometry}
+% QUESTION: Which STFT geometry makes the spectral Observable useful for prediction
+% and control, under the selection criterion established in Chapter 4?
 
+\subsection{Geometry Search and Comparison Protocol}
+% Give candidate Segment lengths, Frame hops, and other geometry parameters varied.
+% State the Predictor class, fitting procedure, search budget, and selection data.
+% Account for changes in target dimension, Frame rate, and physical prediction duration.
+% QUESTION: What common evaluation reference makes scores comparable when changing
+% the geometry changes the target itself? Avoid ranking solely by native training Loss.
 
-\section{Predictor comparison}
+\subsection{Prediction Accuracy and Temporal Responsiveness}
+% Compare prediction quality and preservation of seizure onset/propagation dynamics.
+% Report tradeoffs associated with temporal and spectral resolution and smoothing.
+% If selection uses closed-loop performance, include that evidence on selection scenarios
+% here and reserve independent scenarios for the final closed-loop comparison.
+% QUESTION: Does a geometry that is easier to predict still resolve changes needed for control?
 
-% maybe also hyperparameter sweeps
+\subsection{Selected Geometry}
+% Justify the configuration carried into later experiments using the declared criterion.
+% Report sensitivity to nearby choices and variability rather than only the best trial.
+% State what the evidence establishes about this choice and where it remains uncertain.
 
-\subsection{Closed-loop comparison}
+\section{Waveform Predictor Training-Loss Comparison}
+% QUESTION: How do waveform Loss, spectral Loss, and curriculum training affect the
+% accuracy and useful duration of waveform predictions?
+
+\subsection{Loss Geometry and Training Configurations}
+% Compare the Loss combinations and curricula defined in Chapter 4, including the
+% intended comparison of STFT training with curriculum plus STFT training.
+% Report searches over spectral Loss geometry, weights, and Spans where investigated.
+% This geometry scores waveform predictions; it need not equal the spectral Observable geometry.
+% Control model capacity, data, training effort, and repetitions, or explain differences.
+% QUESTION: Which comparisons isolate the effect of the Loss, geometry, and curriculum
+% rather than changing all three at once?
+
+\subsection{Prediction Results and Training Strategy Selection}
+% Evaluate waveform and spectral errors on common criteria across training objectives.
+% Examine multi-step error and retention of seizure dynamics and stimulation responses.
+% Justify the Loss geometry and training strategy used in the Predictor comparison.
+% Assess their consequences for control in the closed-loop study below; if control is
+% the selection criterion, report selection evidence here separately from final evaluation.
+
+\section{Predictor Comparison}
+% QUESTION: What is gained or lost by predicting waveforms versus spectral Observables,
+% and by using linear/DMD versus nonlinear MLP dynamics?
+
+\subsection{Comparison Protocol and Model Selection}
+% List the representation/model combinations studied and the configurations selected above.
+% Report remaining hyperparameter searches and comparable selection budgets.
+% Separate the representation comparison from the model-class comparison where possible.
+% QUESTION: Are the selected geometry and Loss settings transferable across model classes,
+% or does each class require its own selection? State the fairness criterion used.
+
+\subsection{Prediction Quality over the Control Horizon}
+% Compare errors at matched physical forecast durations and across relevant seizure regimes.
+% Use shared spectral evaluation criteria where waveform errors cannot be compared directly.
+% Assess response to candidate stimulation, as well as unstimulated seizure evolution.
+% Identify Predictors carried into closed-loop evaluation without equating prediction
+% accuracy with demonstrated control performance.
+
+\section{Numerical Solution Comparison}
+% QUESTION: Which formulation and solver solve the control problems reliably at the
+% Predictor dimensions and Control Horizons used in the study?
+% Keep this section proportional to its scientific role; shorten it if solver selection
+% is only a supporting choice. Definitions belong in Chapter 4.
+
+\subsection{Single Shooting, Multiple Shooting, and PCMS}
+% Compare the selected transcriptions, including the NARX and PCMS formulations.
+% Hold the underlying Predictor, Cost, constraints, and initial control problem fixed.
+% State initialization, termination tolerances, and treatment of whole-horizon Costs.
+
+\subsection{Solution Quality, Reliability, and Runtime}
+% Compare attained Cost, constraint violations, failure frequency, and solve time.
+% Examine the effect of Predictor class and Control Horizon where relevant.
+% Justify the numerical methods used in the subsequent closed-loop experiments.
+% QUESTION: Does a faster solve preserve the objective and feasibility of the original problem?
+
+\section{Closed-Loop Control Evaluation}
+% Test whether the choices above lead to seizure suppression under admissible stimulation.
+% Use final evaluation scenarios that were not used to select configurations.
+
+\subsection{Evaluation Protocol and Reference Conditions}
+% Specify controller configurations, Control Horizons, update intervals, and evaluation durations.
+% Include the unstimulated reference and justify any additional control baselines.
+% State how controller Cost weights and budgets were selected before final evaluation.
+% QUESTION: Which comparisons isolate the Predictor, suppression Cost, and stimulation
+% formulation, and which compare the best selected combination for each method?
+
+\subsection{Prediction Representation and Suppression Objective}
+% QUESTION: Do the open-loop prediction advantages translate into lower Seizure Burden?
+% Compare waveform and spectral Predictors and the suppression Costs defined in Chapter 4.
+% Relate sensor-space improvement to regional seizure outcomes and stimulation use.
+% Include focused training-Loss comparisons if needed to establish their effect on control.
+
+\subsection{Continuous and Pulse-Based Stimulation}
+% QUESTION: How do L2/L1 continuous control and pulse-based formulations trade seizure
+% suppression against current magnitude, stimulation time, pulse count, and computation?
+% Compare the mixed-integer method, relaxation with schedule recovery, and continuous
+% pulse-timing method included in the thesis, under explicitly comparable restrictions.
+% Evaluate recovered schedules as delivered to the Plant, not just their relaxed objectives.
+% QUESTION: What changes after schedule recovery in feasibility and achieved suppression?
+% QUESTION: Does optimizing amplitude or duty cycle add benefit over the simpler pulse formulation?
+
+\subsection{Tradeoffs and Limits of the Findings}
+% Bring together suppression, stimulation use, and computational reliability across runs.
+% Identify where prediction-based selection agrees with closed-loop performance and where it fails.
+% Distinguish conclusions supported across scenarios from those specific to the simulated setup.
+% Close by answering the chapter's questions and preparing the thesis conclusion.

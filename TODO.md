@@ -5,6 +5,8 @@
 * get a clear overview over the predictors and their hyperparameters!!
   * clean up all the old config files etc.Run
 
+* figure out font typography etc.
+
 ## Refactors
 
 * potential estimator refactor: move State Absorption/Priming (the "lift") out of the model into the estimator, so the model is pure `x_{k+1} = f(x_k, u_k)`. The lift would become a shared function used by both the runtime estimator and the evaluation free_run. Deferred for now: the model owns the window, the estimator emits one native measurement (y_k / o_k).
