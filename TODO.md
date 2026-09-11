@@ -7,6 +7,8 @@
 
 * figure out font typography etc.
 
+* don't discard frequency 0Hz bin, could hold valuable information
+
 ## Refactors
 
 * potential estimator refactor: move State Absorption/Priming (the "lift") out of the model into the estimator, so the model is pure `x_{k+1} = f(x_k, u_k)`. The lift would become a shared function used by both the runtime estimator and the evaluation free_run. Deferred for now: the model owns the window, the estimator emits one native measurement (y_k / o_k).

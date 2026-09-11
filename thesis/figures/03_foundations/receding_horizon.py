@@ -90,7 +90,7 @@ def _closed_loop() -> tuple[FloatArray, FloatArray, list[tuple[int, FloatArray, 
 
 
 def main() -> None:
-    """Write the two-panel state and input figure showing three successive plans."""
+    """Write three successive plans with the scalar input limits marked explicitly."""
     y_real, u_real, plans = _closed_loop()
     t_real = np.arange(len(y_real)) * DT
 
@@ -125,7 +125,8 @@ def main() -> None:
 
     for bound in (-U_MAX, U_MAX):
         ax_u.axhline(bound, ls=":", lw=0.9, color="C3")
-    ax_u.text(0.02, U_MAX, r"$\mathbb{U}$", fontsize=8, color="C3", va="bottom")
+    ax_u.text(0.02, U_MAX, r"$u_\mathrm{max}$", fontsize=8, color="C3", va="bottom")
+    ax_u.text(0.02, -U_MAX, r"$-u_\mathrm{max}$", fontsize=8, color="C3", va="top")
     ax_u.set_ylabel("Input $u$ / a.u.")
     ax_u.set_xlabel("Time / s")
     ax_u.set_ylim(-1.5 * U_MAX, 1.5 * U_MAX)
