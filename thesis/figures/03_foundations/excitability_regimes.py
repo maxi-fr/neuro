@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
 from scipy.signal import welch
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import style
 
 from neuro.connectome import Connectome
 from neuro.jansen_rit import JansenRitDynamics, JansenRitParams, lfp, simulate_network
@@ -73,11 +77,11 @@ def main() -> None:
         (_isolated(A_EZ), "(d) Epileptogenic zone, $A_i = 3.6$ mV, uncoupled"),
     ]
 
-    fig, axes = plt.subplots(len(panels), 2, figsize=(7.0, 7.0), constrained_layout=True)
+    fig, axes = plt.subplots(len(panels), 2, figsize=style.figsize(height_in=4.4), constrained_layout=True)
     for row, ((t, y), label) in enumerate(panels):
         axes[row, 0].plot(t, y, lw=0.7, color="C0")
         axes[row, 0].set_ylabel("$y_\\mathrm{LFP}$ / mV")
-        axes[row, 0].set_title(label, fontsize=8, loc="left")
+        axes[row, 0].set_title(label, loc="left")
         axes[row, 0].set_xlim(0.0, 4.0)
 
         f, pxx = welch(y, fs=1.0 / DT, nperseg=2**14)

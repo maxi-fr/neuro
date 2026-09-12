@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import style
 
 from neuro.types import FloatArray  # noqa: TC001 -- runtime import keeps the script runnable standalone
 
@@ -78,11 +82,11 @@ def main() -> None:
     pieces = _pieces(u)
     length = HORIZON // N_INTERVALS
 
-    fig, (ax_s, ax_m) = plt.subplots(2, 1, figsize=(6.2, 4.4), sharex=True, constrained_layout=True)
+    fig, (ax_s, ax_m) = plt.subplots(2, 1, figsize=style.figsize(height_in=4.0), sharex=True, constrained_layout=True)
 
     ax_s.plot(t, single, lw=1.6, color="C0", marker="o", ms=3.5, label="predicted trajectory")
     ax_s.plot(t[0], single[0], marker="s", ms=6, color="C3", ls="none", label=r"$\hat{\mathbf{x}}_k$")
-    ax_s.set_title("Direct single shooting", fontsize=9, loc="left")
+    ax_s.set_title("Direct single shooting", loc="left")
     ax_s.annotate(
         "only the inputs are decision variables,\n"
         "so the dynamics hold at every iterate and\n"
@@ -91,7 +95,7 @@ def main() -> None:
         xycoords="axes fraction",
         ha="right",
         va="top",
-        fontsize=7,
+        fontsize=style.FONT_ANNOTATION,
     )
 
     for i, piece in enumerate(pieces):
@@ -118,7 +122,7 @@ def main() -> None:
             arrowprops={"arrowstyle": "<->", "lw": 1.0, "color": "C3"},
         )
     ax_m.plot(t[0], X0, marker="s", ms=6, color="C3", ls="none", label=r"$\hat{\mathbf{x}}_k$")
-    ax_m.set_title("Direct multiple shooting", fontsize=9, loc="left")
+    ax_m.set_title("Direct multiple shooting", loc="left")
     ax_m.annotate(
         "gaps: continuity equality constraints, closed only at\nconvergence; the drawn iterate is not a valid trajectory",
         xy=(t[length], pieces[0][-1] + GAPS[0]),
@@ -126,7 +130,7 @@ def main() -> None:
         textcoords="axes fraction",
         ha="right",
         va="top",
-        fontsize=7,
+        fontsize=style.FONT_ANNOTATION,
         color="C3",
         arrowprops={"arrowstyle": "->", "lw": 0.7, "color": "C3"},
     )
@@ -135,7 +139,7 @@ def main() -> None:
 
     for ax in (ax_s, ax_m):
         ax.set_ylabel("State $x$ / a.u.")
-        ax.legend(fontsize=7, loc="lower left")
+        ax.legend(loc="lower left")
         ax.set_ylim(-0.6, 2.8)
         ax.grid(visible=True, lw=0.4, alpha=0.4)
         ax.set_axisbelow(True)

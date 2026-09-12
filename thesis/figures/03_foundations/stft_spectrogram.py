@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
 from scipy.signal import decimate
 from scipy.signal.windows import hann
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import style
 
 from neuro.connectome import Connectome
 from neuro.jansen_rit import JansenRitDynamics, JansenRitParams, lfp, resting_state, simulate_network
@@ -70,12 +74,12 @@ def main() -> None:
     t, y = _pz_trace()
     freqs, frame_times, power_db = _periodograms(y)
 
-    fig, axes = plt.subplots(2, 1, figsize=(6.6, 4.0), height_ratios=[1.0, 1.3], constrained_layout=True)
+    fig, axes = plt.subplots(2, 1, figsize=style.figsize(height_in=4.0), height_ratios=[1.0, 1.3], constrained_layout=True)
 
     ax = axes[0]
     ax.plot(t, y, lw=0.6, color="C0")
     ax.set_ylabel(r"$y_{\mathrm{LFP}}$ / mV")
-    ax.set_title("(a) Propagation-zone node recruited by the epileptogenic zone", fontsize=8, loc="left")
+    ax.set_title("(a) Propagation-zone node recruited by the epileptogenic zone", loc="left")
 
     ax = axes[1]
     d_f = freqs[1] - freqs[0]
@@ -85,7 +89,7 @@ def main() -> None:
     fig.colorbar(mesh, ax=ax, label=r"$\hat{\Phi}_q$ / dB", pad=0.02)
     ax.set_ylabel("Frequency / Hz")
     ax.set_xlabel("Time / s")
-    ax.set_title("(b) The periodograms it produces", fontsize=8, loc="left")
+    ax.set_title("(b) Spectrogram", loc="left")
 
     for ax in axes:
         ax.set_xlim(0.0, DURATION)

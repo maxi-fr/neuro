@@ -6,7 +6,7 @@
 
 The controllers designed in this work need to be evaluated through simulations against a ground thruth model plant.
 The plant used throughout this work is a whole-brain network of Jansen-Rit neural masses coupled
-through a structural connectome, following the epilepsy model of Yu et al.~\cite{Yu2024}.
+through a structural connectome, following the epilepsy model of Yu et al.~\cite{Yu2024}. % cite-checked: SUPPORTED
 This section develops that model from the single cortical column to the network, and closes with the two electrical interfaces the controller acts through: the scalp \ac{eeg} it measures and the stimulation drive it applies.
 
 \subsection{The Jansen-Rit Neural Mass Model}
@@ -14,15 +14,15 @@ This section develops that model from the single cortical column to the network,
 A neural mass model abandons the individual neuron and describes a cortical macro-column
 by the mean membrane potential and mean firing rate of whole populations, an approximation
 justified when the quantity of interest --- the extracellular field --- is itself a % no em dash
-spatial average over millions of cells~\cite{LopesDaSilva1974,Nunez2006}. Lopes da Silva
-et al.\ introduced the formalism to explain the thalamic alpha rhythm~\cite{LopesDaSilva1974},
+spatial average over millions of cells~\cite{LopesDaSilva1974,Buzsaki2012}. Lopes da Silva % cite-checked: SUPPORTED
+et al.\ introduced the formalism to explain the thalamic alpha rhythm~\cite{LopesDaSilva1974}, % cite-checked: SUPPORTED
 and Jansen and Rit gave it the three-population form used here, which reproduces both
-resting alpha activity and visual evoked potentials from one parameter set~\cite{Jansen1995}.
+resting alpha activity and visual evoked potentials from one parameter set~\cite{Jansen1995}. % cite-checked: SUPPORTED
 Its appeal for this work is the combination of physiological
-interpretability as well as the ability to produce waveforms characteristic of epileptic seizures~\cite{Wendling2002,Yu2024}.
+interpretability as well as the ability to produce waveforms characteristic of epileptic seizures~\cite{Wendling2002,Yu2024}. % cite-checked: SUPPORTED
 This differentiates it from simpler models such as Wilson-Cowan or FitzHugh-Nagumo, both only two instead of six states, separate excitation from inhibition but collapse the synaptic filtering setting the frequency of the resulting
 rhythm, and produce oscillations without the spike-wave morphology making a simulated
-seizure recognisable~\cite{David2003}.
+seizure recognisable~\cite{David2003}. % cite-checked: SUPPORTED
 
 Each node $i$ comprises a population of \acp{py} that projects to, and receives
 feedback from, a population of \acp{ein} and a population of \acp{iin}, wired as shown in
@@ -32,9 +32,9 @@ branch a negative one, and the competition between the two produces the oscillat
 model is built to explain. The strengths of the four intra-columnar projections are the
 average synaptic contact numbers $c_1$ to $c_4$, held at the standard proportions
 $c_2 = 0.8\,c_1$ and $c_3 = c_4 = 0.25\,c_1$ so that a single number $c_1$ scales the
-whole microcircuit~\cite{Jansen1995}.
+whole microcircuit~\cite{Jansen1995}. % cite-checked: SUPPORTED
 
-\begin{figure}[tb]
+\begin{figure}
     \centering
     % PLACEHOLDER -- see figures/03_foundations/PLACEHOLDER_jansen_rit_microcircuit.md
     \framebox[0.8\linewidth]{\rule{0pt}{5cm}\itshape Jansen-Rit microcircuit block diagram}
@@ -98,9 +98,9 @@ The term $\zeta_i$ is Gaussian white noise of intensity $\sigma$ entering the ex
 The noise is a necessary component. A node sitting just below its bifurcation has two
 coexisting attractors, and only the noise pushes it from the quiet one into the
 oscillating one, so the noise is the mechanism by which
-seizures start at irregular times and by which repeated runs of one configuration differ~\cite{Yu2024}. Table~\ref{tab:jr_params} collects the parameter values, which are those of the
-original single-column fit~\cite{Jansen1995} except where the network model of Yu et al.\
-prescribes otherwise~\cite{Yu2024}.
+seizures start at irregular times and by which repeated runs of one configuration differ~\cite{Yu2024}. Table~\ref{tab:jr_params} collects the parameter values, which are those of the % cite-checked: SUPPORTED
+original single-column fit~\cite{Jansen1995} except where the network model of Yu et al.\ % cite-checked: SUPPORTED
+prescribes otherwise~\cite{Yu2024}. % cite-checked: SUPPORTED
 
 The quantity read out of a node is the net depolarisation of the pyramidal population,
 %
@@ -122,14 +122,14 @@ parameter in~\eqref{eq:jr_node} is shared. Increasing $A_i$ strengthens the exci
 feedback loop relative to the inhibitory one, and the node passes through a Hopf
 bifurcation from a stable fixed point, around which noise produces low-amplitude alpha-band
 fluctuations, to a large-amplitude limit cycle of spike-wave morphology. Following the
-excitability partition established for whole-brain epilepsy models~\cite{Yu2024}, three levels are used. Healthy background tissue takes
+excitability partition established for whole-brain epilepsy models~\cite{Yu2024}, three levels are used. Healthy background tissue takes % cite-checked: SUPPORTED
 $A_i = 3.25\,\si{\milli\volt}$ and rests at the fixed point. The \ac{ez} takes
 $A_i = 3.6\,\si{\milli\volt}$ and oscillates autonomously, needing no input from the
 network to seize. The \ac{pz} takes the intermediate $A_i = 3.4\,\si{\milli\volt}$, which
 leaves it below its own bifurcation but close enough that coupling from an active \ac{ez}
 recruits it.
 
-\begin{figure}[tb]
+\begin{figure}
     \centering
     \includegraphics[width=0.9\linewidth]{figures/03_foundations/excitability_regimes}
     \caption{Jansen-Rit dynamics at the three excitability levels. Left, the local field
@@ -157,8 +157,8 @@ Scaling from one column to a brain means specifying which nodes talk to which, h
 strongly, and how long the signal takes to arrive. The first two are carried by the
 structural connectivity matrix $\mathbf{W} \in \mathbb{R}^{N \times N}$ over $N$ regions,
 whose entry $w_{ij}$ is the density of fibres between regions $i$ and $j$; the matrix is
-symmetric, since diffusion-weighted tractography and the tracer collations it is validated
-against recover fibre bundles without their direction~\cite{Kotter2004,SanzLeon2013}. A
+symmetric, since diffusion-weighted tractography recovers fibre bundles without their
+direction~\cite{SanzLeon2013}. A % cite-checked: SUPPORTED
 single global coupling factor $K$ scales the whole matrix and is the one free network
 parameter, $\mathbf{W}$ itself being measured rather than fitted.
 
@@ -192,16 +192,16 @@ synaptic currents entering the apical dendrites of a pyramidal population, toget
 the return currents at the soma, form a current dipole oriented along the somato-dendritic
 axis of the cell; because pyramidal cells are aligned perpendicular to the cortical
 sheet, these dipoles sum coherently across a region instead of cancelling, and they, not
-the action potentials, dominate the extracellular field~\cite{Nunez2006}. The net somatic depolarisation $x_{i,2} - x_{i,3}$ is the only variable of the model tracking
+the action potentials, dominate the extracellular field~\cite{Buzsaki2012}. The net somatic depolarisation $x_{i,2} - x_{i,3}$ is the only variable of the model tracking % cite-checked: SUPPORTED
 that current balance, and it is taken as a proxy for the regional dipole moment up to an
 undetermined constant of proportionality, the convention throughout neural mass modelling
-of \ac{eeg}~\cite{David2003,SanzLeon2015}. The convention is a modelling choice rather
+of \ac{eeg}~\cite{David2003,SanzLeon2015}. The convention is a modelling choice rather % cite-checked: SUPPORTED
 than a derivation: the model carries no cortical geometry, so it fixes neither the sign
 nor the scale of the dipole, and~\eqref{eq:lfp} therefore predicts the waveform of the
 regional \ac{lfp} but not its absolute amplitude.
 
 Scalp \ac{eeg} follows from the \ac{lfp} by volume conduction through the head. Quasi-static
-Maxwell equations make the map linear, so with
+Maxwell equations make the map linear~\cite{Buzsaki2012}, so with % cite-checked: SUPPORTED
 $\mathbf{y}_\mathrm{LFP}(t) \in \mathbb{R}^{N}$ collecting the regional \acp{lfp} the $M$
 channel voltages are
 %
@@ -211,7 +211,7 @@ channel voltages are
 \end{equation}
 %
 where the \ac{eeg} lead field $\mathbf{L}_\mathrm{EEG} \in \mathbb{R}^{M \times N}$ holds in
-entry $(m,i)$ the voltage electrode $m$ records per unit dipole moment in region $i$~\cite{SanzLeon2015}. The dipole scale being undetermined, $\mathbf{y}_\mathrm{EEG}$ carries
+entry $(m,i)$ the voltage electrode $m$ records per unit dipole moment in region $i$~\cite{SanzLeon2015}. The dipole scale being undetermined, $\mathbf{y}_\mathrm{EEG}$ carries % cite-checked: SUPPORTED
 the arbitrary amplitude units of $\mathbf{y}_\mathrm{LFP}$ rather than volts, which is why
 every threshold and cost in the later chapters is stated relative to the background level
 of the model itself.
@@ -219,9 +219,10 @@ of the model itself.
 Stimulation runs in the opposite direction. Transcranial currents injected at $P$ scalp
 electrodes produce an electric field in the head, and the component of that field along the
 somato-dendritic axis polarises the pyramidal membrane, shifting its operating point on the
-sigmoid without injecting a firing rate of its own. The perturbation therefore enters~\eqref{eq:jr_node} inside the pyramidal sigmoid as the additive drive $s_i$, the
+sigmoid without injecting a firing rate of its own~\cite{Buzsaki2012}. % cite-checked: SUPPORTED
+The perturbation therefore enters~\eqref{eq:jr_node} inside the pyramidal sigmoid as the additive drive $s_i$, the
 macroscopic $\lambda_\mathrm{E}$ formulation of \ac{tes} adopted by large-scale modelling
-studies~\cite{Kunze2016,Merlet2013,Yu2024}. Collecting the electrode currents in
+studies~\cite{Kunze2016,Merlet2013,Yu2024}. Collecting the electrode currents in % cite-checked: SUPPORTED
 $\mathbf{u} \in \mathbb{R}^{P}$ and the regional drives in $\mathbf{s} \in \mathbb{R}^{N}$,
 the drive is
 %
@@ -237,14 +238,14 @@ the zero-sum constraint imposed by Kirchhoff's current law, which forbids curren
 The two lead fields in~\eqref{eq:eeg} and~\eqref{eq:stim} describe the same physics viewed
 from opposite ends. Helmholtz reciprocity states that the lead field relating a source in
 the brain to a pair of scalp electrodes is identical to the field the same electrode pair
-would produce in the brain when driven by unit current~\cite{Malmivuo1995}, so
+would produce in the brain when driven by unit current~\cite{Malmivuo1995}, so % cite-checked: SUPPORTED
 $\mathbf{L}_\mathrm{stim}$ and $\mathbf{L}_\mathrm{EEG}^\top$ ought to agree up to scaling.
 How the two lead fields are obtained in practice is taken up in Chapter~\ref{ch:methodology}.
 
-\begin{table}[tb]
+\begin{table}
     \centering
     \caption{Parameters of the Jansen-Rit network model. Values follow the original
-    single-column fit~\cite{Jansen1995} and the whole-brain epilepsy model of Yu et al.~\cite{Yu2024}. The global coupling factor $K$ and the noise intensity $\sigma$ deviate
+    single-column fit~\cite{Jansen1995} and the whole-brain epilepsy model of Yu et al.~\cite{Yu2024}. The global coupling factor $K$ and the noise intensity $\sigma$ deviate % cite-checked: SUPPORTED
     from the values of Yu et al.\ and were recalibrated for the connectome used here, as
     Chapter~\ref{ch:methodology} sets out. Rate constants are given both as inverse time
     constants and as the corresponding time constants.}
@@ -329,7 +330,7 @@ and $f_\nu$ is the frequency each bin sits at. The segment length $L_\mathrm{s}$
 $H_\mathrm{s}$ are the two integers that fix the grid, and Figure~\ref{fig:stft_geometry}
 draws it.
 
-\begin{figure}[tb]
+\begin{figure}
     \centering
     \includegraphics[width=0.9\linewidth]{figures/03_foundations/stft_geometry}
     \caption{The grid an \ac{stft} imposes, drawn on a linear chirp sweeping
@@ -348,14 +349,14 @@ though not before that sample has arrived: each spectrum lags the oldest sample 
 $L_\mathrm{s} \, \Delta t$ seconds, and anything acting on those spectra inherits the lag. The
 same length also fixes the resolution. Bins are spaced $\Delta f = f_\mathrm{s}/L_\mathrm{s}$
 apart, which is also the width of the central peak the finite segment convolves the true
-spectrum with, so two components closer together than $\Delta f$ are reported as one~\cite{Oppenheim2010}. Resolving finer structure means a longer segment, and a longer segment
+spectrum with, so two components closer together than $\Delta f$ are reported as one~\cite{Oppenheim2010}. Resolving finer structure means a longer segment, and a longer segment % cite-checked: SUPPORTED
 means a longer delay.
 
 The taper $g_n$ is the remaining freedom. Taking a segment without one multiplies the signal
 by a rectangular window, whose transform has ripples flanking the central peak, the sidelobes,
 decaying only as $1/f$. A strong low-frequency component then leaks power across the whole
 band and buries weaker structure. Tapering the segment edges smoothly to zero suppresses the
-sidelobes and widens the central peak to roughly twice $\Delta f$ in exchange~\cite{Oppenheim2010}. This thesis uses the periodic Hann taper throughout, in the training
+sidelobes and widens the central peak to roughly twice $\Delta f$ in exchange~\cite{Oppenheim2010}. This thesis uses the periodic Hann taper throughout, in the training % cite-checked: SUPPORTED
 loss and in the controller alike.
 
 \subsection{Power Estimation and Averaging}
@@ -382,7 +383,7 @@ the periodogram of segment $q$. The factor $\alpha_\nu$ folds the negative frequ
 the positive ones, sparing the two bins that have no partner. The denominator holds the taper
 energy $\sum_n g_n^2$, which the Hann definition does not normalise to one, and dividing it
 out makes the result a density per hertz whose value does not depend on how long the segment
-was or on how much the taper attenuated it~\cite{Oppenheim2010}. Without that normalisation a
+was or on how much the taper attenuated it~\cite{Oppenheim2010}. Without that normalisation a % cite-checked: SUPPORTED
 comparison between two segment lengths would confound a change of resolution with a change of
 scale.
 
@@ -390,7 +391,7 @@ Equation~\eqref{eq:periodogram} is a poor estimator, and poor in a way lengtheni
 does not repair. For a stationary Gaussian process the real and imaginary parts of $Y_q(f_\nu)$
 are asymptotically independent and Gaussian with variance proportional to the true density
 $\Phi(f_\nu)$, so $\hat{\Phi}_q$ is that density scaled by a chi-squared variable with two
-degrees of freedom~\cite{Oppenheim2010}. Its standard deviation therefore equals its mean,
+degrees of freedom~\cite{Oppenheim2010}. Its standard deviation therefore equals its mean, % cite-checked: SUPPORTED
 whatever $L_\mathrm{s}$ is. Doubling the segment doubles the number of bins and leaves the
 scatter within each of them untouched, which is why a single periodogram of a long record
 looks like noise drawn around the shape it is meant to reveal. Averaging is the only remedy.
@@ -416,7 +417,7 @@ The kernel costs a further $(L_\mathrm{k} - 1) H_\mathrm{s}$ samples of delay an
 $\Delta f$ untouched, so it buys degrees of freedom rather than resolution and is a knob
 separate from the segment length. Figure~\ref{fig:stft_resolution} separates the two effects.
 
-\begin{figure}[tb]
+\begin{figure}
     \centering
     \includegraphics[width=0.98\linewidth]{figures/03_foundations/stft_resolution}
     \caption{The two knobs, on the \ac{lfp} of an uncoupled \ac{ez} node decimated to
@@ -431,7 +432,7 @@ separate from the segment length. Figure~\ref{fig:stft_resolution} separates the
     \label{fig:stft_resolution}
 \end{figure}
 
-\begin{figure}[tb]
+\begin{figure}
     \centering
     \includegraphics[width=0.9\linewidth]{figures/03_foundations/stft_spectrogram}
     \caption{Spectra of a \ac{pz} node recruited by the \ac{ez}, from the 76-region network of
@@ -458,7 +459,7 @@ with hard constraints on the electrode currents. \Ac{mpc} is suited to this stru
 because it determines the control input by solving a constrained finite-horizon \ac{ocp}.
 At each control step, the OCP predicts the response to a sequence of candidate inputs and
 minimises a cost over that prediction. Only the first input is applied before the problem is
-solved again using the latest measurements~\cite{Rawlings2017,Mayne2000}.
+solved again using the latest measurements~\cite{Rawlings2017,Mayne2000}. % cite-checked: SUPPORTED
 
 \subsection{Receding Horizon Control}
 \label{sec:rhc}
@@ -510,7 +511,7 @@ the controller computes predicted states and inputs by solving
         & \mathbf{x}_{H|k} \in \mathbb{X}_\mathrm{f} \,.
     \end{aligned}
     \label{eq:ocp}
-\end{equation}
+\end{equation} % latex-lint:ignore=MATH-01
 %
 The index $j|k$ denotes a quantity predicted $j$ steps ahead using the information available
 at step $k$. The initial condition $\hat{\mathbf{x}}_k$ is the state estimate available to
@@ -534,7 +535,7 @@ solves~\eqref{eq:ocp} again over a shifted prediction horizon.
 Figure~\ref{fig:receding_horizon} shows
 three such solves.
 
-\begin{figure}[tb]
+\begin{figure}
     \centering
     \includegraphics[width=0.9\linewidth]{figures/03_foundations/receding_horizon}
     \caption{The receding horizon principle over three control steps. At each step, the
@@ -559,16 +560,17 @@ the resulting deterministic OCP. This approximation ignores the distribution of 
 states. In particular, the cost of the expected state generally differs from the expected
 cost when the dynamics or cost are nonlinear. Stochastic MPC evaluates a probabilistic
 formulation, while robust MPC enforces performance or constraints for a prescribed
-uncertainty set~\cite{Mesbah2016,Hewing2020}.
+uncertainty set~\cite{Mesbah2016,Hewing2020}. % cite-checked: SUPPORTED
 
 Closed-loop stability does not follow from the receding-horizon procedure alone. Establishing
 stability is especially difficult for nonlinear dynamics and models affected by uncertainty. % citation?
 Standard approaches use terminal costs, terminal constraints, and a local terminal control
 law. Results without terminal ingredients require additional controllability and
-horizon-length assumptions~\cite{Mayne2000,Gruene2017}. The controllers studied here do not
+horizon-length assumptions~\cite{Mayne2000,Gruene2017}. The controllers studied here do not % cite-checked: SUPPORTED
 come with such a certificate, so their closed-loop behaviour is assessed in simulation.
 
 \subsection{Linear and Nonlinear MPC}
+\label{sec:linear_nonlinear_mpc}
 
 The numerical class of~\eqref{eq:ocp} depends on the prediction model, the cost functions, %  very abstract and unclear first sentence
 and the constraint sets. Consider the affine prediction model
@@ -582,7 +584,7 @@ $\mathbf{B} \in \mathbb{R}^{n_x \times n_u}$, and offset
 $\mathbf{c} \in \mathbb{R}^{n_x}$. If $\ell$ and $V_\mathrm{f}$ are convex quadratic
 functions and the constraint sets are polyhedral, the OCP is a convex \ac{qp}. A positive % I thought the constrainst needed to be affine?
 definite quadratic penalty on the input sequence makes the objective strictly convex, so a
-feasible problem has a unique solution~\cite{Rawlings2017}.
+feasible problem has a unique solution~\cite{Rawlings2017}. % cite-checked: SUPPORTED
 % why show only the equation for the linear dynamics but not everything else (cost, constraints, etc)?
 
 The Jansen-Rit dynamics are nonlinear because the stimulation drive enters the sigmoid
@@ -590,14 +592,14 @@ of~\eqref{eq:sigmoid}. A learned prediction model can nevertheless be linear in 
 Koopman theory describes the nonlinear dynamics through a linear operator acting on
 observable functions. This operator is generally infinite-dimensional. Exact
 finite-dimensional invariant subspaces that retain the variables needed for control exist
-only for restricted systems~\cite{Rowley2009,Brunton2016}. Data-driven linear prediction
+only for restricted systems~\cite{Rowley2009,Brunton2016}. Data-driven linear prediction % cite-checked: SUPPORTED
 models therefore use finite-dimensional approximations whose accuracy over the prediction
 horizon must be tested.
 
 A nonlinear prediction model usually turns the dynamic equality constraints into a nonconvex
 \ac{nlp}. A solver can then converge to different stationary points from different
 initial guesses, and global optimality is generally unavailable within a fixed online
-computation time~\cite{Findeisen2002}. Linear and nonlinear prediction models therefore
+computation time~\cite{Findeisen2002}. Linear and nonlinear prediction models therefore % cite-checked: SUPPORTED
 present a trade-off between predictive accuracy and numerical tractability.
 
 \subsection{Transcription and Numerical Solution}
@@ -631,7 +633,7 @@ consistent rollout of the prediction model, although it does not necessarily sat
 constraints.
 
 Direct multiple shooting also optimises the $(H+1)n_x$ predicted state components. It % optimizes over the ... or direct MS also includes the ... in the optimization variables (smt like that)
-imposes the one-step continuity constraints~\cite{Bock1984}
+imposes the one-step continuity constraints~\cite{Bock1984} % cite-checked: SUPPORTED
 %
 \begin{equation}
     \mathbf{x}_{0|k} = \hat{\mathbf{x}}_k, \qquad
@@ -665,7 +667,7 @@ conditioning depends on the singular values of the factors, so
 the product may amplify or attenuate early-input sensitivities. Multiple shooting shortens
 these products at the cost of more variables and equality constraints.
 
-\begin{figure}[tb]
+\begin{figure}
     \centering
     \includegraphics[width=0.9\linewidth]{figures/03_foundations/shooting}
     \caption{Direct single and multiple shooting over one prediction horizon. Single shooting
@@ -679,40 +681,19 @@ these products at the cost of more variables and equality constraints.
 For a nonlinear prediction model, either transcription gives a finite-dimensional \ac{nlp}.
 \Ac{sqp} methods solve a sequence of local quadratic approximations to the Lagrangian and
 constraints. Primal-dual interior-point methods solve barrier subproblems while reducing the
-barrier parameter~\cite{Waechter2006,Nocedal2006}.
+barrier parameter~\cite{Waechter2006,Nocedal2006}. % cite-checked: SUPPORTED
 
-\subsection{Output Feedback and Input-Output Models}
+\subsection{Output Feedback}
 \label{sec:output_feedback}
-% where is the mentioning of the state of the NARX model?
 
 The state-feedback formulation~\eqref{eq:ocp} assumes that the model state
 $\hat{\mathbf{x}}_k$ is available at the beginning of each control step. This assumption
 fails when the controller only measures an output $\mathbf{y}_k \in \mathbb{R}^{n_y}$. One option
 is to reconstruct the state with an observer. For the delayed whole-brain model, however,
 the state would contain the $6N$ neural-mass variables and the history required by the delay
-terms. Constructing an observer would also require an accurate state-space model.
-
-An input-output model avoids explicit reconstruction of this physical state. A \ac{narx}
-model assumes that the recent input-output history contains the information needed to predict
-the next output~\cite{Chen1989}. With output-history length
-$d_\mathrm{y} \in \mathbb{N}$ and input-history length
-$d_\mathrm{u} \in \mathbb{N}$, it has the form
-%
-\begin{equation}
-    \hat{\mathbf{y}}_{k+1}
-    = \mathbf{f}_\mathrm{NARX}\!\left(
-      \mathbf{y}_k, \dots, \mathbf{y}_{k-d_\mathrm{y}+1},
-      \mathbf{u}_k, \dots, \mathbf{u}_{k-d_\mathrm{u}+1}\right) \,,
-    \label{eq:narx}
-\end{equation}
-%
-In~\eqref{eq:narx}, $\mathbf{u}_k$ is the candidate input for the next sampling interval and the earlier
-inputs have already been applied. The input and output histories act as the state of the
-prediction model. During a multi-step prediction, the model appends each predicted output
-and candidate input before evaluating the next step. The history must be initialized from
-recorded measurements and inputs before the first prediction. This construction dispenses
-with a separate state estimator, but its validity depends on whether the chosen history is
-sufficient for prediction.
+terms. Constructing an observer would also require an accurate state-space model. An
+input-output prediction model instead constructs a prediction state from measured input and
+output histories. Section~\ref{sec:sysid} develops this alternative.
 
 \subsection{Cost Function Design}
 \label{sec:cost_design}
@@ -731,7 +712,7 @@ effort.
 
 A tracking cost penalises the deviation from a specified reference. More generally,
 economic MPC permits stage costs that are not positive definite about a reference
-point~\cite{Ellis2014}. A set-based cost, for example, can vanish throughout an admissible
+point~\cite{Ellis2014}. A set-based cost, for example, can vanish throughout an admissible % cite-checked: SUPPORTED
 region and penalise only violations. Such a cost is useful for seizure suppression because the EEG
 need not follow one prescribed waveform. Either waveform samples or spectral quantities can
 enter $\ell_\mathrm{x}$.
@@ -770,7 +751,7 @@ can be imposed by
 %
 where $u_{p,j|k}$ is the input applied through electrode $p$ and $u_\mathrm{max}>0$ is its
 magnitude limit. Setting $\delta_{j|k}=0$ forces every electrode current to zero, whereas
-$\delta_{j|k}=1$ retains the continuous input constraints~\cite{Bemporad1999}. The sum
+$\delta_{j|k}=1$ retains the continuous input constraints~\cite{Bemporad1999}. The sum % cite-checked: SUPPORTED
 $\sum_{j=0}^{H-1}\delta_{j|k}$ counts enabled sampling intervals. It does not count pulses,
 because one pulse may extend over several consecutive intervals. A formulation that limits
 the number of pulses must instead count transitions from zero to one and specify pulse
@@ -778,17 +759,17 @@ duration and shape.
 
 Adding binary variables to a \ac{qp} gives a \ac{miqp}; adding them to a nonlinear OCP gives
 a \ac{minlp}. Branch-and-bound partitions the binary assignments and uses relaxations to
-bound the objective on each subtree~\cite{Belotti2013}. A convex relaxation supplies a valid
+bound the objective on each subtree~\cite{Belotti2013}. A convex relaxation supplies a valid % cite-checked: SUPPORTED
 lower bound for minimisation. A local solution of a nonconvex NLP relaxation does not.
 Consequently, global certification is substantially harder for a nonconvex \ac{minlp} than
 for a convex \ac{miqp}. Blocking the binary variables over groups of steps reduces the
-number of binary decisions, but also restricts the admissible schedules~\cite{Cagienard2007}.
+number of binary decisions, but also restricts the admissible schedules~\cite{Cagienard2007}. % cite-checked: SUPPORTED
 
 Relaxing $\delta_{j|k} \in \{0, 1\}$ to $\delta_{j|k} \in [0, 1]$ produces a continuous
 problem. Its solution is not yet a binary schedule. Rounding can change the predicted
 trajectory, violate a pulse budget, or destroy feasibility, so the rounded schedule must be
 checked in the original constraints. Approximation bounds exist for specific
-mixed-integer optimal-control formulations and rounding schemes~\cite{Sager2012}; they do
+mixed-integer optimal-control formulations and rounding schemes~\cite{Sager2012}; they do % cite-checked: SUPPORTED
 not apply automatically to an arbitrary discrete-time prediction model.
 
 Continuous optimisation of pulse onset times is a different formulation. A discrete-time
@@ -799,7 +780,242 @@ requires a prediction model or input parameterisation that represents this timin
 Every formulation above depends on the transition function $\mathbf{f}$. The next section
 therefore turns to identifying prediction models from input-output data.
 
-\section{Data-Driven Dynamics Identification}
+\section{Data-Driven Prediction Models}
 \label{sec:sysid}
 
-\subsection{Multilayer Perceptrons (MLP)} % latex-lint: ignore=STRUC-03
+The preceding \ac{mpc} formulations require a transition model that predicts how candidate
+inputs affect future outputs. When the physical state or its transition equations are not
+available, recorded input-output trajectories can instead identify such a model. This section
+introduces a common autoregressive formulation and two parameterisations of its transition
+function.
+
+\subsection{Autoregressive Input-Output Models}
+
+An autoregressive model with exogenous inputs predicts the next output from a finite history
+of outputs and inputs. Its nonlinear form is commonly called a \ac{narx} model~\cite{Chen1989}. % cite-checked: SUPPORTED
+Let $d_\mathrm{y} \in \mathbb{N}$ be the output-history length and let
+$d_\mathrm{u} \in \mathbb{N}$ count the current input and the retained past inputs. The
+history state before applying $\mathbf{u}_k$ is
+%
+\begin{equation}
+    \mathbf{h}_k
+    = \begin{bmatrix}
+        \mathbf{y}_k^\mathsf{T} & \mathbf{y}_{k-1}^\mathsf{T} & \cdots &
+        \mathbf{y}_{k-d_\mathrm{y}+1}^\mathsf{T} &
+        \mathbf{u}_{k-1}^\mathsf{T} & \mathbf{u}_{k-2}^\mathsf{T} & \cdots &
+        \mathbf{u}_{k-d_\mathrm{u}+1}^\mathsf{T}
+      \end{bmatrix}^\mathsf{T}
+    \in \mathbb{R}^{n_h} \,,
+    \label{eq:history_state}
+\end{equation}
+%
+with $n_h = d_\mathrm{y}n_y + (d_\mathrm{u}-1)n_u$. The past-input block is empty for $d_\mathrm{u}=1$. A parameterised one-step model has
+the form
+%
+\begin{equation}
+    \hat{\mathbf{y}}_{k+1}
+    = \mathbf{f}_{\boldsymbol{\theta}}\!\left(\mathbf{h}_k,\mathbf{u}_k\right) \,,
+    \label{eq:controlled_autoregression}
+\end{equation}
+%
+where $\boldsymbol{\theta}$ contains the model parameters. After each prediction, the oldest
+entries leave the history state and $\hat{\mathbf{y}}_{k+1}$ and $\mathbf{u}_k$ enter it. Repeating
+this shift and~\eqref{eq:controlled_autoregression} produces a multi-step prediction from an
+initial measured history.
+
+Fitting~\eqref{eq:controlled_autoregression} requires recorded input-output trajectories. Let
+$\mathcal{D}$ denote the empirical distribution of sampled trajectory segments. One-step
+least-squares identification uses each segment's history, current input and successor output
+to solve
+%
+\begin{equation}
+    \underset{\boldsymbol{\theta}}{\operatorname{minimise}}
+    \quad
+    \mathbb{E}_{\mathcal{D}}\!\left[
+      \left\|\mathbf{y}_{k+1}
+      - \mathbf{f}_{\boldsymbol{\theta}}(\mathbf{h}_k,\mathbf{u}_k)\right\|_2^2
+    \right] \,,
+    \label{eq:one_step_identification}
+\end{equation}
+%
+The data can distinguish the effect of an input only where the recorded inputs excite that
+effect. They must also cover the input-output region in which the model will be used
+subsequently~\cite[chaps.~13 and~16]{Ljung1999}. % cite-checked: SUPPORTED
+
+A small one-step error does not by itself imply an accurate multi-step prediction. During a
+rollout, predicted outputs replace measured outputs in later regressors, so errors can
+accumulate~\cite{Farina2011}. % cite-checked: SUPPORTED
+A horizon-aligned alternative minimises
+%
+\begin{equation}
+    \underset{\boldsymbol{\theta}}{\operatorname{minimise}}
+    \quad
+    \frac{1}{H}
+    \sum_{j=1}^{H}
+    \mathbb{E}_{\mathcal{D}}\!\left[
+      \left\|\mathbf{y}_{k+j}
+      - \hat{\mathbf{y}}_{j|k}(\boldsymbol{\theta})\right\|_2^2
+    \right] \,,
+    \label{eq:multi_step_identification}
+\end{equation}
+%
+where $\hat{\mathbf{y}}_{j|k}(\boldsymbol{\theta})$ is the output obtained after $j$ recursive
+applications of the model. For control, the relevant validation measure is the prediction
+error over the control horizon on trajectories that were not used for fitting.
+
+\subsection{Nonlinear Prediction with Multilayer Perceptrons}
+
+An \ac{mlp} parameterises the nonlinear map
+in~\eqref{eq:controlled_autoregression} by composing affine maps and element-wise
+activation functions~\cite[ch.~6]{Goodfellow2016}. % cite-checked: SUPPORTED
+Define the network input as
+$\boldsymbol{\xi}_k =
+\begin{bmatrix}\mathbf{h}_k^\mathsf{T}&\mathbf{u}_k^\mathsf{T}\end{bmatrix}^\mathsf{T}$.
+Consider a feedforward network with $L-1$ hidden layers and one affine output layer. Its $L$
+affine maps give
+%
+\begin{align}
+    \mathbf{a}^{(0)}_k
+    &= \boldsymbol{\xi}_k \,, \nonumber \\
+    \mathbf{a}^{(\ell)}_k
+    &= \boldsymbol{\sigma}^{(\ell)}\!\left(
+       \mathbf{W}^{(\ell)}\mathbf{a}^{(\ell-1)}_k
+       + \mathbf{b}^{(\ell)}\right),
+       \qquad \ell = 1, \dots, L-1 \,, \nonumber \\
+    \mathbf{f}_{\boldsymbol{\theta}}(\mathbf{h}_k,\mathbf{u}_k)
+    &= \mathbf{W}^{(L)}\mathbf{a}^{(L-1)}_k + \mathbf{b}^{(L)} \,,
+    \label{eq:mlp_predictor}
+\end{align}
+%
+The relations in~\eqref{eq:mlp_predictor} define $\mathbf{a}^{(\ell)}_k$ as the activation
+vector of hidden layer $\ell$. $\mathbf{W}^{(\ell)}$ and $\mathbf{b}^{(\ell)}$ are the
+weight matrix and bias vector of affine map $\ell$, and
+$\boldsymbol{\sigma}^{(\ell)}$ acts element-wise. The parameter vector
+$\boldsymbol{\theta}$ collects all weights and biases. Nonlinear activation functions allow
+the model to represent a nonlinear dependence on the history and current input.
+
+The predictor can alternatively learn an increment relative to the latest output according to
+%
+\begin{equation}
+    \mathbf{f}_{\boldsymbol{\theta}}(\mathbf{h}_k,\mathbf{u}_k)
+    = \mathbf{y}_k
+    + \mathbf{g}_{\boldsymbol{\theta}}(\mathbf{h}_k,\mathbf{u}_k) \,,
+    \label{eq:residual_predictor}
+\end{equation}
+%
+The residual form~\eqref{eq:residual_predictor} contains the persistence predictor as the
+special case $\mathbf{g}_{\boldsymbol{\theta}}=\mathbf{0}$. The nonlinear network represents
+the one-step change. This parameterisation does not guarantee a smaller prediction error.
+
+For an \ac{mlp}, both~\eqref{eq:one_step_identification}
+and~\eqref{eq:multi_step_identification} are nonlinear optimisation problems. The latter
+differentiates through repeated model evaluations. Its gradients therefore contain the same
+products of transition Jacobians that arise in single-shooting sensitivities in
+Section~\ref{sec:transcription}. Gradient-based methods fit the model iteratively, and the
+result can depend on the initial parameters and optimisation
+procedure~\cite[sec.~6.2]{Goodfellow2016}. % cite-checked: SUPPORTED
+
+\subsection{Dynamic Mode Decomposition with Control}
+
+The Koopman viewpoint in Section~\ref{sec:linear_nonlinear_mpc} motivates a linear evolution
+law in a selected observable space. \Ac{dmd} estimates such a law from time-shifted data
+matrices. Its controlled extension, \ac{dmdc}, includes the applied input so that the fitted
+model separates autonomous evolution from the effect of actuation~\cite{Proctor2016}. % cite-checked: SUPPORTED
+
+In this thesis, the history state~\eqref{eq:history_state} supplies the delay coordinates. Only
+the next-output block of its transition is unknown because the remaining blocks follow from
+the exact history shift described above. The affine next-output model is
+%
+\begin{equation}
+    \hat{\mathbf{y}}_{k+1}
+    = \mathbf{A}_\mathrm{y}\mathbf{h}_k
+    + \mathbf{B}_\mathrm{y}\mathbf{u}_k
+    + \mathbf{c}_\mathrm{y} \,,
+    \label{eq:output_dmdc}
+\end{equation}
+%
+where $\mathbf{A}_\mathrm{y} \in \mathbb{R}^{n_y \times n_h}$ maps the history state,
+$\mathbf{B}_\mathrm{y} \in \mathbb{R}^{n_y \times n_u}$ maps the current input, and
+$\mathbf{c}_\mathrm{y} \in \mathbb{R}^{n_y}$ is the offset.
+Combining~\eqref{eq:output_dmdc} with the exact history shift yields a structured affine
+transition for the complete history state. Delay coordinates enlarge the set of regressors,
+but Section~\ref{sec:linear_nonlinear_mpc} explains why they need not span an invariant
+Koopman subspace.
+
+To fit~\eqref{eq:output_dmdc}, consider $N_\mathrm{d}$ sampled triples
+$(\mathbf{h}^{(i)},\mathbf{u}^{(i)},\mathbf{y}_+^{(i)})$ for
+$i=1,\dots,N_\mathrm{d}$. Here, $\mathbf{y}_+^{(i)}$ is the successor output associated with
+$\mathbf{h}^{(i)}$ and $\mathbf{u}^{(i)}$. Let $\bar{\mathbf{h}}$,
+$\bar{\mathbf{u}}$, and $\bar{\mathbf{y}}_+$ denote the corresponding sample means. The
+centred snapshot matrices are
+%
+\begin{align}
+    \mathbf{H}
+    &= \begin{bmatrix}
+        \mathbf{h}^{(1)}-\bar{\mathbf{h}} & \cdots &
+        \mathbf{h}^{(N_\mathrm{d})}-\bar{\mathbf{h}}
+      \end{bmatrix}, \nonumber \\
+    \boldsymbol{\Upsilon}
+    &= \begin{bmatrix}
+        \mathbf{u}^{(1)}-\bar{\mathbf{u}} & \cdots &
+        \mathbf{u}^{(N_\mathrm{d})}-\bar{\mathbf{u}}
+      \end{bmatrix}, \nonumber \\
+    \mathbf{Y}_+
+    &= \begin{bmatrix}
+        \mathbf{y}_+^{(1)}-\bar{\mathbf{y}}_+ & \cdots &
+        \mathbf{y}_+^{(N_\mathrm{d})}-\bar{\mathbf{y}}_+
+      \end{bmatrix} \,,
+    \label{eq:dmdc_snapshots}
+\end{align}
+%
+Using the matrices in~\eqref{eq:dmdc_snapshots}, define
+$\boldsymbol{\Omega}=
+\begin{bmatrix}\mathbf{H}^\mathsf{T}&\boldsymbol{\Upsilon}^\mathsf{T}\end{bmatrix}^\mathsf{T}$
+and
+$\mathbf{G}=\begin{bmatrix}\mathbf{A}_\mathrm{y}&\mathbf{B}_\mathrm{y}\end{bmatrix}$.
+The one-step objective~\eqref{eq:one_step_identification}, restricted to this affine model, is
+%
+\begin{equation}
+    \underset{\mathbf{G}}{\operatorname{minimise}}
+    \quad
+    \left\|\mathbf{Y}_+-\mathbf{G}\boldsymbol{\Omega}\right\|_\mathrm{F}^2 \,,
+    \label{eq:dmdc_least_squares}
+\end{equation}
+%
+For~\eqref{eq:dmdc_least_squares}, let $\rho$ be the number of retained positive singular
+values. A rank-$\rho$ truncated \ac{svd} gives
+$\boldsymbol{\Omega}\approx\mathbf{U}_\rho\boldsymbol{\Sigma}_\rho
+\mathbf{V}_\rho^\mathsf{T}$, where
+$\mathbf{U}_\rho\in\mathbb{R}^{(n_h+n_u)\times\rho}$,
+$\boldsymbol{\Sigma}_\rho\in\mathbb{R}^{\rho\times\rho}$, and
+$\mathbf{V}_\rho\in\mathbb{R}^{N_\mathrm{d}\times\rho}$. The truncated-pseudoinverse
+estimate and its affine offset are
+%
+\begin{equation}
+    \mathbf{G}_\rho
+    = \begin{bmatrix}\mathbf{A}_{\mathrm{y},\rho} & \mathbf{B}_{\mathrm{y},\rho}\end{bmatrix}
+    = \mathbf{Y}_+\mathbf{V}_\rho\boldsymbol{\Sigma}_\rho^{-1}\mathbf{U}_\rho^\mathsf{T} \,,
+    \qquad
+    \mathbf{c}_{\mathrm{y},\rho}
+    = \bar{\mathbf{y}}_+
+    - \mathbf{A}_{\mathrm{y},\rho}\bar{\mathbf{h}}
+    - \mathbf{B}_{\mathrm{y},\rho}\bar{\mathbf{u}} \,,
+    \label{eq:dmdc_solution}
+\end{equation}
+%
+Retaining every nonzero singular value recovers the minimum-norm pseudoinverse solution of
+the linear least-squares problem.
+Truncation restricts the estimate to the leading singular directions
+of the sampled regressors and prevents inversion of the discarded singular values. DMDc is
+therefore linear regression arranged around controlled, time-shifted snapshots. Treating the
+history state as a vector of observables connects the fitted transition to finite-dimensional  % this is not what i wanted the connention to koopman to be. The connection is for our spectral predictor that it matches the idea of koopman observables. Maybe that is for a later chapter tho. When we actually introduce it
+Koopman approximations~\cite{Williams2015,Proctor2016}. % cite-checked: Williams2015=SUPPORTED, Proctor2016=SUPPORTED
+
+The one-step DMDc estimate is available from~\eqref{eq:dmdc_solution}. Directly minimising the
+multi-step objective~\eqref{eq:multi_step_identification} instead introduces repeated products
+of the unknown transition matrix and no longer has this linear least-squares form. The affine
+model restricts the transition to a linear map and an offset, but it also gives affine dynamic
+constraints in the subsequent control problem. Neither model class guarantees accurate
+multi-step prediction outside the region represented by the identification data. The next
+chapter specifies how these model classes are fitted and evaluated for the control problem in
+this thesis.
