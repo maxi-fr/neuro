@@ -1,0 +1,42 @@
+simulation:
+  dt: 0.0001
+  downsample: 200
+  n_steps: null
+  data_path: "data/experiment_excited_100ms/train"
+
+model:
+  n_y: 1
+  n_u: 10  # StftGeometry(n_segment=50, n_hop=5, kernel_width=1).min_past_controls()
+  hidden_size: 512
+  depth: 2
+  activation: relu
+  residual: true
+
+observable:
+  n_segment: 50
+  n_hop: 5
+  band_hz: null
+  n_bin_pool: 1
+  kernel: boxcar
+  kernel_width: 1
+
+training:
+  fit: gradient_descent
+  train_split: 0.8
+  eval_horizon_s: 1.5   # = the Control Horizon the arm is evaluated at
+  epochs: 200
+  batch_size: 128
+  learning_rate: 0.001
+  weight_decay: 0.0001
+  patience: 50
+  scaler: standard
+  device: auto
+  seed: 69
+  losses:
+    curriculum_mse:
+      weight: 1.0
+      span_s: 1.5     # 15 Frames at the 10 Hz Frame rate
+      curr_start: 5   # epochs over which the trusted Rollout ramps to the full Span
+      curr_end: 80
+
+artifact: "artifacts/cmp_observable_mlp_100ms"

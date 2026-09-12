@@ -18,6 +18,7 @@ if TYPE_CHECKING:
 
     from neuro.config import StftGeometry
     from neuro.spectral import ObservableEnvelope, PsdEnvelope
+    from neuro.types import FloatArray
 
 
 class SumCost(CostFunction):
