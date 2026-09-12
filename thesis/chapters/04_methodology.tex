@@ -1,41 +1,164 @@
 \chapter{Methodology}
 \label{ch:methodology}
 
+% Chapter introduction, without a separate section:
+% - Formulate the suppression problem, available measurements, admissible stimulation,
+%   and the role of a learned Predictor in MPC.
+% - Introduce the investigated choices: waveform versus spectral prediction, training
+%   objectives, and continuous versus pulse-based stimulation.
+% - Explain how these choices connect and introduce the chapter's order.
+% Editorial boundary: Chapter 3 supplies general theory. This chapter formulates the
+% methods and motivates design choices. Chapter 5 tests them and reports the evidence.
+% Introduce tunable parameters and selection criteria here; put search ranges, budgets,
+% results, and selected configurations in Chapter 5. Routine tuning can go in an appendix.
+% When drafting, bridge each section into the question addressed by the next.
+
 \section{Closed-Loop Neurostimulation Architecture}
-% Deferred here from Section 3.1 (Whole-Brain Biophysical Modeling):
-% - Pin the symbolic dimensions to the concrete setup: N = 76 regions (TVB default
-%   connectome), M = 62 EEG channels, P stimulation electrodes.
-% - EZ / PZ region assignment: which named regions carry A_i = 3.6 and A_i = 3.4, and how
-%   that choice follows Yu et al. The mechanism itself is already in Section 3.1.2.
-% - Numerical integration: Heun predictor-corrector, step size dt, ring-buffer
-%   implementation of the delayed history, and why Euler-Maruyama noise is applied on the
-%   Heun step.
-% - Construction of L_EEG: TVB boundary-element surface projection (62 x 16384) collapsed
-%   to region level (62 x 76) via the region mapping, plus the sagittal-mirror row/label
-%   correction.
-% - Construction of L_stim: ROAST finite-element field solve, reduction of the 3D field
-%   along the cortical normal at each region centroid.
-% - Why reciprocity is not exploited to reuse L_EEG^T as L_stim: the TVB EEG projection
-%   does not contain the electrodes used for stimulation, so L_stim must be solved
-%   separately. Section 3.1.4 sets up this tension and points here.
-% - Recalibration of K = 0.60 and sigma = 280 against the values of Yu et al. (0.75 and
-%   500). Table 3.1 in Foundations already carries the values used here and points here
-%   for the justification.
-% - Amplitude units: the TVB projection matrix is unitless and the Jansen-Rit dipole scale
-%   is undetermined, so y_EEG is in arbitrary units. State that thresholds and cost weights
-%   are therefore relative to the model's own background level. Section 3.1.4 flags this.
+% Give the concrete setting in which the ideas are investigated.
+% Figure: Plant -> EEG -> Estimator -> Predictor/MPC -> electrode currents ->
+% Field Projection -> Plant. Identify signals available to control versus evaluation.
 
-\section{Prediction Model Training and Inference}
+\subsection{Plant Configuration and Seizure Dynamics}
+% Refer to Chapter 3 for the biophysical equations; describe the choices made here.
+% - Concrete dimensions: 76 regions, 62 EEG channels, and the stimulation electrode count.
+% - Named EZ/PZ regions, their excitability parameters, and the relation to Yu et al.
+% - Justification of K = 0.60 and sigma = 280 versus Yu et al.'s 0.75 and 500.
+%   If calibration is an empirical study, report its evidence in Chapter 5 and refer to it.
+% - Integration method, Plant time step, noise discretization, and conduction delays.
+%   Keep numerical details brief; omit software mechanisms such as ring-buffer storage.
 
-\subsection{Waveform Predictor}
+\subsection{EEG Measurement and Stimulation Geometry}
+% - EEG Leadfield: reduction of the TVB surface projection from 62 x 16384 to 62 x 76
+%   through the region mapping; explain the sagittal-mirror row/label correction briefly.
+% - Field Projection: ROAST field calculation and projection onto cortical normals at
+%   regional centroids; specify the stimulation montage.
+% - Explain why the EEG Leadfield transpose cannot be reused for this electrode setup.
+% - EEG amplitude is in arbitrary units because the projection and dipole scale do not
+%   establish physical voltage units; relate references and thresholds to background EEG.
 
-\subsection{STFT predictor}
+\subsection{Filtering and Sampling}
+% Keep this short. State the frequency band relevant to the EEG activity studied here,
+% then explain causal anti-aliasing filtering before downsampling from the Plant rate.
+% Specify the filter, cutoff, and resulting waveform sampling interval once verified.
+% Distinguish that interval from the spectral Frame hop and controller update interval
+% where needed. Explain briefly how currents are held between updates.
+% QUESTION: Which frequency band [x, y] supports the intended claim, and is the claim
+% about EEG generally or the simulated seizure activity? Supply a citation or evidence.
+% QUESTION: What sampling rate and filter settings are actually used in the thesis runs?
+% Do not equate the scored spectral band with the anti-aliasing filter's passband.
 
-% Autoregressive MLP
+\section{Prediction Representations and Models}
+% Motivate the central question: what should be predicted to support seizure suppression?
+% Separate the output representation from the model class used to predict its dynamics.
 
-% Dynamic Mode Decomposition - Koopman connection
+\subsection{Waveform Prediction}
+% Define the future EEG waveform to be predicted, the measured history, and the past
+% and candidate future currents conditioning the prediction. Motivate this representation.
 
+\subsection{Spectral Observable Prediction}
+% Define the spectral Observable and why it is a candidate alternative to waveform prediction.
+% Refer to Chapter 3 for STFT theory; specify the representation used in this method.
+% Introduce Segment length, Frame hop, frequency selection, pooling, and normalization.
+% Explain which information each geometry choice retains or discards and its time scale.
+% Keep geometry parameterized here; its empirical selection belongs in Chapter 5.
+% QUESTION: Is geometry selected for prediction accuracy, closed-loop suppression,
+% temporal responsiveness, or an explicit tradeoff? Define "optimal" relative to that goal.
 
-\section{MPC Controller and Cost Function Design}
+\subsection{Predictor Model Classes}
+% Define the shared autoregressive input-output formulation and multi-step Rollout.
+% Introduce the nonlinear MLP and linear/DMD variants and their modeling assumptions.
+% Relate DMD to the Koopman perspective only as far as needed to motivate the chosen model.
+% Explain which model classes are studied for each representation and why.
+% Describe initialization from measured history only to establish a valid prediction.
 
-\subsection{Nonlinear ARX (NARX) Formulation}
+\section{Predictor Training and Selection}
+% Explain how the prediction tasks become identification problems and how candidates
+% are selected. This section defines procedures; Chapter 5 reports their outcomes.
+
+\subsection{Identification Data and Prediction Task}
+% Describe simulated training data, seizure regimes, and stimulation used to identify
+% the response to currents rather than only autonomous dynamics.
+% Define history/target construction, prediction duration, and normalization.
+% Explain separation of training, selection, and final evaluation data at trajectory level.
+% Put experimental dataset sizes and scenario-specific settings in Chapter 5.
+
+\subsection{Waveform and Spectral Training Losses}
+% Formulate waveform error, spectral error, and the combinations to be investigated.
+% Distinguish a spectral Loss on predicted waveforms from prediction of spectral Observables.
+% For the former, STFT geometry defines error scoring; for the latter, it defines the target.
+% Introduce the Loss geometry, weights, and scored Spans without claiming selected values.
+% QUESTION: Should these two STFT geometries be selected independently, and what must
+% remain comparable when evaluating the resulting Predictors?
+
+\subsection{Training Strategies and Selection Criteria}
+% Describe fitting procedures and curriculum strategies that are part of the investigation.
+% Define the criterion used to select geometry, Loss settings, and model configurations.
+% QUESTION: Which choices are scientific comparisons and which are routine tuning?
+% QUESTION: Is selection based on open-loop prediction or closed-loop control performance?
+% Chapter 5: give search spaces/budgets, compare outcomes, and justify the configurations
+% carried into later experiments. Reserve independent evaluation data for final comparisons.
+
+\section{MPC Objectives and Continuous Stimulation}
+% Turn the trained Predictor into a controller by defining the optimization problem.
+
+\subsection{Decision Variables and Control Constraints}
+% Define the Control Horizon, candidate electrode currents, and predicted dynamics.
+% Specify Kirchhoff's law and the Control Budget imposed in the study.
+% State the current parameterization and how prediction and control time grids relate.
+
+\subsection{Seizure-Suppression Costs}
+% Formulate waveform-based and spectral suppression Costs and their intended behavior.
+% Explain construction of the healthy spectral reference and normalization of Cost terms.
+% Keep the controller's suppression Cost distinct from the Predictor's training Loss
+% and from the post hoc Closed-Loop Evaluation Score used in Chapter 5.
+
+\subsection{Stimulation Penalties}
+% Define L2 and L1 current penalties, weight scaling, and the behavior to be compared.
+% Describe the smooth L1 surrogate where it is used in the evaluated method.
+% End with the complete continuous optimization problem, collecting dynamics, Costs,
+% and constraints before extending the formulation to pulses.
+
+\subsection{Numerical Solution and Receding-Horizon Application}
+% Explain the transcriptions and solution methods studied, including single/multiple
+% shooting and NARX/PCMS formulations if retained as part of the investigation.
+% State how Costs spanning multiple samples or Frames enter the optimization.
+% Briefly describe initialization, termination, measurement correction, and application
+% of the first part of the optimized current sequence. Avoid a software architecture account.
+% QUESTION: Is the numerical solution comparison a research question or a supporting
+% implementation choice? Scale this subsection and Chapter 5's comparison accordingly.
+% Chapter 5 contains solver comparison protocols and results, not first definitions.
+
+\section{Pulse-Based Control}
+% Formulate pulse-based stimulation as an alternative to continuous stimulation.
+% Reuse the continuous problem's Predictor, suppression Cost, and current constraints.
+
+\subsection{Pulse Definition and Scheduling Variables}
+% Define a pulse before introducing its decision variables and admissible schedules.
+% QUESTION: Is the objective to restrict current magnitude, total stimulation time,
+% the number of distinct pulses, or some stated combination?
+% QUESTION: Does a binary variable denote an active interval or a pulse onset?
+% Summing active steps counts enabled intervals; consecutive enabled steps can form one pulse.
+% QUESTION: Are pulse shape, duration, polarity, and electrode pattern fixed?
+% Which of amplitude, duration/duty cycle, and timing should be optimized?
+
+\subsection{Mixed-Integer Formulation}
+% Couple binary scheduling decisions to admissible currents and define the pulse budget.
+% State which decisions are shared across electrodes and which are electrode-specific.
+% Derive the resulting optimization class from the chosen Predictor, Cost, and constraints.
+% Explain the solution approach and any schedule simplifications needed for tractability.
+% QUESTION: What is the smallest pulse formulation that tests the intended idea before
+% adding amplitude or duty-cycle optimization?
+
+\subsection{Continuous Relaxation and Schedule Recovery}
+% Define a relaxation of binary activation variables and how a deliverable schedule
+% would be recovered. Explain how feasibility and predicted suppression would be rechecked.
+% QUESTION: Which recovery rule preserves the chosen pulse budget and current constraints?
+% Distinguish this procedure from continuous optimization of pulse onset times.
+
+\subsection{Continuous Pulse-Timing Alternative}
+% Formulate onset times as continuous decisions if this alternative remains in scope.
+% Explain how candidate pulses occurring within a sampling interval affect prediction.
+% QUESTION: Can the present discrete-time Predictor represent that dependence, or is
+% a different input parameterization or continuous-time Predictor required?
+% Compare the formulations conceptually with L2/L1 continuous stimulation here.
+% Chapter 5 compares their suppression, stimulation use, and computational cost.

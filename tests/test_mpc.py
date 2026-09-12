@@ -22,6 +22,7 @@ from yaml import safe_load
 from neuro.config import StftGeometry
 from neuro.control.costs import ObservableHingeCost
 from neuro.control.mpc import (
+    IPOPT_DEFAULTS,
     CanonicalDuals,
     TrajOptMPCController,
     TrajOptMPCLog,
@@ -320,7 +321,7 @@ def test_migrated_config_reproduces_incumbent_end_to_end(tmp_path: Path) -> None
 
 
 def test_migrated_config_reproduces_incumbent_with_default_solver(tmp_path: Path) -> None:
-    """A migrated ``kirchhoff: true`` config runs through ``from_config`` with no injected solver."""
+    """A migrated ``kirchhoff: true`` config runs through ``from_config`` with the tuned default solver."""
     with Path("configs/simulation/mse02_psd_mpc.yaml").open() as file:
         sim_config = safe_load(file)
     controller_cfg = sim_config["controller"]
@@ -337,8 +338,9 @@ def test_migrated_config_reproduces_incumbent_with_default_solver(tmp_path: Path
     assert type(controller.solver) is SingleShooting
 
     controls, costs = _drive_golden(controller, n_steps=8, n_channels=controller.model.n_channels)
-    np.testing.assert_allclose(controls, _WAVEFORM_PARITY_CONTROLS, atol=1e-4)
-    np.testing.assert_allclose(costs, _WAVEFORM_PARITY_COSTS, atol=1e-4)
+    # The default solver operates at tol=1e-3, matching the incumbent 1e-8 solve within 1e-3.
+    np.testing.assert_allclose(controls, _WAVEFORM_PARITY_CONTROLS, atol=1e-3)
+    np.testing.assert_allclose(costs, _WAVEFORM_PARITY_COSTS, atol=1e-3)
 
 
 def test_single_shooting_solver_succeeds_when_kirchhoff(tmp_path: Path) -> None:
@@ -937,3 +939,19 @@ def test_controller_emits_electrode_currents_under_nullspace_reduction(tmp_path:
         assert np.abs(u).max() <= 0.5 + 1e-6
     assert not log.warmup
     assert np.abs(u).max() > 0.0
+
+
+def test_default_ipopt_solver_options(tmp_path: Path) -> None:
+    """_default_solver uses the tuned IPOPT tolerances (tol=1e-3, acceptable_tol=1e-2, acceptable_iter=5)."""
+    art = _build_checkpoint(tmp_path, depth=0, n_y=2, n_u=2, horizon=3, n_channels=2, n_controls=3)
+    problem = build_waveform_problem(art, horizon=3, u_max=0.5, reference=_ref(2))
+    solver = _default_solver(problem)
+    assert isinstance(solver, SingleShooting)
+    assert isinstance(solver.solver, Ipopt)
+    opts = dict(solver.solver.options)
+    assert opts["tol"] == 1e-3
+    assert opts["acceptable_tol"] == 1e-2
+    assert opts["acceptable_iter"] == 5
+    assert opts["print_level"] == 0
+    assert opts["hessian_approximation"] == "limited-memory"
+    assert opts["max_iter"] == 300

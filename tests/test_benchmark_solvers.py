@@ -34,9 +34,20 @@ if TYPE_CHECKING:
 
 
 def test_get_benchmark_solver_instantiation() -> None:
-    """get_benchmark_solver creates configured solver instances across all names."""
-    assert type(get_benchmark_solver("single_shooting")) is SingleShooting
-    assert type(get_benchmark_solver("ipopt")) is Ipopt
+    """get_benchmark_solver creates configured solver instances across all names with tuned Ipopt defaults."""
+    ss = get_benchmark_solver("single_shooting")
+    assert type(ss) is SingleShooting
+    assert type(ss.solver) is Ipopt
+    assert ss.solver.options["tol"] == 1e-3
+    assert ss.solver.options["acceptable_tol"] == 1e-2
+    assert ss.solver.options["acceptable_iter"] == 5
+
+    ip = get_benchmark_solver("ipopt")
+    assert type(ip) is Ipopt
+    assert ip.options["tol"] == 1e-3
+    assert ip.options["acceptable_tol"] == 1e-2
+    assert ip.options["acceptable_iter"] == 5
+
     assert type(get_benchmark_solver("altro")) is ALTRO
     assert type(get_benchmark_solver("boxqp")) is BoxQP
     assert type(get_benchmark_solver("osqp")) is OSQP

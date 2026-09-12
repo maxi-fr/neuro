@@ -162,15 +162,20 @@ def _assemble_problem(  # noqa: PLR0913 -- the horizon's grid joins the five it 
     return Problem(model=model, obj=objective, constraints=constraints, N=N, dt=dt)
 
 
-def _default_solver(problem: Problem) -> Solver:
-    """Select SingleShooting(Ipopt), the only backend every deployed formulation admits.
+IPOPT_DEFAULTS: dict[str, Any] = {
+    "print_level": 0,
+    "hessian_approximation": "limited-memory",
+    "tol": 1e-3,
+    "acceptable_tol": 1e-2,
+    "acceptable_iter": 5,
+    "max_iter": 300,
+}
 
-    Both Kirchhoff formulations couple the controls -- the hard equality as an equality row, the
-    null-space reduction as the polytope carrying the per-electrode limit -- so the DDP backends,
-    which clamp elementwise, are eligible for neither.
-    """
+
+def _default_solver(problem: Problem) -> Solver:
+    """Select SingleShooting(Ipopt) with tuned tolerances for the receding-horizon Controller."""
     del problem
-    return SingleShooting(solver=Ipopt(options={"print_level": 0, "hessian_approximation": "limited-memory"}))
+    return SingleShooting(solver=Ipopt(options=IPOPT_DEFAULTS))
 
 
 def ensure_solver_supports_objective(problem: Problem, solver: Solver) -> None:
@@ -190,7 +195,7 @@ def ensure_solver_supports_objective(problem: Problem, solver: Solver) -> None:
 
 
 def _instantiate_solver(class_path: str, cfg: dict[str, Any]) -> Solver:
-    """Import and instantiate a solver from its class_path and config."""
+    """Import and instantiate a Solver from its class_path and config, defaulting Ipopt options."""
     if not isinstance(class_path, str) or "." not in class_path:
         msg = f"solver 'class_path' must be a dot-separated import path, got {class_path!r}"
         raise ValueError(msg)
@@ -201,7 +206,11 @@ def _instantiate_solver(class_path: str, cfg: dict[str, Any]) -> Solver:
     if "solver" in cfg and isinstance(cfg["solver"], dict):
         cfg["solver"] = _build_solver(cfg["solver"])
 
-    if "options" in cfg and isinstance(cfg["options"], dict) and issubclass(target_cls, (ALTRO, BoxQP)):
+    if issubclass(target_cls, Ipopt):
+        cfg["options"] = {**IPOPT_DEFAULTS, **cfg.get("options", {})}
+    elif issubclass(target_cls, SingleShooting) and "solver" not in cfg:
+        cfg["solver"] = Ipopt(options=dict(IPOPT_DEFAULTS))
+    elif "options" in cfg and isinstance(cfg["options"], dict) and issubclass(target_cls, (ALTRO, BoxQP)):
         cfg["options"] = SolverOptions(**cfg["options"])
 
     res = target_cls(**cfg) if cfg else target_cls()

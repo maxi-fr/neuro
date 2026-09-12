@@ -59,29 +59,28 @@ lowercase. A running index is italic, a naming index upright.
     \midrule
     \multicolumn{3}{l}{\itshape Model predictive control} \\
     $k$ & Sample index, and the control step index & -- \\
-    $j$ & Step offset within the control horizon & -- \\
-    $H$ & control horizon length & -- \\
-    $\mathbf{x}$, $n_x$ & Prediction model state and its dimension & -- \\
-    $\hat{\mathbf{x}}_k$ & Model state the horizon starts from & -- \\
-    $n_u$ & Input dimension & -- \\
+    $j$ & Step offset within the prediction horizon & -- \\
+    $H$ & Prediction horizon length & -- \\
+    $\mathbf{x}$, $n_x$ & Prediction-model state and its dimension & -- \\
+    $\hat{\mathbf{x}}_k$ & State estimate at control step $k$ & -- \\
+    $n_u$, $n_y$ & Input and output dimensions & -- \\
     $\mathbf{x}_{j|k}$ & Prediction $j$ steps ahead of step $k$ & -- \\
-    $\mathbf{f}$ & One-step transition of the model & -- \\
-    $\boldsymbol{\varphi}_j$ & Single shooting rollout, $j$ steps from $\hat{\mathbf{x}}_k$ & -- \\
-    $n_\mathrm{y}, n_\mathrm{u}$ & \ac{narx} output and input windows & -- \\
+    $\mathbf{f}$ & One-step transition function of the prediction model & -- \\
+    $\boldsymbol{\varphi}_j$ & Single-shooting rollout map over $j$ steps & -- \\
+    $d_\mathrm{y}, d_\mathrm{u}$ & \ac{narx} output and input history lengths & -- \\
     $\ell$ & Stage cost & -- \\
-    $\ell_\mathrm{x}$, $\ell_\mathrm{u}$ & State and input term of the stage cost & -- \\
+    $\ell_\mathrm{x}$, $\ell_\mathrm{u}$ & State-dependent and input-dependent stage-cost terms & -- \\
     $V_\mathrm{f}$ & Terminal cost & -- \\
-    $J$ & Cost over the control horizon & -- \\
+    $J_H$ & Finite-horizon cost & -- \\
     $\mathbf{Q}$, $\mathbf{R}$ & Weights of a quadratic stage cost & -- \\
-    $w$ & Weight of the input penalty & -- \\
-    $\ell_p$ & Input penalty norm, order $p \in \{0, 1, 2\}$ & -- \\
-    $\mathbf{g}$, $\mathbf{h}$ & Equality and inequality constraints & -- \\
-    $\mathbb{X}$, $\mathbb{U}$ & State and input constraint sets & -- \\
-    $\mathbf{A}$, $\mathbf{B}$ & System and input matrix, linear model & -- \\
+    $w_1$, $w_2$ & Weights of the input penalties & -- \\
+    $\mathbb{X}$, $\mathbb{U}$ & Admissible state and input sets & -- \\
+    $\mathbb{X}_\mathrm{f}$ & Terminal set & -- \\
+    $\mathbf{A}$, $\mathbf{B}$, $\mathbf{c}$ & State matrix, input matrix, and offset of an affine prediction model & -- \\
+    $\mathbf{A}_q$, $\mathbf{B}_q$ & State and input Jacobians at predicted step $q$ & -- \\
     $\mathbf{I}_n$ & Identity matrix of size $n \times n$ & -- \\
-    $\delta_{j|k}$ & Binary pulse indicator & -- \\
+    $\delta_{j|k}$ & Binary input-activation indicator & -- \\
     $u_\mathrm{max}$ & Per-electrode current bound & \si{\milli\ampere} \\
-    $n_\mathrm{p}$ & Pulse budget per control horizon & -- \\
     \bottomrule
 \end{tabular}
 

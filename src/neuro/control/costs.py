@@ -410,14 +410,13 @@ class ObservableHingeCost(CostFunction):
     Wrapped in :class:`~trajopt.costs.output.OutputCost` for receding-horizon optimal control problems.
     """
 
-    envelope: ObservableEnvelope = eqx.field(static=True)
     horizon: int = eqx.field(static=True)
     w: jax.Array
     power: jax.Array
 
     def __init__(
         self,
-        envelope: ObservableEnvelope,
+        envelope: ObservableEnvelope | jax.Array | FloatArray,
         *,
         w_hinge: float,
         horizon: int,
@@ -428,7 +427,7 @@ class ObservableHingeCost(CostFunction):
         Parameters
         ----------
         envelope
-            The healthy Observable reference envelope.
+            The healthy Observable reference envelope or its power array.
         w_hinge
             Weight on the hinge Cost; ``0`` disables it.
         horizon
@@ -436,15 +435,15 @@ class ObservableHingeCost(CostFunction):
         terminal
             Whether this instance is the terminal Cost scoring the Control Horizon's last Frame.
         """
-        expected_outputs = int(envelope.power.shape[0] * envelope.power.shape[1])
         if horizon < 1:
             msg = f"horizon ({horizon}) must be at least 1"
             raise ValueError(msg)
-        super().__init__(n=expected_outputs, m=0, terminal=terminal)
-        self.envelope = envelope
+        power_arr = envelope.power if hasattr(envelope, "power") else envelope
+        power_jax = jnp.asarray(power_arr).reshape(-1)
+        super().__init__(n=power_jax.shape[0], m=0, terminal=terminal)
         self.horizon = int(horizon)
         self.w = jnp.asarray(w_hinge)
-        self.power = jnp.asarray(envelope.power).reshape(-1)
+        self.power = power_jax
 
     def evaluate(
         self,
@@ -460,7 +459,7 @@ class ObservableHingeCost(CostFunction):
     def as_terminal(self) -> ObservableHingeCost:
         """Derive a terminal cost scoring the final Frame."""
         return ObservableHingeCost(
-            self.envelope,
+            self.power,
             w_hinge=float(self.w),
             horizon=self.horizon,
             terminal=True,

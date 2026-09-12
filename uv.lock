@@ -1043,6 +1043,11 @@ wheels = [
 ]
 
 [[package]]
+name = "latex-linting"
+version = "0.1.0"
+source = { git = "https://github.com/maxi-fr/latex_linting#0b1f0447a51be744db3c19b415ab2eca8b6a7fef" }
+
+[[package]]
 name = "llvmlite"
 version = "0.49.0"
 source = { registry = "https://pypi.org/simple" }
@@ -1382,6 +1387,7 @@ source = { editable = "." }
 dependencies = [
     { name = "cython" },
     { name = "h5py" },
+    { name = "latex-linting" },
     { name = "marimo" },
     { name = "matplotlib" },
     { name = "optuna" },
@@ -1426,6 +1432,7 @@ dev = [
 requires-dist = [
     { name = "cython", specifier = ">=3.3.0" },
     { name = "h5py", specifier = ">=3.16.0" },
+    { name = "latex-linting", git = "https://github.com/maxi-fr/latex_linting" },
     { name = "marimo", specifier = ">=0.23.10" },
     { name = "matplotlib", specifier = ">=3.8" },
     { name = "optuna", specifier = ">=4.9.0" },
