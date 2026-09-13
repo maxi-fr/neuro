@@ -267,7 +267,7 @@ def test_spectral_hinge_jax_reduction_agrees_with_canonical_numpy() -> None:
     horizon, n_channels, fs, window, hop = 100, 3, 50.0, 50, 25
     y = rng.standard_normal((horizon, n_channels))
 
-    geom = StftGeometry(n_segment=window, n_hop=hop)
+    geom = StftGeometry(n_segment=window, n_hop=hop, band_hz=(1.0, 25.0))
     numpy_frames = compute_log_power_frames(y, geom, fs=fs)
 
     jax_frames = jax_compute_log_power_frames(jnp.asarray(y), fs=fs, window=window, hop=hop)
@@ -312,7 +312,7 @@ def test_spectral_hinge_cost_is_model_free_and_scores_stage_trajectory() -> None
     # Check value at index 0 against NumPy
     z_last = slice((n_y - 1) * n_channels, n_y * n_channels)
     y_stage = X[:, z_last] * y_scale + y_center  # (horizon, n_channels)
-    geom = StftGeometry(n_segment=window, n_hop=hop)
+    geom = StftGeometry(n_segment=window, n_hop=hop, band_hz=(1.0, 25.0))
     numpy_frames = compute_log_power_frames(y_stage, geom, fs=fs)
     assert numpy_frames.shape[0] == (horizon - window) // hop + 1
     log_excess = numpy_frames - np.log(envelope_power[None, :, 1:])

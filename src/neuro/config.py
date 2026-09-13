@@ -150,12 +150,12 @@ class StftGeometry(ObservableGeometry):
     kernel_width: int = Field(default=1, ge=1)
 
     def bin_range(self, fs: float) -> tuple[int, int]:
-        """Half-open rfft bin index range scored at ``fs``; DC is always excluded."""
+        """Half-open rfft bin index range scored at ``fs``; includes DC unless band_hz excludes it."""
         n_bins = self.n_segment // 2 + 1
         if self.band_hz is None:
-            return 1, n_bins
+            return 0, n_bins
         lo_hz, hi_hz = self.band_hz
-        lo = max(1, math.ceil(lo_hz * self.n_segment / fs))
+        lo = max(0, math.ceil(lo_hz * self.n_segment / fs))
         hi = min(n_bins, math.floor(hi_hz * self.n_segment / fs) + 1)
         return lo, max(lo, hi)
 

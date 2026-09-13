@@ -272,12 +272,18 @@ def test_value_constraints_rejected(raw: dict) -> None:
         NNPredictorConfig.from_dict(raw)
 
 
-def test_stft_bin_range_excludes_dc_and_clips_to_the_band() -> None:
-    """bin_range drops the DC bin and keeps only rfft bins inside band_hz."""
+def test_stft_bin_range_includes_dc_unless_manually_excluded() -> None:
+    """bin_range includes DC when band_hz is None or starts at 0, and excludes DC when band_hz starts > 0."""
     fs = 50.0
     full = StftSpec(weight=1.0, n_span=50, n_segment=50, n_hop=25)
-    assert full.bin_range(fs) == (1, 26)
+    assert full.bin_range(fs) == (0, 26)  # DC included by default
     assert full.n_segment_frames(full.n_span) == 1  # segment == span: the Welch endpoint
+
+    dc_explicit = StftSpec(weight=1.0, n_span=50, n_segment=50, n_hop=25, band_hz=(0.0, 25.0))
+    assert dc_explicit.bin_range(fs) == (0, 26)
+
+    dc_excluded = StftSpec(weight=1.0, n_span=50, n_segment=50, n_hop=25, band_hz=(1.0, 25.0))
+    assert dc_excluded.bin_range(fs) == (1, 26)  # DC manually excluded
 
     hopped = StftSpec(weight=1.0, n_span=50, n_segment=25, n_hop=12)
     assert hopped.n_segment_frames(hopped.n_span) == 3

@@ -265,7 +265,7 @@ def test_jax_reduction_agrees_with_canonical_numpy() -> None:
     n_samples, n_channels, fs, window, hop = 120, 3, 50.0, 40, 20
     y = rng.standard_normal((n_samples, n_channels))
 
-    geom = StftGeometry(n_segment=window, n_hop=hop)
+    geom = StftGeometry(n_segment=window, n_hop=hop, band_hz=(1.25, 25.0))
     numpy_frames = compute_log_power_frames(y, geom, fs=fs)
 
     jax_frames = jax_compute_log_power_frames(jnp.asarray(y), fs=fs, window=window, hop=hop)

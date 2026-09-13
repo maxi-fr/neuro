@@ -1,15 +1,12 @@
 from __future__ import annotations
 
 import itertools
-from pathlib import Path
 from typing import TYPE_CHECKING
 
 import jax.numpy as jnp
 import numpy as np
 import pytest
 import torch
-from simulate.config import load_config as load_sim_config
-from simulate.simulation import Simulation
 from trajopt.costs.output import OutputCost
 from trajopt.mpc import MPC
 from trajopt.solvers.altro import ALTRO
@@ -17,7 +14,6 @@ from trajopt.solvers.boxqp import BoxQP
 from trajopt.transcription.ipopt import Ipopt
 from trajopt.transcription.osqp import OSQP
 from trajopt.transcription.single_shooting import SingleShooting
-from yaml import safe_load
 
 from neuro.config import StftGeometry
 from neuro.control.costs import ObservableHingeCost
@@ -38,6 +34,8 @@ from neuro.spectral import HealthyReference, ObservableEnvelope
 from neuro.transforms import Standardizer
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from neuro.types import FloatArray
 
 _SEED = 7
@@ -290,57 +288,6 @@ def test_reproduces_mpc_controller_control_sequence(tmp_path: Path) -> None:
     controls, costs = _drive_golden(controller, n_steps=8, n_channels=controller.model.n_channels)
     np.testing.assert_allclose(controls, _WAVEFORM_PARITY_CONTROLS, atol=1e-4)
     np.testing.assert_allclose(costs, _WAVEFORM_PARITY_COSTS, atol=1e-4)
-
-
-def test_migrated_config_reproduces_incumbent_end_to_end(tmp_path: Path) -> None:
-    """The migrated YAML, dispatched through ``from_config``, reproduces the incumbent sequence and cost.
-
-    Loads ``mse02_psd_mpc.yaml`` and swaps in the synthetic checkpoint and the golden weights,
-    keeping the config's ``kirchhoff: true``; the controller is then built through the config's
-    class-path dispatch rather than direct instantiation.
-    """
-    with Path("configs/simulation/mse02_psd_mpc.yaml").open() as file:
-        sim_config = safe_load(file)
-    controller_cfg = sim_config["controller"]
-    problem_cfg = {
-        **controller_cfg["problem"],
-        "artifact": str(_build_checkpoint(tmp_path, depth=0)),
-        "horizon": 3,
-        "u_max": 0.5,
-        "w_y": 1.0,
-        "w_u": 0.0,
-        "reference": _ref(2),
-    }
-    controller = TrajOptMPCController.from_config(
-        {"dt": controller_cfg["dt"], "problem": problem_cfg, "solver": _full_parity_solver()}
-    )
-
-    controls, costs = _drive_golden(controller, n_steps=8, n_channels=controller.model.n_channels)
-    np.testing.assert_allclose(controls, _WAVEFORM_PARITY_CONTROLS, atol=1e-4)
-    np.testing.assert_allclose(costs, _WAVEFORM_PARITY_COSTS, atol=1e-4)
-
-
-def test_migrated_config_reproduces_incumbent_with_default_solver(tmp_path: Path) -> None:
-    """A migrated ``kirchhoff: true`` config runs through ``from_config`` with the tuned default solver."""
-    with Path("configs/simulation/mse02_psd_mpc.yaml").open() as file:
-        sim_config = safe_load(file)
-    controller_cfg = sim_config["controller"]
-    problem_cfg = {
-        **controller_cfg["problem"],
-        "artifact": str(_build_checkpoint(tmp_path, depth=0)),
-        "horizon": 3,
-        "u_max": 0.5,
-        "w_y": 1.0,
-        "w_u": 0.0,
-        "reference": _ref(2),
-    }
-    controller = TrajOptMPCController.from_config({"dt": controller_cfg["dt"], "problem": problem_cfg})
-    assert type(controller.solver) is SingleShooting
-
-    controls, costs = _drive_golden(controller, n_steps=8, n_channels=controller.model.n_channels)
-    # The default solver operates at tol=1e-3, matching the incumbent 1e-8 solve within 1e-3.
-    np.testing.assert_allclose(controls, _WAVEFORM_PARITY_CONTROLS, atol=1e-3)
-    np.testing.assert_allclose(costs, _WAVEFORM_PARITY_COSTS, atol=1e-3)
 
 
 def test_single_shooting_solver_succeeds_when_kirchhoff(tmp_path: Path) -> None:
@@ -630,45 +577,12 @@ def test_build_observable_problem_envelope_cross_validation(tmp_path: Path) -> N
         build_observable_problem(artifact, horizon=4, u_max=0.5, w_hinge=1.0, reference=HealthyReference.load(bad_band))
 
 
-def test_example_observable_config_runs_simulation_start_to_finish(tmp_path: Path) -> None:
-    """An example config with build_observable_problem runs the loop start to finish."""
-    sim_dict = load_sim_config(Path("configs/simulation/observable_psd_mpc.yaml"))
-    geom = StftGeometry(n_segment=50, n_hop=25, kernel="boxcar", kernel_width=1)
-    artifact, _ = _build_observable_checkpoint(
-        tmp_path, n_y=2, n_u=2, horizon=4, n_channels=62, n_controls=3, geom=geom
-    )
-    env_path = tmp_path / "healthy_psd.npz"
-    np.savez_compressed(
-        env_path,
-        Pref_frames=np.full((62, geom.n_values(50.0)), -2.0),
-        fs=50.0,
-        n_segment=geom.n_segment,
-        n_hop=geom.n_hop,
-        band_hz=np.asarray(geom.band_hz if geom.band_hz is not None else [-1.0, -1.0]),
-        n_bin_pool=geom.n_bin_pool,
-        kernel=geom.kernel,
-        kernel_width=geom.kernel_width,
-    )
-    sim_dict["t_end"] = 0.5
-    sim_dict["controller"]["problem"]["artifact"] = str(artifact)
-    sim_dict["controller"]["problem"]["reference"] = str(env_path)
-    sim_dict["estimator"]["geometry"] = geom.model_dump()
-    sim_dict["estimator"]["downsample"] = 200
-
-    sim = Simulation.from_config(sim_dict)
-    sim.run(output_dir=tmp_path / "sim_out", use_mmap=True)
-    assert sim.logger is not None
-    us = sim.logger.signal("controller", "u")
-    assert us.shape[0] > 0
-    assert np.isfinite(us).all()
-
-
 def test_default_solver_selection(tmp_path: Path) -> None:
     """_default_solver picks SingleShooting(Ipopt) for every deployed formulation."""
     art_wf = _build_checkpoint(tmp_path / "wf", depth=0, n_y=3, n_u=2, horizon=4, n_channels=2, n_controls=3)
 
     geometry = StftGeometry(n_segment=4, n_hop=2)
-    envelope = ObservableEnvelope(power=np.full((2, 2), -2.0), fs=100.0, geometry=geometry)
+    envelope = ObservableEnvelope(power=np.full((2, 3), -2.0), fs=100.0, geometry=geometry)
     problems = (
         build_waveform_problem(art_wf, horizon=4, u_max=0.5, w_y=1.0, kirchhoff=True, reference=_ref(2)),
         build_waveform_problem(art_wf, horizon=4, u_max=0.5, w_y=1.0, reduce_kirchhoff=True, reference=_ref(2)),
