@@ -20,7 +20,6 @@ FONT_ANNOTATION = 7.5  # In-plot descriptions, arrows, and labels
 FONT_SMALL = 6.5  # Fine details, tight index tags (e.g. "$q = 0$")
 
 
-
 def _register_fonts() -> None:
     """Register font files located in thesis/figures/fonts/."""
     if FONT_DIR.is_dir():
@@ -36,28 +35,30 @@ def setup_style() -> None:
     """
     _register_fonts()
 
-    plt.rcParams.update({
-        # Typography matching tudapub (XCharter / serif)
-        "font.family": "serif",
-        "font.serif": ["XCharter", "Charter", "DejaVu Serif", "serif"],
-        "mathtext.fontset": "cm",
-        # Sizing hierarchy
-        "font.size": FONT_LABEL,
-        "figure.titlesize": FONT_LARGE,
-        "axes.titlesize": FONT_TITLE,
-        "axes.labelsize": FONT_LABEL,
-        "legend.fontsize": FONT_LEGEND,
-        "xtick.labelsize": FONT_TICK,
-        "ytick.labelsize": FONT_TICK,
-        # Plot styling
-        "axes.linewidth": 0.6,
-        "grid.linewidth": 0.4,
-        "grid.alpha": 0.35,
-        "lines.linewidth": 0.8,
-        # Output export
-        "savefig.bbox": "tight",
-        "savefig.pad_inches": 0.02,
-    })
+    plt.rcParams.update(
+        {
+            # Typography matching tudapub (XCharter / serif)
+            "font.family": "serif",
+            "font.serif": ["XCharter", "Charter", "DejaVu Serif", "serif"],
+            "mathtext.fontset": "cm",
+            # Sizing hierarchy
+            "font.size": FONT_LABEL,
+            "figure.titlesize": FONT_LARGE,
+            "axes.titlesize": FONT_TITLE,
+            "axes.labelsize": FONT_LABEL,
+            "legend.fontsize": FONT_LEGEND,
+            "xtick.labelsize": FONT_TICK,
+            "ytick.labelsize": FONT_TICK,
+            # Plot styling
+            "axes.linewidth": 0.6,
+            "grid.linewidth": 0.4,
+            "grid.alpha": 0.35,
+            "lines.linewidth": 0.8,
+            # Output export
+            "savefig.bbox": "tight",
+            "savefig.pad_inches": 0.02,
+        }
+    )
 
 
 def figsize(

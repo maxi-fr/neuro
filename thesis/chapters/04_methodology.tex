@@ -11,43 +11,172 @@
 % methods and motivates design choices. Chapter 5 tests them and reports the evidence.
 % Introduce tunable parameters and selection criteria here; put search ranges, budgets,
 % results, and selected configurations in Chapter 5. Routine tuning can go in an appendix.
-% When drafting, bridge each section into the question addressed by the next.
 
 \section{Closed-Loop Neurostimulation Architecture}
-% Give the concrete setting in which the ideas are investigated.
-% Figure: Plant -> EEG -> Estimator -> Predictor/MPC -> electrode currents ->
-% Field Projection -> Plant. Identify signals available to control versus evaluation.
+
+% i don't like this whole first paragraph. Feels too much like AI
+Chapter~\ref{ch:foundations} introduced the plant, electrical interfaces, prediction
+models, and receding-horizon control separately. This section connects them into the
+closed-loop setting used in this thesis. The setting follows the EEG-feedback structure
+of Yu et al.~\cite{Yu2024}, but replaces their amplitude trigger with a prediction model % we don't need to mention what controller they used. This should be in the introduction not here.
+and \ac{mpc}. Figure~\ref{fig:closed_loop_architecture} shows the resulting signal path.
+Only scalp \ac{eeg} and previously applied electrode currents enter the controller.
+The regional activity retained to assess seizure propagation is not available for feedback.
+
+At a controller update, the signal-conditioning stage passes the latest causal % its not "causal signal conditioning" its a low pass filter.
+measurement to the prediction model. The \ac{mpc} problem evaluates candidate current
+sequences and applies the first current vector of its solution. A zero-order hold keeps
+this vector constant until the next update. The stimulation projection converts the
+electrode currents into regional membrane perturbations, after which the plant evolves
+and produces the next measurement. Waveform and spectral controllers use this same
+physical loop. Their update rates differ because a waveform sample is available after
+each decimation interval, whereas a spectral quantity is available only after a new
+analysis frame has been formed.
+
+\begin{figure}[htbp]
+    \centering
+    \begin{tikzpicture}[
+        block/.style={
+            draw,
+            rounded corners=2pt,
+            align=center,
+            minimum height=1.3cm,
+            text width=1.9cm,
+            font=\small
+        },
+        signal/.style={->, thick},
+        evaluation/.style={->, dashed, thick}
+    ]
+        \node[block] (plant) at (0,4.2) {Whole-brain seizure plant};
+        \node[block] (eeg) at (2.8,4.2) {62-channel EEG projection};
+        \node[block] (conditioning) at (5.6,4.2) {Causal signal conditioning};
+        \node[block] (control) at (8.4,4.2) {Prediction model and MPC};
+        \node[block] (field) at (8.4,2.0) {ROAST field projection};
+        \node[block] (assessment) at (2.8,0) {Seizure-spread assessment};
+
+        \draw[signal] (plant) -- node[above, font=\scriptsize] {$\mathbf{y}_\mathrm{LFP}$} (eeg);
+        \draw[signal] (eeg) -- node[above, font=\scriptsize] {$\mathbf{y}_\mathrm{EEG}$} (conditioning);
+        \draw[signal] (conditioning) -- node[above, font=\scriptsize] {$\tilde{\mathbf{y}}_k$} (control); % is tilde what we use for denoting estimates/filtered values?
+        \draw[signal] (control) -- node[right, font=\scriptsize] {$\mathbf{u}_k$} (field);
+        \draw[signal] (field) -- (0,2.0) -- node[left, font=\scriptsize] {$\mathbf{s}_k$} (plant);
+        \draw[evaluation] (plant) -- (0,0) -- node[above, font=\scriptsize] {evaluation only} (assessment);
+    \end{tikzpicture}
+    \caption{Closed-loop neurostimulation architecture. Solid arrows denote the causal
+        feedback loop. The dashed branch carries regional activity used only for post hoc
+        evaluation and does not provide the controller with source-level information.}
+    \label{fig:closed_loop_architecture}  %  I don't like this picture. It should show the blocks in a standard closed-loop control block diagram layout. With the EEG projection and ROAST field projection just being multiplication blocks and holding their matrix symbols. There needs to be a "reference"/goal. The seizure spread assessment is not a part of it at all
+\end{figure}
 
 \subsection{Plant Configuration and Seizure Dynamics}
-% Refer to Chapter 3 for the biophysical equations; describe the choices made here.
-% - Concrete dimensions: 76 regions, 62 EEG channels, and the stimulation electrode count.
-% - Named EZ/PZ regions, their excitability parameters, and the relation to Yu et al.
-% - Justification of K = 0.60 and sigma = 280 versus Yu et al.'s 0.75 and 500.
-%   If calibration is an empirical study, report its evidence in Chapter 5 and refer to it.
-% - Integration method, Plant time step, noise discretization, and conduction delays.
-%   Keep numerical details brief; omit software mechanisms such as ring-buffer storage.
+
+The loop in Figure~\ref{fig:closed_loop_architecture} is closed around the biophysical
+model of Section~\ref{sec:excitability}. Its plant contains 76 Jansen--Rit regions coupled
+by the structural weights and tract lengths of the connectome. Each region contributes  % what connectome? mention that it is the TVB ...
+six states, so the instantaneous neural-mass state has dimension 456. Fibre lengths are  % the neural-mass state is irrelevant information. This should just be a description of our setup and what decision we took.
+converted into delays using the uniform conduction speed
+$c=\SI{50}{\milli\metre\per\milli\second}$, and each delay is rounded to the nearest plant
+integration step.
+
+The regional seizure configuration adopts the temporal-lobe partition of Yu et.\.al.~\cite{Yu2024}. % and why is that partition important?
+The left hippocampus, left parahippocampal cortex, and left amygdala form  % we need to explain why these regions were chosen.
+the \ac{ez}, with $A_i=\SI{3.6}{\milli\volt}$. The left inferior temporal cortex and left
+ventral temporal cortex form the initial \ac{pz}, with
+$A_i=\SI{3.4}{\milli\volt}$. All remaining regions use the background value
+$A_i=\SI{3.25}{\milli\volt}$. The global coupling factor $K=0.60$ and noise intensity
+$\sigma=\SI{280}{\per\second}$ were calibrated jointly because both parameters affect the
+time at which activity escapes the \ac{ez} and recruits the \ac{pz}. The calibration
+criterion rewards early recruitment within the \ac{ez}, later recruitment of the \ac{pz}
+and left hemisphere, and little recruitment of the right hemisphere. The calibration
+results are reserved for the appendix.
+
+Each simulation starts from the settled healthy state and advances the stochastic delayed
+dynamics with the Heun method at $\Delta t=\SI{0.1}{\milli\second}$. One Gaussian increment
+is used in both stages of a step. For a standard normal random vector
+$\boldsymbol{\xi}_k$, the stochastic increment on the excitatory loop is therefore
+$\sigma\sqrt{\Delta t}\,\boldsymbol{\xi}_k$. This fine grid resolves the neural-mass
+dynamics and conduction delays. It is not the sampling grid presented to the controller.
 
 \subsection{EEG Measurement and Stimulation Geometry}
-% - EEG Leadfield: reduction of the TVB surface projection from 62 x 16384 to 62 x 76
-%   through the region mapping; explain the sagittal-mirror row/label correction briefly.
-% - Field Projection: ROAST field calculation and projection onto cortical normals at
-%   regional centroids; specify the stimulation montage.
-% - Explain why the EEG Leadfield transpose cannot be reused for this electrode setup.
-% - EEG amplitude is in arbitrary units because the projection and dipole scale do not
-%   establish physical voltage units; relate references and thresholds to background EEG.
+
+The plant configuration fixes the internal seizure dynamics, while closing the loop
+requires separate maps for measurement and stimulation. For measurement, the surface
+projection supplied with The Virtual Brain maps 16,384 cortical vertices to 62 scalp
+electrodes~\cite{SanzLeon2015}. Summing the columns belonging to each anatomical region
+reduces this operator from $62\times16{,}384$ to the regional lead field
+$\mathbf{L}_\mathrm{EEG}\in\mathbb{R}^{62\times76}$. Equation~\eqref{eq:eeg} then maps the
+76 regional \acp{lfp} to the measured scalp signals. No additional measurement noise is
+added. Stochastic variability enters through the plant noise described above.
+
+The regional neural-mass output is only proportional to a dipole moment, and neither this
+proportionality nor the lead-field data establish an absolute voltage scale. Consequently,
+the simulated scalp \ac{eeg} is stated in arbitrary amplitude units. Thresholds and healthy
+references are constructed from signals produced by the same forward model, so their
+relative scale remains consistent.
+
+The stimulation interface uses the TP9--CP5--Ex8 montage. It extends the CP5--Ex8
+placement used by Yu et al.~\cite{Yu2024} with TP9 as a second controllable scalp site.
+Ex8 is the return position below the inion defined in the 10--05 cap. During field
+generation, ROAST substituted its TPP9 position for the requested TP9 label because this
+was the nearest available cap position. The thesis retains TP9 as the requested montage
+label and records the substitution here.
+
+ROAST computes one electric-field basis solution for a \SI{1}{\milli\ampere} current at
+each controllable scalp electrode against Ex8 on the MNI152 head model~\cite{Huang2019}.
+Linear superposition gives the field for any balanced current vector. Let
+$\mathbf{E}_{p,i}$ denote the field at the centroid of region $i$ due to the basis current
+at electrode $p$, and let $\mathbf{n}_i$ be the outward cortical normal assigned to that
+region. The regional membrane perturbation is
+%
+\begin{equation}
+    s_i(t)
+    = \lambda_\mathrm{p}\sum_{p=1}^{3}u_p(t)\,
+      \mathbf{E}_{p,i}^{\mathsf{T}}\mathbf{n}_i,
+    \qquad
+    \lambda_\mathrm{p}=\SI{0.35}{\milli\metre} \, .
+    \label{eq:regional_stimulation_projection}
+\end{equation}
+%
+The current $u_p$ belongs to electrode $p$, and $\lambda_\mathrm{p}$ is the assumed somatic
+polarisation length. The projection in~\eqref{eq:regional_stimulation_projection} uses a
+value within the range measured for deep-layer
+pyramidal cells~\cite{Radman2009}. Since
+$\mathbf{E}_{p,i}^{\mathsf{T}}\mathbf{n}_i$ has units of volts per metre, equivalently
+millivolts per millimetre, $s_i$ has units of millivolts. It enters the pyramidal sigmoid as
+specified in Section~\ref{sec:electro}. The controller imposes
+$|u_p|\leq\SI{2}{\milli\ampere}$ and $\sum_{p=1}^{3}u_p=0$. No slew-rate constraint is used.
+
+The transpose of $\mathbf{L}_\mathrm{EEG}$ cannot supply this stimulation map. Reciprocity
+applies when measurement and stimulation use the same electrodes, source locations, and
+orientations~\cite{Malmivuo1995}. Ex8 is absent from the 62-channel recording montage, and
+the ROAST map samples a volumetric electric field along regional cortical normals. These
+conditions differ from those used to construct the \ac{eeg} forward operator.
 
 \subsection{Filtering and Sampling}
-% Keep this short. State the frequency band relevant to the EEG activity studied here,
-% then explain causal anti-aliasing filtering before downsampling from the Plant rate.
-% Specify the filter, cutoff, and resulting waveform sampling interval once verified.
-% Distinguish that interval from the spectral Frame hop and controller update interval
-% where needed. Explain briefly how currents are held between updates.
-% QUESTION: Which frequency band [x, y] supports the intended claim, and is the claim
-% about EEG generally or the simulated seizure activity? Supply a citation or evidence.
-% QUESTION: What sampling rate and filter settings are actually used in the thesis runs?
-% Do not equate the scored spectral band with the anti-aliasing filter's passband.
+
+The spatial projections determine which signals the controller can measure and apply;
+filtering determines which temporal content reaches it. In the simulated seizure regime,
+the dominant oscillation lies near \SIrange{3}{4}{\hertz}, and most seizure-related power
+lies below \SI{12}{\hertz}, as illustrated in Figure~\ref{fig:bifurcation}. The controller input is
+therefore sampled at \SI{50}{\hertz}, retaining frequencies up to the
+\SI{25}{\hertz} Nyquist limit while reducing the number of prediction steps.
+
+Before decimation from the \SI{10}{\kilo\hertz} plant grid, every \ac{eeg} channel passes
+through a causal fourth-order Butterworth low-pass filter with a \SI{25}{\hertz} cutoff.
+A causal filter is required because future samples are unavailable during feedback; a
+zero-phase offline filter would give the controller non-causal information. The filtered
+signal is then decimated by 200, producing one waveform sample every
+\SI{20}{\milli\second}. The same filtering and decimation are applied to identification
+data and during closed-loop operation.
+
+The \SI{25}{\hertz} cutoff defines the anti-aliasing stage, not the frequency range used by
+a later spectral cost or prediction representation. A waveform controller may update on
+the \SI{20}{\milli\second} sample grid. A spectral controller instead updates when its next
+causal analysis frame becomes available, so its interval also depends on the frame hop.
+Section~\ref{sec:prediction_representations} next defines these two prediction
+representations and their time grids.
 
 \section{Prediction Representations and Models}
+\label{sec:prediction_representations}
 % Motivate the central question: what should be predicted to support seizure suppression?
 % Separate the output representation from the model class used to predict its dynamics.
 
@@ -56,7 +185,7 @@
 % and candidate future currents conditioning the prediction. Motivate this representation.
 
 \subsection{Spectral Observable Prediction}
-% Define the spectral Observable and why it is a candidate alternative to waveform prediction.
+% Define the spectral Observable and why it is a candidate alternative to waveform prediction. The reason is: if we are only predicting
 % Refer to Chapter 3 for STFT theory; specify the representation used in this method.
 % Introduce Segment length, Frame hop, frequency selection, pooling, and normalization.
 % Explain which information each geometry choice retains or discards and its time scale.
@@ -122,10 +251,7 @@
 % Explain the transcriptions and solution methods studied, including single/multiple
 % shooting and NARX/PCMS formulations if retained as part of the investigation.
 % State how Costs spanning multiple samples or Frames enter the optimization.
-% Briefly describe initialization, termination, measurement correction, and application
-% of the first part of the optimized current sequence. Avoid a software architecture account.
-% QUESTION: Is the numerical solution comparison a research question or a supporting
-% implementation choice? Scale this subsection and Chapter 5's comparison accordingly.
+% Avoid a software architecture account.
 % Chapter 5 contains solver comparison protocols and results, not first definitions.
 
 \section{Pulse-Based Control}
@@ -156,9 +282,8 @@
 % Distinguish this procedure from continuous optimization of pulse onset times.
 
 \subsection{Continuous Pulse-Timing Alternative}
-% Formulate onset times as continuous decisions if this alternative remains in scope.
+% Formulate onset times as continuous decisions (if this alternative remains in scope)
 % Explain how candidate pulses occurring within a sampling interval affect prediction.
-% QUESTION: Can the present discrete-time Predictor represent that dependence, or is
-% a different input parameterization or continuous-time Predictor required?
+% Develope a continuous-time Predictor required
 % Compare the formulations conceptually with L2/L1 continuous stimulation here.
 % Chapter 5 compares their suppression, stimulation use, and computational cost.
