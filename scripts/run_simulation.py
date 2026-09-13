@@ -3,8 +3,10 @@ import shutil
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 import numpy as np
+import yaml
 from simulate.config import deep_merge, load_config
 from simulate.experiment import ExperimentManager
 from simulate.simulation import Simulation
@@ -28,8 +30,19 @@ def _redundant_keys(data: dict[str, np.ndarray]) -> set[str]:
     return drop
 
 
+def _retain_batch(output_dir: Path, configs: list[dict[str, Any]]) -> None:
+    """Package completed batch archives with their resolved configs for the run explorer."""
+    for index, resolved in enumerate(configs):
+        archive = output_dir / f"sim_{index:03d}.npz"
+        if archive.exists():
+            run_dir = output_dir / f"sim_{index:03d}"
+            run_dir.mkdir(exist_ok=True)
+            archive.replace(run_dir / "log.npz")
+            (run_dir / "config.yaml").write_text(yaml.safe_dump(resolved, sort_keys=False), encoding="utf-8")
+
+
 def main() -> None:
-    """Execute the main entry point for the simulation CLI."""
+    """Run simulations and retain each resolved config beside its component-rate log."""
     parser = argparse.ArgumentParser(description="Modular Python Framework for Control System Simulation")
     parser.add_argument(
         "config_file",
@@ -91,8 +104,10 @@ def main() -> None:
             validate_simulation_config(merged)
 
         manager.run_batch(configs, max_num_processes=args.workers, use_mmap=args.mmap, compress=args.compress)
+        _retain_batch(output_dir, configs)
     else:
         validate_simulation_config(config)
+        (output_dir / "config.yaml").write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
         sim = Simulation.from_config(config)
         sim.run(output_dir, prefix="log", use_mmap=args.mmap)
         sim.export_results(output_dir, prefix="log", compress=args.compress)

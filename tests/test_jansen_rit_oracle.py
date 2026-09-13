@@ -73,6 +73,20 @@ def test_oracle_handover_reproduces_plant_step_exactly() -> None:
         np.testing.assert_allclose(float(k), float(step + 1))
 
 
+def test_oracle_components_log_observations_without_changing_handover() -> None:
+    params, conn = _toy_plant(3)
+    dyn = JansenRitDynamics(dt=_DT, params=params, conn=conn, seed=_SEED)
+    sensor = FullStateSensor(dt=_DT)
+    state, sensor_log = sensor.update(0.0, dyn.x, np.zeros(dyn.n_controls))
+    np.testing.assert_array_equal(state, dyn.x.reshape(-1))
+    np.testing.assert_array_equal(sensor_log.lfp, dyn.x[1] - dyn.x[2])
+    np.testing.assert_allclose(sensor_log.eeg, sensor.leadfield[:, :3] @ sensor_log.lfp)
+    estimator = JansenRitOracleEstimator(dt=_DT, model=JansenRitModel.from_plant(dyn))
+    estimate, estimator_log = estimator.update(0.0, state, np.zeros(dyn.n_controls))
+    np.testing.assert_array_equal(estimator_log.x_hat, estimate)
+    assert not np.shares_memory(estimator_log.x_hat, estimate)
+
+
 def test_oracle_history_is_written_on_the_predictor_grid() -> None:
     """The handover buffer holds ``S(y)`` sampled every Predictor step, not every Plant step."""
     stride = 10

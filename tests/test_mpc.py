@@ -30,6 +30,8 @@ from neuro.control.mpc import (
 from neuro.filtering import ObservableEstimator
 from neuro.predictor.inference import ObservableMLPModel, WaveformMLPModel
 from neuro.predictor.module import AutoregressiveMLP
+from neuro.predictor.replay import prepare_replay, replay_predictions
+from neuro.run_view import PredictionSeries, Run
 from neuro.spectral import HealthyReference, ObservableEnvelope
 from neuro.transforms import Standardizer
 
@@ -196,6 +198,79 @@ def test_warmup_emits_zero_until_window_filled(tmp_path: Path) -> None:
         np.testing.assert_array_equal(u, np.zeros(controller.model.m))
 
     assert not results[-1][1].warmup
+
+
+def test_decision_log_preserves_unshifted_predictions_and_physical_plan(tmp_path: Path) -> None:
+    artifact = _build_checkpoint(tmp_path)
+    problem = build_waveform_problem(artifact, horizon=3, u_max=0.5, w_y=1.0, reference=_ref(2), kirchhoff=True)
+    controller = TrajOptMPCController(dt=0.01, problem=problem)
+    results = _drive(controller, n_steps=5, n_channels=2)
+    warmup = results[0][1]
+    assert warmup.predicted_y.shape == (4, 2)
+    assert np.isnan(warmup.predicted_y).all()
+    for u, log in results[3:]:
+        assert log.planned_u.shape == (3, 2)
+        np.testing.assert_allclose(log.planned_u[0], u)
+        np.testing.assert_allclose(log.planned_u.sum(axis=1), 0, atol=1e-10)
+        assert not hasattr(log, "measurement")
+        assert not hasattr(log, "observed_y")
+        assert np.isfinite(log.predicted_y).all()
+    saved = results[-1][1].predicted_y.copy()
+    _drive(controller, n_steps=2, n_channels=2)
+    np.testing.assert_array_equal(results[-1][1].predicted_y, saved)
+
+
+def test_replay_rollout_uses_future_currents_but_never_future_measurements(tmp_path: Path) -> None:
+    artifact = _build_checkpoint(tmp_path, depth=0)
+    model = WaveformMLPModel.load(artifact)
+    rng = np.random.default_rng(71)
+    measurements = rng.normal(size=(12, 2))
+    controls = rng.normal(size=(12, 2))
+    times = np.arange(12, dtype=np.float64) * 0.01
+    predictions, observed = replay_predictions(model, measurements, controls, times, horizon=3)
+    np.testing.assert_allclose(predictions[4, 0], observed[4])
+    assert np.isnan(predictions[-3:]).all()
+    altered = measurements.copy()
+    altered[5:] += 100
+    changed, _ = replay_predictions(model, altered, controls, times, horizon=3)
+    np.testing.assert_allclose(predictions[4], changed[4])
+    altered_u = controls.copy()
+    altered_u[4:7] += 100
+    changed_u, _ = replay_predictions(model, measurements, altered_u, times, horizon=3)
+    assert not np.allclose(predictions[4, 1:], changed_u[4, 1:])
+
+
+def test_offline_preparation_reads_estimator_logs_and_saves_typed_predictions(tmp_path: Path) -> None:
+    artifact = _build_checkpoint(tmp_path, depth=0)
+    config = {
+        "controller": {
+            "dt": 0.01,
+            "problem": {
+                "class_path": "neuro.control.mpc.build_waveform_problem",
+                "artifact": str(artifact),
+                "horizon": 3,
+                "u_max": 1.0,
+                "w_y": 0.0,
+                "w_u": 1.0,
+            },
+        },
+        "estimator": {"class_path": "simulate.estimator.IdentityEstimator", "dt": 0.01},
+        "sensors": {"class_path": "simulate.sensor.GaussianSensor"},
+        "dynamics": {},
+    }
+    times = np.arange(12, dtype=np.float64) * 0.01
+    measurements = np.random.default_rng(4).normal(size=(12, 2))
+    run = Run(
+        tmp_path,
+        config,
+        {"controller.t": times, "controller.u": np.zeros((12, 2)), "sensor_0.t": times, "sensor_0.y_mea": measurements},
+    )
+    path = tmp_path / "replays" / "own.npz"
+    prepare_replay(run, config, path)
+    restored = PredictionSeries.load(path)
+    np.testing.assert_allclose(restored.observed_y[4:], measurements[4:])
+    assert restored.predicted_y.shape == (12, 4, 2)
+    assert restored.frequencies.size == 0
 
 
 def test_update_respects_bounds(tmp_path: Path) -> None:
