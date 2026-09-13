@@ -67,7 +67,22 @@ lowercase. A running index is italic, a naming index upright.
     $\mathbf{x}_{j|k}$ & Prediction $j$ steps ahead of step $k$ & -- \\
     $\mathbf{f}$ & One-step transition function of the prediction model & -- \\
     $\boldsymbol{\varphi}_j$ & Single-shooting rollout map over $j$ steps & -- \\
-    $d_\mathrm{y}, d_\mathrm{u}$ & \ac{narx} output and input history lengths & -- \\
+    $d_\mathrm{y}, d_\mathrm{u}$ & NARX output and input history lengths & -- \\
+    $\mathbf{h}_k$, $n_h$ & Input-output history state and its dimension & -- \\
+    $\boldsymbol{\theta}$ & Prediction-model parameters & -- \\
+    $\boldsymbol{\xi}_k$ & MLP input & -- \\
+    $L$ & Number of affine layers in the MLP & -- \\
+    $\mathbf{a}^{(\ell)}_k$ & MLP layer activation & -- \\
+    $\mathbf{W}^{(\ell)}$, $\mathbf{b}^{(\ell)}$ & MLP layer weights and biases & -- \\
+    $\mathcal{D}$ & Identification sample distribution & -- \\
+    $N_\mathrm{d}$ & Identification sample count & -- \\
+    $\mathbf{H}$ & Centred history snapshots & -- \\
+    $\mathbf{Y}_+$ & Centred successor-output snapshots & -- \\
+    $\boldsymbol{\Upsilon}$ & Centred input snapshots & -- \\
+    $\boldsymbol{\Omega}$ & Stacked DMDc regressors & -- \\
+    $\mathbf{A}_\mathrm{y}$, $\mathbf{B}_\mathrm{y}$, $\mathbf{c}_\mathrm{y}$ & Affine DMDc output-map parameters & -- \\
+    $\mathbf{G}$ & Combined DMDc regression matrix & -- \\
+    $\rho$ & Retained SVD rank & -- \\
     $\ell$ & Stage cost & -- \\
     $\ell_\mathrm{x}$, $\ell_\mathrm{u}$ & State-dependent and input-dependent stage-cost terms & -- \\
     $V_\mathrm{f}$ & Terminal cost & -- \\

@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
 from scipy.signal import chirp
 from scipy.signal.windows import hann
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import style
 
 FS = 200.0
 DURATION = 3.0
@@ -36,7 +40,7 @@ def main() -> None:
     y = chirp(t, f0=F_START, t1=DURATION, f1=F_END, method="linear")
     freqs, frame_times, power = _periodograms(y)
 
-    fig, axes = plt.subplots(2, 1, figsize=(6.6, 4.6), height_ratios=[1.0, 1.25], constrained_layout=True)
+    fig, axes = plt.subplots(2, 1, figsize=style.figsize(height_in=4.4), height_ratios=[1.0, 1.25], constrained_layout=True)
 
     ax = axes[0]
     ax.plot(t, y, lw=0.7, color="C0", zorder=3)
@@ -48,26 +52,26 @@ def main() -> None:
         label = r"Hann taper $g[n]$" if q == 0 else None
         ax.fill_between(seg_t + offset, base, base + 0.5 * taper, color=f"C{q + 1}", alpha=0.35, lw=0)
         ax.plot(seg_t + offset, base + 0.5 * taper, lw=0.9, color=f"C{q + 1}", label=label)
-        ax.text(offset + N_SEGMENT / FS + 0.02, base + 0.12, f"$q = {q}$", ha="left", va="center", fontsize=7)
+        ax.text(offset + N_SEGMENT / FS + 0.02, base + 0.12, f"$q = {q}$", ha="left", va="center", fontsize=style.FONT_SMALL)
     ax.annotate(
         "",
         xy=(0.0, 1.55),
         xytext=(N_SEGMENT / FS, 1.55),
         arrowprops={"arrowstyle": "<->", "lw": 0.8, "color": "0.25"},
     )
-    ax.text(0.5 * N_SEGMENT / FS, 1.68, r"$L_\mathrm{s}$", ha="center", va="bottom", fontsize=8)
+    ax.text(0.5 * N_SEGMENT / FS, 1.68, r"$L_\mathrm{s}$", ha="center", va="bottom", fontsize=style.FONT_ANNOTATION)
     ax.annotate(
         "",
         xy=(0.0, -4.15),
         xytext=(N_HOP / FS, -4.15),
         arrowprops={"arrowstyle": "<->", "lw": 0.8, "color": "0.25"},
     )
-    ax.text(0.5 * N_HOP / FS, -4.42, r"$H_\mathrm{s}$", ha="center", va="top", fontsize=8)
+    ax.text(0.5 * N_HOP / FS, -4.42, r"$H_\mathrm{s}$", ha="center", va="top", fontsize=style.FONT_ANNOTATION)
     ax.set_ylim(-5.3, 2.4)
     ax.set_yticks([-1.0, 0.0, 1.0])
     ax.set_ylabel("Amplitude / 1")
-    ax.set_title("(a) Segments on the hop grid", fontsize=8, loc="left")
-    ax.legend(fontsize=7, loc="lower right")
+    ax.set_title("(a) Segments on the hop grid", loc="left")
+    ax.legend(loc="lower right")
 
     ax = axes[1]
     edges_t = np.concatenate([[frame_times[0] - N_HOP / FS], frame_times])
@@ -82,12 +86,12 @@ def main() -> None:
         xytext=(N_SEGMENT / FS, 112.0),
         arrowprops={"arrowstyle": "<->", "lw": 0.9, "color": "0.25"},
     )
-    ax.text(N_SEGMENT / FS + 0.03, 112.0, "samples spectrum $q = 0$ waits for", ha="left", va="center", fontsize=7)
+    ax.text(N_SEGMENT / FS + 0.03, 112.0, "samples spectrum $q = 0$ waits for", ha="left", va="center", fontsize=style.FONT_ANNOTATION)
     ax.set_ylim(0.0, 128.0)
     ax.set_yticks([0.0, 25.0, 50.0, 75.0, 100.0])
     ax.set_ylabel("Frequency / Hz")
     ax.set_xlabel("Time / s")
-    ax.set_title("(b) The spectra the grid produces", fontsize=8, loc="left")
+    ax.set_title("(b) The spectra the grid produces", loc="left")
 
     for ax in axes:
         ax.grid(visible=True, lw=0.4, alpha=0.4)

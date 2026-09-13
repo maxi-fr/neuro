@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
 from scipy.signal import decimate
 from scipy.signal.windows import hann
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import style
 
 from neuro.connectome import Connectome
 from neuro.jansen_rit import JansenRitDynamics, JansenRitParams, lfp, simulate_network
@@ -66,7 +70,7 @@ def _periodograms(y: FloatArray, n_segment: int, n_hop: int) -> tuple[FloatArray
 def main() -> None:
     """Write the two-panel resolution and variance figure."""
     y = _ez_trace()
-    fig, axes = plt.subplots(1, 2, figsize=(7.0, 3.0), constrained_layout=True)
+    fig, axes = plt.subplots(1, 2, figsize=style.figsize(height_in=3.0), constrained_layout=True)
 
     ax = axes[0]
     for idx, n_segment in enumerate(SEGMENT_LENGTHS):
@@ -81,7 +85,7 @@ def main() -> None:
             color=f"C{idx}",
             label=label,
         )
-    ax.set_title("(a) Three segment lengths, matched averaging", fontsize=8, loc="left")
+    ax.set_title("(a) Three segment lengths, matched averaging", loc="left")
 
     ax = axes[1]
     freqs, power = _periodograms(y, KERNEL_SEGMENT, KERNEL_HOP)
@@ -90,7 +94,7 @@ def main() -> None:
         ax.semilogy(
             freqs, power[end - width : end].mean(axis=0), lw=0.9, color=f"C{idx}", label=rf"$L_\mathrm{{k}} = {width}$"
         )
-    ax.set_title("(b) One segment length, three kernel widths", fontsize=8, loc="left")
+    ax.set_title("(b) One segment length, three kernel widths", loc="left")
 
     for ax in axes:
         ax.set_xlim(0.0, BAND_MAX_HZ)
@@ -99,7 +103,7 @@ def main() -> None:
         ax.set_ylabel("PSD / mV$^2$ Hz$^{-1}$")
         ax.grid(visible=True, lw=0.4, alpha=0.4)
         ax.set_axisbelow(True)
-        ax.legend(fontsize=7, loc="lower left")
+        ax.legend(loc="lower left")
 
     fig.savefig(OUT)
     print(f"wrote {OUT}")

@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import style
 
 from neuro.types import FloatArray  # noqa: TC001 -- runtime import keeps the script runnable standalone
 
@@ -95,7 +99,7 @@ def main() -> None:
     t_real = np.arange(len(y_real)) * DT
 
     fig, (ax_y, ax_u) = plt.subplots(
-        2, 1, figsize=(6.2, 4.2), sharex=True, height_ratios=(2, 1), constrained_layout=True
+        2, 1, figsize=style.figsize(height_in=3.8), sharex=True, height_ratios=(2, 1), constrained_layout=True
     )
 
     for i, (k, u_plan, y_plan) in enumerate(plans):
@@ -110,23 +114,23 @@ def main() -> None:
     ax_u.step(t_real[:-1], u_real, where="post", lw=1.8, color="C0")
 
     ax_y.axhline(Y_REF, lw=0.8, ls="-.", color="0.4")
-    ax_y.text(0.02, Y_REF, "reference", fontsize=7, color="0.4", va="bottom")
+    ax_y.text(0.02, Y_REF, "reference", fontsize=style.FONT_ANNOTATION, color="0.4", va="bottom")
     ax_y.set_ylabel("State $x$ / a.u.")
     ax_y.set_ylim(-0.12, 1.42)
-    ax_y.legend(fontsize=7, ncols=2, loc="upper right")
+    ax_y.legend(ncols=2, loc="upper right")
     ax_y.annotate(
         "horizon of length $H$",
         xy=(HORIZON * DT, plans[0][2][-1]),
         xytext=(HORIZON * DT + 0.06, 0.26),
-        fontsize=7,
+        fontsize=style.FONT_ANNOTATION,
         color=COLORS[0],
         arrowprops={"arrowstyle": "->", "lw": 0.7, "color": COLORS[0]},
     )
 
     for bound in (-U_MAX, U_MAX):
         ax_u.axhline(bound, ls=":", lw=0.9, color="C3")
-    ax_u.text(0.02, U_MAX, r"$u_\mathrm{max}$", fontsize=8, color="C3", va="bottom")
-    ax_u.text(0.02, -U_MAX, r"$-u_\mathrm{max}$", fontsize=8, color="C3", va="top")
+    ax_u.text(0.02, U_MAX, r"$u_\mathrm{max}$", fontsize=style.FONT_ANNOTATION, color="C3", va="bottom")
+    ax_u.text(0.02, -U_MAX, r"$-u_\mathrm{max}$", fontsize=style.FONT_ANNOTATION, color="C3", va="top")
     ax_u.set_ylabel("Input $u$ / a.u.")
     ax_u.set_xlabel("Time / s")
     ax_u.set_ylim(-1.5 * U_MAX, 1.5 * U_MAX)
