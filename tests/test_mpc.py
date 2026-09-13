@@ -668,7 +668,7 @@ def test_default_solver_selection(tmp_path: Path) -> None:
     art_wf = _build_checkpoint(tmp_path / "wf", depth=0, n_y=3, n_u=2, horizon=4, n_channels=2, n_controls=3)
 
     geometry = StftGeometry(n_segment=4, n_hop=2)
-    envelope = ObservableEnvelope(power=np.full((2, 2), -2.0), fs=100.0, geometry=geometry)
+    envelope = ObservableEnvelope(power=np.full((2, 3), -2.0), fs=100.0, geometry=geometry)
     problems = (
         build_waveform_problem(art_wf, horizon=4, u_max=0.5, w_y=1.0, kirchhoff=True, reference=_ref(2)),
         build_waveform_problem(art_wf, horizon=4, u_max=0.5, w_y=1.0, reduce_kirchhoff=True, reference=_ref(2)),

@@ -42,7 +42,7 @@ estimator:
   geometry:
     n_segment: 50
     n_hop: 25
-    band_hz: null
+    band_hz: [1.0, 25.0]
     n_bin_pool: 1
     kernel: boxcar
     kernel_width: 1

@@ -41,6 +41,7 @@ training:
     stft:
       weight: 1.0
       n_segment: 50        # 1.0 s window at 50 Hz, the healthy-envelope geometry
+      band_hz: [1.0, 25.0]
       n_hop: 5             # 0.1 s hop, matching the observable arms
       n_span: 75           # 1.5 s: the full MPC horizon, 6 frames
       start_epoch: 80      # the rollout must survive before its spectrum is scored

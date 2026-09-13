@@ -144,7 +144,7 @@ def test_stft_frame_kernel_pools_before_the_log() -> None:
         ),
     )
     n_frames = (n_span - n_segment) // n_hop + 1
-    assert loss_fn.log_spectrogram(pred, _stft_ctx(c)).shape == (3, c, n_frames - width + 1, n_segment // 2)
+    assert loss_fn.log_spectrogram(pred, _stft_ctx(c)).shape == (3, c, n_frames - width + 1, n_segment // 2 + 1)
 
     _, diag = loss_fn(pred, true, _stft_ctx(c))
     assert diag["M_out"] == float(n_frames - width + 1)
