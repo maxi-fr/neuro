@@ -29,7 +29,7 @@ GOOD_COMMAND = (2.0, 0.0, -2.0)
 
 
 def _run_arm(base_sim_dict: dict, seed: int, command: tuple[float, float, float]) -> FloatArray:
-    """Simulate one seed for ``SETTLE_S + max(LOOKAHEADS_S)``, holding ``command`` after the settle."""
+    """Hold ``command`` after settling one seed and return the Sensor's logged EEG values."""
     t_end = SETTLE_S + max(LOOKAHEADS_S)
     dt_u = float(base_sim_dict["controller"]["dt"])
 
@@ -52,7 +52,7 @@ def _run_arm(base_sim_dict: dict, seed: int, command: tuple[float, float, float]
         if sim.logger is None:
             msg = "Simulation logger is missing after run."
             raise RuntimeError(msg)
-        y_mea = np.asarray(sim.logger.signal("sensor_0", "y_mea"), dtype=np.float64)
+        y_mea = np.asarray(sim.logger.signal("sensor_0", "y_mea")[1], dtype=np.float64)
         start = round(SETTLE_S / sim.dt)
         return y_mea[start : start + round(max(LOOKAHEADS_S) / sim.dt)].copy()
 

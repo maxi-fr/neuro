@@ -130,6 +130,16 @@ def _(Path, electrode_labels, find_run, mo, np, region_lfp, run_dir_input):
         _u = data["controller.u"]
         _u = _u.reshape(_u.shape[0], -1)
         _nan = np.full(_u.shape[0], np.nan)
+        _control_t = (
+            np.asarray(data["controller.t"])
+            if "controller.t" in data
+            else np.arange(len(_u)) * float(_config["dynamics"]["dt"])
+        )
+        _eeg_t = (
+            np.asarray(data["sensor_0.t"])
+            if "sensor_0.t" in data
+            else np.arange(len(_y_mea)) * float(_config["dynamics"]["dt"])
+        )
         _cost = data["controller.cost"] if "controller.cost" in data.files else _nan
         _y_reg = region_lfp(data)
 
@@ -145,6 +155,9 @@ def _(Path, electrode_labels, find_run, mo, np, region_lfp, run_dir_input):
         "y_mea": _y_mea,
         "y_reg": _y_reg,
         "u": _u,
+        "control_t": _control_t,
+        "eeg_t": _eeg_t,
+        "control_dt": float(np.median(np.diff(_control_t))),
         "cost": _cost,
         "eeg_energy": float(np.mean(_y_mea**2)),
         "control_energy": float(np.sum(_u**2)),
@@ -220,12 +233,11 @@ def _(mo):
 
 
 @app.cell
-def _(np, plt, run):
+def _(plt, run):
     _y = run["y_mea"]
     _u = run["u"]
-    _dt = run["dt"]
-    _t_y = np.arange(_y.shape[0]) * _dt
-    _t_u = np.arange(_u.shape[0]) * _dt
+    _t_y = run["eeg_t"]
+    _t_u = run["control_t"]
 
     _fig_ts, _axes_ts = plt.subplots(2, 1, figsize=(11, 8), sharex=True, layout="constrained")
 
@@ -390,7 +402,7 @@ def _(plot_signals, plt, run):
     _fig_tr, _ax_tr = plt.subplots(figsize=(11, 4.2), layout="constrained")
     plot_signals(
         run["u"].T,
-        dt_ms=run["dt"] * 1000.0,
+        dt_ms=run["control_dt"] * 1000.0,
         channel_names=run["electrodes"],
         channels_to_plot=list(range(_n_ctrl)),
         stacked=False,
@@ -443,7 +455,7 @@ def _(np, plt, run):
 @app.cell
 def _(np, plt, run):
     _kcl = run["kcl"]
-    _t = np.arange(_kcl.shape[0]) * run["dt"]
+    _t = run["control_t"]
     _fig_k, _ax_k = plt.subplots(figsize=(11, 3.6), layout="constrained")
     _ax_k.plot(_t, _kcl, linewidth=0.7, color="#2ca02c")
     _ax_k.set_xlabel("Time (s)")

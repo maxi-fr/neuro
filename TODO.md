@@ -33,6 +33,7 @@
 ## Simulate package
 
 * allow for cross component config validation (like i've done here)
+* package script for running simulations
 
 ## MPC package (trajopt)
 

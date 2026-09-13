@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
+import yaml
 from pydantic import Field, field_validator
 from simulate.config import deep_merge, load_config
 from simulate.simulation import Simulation
@@ -228,8 +229,8 @@ def control_metrics(us: FloatArray, u_max: float, dt: float) -> dict[str, float]
     }
 
 
-def solver_metrics(logger: BaseLogger, stride: int, control_dt: float) -> dict[str, float]:
-    """Score solve time and convergence over the control steps that actually ran a solve.
+def solver_metrics(logger: BaseLogger, control_dt: float) -> dict[str, float]:
+    """Score solve time and convergence from decision-rate controller records.
 
     ``realtime_factor`` is the p95 solve time against the decision period the arm has to meet: the
     arms decide at different rates, so a raw solve time does not compare across them, and anything
@@ -238,9 +239,9 @@ def solver_metrics(logger: BaseLogger, stride: int, control_dt: float) -> dict[s
     available = {name for component, name in logger.signals() if component == "controller"}
     if not {"solve_time", "success", "warmup"} <= available:
         return {}
-    warmup = logger.signal("controller", "warmup")[::stride].reshape(-1).astype(bool)
-    success = logger.signal("controller", "success")[::stride].reshape(-1).astype(bool)
-    solve_time = logger.signal("controller", "solve_time")[::stride].reshape(-1)
+    warmup = logger.signal("controller", "warmup")[1].reshape(-1).astype(bool)
+    success = logger.signal("controller", "success")[1].reshape(-1).astype(bool)
+    solve_time = logger.signal("controller", "solve_time")[1].reshape(-1)
     solved = ~warmup
     if not solved.any():
         keys = ("solve_success_rate", "solve_time_mean_s", "solve_time_p95_s", "realtime_factor")
@@ -254,14 +255,15 @@ def solver_metrics(logger: BaseLogger, stride: int, control_dt: float) -> dict[s
     }
 
 
-def score_run(config: dict[str, Any], u_max: float, *, threshold: float = SEIZURE_PTP_MV) -> dict[str, float]:
-    """Run one Simulation to completion and reduce its logs to the comparison metrics."""
+def score_run(
+    config: dict[str, Any], u_max: float, *, threshold: float = SEIZURE_PTP_MV, output_dir: Path | None = None
+) -> dict[str, float]:
+    """Score one Simulation and optionally retain its component logs, resolved config, and scores."""
     config = lfp_logging(config)
     sim = Simulation.from_config(config)
     connectome = Connectome.from_config(config["dynamics"]["connectome"])
     started = time.perf_counter()
-    # Log to a scratch directory so the full-rate region LFP never becomes resident, and is
-    # discarded with the directory rather than kept for every cell of the grid.
+    # Stage memmaps outside the run bundle; export only after scoring has consumed their views.
     with tempfile.TemporaryDirectory(prefix="comparison_", ignore_cleanup_errors=True) as log_dir:
         sim.run(output_dir=log_dir, use_mmap=True)
         wall_time = time.perf_counter() - started
@@ -269,13 +271,25 @@ def score_run(config: dict[str, Any], u_max: float, *, threshold: float = SEIZUR
             msg = "Simulation logger is missing after run."
             raise RuntimeError(msg)
         control_dt = float(config["controller"]["dt"])
-        stride = max(1, round(control_dt / sim.dt))
-        return {
+        control_t, controls = sim.logger.signal("controller", "u")
+        # The final logged command has no duration inside the recorded simulation.
+        durations = np.diff(np.append(control_t, config["t_end"]))
+        metrics = {
             "wall_time_s": wall_time,
-            **spread_metrics(sim.logger.signal("dynamics", "lfp"), sim.dt, connectome, threshold=threshold),
-            **control_metrics(sim.logger.signal("controller", "u"), u_max, sim.dt),
-            **solver_metrics(sim.logger, stride, control_dt),
+            **spread_metrics(sim.logger.signal("dynamics", "lfp")[1], sim.dt, connectome, threshold=threshold),
+            **control_metrics(controls, u_max, control_dt),
+            **solver_metrics(sim.logger, control_dt),
         }
+        metrics["delivered_charge"] = float(np.sum(np.abs(controls) * durations[:, None]))
+        metrics["mean_amplitude"] = float(
+            np.sum(np.mean(np.abs(controls) / u_max, axis=1) * durations) / config["t_end"]
+        )
+        if output_dir is not None:
+            output_dir.mkdir(parents=True, exist_ok=True)
+            (output_dir / "config.yaml").write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
+            (output_dir / "scores.json").write_text(json.dumps(metrics, indent=2), encoding="utf-8")
+            sim.export_results(output_dir, compress=True)
+        return metrics
 
 
 def record_progress(progress_dir: Path, cell: Cell, **fields: Any) -> None:  # noqa: ANN401 -- the record is free-form status
@@ -298,14 +312,16 @@ def read_progress(progress_dir: Path) -> list[dict[str, Any]]:
     return sorted(records, key=lambda record: record["started"])
 
 
-def score_cell(cell: Cell, *, threshold: float = SEIZURE_PTP_MV, progress_dir: Path | None = None) -> dict[str, Any]:
-    """Score one Cell; a failure is recorded as a row rather than sinking the whole grid."""
+def score_cell(
+    cell: Cell, *, threshold: float = SEIZURE_PTP_MV, progress_dir: Path | None = None, output_dir: Path | None = None
+) -> dict[str, Any]:
+    """Score and optionally retain one Cell; record failures without sinking the grid."""
     row: dict[str, Any] = {"run": cell.run, "arm": cell.arm, "seed": cell.seed, "error": ""}
     started = datetime.now(UTC).astimezone()
     if progress_dir is not None:
         record_progress(progress_dir, cell, started=started.isoformat(), state="running")
     try:
-        row |= score_run(cell.config, cell.u_max, threshold=threshold)
+        row |= score_run(cell.config, cell.u_max, threshold=threshold, output_dir=output_dir)
     except Exception as exc:  # noqa: BLE001 -- one diverged arm must not lose the rest of the grid
         row["error"] = f"{type(exc).__name__}: {exc}"
     if progress_dir is not None:

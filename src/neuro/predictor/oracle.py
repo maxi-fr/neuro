@@ -1,14 +1,15 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Self
 
 import jax.numpy as jnp
 import numpy as np
-from simulate.component import NoLog
 from simulate.estimator import Estimator
 from simulate.sensor import Sensor
 
 from neuro.connectome import Connectome
+from neuro.eeg import build_eeg_leadfield
 from neuro.jansen_rit import JansenRitParams
 from neuro.predictor.jansen_rit import JansenRitModel, lfp_jax, sigmoid_jax
 
@@ -16,16 +17,36 @@ if TYPE_CHECKING:
     from neuro.types import FloatArray
 
 
-class FullStateSensor(Sensor[NoLog]):
+@dataclass(frozen=True)
+class OracleSensorLog:
+    """EEG and regional LFP observed before the Plant advances."""
+
+    eeg: FloatArray
+    lfp: FloatArray
+
+
+@dataclass(frozen=True)
+class OracleEstimatorLog:
+    """Packed state delivered by the oracle Estimator, including its delay history."""
+
+    x_hat: FloatArray
+
+
+class FullStateSensor(Sensor[OracleSensorLog]):
     """Noiseless Sensor handing the Plant's ``(6, n_nodes)`` state over as a flat vector."""
+
+    def __init__(self, dt: float) -> None:
+        """Initialize state handover and the standard EEG Leadfield for Sensor logging."""
+        super().__init__(dt)
+        self.leadfield, _ = build_eeg_leadfield()
 
     @classmethod
     def from_config(cls, config: dict[str, Any]) -> Self:
         """Instantiate the component from a raw configuration dictionary."""
         return cls(dt=float(config["dt"]))
 
-    def update(self, t: float, x: FloatArray, u: FloatArray) -> tuple[FloatArray, NoLog]:
-        """Flatten the Plant state; the oracle handover carries no measurement model and no noise.
+    def update(self, t: float, x: FloatArray, u: FloatArray) -> tuple[FloatArray, OracleSensorLog]:
+        """Hand over the Plant state and log its simultaneous EEG and regional LFP.
 
         Parameters
         ----------
@@ -33,10 +54,12 @@ class FullStateSensor(Sensor[NoLog]):
             Plant state of shape ``(6, n_nodes)``.
         """
         del t, u
-        return np.asarray(x, dtype=np.float64).reshape(-1), NoLog()
+        regional = np.asarray(x[1] - x[2], dtype=np.float64)
+        eeg = self.leadfield[:, : len(regional)] @ regional
+        return np.asarray(x, dtype=np.float64).reshape(-1), OracleSensorLog(eeg=eeg, lfp=regional.copy())
 
 
-class JansenRitOracleEstimator(Estimator[NoLog]):
+class JansenRitOracleEstimator(Estimator[OracleEstimatorLog]):
     """Pack the Plant's full state into a Jansen-Rit Predictor state, rebuilding the delay buffer on the Predictor grid.
 
     The Plant carries its delay history at the Plant step while the Predictor integrates at its own
@@ -61,8 +84,8 @@ class JansenRitOracleEstimator(Estimator[NoLog]):
         model = JansenRitModel.from_plant_components(params, conn=conn, dt=dt)
         return cls(dt=dt, model=model)
 
-    def update(self, t: float, y_mea: FloatArray, u: FloatArray) -> tuple[FloatArray, NoLog]:
-        """Emit the packed Predictor state for the observed Plant state.
+    def update(self, t: float, y_mea: FloatArray, u: FloatArray) -> tuple[FloatArray, OracleEstimatorLog]:
+        """Emit and log the packed Predictor state for the observed Plant state.
 
         Parameters
         ----------
@@ -87,4 +110,5 @@ class JansenRitOracleEstimator(Estimator[NoLog]):
         k = round(t / self.dt)
         self._history[k % model.max_history_len] = s_y
         z = model.pack_state(jnp.asarray(x_ode), jnp.asarray(self._history), float(k))
-        return np.asarray(z, dtype=np.float64), NoLog()
+        estimate = np.asarray(z, dtype=np.float64)
+        return estimate, OracleEstimatorLog(x_hat=estimate.copy())

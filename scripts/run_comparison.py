@@ -46,8 +46,9 @@ def _init_worker(threshold: float, progress_dir: Path) -> None:
 
 
 def _score(cell: Cell) -> dict[str, Any]:
-    """Score one Cell at the worker's configured Seizure Threshhold."""
-    return comparison.score_cell(cell, threshold=_THRESHOLD_MV, progress_dir=_PROGRESS_DIR)
+    """Score one Cell and retain its run beside the comparison tables."""
+    output_dir = None if _PROGRESS_DIR is None else _PROGRESS_DIR.parent / "runs" / cell.run
+    return comparison.score_cell(cell, threshold=_THRESHOLD_MV, progress_dir=_PROGRESS_DIR, output_dir=output_dir)
 
 
 def _print_status(out_dir: Path) -> None:

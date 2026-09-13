@@ -1492,7 +1492,7 @@ setuptools==81.0.0 \
     # via
     #   neuro
     #   osqp
-simulate @ git+https://github.com/maxi-fr/simulate.git@68b7fd6af16bbfa1ead5b451fa5f3858545b5d88
+simulate @ git+https://github.com/maxi-fr/simulate.git@350c7135aba02bd4088baef8168994b713df5f85
     # via neuro
 six==1.17.0 \
     --hash=sha256:4721f391ed90541fddacab5acf947aa0d3dc7d27b2e1e8eda2be8970586c3274 \

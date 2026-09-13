@@ -52,13 +52,25 @@ if TYPE_CHECKING:
 
 @dataclasses.dataclass(frozen=True)
 class TrajOptMPCLog:
-    """Per-step diagnostics: the applied control, optimal cost, solver success, solve time, warm-up flag."""
+    """Decision diagnostics and unshifted plans: outputs ``(H+1, p)``, Control Currents ``(H, m)``."""
 
     u: FloatArray
     cost: float
     success: bool
     warmup: bool
     solve_time: float
+    predicted_y: FloatArray
+    planned_u: FloatArray
+
+
+@eqx.filter_jit
+def planned_outputs(
+    model: InferencePredictor, states: jax.Array, controls: jax.Array, t: float, dt: float
+) -> jax.Array:
+    """Project every solved state to physical outputs, including the initial and terminal knots."""
+    padded = jnp.concatenate((controls, controls[-1:]), axis=0)
+    times = t + jnp.arange(states.shape[0]) * dt
+    return jax.vmap(model.output)(states, padded, times)
 
 
 def _build_problem(spec: dict[str, Any] | Problem) -> Problem:
@@ -748,7 +760,7 @@ class TrajOptMPCController(Controller[TrajOptMPCLog]):
         ref: FloatArray,  # noqa: ARG002 -- the goal is baked into the objective
         x_hat: FloatArray,
     ) -> tuple[FloatArray, TrajOptMPCLog]:
-        """Ingest the EEG measurement, solve the receding-horizon problem, emit the first electrode currents.
+        """Absorb the measurement and record the solved plan before shifting the Control Horizon.
 
         The emitted control is always the ``(n_electrodes,)`` physical currents: under a Nullspace
         Frame the solver decides in the reduced ``v``, which is expanded through ``Z`` here.
@@ -758,7 +770,16 @@ class TrajOptMPCController(Controller[TrajOptMPCLog]):
         if not self.model.is_ready(self._state):
             self._u_last = np.zeros(self.model.m, dtype=np.float64)
             u_zero = np.zeros(self.n_electrodes, dtype=np.float64)
-            return u_zero, TrajOptMPCLog(u=u_zero, cost=0.0, success=True, warmup=True, solve_time=0.0)
+            knots = self.mpc.problem.N
+            return u_zero, TrajOptMPCLog(
+                u=u_zero,
+                cost=0.0,
+                success=True,
+                warmup=True,
+                solve_time=0.0,
+                predicted_y=np.full((knots, self.model.p), np.nan),
+                planned_u=np.full((knots - 1, self.n_electrodes), np.nan),
+            )
 
         self.mpc.measure(jnp.asarray(self._state), t)
         started = time.perf_counter()
@@ -766,6 +787,9 @@ class TrajOptMPCController(Controller[TrajOptMPCLog]):
         solve_time = time.perf_counter() - started
         u_solved = np.asarray(self.mpc.controls[0], dtype=np.float64)
         cost = float(self.mpc.cost())
+        predicted_y = np.asarray(planned_outputs(self.model, self.mpc.states, self.mpc.controls, t, self.dt)).copy()
+        plan = np.asarray(self.mpc.controls)
+        planned_u = (plan if self._basis is None else plan @ self._basis.T).copy()
         self.mpc.shift(self.dt)
         # ``_u_last`` feeds ``model.absorb``, which expands for itself, so the state keeps the
         # solver's own coordinates while the Plant and the log get the electrode currents.
@@ -777,4 +801,6 @@ class TrajOptMPCController(Controller[TrajOptMPCLog]):
             success=bool(solved.success),
             warmup=False,
             solve_time=solve_time,
+            predicted_y=predicted_y,
+            planned_u=planned_u,
         )
