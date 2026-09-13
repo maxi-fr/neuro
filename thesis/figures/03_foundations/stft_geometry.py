@@ -40,7 +40,9 @@ def main() -> None:
     y = chirp(t, f0=F_START, t1=DURATION, f1=F_END, method="linear")
     freqs, frame_times, power = _periodograms(y)
 
-    fig, axes = plt.subplots(2, 1, figsize=style.figsize(height_in=4.4), height_ratios=[1.0, 1.25], constrained_layout=True)
+    fig, axes = plt.subplots(
+        2, 1, figsize=style.figsize(height_in=4.4), height_ratios=[1.0, 1.25], constrained_layout=True
+    )
 
     ax = axes[0]
     ax.plot(t, y, lw=0.7, color="C0", zorder=3)
@@ -52,7 +54,9 @@ def main() -> None:
         label = r"Hann taper $g[n]$" if q == 0 else None
         ax.fill_between(seg_t + offset, base, base + 0.5 * taper, color=f"C{q + 1}", alpha=0.35, lw=0)
         ax.plot(seg_t + offset, base + 0.5 * taper, lw=0.9, color=f"C{q + 1}", label=label)
-        ax.text(offset + N_SEGMENT / FS + 0.02, base + 0.12, f"$q = {q}$", ha="left", va="center", fontsize=style.FONT_SMALL)
+        ax.text(
+            offset + N_SEGMENT / FS + 0.02, base + 0.12, f"$q = {q}$", ha="left", va="center", fontsize=style.FONT_SMALL
+        )
     ax.annotate(
         "",
         xy=(0.0, 1.55),
@@ -86,7 +90,14 @@ def main() -> None:
         xytext=(N_SEGMENT / FS, 112.0),
         arrowprops={"arrowstyle": "<->", "lw": 0.9, "color": "0.25"},
     )
-    ax.text(N_SEGMENT / FS + 0.03, 112.0, "samples spectrum $q = 0$ waits for", ha="left", va="center", fontsize=style.FONT_ANNOTATION)
+    ax.text(
+        N_SEGMENT / FS + 0.03,
+        112.0,
+        "samples spectrum $q = 0$ waits for",
+        ha="left",
+        va="center",
+        fontsize=style.FONT_ANNOTATION,
+    )
     ax.set_ylim(0.0, 128.0)
     ax.set_yticks([0.0, 25.0, 50.0, 75.0, 100.0])
     ax.set_ylabel("Frequency / Hz")

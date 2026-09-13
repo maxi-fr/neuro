@@ -17,11 +17,15 @@ from neuro.spectral import HealthyReference
 # their decision-variable count scales with the Predictor's trailing window, so a toy checkpoint
 # compares them on the one axis where they agree. Horizons are the 1 s Control Horizon each
 # controller config deploys, on that Predictor's own grid.
-_WAVEFORM_ARTIFACT = "artifacts/cmp_waveform_mlp_1p5s/model"  # n_y=15, n_u=10, 62 ch, 3 electrodes
-_WAVEFORM_HORIZON = 50  # 50 * 0.02 s = 1 s, as configs/simulation/mse02_psd_mpc.yaml deploys
+_WAVEFORM_ARTIFACT = (
+    "artifacts/experiment_observable_tailoring/cmp_waveform_mlp_1p5s/model.npz"  # n_y=15, n_u=10, 62 ch, 3 electrodes
+)
+_WAVEFORM_HORIZON = 50  # 50 * 0.02 s = 1 s Control Horizon on the 20 ms waveform grid
 _WAVEFORM_REFERENCE = "data/healthy_psd.npz"
-_OBSERVABLE_LINEAR = "artifacts/cmp_observable_dmd_hop5/model"  # depth-0, so the OCP is a convex QP
-_OBSERVABLE_NONLINEAR = "artifacts/cmp_observable_mlp_hop5/model"
+_OBSERVABLE_LINEAR = (
+    "artifacts/experiment_observable_tailoring/cmp_observable_dmd_hop5/model.npz"  # depth-0, so the OCP is a convex QP
+)
+_OBSERVABLE_NONLINEAR = "artifacts/experiment_observable_tailoring/cmp_observable_mlp_hop5/model.npz"
 _OBSERVABLE_HORIZON = 10  # 10 * 0.1 s = 1 s on the n_hop=5 Frame grid
 _OBSERVABLE_ENVELOPE = "data/healthy_psd_hop5.npz"
 

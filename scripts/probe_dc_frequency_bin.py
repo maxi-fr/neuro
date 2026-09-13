@@ -191,7 +191,9 @@ if __name__ == "__main__":
     print(f"Corr(u[2], mean(0 Hz)): {metrics['corr_u2_p0']:+.4f}")
 
     print("\n=== Out-of-Sample Predictive Value for Seizure Band (3-12 Hz) Power ===")
-    print(f"{'Horizon':<10} | {'Base R^2 (1-25Hz)':<18} | {'Aug R^2 (+0Hz)':<16} | {'Base MSE':<10} | {'Aug MSE':<10} | {'0Hz Self-R^2':<12}")
+    print(
+        f"{'Horizon':<10} | {'Base R^2 (1-25Hz)':<18} | {'Aug R^2 (+0Hz)':<16} | {'Base MSE':<10} | {'Aug MSE':<10} | {'0Hz Self-R^2':<12}"
+    )
     print("-" * 88)
     for h_s in [0.1, 0.5, 1.0, 1.5]:
         r2_b = metrics[f"r2_base_{h_s:0.1f}s"]

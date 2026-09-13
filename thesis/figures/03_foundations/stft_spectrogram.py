@@ -74,7 +74,9 @@ def main() -> None:
     t, y = _pz_trace()
     freqs, frame_times, power_db = _periodograms(y)
 
-    fig, axes = plt.subplots(2, 1, figsize=style.figsize(height_in=4.0), height_ratios=[1.0, 1.3], constrained_layout=True)
+    fig, axes = plt.subplots(
+        2, 1, figsize=style.figsize(height_in=4.0), height_ratios=[1.0, 1.3], constrained_layout=True
+    )
 
     ax = axes[0]
     ax.plot(t, y, lw=0.6, color="C0")
