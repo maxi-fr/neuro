@@ -10,7 +10,7 @@ import yaml
 from simulate.config import deep_merge, load_config
 from simulate.experiment import ExperimentManager
 
-from neuro.config import StftGeometry
+from neuro.config import StftGeometry, resolve_simulation_config
 from neuro.predictor.data import load_trajectory
 from neuro.provenance import data_plant_fingerprint, plant_fingerprint
 from neuro.spectral import compute_log_power_frames, compute_periodograms, windowed_mean_square
@@ -31,7 +31,7 @@ def _batch_configs(config: dict) -> list[dict]:
 
 def run_healthy_simulation(config_path: Path, output_dir: Path, workers: int) -> None:
     """Run the healthy reference simulations described by ``config_path`` into ``output_dir``."""
-    configs = _batch_configs(load_config(config_path))
+    configs = [resolve_simulation_config(c) for c in _batch_configs(load_config(config_path))]
     output_dir.mkdir(parents=True, exist_ok=True)
     shutil.copy2(config_path, output_dir / config_path.name)
 

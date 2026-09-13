@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import numpy as np
 import pytest
 from pydantic import ValidationError
 
 from neuro.config import (
+    SEED_TIERS,
     CategoricalParam,
+    ClosedLoopEvalConfig,
     CurriculumMSESpec,
     FloatParam,
     IntParam,
@@ -17,11 +20,14 @@ from neuro.config import (
     TrainingConfig,
     expand_dotted_dict,
     resolve_data_files,
+    resolve_seeds,
+    resolve_simulation_config,
 )
 from neuro.connectome import Connectome
 from neuro.control.zero import ZeroController
 from neuro.eeg import EEGMeasurement
 from neuro.jansen_rit import JansenRitDynamics
+from neuro.seizure import build_seizure_a_gains
 
 _VALID_TRAINING = {
     "eval_horizon_s": 0.2,
@@ -591,3 +597,137 @@ def test_curriculum_span_and_eval_horizon_must_hold_at_least_one_frame() -> None
         }
     )
     assert conforming.training.losses is not None
+
+
+def test_simulation_config_fs_infers_downsample() -> None:
+    """SimulationConfig derives downsample from sampling frequency fs and dt."""
+    cfg = SimulationConfig(fs=50.0)
+    assert cfg.downsample == 200
+    assert cfg.fs == 50.0
+
+    cfg100 = SimulationConfig(fs=100.0)
+    assert cfg100.downsample == 100
+
+    cfg_agree = SimulationConfig(fs=50.0, downsample=200)
+    assert cfg_agree.downsample == 200
+
+    with pytest.raises(ValidationError, match="implies downsample=200"):
+        SimulationConfig(fs=50.0, downsample=100)
+
+
+def test_seed_tiers_resolution() -> None:
+    """Seed tiers resolve correctly to small, medium, and large presets."""
+    assert resolve_seeds("small") == SEED_TIERS["small"]
+    assert resolve_seeds("medium") == [7000, 7001, 7002, 7004, 7005]
+    assert resolve_seeds("large") == SEED_TIERS["large"]
+    assert resolve_seeds([1, 2, 3]) == [1, 2, 3]
+    assert resolve_seeds(None) == SEED_TIERS["medium"]
+
+    with pytest.raises(ValueError, match="Unknown seed tier 'invalid'"):
+        resolve_seeds("invalid")
+
+
+def test_closed_loop_eval_config_defaults_and_tiers() -> None:
+    """ClosedLoopEvalConfig defaults seeds to medium, t_end to 12.0s, and resolves seed tiers."""
+    cfg = ClosedLoopEvalConfig(simulation_config="sim.yaml")
+    assert cfg.seeds == [7000, 7001, 7002, 7004, 7005]
+    assert cfg.t_end == 12.0
+    assert cfg.seizure_ptp_mv == 5.0
+    assert cfg.max_seizing_regions == 5
+
+    cfg_small = ClosedLoopEvalConfig(simulation_config="sim.yaml", seeds="small")  # type: ignore[arg-type]
+    assert cfg_small.seeds == [7000, 7001]
+
+
+def test_jansen_rit_regime_healthy_and_seizure() -> None:
+    """JansenRitDynamics builds healthy and seizure regimes without manual parameter arrays."""
+    dyn_h = JansenRitDynamics.from_config({"regime": "healthy", "seed": 42})
+    assert np.allclose(dyn_h.net_params.A, 3.25)
+    assert dyn_h.net_params.sigma == 280.0
+    assert dyn_h.conn.K == 0.60
+    assert dyn_h.dt == 1e-4
+
+    dyn_s = JansenRitDynamics.from_config({"regime": "seizure", "seed": 42})
+    assert np.allclose(dyn_s.net_params.A, build_seizure_a_gains(dyn_s.conn))
+    assert dyn_s.net_params.sigma == 280.0
+
+    with pytest.raises(ValidationError):
+        JansenRitDynamics.from_config({"regime": "unknown"})
+
+
+def test_resolve_simulation_config_expands_defaults() -> None:
+    """resolve_simulation_config populates t_end, reference, and eeg sensors when omitted."""
+    cfg = {"dynamics": {"dt": 1e-4}}
+    resolved = resolve_simulation_config(cfg)
+    assert resolved["t_end"] == 12.0
+    assert resolved["reference"]["class_path"] == "simulate.reference.StepReference"
+    assert resolved["reference"]["dt"] == 1e-4
+    assert resolved["reference"]["step_value"] == 0.0
+    assert resolved["sensors"]["class_path"] == "simulate.sensor.GaussianSensor"
+    assert resolved["sensors"]["measurement"]["class_path"] == "neuro.eeg.EEGMeasurement"
+
+
+def test_resolve_simulation_config_immutability() -> None:
+    """resolve_simulation_config does not mutate its input mapping."""
+    original = {"dynamics": {"dt": 1e-4, "regime": "healthy"}, "sensors": "eeg"}
+    resolved = resolve_simulation_config(original)
+    assert "t_end" not in original
+    assert original["sensors"] == "eeg"
+    assert original["dynamics"] == {"dt": 1e-4, "regime": "healthy"}
+    assert resolved["t_end"] == 12.0
+    assert isinstance(resolved["sensors"], dict)
+
+
+def test_resolve_simulation_config_sensors_shorthands() -> None:
+    """resolve_simulation_config expands 'eeg' and 'oracle' sensor shorthands."""
+    cfg_eeg = resolve_simulation_config({"dynamics": {"dt": 2e-4}, "sensors": "eeg"})
+    assert cfg_eeg["sensors"]["class_path"] == "simulate.sensor.GaussianSensor"
+    assert cfg_eeg["sensors"]["dt"] == 2e-4
+
+    cfg_oracle = resolve_simulation_config({"dynamics": {"dt": 1e-4}, "sensors": "oracle"})
+    assert cfg_oracle["sensors"]["class_path"] == "neuro.predictor.oracle.FullStateSensor"
+
+    with pytest.raises(ValueError, match="Unknown sensors shorthand"):
+        resolve_simulation_config({"sensors": "unknown"})
+
+
+def test_resolve_simulation_config_dynamics_regimes() -> None:
+    """resolve_simulation_config expands healthy and seizure dynamics regimes."""
+    cfg_h = resolve_simulation_config({"dynamics": {"regime": "healthy"}})
+    assert cfg_h["dynamics"]["class_path"] == "neuro.jansen_rit.JansenRitDynamics"
+    assert cfg_h["dynamics"]["params"]["A"] == 3.25
+    assert cfg_h["dynamics"]["params"]["sigma"] == 280.0
+    assert cfg_h["dynamics"]["connectome"] == {"speed": 50.0, "K": 0.60}
+
+    cfg_s = resolve_simulation_config({"dynamics": {"regime": "seizure"}})
+    assert len(cfg_s["dynamics"]["params"]["A"]) == 76
+    assert cfg_s["dynamics"]["params"]["sigma"] == 280.0
+
+    with pytest.raises(ValueError, match="Unknown dynamics regime"):
+        resolve_simulation_config({"dynamics": {"regime": "unknown"}})
+
+
+def test_resolve_simulation_config_oracle_propagation() -> None:
+    """resolve_simulation_config propagates plant settings to oracle estimator and problem."""
+    cfg = {
+        "dynamics": {
+            "regime": "seizure",
+            "stimulation": {"model": "roast_3d", "field_projection_path": "data/roast_field_projection_3d.npz"},
+        },
+        "sensors": "oracle",
+        "estimator": {"class_path": "neuro.predictor.oracle.JansenRitOracleEstimator", "dt": 1e-4},
+        "controller": {
+            "class_path": "neuro.control.mpc.TrajOptMPCController",
+            "dt": 0.02,
+            "problem": {
+                "class_path": "neuro.predictor.jansen_rit.build_jansen_rit_problem",
+                "horizon": 10,
+            },
+        },
+    }
+    resolved = resolve_simulation_config(cfg)
+    assert resolved["estimator"]["connectome"] == resolved["dynamics"]["connectome"]
+    assert resolved["estimator"]["params"] == resolved["dynamics"]["params"]
+    assert resolved["controller"]["problem"]["connectome"] == resolved["dynamics"]["connectome"]
+    assert resolved["controller"]["problem"]["params"] == resolved["dynamics"]["params"]
+    assert resolved["controller"]["problem"]["stimulation"] == resolved["dynamics"]["stimulation"]

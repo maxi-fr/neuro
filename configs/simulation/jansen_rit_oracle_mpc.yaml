@@ -6,43 +6,20 @@
 
 t_end: 12.0
 
-_plant_connectome: &connectome
-  speed: 50.0
-  K: 0.60
-
-_plant_params: &params
-  sigma: 280.0
-  A: [3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25,
-    3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25,
-    3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25,
-    3.25, 3.6, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.6, 3.25, 3.25, 3.25, 3.25,
-    3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.6, 3.25, 3.25,
-    3.25, 3.25, 3.25, 3.25, 3.4, 3.25, 3.25, 3.4, 3.25, 3.25, 3.25]
-
-_plant_stimulation: &stimulation
-  model: roast_3d
-  field_projection_path: data/roast_field_projection_3d.npz
-
 dynamics:
-  class_path: neuro.jansen_rit.JansenRitDynamics
-  dt: 0.0001
+  regime: seizure
   seed: 69
-  initial_state: rest
-  log: lfp              # region LFP, so seizure spread is scorable after the run
-  connectome: *connectome
-  stimulation: *stimulation
-  params: *params
-
-reference: {class_path: simulate.reference.StepReference, dt: 0.0001, step_value: 0.0}
+  log: lfp
+  stimulation:
+    model: roast_3d
+    field_projection_path: data/roast_field_projection_3d.npz
 
 # The oracle path replaces the EEG sensor: the state itself is handed over, not a measurement.
-sensors: {class_path: neuro.predictor.oracle.FullStateSensor, dt: 0.0001}
+sensors: oracle
 
 estimator:
   class_path: neuro.predictor.oracle.JansenRitOracleEstimator
   dt: 0.001             # = problem.dt; the delay buffer is filled on the Predictor's grid
-  connectome: *connectome
-  params: *params
 
 controller:
   class_path: neuro.control.mpc.TrajOptMPCController
@@ -57,6 +34,3 @@ controller:
     w_u: 0.0
     reference: data/healthy_lfp_knot20ms_frame500ms.npz
     kirchhoff: true
-    connectome: *connectome
-    stimulation: *stimulation
-    params: *params

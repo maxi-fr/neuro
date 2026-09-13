@@ -7,8 +7,7 @@
 # val_log_mse 2.1017), not from the hop25/15/10 trend I first extrapolated them from.
 # The comments below were stripped by the sweep's automated patch; the values are the swept ones.
 simulation:
-  dt: 0.0001
-  downsample: 200
+  fs: 50.0
   n_steps: null
   data_path: data/experiment_excited_long/train
 model:

@@ -11,6 +11,7 @@ import numpy.typing as npt
 from scipy.signal import decimate
 from simulate.config import load_config as load_sim_config
 
+from neuro.config import resolve_simulation_config
 from neuro.connectome import Connectome
 from neuro.eeg import build_eeg_leadfield, focal_channels
 from neuro.jansen_rit import JansenRitDynamics, lfp, simulate_network
@@ -196,11 +197,21 @@ def build_plants(config_path: Path = PLANT_CONFIG) -> PlantPair:
         which would mean the seizure plant is not the one the rest of the repo reasons about.
     """
     # class_path selects the plant for the simulate orchestrator; from_config forbids it as a key.
-    dynamics_cfg = {k: v for k, v in load_sim_config(config_path)["dynamics"].items() if k != "class_path"}
+    raw_cfg = load_sim_config(config_path)
+    if isinstance(raw_cfg, dict):
+        raw_cfg = resolve_simulation_config(raw_cfg)
+    dynamics_cfg = {k: v for k, v in raw_cfg["dynamics"].items() if k != "class_path"}
     conn = Connectome.from_config(dynamics_cfg["connectome"])
 
     expected = build_seizure_a_gains(conn)
-    if not np.allclose(np.asarray(dynamics_cfg["params"]["A"], dtype=np.float64), expected):
+    is_seizure = dynamics_cfg.get("regime") == "seizure" or dynamics_cfg.get("params", {}).get("A") == "seizure"
+    has_matching_a = (
+        "params" in dynamics_cfg
+        and "A" in dynamics_cfg["params"]
+        and not isinstance(dynamics_cfg["params"]["A"], str)
+        and np.allclose(np.asarray(dynamics_cfg["params"]["A"], dtype=np.float64), expected)
+    )
+    if not (is_seizure or has_matching_a):
         msg = f"{config_path} does not carry the EZ/PZ A vector of neuro.seizure.build_seizure_a_gains"
         raise ValueError(msg)
 

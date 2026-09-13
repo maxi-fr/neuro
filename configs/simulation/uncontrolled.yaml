@@ -8,32 +8,11 @@
 t_end: 20.0
 
 dynamics:
-  class_path: neuro.jansen_rit.JansenRitDynamics
-  dt: 0.0001
+  regime: seizure
   seed: 69
-  initial_state: rest
-  log: lfp              # region LFP, so seizure spread is scorable after the run
-  connectome:
-    speed: 50.0
-    K: 0.60
-  params:
-    sigma: 280.0
-    A: [3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25,
-      3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25,
-      3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25,
-      3.25, 3.6, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.6, 3.25, 3.25, 3.25, 3.25,
-      3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.25, 3.6, 3.25, 3.25,
-      3.25, 3.25, 3.25, 3.25, 3.4, 3.25, 3.25, 3.4, 3.25, 3.25, 3.25]
+  log: lfp
 
-reference: {class_path: simulate.reference.StepReference, dt: 0.0001, step_value: 0.0}
-
-sensors:
-  class_path: simulate.sensor.GaussianSensor
-  dt: 0.0001
-  std_dev: 0.0
-  measurement:
-    class_path: neuro.eeg.EEGMeasurement
-    # Full EEG: no selected_channels -> all 62 channels, as in the MPC runs.
+sensors: eeg
 
 estimator: {class_path: simulate.estimator.IdentityEstimator, dt: 0.0001}
 

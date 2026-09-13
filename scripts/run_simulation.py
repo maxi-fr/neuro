@@ -9,6 +9,7 @@ from simulate.config import deep_merge, load_config
 from simulate.experiment import ExperimentManager
 from simulate.simulation import Simulation
 
+from neuro.config import resolve_simulation_config
 from neuro.validation import validate_simulation_config
 
 
@@ -87,13 +88,15 @@ def main() -> None:
         configs = [raw_configs[0]]
         for override in raw_configs[1:]:
             configs.append(deep_merge(configs[-1], override))
+        configs = [resolve_simulation_config(merged) for merged in configs]
         for merged in configs:
             validate_simulation_config(merged)
 
         manager.run_batch(configs, max_num_processes=args.workers, use_mmap=args.mmap, compress=args.compress)
     else:
-        validate_simulation_config(config)
-        sim = Simulation.from_config(config)
+        resolved = resolve_simulation_config(config)
+        validate_simulation_config(resolved)
+        sim = Simulation.from_config(resolved)
         sim.run(output_dir, prefix="log", use_mmap=args.mmap)
         sim.export_results(output_dir, prefix="log", compress=args.compress)
 

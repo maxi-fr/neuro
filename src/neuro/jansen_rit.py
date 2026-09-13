@@ -121,7 +121,16 @@ class JansenRitParams:
         """Build :class:`JansenRitParams` from a strictly-validated config dict."""
         kwargs = _JansenRitParamsConfig.model_validate(config).model_dump()
         a = parse_array(kwargs["A"])
-        kwargs["A"] = np.asarray(a, dtype=np.float64) if isinstance(a, (list, tuple, np.ndarray)) else float(a)
+        if a == "healthy":
+            kwargs["A"] = 3.25
+        elif a == "seizure":
+            from neuro.connectome import Connectome  # noqa: PLC0415 -- breaks circular import
+            from neuro.seizure import build_seizure_a_gains  # noqa: PLC0415 -- breaks circular import
+
+            conn = Connectome.from_config({"speed": 50.0, "K": 0.60})
+            kwargs["A"] = build_seizure_a_gains(conn)
+        else:
+            kwargs["A"] = np.asarray(a, dtype=np.float64) if isinstance(a, (list, tuple, np.ndarray)) else float(a)
         return cls(**kwargs)
 
 
@@ -308,7 +317,7 @@ class JansenRitLFPLog:
 class _JansenRitDynamicsConfig(StrictConfig):
     """Config schema for :meth:`JansenRitDynamics.from_config`."""
 
-    dt: float = Field(gt=0)
+    dt: float = Field(default=1e-4, gt=0)
     seed: int | None = None
     enforce_zero_sum_current: bool = True
     initial_state: Literal["zeros", "rest"] = "zeros"
@@ -316,6 +325,7 @@ class _JansenRitDynamicsConfig(StrictConfig):
     connectome: _ConnectomeConfig = Field(default_factory=_ConnectomeConfig)
     stimulation: StimulationConfig = Field(default_factory=_NullConfig)
     params: _JansenRitParamsConfig = Field(default_factory=_JansenRitParamsConfig)
+    regime: Literal["healthy", "seizure"] | None = None
 
 
 class JansenRitDynamics(Dynamics[JansenRitStateLog | JansenRitLFPLog | NoLog]):
@@ -376,9 +386,38 @@ class JansenRitDynamics(Dynamics[JansenRitStateLog | JansenRitLFPLog | NoLog]):
     @classmethod
     def from_config(cls, config: dict[str, Any]) -> Self:
         """Instantiate the plant from a raw config dict."""
-        cfg = _JansenRitDynamicsConfig.model_validate(config)
+        cfg_dict = dict(config)
+        regime = cfg_dict.get("regime")
+        if regime is not None:
+            if "dt" not in cfg_dict:
+                cfg_dict["dt"] = 1e-4
+            if "initial_state" not in cfg_dict:
+                cfg_dict["initial_state"] = "rest"
+            if "log" not in cfg_dict:
+                cfg_dict["log"] = "lfp"
+            if "connectome" not in cfg_dict:
+                cfg_dict["connectome"] = {"speed": 50.0, "K": 0.60}
+            params_dict = dict(cfg_dict.get("params", {}))
+            if "sigma" not in params_dict:
+                params_dict["sigma"] = 280.0
+            cfg_dict["params"] = params_dict
+
+        cfg = _JansenRitDynamicsConfig.model_validate(cfg_dict)
         conn = Connectome.from_config(cfg.connectome.model_dump())
-        params = JansenRitParams.from_config(cfg.params.model_dump())
+
+        params_data = cfg.params.model_dump()
+        if cfg.regime == "healthy" or params_data.get("A") == "healthy":
+            from neuro.seizure import A_HEALTHY  # noqa: PLC0415 -- breaks circular import with neuro.seizure
+
+            params = JansenRitParams.from_config({**params_data, "A": A_HEALTHY})
+        elif cfg.regime == "seizure" or params_data.get("A") == "seizure":
+            from neuro.seizure import (  # noqa: PLC0415 -- breaks circular import with neuro.seizure
+                build_seizure_a_gains,
+            )
+
+            params = JansenRitParams.from_config({**params_data, "A": build_seizure_a_gains(conn)})
+        else:
+            params = JansenRitParams.from_config(params_data)
 
         return cls(
             dt=cfg.dt,

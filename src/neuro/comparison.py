@@ -16,11 +16,11 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
-from pydantic import Field
+from pydantic import Field, field_validator
 from simulate.config import deep_merge, load_config
 from simulate.simulation import Simulation
 
-from neuro.config import StrictConfig
+from neuro.config import SEED_TIERS, StrictConfig, resolve_seeds, resolve_simulation_config
 from neuro.connectome import Connectome
 from neuro.seizure import EZ_REGIONS, PZ_REGIONS, SEIZURE_PTP_MV, spread_profile_from_lfp, spread_summary
 from neuro.validation import validate_simulation_config
@@ -42,10 +42,15 @@ class ComparisonManifest(StrictConfig):
     """A whole comparison: the shared base config, the arms, and the Plant seeds they are paired on."""
 
     base: str
-    seeds: list[int]
+    seeds: list[int] = Field(default_factory=lambda: list(SEED_TIERS["medium"]))
     arms: dict[str, ArmSpec]
-    t_end: float | None = None
+    t_end: float = 12.0
     seizure_ptp_mv: float = SEIZURE_PTP_MV
+
+    @field_validator("seeds", mode="before")
+    @classmethod
+    def _resolve_seeds(cls, v: object) -> list[int]:
+        return resolve_seeds(v)
 
 
 @dataclass(frozen=True)
@@ -94,7 +99,7 @@ def arm_config(manifest: ComparisonManifest, arm: str) -> dict[str, Any]:
     config = deep_merge(load_config(Path(spec.config or manifest.base)), spec.patch)
     if manifest.t_end is not None:
         config["t_end"] = manifest.t_end
-    return config
+    return resolve_simulation_config(config)
 
 
 def lfp_logging(config: dict[str, Any]) -> dict[str, Any]:

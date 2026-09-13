@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import datetime
 import math
 import types
@@ -9,10 +10,11 @@ from typing import TYPE_CHECKING, Annotated, Any, ClassVar, Literal
 
 import numpy as np
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from neuro.metrics import DEFAULT_HOP_S, METRICS
 from neuro.provenance import check_excitation_alignment
+from neuro.seizure_calibration import SEIZURE_PTP_MV
 
 if TYPE_CHECKING:
     from typing import Self
@@ -62,6 +64,24 @@ class SimulationConfig(StrictConfig):
     n_steps: int | None = Field(default=None, ge=1)
     data_path: str | None = None
     cutoff_hz: float | None = Field(default=None, gt=0)
+    fs: float | None = Field(default=None, gt=0)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _resolve_sampling_rate(cls, data: Any) -> Any:  # noqa: ANN401 -- pydantic before-validator receives raw mapping
+        if isinstance(data, dict):
+            fs = data.get("fs")
+            dt = data.get("dt", 1e-4)
+            if fs is not None:
+                calculated_downsample = max(1, round(1.0 / (float(dt) * float(fs))))
+                if "downsample" in data and data["downsample"] != calculated_downsample:
+                    msg = (
+                        f"simulation.fs ({fs} Hz) implies downsample={calculated_downsample} at dt={dt} s, "
+                        f"but downsample={data['downsample']} was configured."
+                    )
+                    raise ValueError(msg)
+                data = {**data, "downsample": calculated_downsample}
+        return data
 
 
 class LossSpec(StrictConfig):
@@ -454,15 +474,63 @@ OBSERVABLE_TRAINER_CANDIDATES = frozenset({"val_loss", "val_log_mse"})
 CLOSED_LOOP_OBJECTIVE = "closed_loop"
 
 
+SEED_TIERS: dict[str, list[int]] = {
+    "small": [7000, 7001],
+    "medium": [7000, 7001, 7002, 7004, 7005],
+    "large": [
+        7000,
+        7001,
+        7002,
+        7003,
+        7004,
+        7005,
+        7006,
+        7007,
+        7008,
+        7009,
+        7010,
+        7011,
+        7012,
+        7013,
+        7014,
+        7015,
+        7016,
+        7017,
+        7018,
+        7019,
+    ],
+}
+
+
+def resolve_seeds(seeds: object) -> list[int]:
+    """Resolve a list of seeds or a named tier ('small', 'medium', 'large')."""
+    if seeds is None:
+        return list(SEED_TIERS["medium"])
+    if isinstance(seeds, str):
+        if seeds not in SEED_TIERS:
+            msg = f"Unknown seed tier {seeds!r}. Available tiers: {sorted(SEED_TIERS)}"
+            raise ValueError(msg)
+        return list(SEED_TIERS[seeds])
+    if isinstance(seeds, (list, tuple)):
+        return [int(s) for s in seeds]
+    msg = f"seeds must be a list of ints or a tier name, got {type(seeds).__name__}"
+    raise TypeError(msg)
+
+
 class ClosedLoopEvalConfig(StrictConfig):
     """Settings for closed-loop evaluation in Optuna hyperparameter sweeps."""
 
     simulation_config: str
-    seeds: list[int]
-    t_end: float = Field(gt=0)
-    seizure_ptp_mv: float = Field(gt=0)
-    max_seizing_regions: int = Field(ge=0)
+    seeds: list[int] = Field(default_factory=lambda: list(SEED_TIERS["medium"]))
+    t_end: float = Field(default=12.0, gt=0)
+    seizure_ptp_mv: float = Field(default=SEIZURE_PTP_MV, gt=0)
+    max_seizing_regions: int = Field(default=5, ge=0)
     amplitude_weight: float = Field(default=0.0, ge=0)
+
+    @field_validator("seeds", mode="before")
+    @classmethod
+    def _resolve_seeds(cls, v: object) -> list[int]:
+        return resolve_seeds(v)
 
 
 class NNSweepConfig(StrictConfig):
@@ -728,3 +796,126 @@ def resolve_artifact_dir(artifact: str | None, default_prefix: str) -> Path:
     artifact_dir = Path(artifact)
     artifact_dir.mkdir(parents=True, exist_ok=True)
     return artifact_dir
+
+
+_ORACLE_ESTIMATOR = "neuro.predictor.oracle.JansenRitOracleEstimator"
+_JANSEN_RIT_PROBLEM = "neuro.predictor.jansen_rit.build_jansen_rit_problem"
+
+
+def _resolve_dynamics_config(dyn: dict[str, Any]) -> None:
+    """Expand regime into canonical connectome, parameters and plant defaults."""
+    regime = dyn.get("regime")
+    params = dyn.setdefault("params", {})
+    if not isinstance(params, dict):
+        return
+
+    is_seizure = regime == "seizure" or params.get("A") == "seizure"
+    is_healthy = regime == "healthy" or params.get("A") == "healthy"
+
+    if is_seizure:
+        from neuro.connectome import Connectome  # noqa: PLC0415 -- breaks circular import with connectome
+        from neuro.seizure import build_seizure_a_gains  # noqa: PLC0415 -- breaks circular import with seizure
+
+        dyn.setdefault("class_path", "neuro.jansen_rit.JansenRitDynamics")
+        dyn.setdefault("dt", 1e-4)
+        dyn.setdefault("initial_state", "rest")
+        dyn.setdefault("connectome", {"speed": 50.0, "K": 0.60})
+        params.setdefault("sigma", 280.0)
+        conn = Connectome.from_config(dyn["connectome"])
+        params["A"] = build_seizure_a_gains(conn).tolist()
+    elif is_healthy:
+        dyn.setdefault("class_path", "neuro.jansen_rit.JansenRitDynamics")
+        dyn.setdefault("dt", 1e-4)
+        dyn.setdefault("initial_state", "rest")
+        dyn.setdefault("connectome", {"speed": 50.0, "K": 0.60})
+        params.setdefault("sigma", 280.0)
+        params["A"] = 3.25
+    elif regime is not None:
+        msg = f"Unknown dynamics regime {regime!r}. Expected 'healthy' or 'seizure'."
+        raise ValueError(msg)
+
+
+def _resolve_oracle_estimator(estimator: dict[str, Any], dyn: dict[str, Any]) -> None:
+    """Propagate plant components to oracle estimator when omitted."""
+    if estimator.get("class_path") != _ORACLE_ESTIMATOR:
+        return
+    if "connectome" not in estimator and "connectome" in dyn:
+        estimator["connectome"] = dyn["connectome"]
+    if "params" not in estimator and "params" in dyn:
+        estimator["params"] = dyn["params"]
+    elif isinstance(estimator.get("params"), dict) and estimator["params"].get("A") == "seizure":
+        from neuro.connectome import Connectome  # noqa: PLC0415
+        from neuro.seizure import build_seizure_a_gains  # noqa: PLC0415
+
+        conn = Connectome.from_config(estimator.get("connectome", dyn.get("connectome", {})))
+        estimator["params"]["A"] = build_seizure_a_gains(conn).tolist()
+
+
+def _resolve_oracle_problem(ctrl: dict[str, Any], dyn: dict[str, Any]) -> None:
+    """Propagate plant components to oracle problem when omitted."""
+    problem = ctrl.get("problem")
+    if not isinstance(problem, dict) or problem.get("class_path") != _JANSEN_RIT_PROBLEM:
+        return
+    if "connectome" not in problem and "connectome" in dyn:
+        problem["connectome"] = dyn["connectome"]
+    if "params" not in problem and "params" in dyn:
+        problem["params"] = dyn["params"]
+    elif isinstance(problem.get("params"), dict) and problem["params"].get("A") == "seizure":
+        from neuro.connectome import Connectome  # noqa: PLC0415
+        from neuro.seizure import build_seizure_a_gains  # noqa: PLC0415
+
+        conn = Connectome.from_config(problem.get("connectome", dyn.get("connectome", {})))
+        problem["params"]["A"] = build_seizure_a_gains(conn).tolist()
+    if "stimulation" not in problem and "stimulation" in dyn:
+        problem["stimulation"] = dyn["stimulation"]
+
+
+def _resolve_sensors_config(config: dict[str, Any], plant_dt: float) -> None:
+    """Expand sensors shorthands ('eeg', 'oracle') into full sensor definitions."""
+    sensors = config.get("sensors")
+    if sensors is None or sensors == "eeg":
+        config["sensors"] = {
+            "class_path": "simulate.sensor.GaussianSensor",
+            "dt": plant_dt,
+            "std_dev": 0.0,
+            "measurement": {"class_path": "neuro.eeg.EEGMeasurement"},
+        }
+    elif sensors == "oracle":
+        config["sensors"] = {
+            "class_path": "neuro.predictor.oracle.FullStateSensor",
+            "dt": plant_dt,
+        }
+    elif isinstance(sensors, str):
+        msg = f"Unknown sensors shorthand {sensors!r}. Expected 'eeg', 'oracle', or a sensor dict."
+        raise ValueError(msg)
+
+
+def resolve_simulation_config(config: dict[str, Any]) -> dict[str, Any]:
+    """Resolve and expand simulation configuration shorthands into a complete runnable dictionary."""
+    resolved = copy.deepcopy(config)
+    resolved.setdefault("t_end", 12.0)
+
+    dyn = resolved.setdefault("dynamics", {})
+    if isinstance(dyn, dict):
+        _resolve_dynamics_config(dyn)
+
+    plant_dt = float(resolved.get("dynamics", {}).get("dt", 1e-4))
+    resolved.setdefault(
+        "reference",
+        {
+            "class_path": "simulate.reference.StepReference",
+            "dt": plant_dt,
+            "step_value": 0.0,
+        },
+    )
+
+    _resolve_sensors_config(resolved, plant_dt)
+
+    estimator = resolved.get("estimator")
+    if isinstance(estimator, dict):
+        _resolve_oracle_estimator(estimator, dyn)
+    ctrl = resolved.get("controller")
+    if isinstance(ctrl, dict):
+        _resolve_oracle_problem(ctrl, dyn)
+
+    return resolved

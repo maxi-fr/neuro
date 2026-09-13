@@ -97,8 +97,9 @@ def test_unstimulated_arm_keeps_the_plant_it_drops_the_stimulation_from() -> Non
     check_arms_are_paired(grid)  # dropping `stimulation` alone does not unpair the seeds
 
     uncontrolled = next(cell.config for cell in grid if cell.arm == "uncontrolled")
+    tracking = next(cell.config for cell in grid if cell.arm == "tracking")
     assert "stimulation" not in uncontrolled["dynamics"]
-    assert uncontrolled["dynamics"]["params"] == load_config(_ROOT / _ORACLE)["dynamics"]["params"]
+    assert uncontrolled["dynamics"]["params"] == tracking["dynamics"]["params"]
 
 
 def test_pairing_check_rejects_arms_that_do_not_share_the_plant() -> None:
@@ -239,3 +240,13 @@ def test_rows_survive_the_round_trip_a_resume_reads_them_back_through(tmp_path: 
     assert [(row["arm"], row["seed"]) for row in restored] == [("a", 7000), ("b", 7000)]
     assert restored[0]["seizure_burden"] == pytest.approx(0.25)
     assert np.isnan(restored[1]["seizure_burden"])
+
+
+def test_comparison_manifest_defaults_and_seed_tiers() -> None:
+    """ComparisonManifest defaults seeds to medium and t_end to 12.0s."""
+    manifest = ComparisonManifest(base=_ORACLE, arms={"tracking": ArmSpec()})
+    assert manifest.seeds == [7000, 7001, 7002, 7004, 7005]
+    assert manifest.t_end == 12.0
+
+    manifest_small = ComparisonManifest(base=_ORACLE, seeds="small", arms={"tracking": ArmSpec()})  # type: ignore[arg-type]
+    assert manifest_small.seeds == [7000, 7001]
