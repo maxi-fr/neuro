@@ -1,0 +1,27 @@
+\chapter{Biological Plant Modeling}
+\label{ch:biological_plant_modeling}
+
+% Core Research Question:
+% How do we construct a rigorous, whole-brain biophysical ground-truth simulation
+% testbed of focal epilepsy with multi-channel scalp sensing and actuation?
+
+% Contents:
+% - Neural Mass Dynamics: Three-population Jansen-Rit cortical column equations and synaptic filtering kernels.
+% - Bifurcation Regimes: Parameterization of healthy background tissue, autonomous Epileptogenic Zone (EZ),
+%   and vulnerable Propagation Zone (PZ).
+% - Whole-Brain Network: 76-region structural connectome coupling with distance-dependent axonal conduction delays
+%   (stochastic delay differential equation system).
+% - Electrical Sensing Interface: Regional Local Field Potentials (LFPs) projected to 62 scalp EEG channels via
+%   volume-conduction Leadfield matrix.
+% - Electrical Actuation Interface: Transcranial scalp currents mapped to regional electric fields and somatic
+%   Stimulation Drives via ROAST finite-element head modeling (TP9-CP5-Ex8 montage).
+% - Signal Conditioning: Causal fourth-order Butterworth low-pass filtering (25 Hz cutoff) and decimation to 50 Hz discrete grid.
+% - Plant Calibration: Empirical recalibration of global coupling factor K and noise intensity sigma for realistic
+%   seizure escape and recruitment dynamics.
+
+% Mapping from Previous Structure:
+% - Merges the biophysical modeling theory from Chapter 3 (03_foundations.tex, Sec. 3.1:
+%   Jansen-Rit equations, bifurcation regimes, connectome coupling, delays, and dipole/leadfield electrophysiology)
+%   with the concrete simulation setup from Chapter 4 (04_methodology.tex, Sec. 4.1:
+%   76-region TVB setup, EZ/PZ temporal-lobe partition, ROAST TP9-CP5-Ex8 montage, Heun integration,
+%   and causal anti-aliasing filtering/decimation).

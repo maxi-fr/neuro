@@ -1,0 +1,33 @@
+\chapter{Model Predictive Control Framework}
+\label{ch:mpc_framework}
+
+% Core Research Question:
+% How do we formulate and solve a receding-horizon optimal control problem that quenches
+% seizure recruitment in real time while respecting physiological safety constraints?
+
+% Contents:
+% - Receding-Horizon Control Formulation: Discrete-time optimal control problem (OCP) over the Control Horizon
+%   using the primed surrogate Predictor as the internal dynamic model.
+% - Safety and Actuation Constraints (Control Budget):
+%   * Kirchhoff's Current Law (sum of electrode currents equals zero: zero charge accumulation in the head).
+%   * Hard per-electrode current limits (|u_p| <= 2 mA) and slew-rate limits.
+%   * Zero-order hold actuation over controller sampling intervals.
+% - Cost Function Design:
+%   * Seizure-suppression costs: Set-based spectral costs penalizing power above healthy baseline vs. waveform tracking.
+%   * Stimulation regularization: L2 penalties (energy/current magnitude) vs. L1 penalties (charge minimization / sparsity)
+%     and smooth approximations.
+% - Stimulation Modes & Scheduling:
+%   * Continuous current stimulation.
+%   * Pulse-based stimulation: Mixed-Integer formulation (binary scheduling variables delta_{j|k}), continuous relaxation
+%     with schedule recovery, and continuous pulse-timing alternatives.
+% - Numerical Transcription and Real-Time Solvers:
+%   * Direct single shooting (sensitivities across rollouts) vs. multiple shooting.
+%   * Resulting optimization classes: Convex QP (linear DMDc + quadratic cost) vs. non-convex NLP/SQP (nonlinear MLP).
+%   * Computational tractability and update deadline considerations.
+
+% Mapping from Previous Structure:
+% - Extracted from the control theory parts of Chapter 3 (03_foundations.tex, Sec. 3.3:
+%   Receding horizon control, linear/nonlinear MPC, shooting transcriptions, output feedback, cost design,
+%   mixed-integer MPC) and Chapter 4 (04_methodology.tex, Sec. 4.4: MPC objectives,
+%   Kirchhoff constraints, suppression costs, stimulation penalties, solvers; Sec. 4.5: Pulse-based control,
+%   mixed-integer OCP, relaxations, recovery).

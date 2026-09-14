@@ -1,0 +1,29 @@
+\chapter{Experiments and Discussion}
+\label{ch:experiments_discussion}
+
+% ==============================================================================
+% Core Research Question:
+% How do the proposed Predictors and MPC formulations perform in closed-loop against
+% the ground-truth Plant, what are their operational trade-offs, and where do they break down?
+% ==============================================================================
+
+% Contents:
+% - Experimental Protocol and Evaluation Criteria:
+%   * In-silico patient scenarios: Spontaneous seizure generation in EZ and recruitment into PZ.
+%   * Quantitative metrics: Seizure State, Seizure Burden, total injected charge, solve times.
+%   * Uncontrolled baseline and reference conditions.
+% - Study 1: Offline Predictor Benchmarking:
+%   * Selection of STFT geometry: Trading temporal responsiveness against frequency resolution.
+%   * Training loss comparison: Multi-step Rollout stability of spectral training loss vs. raw MSE loss.
+%   * Model comparison: Linear DMDc vs. Nonlinear MLP over the Control Horizon.
+% - Study 2: Numerical Solver and Transcription Benchmarking:
+%   * Solve time, convergence reliability, and constraint satisfaction across horizon lengths.
+%   * Single shooting vs. multiple shooting performance.
+% - Study 3: Closed-Loop Seizure Suppression:
+%   * Proof of closed-loop efficacy: Attenuating seizure amplitude and preventing PZ recruitment via scalp EEG feedback.
+%   * Waveform MPC vs. Spectral MPC: Empirical demonstration of why waveform tracking fails while spectral MPC succeeds.
+%   * Continuous vs. Pulse-Based Stimulation: Trade-offs between Seizure Burden reduction, stimulation duration,
+%     pulse counts, and solver complexity.
+% - Critical Discussion & Failure Analysis:
+%   * Analysis of negative results and controller breakdown modes (stochastic noise bursts, leadfield errors, latency limits).
+%   * Translational implications of findings.
