@@ -434,6 +434,19 @@ class NullspaceReducedModel(DiscreteDynamics, InferencePredictor):
         """Report readiness from base model."""
         return self.base_model.is_ready(state)
 
+    @property
+    def n_history(self) -> int:
+        """History buffer length of the base model if defined, else n_y."""
+        return getattr(self.base_model, "n_history", getattr(self.base_model, "n_y", 1))
+
+    def past_outputs(self, x: jax.Array, count: int) -> jax.Array:
+        """Extract physical past outputs through the base model."""
+        return self.base_model.past_outputs(x, count)
+
+    def with_history(self, n_history: int) -> NullspaceReducedModel:
+        """Return a copy wrapping base_model with extended history."""
+        return NullspaceReducedModel(self.base_model.with_history(n_history))
+
     def initial_state(self) -> FloatArray:
         """Return base model's initial state."""
         return self.base_model.initial_state()
@@ -547,6 +560,12 @@ def build_waveform_problem(  # noqa: PLR0913 -- checkpoint plus the ten MPC cost
         ``[Z; -Z] v <= u_max``. Excludes ``kirchhoff``.
     """
     base = WaveformMLPModel.load(artifact)
+    envelope = _observable_envelope(reference, w_hinge)
+    if envelope is not None:
+        _validate_waveform_envelope(envelope, base)
+        support = envelope.geometry.sample_support_steps(envelope.fs)
+        if base.n_history < support:
+            base = base.with_history(support)
     if reduce_kirchhoff:
         if kirchhoff:
             msg = "reduce_kirchhoff satisfies Kirchhoff by construction; drop kirchhoff"
@@ -580,9 +599,7 @@ def build_waveform_problem(  # noqa: PLR0913 -- checkpoint plus the ten MPC cost
         costs.append(ReducedEffortCost(n=n, m=m, w_u=w_u, horizon=horizon))
     if w_u_l1 > 0:
         costs.append(L1ControlCost(n=n, m=m, w_l1=w_u_l1, horizon=horizon))
-    envelope = _observable_envelope(reference, w_hinge)
     if envelope is not None:
-        _validate_waveform_envelope(envelope, base)
         costs.append(ObservableFrameHingeCost(model, envelope, w_hinge=w_hinge, horizon=horizon))
     stage_cost: CostFunction = _combine_costs(costs)
     if w_y_terminal is not None and w_y_terminal != w_y:

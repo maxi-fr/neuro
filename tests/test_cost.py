@@ -78,6 +78,36 @@ class _DummyModel(DiscreteDynamics):
         return x
 
 
+class _DummyHistoryModel(DiscreteDynamics):
+    p: int
+    n_history: int
+    center: jax.Array
+    scale: jax.Array
+
+    def __init__(self, *, n_history: int, p: int, m: int = 1) -> None:
+        super().__init__(n=n_history * p, m=m, ne=n_history * p, p=p)
+        self.p = p
+        self.n_history = n_history
+        self.center = jnp.zeros(p)
+        self.scale = jnp.ones(p)
+
+    def output(self, x: jax.Array, u: jax.Array | None = None, t: float | jax.Array = 0.0) -> jax.Array:
+        del u, t
+        newest = x[(self.n_history - 1) * self.p : self.n_history * self.p]
+        return newest * self.scale + self.center
+
+    def past_outputs(self, x: jax.Array, count: int) -> jax.Array:
+        start_idx = (self.n_history - 1 - count) * self.p
+        end_idx = (self.n_history - 1) * self.p
+        past_std = x[..., start_idx:end_idx].reshape(-1, count, self.p)
+        out = past_std * self.scale + self.center
+        return out[0] if x.ndim == 1 else out
+
+    def discrete_dynamics(self, x: jax.Array, u: jax.Array, t: float | jax.Array, dt: float | jax.Array) -> jax.Array:
+        del u, t, dt
+        return x
+
+
 def _random_layers(rng: np.random.Generator, sizes: list[int]) -> tuple[tuple[FloatArray, FloatArray], ...]:
     """Random ``(weight (out, in), bias (out,))`` pairs, drawn uniformly from ``+-1/sqrt(fan_in)``."""
     return tuple(
@@ -552,7 +582,8 @@ def test_observable_frame_hinge_cost_scores_the_stage_waveform() -> None:
     newest = slice((n_y - 1) * n_channels, n_y * n_channels)
     y_stage = X[:, newest] * y_scale + y_center
     numpy_frames = compute_log_power_frames(y_stage, geom, fs=fs)
-    want = 10.0 * float(np.mean(np.maximum(0.0, numpy_frames - envelope.power[None]) ** 2))
+    numpy_hinge = np.maximum(0.0, numpy_frames - envelope.power[None]) ** 2
+    want = 10.0 * float(np.mean(np.sum(np.mean(numpy_hinge, axis=-1), axis=-1)))
     np.testing.assert_allclose(float(stage_vals[0]), want, rtol=1e-10, atol=1e-12)
 
 
@@ -596,6 +627,36 @@ def test_observable_frame_hinge_cost_validation() -> None:
     wrong_values = ObservableEnvelope(power=np.zeros((n_channels, geom.n_values(fs) + 1)), fs=fs, geometry=geom)
     with pytest.raises(ValueError, match="values per channel but its geometry implies"):
         ObservableFrameHingeCost(model, wrong_values, w_hinge=1.0, horizon=200)
+
+
+def test_observable_frame_hinge_cost_with_history_prepends_past_outputs() -> None:
+    """ObservableFrameHingeCost prepends past outputs when model carries history >= support."""
+    rng = np.random.default_rng(_SEED + 23)
+    geom = StftGeometry(n_segment=20, n_hop=10, kernel_width=1)
+    fs = 100.0
+    support = geom.sample_support_steps(fs)
+    n_history = 25
+    p = 3
+    model = _DummyHistoryModel(n_history=n_history, p=p)
+    envelope = ObservableEnvelope(power=np.zeros((p, geom.n_values(fs))), fs=fs, geometry=geom)
+
+    short_cost = ObservableFrameHingeCost(model, envelope, w_hinge=1.0, horizon=5)
+    assert short_cost is not None
+
+    horizon = 30
+    cost = ObservableFrameHingeCost(model, envelope, w_hinge=2.0, horizon=horizon)
+    X = rng.standard_normal((horizon, n_history * p))
+    stage_vals = cost.stage_costs(jnp.asarray(X), jnp.zeros((horizon, 1)), jnp.zeros(horizon))
+
+    n_past = support - 1
+    past_y = np.asarray(model.past_outputs(jnp.asarray(X[0]), n_past))
+    y_future = np.asarray(jax.vmap(model.output)(jnp.asarray(X)))
+    y_full = np.concatenate([past_y, y_future], axis=0)
+
+    numpy_frames = compute_log_power_frames(y_full, geom, fs=fs)
+    numpy_hinge = np.maximum(0.0, numpy_frames - envelope.power[None]) ** 2
+    want = 2.0 * float(np.mean(np.sum(np.mean(numpy_hinge, axis=-1), axis=-1)))
+    np.testing.assert_allclose(float(stage_vals[0]), want, rtol=1e-10, atol=1e-12)
 
 
 def test_reduced_effort_cost_prices_the_expanded_currents() -> None:

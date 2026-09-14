@@ -370,7 +370,8 @@ def test_observable_frame_hinge_cost_output_equivalence(tmp_path: Path) -> None:
     newest = np.asarray(X)[..., (model.n_y - 1) * model.n_channels : model.n_y * model.n_channels]
     y_incumbent = newest * np.asarray(model.y_scale) + np.asarray(model.y_center)
     frames = jax_compute_observable_frames(jnp.asarray(y_incumbent), geom, fs=fs)
-    expected_stage_cost = float(3.0 * jnp.mean(jnp.maximum(0.0, frames - jnp.asarray(envelope.power)[None]) ** 2))
+    hinge = jnp.maximum(0.0, frames - jnp.asarray(envelope.power)[None]) ** 2
+    expected_stage_cost = float(3.0 * jnp.mean(jnp.sum(jnp.mean(hinge, axis=-1), axis=-1)))
 
     np.testing.assert_allclose(float(val_cost[0]), expected_stage_cost, rtol=1e-10, atol=1e-12)
     np.testing.assert_array_equal(np.asarray(val_cost[1:]), np.zeros(horizon - 1))

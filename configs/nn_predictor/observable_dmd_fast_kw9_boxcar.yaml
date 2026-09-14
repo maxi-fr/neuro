@@ -1,0 +1,34 @@
+# Champion Observable DMD Predictor: Fast STFT, KW 9 Boxcar
+# Selected in canonical_predictors_comparison campaign: mean seizure burden 0.203, delivered charge 1.28 uC.
+simulation:
+  fs: 50.0
+  n_steps: null
+  data_path: "data/experiment_excited_60ms/train"
+
+model:
+  n_y: 1
+  n_u: 17
+  depth: 0
+
+observable:
+  n_segment: 25
+  n_hop: 3
+  band_hz: [1.0, 25.0]
+  n_bin_pool: 1
+  kernel: boxcar
+  kernel_width: 9
+
+training:
+  fit: dmd
+  train_split: 0.8
+  eval_horizon_s: 1.5
+  dmd_energy: 0.9998905936665128
+  dmd_lambda: 1.8623745091658878e-05
+  losses:
+    curriculum_mse:
+      weight: 1.0
+      span_s: 1.5
+      curr_start: 0
+      curr_end: 1
+
+artifact: "artifacts/canonical_predictors_comparison/3_observable_dmd/models/fast_dmd_kw9_boxcar"

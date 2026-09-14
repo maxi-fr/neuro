@@ -120,19 +120,31 @@ class InferencePredictor(ABC):
         """Rebuild the model from a ``(meta, arrays)`` pair, in memory."""
         ...
 
+    n_history: int = 1
+
+    def past_outputs(self, x: jax.Array, count: int) -> jax.Array:
+        """Extract physical past outputs of shape ``(count, n_outputs)`` preceding the newest sample."""
+        raise NotImplementedError
+
+    def with_history(self, n_history: int) -> Self:
+        """Return a copy of the model with an extended history buffer."""
+        raise NotImplementedError
+
     def save(self, path: str | Path) -> None:
         """Persist the exchange checkpoint to ``path`` (a suffix-less stem)."""
         meta, arrays = self.to_checkpoint()
         save_checkpoint(path, meta=meta, arrays=arrays)
 
     @classmethod
-    def load(cls, path: str | Path) -> Self:
+    def load(cls, path: str | Path, *, n_history: int | None = None) -> Self:
         """Rebuild the model from an exchange checkpoint on disk."""
         meta, arrays = load_checkpoint(path)
         if cls is InferencePredictor:
             if "geometry" in meta:
                 return cast("Self", ObservableMLPModel.from_checkpoint(meta, arrays))
-            return cast("Self", WaveformMLPModel.from_checkpoint(meta, arrays))
+            return cast("Self", WaveformMLPModel.from_checkpoint(meta, arrays, n_history=n_history))
+        if issubclass(cls, WaveformMLPModel):
+            return cast("Self", cls.from_checkpoint(meta, arrays, n_history=n_history))
         return cls.from_checkpoint(meta, arrays)
 
 
@@ -181,6 +193,7 @@ class ShiftRegisterMLPModel(DiscreteDynamics, InferencePredictor):
 
     n_y: int = eqx.field(static=True)
     n_u: int = eqx.field(static=True)
+    n_history: int = eqx.field(static=True)
     n_channels: int = eqx.field(static=True)
     n_controls: int = eqx.field(static=True)
     n_outputs: int = eqx.field(static=True)
@@ -221,6 +234,7 @@ class ShiftRegisterMLPModel(DiscreteDynamics, InferencePredictor):
         weights: tuple[FloatArray, ...],
         biases: tuple[FloatArray, ...],
         provenance: TrainingProvenance | None = None,
+        n_history: int | None = None,
     ) -> None:
         """Copy the checkpoint's float64 buffers into jax arrays."""
         n_out = int(n_outputs)
@@ -229,14 +243,16 @@ class ShiftRegisterMLPModel(DiscreteDynamics, InferencePredictor):
         if len(y_c) != n_out or len(y_s) != n_out:
             msg = f"y_center/scale length ({len(y_c)}) must equal model n_outputs ({n_out})."
             raise ValueError(msg)
+        n_hist = int(n_y) if n_history is None else max(int(n_y), int(n_history))
         super().__init__(
-            n=int(n_y) * n_out + int(n_u) * int(n_controls),
+            n=n_hist * n_out + int(n_u) * int(n_controls),
             m=int(n_controls),
-            ne=int(n_y) * n_out + int(n_u) * int(n_controls),
+            ne=n_hist * n_out + int(n_u) * int(n_controls),
             p=n_out,
         )
         self.n_y = int(n_y)
         self.n_u = int(n_u)
+        self.n_history = n_hist
         self.n_channels = int(n_channels)
         self.n_controls = int(n_controls)
         self.n_outputs = n_out
@@ -263,8 +279,16 @@ class ShiftRegisterMLPModel(DiscreteDynamics, InferencePredictor):
     ) -> jax.Array:
         """Evaluate physical output y = g(x, u, t) of shape ``(n_outputs,)``."""
         del u, t
-        newest = x[..., (self.n_y - 1) * self.n_outputs : self.n_y * self.n_outputs]
+        newest = x[..., (self.n_history - 1) * self.n_outputs : self.n_history * self.n_outputs]
         return newest * self.y_scale + self.y_center
+
+    def past_outputs(self, x: jax.Array, count: int) -> jax.Array:
+        """Extract physical past outputs of shape ``(count, n_outputs)`` preceding the newest sample."""
+        start_idx = (self.n_history - 1 - count) * self.n_outputs
+        end_idx = (self.n_history - 1) * self.n_outputs
+        past_std = x[..., start_idx:end_idx].reshape(-1, count, self.n_outputs)
+        out = past_std * self.y_scale + self.y_center
+        return out[0] if x.ndim == 1 else out
 
     def _predict(self, y_window: jax.Array, u_window: jax.Array) -> jax.Array:
         """One MLP forward pass on standardized windows -> the next standardized output ``(n_outputs,)``.
@@ -287,18 +311,14 @@ class ShiftRegisterMLPModel(DiscreteDynamics, InferencePredictor):
         t: float | jax.Array,
         dt: float | jax.Array,
     ) -> jax.Array:
-        """Advance one position: shift ``u`` into the control window, predict, and shift both windows.
-
-        Mirrors the incumbent MPC's ``NNSymbolicModel.f_step``: the predicted ``y_{t+1}`` is the
-        MLP output on the y-window ending at ``t`` and the u-window ending at ``t + 1`` after
-        ``u`` is shifted in, and the returned state's control window ends with ``u``.
-        """
+        """Advance one position: shift ``u`` into the control window, predict, and shift both windows."""
         del t, dt
-        n_z = self.n_y * self.n_outputs
-        y_window = x[:n_z].reshape(self.n_y, self.n_outputs)
+        n_z = self.n_history * self.n_outputs
+        y_window = x[:n_z].reshape(self.n_history, self.n_outputs)
         u_window_raw = x[n_z:].reshape(self.n_u, self.n_controls)
         u_window = jnp.concatenate([u_window_raw[1:], u.reshape(1, -1)], axis=0)
-        z_next = self._predict(y_window, (u_window - self.u_center) / self.u_scale)
+        y_mlp_in = y_window[-self.n_y :]
+        z_next = self._predict(y_mlp_in, (u_window - self.u_center) / self.u_scale)
         y_window = jnp.concatenate([y_window[1:], z_next[None, :]], axis=0)
         return jnp.concatenate([y_window.reshape(-1), u_window.reshape(-1)])
 
@@ -332,9 +352,9 @@ class ShiftRegisterMLPModel(DiscreteDynamics, InferencePredictor):
 
     def absorb(self, state: FloatArray, y: FloatArray, u: FloatArray) -> FloatArray:
         """Append raw measurement ``y`` and applied control ``u`` into the shift-register state."""
-        n_z = self.n_y * self.n_outputs
+        n_z = self.n_history * self.n_outputs
         state_arr = np.asarray(state, dtype=np.float64)
-        y_window = state_arr[:n_z].reshape(self.n_y, self.n_outputs)
+        y_window = state_arr[:n_z].reshape(self.n_history, self.n_outputs)
         u_window = state_arr[n_z:].reshape(self.n_u, self.n_controls)
         z = (np.asarray(y, dtype=np.float64).reshape(-1) - np.asarray(self.y_center)) / np.asarray(self.y_scale)
         y_window = np.concatenate([y_window[1:], z[None, :]], axis=0)
@@ -342,15 +362,20 @@ class ShiftRegisterMLPModel(DiscreteDynamics, InferencePredictor):
         return np.concatenate([y_window.reshape(-1), u_window.reshape(-1)])
 
     def is_ready(self, state: FloatArray) -> bool:
-        """Report whether the output window holds no NaN, i.e. at least ``n_y`` positions were absorbed."""
-        n_z = self.n_y * self.n_outputs
+        """Report whether the output window holds no NaN, i.e. at least ``n_history`` positions were absorbed."""
+        n_z = self.n_history * self.n_outputs
         return not bool(np.isnan(np.asarray(state, dtype=np.float64)[:n_z]).any())
 
     def initial_state(self) -> FloatArray:
         """NaN-padded output window and zero-padded control window: nothing absorbed yet."""
-        y_buf = np.full(self.n_y * self.n_outputs, np.nan, dtype=np.float64)
+        y_buf = np.full(self.n_history * self.n_outputs, np.nan, dtype=np.float64)
         u_buf = np.zeros(self.n_u * self.n_controls, dtype=np.float64)
         return np.concatenate([y_buf, u_buf])
+
+    def with_history(self, n_history: int) -> Self:
+        """Return a copy of the model with an extended history buffer."""
+        meta, arrays = self.to_checkpoint()
+        return self.from_checkpoint(meta, arrays, n_history=n_history)
 
     def to_checkpoint(self) -> tuple[dict[str, Any], dict[str, FloatArray]]:
         """Build the ``(meta, arrays)`` pair the torch side also writes and reads."""
@@ -406,17 +431,26 @@ class ShiftRegisterMLPModel(DiscreteDynamics, InferencePredictor):
         }
 
     @classmethod
-    def from_checkpoint(cls, meta: dict[str, Any], arrays: dict[str, FloatArray]) -> Self:
+    def from_checkpoint(
+        cls,
+        meta: dict[str, Any],
+        arrays: dict[str, FloatArray],
+        *,
+        n_history: int | None = None,
+    ) -> Self:
         """Rebuild the model from a ``(meta, arrays)`` pair, in memory."""
-        return cls(**cls._checkpoint_kwargs(meta, arrays))
+        kwargs = cls._checkpoint_kwargs(meta, arrays)
+        if n_history is not None:
+            kwargs["n_history"] = n_history
+        return cls(**kwargs)
 
 
 class WaveformMLPModel(ShiftRegisterMLPModel):
     """The core on the sample grid: one position is one Raw EEG sample, and there is no geometry to carry."""
 
-    def __init__(self, **core: Any) -> None:  # noqa: ANN401 -- forwarded verbatim to the core's own typed signature
+    def __init__(self, *, n_history: int | None = None, **core: Any) -> None:  # noqa: ANN401 -- forwarded verbatim to the core's own typed signature
         """Copy the checkpoint's float64 buffers into jax arrays."""
-        super().__init__(**core)
+        super().__init__(n_history=n_history, **core)
 
 
 class ObservableMLPModel(ShiftRegisterMLPModel):

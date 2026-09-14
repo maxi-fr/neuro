@@ -2,6 +2,8 @@
 
 * Test cost functions with JR model as the MPC predictor!!!
 
+* add predictability of a number of seizing nodes to the predictability experiment
+
 ## Refactors
 
 * potential estimator refactor: move State Absorption/Priming (the "lift") out of the model into the estimator, so the model is pure `x_{k+1} = f(x_k, u_k)`. The lift would become a shared function used by both the runtime estimator and the evaluation free_run. Deferred for now: the model owns the window, the estimator emits one native measurement (y_k / o_k).

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 import equinox as eqx
 import jax
@@ -12,7 +12,7 @@ from trajopt.costs.base import CostFunction
 from neuro.spectral import LOG_FLOOR, _frame_kernel_weights
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Callable, Sequence
 
     from trajopt.dynamics.base import AbstractModel
 
@@ -370,7 +370,9 @@ class ObservableFrameHingeCost(CostFunction):
             )
             raise ValueError(msg)
         support = envelope.geometry.sample_support_steps(envelope.fs)
-        if horizon < support:
+        n_hist = getattr(model, "n_history", 0)
+        min_horizon = 1 if n_hist >= support and hasattr(model, "past_outputs") else support
+        if horizon < min_horizon:
             msg = f"horizon ({horizon}) is shorter than the sample support of one Frame ({support})"
             raise ValueError(msg)
         self.model = model
@@ -398,10 +400,21 @@ class ObservableFrameHingeCost(CostFunction):
             Stage states ``(horizon, n)``, one waveform sample each.
         """
         del U, t
-        y = jax.vmap(self.model.output)(X)
+        support = self.geometry.sample_support_steps(self.fs)
+        n_past = support - 1
+        n_hist = getattr(self.model, "n_history", 0)
+        y_future = jax.vmap(self.model.output)(X)
+        past_outputs = getattr(self.model, "past_outputs", None)
+        if n_hist >= support and callable(past_outputs):
+            past_fn = cast("Callable[[jax.Array, int], jax.Array]", past_outputs)
+            past_y = past_fn(X[0], n_past)
+            y = jnp.concatenate([past_y, y_future], axis=0)
+        else:
+            y = y_future
         frames = jax_compute_observable_frames(y, self.geometry, fs=self.fs)
         hinge = jnp.maximum(0.0, frames - self.power[None]) ** 2
-        return jnp.zeros(X.shape[0]).at[0].set(self.w * jnp.mean(hinge))
+        cost_val = self.w * jnp.mean(jnp.sum(jnp.mean(hinge, axis=-1), axis=-1))
+        return jnp.zeros(X.shape[0]).at[0].set(cost_val)
 
 
 class ObservableHingeCost(CostFunction):

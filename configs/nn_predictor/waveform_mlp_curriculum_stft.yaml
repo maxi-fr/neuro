@@ -1,0 +1,52 @@
+# Champion Waveform MLP Predictor: 100 Hz Curriculum STFT Predictor
+# Selected in canonical_predictors_comparison ablation campaign:
+#   - Sampling Rate: 100 Hz (dt = 0.01 s)
+#   - Closed-Loop Seizure Burden: 0.0436 +- 0.0009
+#   - PZ Propagation Containment: 100% (t_pz = 12.0 s, 0 healthy regions recruited)
+#   - MPC Objective: Raw EEG tracking against healthy reference (w_y = 1.0, w_hinge = 0.0)
+simulation:
+  dt: 0.0001
+  downsample: 100          # fs = 100 Hz, dt = 0.01 s
+  n_steps: null
+  data_path: "data/experiment_excited_long/train"
+
+model:
+  n_y: 15
+  n_u: 10
+  hidden_size: 256
+  depth: 1
+  activation: softplus
+  residual: true
+
+training:
+  fit: gradient_descent
+  epochs: 250
+  train_split: 0.8
+  seed: 1903
+  patience: 50
+  scaler: robust
+  global_scaling: true
+  device: auto
+  learning_rate: 6.650153060902405e-05
+  weight_decay: 9.925538634530832e-06
+  batch_size: 1024
+  eval_horizon_s: 0.2      # 20 steps at 100 Hz
+  losses:
+    curriculum_mse:
+      weight: 1.0
+      span_s: 0.2
+      curr_start: 100
+      curr_end: 200
+      start_epoch: 0
+    stft:
+      weight: 1.0
+      n_segment: 50       # 0.5 s Segment
+      n_hop: 25           # 0.25 s hop
+      n_span: 100         # 1.0 s Horizon
+      band_hz: [1.0, 25.0]
+      n_bin_pool: 1
+      kernel: boxcar
+      kernel_width: 1
+      start_epoch: 0
+
+artifact: "artifacts/canonical_predictors_comparison/2_waveform_mlp/ablation/models/waveform_100hz/model"
