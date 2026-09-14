@@ -1,0 +1,29 @@
+\chapter{Data-Driven Predictor Design}
+\label{ch:data_driven_predictor_design}
+
+% Core Research Question:
+% How do we learn a computationally tractable surrogate model that forecasts future
+% seizure dynamics directly from causal EEG measurements and candidate control currents?
+
+% Contents:
+% - The Prediction Dilemma: Severe partial observability of scalp EEG, intractability of full-state
+%   Kalman observers for high-dimensional delayed networks, and the necessity of data-driven input-output surrogate models.
+% - Signal Representations:
+%   * Waveform representation on the decimated 50 Hz grid.
+%   * Spectral Observables via the Short-Time Fourier Transform (STFT): Segments, Frames, and Frame Kernels;
+%     why spectral power removes phase-jitter sensitivity while linearizing oscillatory seizure dynamics.
+% - Model Architectures:
+%   * Autoregressive input-output formulation with history states (d_y, d_u).
+%   * Linear/Affine: Dynamic Mode Decomposition with Control (DMDc) and connection to Koopman observable theory.
+%   * Nonlinear: Multilayer Perceptrons (MLPs) and residual one-step predictors.
+% - Dynamic State Handling: Causal State Absorption and Priming from trailing EEG history.
+% - Offline Training Methodology:
+%   * Identification dataset generation under exploratory stimulation.
+%   * One-step least squares vs. multi-step Rollout training objectives.
+%   * Waveform vs. spectral training losses and curriculum training strategies.
+
+% Mapping from Previous Structure:
+% - Extracted from the signal processing and SysID parts of Chapter 3 (03_foundations.tex,
+%   Sec. 3.2: STFT, periodograms, Welch averaging, frame kernels; Sec. 3.4: NARX, MLPs, DMDc)
+%   and Chapter 4 (04_methodology.tex, Sec. 4.2: Waveform vs. Spectral Observables,
+%   Predictor model classes; Sec. 4.3: Identification data, training losses, curricula).
