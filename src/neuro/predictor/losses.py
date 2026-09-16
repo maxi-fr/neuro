@@ -131,10 +131,10 @@ class StftLoss:
         )
 
     def log_spectrogram(self, x: Tensor, ctx: LossContext) -> Tensor:
-        """Pooled log power per ``(batch, channel, frame, bin)`` in raw units."""
+        """Pooled log power per batch, output axis, Frame, and frequency bin in raw units."""
         geom = self.geometry
         bin_lo, bin_hi = geom.bin_range(ctx.fs)
-        raw = ctx.to_raw(x[:, : self.span_steps]).transpose(1, 2)
+        raw = ctx.to_raw(x[:, : self.span_steps]).movedim(1, -1)
         power = spectrogram(raw, geom.n_segment, geom.n_hop, fs=ctx.fs)[..., bin_lo:bin_hi]
         power = pool_bins(power, geom.n_bin_pool)
         power = smooth_frames(power, frame_kernel(geom.kernel, geom.kernel_width, power))
@@ -177,8 +177,8 @@ class EegMsLoss:
         )
 
     def windowed_power(self, x: Tensor, ctx: LossContext) -> Tensor:
-        """Mean-square power per trailing window in raw units: ``(B, span, C) -> (B, C, n_windows)``."""
-        raw = ctx.to_raw(x[:, : self.span_steps]).transpose(1, 2)
+        """Mean-square power per trailing window, preserving every output axis in raw units."""
+        raw = ctx.to_raw(x[:, : self.span_steps]).movedim(1, -1)
         return (
             raw.unfold(dimension=-1, size=self.geometry.window_steps(ctx.fs), step=self.geometry.hop_steps(ctx.fs))
             .pow(2)

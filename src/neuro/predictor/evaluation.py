@@ -66,9 +66,10 @@ def accumulate_rollout_errors(
     pred_power = np.zeros(steps, dtype=np.float64)
 
     for y_pred, y_true in rollout_batches(model, trajectories, steps, stride=stride, start=start):
-        sq_err += ((y_pred - y_true) ** 2).sum(axis=(0, 2))
-        power += (y_true**2).sum(axis=(0, 2))
-        pred_power += (y_pred**2).sum(axis=(0, 2))
+        value_axes = (0, *range(2, y_pred.ndim))
+        sq_err += ((y_pred - y_true) ** 2).sum(axis=value_axes)
+        power += (y_true**2).sum(axis=value_axes)
+        pred_power += (y_pred**2).sum(axis=value_axes)
 
     return sq_err, power, pred_power
 
@@ -240,7 +241,8 @@ def evaluate_observable_free_run(
             )
         )
         y_true = np.stack([y[t0 : t0 + eval_steps] for t0 in t0s])
-        sq_err += ((y_pred - y_true) ** 2).sum(axis=(0, 2))
+        value_axes = (0, *range(2, y_pred.ndim))
+        sq_err += ((y_pred - y_true) ** 2).sum(axis=value_axes)
         n_windows += len(t0s)
 
     if n_windows == 0:

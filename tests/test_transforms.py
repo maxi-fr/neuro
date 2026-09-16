@@ -59,3 +59,19 @@ def test_standardizer_serialization_round_trip(prefix: str) -> None:
     restored = Standardizer.from_arrays(arrs, prefix=prefix)
     np.testing.assert_allclose(restored.center, std.center)
     np.testing.assert_allclose(restored.scale, std.scale)
+
+
+@pytest.mark.parametrize("kind", ["standard", "robust"])
+@pytest.mark.parametrize("global_scaling", [False, True])
+def test_structured_standardizer_matches_flattened_statistics(
+    kind: Literal["standard", "robust"], *, global_scaling: bool
+) -> None:
+    """Structured channel-frequency statistics equal equivalent flattened output statistics."""
+    rng = np.random.default_rng(_SEED + 3)
+    x = rng.standard_normal((40, 3, 5))
+    structured = Standardizer.fit(x, kind=kind, global_scaling=global_scaling)
+    flattened = Standardizer.fit(x.reshape(x.shape[0], -1), kind=kind, global_scaling=global_scaling)
+
+    np.testing.assert_allclose(structured.center.reshape(-1), flattened.center)
+    np.testing.assert_allclose(structured.scale.reshape(-1), flattened.scale)
+    np.testing.assert_allclose(structured.transform(x).reshape(x.shape[0], -1), flattened.transform(x.reshape(x.shape[0], -1)))

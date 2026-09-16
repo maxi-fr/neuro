@@ -180,10 +180,10 @@ def test_reduce_trajectory_to_frames() -> None:
     n_raw_frames = (n_samples - geometry.n_segment) // geometry.n_hop + 1
     expected_frames = n_raw_frames - geometry.kernel_width + 1
 
-    assert frames.shape == (expected_frames, n_channels * n_values)
+    assert frames.shape == (expected_frames, n_channels, n_values)
 
     frames_offset = reduce_trajectory_to_frames(y, geometry, fs, offset=4)
-    assert frames_offset.shape[1] == n_channels * n_values
+    assert frames_offset.shape[1:] == (n_channels, n_values)
 
 
 def test_prepare_observable_datasets(tmp_path: Path) -> None:
@@ -194,8 +194,6 @@ def test_prepare_observable_datasets(tmp_path: Path) -> None:
     dt = 0.004  # 250 Hz
     fs = 1.0 / dt
     n_values = geometry.n_values(fs)
-    n_outputs = n_eeg * n_values
-
     files = [_write_trajectory(tmp_path / f"traj_{i}.npz", n_steps, n_eeg, n_controls) for i in range(2)]
 
     data = prepare_observable_datasets(
@@ -215,18 +213,18 @@ def test_prepare_observable_datasets(tmp_path: Path) -> None:
 
     assert data.n_channels == n_eeg
     assert data.n_controls == n_controls
-    assert data.y_std.center.shape == (n_outputs,)
-    assert data.y_std.scale.shape == (n_outputs,)
+    assert data.y_std.center.shape == (n_eeg, n_values)
+    assert data.y_std.scale.shape == (n_eeg, n_values)
     assert len(data.train_trajs) == geometry.n_hop
     assert len(data.val_trajs) == 1
-    assert data.train_trajs[0][1].shape[1] == n_outputs
+    assert data.train_trajs[0][1].shape[1:] == (n_eeg, n_values)
     assert len(data.train_dataset) > 0
     assert len(data.val_dataset) > 0
     y_hist, u_hist, u_future, y_target = data.train_dataset[0]
-    assert y_hist.shape == (n_y, n_outputs)
+    assert y_hist.shape == (n_y, n_eeg, n_values)
     assert u_hist.shape == (n_u, n_controls)
     assert u_future.shape == (horizon, n_controls)
-    assert y_target.shape == (horizon, n_outputs)
+    assert y_target.shape == (horizon, n_eeg, n_values)
 
     data_no_subhop = prepare_observable_datasets(
         files,

@@ -41,14 +41,14 @@ class Standardizer:
         kind: Literal["standard", "robust"] = "standard",
         global_scaling: bool = False,
     ) -> Standardizer:
-        """Fit ``center``/``scale`` from ``(rows, C)`` data, always length ``C``.
+        """Fit ``center``/``scale`` over the leading sample axis of arbitrary output shape.
 
         Under ``global_scaling`` the statistic is pooled over every column and then broadcast back
-        to width ``C``, so the fitted arrays are per-output whichever way they were pooled and a
-        consumer that checks their length against the output width never has to special-case them.
+        to the complete output shape, so channel-frequency Observables retain their geometry.
         """
         data = np.asarray(x, dtype=np.float64)
-        flat = data.reshape(-1, 1) if global_scaling else data
+        output_shape = data.shape[1:]
+        flat = data.reshape(-1) if global_scaling else data
         if kind == "robust":
             center = np.median(flat, axis=0)
             q75, q25 = np.percentile(flat, [75, 25], axis=0)
@@ -57,9 +57,8 @@ class Standardizer:
             center = flat.mean(axis=0)
             scale = flat.std(axis=0)
         scale = np.where(scale == 0, 1.0, scale)
-        width = data.shape[-1]
-        center = np.broadcast_to(center, (width,))
-        scale = np.broadcast_to(scale, (width,))
+        center = np.broadcast_to(center, output_shape)
+        scale = np.broadcast_to(scale, output_shape)
         return cls(center=np.array(center, dtype=np.float64), scale=np.array(scale, dtype=np.float64))
 
     def transform(self, x: TMath) -> TMath:

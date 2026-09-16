@@ -240,8 +240,8 @@ class ShiftRegisterMLPModel(DiscreteDynamics, InferencePredictor):
         n_out = int(n_outputs)
         y_c = np.asarray(y_center)
         y_s = np.asarray(y_scale)
-        if len(y_c) != n_out or len(y_s) != n_out:
-            msg = f"y_center/scale length ({len(y_c)}) must equal model n_outputs ({n_out})."
+        if y_c.size != n_out or y_s.size != n_out:
+            msg = f"y_center/scale size ({y_c.size}) must equal model n_outputs ({n_out})."
             raise ValueError(msg)
         n_hist = int(n_y) if n_history is None else max(int(n_y), int(n_history))
         super().__init__(
@@ -264,8 +264,8 @@ class ShiftRegisterMLPModel(DiscreteDynamics, InferencePredictor):
         self.activation = activation
         self.residual = bool(residual)
         self.provenance = provenance if provenance is not None else TrainingProvenance()
-        self.y_center = jnp.asarray(y_center)
-        self.y_scale = jnp.asarray(y_scale)
+        self.y_center = jnp.asarray(y_c.reshape(-1))
+        self.y_scale = jnp.asarray(y_s.reshape(-1))
         self.u_center = jnp.asarray(u_center)
         self.u_scale = jnp.asarray(u_scale)
         self.weights = tuple(jnp.asarray(weight) for weight in weights)
@@ -324,7 +324,7 @@ class ShiftRegisterMLPModel(DiscreteDynamics, InferencePredictor):
 
     def _rollout_one(self, y_hist: jax.Array, u_hist: jax.Array, u_future: jax.Array) -> jax.Array:
         """Free-run one raw history under raw future controls -> raw ``(steps, n_outputs)``."""
-        y_window = (y_hist[-self.n_y :] - self.y_center) / self.y_scale
+        y_window = (y_hist[-self.n_y :].reshape(self.n_y, self.n_outputs) - self.y_center) / self.y_scale
         u_window = (u_hist[-self.n_u :] - self.u_center) / self.u_scale
         u_future = (u_future - self.u_center) / self.u_scale
 
@@ -471,7 +471,19 @@ class ObservableMLPModel(ShiftRegisterMLPModel):
         """Build the ``(meta, arrays)`` pair the torch side also writes and reads, geometry included."""
         meta, arrays = super().to_checkpoint()
         meta["geometry"] = self.geometry.model_dump()
+        for name in ("y_center", "y_scale"):
+            arrays[name] = arrays[name].reshape(self.n_channels, -1)
         return meta, arrays
+
+    def free_run(
+        self,
+        y_hists: FloatArray,
+        u_hists: FloatArray,
+        u_futures: FloatArray,
+    ) -> jax.Array:
+        """Free-run Observable histories and preserve their channel-frequency axes."""
+        flat = super().free_run(y_hists, u_hists, u_futures)
+        return flat.reshape(flat.shape[0], flat.shape[1], self.n_channels, -1)
 
     @classmethod
     def _checkpoint_kwargs(cls, meta: dict[str, Any], arrays: dict[str, FloatArray]) -> dict[str, Any]:

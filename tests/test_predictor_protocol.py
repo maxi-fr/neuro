@@ -172,7 +172,10 @@ def _observable_model(depth: int, activation: Activation, *, residual: bool) -> 
         activation=activation,
         residual=residual,
         dt=0.01 * 16,
-        y_std=Standardizer(center=rng.uniform(-1.0, 1.0, n_outputs), scale=rng.uniform(0.5, 2.0, n_outputs)),
+        y_std=Standardizer(
+            center=rng.uniform(-1.0, 1.0, (_N_EEG, n_values)),
+            scale=rng.uniform(0.5, 2.0, (_N_EEG, n_values)),
+        ),
         u_std=Standardizer(center=rng.uniform(-1.0, 1.0, _N_CONTROLS), scale=rng.uniform(0.5, 2.0, _N_CONTROLS)),
         geometry=geometry,
     )
@@ -210,7 +213,7 @@ def test_observable_state_absorption_and_readiness() -> None:
 
     rng = np.random.default_rng(42)
     for i in range(_N_Y):
-        raw_frame = rng.standard_normal(model.n_outputs)
+        raw_frame = rng.standard_normal((model.n_channels, model.n_outputs // model.n_channels))
         raw_control = rng.standard_normal(_N_CONTROLS)
         state = model.absorb(state, raw_frame, raw_control)
         if i < _N_Y - 1:
@@ -230,7 +233,7 @@ def test_observable_cross_side_parity(depth: int, activation: Activation, residu
 
     rng = np.random.default_rng(_SEED + 400)
     t0 = max(_N_Y, _N_U) + 3
-    y_raw = rng.standard_normal((t0 + _HORIZON, module.n_outputs))
+    y_raw = rng.standard_normal((t0 + _HORIZON, module.n_channels, module.n_outputs // module.n_channels))
     u_raw = rng.standard_normal((t0 + _HORIZON, _N_CONTROLS))
     k = t0 - 1
 
@@ -242,5 +245,5 @@ def test_observable_cross_side_parity(depth: int, activation: Activation, residu
     want = module.y_std.inverse_transform(standardized)
 
     got = np.asarray(jax_model.free_run(y_raw[:t0][None], u_raw[:t0][None], u_raw[t0 : t0 + _HORIZON][None]))[0]
-    assert got.shape == (_HORIZON, module.n_outputs)
+    assert got.shape == (_HORIZON, module.n_channels, module.n_outputs // module.n_channels)
     np.testing.assert_allclose(got, want, rtol=1e-4, atol=1e-5)

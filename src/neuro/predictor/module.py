@@ -195,9 +195,9 @@ class AutoregressiveMLP(nn.Module, TrainingPredictor):
     ) -> None:
         """Build the ``depth``-hidden-layer MLP and its standardizer buffers.
 
-        ``n_outputs`` is the per-position output width the kind fixes -- ``n_channels`` for the
-        waveform kind, ``n_channels * n_values`` for the observable kind -- and the core never
-        infers it. ``y_std``/``u_std`` become the module's float32 buffers; when omitted they
+        ``n_outputs`` is the flattened per-position output width -- ``n_channels`` for the
+        waveform kind, ``n_channels * n_values`` for the observable kind. ``y_std``/``u_std``
+        become the module's float32 buffers; when omitted they
         default to the identity map, so a module built before the standardizers are fitted treats
         raw units as model space. The residual skip ``+ z_t`` is part of the architecture: when
         disabled the layers predict the absolute sample exactly as before.
@@ -236,14 +236,16 @@ class AutoregressiveMLP(nn.Module, TrainingPredictor):
             )
             self.install_readout = cast("Callable[..., None]", install_readout.__get__(self))
 
-        if y_std is not None and (len(y_std.center) != self.n_outputs or len(y_std.scale) != self.n_outputs):
-            msg = f"y_std length ({len(y_std.center)}) must equal model n_outputs ({self.n_outputs})."
+        if y_std is not None and (y_std.center.size != self.n_outputs or y_std.scale.size != self.n_outputs):
+            msg = f"y_std length ({y_std.center.size}) must equal model n_outputs ({self.n_outputs})."
             raise ValueError(msg)
         if u_std is not None and (len(u_std.center) != n_controls or len(u_std.scale) != n_controls):
             msg = f"u_std length ({len(u_std.center)}) must equal model n_controls ({n_controls})."
             raise ValueError(msg)
 
-        y_std = y_std or Standardizer(center=np.zeros(self.n_outputs), scale=np.ones(self.n_outputs))
+        if y_std is None:
+            y_shape = (self.n_channels, self.n_outputs // self.n_channels) if geometry is not None else (self.n_outputs,)
+            y_std = Standardizer(center=np.zeros(y_shape), scale=np.ones(y_shape))
         u_std = u_std or Standardizer(center=np.zeros(n_controls), scale=np.ones(n_controls))
         self.register_buffer("y_center", torch.as_tensor(y_std.center, dtype=torch.float32))
         self.register_buffer("y_scale", torch.as_tensor(y_std.scale, dtype=torch.float32))
@@ -256,7 +258,7 @@ class AutoregressiveMLP(nn.Module, TrainingPredictor):
         Parameters
         ----------
         y_hist : Tensor
-            Standardized past outputs/Frames of shape ``(batch, n_y, n_outputs)``.
+            Standardized past outputs/Frames of shape ``(batch, n_y, *output_shape)``.
         u_hist : Tensor
             Standardized past Control Currents of shape ``(batch, n_u, n_controls)``.
         u_future : Tensor
@@ -265,7 +267,7 @@ class AutoregressiveMLP(nn.Module, TrainingPredictor):
         Returns
         -------
         Tensor
-            Standardized predicted Rollout of shape ``(batch, horizon, n_outputs)``.
+            Standardized predicted Rollout of shape ``(batch, horizon, *output_shape)``.
         """
         preds: list[Tensor] = []
         y_window = y_hist
@@ -274,6 +276,8 @@ class AutoregressiveMLP(nn.Module, TrainingPredictor):
             u_window = torch.cat([u_window[:, 1:], u_future[:, t : t + 1]], dim=1)
             features = torch.cat([y_window.flatten(1), u_window.flatten(1)], dim=1)
             delta = self.layers(features)
+            if y_window.ndim > 3:  # noqa: PLR2004 -- structured Observable outputs add one axis
+                delta = delta.reshape(delta.shape[0], *y_window.shape[2:])
             y_next = y_window[:, -1, :] + delta if self.residual else delta
             y_window = torch.cat([y_window[:, 1:], y_next.unsqueeze(1)], dim=1)
             preds.append(y_next)
