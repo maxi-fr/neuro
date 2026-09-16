@@ -236,7 +236,11 @@ class ShiftRegisterMLPModel(DiscreteDynamics, InferencePredictor):
         provenance: TrainingProvenance | None = None,
         n_history: int | None = None,
     ) -> None:
-        """Copy the checkpoint's float64 buffers into jax arrays."""
+        """Copy checkpoint buffers into flat JAX solver arrays.
+
+        Observable checkpoint standardizers may carry ``(n_channels, n_values)`` axes; they are
+        flattened here because the controller state and solver interface remain one-dimensional.
+        """
         n_out = int(n_outputs)
         y_c = np.asarray(y_center)
         y_s = np.asarray(y_scale)
@@ -323,7 +327,7 @@ class ShiftRegisterMLPModel(DiscreteDynamics, InferencePredictor):
         return jnp.concatenate([y_window.reshape(-1), u_window.reshape(-1)])
 
     def _rollout_one(self, y_hist: jax.Array, u_hist: jax.Array, u_future: jax.Array) -> jax.Array:
-        """Free-run one raw history under raw future controls -> raw ``(steps, n_outputs)``."""
+        """Free-run one raw history under raw future controls using flat output state arrays."""
         y_window = (y_hist[-self.n_y :].reshape(self.n_y, self.n_outputs) - self.y_center) / self.y_scale
         u_window = (u_hist[-self.n_u :] - self.u_center) / self.u_scale
         u_future = (u_future - self.u_center) / self.u_scale

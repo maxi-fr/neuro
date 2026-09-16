@@ -25,7 +25,7 @@ def rollout_batches(
     stride: int = 25,
     start: int | None = None,
 ) -> Iterator[tuple[FloatArray, FloatArray]]:
-    """Yield ``(y_pred, y_true)`` of shape ``(n_windows, steps, n_channels)``, one batch per trajectory.
+    """Yield one trajectory batch of predictions and targets with all output axes preserved.
 
     The whole t0 grid of a trajectory is primed and rolled out in one stateless jax ``free_run``
     call, so every free-run score reads the same windows off one traversal rather than re-rolling
@@ -60,7 +60,7 @@ def accumulate_rollout_errors(
     stride: int = 25,
     start: int | None = None,
 ) -> tuple[FloatArray, FloatArray, FloatArray]:
-    """Accumulate per-step squared error, true power and predicted power over free-run windows."""
+    """Accumulate per-step errors over free-run windows, summing every output axis after time."""
     sq_err = np.zeros(steps, dtype=np.float64)
     power = np.zeros(steps, dtype=np.float64)
     pred_power = np.zeros(steps, dtype=np.float64)
@@ -213,7 +213,7 @@ def evaluate_observable_free_run(
         The inference predictor adapter.
     val_trajs : list[tuple[FloatArray, FloatArray]]
         Held-out validation trajectories in Frame space, shape ``(n_frames, n_controls)`` and
-        ``(n_frames, n_outputs)``.
+        ``(n_frames, n_channels, n_values)``.
     eval_steps : int
         Free-run horizon in Frames.
     step_stride : int, optional

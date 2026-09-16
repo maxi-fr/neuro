@@ -135,7 +135,7 @@ def build_dataset_for_trajectory(
     Returns
     -------
     X : Float32Array
-        Input features array of shape (samples, n_y * n_channels + n_u * n_controls + N * n_controls).
+        Input features array of shape ``(samples, n_y * prod(output_shape) + n_u * n_controls + N * n_controls)``.
     Y : Float32Array
         Flattened target labels array of shape (samples, N * prod(output_shape)).
     """
@@ -374,7 +374,7 @@ def prepare_datasets(  # noqa: PLR0913, PLR0917
 
 
 def reduce_trajectory_to_frames(y: FloatArray, geometry: StftGeometry, fs: float, offset: int = 0) -> FloatArray:
-    """Reduce Raw EEG trajectory to flattened log-power Frames with optional sub-hop sample offset.
+    """Reduce Raw EEG trajectory to structured log-power Frames with optional sub-hop sample offset.
 
     Parameters
     ----------
