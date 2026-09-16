@@ -19,9 +19,9 @@ from neuro.predictor.evaluation import (
     free_run_stats,
 )
 from neuro.predictor.gradient import fit_gradient_descent, float32_tensor
-from neuro.predictor.inference import ObservableMLPModel, WaveformMLPModel
+from neuro.predictor.inference import ObservableMLPModel, WaveformCNNModel, WaveformMLPModel
 from neuro.predictor.losses import LossContext, build_losses, total_loss
-from neuro.predictor.module import AutoregressiveMLP
+from neuro.predictor.module import AutoregressiveCNN, AutoregressiveMLP
 from neuro.predictor.ridge import RidgeTrainer, RidgeTrainingResult
 from neuro.provenance import training_provenance
 
@@ -192,6 +192,10 @@ def train(
         If the named fit is one the configured model does not support: ``ridge`` on an MLP with
         hidden layers.
     """
+    if cfg.model.architecture == "cnn" and cfg.observable is not None:
+        raise ValueError("CNN predictors currently support waveform Observables only.")
+    if cfg.model.architecture == "cnn" and cfg.training.fit != "gradient_descent":
+        raise ValueError("CNN predictors support only gradient_descent training.")
     if cfg.observable is not None:
         if cfg.training.fit == "ridge":
             return _train_observable_ridge(cfg, data_files, cfg.observable)
@@ -437,7 +441,7 @@ def _train_ridge(cfg: NNPredictorConfig, data_files: list[str]) -> RidgeTraining
     layers is not Ridge-Fittable and fails here at build time, before data is loaded or any
     fit runs.
     """
-    if cfg.model.depth > 0:
+    if cfg.model.architecture != "mlp" or cfg.model.depth > 0:
         msg = f"'training.fit: ridge' requires a depth-0 MLP, got model.depth = {cfg.model.depth}."
         raise ValueError(msg)
     return _train_waveform_ridge(cfg, data_files)
@@ -472,13 +476,12 @@ def _prepare_waveform(
         global_scaling=trn.global_scaling,
         cutoff_hz=sim.cutoff_hz,
     )
-    model = AutoregressiveMLP(
+    model_kwargs = dict(
         n_y=mdl.n_y,
         n_u=mdl.n_u,
         horizon=horizon,
         n_channels=data.n_channels,
         n_controls=data.n_controls,
-        n_outputs=data.n_channels,
         hidden_size=mdl.hidden_size,
         depth=depth,
         activation=mdl.activation,
@@ -487,6 +490,10 @@ def _prepare_waveform(
         y_std=data.y_std,
         u_std=data.u_std,
     )
+    if mdl.architecture == "cnn":
+        model = AutoregressiveCNN(**model_kwargs, kernel_size=mdl.kernel_size)
+    else:
+        model = AutoregressiveMLP(**model_kwargs, n_outputs=data.n_channels)
     return data, model, losses
 
 
@@ -506,7 +513,11 @@ def _train_waveform_ridge(cfg: NNPredictorConfig, data_files: list[str]) -> Ridg
     model.provenance = training_provenance(data_files, sim.cutoff_hz)
     model.downsample = sim.downsample
     eval_steps = max(1, round(trn.eval_horizon_s * fs))
-    inference = WaveformMLPModel.from_checkpoint(*model.to_checkpoint())
+    inference = (
+        WaveformCNNModel.from_checkpoint(*model.to_checkpoint())
+        if cfg.model.architecture == "cnn"
+        else WaveformMLPModel.from_checkpoint(*model.to_checkpoint())
+    )
     rollout, log_energy = evaluate_free_run(inference, data.val_trajs, eval_steps, fs)
     return RidgeTrainingResult(
         predictor=model,
@@ -533,7 +544,11 @@ def _train_waveform_dmd(cfg: NNPredictorConfig, data_files: list[str]) -> RidgeT
     model.provenance = training_provenance(data_files, sim.cutoff_hz)
     model.downsample = sim.downsample
     eval_steps = max(1, round(trn.eval_horizon_s * fs))
-    inference = WaveformMLPModel.from_checkpoint(*model.to_checkpoint())
+    inference = (
+        WaveformCNNModel.from_checkpoint(*model.to_checkpoint())
+        if cfg.model.architecture == "cnn"
+        else WaveformMLPModel.from_checkpoint(*model.to_checkpoint())
+    )
     rollout, log_energy = evaluate_free_run(inference, data.val_trajs, eval_steps, fs)
     return RidgeTrainingResult(
         predictor=model,

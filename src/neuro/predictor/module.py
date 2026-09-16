@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Any, Self, cast
 import numpy as np
 import torch
 from torch import nn
+from torch.nn import functional as F
 
 from neuro.config import StftGeometry
 from neuro.predictor.checkpoint import (
@@ -128,7 +129,27 @@ def install_readout(self: AutoregressiveMLP, A: FloatArray) -> None:
         layer.bias.copy_(torch.as_tensor(A[:, -1], dtype=torch.float32))
 
 
-class AutoregressiveMLP(nn.Module, TrainingPredictor):
+class _AutoregressiveBase(nn.Module, TrainingPredictor):
+    """Shared autoregressive history and Rollout machinery for waveform architectures."""
+
+    @abstractmethod
+    def _predict_next(self, y_window: Tensor, u_window: Tensor) -> Tensor:
+        """Predict one standardized sample from the current history windows."""
+        ...
+
+    def forward(self, y_hist: Tensor, u_hist: Tensor, u_future: Tensor) -> Tensor:
+        """Roll out ``horizon`` steps while shifting shared output and control histories."""
+        preds: list[Tensor] = []
+        y_window, u_window = y_hist, u_hist
+        for t in range(self.horizon):
+            u_window = torch.cat([u_window[:, 1:], u_future[:, t : t + 1]], dim=1)
+            y_next = self._predict_next(y_window, u_window)
+            y_window = torch.cat([y_window[:, 1:], y_next.unsqueeze(1)], dim=1)
+            preds.append(y_next)
+        return torch.stack(preds, dim=1)
+
+
+class AutoregressiveMLP(_AutoregressiveBase):
     """One-step MLP unrolled autoregressively over ``horizon`` steps in standardized space.
 
     The training side of the predictor: a batched ``forward`` over the trained Span plus the
@@ -244,7 +265,9 @@ class AutoregressiveMLP(nn.Module, TrainingPredictor):
             raise ValueError(msg)
 
         if y_std is None:
-            y_shape = (self.n_channels, self.n_outputs // self.n_channels) if geometry is not None else (self.n_outputs,)
+            y_shape = (
+                (self.n_channels, self.n_outputs // self.n_channels) if geometry is not None else (self.n_outputs,)
+            )
             y_std = Standardizer(center=np.zeros(y_shape), scale=np.ones(y_shape))
         u_std = u_std or Standardizer(center=np.zeros(n_controls), scale=np.ones(n_controls))
         self.register_buffer("y_center", torch.as_tensor(y_std.center, dtype=torch.float32))
@@ -252,8 +275,8 @@ class AutoregressiveMLP(nn.Module, TrainingPredictor):
         self.register_buffer("u_center", torch.as_tensor(u_std.center, dtype=torch.float32))
         self.register_buffer("u_scale", torch.as_tensor(u_std.scale, dtype=torch.float32))
 
-    def forward(self, y_hist: Tensor, u_hist: Tensor, u_future: Tensor) -> Tensor:
-        """Roll out ``horizon`` steps autoregressively in standardized space.
+    def _predict_next(self, y_window: Tensor, u_window: Tensor) -> Tensor:
+        """Predict one standardized sample from flattened output and control histories.
 
         Parameters
         ----------
@@ -269,20 +292,11 @@ class AutoregressiveMLP(nn.Module, TrainingPredictor):
         Tensor
             Standardized predicted Rollout of shape ``(batch, horizon, *output_shape)``.
         """
-        preds: list[Tensor] = []
-        y_window = y_hist
-        u_window = u_hist
-        for t in range(self.horizon):
-            u_window = torch.cat([u_window[:, 1:], u_future[:, t : t + 1]], dim=1)
-            features = torch.cat([y_window.flatten(1), u_window.flatten(1)], dim=1)
-            delta = self.layers(features)
-            if y_window.ndim > 3:  # noqa: PLR2004 -- structured Observable outputs add one axis
-                delta = delta.reshape(delta.shape[0], *y_window.shape[2:])
-            y_next = y_window[:, -1, :] + delta if self.residual else delta
-            y_window = torch.cat([y_window[:, 1:], y_next.unsqueeze(1)], dim=1)
-            preds.append(y_next)
-
-        return torch.stack(preds, dim=1)
+        features = torch.cat([y_window.flatten(1), u_window.flatten(1)], dim=1)
+        delta = self.layers(features)
+        if y_window.ndim > 3:  # noqa: PLR2004 -- structured Observable outputs add one axis
+            delta = delta.reshape(delta.shape[0], *y_window.shape[2:])
+        return y_window[:, -1, :] + delta if self.residual else delta
 
     @property
     def y_std(self) -> Standardizer:
@@ -359,4 +373,151 @@ class AutoregressiveMLP(nn.Module, TrainingPredictor):
             for lin, weight, bias in zip(linears, weights, biases, strict=True):
                 lin.weight.copy_(torch.as_tensor(weight, dtype=torch.float32))
                 lin.bias.copy_(torch.as_tensor(bias, dtype=torch.float32))
+        return model
+
+
+class AutoregressiveCNN(_AutoregressiveBase):
+    """Causal waveform CNN with a dense Control Current history head."""
+
+    def __init__(  # noqa: PLR0913 -- architecture and standardizer record
+        self,
+        *,
+        n_y: int,
+        n_u: int,
+        horizon: int,
+        n_channels: int,
+        n_controls: int,
+        n_outputs: int | None = None,
+        hidden_size: int,
+        depth: int,
+        kernel_size: int = 3,
+        activation: Activation = "relu",
+        residual: bool = True,
+        dt: float = 0.0,
+        y_std: Standardizer | None = None,
+        u_std: Standardizer | None = None,
+    ) -> None:
+        """Build a causal stride-one temporal CNN for waveform Observables."""
+        super().__init__()
+        if depth < 1:
+            raise ValueError("CNN depth must be at least 1.")
+        if kernel_size < 1:
+            raise ValueError("CNN kernel_size must be at least 1.")
+        self.n_y, self.n_u, self.horizon = n_y, n_u, horizon
+        if n_outputs is not None and n_outputs != n_channels:
+            raise ValueError("waveform CNN n_outputs must equal n_channels")
+        self.n_channels, self.n_controls = n_channels, n_controls
+        self.n_outputs, self.hidden_size, self.depth = n_channels, hidden_size, depth
+        self.kernel_size, self.activation, self.residual, self.dt = kernel_size, activation, residual, float(dt)
+        self.downsample = 1
+        self.provenance = TrainingProvenance()
+        convs: list[nn.Module] = []
+        for i in range(depth):
+            convs.append(
+                nn.Conv1d(n_channels if i == 0 else hidden_size, hidden_size, kernel_size, dtype=torch.float32)
+            )
+            if i < depth - 1:
+                convs.append(activation_module(activation))
+        self.convs = nn.Sequential(*convs)
+        self.head = nn.Sequential(
+            nn.Linear(hidden_size + n_u * n_controls, hidden_size, dtype=torch.float32),
+            activation_module(activation),
+            nn.Linear(hidden_size, n_channels, dtype=torch.float32),
+        )
+        y_std = y_std or Standardizer(center=np.zeros(n_channels), scale=np.ones(n_channels))
+        u_std = u_std or Standardizer(center=np.zeros(n_controls), scale=np.ones(n_controls))
+        self.register_buffer("y_center", torch.as_tensor(y_std.center, dtype=torch.float32))
+        self.register_buffer("y_scale", torch.as_tensor(y_std.scale, dtype=torch.float32))
+        self.register_buffer("u_center", torch.as_tensor(u_std.center, dtype=torch.float32))
+        self.register_buffer("u_scale", torch.as_tensor(u_std.scale, dtype=torch.float32))
+
+    def _one_step(self, y_window: Tensor, u_window: Tensor) -> Tensor:
+        """Predict one standardized waveform sample from causal history windows."""
+        z = y_window.transpose(1, 2)
+        for layer in self.convs:
+            if isinstance(layer, nn.Conv1d):
+                z = F.pad(z, (layer.kernel_size[0] - 1, 0))
+            z = layer(z)
+        features = torch.cat([z[:, :, -1], u_window.flatten(1)], dim=1)
+        delta = self.head(features)
+        return y_window[:, -1] + delta if self.residual else delta
+
+    def _predict_next(self, y_window: Tensor, u_window: Tensor) -> Tensor:
+        """Predict one standardized waveform sample through causal convolution and the head."""
+        if y_window.ndim != 3:
+            raise ValueError("AutoregressiveCNN expects waveform histories shaped (batch, time, channels).")
+        return self._one_step(y_window, u_window)
+
+    @property
+    def y_std(self) -> Standardizer:
+        """Return the output standardizer held by this module."""
+        return Standardizer(center=to_numpy(self.y_center), scale=to_numpy(self.y_scale))
+
+    @property
+    def u_std(self) -> Standardizer:
+        """Return the Control Current standardizer held by this module."""
+        return Standardizer(center=to_numpy(self.u_center), scale=to_numpy(self.u_scale))
+
+    def to_checkpoint(self) -> tuple[dict[str, Any], dict[str, FloatArray]]:
+        """Build the portable CNN checkpoint."""
+        convs = [m for m in self.convs if isinstance(m, nn.Conv1d)]
+        heads = [m for m in self.head if isinstance(m, nn.Linear)]
+        meta = {
+            "model_type": "cnn",
+            "activation": self.activation,
+            "n_y": self.n_y,
+            "n_u": self.n_u,
+            "horizon": self.horizon,
+            "n_channels": self.n_channels,
+            "n_controls": self.n_controls,
+            "n_outputs": self.n_outputs,
+            "hidden_size": self.hidden_size,
+            "depth": self.depth,
+            "kernel_size": self.kernel_size,
+            "residual": int(self.residual),
+            "dt": self.dt,
+            "downsample": self.downsample,
+            "n_convs": len(convs),
+            "n_head_layers": len(heads),
+            **self.provenance.meta,
+        }
+        arrays: dict[str, FloatArray] = {}
+        for prefix, layers in (("conv", convs), ("head", heads)):
+            arrays.update(
+                layer_arrays(prefix, [to_numpy(m.weight) for m in layers], [to_numpy(m.bias) for m in layers])
+            )
+        arrays.update(self.y_std.arrays("y"))
+        arrays.update(self.u_std.arrays("u"))
+        return meta, arrays
+
+    @classmethod
+    def from_checkpoint(cls, meta: dict[str, Any], arrays: dict[str, FloatArray]) -> Self:
+        """Rebuild a CNN from its portable checkpoint."""
+        require_model_type(meta, "cnn")
+        require_activation(meta)
+        model = cls(
+            n_y=int(meta["n_y"]),
+            n_u=int(meta["n_u"]),
+            horizon=int(meta["horizon"]),
+            n_channels=int(meta["n_channels"]),
+            n_controls=int(meta["n_controls"]),
+            hidden_size=int(meta["hidden_size"]),
+            depth=int(meta["depth"]),
+            kernel_size=int(meta["kernel_size"]),
+            activation=meta["activation"],
+            residual=bool(meta["residual"]),
+            dt=float(meta["dt"]),
+            y_std=Standardizer.from_arrays(arrays, "y"),
+            u_std=Standardizer.from_arrays(arrays, "u"),
+        )
+        model.downsample = int(meta["downsample"])
+        model.provenance = TrainingProvenance.from_meta(meta)
+        convs = [m for m in model.convs if isinstance(m, nn.Conv1d)]
+        heads = [m for m in model.head if isinstance(m, nn.Linear)]
+        for layers, prefix in ((convs, "conv"), (heads, "head")):
+            weights, biases = layers_from_arrays(arrays, prefix, len(layers))
+            with torch.no_grad():
+                for layer, weight, bias in zip(layers, weights, biases, strict=True):
+                    layer.weight.copy_(torch.as_tensor(weight, dtype=torch.float32))
+                    layer.bias.copy_(torch.as_tensor(bias, dtype=torch.float32))
         return model

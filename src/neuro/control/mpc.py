@@ -37,7 +37,7 @@ from neuro.control.costs import (
     SumCost,
     has_whole_horizon_cost,
 )
-from neuro.predictor.inference import InferencePredictor, ObservableMLPModel, WaveformMLPModel
+from neuro.predictor.inference import InferencePredictor, ObservableMLPModel, WaveformCNNModel, WaveformMLPModel
 from neuro.spectral import HealthyReference, ObservableEnvelope
 
 if TYPE_CHECKING:
@@ -474,7 +474,7 @@ class NullspaceReducedModel(DiscreteDynamics, InferencePredictor):
         if "geometry" in meta:
             base: InferencePredictor = ObservableMLPModel.from_checkpoint(meta, arrays)
         else:
-            base = WaveformMLPModel.from_checkpoint(meta, arrays)
+            base = WaveformCNNModel.from_checkpoint(meta, arrays) if meta.get("model_type") == "cnn" else WaveformMLPModel.from_checkpoint(meta, arrays)
         return cls(base)
 
 

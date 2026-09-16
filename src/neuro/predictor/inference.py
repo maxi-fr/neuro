@@ -140,9 +140,13 @@ class InferencePredictor(ABC):
         """Rebuild the model from an exchange checkpoint on disk."""
         meta, arrays = load_checkpoint(path)
         if cls is InferencePredictor:
+            if meta.get("model_type") == "cnn":
+                return cast("Self", WaveformCNNModel.from_checkpoint(meta, arrays, n_history=n_history))
             if "geometry" in meta:
                 return cast("Self", ObservableMLPModel.from_checkpoint(meta, arrays))
-            return cast("Self", WaveformMLPModel.from_checkpoint(meta, arrays, n_history=n_history))
+                return cast("Self", WaveformMLPModel.from_checkpoint(meta, arrays, n_history=n_history))
+        if meta.get("model_type") == "cnn":
+            return cast("Self", WaveformCNNModel.from_checkpoint(meta, arrays, n_history=n_history))
         if issubclass(cls, WaveformMLPModel):
             return cast("Self", cls.from_checkpoint(meta, arrays, n_history=n_history))
         return cls.from_checkpoint(meta, arrays)
@@ -176,7 +180,7 @@ def _mlp(
     return z @ weights[-1].T + biases[-1]
 
 
-class ShiftRegisterMLPModel(DiscreteDynamics, InferencePredictor):
+class ShiftRegisterModel(DiscreteDynamics, InferencePredictor):
     """trajopt ``DiscreteDynamics`` adapter for the autoregressive MLP core, one position per call.
 
     Holds the checkpoint's float64 weights and standardizer buffers as jax arrays, so the model
@@ -449,15 +453,140 @@ class ShiftRegisterMLPModel(DiscreteDynamics, InferencePredictor):
         return cls(**kwargs)
 
 
-class WaveformMLPModel(ShiftRegisterMLPModel):
-    """The core on the sample grid: one position is one Raw EEG sample, and there is no geometry to carry."""
+class _MLPModel(ShiftRegisterModel):
+    """Architecture-specific MLP checkpoint and prediction core."""
 
     def __init__(self, *, n_history: int | None = None, **core: Any) -> None:  # noqa: ANN401 -- forwarded verbatim to the core's own typed signature
         """Copy the checkpoint's float64 buffers into jax arrays."""
         super().__init__(n_history=n_history, **core)
 
 
-class ObservableMLPModel(ShiftRegisterMLPModel):
+class WaveformCNNModel(ShiftRegisterModel):
+    """JAX runtime for a causal waveform CNN checkpoint.
+
+    The shift-register protocol is shared with the MLP adapter; only the one-step feature map
+    differs, which keeps Priming, State Absorption, and Rollout semantics identical.
+    """
+
+    conv_weights: tuple[jax.Array, ...]
+    conv_biases: tuple[jax.Array, ...]
+    head_weights: tuple[jax.Array, ...]
+    head_biases: tuple[jax.Array, ...]
+    kernel_size: int = eqx.field(static=True)
+
+    @classmethod
+    def from_checkpoint(
+        cls, meta: dict[str, Any], arrays: dict[str, FloatArray], *, n_history: int | None = None
+    ) -> Self:
+        """Rebuild the CNN runtime from a portable checkpoint."""
+        require_model_type(meta, "cnn")
+        require_activation(meta)
+        conv_w, conv_b = layers_from_arrays(arrays, "conv", int(meta["n_convs"]))
+        head_w, head_b = layers_from_arrays(arrays, "head", int(meta["n_head_layers"]))
+        y_std, u_std = Standardizer.from_arrays(arrays, "y"), Standardizer.from_arrays(arrays, "u")
+        return cls(
+            n_y=int(meta["n_y"]),
+            n_u=int(meta["n_u"]),
+            horizon=int(meta["horizon"]),
+            n_channels=int(meta["n_channels"]),
+            n_controls=int(meta["n_controls"]),
+            n_outputs=int(meta["n_outputs"]),
+            hidden_size=int(meta["hidden_size"]),
+            depth=int(meta["depth"]),
+            activation=meta["activation"],
+            residual=bool(meta["residual"]),
+            dt=float(meta["dt"]),
+            downsample=int(meta["downsample"]),
+            y_center=y_std.center,
+            y_scale=y_std.scale,
+            u_center=u_std.center,
+            u_scale=u_std.scale,
+            weights=(),
+            biases=(),
+            conv_weights=conv_w,
+            conv_biases=conv_b,
+            head_weights=head_w,
+            head_biases=head_b,
+            n_history=n_history,
+            kernel_size=int(meta["kernel_size"]),
+            provenance=TrainingProvenance.from_meta(meta),
+        )
+
+    def __init__(
+        self,
+        *,
+        conv_weights: tuple[FloatArray, ...],
+        conv_biases: tuple[FloatArray, ...],
+        head_weights: tuple[FloatArray, ...],
+        head_biases: tuple[FloatArray, ...],
+        kernel_size: int,
+        **core: Any,
+    ) -> None:
+        """Copy CNN checkpoint buffers into JAX arrays and initialise the shared state protocol."""
+        super().__init__(**core)
+        self.conv_weights = tuple(jnp.asarray(x) for x in conv_weights)
+        self.conv_biases = tuple(jnp.asarray(x) for x in conv_biases)
+        self.head_weights = tuple(jnp.asarray(x) for x in head_weights)
+        self.head_biases = tuple(jnp.asarray(x) for x in head_biases)
+        self.kernel_size = int(kernel_size)
+
+    def _predict(self, y_window: jax.Array, u_window: jax.Array) -> jax.Array:
+        """Apply causal temporal convolutions, then the dense Control Current head."""
+        z = y_window
+        for i, (weight, bias) in enumerate(zip(self.conv_weights, self.conv_biases, strict=True)):
+            z = jnp.asarray(z, dtype=weight.dtype)
+            z = (
+                jax.lax.conv_general_dilated(
+                    z.T[None, ...],
+                    weight,
+                    window_strides=(1,),
+                    padding=((weight.shape[2] - 1, 0),),
+                    dimension_numbers=("NCH", "OIH", "NCH"),
+                )[0].T
+                + bias[None, :]
+            )
+            if i < len(self.conv_weights) - 1:
+                z = _apply_activation(self.activation, z)
+        z = jnp.concatenate([z[-1], u_window.reshape(-1)])
+        for i, (weight, bias) in enumerate(zip(self.head_weights, self.head_biases, strict=True)):
+            z = z @ weight.T + bias
+            if i < len(self.head_weights) - 1:
+                z = _apply_activation(self.activation, z)
+        return z + y_window[-1] if self.residual else z
+
+    def to_checkpoint(self) -> tuple[dict[str, Any], dict[str, FloatArray]]:
+        """Build the portable CNN checkpoint from JAX arrays."""
+        meta = {
+            "model_type": "cnn",
+            "activation": self.activation,
+            "n_y": self.n_y,
+            "n_u": self.n_u,
+            "horizon": self.horizon,
+            "n_channels": self.n_channels,
+            "n_controls": self.n_controls,
+            "n_outputs": self.n_outputs,
+            "hidden_size": self.hidden_size,
+            "depth": self.depth,
+            "kernel_size": self.kernel_size,
+            "residual": int(self.residual),
+            "dt": self.dt,
+            "downsample": self.downsample,
+            "n_convs": len(self.conv_weights),
+            "n_head_layers": len(self.head_weights),
+            **self.provenance.meta,
+        }
+        arrays = layer_arrays("conv", self.conv_weights, self.conv_biases)
+        arrays.update(layer_arrays("head", self.head_weights, self.head_biases))
+        arrays.update(_standardizer_arrays("y", self.y_center, self.y_scale))
+        arrays.update(_standardizer_arrays("u", self.u_center, self.u_scale))
+        return meta, arrays
+
+
+class WaveformMLPModel(_MLPModel):
+    """The waveform MLP runtime on the sample grid."""
+
+
+class ObservableMLPModel(_MLPModel):
     """The core on the Frame grid: one position is one Frame under the Control Current held over that hop.
 
     The Observable geometry the model was trained at rides along in the checkpoint, so config

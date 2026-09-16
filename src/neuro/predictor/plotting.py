@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING
 import matplotlib.pyplot as plt
 import numpy as np
 
-from neuro.predictor.inference import ObservableMLPModel, WaveformMLPModel
+from neuro.predictor.inference import ObservableMLPModel, WaveformCNNModel, WaveformMLPModel
 from neuro.predictor.train import TrainingResult
 from utils.plotting import plot_multistep_predictions
 
@@ -98,7 +98,7 @@ def plot_rollout_comparison(
         inference = ObservableMLPModel.from_checkpoint(meta, arrays)
         is_observable = True
     else:
-        inference = WaveformMLPModel.from_checkpoint(meta, arrays)
+        inference = WaveformCNNModel.from_checkpoint(meta, arrays) if meta.get("model_type") == "cnn" else WaveformMLPModel.from_checkpoint(meta, arrays)
         is_observable = False
 
     u, y = result.val_trajs[0]
