@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING, Any, Self, cast
 import numpy as np
 import torch
 from torch import nn
-from torch.nn import functional as F
+from torch.nn import functional
 
 from neuro.config import StftGeometry
 from neuro.predictor.checkpoint import (
@@ -131,6 +131,8 @@ def install_readout(self: AutoregressiveMLP, A: FloatArray) -> None:
 
 class _AutoregressiveBase(nn.Module, TrainingPredictor):
     """Shared autoregressive history and Rollout machinery for waveform architectures."""
+
+    horizon: int
 
     @abstractmethod
     def _predict_next(self, y_window: Tensor, u_window: Tensor) -> Tensor:
@@ -379,6 +381,25 @@ class AutoregressiveMLP(_AutoregressiveBase):
 class AutoregressiveCNN(_AutoregressiveBase):
     """Causal waveform CNN with a dense Control Current history head."""
 
+    n_y: int
+    n_u: int
+    horizon: int
+    n_channels: int
+    n_controls: int
+    n_outputs: int
+    hidden_size: int
+    depth: int
+    kernel_size: int
+    activation: Activation
+    residual: bool
+    dt: float
+    downsample: int
+    provenance: TrainingProvenance
+    y_center: Tensor
+    y_scale: Tensor
+    u_center: Tensor
+    u_scale: Tensor
+
     def __init__(  # noqa: PLR0913 -- architecture and standardizer record
         self,
         *,
@@ -400,12 +421,15 @@ class AutoregressiveCNN(_AutoregressiveBase):
         """Build a causal stride-one temporal CNN for waveform Observables."""
         super().__init__()
         if depth < 1:
-            raise ValueError("CNN depth must be at least 1.")
+            msg = "CNN depth must be at least 1."
+            raise ValueError(msg)
         if kernel_size < 1:
-            raise ValueError("CNN kernel_size must be at least 1.")
+            msg = "CNN kernel_size must be at least 1."
+            raise ValueError(msg)
         self.n_y, self.n_u, self.horizon = n_y, n_u, horizon
         if n_outputs is not None and n_outputs != n_channels:
-            raise ValueError("waveform CNN n_outputs must equal n_channels")
+            msg = "waveform CNN n_outputs must equal n_channels"
+            raise ValueError(msg)
         self.n_channels, self.n_controls = n_channels, n_controls
         self.n_outputs, self.hidden_size, self.depth = n_channels, hidden_size, depth
         self.kernel_size, self.activation, self.residual, self.dt = kernel_size, activation, residual, float(dt)
@@ -436,7 +460,7 @@ class AutoregressiveCNN(_AutoregressiveBase):
         z = y_window.transpose(1, 2)
         for layer in self.convs:
             if isinstance(layer, nn.Conv1d):
-                z = F.pad(z, (layer.kernel_size[0] - 1, 0))
+                z = functional.pad(z, (layer.kernel_size[0] - 1, 0))
             z = layer(z)
         features = torch.cat([z[:, :, -1], u_window.flatten(1)], dim=1)
         delta = self.head(features)
@@ -444,8 +468,9 @@ class AutoregressiveCNN(_AutoregressiveBase):
 
     def _predict_next(self, y_window: Tensor, u_window: Tensor) -> Tensor:
         """Predict one standardized waveform sample through causal convolution and the head."""
-        if y_window.ndim != 3:
-            raise ValueError("AutoregressiveCNN expects waveform histories shaped (batch, time, channels).")
+        if y_window.ndim != 3:  # noqa: PLR2004 -- the CNN input has batch, time, channel axes
+            msg = "AutoregressiveCNN expects waveform histories shaped (batch, time, channels)."
+            raise ValueError(msg)
         return self._one_step(y_window, u_window)
 
     @property
@@ -484,7 +509,11 @@ class AutoregressiveCNN(_AutoregressiveBase):
         arrays: dict[str, FloatArray] = {}
         for prefix, layers in (("conv", convs), ("head", heads)):
             arrays.update(
-                layer_arrays(prefix, [to_numpy(m.weight) for m in layers], [to_numpy(m.bias) for m in layers])
+                layer_arrays(
+                    prefix,
+                    [to_numpy(m.weight) for m in layers],
+                    [to_numpy(cast("Tensor", m.bias)) for m in layers],
+                )
             )
         arrays.update(self.y_std.arrays("y"))
         arrays.update(self.u_std.arrays("u"))
@@ -519,5 +548,5 @@ class AutoregressiveCNN(_AutoregressiveBase):
             with torch.no_grad():
                 for layer, weight, bias in zip(layers, weights, biases, strict=True):
                     layer.weight.copy_(torch.as_tensor(weight, dtype=torch.float32))
-                    layer.bias.copy_(torch.as_tensor(bias, dtype=torch.float32))
+                    cast("Tensor", layer.bias).copy_(torch.as_tensor(bias, dtype=torch.float32))
         return model

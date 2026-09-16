@@ -19,7 +19,7 @@ from neuro.predictor.evaluation import (
     free_run_stats,
 )
 from neuro.predictor.gradient import fit_gradient_descent, float32_tensor
-from neuro.predictor.inference import ObservableMLPModel, WaveformCNNModel, WaveformMLPModel
+from neuro.predictor.inference import ObservableMLPModel, inference_from_checkpoint
 from neuro.predictor.losses import LossContext, build_losses, total_loss
 from neuro.predictor.module import AutoregressiveCNN, AutoregressiveMLP
 from neuro.predictor.ridge import RidgeTrainer, RidgeTrainingResult
@@ -44,7 +44,7 @@ class TrainingResult:
 
     Attributes
     ----------
-    predictor : AutoregressiveMLP
+    predictor : AutoregressiveMLP | AutoregressiveCNN
         The trained module holding the best-validation-loss weights, with the standardizers as
         buffers and the recorded metadata (provenance, downsample) attached.
     candidates : dict[str, float]
@@ -68,7 +68,7 @@ class TrainingResult:
         value near zero means the model predicts EEG while ignoring stimulation.
     """
 
-    predictor: AutoregressiveMLP
+    predictor: AutoregressiveMLP | AutoregressiveCNN
     candidates: dict[str, float]
     train_losses: list[float]
     val_losses: list[float]
@@ -94,7 +94,7 @@ class TrainingResult:
 
 
 def _du_sensitivity(
-    model: AutoregressiveMLP,
+    model: AutoregressiveMLP | AutoregressiveCNN,
     val_loader: DataLoader[tuple[Tensor, Tensor, Tensor, Tensor]],
     *,
     n_probes: int = _DU_PROBES,
@@ -193,9 +193,11 @@ def train(
         hidden layers.
     """
     if cfg.model.architecture == "cnn" and cfg.observable is not None:
-        raise ValueError("CNN predictors currently support waveform Observables only.")
+        msg = "CNN predictors currently support waveform Observables only."
+        raise ValueError(msg)
     if cfg.model.architecture == "cnn" and cfg.training.fit != "gradient_descent":
-        raise ValueError("CNN predictors support only gradient_descent training.")
+        msg = "CNN predictors support only gradient_descent training."
+        raise ValueError(msg)
     if cfg.observable is not None:
         if cfg.training.fit == "ridge":
             return _train_observable_ridge(cfg, data_files, cfg.observable)
@@ -449,8 +451,8 @@ def _train_ridge(cfg: NNPredictorConfig, data_files: list[str]) -> RidgeTraining
 
 def _prepare_waveform(
     cfg: NNPredictorConfig, data_files: list[str], *, depth: int
-) -> tuple[Datasets, AutoregressiveMLP, list[Loss]]:
-    """Build the prepared datasets and the autoregressive waveform MLP for ``cfg``.
+) -> tuple[Datasets, AutoregressiveMLP | AutoregressiveCNN, list[Loss]]:
+    """Build prepared datasets and the configured autoregressive waveform Predictor.
 
     Shared by the two waveform arms, which differ only in ``depth`` (0 on the ridge arm,
     ``cfg.model.depth`` on the gradient-descent arm); the built losses ride along for the
@@ -476,24 +478,38 @@ def _prepare_waveform(
         global_scaling=trn.global_scaling,
         cutoff_hz=sim.cutoff_hz,
     )
-    model_kwargs = dict(
-        n_y=mdl.n_y,
-        n_u=mdl.n_u,
-        horizon=horizon,
-        n_channels=data.n_channels,
-        n_controls=data.n_controls,
-        hidden_size=mdl.hidden_size,
-        depth=depth,
-        activation=mdl.activation,
-        residual=mdl.residual,
-        dt=sim.dt * sim.downsample,
-        y_std=data.y_std,
-        u_std=data.u_std,
-    )
     if mdl.architecture == "cnn":
-        model = AutoregressiveCNN(**model_kwargs, kernel_size=mdl.kernel_size)
+        model = AutoregressiveCNN(
+            n_y=mdl.n_y,
+            n_u=mdl.n_u,
+            horizon=horizon,
+            n_channels=data.n_channels,
+            n_controls=data.n_controls,
+            hidden_size=mdl.hidden_size,
+            depth=depth,
+            kernel_size=mdl.kernel_size,
+            activation=mdl.activation,
+            residual=mdl.residual,
+            dt=sim.dt * sim.downsample,
+            y_std=data.y_std,
+            u_std=data.u_std,
+        )
     else:
-        model = AutoregressiveMLP(**model_kwargs, n_outputs=data.n_channels)
+        model = AutoregressiveMLP(
+            n_y=mdl.n_y,
+            n_u=mdl.n_u,
+            horizon=horizon,
+            n_channels=data.n_channels,
+            n_controls=data.n_controls,
+            n_outputs=data.n_channels,
+            hidden_size=mdl.hidden_size,
+            depth=depth,
+            activation=mdl.activation,
+            residual=mdl.residual,
+            dt=sim.dt * sim.downsample,
+            y_std=data.y_std,
+            u_std=data.u_std,
+        )
     return data, model, losses
 
 
@@ -508,16 +524,15 @@ def _train_waveform_ridge(cfg: NNPredictorConfig, data_files: list[str]) -> Ridg
     sim, trn = cfg.simulation, cfg.training
     fs = cfg.fs
     data, model, _ = _prepare_waveform(cfg, data_files, depth=0)
+    if not isinstance(model, AutoregressiveMLP):
+        msg = "waveform ridge fitting requires an MLP model"
+        raise TypeError(msg)
     RidgeTrainer(ridge_lambda=trn.ridge_lambda).fit(model, data.train_trajs)
 
     model.provenance = training_provenance(data_files, sim.cutoff_hz)
     model.downsample = sim.downsample
     eval_steps = max(1, round(trn.eval_horizon_s * fs))
-    inference = (
-        WaveformCNNModel.from_checkpoint(*model.to_checkpoint())
-        if cfg.model.architecture == "cnn"
-        else WaveformMLPModel.from_checkpoint(*model.to_checkpoint())
-    )
+    inference = inference_from_checkpoint(*model.to_checkpoint())
     rollout, log_energy = evaluate_free_run(inference, data.val_trajs, eval_steps, fs)
     return RidgeTrainingResult(
         predictor=model,
@@ -533,22 +548,24 @@ def _train_waveform_ridge(cfg: NNPredictorConfig, data_files: list[str]) -> Ridg
 
 def _train_waveform_dmd(cfg: NNPredictorConfig, data_files: list[str]) -> RidgeTrainingResult:
     """Fit the single layer of a depth-0 waveform MLP by closed-form Hankel-DMDc."""
+    if cfg.model.architecture != "mlp":
+        msg = "'training.fit: dmd' supports waveform MLP predictors only."
+        raise ValueError(msg)
     if cfg.model.depth > 0:
         msg = f"'training.fit: dmd' requires a depth-0 MLP, got model.depth = {cfg.model.depth}."
         raise ValueError(msg)
     sim, trn = cfg.simulation, cfg.training
     fs = cfg.fs
     data, model, _ = _prepare_waveform(cfg, data_files, depth=0)
+    if not isinstance(model, AutoregressiveMLP):
+        msg = "waveform DMD fitting requires an MLP model"
+        raise TypeError(msg)
     DmdTrainer(rank=trn.dmd_rank, energy=trn.dmd_energy, dmd_lambda=trn.dmd_lambda).fit(model, data.train_trajs)
 
     model.provenance = training_provenance(data_files, sim.cutoff_hz)
     model.downsample = sim.downsample
     eval_steps = max(1, round(trn.eval_horizon_s * fs))
-    inference = (
-        WaveformCNNModel.from_checkpoint(*model.to_checkpoint())
-        if cfg.model.architecture == "cnn"
-        else WaveformMLPModel.from_checkpoint(*model.to_checkpoint())
-    )
+    inference = inference_from_checkpoint(*model.to_checkpoint())
     rollout, log_energy = evaluate_free_run(inference, data.val_trajs, eval_steps, fs)
     return RidgeTrainingResult(
         predictor=model,
@@ -626,7 +643,7 @@ def _train_waveform(cfg: NNPredictorConfig, data_files: list[str], *, seed_offse
     # Free-run scoring runs on the deployed jax side, built in memory from the fitted torch model.
     model.provenance = training_provenance(data_files, sim.cutoff_hz)
     model.downsample = sim.downsample
-    inference = WaveformMLPModel.from_checkpoint(*model.to_checkpoint())
+    inference = inference_from_checkpoint(*model.to_checkpoint())
     rollout, log_energy = evaluate_free_run(inference, data.val_trajs, eval_steps, fs)
     return TrainingResult(
         predictor=model,

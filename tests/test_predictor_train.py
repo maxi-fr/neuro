@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 import numpy as np
 import pytest
@@ -197,7 +197,9 @@ def test_returned_artifact_is_the_best_epoch_not_the_last(files: list[str]) -> N
     assert int(np.argmin(result.val_losses)) == len(result.val_losses) - 3
     assert min(result.val_losses) < result.val_losses[-1]
 
-    assert _validation_loss(cfg, files, result.predictor) == pytest.approx(min(result.val_losses))
+    assert _validation_loss(cfg, files, cast("AutoregressiveMLP", result.predictor)) == pytest.approx(
+        min(result.val_losses)
+    )
 
 
 def test_depth0_ridge_fit_reproduces_the_exact_one_step_lstsq(files: list[str]) -> None:
@@ -288,13 +290,21 @@ def test_same_seed_reproduces_and_offset_decorrelates(files: list[str]) -> None:
     shifted = _wave_train(_config(), files, seed_offset=1)
 
     assert first.train_losses == again.train_losses
-    for got, want in zip(_weights(again.predictor), _weights(first.predictor), strict=True):
+    for got, want in zip(
+        _weights(cast("AutoregressiveMLP", again.predictor)),
+        _weights(cast("AutoregressiveMLP", first.predictor)),
+        strict=True,
+    ):
         np.testing.assert_array_equal(got, want)
 
     assert shifted.train_losses != first.train_losses
     assert any(
         not np.array_equal(got, want)
-        for got, want in zip(_weights(shifted.predictor), _weights(first.predictor), strict=True)
+        for got, want in zip(
+            _weights(cast("AutoregressiveMLP", shifted.predictor)),
+            _weights(cast("AutoregressiveMLP", first.predictor)),
+            strict=True,
+        )
     )
 
 
@@ -336,6 +346,7 @@ def test_depth0_gradient_descent_starts_from_random_init_and_runs_every_epoch(fi
     linear = _wave_train(_config(depth=0, epochs=3, curr_start=2, curr_end=2), files)
     nonlinear = _wave_train(_config(depth=1, epochs=3, curr_start=2, curr_end=2), files)
 
+    assert isinstance(linear.predictor, AutoregressiveMLP)
     assert len(linear.predictor.layers) == 1
     assert len(linear.train_losses) == 3
     assert len(nonlinear.train_losses) == 3

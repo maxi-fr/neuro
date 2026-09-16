@@ -58,6 +58,14 @@ class ModelConfig(StrictConfig):
     residual: bool = True
     kernel_size: int = Field(default=3, ge=1)
 
+    @model_validator(mode="after")
+    def _validate_architecture_depth(self) -> Self:
+        """Require at least one convolutional layer for the CNN architecture."""
+        if self.architecture == "cnn" and self.depth < 1:
+            msg = "CNN predictors require model.depth >= 1."
+            raise ValueError(msg)
+        return self
+
 
 class SimulationConfig(StrictConfig):
     """Trajectory-loading settings shared by the NN-predictor pipeline."""

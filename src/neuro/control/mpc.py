@@ -37,7 +37,13 @@ from neuro.control.costs import (
     SumCost,
     has_whole_horizon_cost,
 )
-from neuro.predictor.inference import InferencePredictor, ObservableMLPModel, WaveformCNNModel, WaveformMLPModel
+from neuro.predictor.inference import (
+    InferencePredictor,
+    ObservableMLPModel,
+    WaveformCNNModel,
+    WaveformMLPModel,
+    inference_from_checkpoint,
+)
 from neuro.spectral import HealthyReference, ObservableEnvelope
 
 if TYPE_CHECKING:
@@ -320,7 +326,7 @@ def canonicalize_duals(solver: Solver) -> Solver:
     return CanonicalDuals(solver) if isinstance(solver, (SingleShooting, Ipopt)) else solver
 
 
-def _validate_waveform_envelope(envelope: ObservableEnvelope, model: WaveformMLPModel) -> None:
+def _validate_waveform_envelope(envelope: ObservableEnvelope, model: WaveformMLPModel | WaveformCNNModel) -> None:
     """Ensure the healthy Observable envelope matches the waveform predictor's channels and sample rate."""
     if envelope.power.shape[0] != model.n_channels:
         msg = f"envelope channel count ({envelope.power.shape[0]}) does not match model channel count ({model.n_channels})."
@@ -471,16 +477,13 @@ class NullspaceReducedModel(DiscreteDynamics, InferencePredictor):
     @classmethod
     def from_checkpoint(cls, meta: dict[str, Any], arrays: dict[str, FloatArray]) -> Self:
         """Rebuild base model then wrap."""
-        if "geometry" in meta:
-            base: InferencePredictor = ObservableMLPModel.from_checkpoint(meta, arrays)
-        else:
-            base = WaveformCNNModel.from_checkpoint(meta, arrays) if meta.get("model_type") == "cnn" else WaveformMLPModel.from_checkpoint(meta, arrays)
+        base = inference_from_checkpoint(meta, arrays)
         return cls(base)
 
 
 def _resolve_waveform_target(
     ref: HealthyReference | None,
-    base: WaveformMLPModel,
+    base: WaveformMLPModel | WaveformCNNModel,
     *,
     tracking_active: bool,
     w_hinge: float,
@@ -502,6 +505,15 @@ def _resolve_waveform_target(
         msg = f"reference mean vector does not match model channel count ({base.n_channels})"
         raise ValueError(msg)
     return np.asarray(y_ref, dtype=np.float64)
+
+
+def _load_waveform_runtime(artifact: str | Path) -> WaveformMLPModel | WaveformCNNModel:
+    """Load and validate a waveform MLP or CNN runtime checkpoint."""
+    base = InferencePredictor.load(artifact)
+    if not isinstance(base, (WaveformMLPModel, WaveformCNNModel)):
+        msg = f"waveform checkpoint required, got {type(base).__name__}"
+        raise TypeError(msg)
+    return base
 
 
 def build_waveform_problem(  # noqa: PLR0913 -- checkpoint plus the ten MPC cost/bound knobs
@@ -559,7 +571,7 @@ def build_waveform_problem(  # noqa: PLR0913 -- checkpoint plus the ten MPC cost
         over `kirchhoff_basis`. The per-electrode limit is carried exactly, as the polytope
         ``[Z; -Z] v <= u_max``. Excludes ``kirchhoff``.
     """
-    base = WaveformMLPModel.load(artifact)
+    base = _load_waveform_runtime(artifact)
     envelope = _observable_envelope(reference, w_hinge)
     if envelope is not None:
         _validate_waveform_envelope(envelope, base)
