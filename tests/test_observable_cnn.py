@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+import jax
+import jax.numpy as jnp
 import numpy as np
 import torch
 
@@ -23,16 +25,16 @@ from neuro.transforms import Standardizer
 if TYPE_CHECKING:
     from pathlib import Path
 
+    from neuro.types import Activation, FloatArray
 
-def _model(*, n_values: int = 4, residual: bool = True, n_y: int = 3) -> AutoregressiveCNN:
+
+def _model(
+    *, n_values: int = 4, residual: bool = True, n_y: int = 3, activation: Activation = "relu"
+) -> AutoregressiveCNN:
     """Build a small structured CNN with nontrivial channel-frequency standardizers."""
     rng = np.random.default_rng(27 + n_values)
     torch.manual_seed(27 + n_values)
-    geometry = (
-        StftGeometry(n_segment=6, n_hop=2)
-        if n_values == 4
-        else StftGeometry(n_segment=2, n_hop=1, n_bin_pool=2)
-    )
+    geometry = StftGeometry(n_segment=6, n_hop=2) if n_values == 4 else StftGeometry(n_segment=2, n_hop=1, n_bin_pool=2)
     model = AutoregressiveCNN(
         n_y=n_y,
         n_u=2,
@@ -44,6 +46,7 @@ def _model(*, n_values: int = 4, residual: bool = True, n_y: int = 3) -> Autoreg
         depth=2,
         kernel_size=3,
         frequency_kernel_size=4,
+        activation=activation,
         residual=residual,
         dt=0.04,
         geometry=geometry,
@@ -65,8 +68,12 @@ def test_observable_cnn_torch_jax_parity_and_frequency_order() -> None:
     y_raw = rng.normal(size=(t0 + model.horizon, model.n_channels, model.n_outputs // model.n_channels))
     u_raw = rng.normal(size=(t0 + model.horizon, model.n_controls))
     y_hist = torch.as_tensor(model.y_std.transform(y_raw[t0 - model.n_y : t0]), dtype=torch.float32).unsqueeze(0)
-    u_hist = torch.as_tensor(model.u_std.transform(u_raw[t0 - 1 - model.n_u : t0 - 1]), dtype=torch.float32).unsqueeze(0)
-    u_future = torch.as_tensor(model.u_std.transform(u_raw[t0 - 1 : t0 - 1 + model.horizon]), dtype=torch.float32).unsqueeze(0)
+    u_hist = torch.as_tensor(model.u_std.transform(u_raw[t0 - 1 - model.n_u : t0 - 1]), dtype=torch.float32).unsqueeze(
+        0
+    )
+    u_future = torch.as_tensor(
+        model.u_std.transform(u_raw[t0 - 1 : t0 - 1 + model.horizon]), dtype=torch.float32
+    ).unsqueeze(0)
     with torch.no_grad():
         expected = model.y_std.inverse_transform(model(y_hist, u_hist, u_future).numpy()[0])
     actual = np.asarray(runtime.free_run(y_raw[:t0][None], u_raw[:t0][None], u_raw[t0:][None]))[0]
@@ -85,9 +92,7 @@ def test_observable_cnn_singleton_frequency_and_short_history() -> None:
     future[:, 0] = rng.normal(size=(1, model.n_controls))
     y_standardized = torch.as_tensor(model.y_std.transform(y[0]), dtype=torch.float32).unsqueeze(0)
     u_standardized = torch.as_tensor(model.u_std.transform(u_hist_raw[0]), dtype=torch.float32).unsqueeze(0)
-    u_future_standardized = torch.as_tensor(
-        model.u_std.transform(future[0]), dtype=torch.float32
-    ).unsqueeze(0)
+    u_future_standardized = torch.as_tensor(model.u_std.transform(future[0]), dtype=torch.float32).unsqueeze(0)
     with torch.no_grad():
         expected = model.y_std.inverse_transform(
             model(y_standardized, u_standardized, u_future_standardized).numpy()[0]
@@ -116,13 +121,65 @@ def test_observable_cnn_generic_checkpoint_factory(tmp_path: Path) -> None:
     u_raw = rng.normal(size=(model.n_u + model.horizon, model.n_controls))
     y_hist = torch.as_tensor(model.y_std.transform(y_raw), dtype=torch.float32).unsqueeze(0)
     u_hist = torch.as_tensor(model.u_std.transform(u_raw[: model.n_u]), dtype=torch.float32).unsqueeze(0)
-    u_future = torch.as_tensor(
-        model.u_std.transform(u_raw[model.n_u :]), dtype=torch.float32
-    ).unsqueeze(0)
+    u_future = torch.as_tensor(model.u_std.transform(u_raw[model.n_u :]), dtype=torch.float32).unsqueeze(0)
     with torch.no_grad():
         expected = model.y_std.inverse_transform(model(y_hist, u_hist, u_future).numpy()[0])
         actual = torch_loaded.y_std.inverse_transform(torch_loaded(y_hist, u_hist, u_future).numpy()[0])
     np.testing.assert_allclose(actual, expected, rtol=1e-5, atol=1e-6)
+
+
+def _central_jacobian_step(
+    runtime: ObservableCNNModel, state: jnp.ndarray, control: jnp.ndarray
+) -> tuple[FloatArray, FloatArray]:
+    """Estimate Observable CNN state and Control Current Jacobians by central differences."""
+    eps = 1e-6
+    state_np = np.asarray(state, dtype=np.float64)
+    control_np = np.asarray(control, dtype=np.float64)
+    state_jac = np.empty((runtime.n, runtime.n), dtype=np.float64)
+    control_jac = np.empty((runtime.n, runtime.m), dtype=np.float64)
+    for index in range(runtime.n):
+        perturbation = np.zeros(runtime.n)
+        perturbation[index] = eps
+        plus = runtime.discrete_dynamics(jnp.asarray(state_np + perturbation), control, 0.0, runtime.dt)
+        minus = runtime.discrete_dynamics(jnp.asarray(state_np - perturbation), control, 0.0, runtime.dt)
+        state_jac[:, index] = (np.asarray(plus) - np.asarray(minus)) / (2.0 * eps)
+    for index in range(runtime.m):
+        perturbation = np.zeros(runtime.m)
+        perturbation[index] = eps
+        plus = runtime.discrete_dynamics(state, jnp.asarray(control_np + perturbation), 0.0, runtime.dt)
+        minus = runtime.discrete_dynamics(state, jnp.asarray(control_np - perturbation), 0.0, runtime.dt)
+        control_jac[:, index] = (np.asarray(plus) - np.asarray(minus)) / (2.0 * eps)
+    return state_jac, control_jac
+
+
+def test_observable_cnn_discrete_dynamics_jacobians_match_finite_differences() -> None:
+    """Check smooth Observable CNN controller derivatives at a primed state and nonzero control sensitivity."""
+    with jax.enable_x64():
+        module = _model(activation="tanh")
+        meta, arrays = module.to_checkpoint()
+        runtime = ObservableCNNModel.from_checkpoint(
+            meta, {key: np.asarray(value, dtype=np.float64) for key, value in arrays.items()}
+        )
+        rng = np.random.default_rng(2405)
+        state = runtime.initial_state()
+        for _ in range(runtime.n_y):
+            state = runtime.absorb(
+                state,
+                rng.normal(size=(runtime.n_channels, runtime.n_values)),
+                rng.normal(size=runtime.n_controls),
+            )
+        state_jax = jnp.asarray(state)
+        control = jnp.asarray(rng.normal(size=runtime.m), dtype=jnp.float64)
+
+        def step(x: jax.Array, u: jax.Array) -> jax.Array:
+            return runtime.discrete_dynamics(x, u, 0.0, runtime.dt)
+
+        state_ad, control_ad = jax.jacfwd(step, (0, 1))(state_jax, control)
+        state_fd, control_fd = _central_jacobian_step(runtime, state_jax, control)
+        np.testing.assert_allclose(np.asarray(state_ad), state_fd, rtol=2e-6, atol=2e-8)
+        np.testing.assert_allclose(np.asarray(control_ad), control_fd, rtol=2e-6, atol=2e-8)
+        newest = slice((runtime.n_history - 1) * runtime.n_outputs, runtime.n_history * runtime.n_outputs)
+        assert np.linalg.norm(np.asarray(control_ad)[newest]) > 1e-6
 
 
 def test_observable_cnn_train_save_load_and_controller_smoke(tmp_path: Path) -> None:

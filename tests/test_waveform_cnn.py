@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Literal
 
+import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
@@ -19,7 +20,7 @@ from neuro.transforms import Standardizer
 if TYPE_CHECKING:
     from pathlib import Path
 
-    from neuro.types import Activation
+    from neuro.types import Activation, FloatArray
 
 
 def _cnn(*, depth: int = 2, activation: Activation = "tanh", residual: bool = True) -> AutoregressiveCNN:
@@ -52,7 +53,9 @@ def _cnn(*, depth: int = 2, activation: Activation = "tanh", residual: bool = Tr
     [(1, "relu", False), (2, "tanh", True), (3, "softplus", False)],
 )
 def test_cnn_torch_jax_parity_for_causal_multistep_rollout(
-    depth: int, activation: Activation, residual: bool  # noqa: FBT001 -- pytest parameterizes this boolean
+    depth: int,
+    activation: Activation,
+    residual: bool,  # noqa: FBT001 -- pytest parameterizes this boolean
 ) -> None:
     """The JAX CNN runtime matches the torch rollout for nonsymmetric causal kernels."""
     module = _cnn(depth=depth, activation=activation, residual=residual)
@@ -92,6 +95,12 @@ def test_cnn_checkpoint_factory_and_typed_loaders(tmp_path: Path) -> None:
         torch_expected = module(y_hist, u_hist, u_future)
         torch_actual = torch_reloaded(y_hist, u_hist, u_future)
     np.testing.assert_allclose(torch_actual.numpy(), torch_expected.numpy(), rtol=1e-6, atol=1e-6)
+    runtime_stem = tmp_path / "cnn_runtime_roundtrip"
+    direct.save(runtime_stem)
+    torch_from_runtime = AutoregressiveCNN.load(runtime_stem)
+    with torch.no_grad():
+        runtime_torch = torch_from_runtime(y_hist, u_hist, u_future)
+    np.testing.assert_allclose(runtime_torch.numpy(), torch_expected.numpy(), rtol=1e-6, atol=1e-6)
     rng = np.random.default_rng(405)
     t0 = 8
     y_raw = rng.standard_normal((t0 + module.horizon, module.n_channels))
@@ -141,10 +150,58 @@ def test_cnn_discrete_step_uses_current_action_alignment() -> None:
     for y_value, u_value in zip(y_raw[: t0 + 1], u_raw[: t0 + 1], strict=True):
         state = runtime.absorb(state, y_value, u_value)
     stepped = runtime.discrete_dynamics(jnp.asarray(state), jnp.asarray(u_raw[t0 + 1]), 0.0, runtime.dt)
-    expected = np.asarray(
-        runtime.free_run(y_raw[: t0 + 1][None], u_raw[: t0 + 2][None], u_raw[t0 + 2 :][None])
-    )[0, 0]
+    expected = np.asarray(runtime.free_run(y_raw[: t0 + 1][None], u_raw[: t0 + 2][None], u_raw[t0 + 2 :][None]))[0, 0]
     np.testing.assert_allclose(np.asarray(runtime.output(stepped)), expected, rtol=1e-5, atol=1e-6)
+
+
+def _central_jacobian_step(
+    runtime: WaveformCNNModel, state: jnp.ndarray, control: jnp.ndarray
+) -> tuple[FloatArray, FloatArray]:
+    """Estimate discrete-dynamics state and Control Current Jacobians independently by central differences."""
+    eps = 1e-6
+    state_np = np.asarray(state, dtype=np.float64)
+    control_np = np.asarray(control, dtype=np.float64)
+    state_jac = np.empty((runtime.n, runtime.n), dtype=np.float64)
+    control_jac = np.empty((runtime.n, runtime.m), dtype=np.float64)
+    for index in range(runtime.n):
+        perturbation = np.zeros(runtime.n)
+        perturbation[index] = eps
+        plus = runtime.discrete_dynamics(jnp.asarray(state_np + perturbation), control, 0.0, runtime.dt)
+        minus = runtime.discrete_dynamics(jnp.asarray(state_np - perturbation), control, 0.0, runtime.dt)
+        state_jac[:, index] = (np.asarray(plus) - np.asarray(minus)) / (2.0 * eps)
+    for index in range(runtime.m):
+        perturbation = np.zeros(runtime.m)
+        perturbation[index] = eps
+        plus = runtime.discrete_dynamics(state, jnp.asarray(control_np + perturbation), 0.0, runtime.dt)
+        minus = runtime.discrete_dynamics(state, jnp.asarray(control_np - perturbation), 0.0, runtime.dt)
+        control_jac[:, index] = (np.asarray(plus) - np.asarray(minus)) / (2.0 * eps)
+    return state_jac, control_jac
+
+
+def test_cnn_discrete_dynamics_state_and_control_jacobians_match_finite_differences() -> None:
+    """Check smooth waveform CNN controller derivatives at a primed state and nonzero control sensitivity."""
+    with jax.enable_x64():
+        module = _cnn(activation="tanh")
+        meta, arrays = module.to_checkpoint()
+        runtime = WaveformCNNModel.from_checkpoint(
+            meta, {key: np.asarray(value, dtype=np.float64) for key, value in arrays.items()}
+        )
+        rng = np.random.default_rng(2404)
+        state = runtime.initial_state()
+        for _ in range(runtime.n_y):
+            state = runtime.absorb(state, rng.normal(size=runtime.n_channels), rng.normal(size=runtime.n_controls))
+        state_jax = jnp.asarray(state)
+        control = jnp.asarray(rng.normal(size=runtime.m), dtype=jnp.float64)
+
+        def step(x: jax.Array, u: jax.Array) -> jax.Array:
+            return runtime.discrete_dynamics(x, u, 0.0, runtime.dt)
+
+        state_ad, control_ad = jax.jacfwd(step, (0, 1))(state_jax, control)
+        state_fd, control_fd = _central_jacobian_step(runtime, state_jax, control)
+        np.testing.assert_allclose(np.asarray(state_ad), state_fd, rtol=2e-6, atol=2e-8)
+        np.testing.assert_allclose(np.asarray(control_ad), control_fd, rtol=2e-6, atol=2e-8)
+        newest = slice((runtime.n_history - 1) * runtime.n_outputs, runtime.n_history * runtime.n_outputs)
+        assert np.linalg.norm(np.asarray(control_ad)[newest]) > 1e-6
 
 
 def test_cnn_history_extension_preserves_runtime() -> None:

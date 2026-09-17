@@ -152,8 +152,12 @@ def test_observable_torch_save_jax_load_round_trips_geometry_and_per_output_stan
     assert isinstance(jax_model_poly, ObservableMLPModel)
     assert jax_model_poly.geometry == geometry
     assert jax_model_poly.n_outputs == n_outputs
-    np.testing.assert_array_equal(np.asarray(jax_model_poly.y_center).reshape(module.y_std.center.shape), module.y_std.center)
-    np.testing.assert_array_equal(np.asarray(jax_model_poly.y_scale).reshape(module.y_std.scale.shape), module.y_std.scale)
+    np.testing.assert_array_equal(
+        np.asarray(jax_model_poly.y_center).reshape(module.y_std.center.shape), module.y_std.center
+    )
+    np.testing.assert_array_equal(
+        np.asarray(jax_model_poly.y_scale).reshape(module.y_std.scale.shape), module.y_std.scale
+    )
 
     # Test reloading back to torch AutoregressiveMLP
     reloaded_torch = AutoregressiveMLP.load(path)

@@ -146,9 +146,7 @@ def build_dataset_for_trajectory(
     u_future_view = extract_windows_flattened(u_data, N)
 
     X = np.ascontiguousarray(
-        np.concatenate(
-            [y_view[k - n_y + 1].reshape(len(k), -1), u_past_view[k - n_u], u_future_view[k]], axis=1
-        ),
+        np.concatenate([y_view[k - n_y + 1].reshape(len(k), -1), u_past_view[k - n_u], u_future_view[k]], axis=1),
         dtype=np.float32,
     )
 

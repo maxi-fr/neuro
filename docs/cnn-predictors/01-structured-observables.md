@@ -28,6 +28,8 @@ uv run ruff check <changed source and test files>
 uv run ty check <changed source files>
 ```
 
-The broader predictor/controller run reached 123 passed and stopped at the unrelated validation
-fixture `tests/test_validation.py::test_jansen_rit_oracle_loop_validates_without_a_checkpoint`,
-which requires the absent `data\healthy_lfp_knot20ms_frame500ms.npz`.
+The broader predictor/controller run reached 123 passed and stopped at the validation fixture
+`tests/test_validation.py::test_jansen_rit_oracle_loop_validates_without_a_checkpoint` while the
+fixture was absent. The parent checkout later supplied `healthy_lfp_knot20ms_frame500ms.npz`,
+`roast_field_projection_3d.npz`, `tvb_geometry.npz`, and `roast_gamma.npz`; the formerly failing
+validation test now passes.

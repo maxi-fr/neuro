@@ -130,7 +130,7 @@ def install_readout(self: AutoregressiveMLP, A: FloatArray) -> None:
 
 
 class _AutoregressiveBase(nn.Module, TrainingPredictor):
-    """Shared autoregressive history and Rollout machinery for waveform architectures."""
+    """Shared autoregressive history and Rollout machinery for waveform and Observable predictors."""
 
     horizon: int
 
@@ -140,7 +140,12 @@ class _AutoregressiveBase(nn.Module, TrainingPredictor):
         ...
 
     def forward(self, y_hist: Tensor, u_hist: Tensor, u_future: Tensor) -> Tensor:
-        """Roll out ``horizon`` steps while shifting shared output and control histories."""
+        """Roll out the trained Span from ``(B, n_y, C[, F])`` and ``(B, n_u, m)`` histories.
+
+        The future Control Current has shape ``(B, horizon, m)``. The returned standardized
+        Rollout has shape ``(B, horizon, C)`` for waveform data or ``(B, horizon, C, F)`` for
+        structured Observable data.
+        """
         preds: list[Tensor] = []
         y_window, u_window = y_hist, u_hist
         for t in range(self.horizon):
@@ -377,9 +382,8 @@ class AutoregressiveMLP(_AutoregressiveBase):
                 lin.bias.copy_(torch.as_tensor(bias, dtype=torch.float32))
         return model
 
-def _cnn_output_shape(
-    geometry: StftGeometry | None, n_channels: int, n_outputs: int | None
-) -> tuple[int, int]:
+
+def _cnn_output_shape(geometry: StftGeometry | None, n_channels: int, n_outputs: int | None) -> tuple[int, int]:
     """Resolve flattened output width and frequency width for one CNN representation."""
     if geometry is None:
         if n_outputs is not None and n_outputs != n_channels:
@@ -406,7 +410,9 @@ def _cnn_convolutions(  # noqa: PLR0913 -- explicit CNN architecture dimensions
     convs: list[nn.Module] = []
     if geometry is None:
         for i in range(depth):
-            convs.append(nn.Conv1d(n_channels if i == 0 else hidden_size, hidden_size, kernel_size, dtype=torch.float32))
+            convs.append(
+                nn.Conv1d(n_channels if i == 0 else hidden_size, hidden_size, kernel_size, dtype=torch.float32)
+            )
             if i < depth - 1:
                 convs.append(activation_module(activation))
         return nn.Sequential(*convs), hidden_size

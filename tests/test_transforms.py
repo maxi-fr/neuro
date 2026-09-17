@@ -74,4 +74,6 @@ def test_structured_standardizer_matches_flattened_statistics(
 
     np.testing.assert_allclose(structured.center.reshape(-1), flattened.center)
     np.testing.assert_allclose(structured.scale.reshape(-1), flattened.scale)
-    np.testing.assert_allclose(structured.transform(x).reshape(x.shape[0], -1), flattened.transform(x.reshape(x.shape[0], -1)))
+    np.testing.assert_allclose(
+        structured.transform(x).reshape(x.shape[0], -1), flattened.transform(x.reshape(x.shape[0], -1))
+    )

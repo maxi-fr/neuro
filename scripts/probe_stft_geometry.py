@@ -12,20 +12,24 @@ import torch
 from neuro.config import EegMsSpec, StftSpec
 from neuro.filtering import antialias_filter
 from neuro.predictor.data import load_trajectory
-from neuro.predictor.inference import WaveformMLPModel
+from neuro.predictor.inference import InferencePredictor, WaveformCNNModel, WaveformMLPModel
 from neuro.predictor.losses import EegMsLoss, LossContext, StftLoss, spectrogram
 from neuro.spectral import LOG_FLOOR, PsdEnvelope
 
 if TYPE_CHECKING:
     from neuro.types import FloatArray
 
-RolloutPredictor = WaveformMLPModel
-"""The jax waveform rollout predictor the probe rolls out; the observable one never free-runs here."""
+RolloutPredictor = WaveformMLPModel | WaveformCNNModel
+"""The jax waveform rollout predictors the probe supports; Observable models are not free-run here."""
 
 
-def _load_rollout_module(path: Path) -> WaveformMLPModel:
-    """Load the jax waveform rollout Predictor whose checkpoint ``path`` names."""
-    return WaveformMLPModel.load(path)
+def _load_rollout_module(path: Path) -> RolloutPredictor:
+    """Load a generic waveform MLP or CNN checkpoint for the probe."""
+    loaded = InferencePredictor.load(path)
+    if not isinstance(loaded, (WaveformMLPModel, WaveformCNNModel)):
+        msg = f"waveform checkpoint required, got {type(loaded).__name__} from {path}"
+        raise TypeError(msg)
+    return loaded
 
 
 # Seizure branches only: the healthy branch runs a different A vector than the predictor's

@@ -1,0 +1,46 @@
+# Small causal time-frequency CNN example for the standard NN-predictor entry point.
+simulation:
+  fs: 50.0
+  n_steps: null
+  data_path: "data/experiment_excited_60ms/train"
+
+model:
+  architecture: cnn
+  n_y: 5
+  n_u: 9
+  hidden_size: 16
+  depth: 2
+  kernel_size: 3
+  frequency_kernel_size: 3
+  activation: tanh
+  residual: true
+
+observable:
+  n_segment: 25
+  n_hop: 3
+  band_hz: [1.0, 25.0]
+  n_bin_pool: 1
+  kernel: linear
+  kernel_width: 1
+
+training:
+  fit: gradient_descent
+  train_split: 0.8
+  eval_horizon_s: 1.5
+  epochs: 20
+  batch_size: 256
+  learning_rate: 0.001
+  weight_decay: 0.0
+  patience: 5
+  scaler: standard
+  global_scaling: true
+  device: cpu
+  seed: 1903
+  losses:
+    curriculum_mse:
+      weight: 1.0
+      span_s: 1.5
+      curr_start: 0
+      curr_end: 10
+
+artifact: "artifacts/example_observable_cnn/model"

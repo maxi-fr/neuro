@@ -384,6 +384,7 @@ class ShiftRegisterModel(DiscreteDynamics, InferencePredictor):
         meta, arrays = self.to_checkpoint()
         return self.from_checkpoint(meta, arrays, n_history=n_history)
 
+
 class _MLPModel(ShiftRegisterModel):
     """Architecture-specific MLP prediction and checkpoint core."""
 
@@ -592,9 +593,7 @@ class _CNNModel(ShiftRegisterModel):
             "head_biases": head_b,
             "n_history": None,
             "kernel_size": int(meta["kernel_size"]),
-            "frequency_kernel_size": (
-                int(meta["frequency_kernel_size"]) if geometry is not None else None
-            ),
+            "frequency_kernel_size": (int(meta["frequency_kernel_size"]) if geometry is not None else None),
             "geometry": geometry,
             "provenance": TrainingProvenance.from_meta(meta),
         }
@@ -686,6 +685,8 @@ class WaveformCNNModel(_CNNModel):
 class ObservableCNNModel(_CNNModel):
     """JAX runtime for a causal time-frequency Observable CNN checkpoint."""
 
+    geometry: StftGeometry = eqx.field(static=True)
+
     @classmethod
     def from_checkpoint(
         cls, meta: dict[str, Any], arrays: dict[str, FloatArray], *, n_history: int | None = None
@@ -700,13 +701,16 @@ class ObservableCNNModel(_CNNModel):
         """Apply causal time-frequency convolutions and preserve frequency positions."""
         z = y_window.reshape(self.n_y, self.n_channels, self.n_values).transpose(1, 0, 2)[None, ...]
         for i, (weight, bias) in enumerate(zip(self.conv_weights, self.conv_biases, strict=True)):
-            z = jax.lax.conv_general_dilated(
-                jnp.asarray(z, dtype=weight.dtype),
-                weight,
-                window_strides=(1, 1),
-                padding=((weight.shape[2] - 1, 0), ((weight.shape[3] - 1) // 2, weight.shape[3] // 2)),
-                dimension_numbers=("NCHW", "OIHW", "NCHW"),
-            ) + bias[None, :, None, None]
+            z = (
+                jax.lax.conv_general_dilated(
+                    jnp.asarray(z, dtype=weight.dtype),
+                    weight,
+                    window_strides=(1, 1),
+                    padding=((weight.shape[2] - 1, 0), ((weight.shape[3] - 1) // 2, weight.shape[3] // 2)),
+                    dimension_numbers=("NCHW", "OIHW", "NCHW"),
+                )
+                + bias[None, :, None, None]
+            )
             if i < len(self.conv_weights) - 1:
                 z = _apply_activation(self.activation, z)
         features = jnp.concatenate([z[0, :, -1, :].reshape(-1), u_window.reshape(-1)])
