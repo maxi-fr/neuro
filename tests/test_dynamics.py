@@ -116,8 +116,10 @@ def test_dynamics_from_config_builds_network() -> None:
     assert dyn.x.shape == (_STATE_DIM, _N_REGIONS_TVB)
     assert dyn.enforce_zero_sum_current is True
     assert dyn.log_mode == "lfp"
+    assert dyn.n_controls == 3
+    assert list(dyn.stim.control_labels) == ["TP9", "CP5", "Ex8"]
 
-    out, _ = dyn.evaluate(0.0, np.array([0.0]))
+    out, _ = dyn.evaluate(0.0, np.zeros(dyn.n_controls))
     out = np.asarray(out)
     assert out.shape == (_STATE_DIM, _N_REGIONS_TVB)
     assert np.isfinite(out).all()

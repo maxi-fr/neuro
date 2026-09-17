@@ -73,9 +73,20 @@ def test_null_stim_drives_nothing(connectome: Connectome) -> None:
     np.testing.assert_array_equal(stim.project(np.array([1.0])), np.zeros(_N_REGIONS))
 
 
-def test_plant_without_stim_is_unstimulated(connectome: Connectome) -> None:
-    """``stim=None`` reproduces the pre-refactor unstimulated plant, one input and no drive."""
+def test_plant_without_stim_defaults_to_roast_3d(connectome: Connectome) -> None:
+    """``stim=None`` defaults to the canonical roast_3d montage [TP9, CP5, Ex8]."""
     plant = JansenRitDynamics(dt=1e-4, params=JansenRitParams(), conn=connectome, seed=7)
+    assert plant.n_controls == 3
+    assert plant.n_inputs == 3
+    assert list(plant.stim.control_labels) == ["TP9", "CP5", "Ex8"]
+    out = plant.dynamics(0.0, plant.x, np.array([0.0, 0.0, 0.0]))
+    assert out.shape == (6, _N_REGIONS)
+    assert np.isfinite(out).all()
+
+
+def test_plant_with_explicit_null_stim(connectome: Connectome) -> None:
+    """Explicitly passing NullStim retains the single zero-input model."""
+    plant = JansenRitDynamics(dt=1e-4, params=JansenRitParams(), conn=connectome, stim=NullStim(_N_REGIONS), seed=7)
     assert plant.n_controls == 1
     assert plant.n_inputs == 1
     out = plant.dynamics(0.0, plant.x, np.array([0.0]))
@@ -187,7 +198,7 @@ def _write_field_projection_npz(
     if not normals_zero:
         normals /= np.linalg.norm(normals, axis=1, keepdims=True)
     lf_data = rng.standard_normal((63, n_nodes, 3))
-    ch_labels = np.array([f"C{i}" for i in range(62)] + ["Ex8"], dtype=str)
+    ch_labels = np.array(["TP9", "CP5"] + [f"C{i}" for i in range(60)] + ["Ex8"], dtype=str)
     r_labels = np.asarray(region_labels, dtype=str)
     if legacy_key:
         np.savez(path, leadfield_3d=lf_data, channel_labels=ch_labels, region_labels=r_labels, region_normals=normals)
@@ -196,6 +207,16 @@ def _write_field_projection_npz(
 
 
 _write_leadfield_npz = _write_field_projection_npz
+
+
+def test_roast_3d_defaults_to_canonical_montage(connectome: Connectome, tmp_path: Path) -> None:
+    """Without electrodes specified, Roast3DStim defaults to [TP9, CP5, Ex8]."""
+    npz = tmp_path / "lf.npz"
+    _write_field_projection_npz(npz, connectome.region_labels)
+    stim = _build({"model": "roast_3d", "field_projection_path": str(npz)}, connectome)
+    assert isinstance(stim, Roast3DStim)
+    assert stim.n_controls == 3
+    assert list(stim.control_labels) == ["TP9", "CP5", "Ex8"]
 
 
 def test_roast_3d_reduces_along_the_cortical_normal(connectome: Connectome, tmp_path: Path) -> None:
@@ -207,7 +228,7 @@ def test_roast_3d_reduces_along_the_cortical_normal(connectome: Connectome, tmp_
     """
     npz = tmp_path / "lf.npz"
     _write_field_projection_npz(npz, connectome.region_labels)
-    stim = _build({"model": "roast_3d", "field_projection_path": str(npz)}, connectome)
+    stim = _build({"model": "roast_3d", "field_projection_path": str(npz), "electrodes": None}, connectome)
     assert isinstance(stim, Roast3DStim)
     assert stim.n_controls == 63
 
@@ -225,7 +246,7 @@ def test_roast_3d_loads_legacy_leadfield_3d_key(connectome: Connectome, tmp_path
     """Legacy leadfield_3d NPZ files must load gracefully via the fallback path."""
     npz = tmp_path / "legacy.npz"
     _write_field_projection_npz(npz, connectome.region_labels, legacy_key=True)
-    stim = _build({"model": "roast_3d", "field_projection_path": str(npz)}, connectome)
+    stim = _build({"model": "roast_3d", "field_projection_path": str(npz), "electrodes": None}, connectome)
     assert isinstance(stim, Roast3DStim)
     assert stim.n_controls == 63
 
@@ -234,7 +255,7 @@ def test_roast_3d_projection_is_linear_and_signed(connectome: Connectome, tmp_pa
     """Reversing the montage reverses the drive -- the property ``magnitude`` could not express."""
     npz = tmp_path / "lf.npz"
     _write_field_projection_npz(npz, connectome.region_labels)
-    stim = _build({"model": "roast_3d", "field_projection_path": str(npz)}, connectome)
+    stim = _build({"model": "roast_3d", "field_projection_path": str(npz), "electrodes": None}, connectome)
 
     u = np.zeros(63)
     u[0], u[-1] = 1.0, -1.0
@@ -275,7 +296,7 @@ def test_roast_3d_drives_the_plant(connectome: Connectome, tmp_path: Path) -> No
     """A 63-input field projection plant steps to a finite state."""
     npz = tmp_path / "lf.npz"
     _write_field_projection_npz(npz, connectome.region_labels)
-    stim = _build({"model": "roast_3d", "field_projection_path": str(npz)}, connectome)
+    stim = _build({"model": "roast_3d", "field_projection_path": str(npz), "electrodes": None}, connectome)
     plant = JansenRitDynamics(dt=1e-3, params=JansenRitParams(), conn=connectome, stim=stim, seed=42)
 
     assert plant.n_controls == 63
@@ -299,7 +320,14 @@ def test_shipped_roast_montage_hyperpolarizes_the_propagation_hub(connectome: Co
     The mesial EZ is deliberately *not* asserted on: ROAST puts 0.04-0.17 V/m per mA there,
     which is far too little to control (see ``docs/tes_field_geometry.md`` section 1.1).
     """
-    stim = _build({"model": "roast_3d", "field_projection_path": str(_SHIPPED_FIELD_PROJECTION)}, connectome)
+    stim = _build(
+        {
+            "model": "roast_3d",
+            "field_projection_path": str(_SHIPPED_FIELD_PROJECTION),
+            "electrodes": ["TP9", "CP5", "Ex8"],
+        },
+        connectome,
+    )
     assert list(stim.control_labels) == ["TP9", "CP5", "Ex8"]
 
     drive = stim.project(np.array([2.0, 0.0, -2.0]))
@@ -433,7 +461,7 @@ def _write_dynamic_field_projection_npz(
     normals /= np.linalg.norm(normals, axis=1, keepdims=True)
     lf_data = rng.standard_normal((63, n_nodes, 3))
     v_data = rng.standard_normal((63, n_nodes))
-    ch_labels = np.array([f"C{i}" for i in range(62)] + ["Ex8"], dtype=str)
+    ch_labels = np.array(["TP9", "CP5"] + [f"C{i}" for i in range(60)] + ["Ex8"], dtype=str)
     r_labels = np.asarray(region_labels, dtype=str)
 
     if legacy_key:
@@ -473,12 +501,25 @@ def _write_dynamic_field_projection_npz(
         )
 
 
+def test_dynamic_yu_defaults_to_canonical_montage(connectome: Connectome, tmp_path: Path) -> None:
+    """Without electrodes specified, DynamicYuStim defaults to [TP9, CP5, Ex8]."""
+    npz = tmp_path / "lf_dynamic.npz"
+    _write_dynamic_field_projection_npz(npz, connectome.region_labels)
+
+    stim = _build({"model": "yu_dynamic", "field_projection_path": str(npz)}, connectome)
+    assert isinstance(stim, DynamicYuStim)
+    assert stim.n_controls == 3
+    assert list(stim.control_labels) == ["TP9", "CP5", "Ex8"]
+
+
 def test_dynamic_yu_stim_project(connectome: Connectome, tmp_path: Path) -> None:
     """DynamicYuStim projects currents using vector E-field magnitude and smooth voltage polarity."""
     npz = tmp_path / "lf_dynamic.npz"
     _write_dynamic_field_projection_npz(npz, connectome.region_labels)
 
-    stim = _build({"model": "yu_dynamic", "field_projection_path": str(npz), "alpha": 4.0}, connectome)
+    stim = _build(
+        {"model": "yu_dynamic", "field_projection_path": str(npz), "alpha": 4.0, "electrodes": None}, connectome
+    )
     assert isinstance(stim, DynamicYuStim)
     assert stim.n_controls == 63
     assert stim.alpha == 4.0
@@ -500,8 +541,9 @@ def test_dynamic_yu_loads_legacy_leadfield_3d_key(connectome: Connectome, tmp_pa
     npz = tmp_path / "lf_dynamic_legacy.npz"
     _write_dynamic_field_projection_npz(npz, connectome.region_labels, legacy_key=True)
 
-    stim = _build({"model": "yu_dynamic", "field_projection_path": str(npz)}, connectome)
+    stim = _build({"model": "yu_dynamic", "field_projection_path": str(npz), "electrodes": None}, connectome)
     assert isinstance(stim, DynamicYuStim)
+    assert stim.n_controls == 63
 
 
 def test_dynamic_yu_rejects_missing_projection_v(connectome: Connectome, tmp_path: Path) -> None:

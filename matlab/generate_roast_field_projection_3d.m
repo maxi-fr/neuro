@@ -23,6 +23,7 @@ function [projection_E, metadata] = generate_roast_field_projection_3d(varargin)
     else
         error('ROAST directory not found at: %s', roastDir);
     end
+    set(groot, 'DefaultFigureVisible', 'off');
 
     % 2. Parse input parameters
     p = inputParser;
@@ -38,6 +39,7 @@ function [projection_E, metadata] = generate_roast_field_projection_3d(varargin)
     addParameter(p, 'mniCoords', [], @isnumeric);
     addParameter(p, 'regionLabels', {}, @iscell);
     addParameter(p, 'channelLabels', {}, @iscell);
+    addParameter(p, 'maxSolves', Inf, @(x) isnumeric(x) && isscalar(x) && x > 0);
     addParameter(p, 'outputFile', 'data/roast_field_projection_3d.mat', @ischar);
     parse(p, varargin{:});
 
@@ -59,6 +61,7 @@ function [projection_E, metadata] = generate_roast_field_projection_3d(varargin)
     mniCoords = p.Results.mniCoords;
     regionLabels = p.Results.regionLabels;
     scalpLabels = p.Results.channelLabels;
+    maxSolves = p.Results.maxSolves;
     outputFile = p.Results.outputFile;
     if ~isempty(outputFile) && ~java.io.File(outputFile).isAbsolute()
         outputFile = fullfile(pwd, outputFile);
@@ -86,15 +89,42 @@ function [projection_E, metadata] = generate_roast_field_projection_3d(varargin)
 
     fprintf('\n=======================================================\n');
     fprintf(' Generating ROAST 3D Field Projection Matrix (%d channels x %d regions x 3)\n', nChannels, nRegions);
-    fprintf(' Return electrode: %s | zeropadding: %d\n', returnElec, zeroPadding);
+    fprintf(' Return electrode: %s | zeropadding: %d | maxSolves: %g\n', returnElec, zeroPadding, maxSolves);
     substituted = find(~strcmpi(allChannelLabels(:), roastLabels(:)));
     for s = substituted(:)'
         fprintf(' Substituted %s -> %s (cos = %.4f)\n', allChannelLabels{s}, roastLabels{s}, labelDots(s));
     end
     fprintf('=======================================================\n\n');
 
+    [subjDir, subjName] = fileparts(subj);
+    if isempty(subjDir), subjDir = fullfile(roastDir, 'example'); end
+
+    [outFolder, outBase, ~] = fileparts(outputFile);
+    if isempty(outFolder), outFolder = pwd; end
+    checkpointFile = fullfile(outFolder, [outBase '_checkpoint.mat']);
+
     projection_E = zeros(nChannels, nRegions, 3);
     projection_V = zeros(nChannels, nRegions);
+    completedMask = false(nScalp, 1);
+
+    if exist(checkpointFile, 'file')
+        try
+            cp = load(checkpointFile);
+            if isfield(cp, 'projection_E') && isfield(cp, 'completedMask') && ...
+               isequal(size(cp.projection_E), [nChannels, nRegions, 3]) && ...
+               length(cp.completedMask) == nScalp
+                projection_E = cp.projection_E;
+                if isfield(cp, 'projection_V')
+                    projection_V = cp.projection_V;
+                end
+                completedMask = cp.completedMask;
+                fprintf('Resuming from checkpoint %s (%d/%d scalp channels complete)\n', ...
+                        checkpointFile, sum(completedMask), nScalp);
+            end
+        catch cpErr
+            warning('Failed to load checkpoint file %s: %s. Starting fresh.', checkpointFile, cpErr.message);
+        end
+    end
 
     % Enter the ROAST directory once. Re-creating the onCleanup inside the loop would destroy
     % the previous one and cd back out, leaving every iteration after the first in the wrong cwd.
@@ -102,31 +132,63 @@ function [projection_E, metadata] = generate_roast_field_projection_3d(varargin)
     cd(roastDir);
     cleanup = onCleanup(@() cd(origDir)); %#ok<NASGU>
 
+    solveCount = 0;
+
     % Run ROAST for each of the 62 scalp electrodes (+1 mA) with the return at -1 mA
     for k = 1:nScalp
         scalpElec = roastLabels{k};
         recipe = {scalpElec, 1, roastLabels{nChannels}, -1};
 
-        fprintf('\n>>> [%d/%d] Simulating basis montage: %s (+1mA) vs %s (-1mA) <<<\n', ...
-                k, nScalp, scalpElec, roastLabels{nChannels});
-
-        roast(subj, recipe, 'capType', capType, 'elecType', elecType, 'elecSize', elecSize, ...
-              'zeropadding', zeroPadding);
-
-        [subjDir, subjName] = fileparts(subj);
-        if isempty(subjDir), subjDir = pwd; end
-
-        resultFiles = dir(fullfile(subjDir, [subjName '_*_roastResult.mat']));
-        if isempty(resultFiles)
-            resultFiles = dir(fullfile(pwd, [subjName '_*_roastResult.mat']));
+        if completedMask(k)
+            fprintf('\n>>> [%d/%d] Electrode %s already in checkpoint. Skipping. <<<\n', ...
+                    k, nScalp, scalpElec);
+            continue;
         end
 
-        if isempty(resultFiles)
-            error('Could not locate ROAST result file after simulation of %s.', scalpElec);
-        end
+        % Check if a valid simulation already exists in ROAST cache
+        [resultFile, uniqueTag] = find_roast_result(subjDir, subjName, scalpElec, roastLabels{nChannels}, zeroPadding);
 
-        [~, latestIdx] = max([resultFiles.datenum]);
-        resultFile = fullfile(resultFiles(latestIdx).folder, resultFiles(latestIdx).name);
+        if ~isempty(resultFile)
+            fprintf('\n>>> [%d/%d] Found cached ROAST simulation for %s (tag: %s). Skipping solve. <<<\n', ...
+                    k, nScalp, scalpElec, uniqueTag);
+        else
+            fprintf('\n>>> [%d/%d] Simulating basis montage: %s (+1mA) vs %s (-1mA) <<<\n', ...
+                    k, nScalp, scalpElec, roastLabels{nChannels});
+
+            solveCount = solveCount + 1;
+            currentElecOri = 'lr';
+            currentElecSize = elecSize;
+            if strcmpi(scalpElec, 'TPP10')
+                currentElecOri = 'si';
+            end
+
+            try
+                roast(subj, recipe, 'capType', capType, 'elecType', elecType, 'elecSize', currentElecSize, ...
+                      'elecOri', currentElecOri, 'zeropadding', zeroPadding);
+            catch err
+                if contains(err.message, 'overlaps with Electrode')
+                    fprintf('Warning: Overlap detected for %s. Retrying with elecOri=''si'' and elecSize=[35 25 3]...\n', ...
+                            scalpElec);
+                    roast(subj, recipe, 'capType', capType, 'elecType', elecType, 'elecSize', [35 25 3], ...
+                          'elecOri', 'si', 'zeropadding', zeroPadding);
+                else
+                    rethrow(err);
+                end
+            end
+
+            [resultFile, uniqueTag] = find_roast_result(subjDir, subjName, scalpElec, roastLabels{nChannels}, zeroPadding);
+            if isempty(resultFile)
+                resultFiles = dir(fullfile(subjDir, [subjName '_*_roastResult.mat']));
+                if isempty(resultFiles)
+                    resultFiles = dir(fullfile(pwd, [subjName '_*_roastResult.mat']));
+                end
+                if isempty(resultFiles)
+                    error('Could not locate ROAST result file after simulation of %s.', scalpElec);
+                end
+                [~, latestIdx] = max([resultFiles.datenum]);
+                resultFile = fullfile(resultFiles(latestIdx).folder, resultFiles(latestIdx).name);
+            end
+        end
 
         resData = load(resultFile);
         if ~isfield(resData, 'ef_all')
@@ -147,16 +209,16 @@ function [projection_E, metadata] = generate_roast_field_projection_3d(varargin)
         [dim1, dim2, dim3, ~] = size(ef_all);
         [X, Y, Z] = ndgrid(1:dim1, 1:dim2, 1:dim3);
 
-        Ex_grid = ef_all(:,:,:,1);
-        Ey_grid = ef_all(:,:,:,2);
-        Ez_grid = ef_all(:,:,:,3);
-
         if any(voxCoords(:,1) < 1 | voxCoords(:,1) > dim1 | ...
                voxCoords(:,2) < 1 | voxCoords(:,2) > dim2 | ...
                voxCoords(:,3) < 1 | voxCoords(:,3) > dim3)
             error(['Region centres fall outside the ROAST volume for %s. The MNI-to-voxel ' ...
                    'affine and the geometry export disagree.'], scalpElec);
         end
+
+        Ex_grid = ef_all(:,:,:,1);
+        Ey_grid = ef_all(:,:,:,2);
+        Ez_grid = ef_all(:,:,:,3);
 
         Ex_regions = interp3(Y, X, Z, Ex_grid, voxCoords(:,2), voxCoords(:,1), voxCoords(:,3), 'linear', 0);
         Ey_regions = interp3(Y, X, Z, Ey_grid, voxCoords(:,2), voxCoords(:,1), voxCoords(:,3), 'linear', 0);
@@ -167,35 +229,61 @@ function [projection_E, metadata] = generate_roast_field_projection_3d(varargin)
         projection_E(k, :, 2) = Ey_regions;
         projection_E(k, :, 3) = Ez_regions;
         projection_V(k, :) = V_regions;
+        completedMask(k) = true;
+
+        if ~isempty(checkpointFile)
+            cpDir = fileparts(checkpointFile);
+            if ~isempty(cpDir) && ~exist(cpDir, 'dir'), mkdir(cpDir); end
+            save(checkpointFile, 'projection_E', 'projection_V', 'completedMask', ...
+                 'allChannelLabels', 'roastLabels', '-v7.3');
+        end
+
+        % Clean up graphics handles and large volumetric variables
+        close all force;
+        clear resData ef_all vol_all Ex_grid Ey_grid Ez_grid;
+
+        if solveCount >= maxSolves
+            fprintf('\nReached maxSolves limit (%d). Saved checkpoint (%d/%d completed). Exiting batch.\n', ...
+                    maxSolves, sum(completedMask), nScalp);
+            break;
+        end
     end
 
-    % Row 63 (return electrode) is the zero reference
-    projection_E(nChannels, :, :) = 0;
-    projection_V(nChannels, :) = 0;
+    if all(completedMask)
+        % Row 63 (return electrode) is the zero reference
+        projection_E(nChannels, :, :) = 0;
+        projection_V(nChannels, :) = 0;
 
-    % Build metadata
-    metadata = struct();
-    metadata.channelLabels = allChannelLabels;
-    metadata.roastLabels = roastLabels;
-    metadata.labelDots = labelDots;
-    metadata.returnElectrode = returnElec;
-    metadata.regionLabels = regionLabels;
-    metadata.mniCoords = mniCoords;
-    metadata.regionNormals = regionNormals;
-    metadata.normalsFrame = 'mni_ras';
-    metadata.elecType = elecType;
-    metadata.elecSize = elecSize;
-    metadata.zeroPadding = zeroPadding;
-    metadata.subj = subj;
+        % Build metadata
+        metadata = struct();
+        metadata.channelLabels = allChannelLabels;
+        metadata.roastLabels = roastLabels;
+        metadata.labelDots = labelDots;
+        metadata.returnElectrode = returnElec;
+        metadata.regionLabels = regionLabels;
+        metadata.mniCoords = mniCoords;
+        metadata.regionNormals = regionNormals;
+        metadata.normalsFrame = 'mni_ras';
+        metadata.elecType = elecType;
+        metadata.elecSize = elecSize;
+        metadata.zeroPadding = zeroPadding;
+        metadata.subj = subj;
 
-    if ~isempty(outputFile)
-        outDir = fileparts(outputFile);
-        if ~isempty(outDir) && ~exist(outDir, 'dir')
-            mkdir(outDir);
+        if ~isempty(outputFile)
+            outDir = fileparts(outputFile);
+            if ~isempty(outDir) && ~exist(outDir, 'dir')
+                mkdir(outDir);
+            end
+            save(outputFile, 'projection_E', 'projection_V', 'metadata', '-v7.3');
+            fprintf('\nSaved ROAST 3D Field Projection matrix (%d x %d x 3) and Potential matrix (%d x %d) to %s\n', ...
+                    nChannels, nRegions, nChannels, nRegions, outputFile);
+            if exist(checkpointFile, 'file')
+                delete(checkpointFile);
+            end
         end
-        save(outputFile, 'projection_E', 'projection_V', 'metadata', '-v7.3');
-        fprintf('\nSaved ROAST 3D Field Projection matrix (%d x %d x 3) and Potential matrix (%d x %d) to %s\n', ...
-                nChannels, nRegions, nChannels, nRegions, outputFile);
+    else
+        fprintf('\nBatch finished: %d of %d scalp channels completed in %s.\n', ...
+                sum(completedMask), nScalp, checkpointFile);
     end
 
 end
@@ -318,4 +406,50 @@ function [coords, labels, scalpLabels, regionNormals, channelPositions] = ...
         end
     end
     regionNormals = data.region_normals_mni_ras;
+end
+
+%% Helper: Locate ROAST result file matching the exact recipe and options
+function [resultFile, uniqueTag] = find_roast_result(subjDir, subjName, scalpElec, returnElec, zeroPadding)
+    resultFile = '';
+    uniqueTag = '';
+    expectedConfig = sprintf('%s (1 mA), %s (-1 mA)', scalpElec, returnElec);
+
+    dirsToCheck = {subjDir};
+    if ~strcmpi(subjDir, pwd)
+        dirsToCheck{end+1} = pwd;
+    end
+
+    for d = 1:length(dirsToCheck)
+        targetDir = dirsToCheck{d};
+        optFiles = dir(fullfile(targetDir, [subjName '_*_roastOptions.mat']));
+        if isempty(optFiles), continue; end
+
+        [~, order] = sort([optFiles.datenum], 'descend');
+        optFiles = optFiles(order);
+
+        for i = 1:length(optFiles)
+            optPath = fullfile(targetDir, optFiles(i).name);
+            try
+                data = load(optPath, 'opt');
+                if isfield(data, 'opt')
+                    opt = data.opt;
+                    if isfield(opt, 'configTxt') && strcmp(opt.configTxt, expectedConfig) && ...
+                       isfield(opt, 'zeroPad') && opt.zeroPad == zeroPadding
+                        tag = opt.uniqueTag;
+                        candidateResult = fullfile(targetDir, [subjName '_' tag '_roastResult.mat']);
+                        if exist(candidateResult, 'file')
+                            resInfo = dir(candidateResult);
+                            if resInfo.bytes > 1024
+                                resultFile = candidateResult;
+                                uniqueTag = tag;
+                                return;
+                            end
+                        end
+                    end
+                end
+            catch
+                continue;
+            end
+        end
+    end
 end

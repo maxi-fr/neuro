@@ -72,20 +72,23 @@ class _AnalyticalConfig(StrictConfig):
         return self
 
 
+_DEFAULT_ROAST_ELECTRODES: tuple[str, ...] = ("TP9", "CP5", "Ex8")
+
+
 class _Roast3DConfig(StrictConfig):
     """ROAST 3D FEM electric-field projection, reduced along the cortical normal."""
 
-    model: Literal["roast_3d"]
+    model: Literal["roast_3d"] = "roast_3d"
     field_projection_path: str | Path = "data/roast_field_projection_3d.npz"
-    electrodes: list[str] | None = None
+    electrodes: list[str] | None = Field(default_factory=lambda: list(_DEFAULT_ROAST_ELECTRODES))
 
 
 class _DynamicYuConfig(StrictConfig):
     """Dynamic Yu stimulation model: ||L_E u|| * smooth_sign(L_V u - V_med)."""
 
-    model: Literal["yu_dynamic"]
+    model: Literal["yu_dynamic"] = "yu_dynamic"
     field_projection_path: str | Path = "data/roast_field_projection_3d.npz"
-    electrodes: list[str] | None = None
+    electrodes: list[str] | None = Field(default_factory=lambda: list(_DEFAULT_ROAST_ELECTRODES))
     alpha: float = Field(default=3.0, gt=0.0)
     scale_factor: float = Field(default=1.0, gt=0.0)
 

@@ -14,6 +14,7 @@ experiments:
       stimulation:
         model: roast_3d
         field_projection_path: data/roast_field_projection_3d.npz
+        electrodes: [TP9, CP5, Ex8]
     sensors: eeg
     estimator: {class_path: neuro.filtering.AntiAliasEstimator, dt: 0.0001, downsample: 200}
     controller:

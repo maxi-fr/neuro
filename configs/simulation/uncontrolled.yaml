@@ -2,14 +2,14 @@
 # Matched pair with mse02_eeg_ms_mpc.yaml -- the plant block (dt, seed, initial_state,
 # connectome, params) is identical, so the difference in seizure burden is attributable to
 # the stimulation alone. Only the drive is removed:
-#   - no dynamics.stimulation -> NullStim, a single electrode that projects nothing (n_u = 1);
+#   - dynamics.stimulation defaults to roast_3d [TP9, CP5, Ex8] (n_u = 3);
 #   - IdentityEstimator, since there is no predictor to feed an anti-alias filter;
 #   - ZeroController.
 t_end: 20.0
 
 dynamics:
   regime: seizure
-  seed: 69
+  seed: 7000
   log: lfp
 
 sensors: eeg
@@ -19,4 +19,4 @@ estimator: {class_path: simulate.estimator.IdentityEstimator, dt: 0.0001}
 controller:
   class_path: neuro.control.zero.ZeroController
   dt: 0.02              # matches the MPC control period; the output is zero regardless
-  n_u: 1                # NullStim exposes exactly one nominal electrode
+  n_u: 3                # roast_3d default montage [TP9, CP5, Ex8]

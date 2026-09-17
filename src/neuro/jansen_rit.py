@@ -13,7 +13,7 @@ from simulate.dynamics import Dynamics
 from neuro.config import StrictConfig, parse_array
 from neuro.connectome import Connectome, _ConnectomeConfig
 from neuro.stimulation import NullStim, StimulationConfig, build_stimulation
-from neuro.stimulation.base import _NullConfig
+from neuro.stimulation.base import _Roast3DConfig
 
 if TYPE_CHECKING:
     from neuro.stimulation import StimulationModel
@@ -320,10 +320,10 @@ class _JansenRitDynamicsConfig(StrictConfig):
     dt: float = Field(default=1e-4, gt=0)
     seed: int | None = None
     enforce_zero_sum_current: bool = True
-    initial_state: Literal["zeros", "rest"] = "zeros"
+    initial_state: Literal["zeros", "rest"] = "rest"
     log: Literal["none", "lfp", "state"] = "none"
     connectome: _ConnectomeConfig = Field(default_factory=_ConnectomeConfig)
-    stimulation: StimulationConfig = Field(default_factory=_NullConfig)
+    stimulation: StimulationConfig = Field(default_factory=_Roast3DConfig)
     params: _JansenRitParamsConfig = Field(default_factory=_JansenRitParamsConfig)
     regime: Literal["healthy", "seizure"] | None = None
 
@@ -345,7 +345,8 @@ class JansenRitDynamics(Dynamics[JansenRitStateLog | JansenRitLFPLog | NoLog]):
     ) -> None:
         """Initialize the network plant from ``params``, the structural ``conn`` and ``stim``.
 
-        ``stim=None`` means unstimulated: a single control electrode that drives nothing.
+        ``stim=None`` defaults to the canonical roast_3d montage [TP9, CP5, Ex8], falling
+        back to NullStim on synthetic or single-node connectomes.
         """
         super().__init__(dt, integrator=None)
         self.conn = conn
@@ -363,7 +364,13 @@ class JansenRitDynamics(Dynamics[JansenRitStateLog | JansenRitLFPLog | NoLog]):
         self.net_params = replace(params, A=a_vec)
         self.params_tuple = self.net_params.to_numba_tuple(n_nodes)
 
-        self.stim = NullStim(n_nodes) if stim is None else stim
+        if stim is None:
+            try:
+                self.stim = build_stimulation(_Roast3DConfig(), conn)
+            except (ValueError, FileNotFoundError, KeyError):
+                self.stim = NullStim(n_nodes)
+        else:
+            self.stim = stim
         self.n_controls = self.n_inputs = self.stim.n_controls
 
         if initial_state is not None:

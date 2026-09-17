@@ -13,6 +13,7 @@ dynamics:
   stimulation:
     model: roast_3d
     field_projection_path: data/roast_field_projection_3d.npz
+    electrodes: [TP9, CP5, Ex8]
 
 # The oracle path replaces the EEG sensor: the state itself is handed over, not a measurement.
 sensors: oracle

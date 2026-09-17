@@ -11,6 +11,7 @@ dynamics:
   stimulation:
     model: roast_3d
     field_projection_path: data/roast_field_projection_3d.npz
+    electrodes: [TP9, CP5, Ex8]
 
 sensors: eeg
 
