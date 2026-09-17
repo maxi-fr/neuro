@@ -46,7 +46,7 @@ class StrictConfig(BaseModel):
 
 
 class ModelConfig(StrictConfig):
-    """Predictor architecture settings shared by MLP and waveform CNN models."""
+    """Predictor architecture settings shared by MLP and CNN models."""
 
     architecture: Literal["mlp", "cnn"] = "mlp"
 
@@ -57,6 +57,7 @@ class ModelConfig(StrictConfig):
     activation: Literal["relu", "tanh", "softplus"] = "relu"
     residual: bool = True
     kernel_size: int = Field(default=3, ge=1)
+    frequency_kernel_size: int = Field(default=3, ge=1)
 
     @model_validator(mode="after")
     def _validate_architecture_depth(self) -> Self:

@@ -19,7 +19,7 @@ from neuro.predictor.evaluation import (
     free_run_stats,
 )
 from neuro.predictor.gradient import fit_gradient_descent, float32_tensor
-from neuro.predictor.inference import ObservableMLPModel, inference_from_checkpoint
+from neuro.predictor.inference import inference_from_checkpoint
 from neuro.predictor.losses import LossContext, build_losses, total_loss
 from neuro.predictor.module import AutoregressiveCNN, AutoregressiveMLP
 from neuro.predictor.ridge import RidgeTrainer, RidgeTrainingResult
@@ -192,9 +192,6 @@ def train(
         If the named fit is one the configured model does not support: ``ridge`` on an MLP with
         hidden layers.
     """
-    if cfg.model.architecture == "cnn" and cfg.observable is not None:
-        msg = "CNN predictors currently support waveform Observables only."
-        raise ValueError(msg)
     if cfg.model.architecture == "cnn" and cfg.training.fit != "gradient_descent":
         msg = "CNN predictors support only gradient_descent training."
         raise ValueError(msg)
@@ -213,8 +210,8 @@ def train(
 
 def _prepare_observable(
     cfg: NNPredictorConfig, data_files: list[str], geom: StftGeometry, *, depth: int
-) -> tuple[Datasets, AutoregressiveMLP, list[Loss]]:
-    """Build the prepared datasets and the autoregressive Observable MLP for ``cfg``."""
+) -> tuple[Datasets, AutoregressiveMLP | AutoregressiveCNN, list[Loss]]:
+    """Build prepared Observable datasets and the configured autoregressive Predictor."""
     sim, mdl, trn = cfg.simulation, cfg.model, cfg.training
     if trn.losses is None:
         msg = "the observable arm requires 'training.losses' (for the curriculum MSE)."
@@ -239,22 +236,42 @@ def _prepare_observable(
     )
     n_values = geom.n_values(fs)
     n_outputs = data.n_channels * n_values
-    model = AutoregressiveMLP(
-        n_y=mdl.n_y,
-        n_u=mdl.n_u,
-        horizon=horizon,
-        n_channels=data.n_channels,
-        n_controls=data.n_controls,
-        n_outputs=n_outputs,
-        hidden_size=mdl.hidden_size,
-        depth=depth,
-        activation=mdl.activation,
-        residual=mdl.residual,
-        dt=sim.dt * sim.downsample * geom.n_hop,
-        y_std=data.y_std,
-        u_std=data.u_std,
-        geometry=geom,
-    )
+    if mdl.architecture == "cnn":
+        model = AutoregressiveCNN(
+            n_y=mdl.n_y,
+            n_u=mdl.n_u,
+            horizon=horizon,
+            n_channels=data.n_channels,
+            n_controls=data.n_controls,
+            n_outputs=n_outputs,
+            hidden_size=mdl.hidden_size,
+            depth=depth,
+            kernel_size=mdl.kernel_size,
+            frequency_kernel_size=mdl.frequency_kernel_size,
+            activation=mdl.activation,
+            residual=mdl.residual,
+            dt=sim.dt * sim.downsample * geom.n_hop,
+            y_std=data.y_std,
+            u_std=data.u_std,
+            geometry=geom,
+        )
+    else:
+        model = AutoregressiveMLP(
+            n_y=mdl.n_y,
+            n_u=mdl.n_u,
+            horizon=horizon,
+            n_channels=data.n_channels,
+            n_controls=data.n_controls,
+            n_outputs=n_outputs,
+            hidden_size=mdl.hidden_size,
+            depth=depth,
+            activation=mdl.activation,
+            residual=mdl.residual,
+            dt=sim.dt * sim.downsample * geom.n_hop,
+            y_std=data.y_std,
+            u_std=data.u_std,
+            geometry=geom,
+        )
     return data, model, losses
 
 
@@ -292,12 +309,15 @@ def _train_observable_ridge(cfg: NNPredictorConfig, data_files: list[str], geom:
     sim, trn = cfg.simulation, cfg.training
     fs_frame = geom.frame_rate(cfg.fs)
     data, model, _ = _prepare_observable(cfg, data_files, geom, depth=0)
+    if not isinstance(model, AutoregressiveMLP):
+        msg = "Observable ridge fitting requires an MLP model"
+        raise TypeError(msg)
     RidgeTrainer(ridge_lambda=trn.ridge_lambda).fit(model, data.train_trajs)
 
     model.provenance = training_provenance(data_files, sim.cutoff_hz)
     model.downsample = sim.downsample
     eval_steps = max(1, round(trn.eval_horizon_s * fs_frame))
-    inference = ObservableMLPModel.from_checkpoint(*model.to_checkpoint())
+    inference = inference_from_checkpoint(*model.to_checkpoint())
     frame_mse = evaluate_observable_free_run(inference, data.val_trajs, eval_steps)
 
     val_loader: DataLoader[tuple[Tensor, Tensor, Tensor, Tensor]] = DataLoader(
@@ -325,12 +345,15 @@ def _train_observable_dmd(cfg: NNPredictorConfig, data_files: list[str], geom: S
     sim, trn = cfg.simulation, cfg.training
     fs_frame = geom.frame_rate(cfg.fs)
     data, model, _ = _prepare_observable(cfg, data_files, geom, depth=0)
+    if not isinstance(model, AutoregressiveMLP):
+        msg = "Observable DMD fitting requires an MLP model"
+        raise TypeError(msg)
     DmdTrainer(rank=trn.dmd_rank, energy=trn.dmd_energy, dmd_lambda=trn.dmd_lambda).fit(model, data.train_trajs)
 
     model.provenance = training_provenance(data_files, sim.cutoff_hz)
     model.downsample = sim.downsample
     eval_steps = max(1, round(trn.eval_horizon_s * fs_frame))
-    inference = ObservableMLPModel.from_checkpoint(*model.to_checkpoint())
+    inference = inference_from_checkpoint(*model.to_checkpoint())
     frame_mse = evaluate_observable_free_run(inference, data.val_trajs, eval_steps)
 
     val_loader: DataLoader[tuple[Tensor, Tensor, Tensor, Tensor]] = DataLoader(
@@ -407,7 +430,7 @@ def _train_observable(
         trn,
         seed=seed,
         loss_fn=batch_loss,
-        desc="Training Observable MLP",
+        desc="Training Observable Predictor",
     )
 
     eval_steps = max(1, round(trn.eval_horizon_s * fs_frame))
@@ -415,7 +438,7 @@ def _train_observable(
     du_sensitivity = _du_sensitivity(model, val_loader)
     model.provenance = training_provenance(data_files, sim.cutoff_hz)
     model.downsample = sim.downsample
-    inference = ObservableMLPModel.from_checkpoint(*model.to_checkpoint())
+    inference = inference_from_checkpoint(*model.to_checkpoint())
     frame_mse = evaluate_observable_free_run(inference, data.val_trajs, eval_steps)
     if torch.cuda.is_available():
         torch.cuda.empty_cache()

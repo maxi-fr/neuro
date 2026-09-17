@@ -39,6 +39,7 @@ from neuro.control.costs import (
 )
 from neuro.predictor.inference import (
     InferencePredictor,
+    ObservableCNNModel,
     ObservableMLPModel,
     WaveformCNNModel,
     WaveformMLPModel,
@@ -337,7 +338,7 @@ def _validate_waveform_envelope(envelope: ObservableEnvelope, model: WaveformMLP
         raise ValueError(msg)
 
 
-def _validate_observable_envelope(envelope: ObservableEnvelope, model: ObservableMLPModel) -> None:
+def _validate_observable_envelope(envelope: ObservableEnvelope, model: ObservableMLPModel | ObservableCNNModel) -> None:
     """Ensure the healthy Observable envelope matches the predictor's channels, rate, and geometry."""
     if envelope.power.shape[0] != model.n_channels:
         msg = f"envelope channel count ({envelope.power.shape[0]}) does not match model channel count ({model.n_channels})."
@@ -654,7 +655,7 @@ def build_observable_problem(  # noqa: PLR0913 -- checkpoint plus the MPC cost/b
     Parameters
     ----------
     artifact
-        Suffix-less stem of the numpy-readable Observable MLP checkpoint.
+        Suffix-less stem of the numpy-readable Observable Predictor checkpoint.
     horizon
         Control Horizon counted in Frames; the trajopt horizon is ``horizon + 1`` knot points.
     u_max
@@ -677,7 +678,10 @@ def build_observable_problem(  # noqa: PLR0913 -- checkpoint plus the MPC cost/b
         Satisfy Kirchhoff's law by construction instead, parameterizing the currents as ``u = Z v``
         over `kirchhoff_basis`. Excludes ``kirchhoff``.
     """
-    base = ObservableMLPModel.load(artifact)
+    base = InferencePredictor.load(artifact)
+    if not isinstance(base, (ObservableMLPModel, ObservableCNNModel)):
+        msg = f"Observable checkpoint required, got {type(base).__name__}"
+        raise TypeError(msg)
     if reduce_kirchhoff and kirchhoff:
         msg = "reduce_kirchhoff satisfies Kirchhoff by construction; drop kirchhoff"
         raise ValueError(msg)

@@ -151,6 +151,8 @@ def inference_from_checkpoint(
 ) -> InferencePredictor:
     """Construct the runtime adapter selected by checkpoint architecture metadata."""
     if meta.get("model_type") == "cnn":
+        if "geometry" in meta:
+            return ObservableCNNModel.from_checkpoint(meta, arrays, n_history=n_history)
         return WaveformCNNModel.from_checkpoint(meta, arrays, n_history=n_history)
     if "geometry" in meta:
         return ObservableMLPModel.from_checkpoint(meta, arrays, n_history=n_history)
@@ -514,56 +516,19 @@ class _MLPModel(ShiftRegisterModel):
         return cls(**kwargs)
 
 
-class WaveformCNNModel(ShiftRegisterModel):
-    """JAX runtime for a causal waveform CNN checkpoint.
-
-    The shift-register protocol is shared with the MLP adapter; only the one-step feature map
-    differs, which keeps Priming, State Absorption, and Rollout semantics identical.
-    """
+class _CNNModel(ShiftRegisterModel):
+    """Shared CNN runtime state, dense head, and portable checkpoint handling."""
 
     conv_weights: tuple[jax.Array, ...]
     conv_biases: tuple[jax.Array, ...]
     head_weights: tuple[jax.Array, ...]
     head_biases: tuple[jax.Array, ...]
+    n_values: int = eqx.field(static=True)
     kernel_size: int = eqx.field(static=True)
+    frequency_kernel_size: int | None = eqx.field(static=True)
+    geometry: StftGeometry | None = eqx.field(static=True)
 
-    @classmethod
-    def from_checkpoint(
-        cls, meta: dict[str, Any], arrays: dict[str, FloatArray], *, n_history: int | None = None
-    ) -> Self:
-        """Rebuild the CNN runtime from a portable checkpoint."""
-        require_model_type(meta, "cnn")
-        require_activation(meta)
-        conv_w, conv_b = layers_from_arrays(arrays, "conv", int(meta["n_convs"]))
-        head_w, head_b = layers_from_arrays(arrays, "head", int(meta["n_head_layers"]))
-        y_std, u_std = Standardizer.from_arrays(arrays, "y"), Standardizer.from_arrays(arrays, "u")
-        return cls(
-            n_y=int(meta["n_y"]),
-            n_u=int(meta["n_u"]),
-            horizon=int(meta["horizon"]),
-            n_channels=int(meta["n_channels"]),
-            n_controls=int(meta["n_controls"]),
-            n_outputs=int(meta["n_outputs"]),
-            hidden_size=int(meta["hidden_size"]),
-            depth=int(meta["depth"]),
-            activation=meta["activation"],
-            residual=bool(meta["residual"]),
-            dt=float(meta["dt"]),
-            downsample=int(meta["downsample"]),
-            y_center=y_std.center,
-            y_scale=y_std.scale,
-            u_center=u_std.center,
-            u_scale=u_std.scale,
-            conv_weights=conv_w,
-            conv_biases=conv_b,
-            head_weights=head_w,
-            head_biases=head_b,
-            n_history=n_history,
-            kernel_size=int(meta["kernel_size"]),
-            provenance=TrainingProvenance.from_meta(meta),
-        )
-
-    def __init__(
+    def __init__(  # noqa: PLR0913 -- explicit portable CNN architecture record
         self,
         *,
         conv_weights: tuple[FloatArray, ...],
@@ -571,42 +536,84 @@ class WaveformCNNModel(ShiftRegisterModel):
         head_weights: tuple[FloatArray, ...],
         head_biases: tuple[FloatArray, ...],
         kernel_size: int,
-        **core: Any,  # noqa: ANN401 -- subclass forwards shared checkpoint fields
+        frequency_kernel_size: int | None,
+        geometry: StftGeometry | None,
+        **core: Any,  # noqa: ANN401 -- explicit checkpoint fields are shared by both CNN variants
     ) -> None:
-        """Copy CNN checkpoint buffers into JAX arrays and initialise the shared state protocol."""
+        """Copy CNN checkpoint arrays and initialize shared runtime state."""
         super().__init__(**core)
+        if geometry is None:
+            if self.n_outputs != self.n_channels:
+                msg = "waveform CNN n_outputs must equal n_channels."
+                raise ValueError(msg)
+            self.n_values = 1
+        else:
+            if self.n_outputs < 1 or self.n_outputs % self.n_channels != 0:
+                msg = "Observable CNN n_outputs must be a positive multiple of n_channels."
+                raise ValueError(msg)
+            self.n_values = self.n_outputs // self.n_channels
         self.conv_weights = tuple(jnp.asarray(x) for x in conv_weights)
         self.conv_biases = tuple(jnp.asarray(x) for x in conv_biases)
         self.head_weights = tuple(jnp.asarray(x) for x in head_weights)
         self.head_biases = tuple(jnp.asarray(x) for x in head_biases)
         self.kernel_size = int(kernel_size)
+        self.frequency_kernel_size = None if frequency_kernel_size is None else int(frequency_kernel_size)
+        self.geometry = geometry
 
-    def _predict(self, y_window: jax.Array, u_window: jax.Array) -> jax.Array:
-        """Apply causal temporal convolutions, then the dense Control Current head."""
-        z = y_window
-        for i, (weight, bias) in enumerate(zip(self.conv_weights, self.conv_biases, strict=True)):
-            z = jnp.asarray(z, dtype=weight.dtype)
-            z = (
-                jax.lax.conv_general_dilated(
-                    z.T[None, ...],
-                    weight,
-                    window_strides=(1,),
-                    padding=((weight.shape[2] - 1, 0),),
-                    dimension_numbers=("NCH", "OIH", "NCH"),
-                )[0].T
-                + bias[None, :]
-            )
-            if i < len(self.conv_weights) - 1:
-                z = _apply_activation(self.activation, z)
-        z = jnp.concatenate([z[-1], u_window.reshape(-1)])
-        for i, (weight, bias) in enumerate(zip(self.head_weights, self.head_biases, strict=True)):
-            z = z @ weight.T + bias
-            if i < len(self.head_weights) - 1:
-                z = _apply_activation(self.activation, z)
-        return z + y_window[-1] if self.residual else z
+    @classmethod
+    def _checkpoint_kwargs(cls, meta: dict[str, Any], arrays: dict[str, FloatArray]) -> dict[str, Any]:
+        """Unpack shared CNN metadata, layers, standardizers, and Observable geometry."""
+        require_model_type(meta, "cnn")
+        require_activation(meta)
+        geometry = StftGeometry.model_validate(meta["geometry"]) if "geometry" in meta else None
+        conv_w, conv_b = layers_from_arrays(arrays, "conv", int(meta["n_convs"]))
+        head_w, head_b = layers_from_arrays(arrays, "head", int(meta["n_head_layers"]))
+        y_std, u_std = Standardizer.from_arrays(arrays, "y"), Standardizer.from_arrays(arrays, "u")
+        return {
+            "n_y": int(meta["n_y"]),
+            "n_u": int(meta["n_u"]),
+            "horizon": int(meta["horizon"]),
+            "n_channels": int(meta["n_channels"]),
+            "n_controls": int(meta["n_controls"]),
+            "n_outputs": int(meta["n_outputs"]),
+            "hidden_size": int(meta["hidden_size"]),
+            "depth": int(meta["depth"]),
+            "activation": meta["activation"],
+            "residual": bool(meta["residual"]),
+            "dt": float(meta["dt"]),
+            "downsample": int(meta["downsample"]),
+            "y_center": y_std.center,
+            "y_scale": y_std.scale,
+            "u_center": u_std.center,
+            "u_scale": u_std.scale,
+            "conv_weights": conv_w,
+            "conv_biases": conv_b,
+            "head_weights": head_w,
+            "head_biases": head_b,
+            "n_history": None,
+            "kernel_size": int(meta["kernel_size"]),
+            "frequency_kernel_size": (
+                int(meta["frequency_kernel_size"]) if geometry is not None else None
+            ),
+            "geometry": geometry,
+            "provenance": TrainingProvenance.from_meta(meta),
+        }
+
+    @classmethod
+    def from_checkpoint(
+        cls,
+        meta: dict[str, Any],
+        arrays: dict[str, FloatArray],
+        *,
+        n_history: int | None = None,
+    ) -> Self:
+        """Rebuild a CNN runtime from its portable checkpoint."""
+        kwargs = cls._checkpoint_kwargs(meta, arrays)
+        kwargs["n_history"] = n_history
+        return cls(**kwargs)
 
     def to_checkpoint(self) -> tuple[dict[str, Any], dict[str, FloatArray]]:
-        """Build the portable CNN checkpoint from JAX arrays."""
+        """Build the portable CNN checkpoint from runtime arrays."""
         meta = {
             "model_type": "cnn",
             "activation": self.activation,
@@ -626,11 +633,101 @@ class WaveformCNNModel(ShiftRegisterModel):
             "n_head_layers": len(self.head_weights),
             **self.provenance.meta,
         }
+        if self.geometry is not None:
+            meta["frequency_kernel_size"] = self.frequency_kernel_size
+            meta["geometry"] = self.geometry.model_dump()
         arrays = layer_arrays("conv", self.conv_weights, self.conv_biases)
         arrays.update(layer_arrays("head", self.head_weights, self.head_biases))
-        arrays.update(_standardizer_arrays("y", self.y_center, self.y_scale))
+        y_center = self.y_center.reshape(self.n_channels, self.n_values) if self.geometry is not None else self.y_center
+        y_scale = self.y_scale.reshape(self.n_channels, self.n_values) if self.geometry is not None else self.y_scale
+        arrays.update(_standardizer_arrays("y", y_center, y_scale))
         arrays.update(_standardizer_arrays("u", self.u_center, self.u_scale))
         return meta, arrays
+
+
+class WaveformCNNModel(_CNNModel):
+    """JAX runtime for a causal waveform CNN checkpoint."""
+
+    @classmethod
+    def from_checkpoint(
+        cls, meta: dict[str, Any], arrays: dict[str, FloatArray], *, n_history: int | None = None
+    ) -> Self:
+        """Rebuild a waveform CNN runtime from a waveform checkpoint."""
+        if "geometry" in meta:
+            msg = "waveform CNN cannot load a structured Observable checkpoint."
+            raise ValueError(msg)
+        return super().from_checkpoint(meta, arrays, n_history=n_history)
+
+    def _predict(self, y_window: jax.Array, u_window: jax.Array) -> jax.Array:
+        """Apply causal temporal convolutions and the dense Control Current head."""
+        z = y_window
+        for i, (weight, bias) in enumerate(zip(self.conv_weights, self.conv_biases, strict=True)):
+            z = jnp.asarray(z, dtype=weight.dtype)
+            z = (
+                jax.lax.conv_general_dilated(
+                    z.T[None, ...],
+                    weight,
+                    window_strides=(1,),
+                    padding=((weight.shape[2] - 1, 0),),
+                    dimension_numbers=("NCH", "OIH", "NCH"),
+                )[0].T
+                + bias[None, :]
+            )
+            if i < len(self.conv_weights) - 1:
+                z = _apply_activation(self.activation, z)
+        features = jnp.concatenate([z[-1], u_window.reshape(-1)])
+        for i, (weight, bias) in enumerate(zip(self.head_weights, self.head_biases, strict=True)):
+            features = features @ weight.T + bias
+            if i < len(self.head_weights) - 1:
+                features = _apply_activation(self.activation, features)
+        return features + y_window[-1] if self.residual else features
+
+
+class ObservableCNNModel(_CNNModel):
+    """JAX runtime for a causal time-frequency Observable CNN checkpoint."""
+
+    @classmethod
+    def from_checkpoint(
+        cls, meta: dict[str, Any], arrays: dict[str, FloatArray], *, n_history: int | None = None
+    ) -> Self:
+        """Rebuild an Observable CNN runtime from a structured checkpoint."""
+        if "geometry" not in meta:
+            msg = "Observable CNN checkpoint requires recorded 'geometry'."
+            raise ValueError(msg)
+        return super().from_checkpoint(meta, arrays, n_history=n_history)
+
+    def _predict(self, y_window: jax.Array, u_window: jax.Array) -> jax.Array:
+        """Apply causal time-frequency convolutions and preserve frequency positions."""
+        z = y_window.reshape(self.n_y, self.n_channels, self.n_values).transpose(1, 0, 2)[None, ...]
+        for i, (weight, bias) in enumerate(zip(self.conv_weights, self.conv_biases, strict=True)):
+            z = jax.lax.conv_general_dilated(
+                jnp.asarray(z, dtype=weight.dtype),
+                weight,
+                window_strides=(1, 1),
+                padding=((weight.shape[2] - 1, 0), ((weight.shape[3] - 1) // 2, weight.shape[3] // 2)),
+                dimension_numbers=("NCHW", "OIHW", "NCHW"),
+            ) + bias[None, :, None, None]
+            if i < len(self.conv_weights) - 1:
+                z = _apply_activation(self.activation, z)
+        features = jnp.concatenate([z[0, :, -1, :].reshape(-1), u_window.reshape(-1)])
+        for i, (weight, bias) in enumerate(zip(self.head_weights, self.head_biases, strict=True)):
+            features = features @ weight.T + bias
+            if i < len(self.head_weights) - 1:
+                features = _apply_activation(self.activation, features)
+        prediction = features.reshape(self.n_channels, self.n_values)
+        if self.residual:
+            prediction = prediction + y_window[-1].reshape(self.n_channels, self.n_values)
+        return prediction.reshape(-1)
+
+    def free_run(
+        self,
+        y_hists: FloatArray,
+        u_hists: FloatArray,
+        u_futures: FloatArray,
+    ) -> jax.Array:
+        """Free-run Observable histories and preserve their channel-frequency axes."""
+        flat = super().free_run(y_hists, u_hists, u_futures)
+        return flat.reshape(flat.shape[0], flat.shape[1], self.n_channels, self.n_values)
 
 
 class WaveformMLPModel(_MLPModel):

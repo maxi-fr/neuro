@@ -377,9 +377,79 @@ class AutoregressiveMLP(_AutoregressiveBase):
                 lin.bias.copy_(torch.as_tensor(bias, dtype=torch.float32))
         return model
 
+def _cnn_output_shape(
+    geometry: StftGeometry | None, n_channels: int, n_outputs: int | None
+) -> tuple[int, int]:
+    """Resolve flattened output width and frequency width for one CNN representation."""
+    if geometry is None:
+        if n_outputs is not None and n_outputs != n_channels:
+            msg = "waveform CNN n_outputs must equal n_channels"
+            raise ValueError(msg)
+        return n_channels, 1
+    if n_outputs is None or n_outputs < 1 or n_outputs % n_channels != 0:
+        msg = "Observable CNN n_outputs must be a positive multiple of n_channels."
+        raise ValueError(msg)
+    return n_outputs, n_outputs // n_channels
+
+
+def _cnn_convolutions(  # noqa: PLR0913 -- explicit CNN architecture dimensions
+    *,
+    geometry: StftGeometry | None,
+    n_channels: int,
+    hidden_size: int,
+    depth: int,
+    kernel_size: int,
+    frequency_kernel_size: int,
+    activation: Activation,
+) -> tuple[nn.Sequential, int]:
+    """Build the representation-specific stride-one convolution stack and head width."""
+    convs: list[nn.Module] = []
+    if geometry is None:
+        for i in range(depth):
+            convs.append(nn.Conv1d(n_channels if i == 0 else hidden_size, hidden_size, kernel_size, dtype=torch.float32))
+            if i < depth - 1:
+                convs.append(activation_module(activation))
+        return nn.Sequential(*convs), hidden_size
+    for i in range(depth):
+        convs.append(
+            nn.Conv2d(
+                n_channels if i == 0 else hidden_size,
+                hidden_size,
+                (kernel_size, frequency_kernel_size),
+                dtype=torch.float32,
+            )
+        )
+        if i < depth - 1:
+            convs.append(activation_module(activation))
+    return nn.Sequential(*convs), hidden_size
+
+
+def _cnn_standardizers(  # noqa: PLR0913 -- explicit standardizer dimensions
+    *,
+    y_std: Standardizer | None,
+    u_std: Standardizer | None,
+    n_channels: int,
+    n_values: int,
+    n_outputs: int,
+    n_controls: int,
+    structured: bool,
+) -> tuple[Standardizer, Standardizer]:
+    """Fill and validate output and Control Current standardizers for a CNN."""
+    if y_std is None:
+        y_shape = (n_channels, n_values) if structured else (n_channels,)
+        y_std = Standardizer(center=np.zeros(y_shape), scale=np.ones(y_shape))
+    if y_std.center.size != n_outputs or y_std.scale.size != n_outputs:
+        msg = f"y_std size ({y_std.center.size}) must equal model n_outputs ({n_outputs})."
+        raise ValueError(msg)
+    u_std = u_std or Standardizer(center=np.zeros(n_controls), scale=np.ones(n_controls))
+    if u_std.center.size != n_controls or u_std.scale.size != n_controls:
+        msg = f"u_std size ({u_std.center.size}) must equal model n_controls ({n_controls})."
+        raise ValueError(msg)
+    return y_std, u_std
+
 
 class AutoregressiveCNN(_AutoregressiveBase):
-    """Causal waveform CNN with a dense Control Current history head."""
+    """Causal waveform or time-frequency CNN with a dense Control Current history head."""
 
     n_y: int
     n_u: int
@@ -387,14 +457,17 @@ class AutoregressiveCNN(_AutoregressiveBase):
     n_channels: int
     n_controls: int
     n_outputs: int
+    n_values: int
     hidden_size: int
     depth: int
     kernel_size: int
+    frequency_kernel_size: int
     activation: Activation
     residual: bool
     dt: float
     downsample: int
     provenance: TrainingProvenance
+    geometry: StftGeometry | None
     y_center: Tensor
     y_scale: Tensor
     u_center: Tensor
@@ -412,66 +485,92 @@ class AutoregressiveCNN(_AutoregressiveBase):
         hidden_size: int,
         depth: int,
         kernel_size: int = 3,
+        frequency_kernel_size: int = 3,
         activation: Activation = "relu",
         residual: bool = True,
         dt: float = 0.0,
         y_std: Standardizer | None = None,
         u_std: Standardizer | None = None,
+        geometry: StftGeometry | None = None,
     ) -> None:
-        """Build a causal stride-one temporal CNN for waveform Observables."""
+        """Build a causal stride-one waveform or Observable CNN."""
         super().__init__()
         if depth < 1:
             msg = "CNN depth must be at least 1."
             raise ValueError(msg)
-        if kernel_size < 1:
-            msg = "CNN kernel_size must be at least 1."
+        if kernel_size < 1 or frequency_kernel_size < 1:
+            msg = "CNN kernel sizes must be at least 1."
             raise ValueError(msg)
         self.n_y, self.n_u, self.horizon = n_y, n_u, horizon
-        if n_outputs is not None and n_outputs != n_channels:
-            msg = "waveform CNN n_outputs must equal n_channels"
-            raise ValueError(msg)
         self.n_channels, self.n_controls = n_channels, n_controls
-        self.n_outputs, self.hidden_size, self.depth = n_channels, hidden_size, depth
-        self.kernel_size, self.activation, self.residual, self.dt = kernel_size, activation, residual, float(dt)
+        self.n_outputs, self.n_values = _cnn_output_shape(geometry, n_channels, n_outputs)
+        self.hidden_size, self.depth = hidden_size, depth
+        self.kernel_size = kernel_size
+        self.frequency_kernel_size = frequency_kernel_size
+        self.activation, self.residual, self.dt = activation, residual, float(dt)
+        self.geometry = geometry
         self.downsample = 1
         self.provenance = TrainingProvenance()
-        convs: list[nn.Module] = []
-        for i in range(depth):
-            convs.append(
-                nn.Conv1d(n_channels if i == 0 else hidden_size, hidden_size, kernel_size, dtype=torch.float32)
-            )
-            if i < depth - 1:
-                convs.append(activation_module(activation))
-        self.convs = nn.Sequential(*convs)
-        self.head = nn.Sequential(
-            nn.Linear(hidden_size + n_u * n_controls, hidden_size, dtype=torch.float32),
-            activation_module(activation),
-            nn.Linear(hidden_size, n_channels, dtype=torch.float32),
-        )
-        y_std = y_std or Standardizer(center=np.zeros(n_channels), scale=np.ones(n_channels))
-        u_std = u_std or Standardizer(center=np.zeros(n_controls), scale=np.ones(n_controls))
-        self.register_buffer("y_center", torch.as_tensor(y_std.center, dtype=torch.float32))
-        self.register_buffer("y_scale", torch.as_tensor(y_std.scale, dtype=torch.float32))
-        self.register_buffer("u_center", torch.as_tensor(u_std.center, dtype=torch.float32))
-        self.register_buffer("u_scale", torch.as_tensor(u_std.scale, dtype=torch.float32))
 
-    def _one_step(self, y_window: Tensor, u_window: Tensor) -> Tensor:
-        """Predict one standardized waveform sample from causal history windows."""
-        z = y_window.transpose(1, 2)
-        for layer in self.convs:
-            if isinstance(layer, nn.Conv1d):
-                z = functional.pad(z, (layer.kernel_size[0] - 1, 0))
-            z = layer(z)
-        features = torch.cat([z[:, :, -1], u_window.flatten(1)], dim=1)
-        delta = self.head(features)
-        return y_window[:, -1] + delta if self.residual else delta
+        self.convs, feature_width = _cnn_convolutions(
+            geometry=geometry,
+            n_channels=n_channels,
+            hidden_size=hidden_size,
+            depth=depth,
+            kernel_size=kernel_size,
+            frequency_kernel_size=frequency_kernel_size,
+            activation=activation,
+        )
+        if geometry is not None:
+            feature_width *= self.n_values
+        self.head = nn.Sequential(
+            nn.Linear(feature_width + n_u * n_controls, hidden_size, dtype=torch.float32),
+            activation_module(activation),
+            nn.Linear(hidden_size, self.n_outputs, dtype=torch.float32),
+        )
+
+        y_std, u_std = _cnn_standardizers(
+            y_std=y_std,
+            u_std=u_std,
+            n_channels=n_channels,
+            n_values=self.n_values,
+            n_outputs=self.n_outputs,
+            n_controls=n_controls,
+            structured=geometry is not None,
+        )
+        self.register_buffer("y_center", torch.tensor(y_std.center, dtype=torch.float32))
+        self.register_buffer("y_scale", torch.tensor(y_std.scale, dtype=torch.float32))
+        self.register_buffer("u_center", torch.tensor(u_std.center, dtype=torch.float32))
+        self.register_buffer("u_scale", torch.tensor(u_std.scale, dtype=torch.float32))
 
     def _predict_next(self, y_window: Tensor, u_window: Tensor) -> Tensor:
-        """Predict one standardized waveform sample through causal convolution and the head."""
-        if y_window.ndim != 3:  # noqa: PLR2004 -- the CNN input has batch, time, channel axes
-            msg = "AutoregressiveCNN expects waveform histories shaped (batch, time, channels)."
+        """Predict one standardized waveform sample or Observable Frame."""
+        expected_ndim = 3 if self.geometry is None else 4
+        if y_window.ndim != expected_ndim:
+            shape = "(batch, time, channels)" if self.geometry is None else "(batch, time, channels, frequency)"
+            msg = f"AutoregressiveCNN expects histories shaped {shape}."
             raise ValueError(msg)
-        return self._one_step(y_window, u_window)
+        if self.geometry is None:
+            z = y_window.transpose(1, 2)
+            for layer in self.convs:
+                if isinstance(layer, nn.Conv1d):
+                    z = functional.pad(z, (layer.kernel_size[0] - 1, 0))
+                z = layer(z)
+            features = torch.cat([z[:, :, -1], u_window.flatten(1)], dim=1)
+            delta = self.head(features)
+            return y_window[:, -1] + delta if self.residual else delta
+
+        z = y_window.permute(0, 2, 1, 3)
+        for layer in self.convs:
+            if isinstance(layer, nn.Conv2d):
+                k_time, k_freq = layer.kernel_size
+                freq_left = (k_freq - 1) // 2
+                freq_right = k_freq - 1 - freq_left
+                z = functional.pad(z, (freq_left, freq_right, k_time - 1, 0))
+            z = layer(z)
+        features = torch.cat([z[:, :, -1, :].flatten(1), u_window.flatten(1)], dim=1)
+        delta = self.head(features).reshape(y_window.shape[0], self.n_channels, self.n_values)
+        return y_window[:, -1] + delta if self.residual else delta
 
     @property
     def y_std(self) -> Standardizer:
@@ -484,8 +583,9 @@ class AutoregressiveCNN(_AutoregressiveBase):
         return Standardizer(center=to_numpy(self.u_center), scale=to_numpy(self.u_scale))
 
     def to_checkpoint(self) -> tuple[dict[str, Any], dict[str, FloatArray]]:
-        """Build the portable CNN checkpoint."""
-        convs = [m for m in self.convs if isinstance(m, nn.Conv1d)]
+        """Build the portable CNN checkpoint including Observable geometry when present."""
+        conv_type = nn.Conv2d if self.geometry is not None else nn.Conv1d
+        convs = [m for m in self.convs if isinstance(m, conv_type)]
         heads = [m for m in self.head if isinstance(m, nn.Linear)]
         meta = {
             "model_type": "cnn",
@@ -506,6 +606,9 @@ class AutoregressiveCNN(_AutoregressiveBase):
             "n_head_layers": len(heads),
             **self.provenance.meta,
         }
+        if self.geometry is not None:
+            meta["frequency_kernel_size"] = self.frequency_kernel_size
+            meta["geometry"] = self.geometry.model_dump()
         arrays: dict[str, FloatArray] = {}
         for prefix, layers in (("conv", convs), ("head", heads)):
             arrays.update(
@@ -524,29 +627,34 @@ class AutoregressiveCNN(_AutoregressiveBase):
         """Rebuild a CNN from its portable checkpoint."""
         require_model_type(meta, "cnn")
         require_activation(meta)
+        geometry = StftGeometry.model_validate(meta["geometry"]) if "geometry" in meta else None
         model = cls(
             n_y=int(meta["n_y"]),
             n_u=int(meta["n_u"]),
             horizon=int(meta["horizon"]),
             n_channels=int(meta["n_channels"]),
             n_controls=int(meta["n_controls"]),
+            n_outputs=int(meta["n_outputs"]),
             hidden_size=int(meta["hidden_size"]),
             depth=int(meta["depth"]),
             kernel_size=int(meta["kernel_size"]),
+            frequency_kernel_size=int(meta.get("frequency_kernel_size", 3)),
             activation=meta["activation"],
             residual=bool(meta["residual"]),
             dt=float(meta["dt"]),
             y_std=Standardizer.from_arrays(arrays, "y"),
             u_std=Standardizer.from_arrays(arrays, "u"),
+            geometry=geometry,
         )
         model.downsample = int(meta["downsample"])
         model.provenance = TrainingProvenance.from_meta(meta)
-        convs = [m for m in model.convs if isinstance(m, nn.Conv1d)]
+        conv_type = nn.Conv2d if geometry is not None else nn.Conv1d
+        convs = [m for m in model.convs if isinstance(m, conv_type)]
         heads = [m for m in model.head if isinstance(m, nn.Linear)]
         for layers, prefix in ((convs, "conv"), (heads, "head")):
             weights, biases = layers_from_arrays(arrays, prefix, len(layers))
             with torch.no_grad():
                 for layer, weight, bias in zip(layers, weights, biases, strict=True):
-                    layer.weight.copy_(torch.as_tensor(weight, dtype=torch.float32))
-                    cast("Tensor", layer.bias).copy_(torch.as_tensor(bias, dtype=torch.float32))
+                    layer.weight.copy_(torch.tensor(weight, dtype=torch.float32))
+                    cast("Tensor", layer.bias).copy_(torch.tensor(bias, dtype=torch.float32))
         return model
