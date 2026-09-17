@@ -20,11 +20,16 @@ import numpy as np
 from neuro.config import StftGeometry
 from neuro.control.costs import jax_compute_log_power_frames
 from neuro.predictor.data import reduce_trajectory_to_frames
-from neuro.predictor.inference import ObservableMLPModel, WaveformMLPModel
+from neuro.predictor.inference import (
+    InferencePredictor,
+    ObservableCNNModel,
+    ObservableMLPModel,
+    WaveformCNNModel,
+    WaveformMLPModel,
+)
 from neuro.spectral import ObservableEnvelope, PsdEnvelope
 
 if TYPE_CHECKING:
-    from neuro.predictor.inference import InferencePredictor
     from neuro.types import FloatArray
 
 GEOM = StftGeometry(n_segment=50, n_hop=5, band_hz=None, n_bin_pool=1, kernel="boxcar", kernel_width=1)
@@ -44,21 +49,19 @@ class HeldControlHinge(Protocol):
         ...
 
 
-def _held_rollout(  # noqa: PLR0913 -- the standardizer's two halves travel with the rollout's three
+def _held_rollout(
     model: InferencePredictor,
     x0: jax.Array,
     u: FloatArray,
     *,
     steps: int,
     dt: float,
-    center: FloatArray,
-    scale: FloatArray,
 ) -> FloatArray:
-    """Free-run `model` for `steps` with `u` held, returning destandardized outputs ``(steps, n_outputs)``."""
+    """Free-run ``model`` for ``steps`` with ``u`` held, returning raw outputs ``(steps, n_outputs)``."""
     x, traj = x0, []
     for _ in range(steps):
         x = model.discrete_dynamics(x, jnp.asarray(u), 0.0, dt)
-        traj.append(np.asarray(x[: model.n_outputs]) * scale + center)
+        traj.append(np.asarray(model.output(x)))
     return np.stack(traj)
 
 
@@ -71,18 +74,27 @@ def observable_hinge_fn(artifact: str, y: FloatArray) -> tuple[HeldControlHinge,
         One held-out Plant realisation's sensor trace of shape ``(steps, n_channels)``.
     """
     power = np.asarray(ObservableEnvelope.load("data/healthy_psd_hop5.npz").power).reshape(-1)
-    model = ObservableMLPModel.load(artifact)
-    y_c, y_s = np.asarray(model.y_center).reshape(-1), np.asarray(model.y_scale).reshape(-1)
-    seizing = reduce_trajectory_to_frames(y, GEOM, FS)[int(T_PROBE / 0.1)]
-    x0 = jnp.concatenate([jnp.asarray((seizing - y_c) / y_s), jnp.zeros(model.n_u * model.n_controls)])
+    loaded = InferencePredictor.load(artifact)
+    if not isinstance(loaded, (ObservableMLPModel, ObservableCNNModel)):
+        msg = f"Observable checkpoint required, got {type(loaded).__name__}"
+        raise TypeError(msg)
+    model = loaded
+    frames = reduce_trajectory_to_frames(y, GEOM, FS)
+    frame_idx = int(T_PROBE / 0.1)
+    history = frames[frame_idx - model.n_y + 1 : frame_idx + 1]
+    x0 = model.initial_state()
+    for frame in history:
+        x0 = model.absorb(x0, frame, np.zeros(model.n_controls))
+    x0 = jnp.asarray(x0)
+    seizing = frames[frame_idx]
 
     def hinge(u: FloatArray) -> float:
         """Observable hinge over the Control Horizon when ``u`` is held for all of it."""
-        traj = _held_rollout(model, x0, u, steps=OBS_HORIZON, dt=0.1, center=y_c, scale=y_s)
+        traj = _held_rollout(model, x0, u, steps=OBS_HORIZON, dt=0.1)
         excess = np.maximum(0.0, traj - power)
         return W_HINGE * float((excess**2).sum()) / (OBS_HORIZON * power.shape[0])
 
-    return hinge, float((seizing > power).mean()), int(power.shape[0])
+    return hinge, float((seizing.reshape(-1) > power).mean()), int(power.shape[0])
 
 
 def waveform_hinge_fn(artifact: str, y: FloatArray) -> HeldControlHinge:
@@ -94,7 +106,11 @@ def waveform_hinge_fn(artifact: str, y: FloatArray) -> HeldControlHinge:
         One held-out Plant realisation's sensor trace of shape ``(steps, n_channels)``.
     """
     env = PsdEnvelope.load("data/healthy_psd.npz")
-    model = WaveformMLPModel.load(artifact)
+    loaded = InferencePredictor.load(artifact)
+    if not isinstance(loaded, (WaveformMLPModel, WaveformCNNModel)):
+        msg = f"waveform checkpoint required, got {type(loaded).__name__}"
+        raise TypeError(msg)
+    model = loaded
     y_c, y_s = np.asarray(model.y_center).reshape(-1), np.asarray(model.y_scale).reshape(-1)
     start = int(T_PROBE * FS)
     hist = (y[start - model.n_y : start] - y_c) / y_s
@@ -103,7 +119,7 @@ def waveform_hinge_fn(artifact: str, y: FloatArray) -> HeldControlHinge:
 
     def hinge(u: FloatArray) -> float:
         """Spectral hinge over the Control Horizon when ``u`` is held for all of it."""
-        traj = _held_rollout(model, x0, u, steps=WAVE_HORIZON, dt=0.02, center=y_c, scale=y_s)
+        traj = _held_rollout(model, x0, u, steps=WAVE_HORIZON, dt=0.02)
         frames = jax_compute_log_power_frames(jnp.asarray(traj), fs=env.fs, window=env.window, hop=env.hop)
         return W_HINGE * float(jnp.mean(jnp.maximum(0.0, frames - log_power_ref) ** 2))
 

@@ -1,9 +1,10 @@
 # NN Predictor — Training Setup
 
 A detailed, end-to-end description of how the neural-network EEG predictor is
-trained. The predictor is a [PyTorch](https://pytorch.org/) MLP, optimised with `torch.optim.AdamW`,
-that learns a **one-step-ahead** EEG map and is unrolled autoregressively to produce a
-multi-step-ahead forecast conditioned on past EEG and past/future stimulation.
+trained. The predictor is a [PyTorch](https://pytorch.org/) MLP or causal CNN, optimised with
+`torch.optim.AdamW`, that learns a **one-step-ahead** EEG or Observable map and is unrolled
+autoregressively to produce a multi-step-ahead forecast conditioned on past outputs and
+past/future stimulation.
 
 Source of truth:
 
@@ -11,7 +12,7 @@ Source of truth:
 - Data loading & windowing: [`src/neuro/predictor/data.py`](../src/neuro/predictor/data.py)
 - torch module: [`src/neuro/predictor/module.py`](../src/neuro/predictor/module.py)
 - Losses: [`src/neuro/predictor/losses.py`](../src/neuro/predictor/losses.py)
-- Artifact + inference: [`src/neuro/predictor/artifact.py`](../src/neuro/predictor/artifact.py)
+- Artifact + inference: [`src/neuro/predictor/inference.py`](../src/neuro/predictor/inference.py)
 - Shared metrics & artifact dispatch: [`src/neuro/artifacts.py`](../src/neuro/artifacts.py)
 - Config schema: [`src/neuro/config.py`](../src/neuro/config.py)
 - Entry points: [`scripts/run_nn_predictor.py`](../scripts/run_nn_predictor.py),
@@ -20,9 +21,22 @@ Source of truth:
 
 > Model training runs in **float32** for computational and memory efficiency: every `nn.Linear`
 > is built with `dtype=torch.float32` and batches crossing into torch go through
-> `torch.as_tensor(..., dtype=torch.float32)`. The exported `MLPArtifact` and downstream CasADi
-> MPC optimization run in double precision (**float64**). The global default dtype is never changed,
-> so importing `neuro` cannot alter dtype behaviour for anything else in the process.
+> `torch.as_tensor(..., dtype=torch.float32)`. The exported neural checkpoint and downstream JAX
+> controller run in double precision (**float64**). The global default dtype is never changed,
+> so importing `neuro` cannot alter dtype behaviour for anything else in the process. Runtime
+> checkpoint arrays are loaded into the JAX controller in float64.
+
+The `model.architecture` setting selects `mlp` (the historical default) or `cnn`. Both use the
+same training entry point, rollout timing, standardizers, checkpoint format, and gradient-descent
+fit. CNN examples are [`waveform_cnn.yaml`](../configs/nn_predictor/waveform_cnn.yaml) and
+[`observable_cnn.yaml`](../configs/nn_predictor/observable_cnn.yaml).
+
+Run either example through the normal entry point (with the configured data path available locally):
+
+```bash
+uv run --extra cpu python scripts/run_nn_predictor.py --config configs/nn_predictor/waveform_cnn.yaml
+uv run --extra cpu python scripts/run_nn_predictor.py --config configs/nn_predictor/observable_cnn.yaml
+```
 
 ---
 
@@ -202,6 +216,24 @@ $$
 train and validation windows *and* the held-out trajectories whole (`val_trajs`), because free-run rollout
 scoring (§8) and the comparison plot both need the un-windowed validation signals, not just their windows.
 
+### 3.2 Structured Observable windows
+
+When `observable` is configured, the estimator first maps each EEG trajectory to Observable Frames.
+The model input keeps the channel and frequency axes separate:
+
+$$
+Y_\text{hist} \in \mathbb{R}^{B \times n_y \times C \times F},\qquad
+U_\text{past} \in \mathbb{R}^{B \times n_u \times m},\qquad
+U_\text{future} \in \mathbb{R}^{B \times N \times m},\qquad
+\hat{Y} \in \mathbb{R}^{B \times N \times C \times F}.
+$$
+
+Here $F$ is the number of frequency values in one Frame after the configured band and bin pooling.
+The window count $B$ is still formed by sliding the anchor along each trajectory, and the control
+history must cover the complete Frame support (`model.n_u >= observable.min_past_controls()`).
+The waveform path instead uses $(B,n_y,C)$ and $(B,N,C)$. Both paths use the same current timing:
+the first predicted position receives the current Control Current before the one-step map is applied.
+
 ---
 
 ## 4. Preprocessing: split and scaling
@@ -316,29 +348,51 @@ The identical recursion exists in three places, and they are pinned to each othe
 
 | where | used for | dtype/engine |
 | ----- | -------- | ------------ |
-| [`AutoregressiveMLP.forward`](../src/neuro/predictor/module.py) | training (differentiable) | torch, float32 |
-| [`MLPArtifact.rollout`](../src/neuro/predictor/artifact.py) / `rollout_many` | evaluation, plotting, closed-loop simulation | NumPy, float64 |
-| [`NNSymbolicModel`](../src/neuro/nn_predictor_casadi.py) `f_step` / `f_out` | the MPC's symbolic graph for IPOPT | CasADi |
+| [`AutoregressiveMLP.forward`](../src/neuro/predictor/module.py) or `AutoregressiveCNN.forward` | training (differentiable) | torch, float32 |
+| `InferencePredictor.free_run` | evaluation, plotting, closed-loop simulation | JAX, float64 |
+| `InferencePredictor.discrete_dynamics` | the MPC's dynamics graph | JAX, float64 |
 
-`tests/test_predictor_module.py::test_torch_rollout_matches_casadi` pins torch against the CasADi
-bridge to `1e-5` over `depth ∈ {0, 2}` and all three activations;
-`test_prime_rollout_matches_the_training_window_at_the_same_index` pins `MLPArtifact.rollout` against
-torch on the same $t_0$; `tests/test_batched_rollout.py` pins `rollout_many` against a loop over
-`rollout` to `1e-12`.
-
-Two convention traps are worth remembering. `NNSymbolicModel` standardizes raw $u$ *internally*,
-while the torch module and `MLPArtifact.rollout`'s `state` expect the control already in model space.
-And the three carry the recursion in **two state conventions**, which differ only in where the
-control window sits:
+The waveform and Observable CNN tests compare the torch and JAX multi-step Rollouts, checkpoint
+dispatch, action alignment, and controller construction. The controller and free-run paths both
+standardize raw Control Currents at the runtime boundary. They carry the recursion in **two state
+conventions**, which differ only in where the control window sits:
 
 | state built by | y-window ends | u-window ends | shift relative to the prediction |
 | -------------- | ------------- | ------------- | -------------------------------- |
 | `absorb` (MPC, fed the *previous* control) and the training feature row | $t$ | $t - 1$ | control shifts in **before** |
-| `MLPArtifact.prime` | $t$ | $t$ | control shifts in **after** |
+| `free_run` raw history | $t$ | $t$ | control shifts in **after** |
 
-Both predict $\hat{y}_{t+1}$ from a $u$-window ending at $t$ — the rule of §1 — and the two are
-interconvertible by lagging the u-window one step (see `_casadi_horizon_rollout` in
-`tests/test_nn_predictor_casadi.py`, which does exactly that to compare them).
+Both predict $\hat{y}_{t+1}$ from a $u$-window ending at $t$ — the rule of §1 — and are
+interconvertible by lagging the u-window one step. `discrete_dynamics` shifts the current action
+into the control window before prediction; `free_run` shifts the next future action after prediction.
+
+### 5.4 Causal CNN $f_\theta$
+
+With `model.architecture: cnn`, [`AutoregressiveCNN`](../src/neuro/predictor/module.py) keeps the
+same autoregressive loop and replaces the flattened output history map with stride-one temporal
+convolutions. A waveform history has shape $(n_y,C)$; an Observable history has shape
+$(n_y,C,F)$. Convolution weights mix EEG channels through learned filters, while the temporal
+kernel slides along the history axis. There is no pooling or temporal stride.
+
+Temporal padding is causal left padding of `kernel_size - 1` samples at every layer, so a prediction
+cannot read a future sample. The temporal receptive field of a stack of `depth` convolutional
+layers is
+
+$$
+1 + \texttt{depth}\,(\texttt{kernel\_size}-1).
+$$
+
+Observable CNNs also convolve along frequency with same padding. The implementation preserves all
+$F$ frequency positions, including for even `frequency_kernel_size`; frequency padding is split so
+the output retains width $F$. The latest temporal features are flattened by frequency and
+concatenated with the standardized Control Current history. Two dense layers then map these
+features through an intermediate `hidden_size` and the selected activation to one output position.
+The final dense layer is linear. With `residual: true`, that output is a delta added to the newest
+history position, matching the MLP residual convention.
+
+CNNs are trained through the gradient-descent path (`fit: gradient_descent`) because their learned
+convolutions and dense head are nonlinear in the input. Ridge and DMD closed-form fits remain
+available only for the linear MLP configurations that support them.
 
 ---
 
@@ -499,6 +553,10 @@ epochs than `warmup_epochs` asks for.
 One training step is `loss.backward()` + `optimizer.step()` + `scheduler.step()`, in eager mode.
 Nothing is JIT-compiled or `torch.compile`d.
 
+The same AdamW loop trains CNNs. A CNN configuration must use `fit: gradient_descent`; its
+convolutional layers and dense residual head do not have the linear readout required by the
+closed-form Ridge or DMD trainers.
+
 ### 7.2 Batching
 
 `_shuffled_batches` in [`train.py`](../src/neuro/predictor/train.py) reshuffles the training sample
@@ -583,7 +641,7 @@ it neither writes files nor imports `matplotlib`. It returns a
 
 | field | is |
 | ----- | -- |
-| `artifact` | the best-epoch [`MLPArtifact`](../src/neuro/predictor/artifact.py): NumPy weights + fitted standardizers + native `dt` |
+| `predictor` | the best-epoch PyTorch MLP/CNN module with fitted standardizers and native `dt` |
 | `train_losses`, `val_losses` | per-epoch total loss, one entry per epoch actually run |
 | `train_components`, `val_components` | per-epoch dict of unweighted loss components and diagnostics |
 | `rollout` | a [`RolloutNMSE`](../src/neuro/artifacts.py) — free-run NMSE `pooled` and `per_step` evaluated over `eval_horizon_s` |
@@ -592,7 +650,8 @@ it neither writes files nor imports `matplotlib`. It returns a
 | `du_sensitivity` | the control-sensitivity scalar of §8.3 |
 
 The caller decides what to persist and what to draw. `TrainingResult.save(artifact_dir)` writes
-`model.npz` and `training_stats.json`; plotting lives in the run script (§8.5).
+`model.npz` and `training_stats.json`; plotting lives in the run script (§8.5). The checkpoint is
+architecture-neutral and is loaded through `InferencePredictor.load` (§8.4).
 
 ### 8.2 Free-run rollout NMSE
 
@@ -634,10 +693,9 @@ its energy-weighted mean, so steps where the EEG is loud count for more. The per
 informative half: it shows *where* along the horizon the model stops beating silence
 ($\text{NMSE}_i \to 1$), which the pooled scalar hides.
 
-[`accumulate_rollout_errors`](../src/neuro/artifacts.py) stacks a trajectory's **whole** $t_0$ grid
-and issues one batched `prime_many` + `rollout_many` call per trajectory rather than one pair per
-window, which is worth 2–4× at the default `stride = 25` depending on model size (3.7× measured on
-`nonlinear`'s dimensions). Both artifact families implement the batched pair.
+[`accumulate_rollout_errors`](../src/neuro/artifacts.py) evaluates each trajectory's **whole** $t_0$
+grid through the generic predictor `free_run` interface. Waveform and Observable runtimes preserve
+their respective output shapes while the score reduces over the dimensions defined by the metric.
 
 The pooled NMSE remains available to the NN sweep as
 `objective: rollout_nmse` — but it is **no longer the default objective**, for the reason §8.2.1
@@ -708,21 +766,37 @@ dataset. It is a "is the model responsive to stimulation at all" signal, not a c
 
 ### 8.4 The artifact: one `.npz`, no framework
 
-[`MLPArtifact`](../src/neuro/predictor/artifact.py) is a frozen dataclass of NumPy arrays. It
-imports no deep-learning framework, and it is what everything downstream of training consumes.
-`save` writes a single file (path convention: configs give a suffix-less stem such as
+`TrainingResult.save(artifact_dir)` writes the suffix-less checkpoint stem `artifact_dir/model` and
+the training statistics. Load a saved neural checkpoint through the architecture-neutral entry point:
+
+```python
+from neuro.predictor.inference import InferencePredictor
+
+predictor = InferencePredictor.load("artifacts/example_waveform_cnn/model")
+```
+
+The loader reads `meta["model_type"]` and the optional Observable geometry, returning the matching
+waveform or Observable MLP/CNN runtime. `WaveformCNNModel.load` and `ObservableCNNModel.load` remain
+available when a caller wants an explicit representation check. A typed non-neural loader such as
+`JansenRitModel.load` continues to use its own checkpoint format. The runtime checkpoint stores
+weights, standardizer arrays, architecture fields (`depth`, `hidden_size`, kernel sizes, activation,
+residual), native time step, and Observable geometry where applicable.
+
+The exchange checkpoint imports no deep-learning framework at runtime. `save` writes a single file
+(path convention: configs give a suffix-less stem such as
 `artifacts/x/model`, and `save`/`load` apply `.with_suffix(".npz")`):
 
 | npz key | contents |
 | ------- | -------- |
-| `meta` | 0-d unicode array holding `json.dumps(...)` of `model_type`, `activation`, `n_y`, `n_u`, `horizon`, `n_channels`, `n_controls`, `dt`, `downsample`, `n_layers` |
-| `layer.<i>.weight`, `layer.<i>.bias` | the MLP stack in forward order, $(out, in)$ and $(out,)$ |
+| `meta` | 0-d unicode array holding `json.dumps(...)` of the model type, dimensions, activation, residual flag, native timing, architecture fields, and Observable geometry when present |
+| `conv.<i>.weight`, `conv.<i>.bias` | CNN convolution layers in forward order, or `layer.<i>.*` for an MLP |
+| `head.<i>.weight`, `head.<i>.bias` | CNN dense residual head in forward order |
 | `y_center`, `y_scale` | the EEG standardizer |
 | `u_center`, `u_scale` | the control standardizer |
 
 Storing `meta` as a 0-d `"<U"` array (not an object array) is deliberate: `np.load` reads it back
 without `allow_pickle`, so loading an artifact never executes pickled code.
-[`load_any_artifact`](../src/neuro/artifacts.py) dispatches on `meta["model_type"]`.
+`InferencePredictor.load` dispatches on `meta["model_type"]` and the optional `geometry` record.
 
 ### 8.5 What lands in the artifact directory
 
@@ -753,21 +827,21 @@ PNGs.
 
 This is a load-bearing architectural property, not an implementation detail:
 
-> `neuro.predictor.artifact`, `neuro.predictor.data`, `neuro.nn_predictor_casadi`, `neuro.control`
-> and `neuro.artifacts` **never import torch**.
+> `neuro.predictor.inference`, `neuro.predictor.data`, `neuro.control` and `neuro.artifacts`
+> **never import torch**.
 
-Training is the only thing in this repo that needs a deep-learning framework. Inference, the CasADi
-bridge, the MPC and every closed-loop simulation run on NumPy and CasADi alone, reading the
-framework-free artifact of §8.4. This keeps a `torch` import (and its multi-second cost, and
-its threading defaults) out of the closed loop.
+Training is the only thing in this repo that needs a deep-learning framework. Inference, the MPC and
+every closed-loop simulation run on JAX and NumPy, reading the framework-free checkpoint of §8.4.
+This keeps a `torch` import out of the closed loop.
 
 It is enforced, not merely intended:
-`tests/test_predictor_module.py::test_control_path_never_imports_torch` imports each of those five
+`tests/test_predictor_module.py::test_control_path_never_imports_torch` imports each of those four
 modules **in a subprocess** and asserts `'torch' not in sys.modules`. The subprocess is required —
 by the time that test runs, pytest has long since imported torch via other test modules.
 
-The split maps onto the package layout: `predictor/artifact.py` and `predictor/data.py` are
-torch-free; `predictor/module.py`, `predictor/losses.py` and `predictor/train.py` are the torch side.
+The split maps onto the package layout: `predictor/inference.py`, `predictor/data.py`, and
+`control/` are torch-free; `predictor/module.py`, `predictor/losses.py`, and `predictor/train.py`
+are the torch side.
 
 ---
 
@@ -790,11 +864,15 @@ out-of-range values raise `ValidationError` rather than silently defaulting.
 
 | key           | default | meaning                                                     |
 | ------------- | ------- | ----------------------------------------------------------- |
+| `architecture` | `mlp`   | `mlp` or causal `cnn`                                       |
 | `n_y`         | `5`     | past EEG steps in history                                   |
 | `n_u`         | `5`     | past control steps in history                               |
-| `hidden_size` | `128`   | MLP width (ignored when `depth = 0`)                        |
-| `depth`       | `2`     | hidden layers; `0` ⇒ linear model                           |
+| `hidden_size` | `128`   | MLP width or CNN convolution/head width                     |
+| `depth`       | `2`     | MLP hidden layers or CNN convolution count                  |
+| `kernel_size` | `3`     | CNN temporal kernel width                                   |
+| `frequency_kernel_size` | `3` | Observable CNN frequency kernel width                   |
 | `activation`  | `relu`  | `relu` / `tanh` / `softplus` (a `Literal`, so typos fail at load) |
+| `residual`    | `true`  | add the newest standardized output to the predicted delta  |
 
 ### `training`
 

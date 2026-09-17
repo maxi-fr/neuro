@@ -144,10 +144,10 @@ def test_dmd_observable_end_to_end(tmp_path: Path) -> None:
 
     # Test free-run on JAX side
     u_h = np.zeros((1, min_n_u, 2))
-    y_h = np.zeros((1, 2, inference.n_outputs))
+    y_h = np.zeros((1, 2, inference.n_channels, geom.n_values(fs)))
     u_f = np.zeros((1, 4, 2))
     pred = inference.free_run(y_h, u_h, u_f)
-    assert pred.shape == (1, 4, inference.n_outputs)
+    assert pred.shape == (1, 4, inference.n_channels, geom.n_values(fs))
 
 
 def test_dmd_waveform_end_to_end(tmp_path: Path) -> None:

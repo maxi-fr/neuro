@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING
 import matplotlib.pyplot as plt
 import numpy as np
 
-from neuro.predictor.inference import ObservableMLPModel, WaveformMLPModel
+from neuro.predictor.inference import inference_from_checkpoint
 from neuro.predictor.train import TrainingResult
 from utils.plotting import plot_multistep_predictions
 
@@ -94,12 +94,8 @@ def plot_rollout_comparison(
     model = result.predictor
     meta, arrays = model.to_checkpoint()
     inference: InferencePredictor
-    if "geometry" in meta:
-        inference = ObservableMLPModel.from_checkpoint(meta, arrays)
-        is_observable = True
-    else:
-        inference = WaveformMLPModel.from_checkpoint(meta, arrays)
-        is_observable = False
+    inference = inference_from_checkpoint(meta, arrays)
+    is_observable = "geometry" in meta
 
     u, y = result.val_trajs[0]
     priming = inference.priming_steps
@@ -119,9 +115,13 @@ def plot_rollout_comparison(
 
     prefix = "Observable" if is_observable else "EEG"
     n_out = model.n_outputs if is_observable else model.n_channels
+    # The generic plotting helper has one output axis; flatten an Observable's frequency axis
+    # only at this visualization boundary. Training and inference retain structured Frames.
+    y_true_plot = y[priming - 1 : priming - 1 + n_anchors].reshape(n_anchors, -1)
+    y_pred_plot = y_pred.reshape(y_pred.shape[0], y_pred.shape[1], -1)
     fig, _ = plot_multistep_predictions(
-        y_true=y[priming - 1 : priming - 1 + n_anchors],
-        y_pred=y_pred,
+        y_true=y_true_plot,
+        y_pred=y_pred_plot,
         dt=model.dt,
         channels=list(range(min(max_channels, n_out))),
         stride=model.horizon,

@@ -46,7 +46,9 @@ class StrictConfig(BaseModel):
 
 
 class ModelConfig(StrictConfig):
-    """MLP predictor architecture settings."""
+    """Predictor architecture settings shared by MLP and CNN models."""
+
+    architecture: Literal["mlp", "cnn"] = "mlp"
 
     n_y: int = Field(default=5, ge=1)
     n_u: int = Field(default=5, ge=1)
@@ -54,6 +56,16 @@ class ModelConfig(StrictConfig):
     depth: int = Field(default=2, ge=0)
     activation: Literal["relu", "tanh", "softplus"] = "relu"
     residual: bool = True
+    kernel_size: int = Field(default=3, ge=1)
+    frequency_kernel_size: int = Field(default=3, ge=1)
+
+    @model_validator(mode="after")
+    def _validate_architecture_depth(self) -> Self:
+        """Require at least one convolutional layer for the CNN architecture."""
+        if self.architecture == "cnn" and self.depth < 1:
+            msg = "CNN predictors require model.depth >= 1."
+            raise ValueError(msg)
+        return self
 
 
 class SimulationConfig(StrictConfig):

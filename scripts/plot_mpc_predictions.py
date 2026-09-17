@@ -13,7 +13,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from simulate.config import build_component, load_config
 
-from neuro.predictor.inference import WaveformMLPModel
+from neuro.predictor.inference import InferencePredictor, WaveformCNNModel, WaveformMLPModel
 
 if TYPE_CHECKING:
     from neuro.types import FloatArray
@@ -64,7 +64,9 @@ def run_open_loop(config: dict, t_end: float) -> tuple[FloatArray, float]:
     return np.asarray(eeg), ctrl_dt
 
 
-def free_run(model: WaveformMLPModel, eeg: FloatArray, anchor: int, horizon: int) -> tuple[FloatArray, FloatArray]:
+def free_run(
+    model: WaveformMLPModel | WaveformCNNModel, eeg: FloatArray, anchor: int, horizon: int
+) -> tuple[FloatArray, FloatArray]:
     """Free-run (zero control) ``horizon`` steps from ``anchor``; return (predicted, true) EEG."""
     n_y, n_u, n_controls = model.n_y, model.n_u, model.n_controls
     y_hist = eeg[anchor - n_y : anchor][None, ...]
@@ -83,7 +85,11 @@ def main() -> None:
 
     print(f"Running plant open-loop for {t_end}s from {args.config} ...", flush=True)
     eeg, dt_model = run_open_loop(config, t_end)
-    model = WaveformMLPModel.load(artifact)
+    loaded = InferencePredictor.load(artifact)
+    if not isinstance(loaded, (WaveformMLPModel, WaveformCNNModel)):
+        msg = f"waveform checkpoint required, got {type(loaded).__name__}"
+        raise TypeError(msg)
+    model = loaded
 
     n_y, horizon = model.n_y, model.horizon
     anchors = np.linspace(n_y + 1, len(eeg) - horizon - 1, args.anchors).astype(int)

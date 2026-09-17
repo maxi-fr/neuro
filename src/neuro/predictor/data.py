@@ -101,6 +101,12 @@ def extract_windows_flattened(data: FloatArray, window_size: int) -> FloatArray:
     return view.reshape(-1, window_size * channels)
 
 
+def extract_windows(data: FloatArray, window_size: int) -> FloatArray:
+    """Extract sliding windows while preserving every output axis after time."""
+    view = np.lib.stride_tricks.sliding_window_view(data, window_size, axis=0)
+    return np.moveaxis(view, -1, 1)
+
+
 def _window_starts(T_src: int, n_y: int, n_u: int, N: int) -> IntArray:
     """Sample indices at which a length-``N`` future window may start: history ahead, horizon fits."""
     start_idx = max(n_y - 1, n_u)
@@ -118,7 +124,7 @@ def build_dataset_for_trajectory(
     u_data : FloatArray
         The Control Current trajectory of shape (T, n_controls).
     y_data : FloatArray
-        The measured output (EEG) trajectory of shape (T, n_channels).
+        The measured output trajectory of shape (T, *output_shape).
     n_y : int
         Number of past output steps to include in the input regression window.
     n_u : int
@@ -129,23 +135,24 @@ def build_dataset_for_trajectory(
     Returns
     -------
     X : Float32Array
-        Input features array of shape (samples, n_y * n_channels + n_u * n_controls + N * n_controls).
+        Input features array of shape ``(samples, n_y * prod(output_shape) + n_u * n_controls + N * n_controls)``.
     Y : Float32Array
-        Target labels array of shape (samples, N * n_channels).
+        Flattened target labels array of shape (samples, N * prod(output_shape)).
     """
     k = _window_starts(y_data.shape[0], n_y, n_u, N)
 
-    y_view = extract_windows_flattened(y_data, n_y)
+    y_view = extract_windows(y_data, n_y)
     u_past_view = extract_windows_flattened(u_data, n_u)
     u_future_view = extract_windows_flattened(u_data, N)
 
     X = np.ascontiguousarray(
-        np.concatenate([y_view[k - n_y + 1], u_past_view[k - n_u], u_future_view[k]], axis=1),
+        np.concatenate([y_view[k - n_y + 1].reshape(len(k), -1), u_past_view[k - n_u], u_future_view[k]], axis=1),
         dtype=np.float32,
     )
 
-    y_fut_view = extract_windows_flattened(y_data, N)
-    Y = np.ascontiguousarray(y_fut_view[k + 1], dtype=np.float32)
+    y_fut_view = extract_windows(y_data, N)
+    Y_window = y_fut_view[k + 1]
+    Y = np.ascontiguousarray(Y_window.reshape(Y_window.shape[0], -1), dtype=np.float32)
 
     return X, Y
 
@@ -264,13 +271,13 @@ class TrajectoryWindowDataset(torch.utils.data.Dataset[tuple[Tensor, Tensor, Ten
         Returns
         -------
         y_hist : Tensor
-            Past outputs of shape ``(n_y, n_outputs)``.
+            Past outputs/Frames of shape ``(n_y, *output_shape)``.
         u_hist : Tensor
             Past controls of shape ``(n_u, n_controls)``.
         u_future : Tensor
             Future controls of shape ``(horizon, n_controls)``.
         y_future : Tensor
-            Future output targets of shape ``(horizon, n_outputs)``.
+            Future output targets of shape ``(horizon, *output_shape)``.
         """
         traj_idx, k = self._index_map[index]
         u, y = self.trajectories[traj_idx]
@@ -365,7 +372,7 @@ def prepare_datasets(  # noqa: PLR0913, PLR0917
 
 
 def reduce_trajectory_to_frames(y: FloatArray, geometry: StftGeometry, fs: float, offset: int = 0) -> FloatArray:
-    """Reduce Raw EEG trajectory to flattened log-power Frames with optional sub-hop sample offset.
+    """Reduce Raw EEG trajectory to structured log-power Frames with optional sub-hop sample offset.
 
     Parameters
     ----------
@@ -381,11 +388,9 @@ def reduce_trajectory_to_frames(y: FloatArray, geometry: StftGeometry, fs: float
     Returns
     -------
     FloatArray
-        Flattened log-power Frames of shape ``(n_frames, n_channels * n_values)``.
+        Log-power Frames of shape ``(n_frames, n_channels, n_values)``.
     """
-    frames = compute_log_power_frames(y[offset:], geometry, fs=fs)
-    n_frames, n_channels, n_values = frames.shape
-    return np.asarray(frames.reshape(n_frames, n_channels * n_values), dtype=np.float64)
+    return np.asarray(compute_log_power_frames(y[offset:], geometry, fs=fs), dtype=np.float64)
 
 
 def frame_aligned_controls(u: FloatArray, geometry: StftGeometry, *, fs: float, offset: int = 0) -> FloatArray:

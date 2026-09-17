@@ -5,7 +5,7 @@ from pathlib import Path
 
 from neuro.predictor.data import load_trajectory
 from neuro.predictor.evaluation import accumulate_rollout_errors, nmse
-from neuro.predictor.inference import WaveformMLPModel
+from neuro.predictor.inference import InferencePredictor, WaveformCNNModel, WaveformMLPModel
 
 _REPORT_STEPS = (1, 5, 10, 20, 40, 60, 80, 100, 125, 150)
 
@@ -20,7 +20,7 @@ def parse_args() -> argparse.Namespace:
         type=Path,
         nargs="+",
         required=True,
-        help="Checkpoint basename(s), e.g. artifacts/mlp_model",
+        help="Checkpoint basename(s), e.g. artifacts/predictor/model",
     )
     parser.add_argument("--data", type=Path, required=True, help="Directory of held-out .npz trajectories.")
     parser.add_argument("--max-steps", type=int, default=150, help="Longest rollout to evaluate, in model steps.")
@@ -32,7 +32,13 @@ def main() -> None:
     """Roll predictor(s) out to --max-steps on held-out data and print per-step NMSE and power_ratio."""
     args = parse_args()
     checkpoint_paths: list[Path] = args.artifact
-    models: list[WaveformMLPModel] = [WaveformMLPModel.load(p) for p in checkpoint_paths]
+    models: list[WaveformMLPModel | WaveformCNNModel] = []
+    for path in checkpoint_paths:
+        loaded = InferencePredictor.load(path)
+        if not isinstance(loaded, (WaveformMLPModel, WaveformCNNModel)):
+            msg = f"waveform checkpoint required, got {type(loaded).__name__} from {path}"
+            raise SystemExit(msg)
+        models.append(loaded)
 
     files = sorted(str(p) for p in args.data.glob("*.npz"))
     if not files:
@@ -75,7 +81,7 @@ def main() -> None:
         power_ratio = pred_power / power
 
         print(
-            f"\nCheckpoint: {path} (mlp), native horizon {model.horizon}, dt {model.dt:.4f} s",
+            f"\nCheckpoint: {path} ({model.__class__.__name__}), native horizon {model.horizon}, dt {model.dt:.4f} s",
             flush=True,
         )
         print(f"{'step':>6} {'lookahead':>10} {'NMSE':>9} {'power_ratio':>13}", flush=True)
