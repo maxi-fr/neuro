@@ -4,7 +4,7 @@ __generated_with = "0.23.16"
 app = marimo.App(width="full", app_title="Closed-loop run explorer")
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _():
     import io
     from pathlib import Path
@@ -32,7 +32,7 @@ def _():
     )
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(mo):
     _intro = mo.md("""
     # Closed-loop run explorer
@@ -51,7 +51,7 @@ def _(mo):
     return (collection,)
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(Path, collection, discover_runs, mo):
     mo.stop(collection.value is None, mo.md("Choose a collection to start."))
     root = Path(collection.value).resolve()
@@ -65,14 +65,14 @@ def _(Path, collection, discover_runs, mo):
     return bookmark_path, root, run_names
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(ViewSettings, mo):
     get_restored, set_restored = mo.state(ViewSettings())
     get_revision, set_revision = mo.state(0)
     return get_restored, get_revision, set_restored, set_revision
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(
     ViewSettings,
     bookmark_path,
@@ -91,7 +91,7 @@ def _(
     return bookmark_choice, bookmarks
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(bookmark_choice, bookmarks, mo, set_restored):
     restore_button = mo.ui.button(
         label="Restore view", on_click=lambda _: set_restored(bookmarks[bookmark_choice.value])
@@ -100,7 +100,7 @@ def _(bookmark_choice, bookmarks, mo, set_restored):
     return
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(get_restored, mo):
     restored = get_restored()
     mode = mo.ui.dropdown(options=["Closed-loop runs", "Shared recording"], value=restored.mode, label="Comparison")
@@ -108,7 +108,7 @@ def _(get_restored, mo):
     return mode, restored
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(mo, mode, restored, run_names):
     _selected = [name for name in restored.runs if name in run_names] or [run_names[0]]
     run_choice = (
@@ -120,7 +120,7 @@ def _(mo, mode, restored, run_names):
     return (run_choice,)
 
 
-@app.cell
+@app.cell(hide_code=True)
 def _(Run, mo, mode, root, run_choice):
     selected_names = [run_choice.value] if mode.value == "Shared recording" else run_choice.value
     mo.stop(not selected_names, mo.md("Select at least one run."))
@@ -145,7 +145,7 @@ def _(mo, restored, root, selected_runs):
         [
             replay_choice,
             mo.md(
-                "Prepare missing replays offline with `uv run --extra cpu python scripts/prepare_run_predictions.py <collection>`. Use repeated `--config` arguments to compare other Predictors."
+                "Prepare missing replays offline with `uv run python scripts/prepare_run_predictions.py <collection>`. Use repeated `--config` arguments to compare other Predictors."
             ),
         ]
     )
@@ -193,17 +193,18 @@ def _(mo, restored, selected_runs):
         options = list(range(max(counts, default=0)))
         return mo.ui.multiselect(options=options, value=[i for i in defaults if i in options], label=label)
 
-    _eeg_count = max(
+    _eeg_labels = next(
         (
-            run.eeg()[1].shape[1]
+            run.eeg_channel_labels()
             for run in selected_runs
-            if "sensor_0.y_mea" in run.arrays or "sensor_0.eeg" in run.arrays
+            if run.config.get("sensors", {}).get("measurement", {}).get("class_path") == "neuro.eeg.EEGMeasurement"
         ),
-        default=0,
+        [],
     )
+    _eeg_options = {label: index for index, label in enumerate(_eeg_labels)}
     eeg_channels = mo.ui.multiselect(
-        options=list(range(_eeg_count)),
-        value=[i for i in restored.eeg_channels if i < _eeg_count],
+        options=_eeg_options,
+        value=[label for label, index in _eeg_options.items() if index in restored.eeg_channels],
         label="EEG channels",
     )
     output_channels = channel_picker("controller.predicted_y", restored.output_channels, "Predictor output indices")

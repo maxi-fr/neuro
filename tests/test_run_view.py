@@ -2,6 +2,7 @@ from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
+import pytest
 
 from neuro.predictor.data import load_trajectory
 from neuro.run_plot import plot_runs
@@ -43,6 +44,18 @@ def test_run_uses_component_times_and_bookmarks_restore_every_setting(tmp_path: 
     )
     save_bookmark(tmp_path / "bookmarks.json", "onset", settings)
     assert load_bookmarks(tmp_path / "bookmarks.json")["onset"] == settings
+
+
+def test_eeg_channel_labels_follow_the_configured_sensor_subset(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr("neuro.run_view.build_eeg_leadfield", lambda: (np.empty((3, 1)), np.array(["F3", "P3", "O1"])))
+    run = Run(
+        tmp_path,
+        {"sensors": {"measurement": {"selected_channels": ["O1", 0]}}},
+        {"sensor_0.t": np.array([0.0]), "sensor_0.eeg": np.ones((1, 2))},
+    )
+    assert run.eeg_channel_labels() == ["O1", "F3"]
 
 
 def test_prediction_lines_are_anchored_in_absolute_time_and_currents_use_own_clock(tmp_path: Path) -> None:

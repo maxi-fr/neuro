@@ -8,6 +8,7 @@ import numpy as np
 import yaml
 
 from neuro.config import StftGeometry
+from neuro.eeg import build_eeg_leadfield
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -109,6 +110,15 @@ class Run:
     def eeg(self) -> tuple[FloatArray, FloatArray]:
         """Read the Sensor's EEG log, including the explicit EEG field of oracle Sensors."""
         return self.signal("sensor_0", "eeg" if "sensor_0.eeg" in self.arrays else "y_mea")
+
+    def eeg_channel_labels(self) -> list[str]:
+        """Return the EEG labels in the same order as the logged channels."""
+        _, labels = build_eeg_leadfield()
+        selected = self.config.get("sensors", {}).get("measurement", {}).get("selected_channels")
+        if selected is None:
+            return [str(label) for label in labels[: self.eeg()[1].shape[1]]]
+        indices = {str(label): index for index, label in enumerate(labels)}
+        return [str(labels[indices[label] if isinstance(label, str) else label]) for label in selected]
 
 
 def discover_runs(root: Path) -> list[Path]:

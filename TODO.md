@@ -3,6 +3,10 @@
 * Test cost functions with JR model as the MPC predictor!!!
 
 * add predictability of a number of seizing nodes to the predictability experiment
+* Electrode montage experiment
+  * use unsnooze
+
+* why in config.py is setdefault used? - shouldn't defaults be set in jansen_rit.py for example
 
 ## Refactors
 

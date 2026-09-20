@@ -830,7 +830,7 @@ def _resolve_dynamics_config(dyn: dict[str, Any]) -> None:
 
         dyn.setdefault("class_path", "neuro.jansen_rit.JansenRitDynamics")
         dyn.setdefault("dt", 1e-4)
-        dyn.setdefault("initial_state", "rest")
+        dyn.setdefault("initial_state", "rest")  # What is this?
         dyn.setdefault("connectome", {"speed": 50.0, "K": 0.60})
         params.setdefault("sigma", 280.0)
         conn = Connectome.from_config(dyn["connectome"])
