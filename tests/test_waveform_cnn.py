@@ -64,16 +64,15 @@ def test_cnn_torch_jax_parity_for_causal_multistep_rollout(
     t0 = 8
     y_raw = rng.standard_normal((t0 + module.horizon, module.n_channels))
     u_raw = rng.standard_normal((t0 + module.horizon, module.n_controls))
-    y_hist = torch.as_tensor(module.y_std.transform(y_raw[t0 - module.n_y : t0]), dtype=torch.float32).unsqueeze(0)
-    u_hist = torch.as_tensor(
-        module.u_std.transform(u_raw[t0 - 1 - module.n_u : t0 - 1]), dtype=torch.float32
-    ).unsqueeze(0)
-    u_future = torch.as_tensor(
-        module.u_std.transform(u_raw[t0 - 1 : t0 - 1 + module.horizon]), dtype=torch.float32
-    ).unsqueeze(0)
+    k = t0 - 1
+    y_hist = torch.as_tensor(module.y_std.transform(y_raw[k - module.n_y + 1 : k + 1]), dtype=torch.float32).unsqueeze(
+        0
+    )
+    u_hist = torch.as_tensor(module.u_std.transform(u_raw[k - module.n_u : k]), dtype=torch.float32).unsqueeze(0)
+    u_future = torch.as_tensor(module.u_std.transform(u_raw[k : k + module.horizon]), dtype=torch.float32).unsqueeze(0)
     with torch.no_grad():
         expected = module.y_std.inverse_transform(module(y_hist, u_hist, u_future).numpy()[0])
-    actual = np.asarray(runtime.free_run(y_raw[:t0][None], u_raw[:t0][None], u_raw[t0 : t0 + module.horizon][None]))[0]
+    actual = np.asarray(runtime.free_run(y_raw[: k + 1][None], u_raw[:k][None], u_raw[k : k + module.horizon][None]))[0]
     np.testing.assert_allclose(actual, expected, rtol=1e-5, atol=1e-6)
 
 
@@ -105,16 +104,17 @@ def test_cnn_checkpoint_factory_and_typed_loaders(tmp_path: Path) -> None:
     t0 = 8
     y_raw = rng.standard_normal((t0 + module.horizon, module.n_channels))
     u_raw = rng.standard_normal((t0 + module.horizon, module.n_controls))
-    y_hist = torch.as_tensor(module.y_std.transform(y_raw[t0 - module.n_y : t0]), dtype=torch.float32).unsqueeze(0)
-    u_hist = torch.as_tensor(
-        module.u_std.transform(u_raw[t0 - 1 - module.n_u : t0 - 1]), dtype=torch.float32
-    ).unsqueeze(0)
-    u_future = torch.as_tensor(
-        module.u_std.transform(u_raw[t0 - 1 : t0 - 1 + module.horizon]), dtype=torch.float32
-    ).unsqueeze(0)
+    k = t0 - 1
+    y_hist = torch.as_tensor(module.y_std.transform(y_raw[k - module.n_y + 1 : k + 1]), dtype=torch.float32).unsqueeze(
+        0
+    )
+    u_hist = torch.as_tensor(module.u_std.transform(u_raw[k - module.n_u : k]), dtype=torch.float32).unsqueeze(0)
+    u_future = torch.as_tensor(module.u_std.transform(u_raw[k : k + module.horizon]), dtype=torch.float32).unsqueeze(0)
     with torch.no_grad():
         torch_rollout = module.y_std.inverse_transform(module(y_hist, u_hist, u_future).numpy()[0])
-    jax_rollout = np.asarray(direct.free_run(y_raw[:t0][None], u_raw[:t0][None], u_raw[t0:][None]))[0]
+    jax_rollout = np.asarray(
+        direct.free_run(y_raw[: k + 1][None], u_raw[:k][None], u_raw[k : k + module.horizon][None])
+    )[0]
     np.testing.assert_allclose(jax_rollout, torch_rollout, rtol=1e-5, atol=1e-6)
     with pytest.raises(ValueError, match="model_type"):
         WaveformMLPModel.load(stem)
@@ -150,7 +150,7 @@ def test_cnn_discrete_step_uses_current_action_alignment() -> None:
     for y_value, u_value in zip(y_raw[: t0 + 1], u_raw[: t0 + 1], strict=True):
         state = runtime.absorb(state, y_value, u_value)
     stepped = runtime.discrete_dynamics(jnp.asarray(state), jnp.asarray(u_raw[t0 + 1]), 0.0, runtime.dt)
-    expected = np.asarray(runtime.free_run(y_raw[: t0 + 1][None], u_raw[: t0 + 2][None], u_raw[t0 + 2 :][None]))[0, 0]
+    expected = np.asarray(runtime.free_run(y_raw[: t0 + 1][None], u_raw[: t0 + 1][None], u_raw[t0 + 1 :][None]))[0, 0]
     np.testing.assert_allclose(np.asarray(runtime.output(stepped)), expected, rtol=1e-5, atol=1e-6)
 
 

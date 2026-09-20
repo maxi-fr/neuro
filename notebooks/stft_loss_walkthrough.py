@@ -82,7 +82,7 @@ def _(MAX_SPAN, art, channel_labels, fs, mo, n_samples, trajectories):
     traj_slider = mo.ui.slider(0, len(trajectories) - 1, 1, value=0, label="Trajectory")
     t0_slider = mo.ui.slider(
         art.priming_steps,
-        n_samples - MAX_SPAN,
+        n_samples - MAX_SPAN - 1,
         1,
         value=art.priming_steps + 100,
         label="Rollout start $t_0$ (samples)",
@@ -113,9 +113,13 @@ def _(
     k = art.priming_steps
 
     pred_full = np.asarray(
-        art.free_run(y_traj[t0 - k : t0][None], u_traj[t0 - k : t0][None], u_traj[t0 : t0 + MAX_SPAN][None])
+        art.free_run(
+            y_traj[t0 - k + 1 : t0 + 1][None],
+            u_traj[t0 - k : t0][None],
+            u_traj[t0 : t0 + MAX_SPAN][None],
+        )
     )[0]
-    true_full = y_traj[t0 : t0 + MAX_SPAN]
+    true_full = y_traj[t0 + 1 : t0 + 1 + MAX_SPAN]
     channel = channel_labels.index(channel_dropdown.value)
     return channel, pred_full, true_full
 

@@ -44,12 +44,12 @@ def rollout_batches(
 
         y_pred = np.asarray(
             model.free_run(
-                np.stack([y[t0 - k : t0] for t0 in t0s]),
+                np.stack([y[t0 - k + 1 : t0 + 1] for t0 in t0s]),
                 np.stack([u[t0 - k : t0] for t0 in t0s]),
                 np.stack([u[t0 : t0 + steps] for t0 in t0s]),
             )
         )
-        yield y_pred, np.stack([y[t0 : t0 + steps] for t0 in t0s])
+        yield y_pred, np.stack([y[t0 + 1 : t0 + 1 + steps] for t0 in t0s])
 
 
 def accumulate_rollout_errors(

@@ -65,18 +65,15 @@ def test_observable_cnn_torch_jax_parity_and_frequency_order() -> None:
     runtime = ObservableCNNModel.from_checkpoint(*model.to_checkpoint())
     rng = np.random.default_rng(91)
     t0 = 7
+    k = t0 - 1
     y_raw = rng.normal(size=(t0 + model.horizon, model.n_channels, model.n_outputs // model.n_channels))
     u_raw = rng.normal(size=(t0 + model.horizon, model.n_controls))
-    y_hist = torch.as_tensor(model.y_std.transform(y_raw[t0 - model.n_y : t0]), dtype=torch.float32).unsqueeze(0)
-    u_hist = torch.as_tensor(model.u_std.transform(u_raw[t0 - 1 - model.n_u : t0 - 1]), dtype=torch.float32).unsqueeze(
-        0
-    )
-    u_future = torch.as_tensor(
-        model.u_std.transform(u_raw[t0 - 1 : t0 - 1 + model.horizon]), dtype=torch.float32
-    ).unsqueeze(0)
+    y_hist = torch.as_tensor(model.y_std.transform(y_raw[k - model.n_y + 1 : k + 1]), dtype=torch.float32).unsqueeze(0)
+    u_hist = torch.as_tensor(model.u_std.transform(u_raw[k - model.n_u : k]), dtype=torch.float32).unsqueeze(0)
+    u_future = torch.as_tensor(model.u_std.transform(u_raw[k : k + model.horizon]), dtype=torch.float32).unsqueeze(0)
     with torch.no_grad():
         expected = model.y_std.inverse_transform(model(y_hist, u_hist, u_future).numpy()[0])
-    actual = np.asarray(runtime.free_run(y_raw[:t0][None], u_raw[:t0][None], u_raw[t0:][None]))[0]
+    actual = np.asarray(runtime.free_run(y_raw[: k + 1][None], u_raw[:k][None], u_raw[k : k + model.horizon][None]))[0]
     np.testing.assert_allclose(actual, expected, rtol=1e-5, atol=1e-6)
     assert actual.shape == (model.horizon, model.n_channels, 4)
 
@@ -97,9 +94,7 @@ def test_observable_cnn_singleton_frequency_and_short_history() -> None:
         expected = model.y_std.inverse_transform(
             model(y_standardized, u_standardized, u_future_standardized).numpy()[0]
         )
-    runtime_u_hist = np.concatenate([u_hist_raw[:, 1:], future[:, :1]], axis=1)
-    runtime_future = np.concatenate([future[:, 1:], future[:, -1:]], axis=1)
-    result = np.asarray(runtime.free_run(y, runtime_u_hist, runtime_future))[0]
+    result = np.asarray(runtime.free_run(y, u_hist_raw, future))[0]
     assert result.shape == (model.horizon, model.n_channels, 1)
     np.testing.assert_allclose(result, expected, rtol=1e-5, atol=1e-6)
 

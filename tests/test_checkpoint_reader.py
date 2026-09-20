@@ -66,9 +66,8 @@ def _waveform_context(seed: int) -> tuple[FloatArray, FloatArray]:
 def test_torch_save_jax_rollout_reproduces_the_decoded_torch_forward(tmp_path: Path) -> None:
     """A torch checkpoint loaded on the jax side free-runs the same raw samples as ``forward``.
 
-    The jax ``rollout`` primes on raw history ending at ``t0 - 1`` and shifts each future control
-    in *after* predicting; the torch ``forward`` shifts in *before*. The two orders are the same
-    seam, so the decoded ``forward`` and the jax rollout agree to float32 tolerance.
+    Both the jax ``free_run`` and torch ``forward`` share the same physical time alignment and
+    shift the candidate control before predicting, agreeing to float32 tolerance.
     """
     module = _mlp_module()
     path = tmp_path / "mlp"
@@ -85,7 +84,7 @@ def test_torch_save_jax_rollout_reproduces_the_decoded_torch_forward(tmp_path: P
         standardized = module(y_hist, u_hist, u_future).numpy()[0]
     want = module.y_std.inverse_transform(standardized)
 
-    got = np.asarray(jax_model.free_run(y_raw[:t0][None], u_raw[:t0][None], u_raw[t0 : t0 + _HORIZON][None]))[0]
+    got = np.asarray(jax_model.free_run(y_raw[: k + 1][None], u_raw[:k][None], u_raw[k : k + _HORIZON][None]))[0]
     np.testing.assert_allclose(got, want, rtol=2e-5, atol=2e-5)
 
 
