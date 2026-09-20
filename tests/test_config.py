@@ -59,7 +59,7 @@ def test_known_keys_parsed() -> None:
         "model": {"n_y": 14, "hidden_size": 64},
         "training": {
             **_VALID_TRAINING,
-            "epochs": 5,
+            "epochs": 15,
             "scaler": "robust",
             "device": "cuda",
         },
@@ -72,6 +72,7 @@ def test_known_keys_parsed() -> None:
     assert cfg.model.hidden_size == 64
     assert cfg.training.scaler == "robust"
     assert cfg.training.device == "cuda"
+    assert cfg.training.epochs == 15
 
 
 @pytest.mark.parametrize(

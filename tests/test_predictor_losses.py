@@ -232,8 +232,11 @@ def test_stft_is_gated_off_until_start_epoch() -> None:
     total_gated, comps_gated = total_loss(losses, pred_traj, true_traj, ctx_gated)
     total_active, comps_active = total_loss(losses, pred_traj, true_traj, ctx_active)
 
-    assert comps_gated["stft"] == 0.0
+    assert comps_gated["stft"] is None
+    assert comps_gated["curriculum_mse"] is not None
     assert float(total_gated.detach()) == pytest.approx(comps_gated["curriculum_mse"])
+    assert comps_active["stft"] is not None
+    assert comps_active["curriculum_mse"] is not None
     assert comps_active["stft"] > 0.0
     assert float(total_active.detach()) == pytest.approx(comps_active["curriculum_mse"] + w_stft * comps_active["stft"])
 

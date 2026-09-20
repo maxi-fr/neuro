@@ -197,7 +197,8 @@ def test_gradient_descent_serves_any_torch_module() -> None:
     )
 
     model = _TinyNet(n_in, n_out)
-    train_losses, val_losses, _, _ = fit_gradient_descent(model, train_loader, val_loader, cfg, seed=_SEED, loss_fn=mse)
+    fit = fit_gradient_descent(model, train_loader, val_loader, cfg, seed=_SEED, loss_fn=mse)
+    train_losses, val_losses = fit.train_losses, fit.val_losses
 
     assert len(train_losses) == len(val_losses) == 20
     assert train_losses[-1] < train_losses[0]
@@ -262,7 +263,7 @@ def test_observable_candidates_match_the_config_kind(tmp_path: Path) -> None:
 
     assert isinstance(result, TrainingResult)
     assert set(result.candidates) == {"val_loss", "val_log_mse"}
-    assert result.candidates["val_loss"] == min(result.val_losses)
+    assert result.candidates["val_loss"] == result.val_losses[result.selected_epoch]
     assert result.candidates["val_log_mse"] == result.free_run.pooled
     assert np.isfinite(result.du_sensitivity)
     assert result.du_sensitivity > 0.0

@@ -44,7 +44,7 @@ def test_plot_training_curves_generates_image(tmp_path: Path) -> None:
     data_files = _write_mock_trajectories(tmp_path, n_samples=100)
     fs = 1.0 / _DT
     span_s = _HORIZON / fs
-    losses = LossSpecs(curriculum_mse=CurriculumMSESpec(weight=1.0, span_s=span_s, curr_start=0, curr_end=2))
+    losses = LossSpecs(curriculum_mse=CurriculumMSESpec(weight=1.0, span_s=span_s, curr_start=0, curr_end=1))
     cfg = NNPredictorConfig(
         simulation=SimulationConfig(dt=_DT, downsample=1),
         model=ModelConfig(n_y=2, n_u=2, hidden_size=4, depth=1),
@@ -75,7 +75,7 @@ def test_plot_rollout_comparison_waveform_generates_image(tmp_path: Path) -> Non
     data_files = _write_mock_trajectories(tmp_path, n_samples=100)
     fs = 1.0 / _DT
     span_s = _HORIZON / fs
-    losses = LossSpecs(curriculum_mse=CurriculumMSESpec(weight=1.0, span_s=span_s, curr_start=0, curr_end=2))
+    losses = LossSpecs(curriculum_mse=CurriculumMSESpec(weight=1.0, span_s=span_s, curr_start=0, curr_end=1))
     cfg = NNPredictorConfig(
         simulation=SimulationConfig(dt=_DT, downsample=1),
         model=ModelConfig(n_y=2, n_u=2, hidden_size=4, depth=1),
@@ -107,7 +107,7 @@ def test_plot_rollout_comparison_observable_generates_image(tmp_path: Path) -> N
     geometry = StftGeometry(n_segment=32, n_hop=8, band_hz=[4.0, 30.0], n_bin_pool=2, kernel_width=3)
     fs_frame = 250.0 / geometry.n_hop
     span_s = 3 / fs_frame
-    losses = LossSpecs(curriculum_mse=CurriculumMSESpec(weight=1.0, span_s=span_s, curr_start=0, curr_end=2))
+    losses = LossSpecs(curriculum_mse=CurriculumMSESpec(weight=1.0, span_s=span_s, curr_start=0, curr_end=1))
     cfg = NNPredictorConfig(
         simulation=SimulationConfig(dt=0.004, downsample=1),
         model=ModelConfig(n_y=2, n_u=8, hidden_size=4, depth=1),

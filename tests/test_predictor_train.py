@@ -164,7 +164,13 @@ def test_save_round_trip_predicts_identically(files: list[str], tmp_path: Path) 
         "log_energy",
         "log_energy_per_position",
         "du_sensitivity",
+        "eligibility_start",
+        "selected_epoch",
+        "stopping_reason",
     }
+    assert stats["eligibility_start"] == result.eligibility_start
+    assert stats["selected_epoch"] == result.selected_epoch
+    assert stats["stopping_reason"] == result.stopping_reason
     assert stats["nmse_rollout"] == result.free_run.pooled
     assert result.log_energy is not None  # the waveform arm always scores it
     assert stats["log_energy"] == result.log_energy.pooled
@@ -343,8 +349,8 @@ def test_depth0_gradient_descent_starts_from_random_init_and_runs_every_epoch(fi
     The closed-form warm start lives only in the Ridge Trainer now, so the depth-0 arm behaves
     like any other module: all ``epochs`` epochs, no skipped curriculum prefix.
     """
-    linear = _wave_train(_config(depth=0, epochs=3, curr_start=2, curr_end=2), files)
-    nonlinear = _wave_train(_config(depth=1, epochs=3, curr_start=2, curr_end=2), files)
+    linear = _wave_train(_config(depth=0, epochs=3, curr_start=1, curr_end=1), files)
+    nonlinear = _wave_train(_config(depth=1, epochs=3, curr_start=1, curr_end=1), files)
 
     assert isinstance(linear.predictor, AutoregressiveMLP)
     assert len(linear.predictor.layers) == 1

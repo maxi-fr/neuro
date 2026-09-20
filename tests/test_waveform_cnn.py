@@ -259,7 +259,7 @@ def test_cnn_train_save_load_and_controller_smoke(tmp_path: Path) -> None:
         simulation=SimulationConfig(dt=0.01, downsample=1),
         model=ModelConfig(architecture="cnn", n_y=2, n_u=2, hidden_size=4, depth=1, kernel_size=3),
         training=TrainingConfig(
-            epochs=1,
+            epochs=2,
             batch_size=16,
             learning_rate=1e-2,
             weight_decay=0.0,

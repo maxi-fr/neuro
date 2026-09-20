@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import collections
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -8,13 +9,25 @@ import torch
 from tqdm import tqdm
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Mapping
 
     from torch import Tensor, nn
     from torch.utils.data import DataLoader
 
     from neuro.config import TrainingConfig
     from neuro.types import Float32Array, FloatArray
+
+
+@dataclass(frozen=True)
+class GradientFitResult:
+    """Outcomes and curves from fitting a module with gradient descent."""
+
+    train_losses: list[float]
+    val_losses: list[float]
+    train_components: dict[str, list[float | None]]
+    val_components: dict[str, list[float | None]]
+    selected_epoch: int
+    stopping_reason: str
 
 
 def float32_tensor(a: FloatArray | Float32Array, device: torch.device, *, pin_memory: bool = False) -> Tensor:
@@ -49,20 +62,23 @@ def lr_schedule(
 def _evaluate_validation(
     model: nn.Module,
     val_loader: DataLoader[tuple[Tensor, Tensor, Tensor, Tensor]],
-    loss_fn: Callable[[nn.Module, Tensor, Tensor, Tensor, Tensor, int | None], tuple[Tensor, dict[str, float]]],
-) -> tuple[float, dict[str, float]]:
-    """Score ``model`` over mini-batches of ``val_loader`` and return the weighted loss and components."""
+    loss_fn: Callable[
+        [nn.Module, Tensor, Tensor, Tensor, Tensor, int | None], tuple[Tensor, Mapping[str, float | None]]
+    ],
+) -> tuple[float, dict[str, float | None]]:
+    """Score ``model`` over mini-batches of ``val_loader`` and return the weighted Loss and components."""
     if len(val_loader) == 0:
         return 0.0, {}
     device = next(model.parameters()).device
     val_loss_sum = 0.0
     val_comps_sum: dict[str, float] = collections.defaultdict(float)
+    val_comps_count: dict[str, int] = collections.defaultdict(int)
+    all_keys: set[str] = set()
     total_samples = 0
     with torch.no_grad():
         for y_hist, u_hist, u_future, y_target in val_loader:
-            b_size = y_hist.shape[0]
-            total_samples += b_size
-            b_loss, b_parts = loss_fn(
+            b_size = y_hist.size(0)
+            loss, parts = loss_fn(
                 model,
                 y_hist.to(device, non_blocking=True),
                 u_hist.to(device, non_blocking=True),
@@ -70,12 +86,67 @@ def _evaluate_validation(
                 y_target.to(device, non_blocking=True),
                 None,
             )
-            val_loss_sum += float(b_loss.detach()) * b_size
-            for key, val in b_parts.items():
-                val_comps_sum[key] += val * b_size
+            val_loss_sum += float(loss.detach()) * b_size
+            total_samples += b_size
+            for key, val in parts.items():
+                all_keys.add(key)
+                if val is not None:
+                    val_comps_sum[key] += val * b_size
+                    val_comps_count[key] += b_size
     if total_samples == 0:
         return 0.0, {}
-    return val_loss_sum / total_samples, {k: v / total_samples for k, v in val_comps_sum.items()}
+    comps: dict[str, float | None] = {}
+    for key in all_keys:
+        if val_comps_count[key] > 0:
+            comps[key] = val_comps_sum[key] / val_comps_count[key]
+        else:
+            comps[key] = None
+    return val_loss_sum / total_samples, comps
+
+
+def _train_epoch(  # noqa: PLR0913 -- training batch context requires optimizer, scheduler, and epoch
+    model: nn.Module,
+    train_loader: DataLoader[tuple[Tensor, Tensor, Tensor, Tensor]],
+    *,
+    optimizer: torch.optim.Optimizer,
+    scheduler: torch.optim.lr_scheduler.LRScheduler,
+    loss_fn: Callable[
+        [nn.Module, Tensor, Tensor, Tensor, Tensor, int | None], tuple[Tensor, Mapping[str, float | None]]
+    ],
+    epoch: int,
+    device: torch.device,
+) -> tuple[float, dict[str, float | None]]:
+    """Train ``model`` for one epoch over mini-batches of ``train_loader`` and return mean Loss and components."""
+    epoch_loss, batches = 0.0, 0
+    comps_sum: dict[str, float] = collections.defaultdict(float)
+    comps_count: dict[str, int] = collections.defaultdict(int)
+    all_keys: set[str] = set()
+
+    for y_hist, u_hist, u_future, y_target in train_loader:
+        loss, parts = loss_fn(
+            model,
+            y_hist.to(device, non_blocking=True),
+            u_hist.to(device, non_blocking=True),
+            u_future.to(device, non_blocking=True),
+            y_target.to(device, non_blocking=True),
+            epoch,
+        )
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
+        scheduler.step()
+
+        epoch_loss += float(loss.detach())
+        for key, val in parts.items():
+            all_keys.add(key)
+            if val is not None:
+                comps_sum[key] += val
+                comps_count[key] += 1
+        batches += 1
+
+    train_loss = epoch_loss / max(batches, 1)
+    train_parts = {k: (comps_sum[k] / comps_count[k] if comps_count[k] > 0 else None) for k in all_keys}
+    return train_loss, train_parts
 
 
 def fit_gradient_descent(  # noqa: PLR0913 -- model, data loaders and config
@@ -85,20 +156,20 @@ def fit_gradient_descent(  # noqa: PLR0913 -- model, data loaders and config
     cfg: TrainingConfig,
     *,
     seed: int,
-    loss_fn: Callable[[nn.Module, Tensor, Tensor, Tensor, Tensor, int | None], tuple[Tensor, dict[str, float]]],
+    loss_fn: Callable[
+        [nn.Module, Tensor, Tensor, Tensor, Tensor, int | None], tuple[Tensor, Mapping[str, float | None]]
+    ],
     desc: str = "Training",
-) -> tuple[list[float], list[float], dict[str, list[float]], dict[str, list[float]]]:
-    """Run the gradient-descent training loop, leaving ``model`` holding the best-validation weights.
+    eligibility_start: int = 0,
+) -> GradientFitResult:
+    """Run the gradient-descent training loop, leaving ``model`` holding the best eligible weights."""
+    if cfg.epochs <= eligibility_start:
+        msg = (
+            f"Training epochs ({cfg.epochs}) cannot reach schedule eligibility start ({eligibility_start}); "
+            f"the epoch budget must be > {eligibility_start} to reach full training."
+        )
+        raise ValueError(msg)
 
-    Generic over any torch module: ``loss_fn`` maps ``(model, y_hist, u_hist, u_future, y_target, epoch)``
-    to that batch's loss and its unweighted component diagnostics. ``epoch`` is ``None`` for the
-    validation score, so a curriculum schedule can trust its full span there. AdamW with the shared
-    warmup-cosine schedule, a best-validation snapshot and patience-based early stopping are the same
-    for every module.
-
-    Returns ``(train_losses, val_losses, train_components, val_components)``, one entry per epoch
-    actually run; the component dicts hold per-epoch unweighted means keyed by loss name.
-    """
     torch.manual_seed(seed)
     device = next(model.parameters()).device
 
@@ -110,44 +181,33 @@ def fit_gradient_descent(  # noqa: PLR0913 -- model, data loaders and config
     scheduler = lr_schedule(optimizer, warmup_steps=warmup_steps, total_steps=total_steps)
 
     best_val_loss = float("inf")
-    # A torch module is mutable, so the best-so-far snapshot has to be a copy on CPU, not an alias on GPU.
-    best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
+    best_state: dict[str, Tensor] | None = None
+    selected_epoch = eligibility_start
     epochs_without_improvement = 0
+    stopping_reason = "max_epochs"
     train_losses: list[float] = []
     val_losses: list[float] = []
-    train_components: dict[str, list[float]] = collections.defaultdict(list)
-    val_components: dict[str, list[float]] = collections.defaultdict(list)
+    train_components: dict[str, list[float | None]] = collections.defaultdict(list)
+    val_components: dict[str, list[float | None]] = collections.defaultdict(list)
 
     pbar = tqdm(range(cfg.epochs), desc=desc)
     for epoch in pbar:
-        epoch_loss, batches = 0.0, 0
-        comps_sum: dict[str, float] = collections.defaultdict(float)
-        for y_hist, u_hist, u_future, y_target in train_loader:
-            loss, parts = loss_fn(
-                model,
-                y_hist.to(device, non_blocking=True),
-                u_hist.to(device, non_blocking=True),
-                u_future.to(device, non_blocking=True),
-                y_target.to(device, non_blocking=True),
-                epoch,
-            )
-            optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
-            scheduler.step()
-
-            epoch_loss += float(loss.detach())
-            for key, val in parts.items():
-                comps_sum[key] += val
-            batches += 1
-
-        train_loss = epoch_loss / max(batches, 1)
+        train_loss, train_parts = _train_epoch(
+            model,
+            train_loader,
+            optimizer=optimizer,
+            scheduler=scheduler,
+            loss_fn=loss_fn,
+            epoch=epoch,
+            device=device,
+        )
         val_loss, val_parts = _evaluate_validation(model, val_loader, loss_fn)
 
         train_losses.append(train_loss)
         val_losses.append(val_loss)
-        for key, val in comps_sum.items():
-            train_components[key].append(val / max(batches, 1))
+
+        for key, val in train_parts.items():
+            train_components[key].append(val)
         for key, val in val_parts.items():
             val_components[key].append(val)
 
@@ -155,16 +215,28 @@ def fit_gradient_descent(  # noqa: PLR0913 -- model, data loaders and config
             msg = "Loss is NaN. Aborting training."
             raise ValueError(msg)
 
-        if val_loss < best_val_loss:
-            best_val_loss = val_loss
-            best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
-            epochs_without_improvement = 0
-        else:
-            epochs_without_improvement += 1
+        if epoch >= eligibility_start:
+            if val_loss < best_val_loss:
+                best_val_loss = val_loss
+                best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
+                selected_epoch = epoch
+                epochs_without_improvement = 0
+            else:
+                epochs_without_improvement += 1
 
         pbar.set_postfix(train_loss=f"{train_loss:.4f}", val_loss=f"{val_loss:.4f}")
-        if epochs_without_improvement >= cfg.patience:
+        if epoch >= eligibility_start and epochs_without_improvement >= cfg.patience:
+            stopping_reason = "early_stopping"
             break
 
-    model.load_state_dict({k: v.to(device) for k, v in best_state.items()})
-    return train_losses, val_losses, dict(train_components), dict(val_components)
+    if best_state is not None:
+        model.load_state_dict({k: v.to(device) for k, v in best_state.items()})
+
+    return GradientFitResult(
+        train_losses=train_losses,
+        val_losses=val_losses,
+        train_components=dict(train_components),
+        val_components=dict(val_components),
+        selected_epoch=selected_epoch,
+        stopping_reason=stopping_reason,
+    )

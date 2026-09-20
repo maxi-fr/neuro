@@ -20,7 +20,7 @@ from neuro.predictor.evaluation import (
 )
 from neuro.predictor.gradient import fit_gradient_descent, float32_tensor
 from neuro.predictor.inference import inference_from_checkpoint
-from neuro.predictor.losses import LossContext, build_losses, total_loss
+from neuro.predictor.losses import LossContext, build_losses, eligibility_start_epoch, total_loss
 from neuro.predictor.module import AutoregressiveCNN, AutoregressiveMLP
 from neuro.predictor.ridge import RidgeTrainer, RidgeTrainingResult
 from neuro.provenance import training_provenance
@@ -52,8 +52,8 @@ class TrainingResult:
         ``rollout_nmse``, all lower-is-better.
     train_losses, val_losses : list[float]
         Per-epoch loss, one entry per epoch actually run (early stopping shortens both).
-    train_components, val_components : dict[str, list[float]]
-        Per-epoch unweighted loss components and diagnostics.
+    train_components, val_components : dict[str, list[float | None]]
+        Per-epoch unweighted loss components and diagnostics, with None for terms not run.
     free_run : RolloutNMSE | ObservableFrameMSE
         Free-run error on ``val_trajs``, per step and pooled: rollout NMSE on the waveform kind,
         log-power Frame MSE on the observable kind.
@@ -66,18 +66,27 @@ class TrainingResult:
     du_sensitivity : float
         Mean Frobenius norm of the Rollout's Jacobian with respect to future Control Currents. A
         value near zero means the model predicts EEG while ignoring stimulation.
+    eligibility_start : int
+        First training epoch where every enabled scheduled Loss is active and curriculum at full Span.
+    selected_epoch : int
+        Epoch of the checkpoint loaded into ``predictor``, selected from the eligible phase.
+    stopping_reason : str
+        Reason training ended: 'early_stopping' or 'max_epochs'.
     """
 
     predictor: AutoregressiveMLP | AutoregressiveCNN
     candidates: dict[str, float]
     train_losses: list[float]
     val_losses: list[float]
-    train_components: dict[str, list[float]]
-    val_components: dict[str, list[float]]
+    train_components: dict[str, list[float | None]]
+    val_components: dict[str, list[float | None]]
     free_run: RolloutNMSE | ObservableFrameMSE
     log_energy: LogEnergyError | None
     val_trajs: list[tuple[FloatArray, FloatArray]]
     du_sensitivity: float
+    eligibility_start: int
+    selected_epoch: int
+    stopping_reason: str
 
     def save(self, artifact_dir: Path) -> None:
         """Write the numpy-checkpoint and ``training_stats.json`` into ``artifact_dir``."""
@@ -88,6 +97,9 @@ class TrainingResult:
             "train_components": self.train_components,
             "val_components": self.val_components,
             "du_sensitivity": self.du_sensitivity,
+            "eligibility_start": self.eligibility_start,
+            "selected_epoch": self.selected_epoch,
+            "stopping_reason": self.stopping_reason,
             **free_run_stats(self.free_run, self.log_energy),
         }
         (artifact_dir / "training_stats.json").write_text(json.dumps(stats, indent=2))
@@ -417,13 +429,14 @@ def _train_observable(
         u_future: Tensor,
         y_target: Tensor,
         epoch: int | None,
-    ) -> tuple[Tensor, dict[str, float]]:
+    ) -> tuple[Tensor, dict[str, float | None]]:
         """Roll out and score against the standardized Frame targets."""
         ctx = LossContext(y_center=y_center, y_scale=y_scale, fs=fs_frame, epoch=epoch)
         pred_traj = model(y_hist, u_hist, u_future)
         return total_loss(losses, pred_traj, y_target, ctx)
 
-    train_losses, val_losses, train_comps, val_comps = fit_gradient_descent(
+    eligibility_start = eligibility_start_epoch(losses)
+    fit = fit_gradient_descent(
         model,
         train_loader,
         val_loader,
@@ -431,6 +444,7 @@ def _train_observable(
         seed=seed,
         loss_fn=batch_loss,
         desc="Training Observable Predictor",
+        eligibility_start=eligibility_start,
     )
 
     eval_steps = max(1, round(trn.eval_horizon_s * fs_frame))
@@ -445,17 +459,20 @@ def _train_observable(
     return TrainingResult(
         predictor=model,
         candidates={
-            "val_loss": float(min(val_losses)),
+            "val_loss": float(fit.val_losses[fit.selected_epoch]),
             "val_log_mse": frame_mse.pooled,
         },
-        train_losses=train_losses,
-        val_losses=val_losses,
-        train_components=train_comps,
-        val_components=val_comps,
+        train_losses=fit.train_losses,
+        val_losses=fit.val_losses,
+        train_components=fit.train_components,
+        val_components=fit.val_components,
         free_run=frame_mse,
         log_energy=None,
         val_trajs=data.val_trajs,
         du_sensitivity=du_sensitivity,
+        eligibility_start=eligibility_start,
+        selected_epoch=fit.selected_epoch,
+        stopping_reason=fit.stopping_reason,
     )
 
 
@@ -644,13 +661,14 @@ def _train_waveform(cfg: NNPredictorConfig, data_files: list[str], *, seed_offse
         u_future: Tensor,
         y_target: Tensor,
         epoch: int | None,
-    ) -> tuple[Tensor, dict[str, float]]:
+    ) -> tuple[Tensor, dict[str, float | None]]:
         """Roll out and score against the standardized waveform targets."""
         ctx = LossContext(y_center=y_center, y_scale=y_scale, fs=fs, epoch=epoch)
         pred_traj = model(y_hist, u_hist, u_future)
         return total_loss(losses, pred_traj, y_target, ctx)
 
-    train_losses, val_losses, train_comps, val_comps = fit_gradient_descent(
+    eligibility_start = eligibility_start_epoch(losses)
+    fit = fit_gradient_descent(
         model,
         train_loader,
         val_loader,
@@ -658,6 +676,7 @@ def _train_waveform(cfg: NNPredictorConfig, data_files: list[str], *, seed_offse
         seed=seed,
         loss_fn=batch_loss,
         desc="Training MLP",
+        eligibility_start=eligibility_start,
     )
 
     eval_steps = max(1, round(trn.eval_horizon_s * fs))
@@ -672,15 +691,18 @@ def _train_waveform(cfg: NNPredictorConfig, data_files: list[str], *, seed_offse
         predictor=model,
         candidates={
             "log_energy": log_energy.pooled,
-            "val_loss": float(min(val_losses)),
+            "val_loss": float(fit.val_losses[fit.selected_epoch]),
             "rollout_nmse": rollout.pooled,
         },
-        train_losses=train_losses,
-        val_losses=val_losses,
-        train_components=train_comps,
-        val_components=val_comps,
+        train_losses=fit.train_losses,
+        val_losses=fit.val_losses,
+        train_components=fit.train_components,
+        val_components=fit.val_components,
         free_run=rollout,
         log_energy=log_energy,
         val_trajs=data.val_trajs,
         du_sensitivity=du_sensitivity,
+        eligibility_start=eligibility_start,
+        selected_epoch=fit.selected_epoch,
+        stopping_reason=fit.stopping_reason,
     )

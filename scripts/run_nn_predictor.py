@@ -37,7 +37,11 @@ def main() -> None:
     summary = ", ".join(f"{k}: {v:.4f}" for k, v in scores.items() if isinstance(v, float))
     # A closed-form fit has no epoch loop, so du sensitivity is only measured on the gradient arm.
     if isinstance(result, TrainingResult):
-        summary += f", du sensitivity: {result.du_sensitivity:.4f}"
+        summary += (
+            f", selected epoch: {result.selected_epoch} "
+            f"(eligible from epoch {result.eligibility_start}, {result.stopping_reason})"
+            f", du sensitivity: {result.du_sensitivity:.4f}"
+        )
     print(summary)
     print(f"Saved NN predictor checkpoint -> {artifact_dir / 'model.npz'}")
     print(f"Plot saved to {artifact_dir / 'comparison.png'}")

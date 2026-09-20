@@ -214,14 +214,43 @@ def build_losses(specs: LossSpecs | dict[str, LossSpec], fs: float) -> list[Loss
     return losses
 
 
-def total_loss(losses: Sequence[Loss], pred: Tensor, true: Tensor, ctx: LossContext) -> tuple[Tensor, dict[str, float]]:
-    """Compute weighted sum of active loss terms and unweighted per-term diagnostics."""
+def loss_eligibility_start(loss: Loss) -> int:
+    """Earliest training epoch where ``loss`` is active at its full Span, or 0 if disabled."""
+    if loss.weight <= 0.0:
+        return 0
+    start = loss.start_epoch
+    if isinstance(loss, CurriculumMSE):
+        if loss.span_steps <= 1:
+            return start
+        epoch = max(start, loss.curr_start)
+        while loss.trusted_length(epoch) < loss.span_steps:
+            epoch += 1
+        return epoch
+    return start
+
+
+def eligibility_start_epoch(losses: Sequence[Loss]) -> int:
+    """First training epoch where every enabled Loss is active and every curriculum at full Span."""
+    return max((loss_eligibility_start(loss) for loss in losses), default=0)
+
+
+def specs_eligibility_start(specs: LossSpecs | dict[str, LossSpec] | None, fs: float) -> int:
+    """First training epoch where every enabled Loss is active and every curriculum at full Span from specs."""
+    if specs is None:
+        return 0
+    return eligibility_start_epoch(build_losses(specs, fs))
+
+
+def total_loss(
+    losses: Sequence[Loss], pred: Tensor, true: Tensor, ctx: LossContext
+) -> tuple[Tensor, dict[str, float | None]]:
+    """Compute weighted sum of active loss terms and unweighted diagnostics, distinguishing unrun terms."""
     total = torch.zeros((), dtype=pred.dtype, device=pred.device)
-    comps: dict[str, float] = {}
+    comps: dict[str, float | None] = {}
 
     for loss in losses:
-        comps[loss.name] = 0.0
-        if ctx.epoch is not None and ctx.epoch < loss.start_epoch:
+        if loss.weight <= 0.0 or (ctx.epoch is not None and ctx.epoch < loss.start_epoch):
+            comps[loss.name] = None
             continue
         val, diag = loss(pred, true, ctx)
         total = total + loss.weight * val

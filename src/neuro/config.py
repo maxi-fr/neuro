@@ -366,6 +366,27 @@ class LossSpecs(StrictConfig):
         """Return a mapping of non-None configured loss specs."""
         return {name: spec for name in self.__class__.model_fields if (spec := getattr(self, name)) is not None}
 
+    def eligibility_start(self, fs: float) -> int:
+        """First training epoch where every enabled Loss is active and every curriculum at full Span."""
+        starts = [0]
+        for spec in self.active().values():
+            if spec.weight <= 0.0:
+                continue
+            start = spec.start_epoch
+            if isinstance(spec, CurriculumMSESpec):
+                span_steps = spec.span_steps(fs)
+                if span_steps > 1:
+                    span = max(spec.curr_end - spec.curr_start, 1)
+                    epoch = max(start, spec.curr_start)
+                    while True:
+                        frac = min(max((epoch - spec.curr_start) / span, 0.0), 1.0)
+                        if round(1 + (span_steps - 1) * frac) >= span_steps:
+                            break
+                        epoch += 1
+                    start = epoch
+            starts.append(start)
+        return max(starts)
+
     @model_validator(mode="after")
     def _validate_non_empty(self) -> Self:
         if not self.active():
@@ -660,6 +681,17 @@ class NNPredictorConfig(StrictConfig):
                 raise ValueError(msg)
         else:
             _validate_waveform_losses(self.training.losses, self.fs)
+
+        if self.training.fit == "gradient_descent" and self.training.losses is not None:
+            eff_fs = self.observable.frame_rate(self.fs) if self.observable is not None else self.fs
+            eligibility_start = self.training.losses.eligibility_start(eff_fs)
+            if self.training.epochs <= eligibility_start:
+                msg = (
+                    f"training.epochs ({self.training.epochs}) cannot reach schedule eligibility start "
+                    f"({eligibility_start}); the epoch budget must be > {eligibility_start} to reach full training."
+                )
+                raise ValueError(msg)
+
         return self
 
     @model_validator(mode="after")

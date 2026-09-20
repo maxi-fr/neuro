@@ -40,7 +40,7 @@ def plot_training_curves(result: TrainingResult | RidgeTrainingResult, plot_path
     for i, key in enumerate(result.train_components):
         color = prop_cycle[(i + 2) % len(prop_cycle)]
         plt.plot(
-            result.train_components[key],
+            np.asarray(result.train_components[key], dtype=float),
             label=f"Train {key}",
             linewidth=1.0,
             linestyle="--",
@@ -49,7 +49,7 @@ def plot_training_curves(result: TrainingResult | RidgeTrainingResult, plot_path
         )
         if key in result.val_components:
             plt.plot(
-                result.val_components[key],
+                np.asarray(result.val_components[key], dtype=float),
                 label=f"Val {key}",
                 linewidth=1.0,
                 linestyle=":",
