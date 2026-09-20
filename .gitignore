@@ -38,3 +38,4 @@ scratch/
 results/
 .claude/
 configs/comparison/
+.worktrees/
