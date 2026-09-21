@@ -263,9 +263,60 @@ def solver_metrics(logger: BaseLogger, control_dt: float) -> dict[str, float]:
     }
 
 
+def cost_metrics(logger: BaseLogger) -> dict[str, Any]:
+    """Score decomposed cost contributions and report normalization convention from controller records."""
+    available = {name for component, name in logger.signals() if component == "controller"}
+    required = {"cost_spectral", "cost_quadratic_effort", "cost_sparse_effort", "warmup"}
+    if not required <= available:
+        return {}
+    warmup = logger.signal("controller", "warmup")[1].reshape(-1).astype(bool)
+    solved = ~warmup
+    if not solved.any():
+        return {
+            "cost_spectral_mean": float("nan"),
+            "cost_quadratic_effort_mean": float("nan"),
+            "cost_sparse_effort_mean": float("nan"),
+            "cost_tracking_mean": float("nan"),
+            "cost_normalization": "unknown",
+        }
+    spec = logger.signal("controller", "cost_spectral")[1].reshape(-1)
+    quad = logger.signal("controller", "cost_quadratic_effort")[1].reshape(-1)
+    sparse = logger.signal("controller", "cost_sparse_effort")[1].reshape(-1)
+    track = (
+        logger.signal("controller", "cost_tracking")[1].reshape(-1)
+        if "cost_tracking" in available
+        else np.zeros_like(spec)
+    )
+    norm_val = "channel_mean"
+    if "normalization" in available:
+        norm_sig = logger.signal("controller", "normalization")[1].reshape(-1)
+        if len(norm_sig) > 0:
+            norm_val = str(norm_sig[0])
+    return {
+        "cost_spectral_mean": float(np.mean(spec[solved])),
+        "cost_quadratic_effort_mean": float(np.mean(quad[solved])),
+        "cost_sparse_effort_mean": float(np.mean(sparse[solved])),
+        "cost_tracking_mean": float(np.mean(track[solved])),
+        "cost_normalization": norm_val,
+    }
+
+
+def format_cost_report(metrics: dict[str, Any]) -> str:
+    """Format cost contribution breakdown and normalization convention for evaluation reporting."""
+    lines = [
+        "Cost Contributions:",
+        f"  Spectral cost:         {metrics.get('cost_spectral_mean', float('nan')):.6f}",
+        f"  Quadratic effort cost: {metrics.get('cost_quadratic_effort_mean', float('nan')):.6f}",
+        f"  Sparse effort cost:    {metrics.get('cost_sparse_effort_mean', float('nan')):.6f}",
+        f"  Tracking cost:         {metrics.get('cost_tracking_mean', float('nan')):.6f}",
+        f"  Normalization:         {metrics.get('cost_normalization', 'unknown')}",
+    ]
+    return "\n".join(lines)
+
+
 def score_run(
     config: dict[str, Any], u_max: float, *, threshold: float = SEIZURE_PTP_MV, output_dir: Path | None = None
-) -> dict[str, float]:
+) -> dict[str, Any]:
     """Score one Simulation and optionally retain its component logs, resolved config, and scores."""
     config = lfp_logging(config)
     sim = Simulation.from_config(config)
@@ -287,6 +338,7 @@ def score_run(
             **spread_metrics(sim.logger.signal("dynamics", "lfp")[1], sim.dt, connectome, threshold=threshold),
             **control_metrics(controls, u_max, control_dt),
             **solver_metrics(sim.logger, control_dt),
+            **cost_metrics(sim.logger),
         }
         metrics["delivered_charge"] = float(np.sum(np.abs(controls) * durations[:, None]))
         metrics["mean_amplitude"] = float(

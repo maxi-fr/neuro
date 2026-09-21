@@ -4,7 +4,7 @@
 
 **Blocked by:** None. Can start immediately.
 
-**Status:** Ready for implementation. Not started.
+**Status:** Complete.
 
 ## Evidence and scope
 
@@ -26,23 +26,23 @@ Existing models, checkpoints, sweeps, trials, configs, run logs, metrics, plots,
 
 ### Horizon coverage
 
-- [ ] A deterministic test of the real waveform objective reproduces the blind final 25 controls in the diagnosed 75-step configuration before the fix.
-- [ ] The corrected objective includes the terminal predicted output in a scored Frame and has no structurally omitted suffix of the intended Control Horizon.
-- [ ] The Frame grid uses only observed history and predictions through the terminal output. It does not invent a future beyond the Control Horizon or duplicate a terminal Frame's contribution.
-- [ ] Direct calculation of the same Frames and aggregation matches the objective returned by the production solver path, including its stage and terminal treatment.
-- [ ] Automatic differentiation agrees with finite differences in an active-hinge, controllable fixture. Every intended control can affect the spectral term, including the final input; tests distinguish structural blindness from a legitimately inactive hinge or zero local sensitivity.
-- [ ] Coverage includes the diagnosed geometry, a horizon shorter than one Segment with adequate history, a horizon not divisible by the hop, and an enabled Frame Kernel.
-- [ ] A bounded solve on a deterministic control-sensitive fixture demonstrates that a late input can change the spectral objective and optimized plan.
-- [ ] Targeted Cost and MPC tests and the repository gate pass. Historical Cost values are not rewritten or claimed to have been produced by this corrected implementation.
+- [x] A deterministic test of the real waveform objective reproduces the blind final 25 controls in the diagnosed 75-step configuration before the fix.
+- [x] The corrected objective includes the terminal predicted output in a scored Frame and has no structurally omitted suffix of the intended Control Horizon.
+- [x] The Frame grid uses only observed history and predictions through the terminal output. It does not invent a future beyond the Control Horizon or duplicate a terminal Frame's contribution.
+- [x] Direct calculation of the same Frames and aggregation matches the objective returned by the production solver path, including its stage and terminal treatment.
+- [x] Automatic differentiation agrees with finite differences in an active-hinge, controllable fixture. Every intended control can affect the spectral term, including the final input; tests distinguish structural blindness from a legitimately inactive hinge or zero local sensitivity.
+- [x] Coverage includes the diagnosed geometry, a horizon shorter than one Segment with adequate history, a horizon not divisible by the hop, and an enabled Frame Kernel.
+- [x] A bounded solve on a deterministic control-sensitive fixture demonstrates that a late input can change the spectral objective and optimized plan.
+- [x] Targeted Cost and MPC tests and the repository gate pass. Historical Cost values are not rewritten or claimed to have been produced by this corrected implementation.
 
 ### Cost normalization
 
-- [ ] A deterministic comparison constructs equivalent excess log-power values for both Predictor families and exposes the current channel-reduction discrepancy.
-- [ ] For matched scored Frames, reference envelopes, and weights, both spectral Costs agree within numerical tolerance.
-- [ ] Duplicating identical channels and their matching reference values leaves the normalized spectral Cost unchanged. The frequency and temporal reduction conventions are documented and tested separately.
-- [ ] Evaluation reports separate spectral, quadratic-effort, and sparse-effort Cost contributions, and identify the normalization convention used.
-- [ ] Existing saved runs retain their original recorded Cost and metadata. No compatibility mode is added solely to make historical totals resemble new totals.
-- [ ] Experimental weight choices explicitly account for the changed reduction. Claims about improved suppression or reduced charge are deferred to ticket 05.
-- [ ] Targeted Cost tests and the repository gate pass. The normalization change does not alter the corrected Frame placement or the Control Budget.
+- [x] A deterministic comparison constructs equivalent excess log-power values for both Predictor families and exposes the current channel-reduction discrepancy.
+- [x] For matched scored Frames, reference envelopes, and weights, both spectral Costs agree within numerical tolerance.
+- [x] Duplicating identical channels and their matching reference values leaves the normalized spectral Cost unchanged. The frequency and temporal reduction conventions are documented and tested separately.
+- [x] Evaluation reports separate spectral, quadratic-effort, and sparse-effort Cost contributions, and identify the normalization convention used.
+- [x] Existing saved runs retain their original recorded Cost and metadata. No compatibility mode is added solely to make historical totals resemble new totals.
+- [x] Experimental weight choices explicitly account for the changed reduction. Claims about improved suppression or reduced charge are deferred to ticket 05.
+- [x] Targeted Cost tests and the repository gate pass. The normalization change does not alter the corrected Frame placement or the Control Budget.
 
-- [ ] Historical artifacts remain unchanged. New diagnostic outputs use a new experiment folder or uniquely named additions, and output collisions are detected before writing.
+- [x] Historical artifacts remain unchanged. New diagnostic outputs use a new experiment folder or uniquely named additions, and output collisions are detected before writing.

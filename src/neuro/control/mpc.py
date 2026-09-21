@@ -34,6 +34,7 @@ from neuro.control.costs import (
     ObservableFrameHingeCost,
     ObservableHingeCost,
     ReducedEffortCost,
+    SpectralHingeCost,
     SumCost,
     has_whole_horizon_cost,
 )
@@ -68,6 +69,11 @@ class TrajOptMPCLog:
     solve_time: float
     predicted_y: FloatArray
     planned_u: FloatArray
+    cost_spectral: float = 0.0
+    cost_quadratic_effort: float = 0.0
+    cost_sparse_effort: float = 0.0
+    cost_tracking: float = 0.0
+    normalization: str = "channel_mean"
 
 
 @eqx.filter_jit
@@ -517,6 +523,16 @@ def _load_waveform_runtime(artifact: str | Path) -> WaveformMLPModel | WaveformC
     return base
 
 
+def _waveform_terminal_cost(
+    base_terminal: CostFunction,
+    frame_hinge: ObservableFrameHingeCost | None,
+) -> CostFunction:
+    """Combine output tracking and optional terminal Frame hinge into the terminal Cost."""
+    if frame_hinge is None:
+        return base_terminal
+    return _combine_costs([base_terminal, frame_hinge.as_terminal()])
+
+
 def build_waveform_problem(  # noqa: PLR0913 -- checkpoint plus the ten MPC cost/bound knobs
     artifact: str | Path,
     *,
@@ -612,15 +628,18 @@ def build_waveform_problem(  # noqa: PLR0913 -- checkpoint plus the ten MPC cost
         costs.append(ReducedEffortCost(n=n, m=m, w_u=w_u, horizon=horizon))
     if w_u_l1 > 0:
         costs.append(L1ControlCost(n=n, m=m, w_l1=w_u_l1, horizon=horizon))
+    frame_hinge: ObservableFrameHingeCost | None = None
     if envelope is not None:
-        costs.append(ObservableFrameHingeCost(model, envelope, w_hinge=w_hinge, horizon=horizon))
+        frame_hinge = ObservableFrameHingeCost(model, envelope, w_hinge=w_hinge, horizon=horizon)
+        costs.append(frame_hinge)
     stage_cost: CostFunction = _combine_costs(costs)
     if w_y_terminal is not None and w_y_terminal != w_y:
         Q_f = jnp.full(model.p, 2.0 * w_y_final / horizon)
-        terminal = OutputCost(model, DiagonalCost.terminal_tracking(Q_f, target, m=m))
+        base_terminal: CostFunction = OutputCost(model, DiagonalCost.terminal_tracking(Q_f, target, m=m))
     else:
-        terminal = output_stage.as_terminal()
-    objective = Objective(stage_cost=stage_cost, terminal_cost=terminal, N=N)
+        base_terminal = output_stage.as_terminal()
+    terminal_cost = _waveform_terminal_cost(base_terminal, frame_hinge)
+    objective = Objective(stage_cost=stage_cost, terminal_cost=terminal_cost, N=N)
 
     return _assemble_problem(
         model,
@@ -724,6 +743,119 @@ def build_observable_problem(  # noqa: PLR0913 -- checkpoint plus the MPC cost/b
     )
 
 
+def _collect_leaf_costs(cost: CostFunction) -> list[CostFunction]:
+    """Flatten SumCost hierarchies into individual leaf CostFunction instances."""
+    if isinstance(cost, SumCost):
+        leaves: list[CostFunction] = []
+        for c in cost.costs:
+            leaves.extend(_collect_leaf_costs(c))
+        return leaves
+    return [cost]
+
+
+def _diagonal_r(c: CostFunction) -> jax.Array | None:
+    """Extract control penalty weight R from a diagonal or wrapped diagonal cost."""
+    target = c.inner if isinstance(c, ExcludeInitialKnotState) else c
+    diag = target.cost if isinstance(target, OutputCost) else target
+    return diag.R if isinstance(diag, DiagonalCost) else None
+
+
+def _is_spectral_cost(c: CostFunction) -> bool:
+    """Identify whether a CostFunction represents an Observable or spectral hinge."""
+    return (
+        isinstance(c, (ObservableFrameHingeCost, ObservableHingeCost, SpectralHingeCost))
+        or (
+            isinstance(c, OutputCost)
+            and isinstance(c.cost, (ObservableFrameHingeCost, ObservableHingeCost, SpectralHingeCost))
+        )
+        or (isinstance(c, ExcludeInitialKnotState) and _is_spectral_cost(c.inner))
+    )
+
+
+def _stage_leaf_contributions(
+    c: CostFunction,
+    states: jax.Array,
+    controls: jax.Array,
+    t_stage: jax.Array,
+) -> tuple[float, float, float, float]:
+    """Break one stage Cost leaf into (spectral, quadratic_effort, sparse_effort, tracking)."""
+    full_val = float(jnp.sum(c.stage_costs(states[:-1], controls, t_stage)))
+    if _is_spectral_cost(c):
+        return full_val, 0.0, 0.0, 0.0
+    if isinstance(c, L1ControlCost):
+        return 0.0, 0.0, full_val, 0.0
+    if isinstance(c, ReducedEffortCost):
+        return 0.0, full_val, 0.0, 0.0
+    r = _diagonal_r(c)
+    if r is not None:
+        r_val = float(0.5 * jnp.sum(r * (controls**2)))
+        return 0.0, r_val, 0.0, full_val - r_val
+    return 0.0, 0.0, 0.0, full_val
+
+
+def decompose_cost(
+    problem: Problem,
+    states: jax.Array,
+    controls: jax.Array,
+    t: float = 0.0,
+    dt: float = 1.0,
+) -> dict[str, Any]:
+    """Decompose the total optimal control cost into spectral, effort, and tracking contributions.
+
+    Parameters
+    ----------
+    problem
+        The optimal control Problem containing the objective.
+    states
+        State trajectory of shape ``(N, n)``.
+    controls
+        Control trajectory of shape ``(N - 1, m)``.
+    t
+        Initial time of the trajectory.
+    dt
+        Sampling period.
+
+    Returns
+    -------
+    dict[str, Any]
+        Dictionary containing ``cost_spectral``, ``cost_quadratic_effort``,
+        ``cost_sparse_effort``, ``cost_tracking``, ``cost_total``, and ``normalization``.
+    """
+    N = states.shape[0]
+    t_stage = t + jnp.arange(N - 1) * dt
+    t_term = t + (N - 1) * dt
+
+    spectral_val = 0.0
+    quadratic_effort_val = 0.0
+    sparse_effort_val = 0.0
+    tracking_val = 0.0
+
+    for c in _collect_leaf_costs(problem.obj.stage_cost):
+        s, qe, se, tr = _stage_leaf_contributions(c, states, controls, t_stage)
+        spectral_val += s
+        quadratic_effort_val += qe
+        sparse_effort_val += se
+        tracking_val += tr
+
+    for c in _collect_leaf_costs(problem.obj.terminal_cost):
+        term_val = float(c.evaluate(states[-1], None, t_term))
+        if _is_spectral_cost(c):
+            spectral_val += term_val
+        else:
+            tracking_val += term_val
+
+    cost_total = spectral_val + quadratic_effort_val + sparse_effort_val + tracking_val
+
+    return {
+        "cost_spectral": spectral_val,
+        "cost_quadratic_effort": quadratic_effort_val,
+        "cost_sparse_effort": sparse_effort_val,
+        "cost_tracking": tracking_val,
+        "cost_total": cost_total,
+        "normalization": "channel_mean",
+    }
+
+
 class TrajOptMPCController(Controller[TrajOptMPCLog]):
     """Receding-horizon MPC for the Waveform Predictor, driven by trajopt's :class:`~trajopt.mpc.MPC`.
 
@@ -812,6 +944,11 @@ class TrajOptMPCController(Controller[TrajOptMPCLog]):
                 solve_time=0.0,
                 predicted_y=np.full((knots, self.model.p), np.nan),
                 planned_u=np.full((knots - 1, self.n_electrodes), np.nan),
+                cost_spectral=0.0,
+                cost_quadratic_effort=0.0,
+                cost_sparse_effort=0.0,
+                cost_tracking=0.0,
+                normalization="channel_mean",
             )
 
         self.mpc.measure(jnp.asarray(self._state), t)
@@ -823,6 +960,7 @@ class TrajOptMPCController(Controller[TrajOptMPCLog]):
         predicted_y = np.asarray(planned_outputs(self.model, self.mpc.states, self.mpc.controls, t, self.dt)).copy()
         plan = np.asarray(self.mpc.controls)
         planned_u = (plan if self._basis is None else plan @ self._basis.T).copy()
+        costs_decomp = decompose_cost(self.mpc.problem, self.mpc.states, self.mpc.controls, t, self.dt)
         self.mpc.shift(self.dt)
         # ``_u_last`` feeds ``model.absorb``, which expands for itself, so the state keeps the
         # solver's own coordinates while the Plant and the log get the electrode currents.
@@ -836,4 +974,9 @@ class TrajOptMPCController(Controller[TrajOptMPCLog]):
             solve_time=solve_time,
             predicted_y=predicted_y,
             planned_u=planned_u,
+            cost_spectral=costs_decomp["cost_spectral"],
+            cost_quadratic_effort=costs_decomp["cost_quadratic_effort"],
+            cost_sparse_effort=costs_decomp["cost_sparse_effort"],
+            cost_tracking=costs_decomp["cost_tracking"],
+            normalization=costs_decomp["normalization"],
         )
