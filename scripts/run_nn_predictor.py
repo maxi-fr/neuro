@@ -26,7 +26,9 @@ def main() -> None:
         return
 
     artifact_dir = resolve_artifact_dir(config.artifact, "nn_predictor")
-    shutil.copy2(config_path, artifact_dir / config_path.name)
+    target_config_copy = artifact_dir / config_path.name
+    if config_path.resolve() != target_config_copy.resolve():
+        shutil.copy2(config_path, target_config_copy)
 
     result = train(config, data_files)
     result.save(artifact_dir)
