@@ -4,7 +4,7 @@
 
 **Blocked by:** 02. Align training, offline Rollouts, and MPC input timing.
 
-**Status:** Ready for implementation. Not started.
+**Status:** Complete.
 
 ## Evidence and scope
 
@@ -18,12 +18,12 @@ Existing models, checkpoints, sweeps, trials, configs, run logs, metrics, plots,
 
 ## Acceptance criteria
 
-- [ ] The evaluation uses the requested MPC sample period and complete Control Horizon, including the terminal predicted output. Windows without a full recorded future are excluded and counted.
-- [ ] It reports per-lookahead waveform RMSE and normalized error, spectral error under the intended Observable geometry, and predicted versus recorded amplitude or energy growth. One-step results remain separately visible.
-- [ ] A persistence baseline and the existing zero-prediction normalization make error magnitudes interpretable. Near-zero reference energy produces an explicit undefined or rejected result rather than a misleading ratio.
-- [ ] Checkpoint, data partition, preprocessing, sample rate, horizon, and reference identity accompany the numeric results. Training and evaluation recordings are separated at the trajectory level.
-- [ ] A stable fixture passes and an unstable fixture fails declared eligibility criteria. The investigated checkpoints are rejected on their saved 75-step actual-input replays without hard-coded checkpoint names.
-- [ ] Numerical tolerances and scientific acceptance thresholds are separately documented. Scientific thresholds are fixed from held-out calibration before comparing retrained candidates or viewing the closed-loop test-seed outcomes.
-- [ ] Insufficient horizon coverage or unavailable calibration yields insufficient evidence, never a pass. The comparison workflow can check this result before accepting a candidate for the corrected-model experiment.
-- [ ] Saved-plan reconstruction and actual-input accuracy have separate labels. The report does not treat later replanning differences as prediction error under the original plan.
-- [ ] Targeted evaluation tests and the repository gate pass.
+- [x] The evaluation uses the requested MPC sample period and complete Control Horizon, including the terminal predicted output. Windows without a full recorded future are excluded and counted.
+- [x] It reports per-lookahead waveform RMSE and normalized error, spectral error under the intended Observable geometry, and predicted versus recorded amplitude or energy growth. One-step results remain separately visible.
+- [x] A persistence baseline and the existing zero-prediction normalization make error magnitudes interpretable. Near-zero reference energy produces an explicit undefined or rejected result rather than a misleading ratio.
+- [x] Checkpoint, data partition, preprocessing, sample rate, horizon, and reference identity accompany the numeric results. Training and evaluation recordings are separated at the trajectory level.
+- [x] A stable fixture passes and an unstable fixture fails declared eligibility criteria. The investigated checkpoints are rejected on their saved 75-step actual-input replays without hard-coded checkpoint names.
+- [x] Numerical tolerances and scientific acceptance thresholds are separately documented. Scientific thresholds are fixed from held-out calibration before comparing retrained candidates or viewing the closed-loop test-seed outcomes.
+- [x] Insufficient horizon coverage or unavailable calibration yields insufficient evidence, never a pass. The comparison workflow can check this result before accepting a candidate for the corrected-model experiment.
+- [x] Saved-plan reconstruction and actual-input accuracy have separate labels. The report does not treat later replanning differences as prediction error under the original plan.
+- [x] Targeted evaluation tests and the repository gate pass.
