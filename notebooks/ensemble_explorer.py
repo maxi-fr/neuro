@@ -12,17 +12,27 @@ def _():
     import numpy as np
     from matplotlib import pyplot as plt
 
-    from neuro.ensembles import cached_scalp, load_manifest, region_path
+    from neuro.ensembles import (
+        EnsembleConfig,
+        build_plants,
+        cached_scalp,
+        generate,
+        load_manifest,
+        region_path,
+    )
     from neuro.geometry import sensor_positions_mm
     from neuro.seizure import SEIZURE_PTP_MV, SPREAD_WINDOW_S, spread_profile_from_lfp
     from utils.processing import compute_psd, synchronization
 
     return (
+        EnsembleConfig,
         Path,
         SEIZURE_PTP_MV,
         SPREAD_WINDOW_S,
+        build_plants,
         cached_scalp,
         compute_psd,
+        generate,
         load_manifest,
         mo,
         np,
@@ -55,26 +65,82 @@ def _(mo):
 
 
 @app.cell
-def _(mo):
+def _(Path, mo):
     dir_input = mo.ui.text(
         value="data/predictability_ensemble",
         label="Ensemble directory",
         full_width=True,
     )
-    mo.md(f"**Ensemble directory:** {dir_input}")
-    return (dir_input,)
+    n_parents_input = mo.ui.dropdown(
+        options={"2 (Quick demo, ~30s)": 2, "4": 4, "8": 8, "16 (Full experiment, ~15m)": 16},
+        value=2,
+        label="Parents (plant seeds)",
+    )
+    n_children_input = mo.ui.dropdown(
+        options={"2 (Quick demo)": 2, "4": 4, "8 (Full experiment)": 8},
+        value=2,
+        label="Children (noise replicates)",
+    )
+    gen_button = mo.ui.run_button(
+        label="Generate ensemble on the fly",
+        kind="success",
+    )
+
+    ens_dir_candidate = Path(dir_input.value)
+    if not (ens_dir_candidate / "manifest.json").exists():
+        _content = mo.vstack(
+            [
+                dir_input,
+                mo.md(
+                    f"⚠️ No `manifest.json` found under `{ens_dir_candidate}`.\n\n"
+                    "You can generate the ensemble data on the fly directly here, or run:\n"
+                    f"```bash\nuv run python scripts/run_predictability_experiment.py --out {ens_dir_candidate}\n```"
+                ),
+                mo.hstack([n_parents_input, n_children_input, gen_button], justify="start", gap=2),
+            ]
+        )
+    else:
+        _content = mo.vstack(
+            [
+                dir_input,
+                mo.md(f"✅ Found `manifest.json` under `{ens_dir_candidate}`"),
+            ]
+        )
+    _content
+    return dir_input, gen_button, n_children_input, n_parents_input
 
 
 @app.cell
-def _(Path, dir_input, load_manifest, mo):
+def _(
+    EnsembleConfig,
+    Path,
+    build_plants,
+    dir_input,
+    gen_button,
+    generate,
+    load_manifest,
+    mo,
+    n_children_input,
+    n_parents_input,
+):
     ens_dir = Path(dir_input.value)
-    mo.stop(
-        not (ens_dir / "manifest.json").exists(),
-        mo.md(
-            f"⚠️ No `manifest.json` under `{ens_dir}`. Generate one first:\n\n"
-            f"```\nuv run python scripts/run_predictability_experiment.py --out {ens_dir}\n```"
-        ),
-    )
+    manifest_path = ens_dir / "manifest.json"
+
+    if not manifest_path.exists():
+        if not gen_button.value:
+            mo.stop(
+                predicate=True,
+                output=mo.md(
+                    "*(Waiting for ensemble data. Choose configuration above and click **Generate ensemble on the fly**)*"
+                ),
+            )
+        with mo.status.spinner(title=f"Generating ensemble under {ens_dir}..."):
+            plants = build_plants()
+            cfg = EnsembleConfig(
+                n_parents=int(n_parents_input.value),
+                n_children=int(n_children_input.value),
+            )
+            generate(ens_dir, cfg, plants)
 
     manifest = load_manifest(ens_dir)
     branch_names = [b["name"] for b in manifest["branches"]]
