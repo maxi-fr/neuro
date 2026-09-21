@@ -9,7 +9,7 @@ import numpy as np
 from scipy.signal.windows import hann
 from trajopt.costs.base import CostFunction
 
-from neuro.spectral import LOG_FLOOR, _frame_kernel_weights
+from neuro.spectral import LOG_FLOOR, ObservableEnvelope, _frame_kernel_weights
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
@@ -17,7 +17,7 @@ if TYPE_CHECKING:
     from trajopt.dynamics.base import AbstractModel
 
     from neuro.config import StftGeometry
-    from neuro.spectral import ObservableEnvelope, PsdEnvelope
+    from neuro.spectral import PsdEnvelope
     from neuro.types import FloatArray
 
 
@@ -34,9 +34,10 @@ class SumCost(CostFunction):
 
     costs: tuple[CostFunction, ...]
 
-    def __init__(self, costs: Sequence[CostFunction]) -> None:
+    def __init__(self, costs: Sequence[CostFunction], *, terminal: bool | None = None) -> None:
         """Initialize from the sub-costs, which must agree on ``n`` and ``m``."""
-        super().__init__(n=costs[0].n, m=costs[0].m)
+        is_term = costs[0].terminal if terminal is None else terminal
+        super().__init__(n=costs[0].n, m=costs[0].m, terminal=is_term)
         self.costs = tuple(costs)
 
     def evaluate(
@@ -309,39 +310,90 @@ def jax_compute_observable_frames(y: jax.Array, geometry: StftGeometry, *, fs: f
     return jnp.log(power + LOG_FLOOR)
 
 
+def frame_grid_offsets(horizon: int, geometry: StftGeometry) -> tuple[list[int], int]:
+    """Calculate causal Frame grid offsets for stage and terminal evaluations.
+
+    Parameters
+    ----------
+    horizon
+        Control Horizon in steps.
+    geometry
+        STFT geometry specifying hop and segment parameters.
+
+    Returns
+    -------
+    tuple[list[int], int]
+        Prediction step offsets ``(stage_offsets, terminal_offset)``.
+    """
+    stage_offsets = [m * geometry.n_hop for m in range((horizon - 1) // geometry.n_hop + 1)]
+    return stage_offsets, int(horizon)
+
+
+def compute_waveform_observable_frames(
+    y: jax.Array,
+    geometry: StftGeometry,
+    *,
+    fs: float,
+) -> jax.Array:
+    """Compute full Observable Frames from a continuous waveform sequence spanning history through terminal output.
+
+    Parameters
+    ----------
+    y
+        Continuous waveform array of shape ``(support - 1 + horizon + 1, n_channels)``
+        spanning ``support - 1`` past samples, ``horizon`` stage predictions, and 1 terminal prediction.
+    geometry
+        STFT geometry for Observable extraction.
+    fs
+        Sampling rate in Hz.
+
+    Returns
+    -------
+    jax.Array
+        Observable Frames of shape ``(n_frames, n_channels, n_values)``.
+    """
+    support = geometry.sample_support_steps(fs)
+    y_stage = y[:-1]
+    stage_frames = jax_compute_observable_frames(y_stage, geometry, fs=fs)
+    y_term = y[-support:]
+    term_frame = jax_compute_observable_frames(y_term, geometry, fs=fs)
+    return jnp.concatenate([stage_frames, term_frame], axis=0)
+
+
 class ObservableFrameHingeCost(CostFunction):
     """Mean squared one-sided log excess of the predicted waveform's Observable Frames over a healthy envelope.
 
     The Observable adapter for a Predictor whose knot carries a waveform sample rather than a
-    Frame: it runs the :class:`~neuro.config.StftGeometry` reduction over the stage trajectory
+    Frame: it runs the :class:`~neuro.config.StftGeometry` reduction over the trajectory
     itself, so a Frame-domain envelope scores a waveform-domain model and
     :class:`ObservableHingeCost`'s Observable joins a comparison of Costs on one Predictor.
 
-    Whole-horizon, for the reason :class:`SpectralHingeCost` is: a Frame pools
-    ``sample_support_steps`` knots, so no single knot holds one. ``evaluate`` returns ``0`` and
-    ``stage_costs`` carries the exact value, which the transcription path scores and a native
-    per-knot expansion would drop -- hence the :func:`has_whole_horizon_cost` registration.
-
-    The Frame grid spans the stage trajectory's ``horizon`` samples, anchored one sample before
-    the Control Horizon's last knot: a Frame straddling the terminal knot does not split into a
-    stage term plus a terminal term.
+    The Frame grid spans observed history through the terminal knot, including when the Control
+    Horizon is not divisible by the hop. Stage Frames are evaluated in :meth:`stage_costs`
+    and the terminal Frame is evaluated in :meth:`evaluate` when ``terminal=True``.
+    Channel and frequency reductions follow the channel-mean convention matching
+    :class:`ObservableHingeCost`.
     """
 
     model: AbstractModel
     geometry: StftGeometry = eqx.field(static=True)
     fs: float = eqx.field(static=True)
+    horizon: int = eqx.field(static=True)
+    total_frames: int = eqx.field(static=True)
     w: jax.Array
     power: jax.Array
 
-    def __init__(
+    def __init__(  # noqa: PLR0913 -- model and envelope plus weighting and horizon parameters
         self,
         model: AbstractModel,
         envelope: ObservableEnvelope,
         *,
         w_hinge: float,
         horizon: int,
+        terminal: bool = False,
+        total_frames: int | None = None,
     ) -> None:
-        """Initialize from the dynamical model, the healthy Observable envelope and the weight.
+        """Initialize from the dynamical model, healthy Observable envelope, weight, and horizon.
 
         Parameters
         ----------
@@ -353,10 +405,14 @@ class ObservableFrameHingeCost(CostFunction):
         w_hinge
             Weight on the hinge Cost; ``0`` disables it.
         horizon
-            Control Horizon in knots, which is the sample count the stage trajectory carries;
-            must cover one Frame's sample support.
+            Control Horizon in knots; must cover one Frame's sample support unless the model
+            provides sufficient past history.
+        terminal
+            Whether this instance is the terminal Cost scoring the Control Horizon's terminal Frame.
+        total_frames
+            Total number of scored Frames across stage and terminal evaluations. Computed if None.
         """
-        super().__init__(n=model.n, m=model.m)
+        super().__init__(n=model.n, m=model.m, terminal=terminal)
         if model.p is None:
             msg = "model must define an output dimension p"
             raise ValueError(msg)
@@ -371,13 +427,26 @@ class ObservableFrameHingeCost(CostFunction):
             raise ValueError(msg)
         support = envelope.geometry.sample_support_steps(envelope.fs)
         n_hist = getattr(model, "n_history", 0)
-        min_horizon = 1 if n_hist >= support and hasattr(model, "past_outputs") else support
+        has_history = n_hist >= support and callable(getattr(model, "past_outputs", None))
+        min_horizon = 1 if has_history else support
         if horizon < min_horizon:
             msg = f"horizon ({horizon}) is shorter than the sample support of one Frame ({support})"
             raise ValueError(msg)
+
+        if total_frames is None:
+            if has_history:
+                n_stage_frames = (horizon - 1) // envelope.geometry.n_hop + 1
+                calc_total = n_stage_frames + 1
+            else:
+                calc_total = (horizon - support) // envelope.geometry.n_hop + 1
+        else:
+            calc_total = total_frames
+
         self.model = model
         self.geometry = envelope.geometry
         self.fs = float(envelope.fs)
+        self.horizon = int(horizon)
+        self.total_frames = max(1, int(calc_total))
         self.w = jnp.asarray(w_hinge)
         self.power = jnp.asarray(envelope.power)
 
@@ -387,12 +456,27 @@ class ObservableFrameHingeCost(CostFunction):
         u: jax.Array | None = None,
         t: float | jax.Array = 0.0,
     ) -> jax.Array:
-        """Return ``0``: the hinge is whole-horizon and is scored by :meth:`stage_costs`."""
-        del x, u, t
-        return jnp.zeros(())
+        """Evaluate the terminal Frame if terminal=True, else return 0."""
+        del u, t
+        if not self.terminal:
+            return jnp.zeros(())
+        support = self.geometry.sample_support_steps(self.fs)
+        n_past = support - 1
+        n_hist = getattr(self.model, "n_history", 0)
+        past_outputs = getattr(self.model, "past_outputs", None)
+        if n_hist < support or not callable(past_outputs):
+            return jnp.zeros(())
+        past_fn = cast("Callable[[jax.Array, int], jax.Array]", past_outputs)
+        past_y = past_fn(x, n_past)
+        y_now = self.model.output(x)
+        y = jnp.concatenate([past_y, y_now[None]], axis=0)
+        frames = jax_compute_observable_frames(y, self.geometry, fs=self.fs)
+        excess = jnp.maximum(0.0, frames - self.power[None])
+        hinge = excess**2
+        return (self.w / self.total_frames) * jnp.mean(hinge)
 
     def stage_costs(self, X: jax.Array, U: jax.Array, t: jax.Array) -> jax.Array:
-        """Evaluate the hinge over the Frames the stage waveform carries, concentrated in entry 0.
+        """Evaluate the hinge over stage Frames with channel-mean normalization, concentrated in entry 0.
 
         Parameters
         ----------
@@ -400,6 +484,8 @@ class ObservableFrameHingeCost(CostFunction):
             Stage states ``(horizon, n)``, one waveform sample each.
         """
         del U, t
+        if self.terminal:
+            return jnp.zeros(X.shape[0])
         support = self.geometry.sample_support_steps(self.fs)
         n_past = support - 1
         n_hist = getattr(self.model, "n_history", 0)
@@ -412,9 +498,22 @@ class ObservableFrameHingeCost(CostFunction):
         else:
             y = y_future
         frames = jax_compute_observable_frames(y, self.geometry, fs=self.fs)
-        hinge = jnp.maximum(0.0, frames - self.power[None]) ** 2
-        cost_val = self.w * jnp.mean(jnp.sum(jnp.mean(hinge, axis=-1), axis=-1))
+        excess = jnp.maximum(0.0, frames - self.power[None])
+        hinge = excess**2
+        frame_means = jnp.mean(hinge, axis=(-2, -1))
+        cost_val = (self.w / self.total_frames) * jnp.sum(frame_means)
         return jnp.zeros(X.shape[0]).at[0].set(cost_val)
+
+    def as_terminal(self) -> ObservableFrameHingeCost:
+        """Derive a terminal cost scoring the final Frame."""
+        return ObservableFrameHingeCost(
+            self.model,
+            ObservableEnvelope(power=np.asarray(self.power), fs=self.fs, geometry=self.geometry),
+            w_hinge=float(self.w),
+            horizon=self.horizon,
+            terminal=True,
+            total_frames=self.total_frames,
+        )
 
 
 class ObservableHingeCost(CostFunction):
@@ -521,4 +620,6 @@ def has_whole_horizon_cost(cost: CostFunction) -> bool:
     """
     if isinstance(cost, SumCost):
         return any(has_whole_horizon_cost(sub) for sub in cost.costs)
-    return isinstance(cost, SpectralHingeCost | ObservableFrameHingeCost)
+    if isinstance(cost, ObservableFrameHingeCost):
+        return not cost.terminal
+    return isinstance(cost, SpectralHingeCost)

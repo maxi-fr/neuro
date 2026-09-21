@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import itertools
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 import jax
 import jax.numpy as jnp
@@ -13,9 +13,11 @@ from trajopt.costs.output import OutputCost
 from trajopt.dynamics.base import DiscreteDynamics
 from trajopt.mpc import MPC
 from trajopt.solvers.altro import ALTRO
+from trajopt.trajectory import Trajectory
 from trajopt.transcription.ipopt import Ipopt
 from trajopt.transcription.single_shooting import SingleShooting
 
+from neuro.comparison import cost_metrics, format_cost_report
 from neuro.config import StftGeometry
 from neuro.control.costs import (
     ExcludeInitialKnotState,
@@ -25,11 +27,13 @@ from neuro.control.costs import (
     ReducedEffortCost,
     SpectralHingeCost,
     SumCost,
+    compute_waveform_observable_frames,
+    frame_grid_offsets,
     has_whole_horizon_cost,
     jax_compute_log_power_frames,
     jax_compute_observable_frames,
 )
-from neuro.control.mpc import build_waveform_problem, kirchhoff_basis
+from neuro.control.mpc import build_waveform_problem, decompose_cost, kirchhoff_basis
 from neuro.predictor.inference import WaveformMLPModel
 from neuro.predictor.module import AutoregressiveMLP
 from neuro.spectral import HealthyReference, ObservableEnvelope, PsdEnvelope, compute_log_power_frames
@@ -39,6 +43,7 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from numpy.typing import ArrayLike
+    from simulate.logger import BaseLogger
     from trajopt.constraints.constraint_list import BuiltConstraintList
 
     from neuro.types import FloatArray
@@ -125,6 +130,7 @@ def _build_checkpoint(
     n_channels: int = 2,
     n_controls: int = 2,
     depth: int = 0,
+    dt: float = 0.01,
     equilibrium_at: FloatArray | None = None,
 ) -> Path:
     """Save a tiny synthetic (linear when ``depth=0``) MLP checkpoint with optional ``equilibrium_at`` and return its stem."""
@@ -146,7 +152,7 @@ def _build_checkpoint(
         hidden_size=5,
         depth=depth,
         activation="relu",
-        dt=0.01,
+        dt=dt,
         y_std=Standardizer(center=scalers["y_mean"], scale=scalers["y_scale"]),
         u_std=Standardizer(center=scalers["u_mean"], scale=scalers["u_scale"]),
     )
@@ -583,7 +589,7 @@ def test_observable_frame_hinge_cost_scores_the_stage_waveform() -> None:
     y_stage = X[:, newest] * y_scale + y_center
     numpy_frames = compute_log_power_frames(y_stage, geom, fs=fs)
     numpy_hinge = np.maximum(0.0, numpy_frames - envelope.power[None]) ** 2
-    want = 10.0 * float(np.mean(np.sum(np.mean(numpy_hinge, axis=-1), axis=-1)))
+    want = 10.0 * float(np.mean(numpy_hinge))
     np.testing.assert_allclose(float(stage_vals[0]), want, rtol=1e-10, atol=1e-12)
 
 
@@ -655,7 +661,7 @@ def test_observable_frame_hinge_cost_with_history_prepends_past_outputs() -> Non
 
     numpy_frames = compute_log_power_frames(y_full, geom, fs=fs)
     numpy_hinge = np.maximum(0.0, numpy_frames - envelope.power[None]) ** 2
-    want = 2.0 * float(np.mean(np.sum(np.mean(numpy_hinge, axis=-1), axis=-1)))
+    want = (2.0 / cost.total_frames) * float(np.sum(np.mean(numpy_hinge, axis=(-2, -1))))
     np.testing.assert_allclose(float(stage_vals[0]), want, rtol=1e-10, atol=1e-12)
 
 
@@ -758,3 +764,415 @@ def test_waveform_problem_active_suppression_under_seizure_deviation(tmp_path: P
     assert res.success
     ctrls = np.asarray(mpc.controls)
     assert np.max(np.abs(ctrls)) > 1e-4
+
+
+def test_reproduces_blind_tail_before_fix(tmp_path: Path) -> None:
+    """Deterministic test of the waveform objective reproducing the blind final 25 controls before fix."""
+    rng = np.random.default_rng(_SEED + 30)
+    horizon = 75
+    n_channels, n_controls = 2, 2
+    fs = 1000.0
+    geom = StftGeometry(n_segment=50, n_hop=25, kernel_width=1)
+    support = geom.sample_support_steps(fs)
+
+    artifact = _build_checkpoint(
+        tmp_path,
+        horizon=horizon,
+        depth=0,
+        n_channels=n_channels,
+        n_controls=n_controls,
+        n_y=support,
+        dt=1.0 / fs,
+    )
+    model = WaveformMLPModel.load(artifact)
+
+    power = np.full((n_channels, geom.n_values(fs)), -100.0)
+    env = ObservableEnvelope(power=power, fs=fs, geometry=geom)
+
+    x0 = np.tile((np.zeros(n_channels) - model.y_center) / model.y_scale, model.n_y)
+    x0 = np.concatenate([x0, np.zeros(model.n_u * model.n_controls)])
+
+    def legacy_objective_cost(u_seq: jax.Array) -> jax.Array:
+        def step_fn(x: jax.Array, u: jax.Array) -> tuple[jax.Array, jax.Array]:
+            x_next = model.discrete_dynamics(x, u, 0.0, model.dt)
+            return x_next, x
+
+        _, x_stage = jax.lax.scan(step_fn, jnp.asarray(x0), u_seq)
+        y_stage = jax.vmap(model.output)(x_stage)
+        past_y = model.past_outputs(jnp.asarray(x0), support - 1)
+        y_all_stage = jnp.concatenate([past_y, y_stage], axis=0)
+        frames = jax_compute_observable_frames(y_all_stage, geom, fs=fs)
+        excess = jnp.maximum(0.0, frames - env.power[None])
+        hinge = excess**2
+        return jnp.mean(jnp.sum(jnp.mean(hinge, axis=-1), axis=-1))
+
+    u_test = jnp.asarray(rng.standard_normal((horizon, n_controls)))
+    grad_legacy = jax.grad(legacy_objective_cost)(u_test)
+
+    assert float(jnp.linalg.norm(grad_legacy[:50])) > 0.0
+    np.testing.assert_allclose(np.asarray(grad_legacy[50:]), 0.0, atol=1e-15)
+
+
+def test_channel_reduction_discrepancy_reproduced() -> None:
+    """Expose the channel-reduction discrepancy: a 62x factor for 62 equivalent channels."""
+    n_channels = 62
+    n_values = 26
+    horizon = 1
+    w = 1.0
+
+    delta = 1.0
+    frame = jnp.full((1, n_channels, n_values), delta)
+    power_ref = jnp.zeros((n_channels, n_values))
+
+    obs_cost = ObservableHingeCost(power_ref, w_hinge=w, horizon=horizon)
+    obs_val = float(obs_cost.evaluate(frame[0].reshape(-1)))
+
+    hinge = (frame - power_ref[None]) ** 2
+    legacy_wave_val = float(w * jnp.mean(jnp.sum(jnp.mean(hinge, axis=-1), axis=-1)))
+
+    assert np.isclose(obs_val, 1.0)
+    assert np.isclose(legacy_wave_val, 62.0)
+    assert np.isclose(legacy_wave_val / obs_val, 62.0)
+
+
+def test_corrected_objective_includes_terminal_frame_and_full_horizon(tmp_path: Path) -> None:
+    """Corrected objective scores through terminal prediction y_H with no blind suffix."""
+    rng = np.random.default_rng(_SEED + 31)
+    horizon = 75
+    n_channels, n_controls = 2, 2
+    fs = 1000.0
+    geom = StftGeometry(n_segment=50, n_hop=25, kernel_width=1)
+    support = geom.sample_support_steps(fs)
+
+    artifact = _build_checkpoint(
+        tmp_path, horizon=horizon, depth=0, n_channels=n_channels, n_controls=n_controls, n_y=support, dt=1.0 / fs
+    )
+    ref = HealthyReference(
+        eeg_mean=np.zeros(n_channels),
+        observable=ObservableEnvelope(power=np.full((n_channels, geom.n_values(fs)), -100.0), fs=fs, geometry=geom),
+    )
+    problem = build_waveform_problem(
+        artifact,
+        horizon=horizon,
+        u_max=1.0,
+        w_y=0.0,
+        w_u=0.0,
+        w_hinge=1.0,
+        reference=ref,
+    )
+    stage_offsets, term_offset = frame_grid_offsets(horizon, geom)
+    assert stage_offsets == [0, 25, 50]
+    assert term_offset == 75
+
+    model = problem.model
+    assert isinstance(model, WaveformMLPModel)
+    x0 = np.tile((np.zeros(n_channels) - model.y_center) / model.y_scale, model.n_y)
+    x0 = np.concatenate([x0, np.zeros(model.n_u * model.n_controls)])
+
+    def full_cost(u_seq: jax.Array) -> jax.Array:
+        def step_fn(x: jax.Array, u: jax.Array) -> tuple[jax.Array, jax.Array]:
+            x_next = model.discrete_dynamics(x, u, 0.0, model.dt)
+            return x_next, x_next
+
+        _, x_stage = jax.lax.scan(step_fn, jnp.asarray(x0), u_seq)
+        X = jnp.concatenate([jnp.asarray(x0)[None], x_stage], axis=0)
+        t_grid = jnp.arange(horizon + 1) * model.dt
+        traj = Trajectory(X=X, U=u_seq, t=t_grid, dt=jnp.full(horizon, model.dt))
+        return problem.obj.cost(traj)
+
+    u_test = jnp.asarray(rng.standard_normal((horizon, n_controls)))
+    grad_corrected = jax.grad(full_cost)(u_test)
+
+    for k in range(horizon):
+        assert float(jnp.linalg.norm(grad_corrected[k])) > 0.0
+    assert float(jnp.linalg.norm(grad_corrected[74])) > 0.0
+
+
+def test_direct_calculation_matches_solver_path() -> None:
+    """Direct calculation of full Observable Frames matches the production solver path."""
+    geom = StftGeometry(n_segment=50, n_hop=25, kernel_width=1)
+    fs = 1000.0
+    horizon = 75
+    support = geom.sample_support_steps(fs)
+    w = 2.0
+
+    n_total = support - 1 + horizon + 1
+    y_full = jnp.arange(n_total, dtype=jnp.float32)[:, None] * 0.05
+    power = jnp.zeros((1, geom.n_values(fs)))
+
+    all_frames = compute_waveform_observable_frames(y_full, geom, fs=fs)
+    assert all_frames.shape[0] == 4
+    direct_cost = w * jnp.mean(jnp.maximum(0.0, all_frames - power[None]) ** 2)
+
+    stage_frames = jax_compute_observable_frames(y_full[:-1], geom, fs=fs)
+    term_frame = jax_compute_observable_frames(y_full[-support:], geom, fs=fs)
+    total_frames = (horizon - 1) // geom.n_hop + 2
+    stage_means = jnp.mean(jnp.maximum(0.0, stage_frames - power[None]) ** 2, axis=(-2, -1))
+    term_mean = jnp.mean(jnp.maximum(0.0, term_frame - power[None]) ** 2)
+    solver_cost = (w / total_frames) * (jnp.sum(stage_means) + term_mean)
+
+    np.testing.assert_allclose(float(direct_cost), float(solver_cost), atol=1e-12)
+
+
+def test_autodiff_matches_finite_differences_and_all_controls_sensitive() -> None:
+    """Autodiff matches finite differences in active-hinge fixture and every control is sensitive."""
+    geom = StftGeometry(n_segment=10, n_hop=5, kernel_width=1)
+    fs = 1000.0
+    horizon = 10
+    total_frames = 3
+
+    class _ControllableLinear(DiscreteDynamics):
+        n_history: int
+        dt: float
+
+        def __init__(self) -> None:
+            super().__init__(n=10, m=1, ne=10, p=1)
+            self.n_history = 10
+            self.dt = 0.001
+
+        def output(self, x: jax.Array, u: jax.Array | None = None, t: float | jax.Array = 0.0) -> jax.Array:
+            del u, t
+            return x[:1]
+
+        def past_outputs(self, x: jax.Array, count: int) -> jax.Array:
+            del x
+            return jnp.zeros((count, 1))
+
+        def discrete_dynamics(
+            self, x: jax.Array, u: jax.Array, t: float | jax.Array, dt: float | jax.Array
+        ) -> jax.Array:
+            del t, dt
+            return x.at[0].set(x[0] + u[0])
+
+    model = _ControllableLinear()
+    env = ObservableEnvelope(power=np.full((1, geom.n_values(fs)), -100.0), fs=fs, geometry=geom)
+    cost_stage = ObservableFrameHingeCost(model, env, w_hinge=1.0, horizon=horizon, total_frames=total_frames)
+    cost_term = cost_stage.as_terminal()
+
+    def cost_fn(u_seq: jax.Array) -> jax.Array:
+        def step(x: jax.Array, u: jax.Array) -> tuple[jax.Array, jax.Array]:
+            xn = model.discrete_dynamics(x, u, 0.0, model.dt)
+            return xn, xn
+
+        x0 = jnp.ones(10) * 0.5
+        _, X_future = jax.lax.scan(step, x0, u_seq)
+        X = jnp.concatenate([x0[None], X_future], axis=0)
+        stage_val = cost_stage.stage_costs(X[:-1], u_seq, jnp.zeros(horizon))[0]
+        term_val = cost_term.evaluate(X[-1])
+        return stage_val + term_val
+
+    u = jnp.ones((horizon, 1)) * 0.2
+    grad_ad = jax.grad(cost_fn)(u)
+
+    eps = 1e-4
+    grad_fd = np.zeros_like(u)
+    for i in range(horizon):
+        u_plus = u.at[i, 0].add(eps)
+        u_minus = u.at[i, 0].add(-eps)
+        grad_fd[i, 0] = (float(cost_fn(u_plus)) - float(cost_fn(u_minus))) / (2 * eps)
+
+    np.testing.assert_allclose(np.asarray(grad_ad), grad_fd, rtol=1e-3, atol=1e-4)
+    for k in range(horizon):
+        assert float(np.abs(grad_ad[k, 0])) > 0.0
+    assert float(np.abs(grad_ad[-1, 0])) > 0.0
+
+
+def test_coverage_geometries_odd_hop_and_frame_kernel() -> None:
+    """Coverage covers diagnosed, short horizon, non-divisible hop, and Frame Kernel."""
+    geoms = [
+        (75, StftGeometry(n_segment=50, n_hop=25, kernel_width=1)),
+        (10, StftGeometry(n_segment=50, n_hop=25, kernel_width=1)),
+        (70, StftGeometry(n_segment=50, n_hop=25, kernel_width=1)),
+        (60, StftGeometry(n_segment=20, n_hop=20, kernel_width=3)),
+    ]
+    fs = 1000.0
+    w = 2.5
+    for H, geom in geoms:
+        support = geom.sample_support_steps(fs)
+        stage_offsets, term_offset = frame_grid_offsets(H, geom)
+        assert term_offset == H
+        assert stage_offsets[-1] < H
+
+        n_total = support - 1 + H + 1
+        y_full = jnp.arange(n_total, dtype=jnp.float32)[:, None] * 0.1
+        power = jnp.zeros((1, geom.n_values(fs)))
+
+        stage_frames = jax_compute_observable_frames(y_full[:-1], geom, fs=fs)
+        term_frame = jax_compute_observable_frames(y_full[-support:], geom, fs=fs)
+        all_frames = jnp.concatenate([stage_frames, term_frame], axis=0)
+
+        direct_cost = w * jnp.mean(jnp.maximum(0.0, all_frames - power[None]) ** 2)
+
+        total_frames = (H - 1) // geom.n_hop + 2
+        stage_means = jnp.mean(jnp.maximum(0.0, stage_frames - power[None]) ** 2, axis=(-2, -1))
+        term_mean = jnp.mean(jnp.maximum(0.0, term_frame - power[None]) ** 2)
+        solver_cost = (w / total_frames) * (jnp.sum(stage_means) + term_mean)
+
+        np.testing.assert_allclose(float(direct_cost), float(solver_cost), atol=1e-12)
+
+
+def test_late_input_changes_spectral_objective_and_optimized_plan(tmp_path: Path) -> None:
+    """Late inputs change the spectral objective and are mobilized in the optimized plan."""
+    horizon = 10
+    n_channels, n_controls = 2, 2
+    fs = 1000.0
+    geom = StftGeometry(n_segment=10, n_hop=5, kernel_width=1)
+    support = geom.sample_support_steps(fs)
+    y_ref = np.zeros(n_channels)
+
+    artifact = _build_checkpoint(
+        tmp_path,
+        horizon=horizon,
+        depth=0,
+        n_channels=n_channels,
+        n_controls=n_controls,
+        n_y=support,
+        dt=1.0 / fs,
+        equilibrium_at=y_ref,
+    )
+    ref = HealthyReference(
+        eeg_mean=y_ref,
+        observable=ObservableEnvelope(power=np.full((n_channels, geom.n_values(fs)), -30.0), fs=fs, geometry=geom),
+    )
+    problem = build_waveform_problem(
+        artifact,
+        horizon=horizon,
+        u_max=2.0,
+        w_y=0.0,
+        w_u=0.05,
+        w_hinge=1.0,
+        reference=ref,
+    )
+    model = problem.model
+    assert isinstance(model, WaveformMLPModel)
+    y_seizure = y_ref + np.array([2.0, -2.0])
+    x0 = np.tile((y_seizure - model.y_center) / model.y_scale, model.n_y)
+    x0 = np.concatenate([x0, np.zeros(model.n_u * model.n_controls)])
+
+    solver = SingleShooting(
+        solver=Ipopt(options={"print_level": 0, "max_iter": 60, "tol": 1e-4, "hessian_approximation": "limited-memory"})
+    )
+    mpc = MPC(problem, solver, x0=jnp.asarray(x0))
+    res = mpc.solve()
+    assert res.success
+    controls = np.asarray(mpc.controls)
+    assert np.max(np.abs(controls[5:])) > 1e-4
+
+
+def test_spectral_costs_agree_for_matched_frames_and_envelopes() -> None:
+    """ObservableFrameHingeCost and ObservableHingeCost agree on matched frames and envelopes."""
+    n_channels = 4
+    n_values = 16
+    delta = 1.5
+    w = 3.0
+
+    frame = jnp.full((1, n_channels, n_values), delta)
+    power_ref = jnp.zeros((n_channels, n_values))
+
+    obs_cost = ObservableHingeCost(power_ref, w_hinge=w, horizon=1)
+    obs_val = float(obs_cost.evaluate(frame[0].reshape(-1)))
+
+    hinge = (frame - power_ref[None]) ** 2
+    corrected_wave_val = float(w * jnp.mean(hinge))
+
+    np.testing.assert_allclose(obs_val, corrected_wave_val, atol=1e-12)
+
+
+def test_duplicating_identical_channels_leaves_normalized_cost_unchanged() -> None:
+    """Duplicating channels leaves normalized spectral cost unchanged under channel-mean convention."""
+    rng = np.random.default_rng(_SEED + 32)
+    n_values = 10
+    c2 = rng.uniform(1.0, 3.0, (1, 2, n_values))
+    p2 = np.zeros((2, n_values))
+    hinge2 = np.maximum(0.0, c2 - p2[None]) ** 2
+    cost2 = float(np.mean(hinge2))
+
+    c4 = np.tile(c2, (1, 2, 1))
+    p4 = np.tile(p2, (2, 1))
+    hinge4 = np.maximum(0.0, c4 - p4[None]) ** 2
+    cost4 = float(np.mean(hinge4))
+
+    np.testing.assert_allclose(cost2, cost4, atol=1e-12)
+
+    bin_means = np.mean(hinge2, axis=-1)
+    np.testing.assert_allclose(float(np.mean(bin_means)), cost2, atol=1e-12)
+
+    multi_frames = np.repeat(hinge2, 5, axis=0)
+    assert np.isclose(float(np.mean(multi_frames)), cost2)
+
+
+def test_cost_contributions_and_evaluation_report(tmp_path: Path) -> None:
+    """Evaluation reports separate spectral, quadratic-effort, and sparse-effort contributions."""
+    horizon = 10
+    n_channels, n_controls = 2, 2
+    fs = 1000.0
+    geom = StftGeometry(n_segment=10, n_hop=5, kernel_width=1)
+    support = geom.sample_support_steps(fs)
+
+    artifact = _build_checkpoint(
+        tmp_path, horizon=horizon, depth=0, n_channels=n_channels, n_controls=n_controls, n_y=support, dt=1.0 / fs
+    )
+    ref = HealthyReference(
+        eeg_mean=np.zeros(n_channels),
+        observable=ObservableEnvelope(power=np.full((n_channels, geom.n_values(fs)), -100.0), fs=fs, geometry=geom),
+    )
+    problem = build_waveform_problem(
+        artifact,
+        horizon=horizon,
+        u_max=1.0,
+        w_y=1.0,
+        w_u=0.5,
+        w_u_l1=0.2,
+        w_hinge=2.0,
+        reference=ref,
+    )
+    model = problem.model
+    assert isinstance(model, WaveformMLPModel)
+    x0 = np.tile((np.zeros(n_channels) - model.y_center) / model.y_scale, model.n_y)
+    x0 = np.concatenate([x0, np.zeros(model.n_u * model.n_controls)])
+    states = jnp.repeat(jnp.asarray(x0)[None], horizon + 1, axis=0)
+    controls = jnp.ones((horizon, n_controls)) * 0.1
+
+    decomp = decompose_cost(problem, states, controls, t=0.0, dt=model.dt)
+    assert decomp["normalization"] == "channel_mean"
+    assert decomp["cost_spectral"] > 0.0
+    assert decomp["cost_quadratic_effort"] > 0.0
+    assert decomp["cost_sparse_effort"] > 0.0
+    total = (
+        decomp["cost_spectral"]
+        + decomp["cost_quadratic_effort"]
+        + decomp["cost_sparse_effort"]
+        + decomp["cost_tracking"]
+    )
+    np.testing.assert_allclose(decomp["cost_total"], total, atol=1e-10)
+
+    class _MockLogger:
+        def signals(self) -> list[tuple[str, str]]:
+            return [
+                ("controller", "cost_spectral"),
+                ("controller", "cost_quadratic_effort"),
+                ("controller", "cost_sparse_effort"),
+                ("controller", "cost_tracking"),
+                ("controller", "normalization"),
+                ("controller", "warmup"),
+            ]
+
+        def signal(self, comp: str, name: str) -> tuple[np.ndarray, np.ndarray]:
+            del comp
+            if name == "warmup":
+                return np.array([0.0, 1.0]), np.array([True, False])
+            if name == "normalization":
+                return np.array([0.0, 1.0]), np.array(["channel_mean", "channel_mean"])
+            val = decomp[name]
+            return np.array([0.0, 1.0]), np.array([0.0, val])
+
+    mock_logger = _MockLogger()
+    metrics = cost_metrics(cast("BaseLogger", mock_logger))
+    assert metrics["cost_normalization"] == "channel_mean"
+    assert np.isclose(metrics["cost_spectral_mean"], decomp["cost_spectral"])
+    assert np.isclose(metrics["cost_quadratic_effort_mean"], decomp["cost_quadratic_effort"])
+    assert np.isclose(metrics["cost_sparse_effort_mean"], decomp["cost_sparse_effort"])
+
+    report = format_cost_report(metrics)
+    assert "channel_mean" in report
+    assert "Spectral cost" in report
