@@ -19,6 +19,7 @@ from neuro.predictor.evaluation import (
 from neuro.predictor.inference import WaveformMLPModel
 from neuro.predictor.module import AutoregressiveMLP
 from neuro.run_view import Run
+from neuro.spectral import compute_log_power_frames
 from neuro.transforms import Standardizer
 
 if TYPE_CHECKING:
@@ -89,7 +90,7 @@ def _synthetic_trajectory(
 
 
 def test_investigated_checkpoint_rejected_on_saved_75_step_actual_input_replay() -> None:
-    """The investigated checkpoint fails eligibility on its saved 75-step actual-input replay."""
+    """Declared test criteria reject the investigated 75-step replay; saved-plan reconstruction still agrees."""
     if not _INVESTIGATED_RUN.exists():
         pytest.skip(f"Artifact run not found: {_INVESTIGATED_RUN}")
 
@@ -103,7 +104,9 @@ def test_investigated_checkpoint_rejected_on_saved_75_step_actual_input_replay()
         dt=0.02,
         stride=5,
         conditioning="actual",
-        thresholds=ScientificThresholds(max_growth_ratio=3.0, max_nmse=1.25),
+        thresholds=ScientificThresholds(
+            calibration_identity="test-fixture calibration", max_growth_ratio=3.0, max_nmse=1.25
+        ),
         tolerances=NumericalTolerances(reconstruction_atol=1e-5),
     )
 
@@ -149,7 +152,7 @@ def test_investigated_checkpoint_rejected_on_saved_75_step_actual_input_replay()
 
 
 def test_stable_fixture_passes_eligibility() -> None:
-    """A stable fixture passes declared scientific acceptance thresholds."""
+    """A stable fixture passes declared synthetic criteria and retains their provenance."""
     model = _create_synthetic_model(gain=0.5, horizon=75, dt=0.02)
     trajectories = [_synthetic_trajectory(n_steps=200, seed=101)]
 
@@ -159,11 +162,16 @@ def test_stable_fixture_passes_eligibility() -> None:
         horizon=75,
         dt=0.02,
         conditioning="actual",
-        thresholds=ScientificThresholds(max_growth_ratio=3.0, max_nmse=1.25),
+        thresholds=ScientificThresholds(
+            calibration_identity="test-fixture calibration", max_growth_ratio=3.0, max_nmse=1.25
+        ),
     )
 
     assert report.eligibility.status == EligibilityStatus.PASS
     assert report.eligibility.passed is True
+    criteria = report.to_dict()["metadata"]["scientific_thresholds"]
+    assert criteria["calibration_identity"] == "test-fixture calibration"
+    assert criteria["max_growth_ratio"] == 3.0
     assert report.n_evaluated_windows > 0
     assert report.max_growth_ratio <= 3.0
     growth = report.terminal_metrics["amplitude_growth"]
@@ -175,7 +183,7 @@ def test_stable_fixture_passes_eligibility() -> None:
 
 
 def test_unstable_fixture_fails_eligibility() -> None:
-    """An unstable fixture fails declared eligibility criteria due to signal growth."""
+    """An unstable fixture fails the explicitly identified synthetic growth criteria."""
     model = _create_synthetic_model(gain=1.1, horizon=75, dt=0.02)
     trajectories = [_synthetic_trajectory(n_steps=200, seed=202)]
 
@@ -185,7 +193,7 @@ def test_unstable_fixture_fails_eligibility() -> None:
         horizon=75,
         dt=0.02,
         conditioning="actual",
-        thresholds=ScientificThresholds(max_growth_ratio=3.0),
+        thresholds=ScientificThresholds(calibration_identity="test-fixture calibration", max_growth_ratio=3.0),
     )
 
     assert report.eligibility.status == EligibilityStatus.FAIL
@@ -194,7 +202,7 @@ def test_unstable_fixture_fails_eligibility() -> None:
 
 
 def test_insufficient_horizon_coverage_yields_insufficient_evidence() -> None:
-    """Windows without a full recorded future are excluded, and insufficient coverage never passes."""
+    """Even with declared calibration, incomplete future coverage never qualifies a candidate."""
     model = _create_synthetic_model(gain=0.5, horizon=75, dt=0.02)
     # Trajectory of 50 steps is shorter than horizon of 75
     short_trajectories = [_synthetic_trajectory(n_steps=50, seed=303)]
@@ -205,7 +213,7 @@ def test_insufficient_horizon_coverage_yields_insufficient_evidence() -> None:
         horizon=75,
         dt=0.02,
         conditioning="actual",
-        thresholds=ScientificThresholds(min_windows=1),
+        thresholds=ScientificThresholds(calibration_identity="test-fixture calibration", min_windows=1),
     )
 
     assert report.n_evaluated_windows == 0
@@ -216,7 +224,7 @@ def test_insufficient_horizon_coverage_yields_insufficient_evidence() -> None:
 
 
 def test_near_zero_reference_energy_yields_rejected_or_insufficient_evidence() -> None:
-    """Near-zero reference energy produces explicit undefined/rejected result rather than misleading ratio."""
+    """A calibrated evaluation rejects near-zero energy and marks its scalar growth metric unavailable."""
     model = _create_synthetic_model(gain=0.5, horizon=75, dt=0.02)
     flat_zero_trajectories = [_synthetic_trajectory(n_steps=200, flat_zero=True)]
 
@@ -226,15 +234,14 @@ def test_near_zero_reference_energy_yields_rejected_or_insufficient_evidence() -
         horizon=75,
         dt=0.02,
         conditioning="actual",
-        thresholds=ScientificThresholds(min_reference_energy=1e-8),
+        thresholds=ScientificThresholds(calibration_identity="test-fixture calibration", min_reference_energy=1e-8),
     )
 
     assert report.eligibility.status == EligibilityStatus.INSUFFICIENT_EVIDENCE
     assert not report.eligibility.passed
     assert any("reference energy" in reason.lower() for reason in report.eligibility.reasons)
     term_growth = report.terminal_metrics["growth_ratio"]
-    assert term_growth is not None
-    assert np.isnan(term_growth)
+    assert term_growth is None
 
 
 def test_spectral_error_under_observable_geometry() -> None:
@@ -258,7 +265,7 @@ def test_spectral_error_under_observable_geometry() -> None:
 
 
 def test_comparison_workflow_candidate_eligibility_check() -> None:
-    """The comparison workflow checks candidate eligibility and rejects failing models."""
+    """The comparison workflow rejects unstable candidates against declared synthetic calibration."""
     unstable_model = _create_synthetic_model(gain=1.1, horizon=75, dt=0.02)
     trajectories = [_synthetic_trajectory(n_steps=200, seed=505)]
 
@@ -267,7 +274,7 @@ def test_comparison_workflow_candidate_eligibility_check() -> None:
         trajectories,
         horizon=75,
         dt=0.02,
-        thresholds=ScientificThresholds(max_growth_ratio=3.0),
+        thresholds=ScientificThresholds(calibration_identity="test-fixture calibration", max_growth_ratio=3.0),
     )
 
     assert eligibility.status == EligibilityStatus.FAIL
@@ -275,7 +282,7 @@ def test_comparison_workflow_candidate_eligibility_check() -> None:
 
 
 def test_comparison_validate_grid_rejects_ineligible_arm(tmp_path: Path) -> None:
-    """validate_grid rejects an arm whose predictor fails Control Horizon eligibility."""
+    """The arm gate rejects calibrated instability and the grid rejects missing calibration."""
     unstable_model = _create_synthetic_model(gain=1.1, horizon=75, dt=0.02)
     art_path = tmp_path / "unstable_model"
     unstable_model.save(art_path)
@@ -298,7 +305,9 @@ def test_comparison_validate_grid_rejects_ineligible_arm(tmp_path: Path) -> None
     cell = Cell(run="test_arm", arm="unstable_arm", seed=7000, u_max=1.0, config=cfg)
     trajectories = [_synthetic_trajectory(n_steps=200, seed=606)]
 
-    eligibility = check_arm_eligibility(cell, trajectories)
+    eligibility = check_arm_eligibility(
+        cell, trajectories, thresholds=ScientificThresholds(calibration_identity="test-fixture calibration")
+    )
     assert not eligibility.passed
     assert eligibility.status == EligibilityStatus.FAIL
 
@@ -310,3 +319,144 @@ def test_comparison_validate_grid_rejects_ineligible_arm(tmp_path: Path) -> None
     # validate_grid with trajectories raises ValueError
     with pytest.raises(ValueError, match="failed Control Horizon eligibility"):
         validate_grid([cell], trajectories)
+
+
+def test_missing_calibration_cannot_qualify_a_stable_predictor() -> None:
+    """Neither omitted criteria nor uncalibrated defaults qualify a stable Predictor."""
+    model = _create_synthetic_model(horizon=4)
+    data = [_synthetic_trajectory(n_steps=20)]
+    for thresholds in (None, ScientificThresholds()):
+        report = evaluate_control_horizon(model, data, 4, thresholds=thresholds)
+        assert report.eligibility.status == EligibilityStatus.INSUFFICIENT_EVIDENCE
+        assert any("calibration" in reason.lower() for reason in report.eligibility.reasons)
+
+
+def test_missing_spectral_geometry_cannot_satisfy_a_spectral_limit() -> None:
+    """A missing spectral measurement cannot satisfy an explicitly required limit."""
+    model = _create_synthetic_model(horizon=4)
+    report = evaluate_control_horizon(
+        model,
+        [_synthetic_trajectory(n_steps=20)],
+        4,
+        thresholds=ScientificThresholds(max_spectral_error=0.0, calibration_identity="test-fixture calibration"),
+    )
+    assert report.eligibility.status == EligibilityStatus.INSUFFICIENT_EVIDENCE
+    assert any("spectral" in reason.lower() for reason in report.eligibility.reasons)
+
+
+def test_zero_input_diagnostics_do_not_score_unmatched_recordings() -> None:
+    """Zero-input growth remains visible without claiming actual-input accuracy."""
+    model = _create_synthetic_model(horizon=4)
+    report = evaluate_control_horizon(model, [_synthetic_trajectory(n_steps=20)], 4, conditioning="zero")
+    assert np.isnan(report.rmse).all()
+    assert np.isnan(report.nmse).all()
+    assert report.one_step_metrics["rmse"] is None
+    assert report.terminal_metrics["nmse"] is None
+    assert np.isfinite(report.amplitude_growth).all()
+    assert not report.eligibility.passed
+    assert report.metadata.growth_reference == "measurement_history"
+
+
+@pytest.mark.parametrize("horizon", [3, 7])
+def test_spectral_errors_use_causal_frames_at_each_lookahead(horizon: int) -> None:
+    """First and terminal spectral errors use history and their exact lookahead endpoints."""
+    model = _create_synthetic_model(gain=0.5, horizon=horizon)
+    u, y = _synthetic_trajectory(n_steps=30)
+    geometry = StftGeometry(n_segment=4, n_hop=2, kernel_width=3)
+    anchor = 12
+    report = evaluate_control_horizon(model, [(u, y)], horizon, geometry=geometry, start=anchor, stride=30)
+    assert report.spectral_error is not None
+    assert report.spectral_error.shape == (horizon,)
+    support = geometry.sample_support_steps(50.0)
+    history = y[anchor - support + 2 : anchor + 1]
+    predictions = y[anchor] * 0.5 ** np.arange(1, horizon + 1)[:, None]
+    predicted = np.concatenate([history, predictions])
+    recorded = np.concatenate([history, y[anchor + 1 : anchor + horizon + 1]])
+    expected = np.array(
+        [
+            np.mean(
+                (
+                    compute_log_power_frames(predicted[i : i + support], geometry, fs=50.0)
+                    - compute_log_power_frames(recorded[i : i + support], geometry, fs=50.0)
+                )
+                ** 2
+            )
+            for i in range(horizon)
+        ]
+    )
+    np.testing.assert_allclose(report.spectral_error, expected, rtol=1e-5, atol=1e-7)
+    assert report.one_step_metrics["spectral_error"] == pytest.approx(expected[0])
+    assert report.terminal_metrics["spectral_error"] == pytest.approx(expected[-1])
+
+
+def test_comparison_loads_reference_geometry_for_spectral_qualification(tmp_path: Path) -> None:
+    """The comparison gate applies the spectral limit using the saved reference geometry."""
+    model = _create_synthetic_model(horizon=4)
+    artifact = tmp_path / "model"
+    model.save(artifact)
+    reference = tmp_path / "reference.npz"
+    geometry = StftGeometry(n_segment=4, n_hop=2)
+    np.savez(
+        reference,
+        Pref_frames=np.zeros((2, geometry.n_values(50.0))),
+        fs=50.0,
+        n_segment=4,
+        n_hop=2,
+        band_hz=np.array([-1.0, -1.0]),
+        n_bin_pool=1,
+        kernel="boxcar",
+        kernel_width=1,
+    )
+    config = {
+        "controller": {
+            "dt": 0.02,
+            "problem": {
+                "artifact": str(artifact),
+                "reference": str(reference),
+                "horizon": 4,
+            },
+        }
+    }
+    data = [_synthetic_trajectory(n_steps=30)]
+    missing = check_arm_eligibility(config, data)
+    assert missing.status == EligibilityStatus.INSUFFICIENT_EVIDENCE
+    assert any("calibration" in reason.lower() for reason in missing.reasons)
+    rejected = check_arm_eligibility(
+        config,
+        data,
+        thresholds=ScientificThresholds(
+            max_spectral_error=0.0,
+            calibration_identity="test-fixture calibration",
+        ),
+    )
+    assert rejected.status == EligibilityStatus.FAIL
+    assert any("Spectral error" in reason for reason in rejected.reasons)
+
+
+def test_planned_reconstruction_withholds_actual_input_accuracy(tmp_path: Path) -> None:
+    """Saved-plan reconstruction remains separate from actual-input accuracy and eligibility."""
+    horizon = 4
+    model = _create_synthetic_model(horizon=horizon)
+    u, y = _synthetic_trajectory(n_steps=20)
+    times = np.arange(len(y), dtype=np.float64) * model.dt
+    forecasts = np.asarray(y[:, None, :] * 0.5 ** np.arange(horizon + 1)[None, :, None], dtype=np.float64)
+    run = Run(
+        tmp_path,
+        {},
+        {
+            "controller.t": times,
+            "controller.u": u,
+            "controller.planned_u": np.zeros((len(y), horizon, model.m)),
+            "controller.predicted_y": forecasts,
+            "estimator.t": times,
+            "estimator.x_hat": y,
+        },
+    )
+    report = evaluate_control_horizon(model, run, horizon, conditioning="planned")
+    assert report.reconstruction is not None
+    assert report.reconstruction["is_reconstructed"]
+    assert np.isnan(report.rmse).all()
+    assert np.isnan(report.nmse).all()
+    assert report.spectral_error is None
+    assert report.terminal_metrics["rmse"] is None
+    assert report.eligibility.status == EligibilityStatus.INSUFFICIENT_EVIDENCE

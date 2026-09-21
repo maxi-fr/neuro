@@ -6,6 +6,33 @@
 
 **Status:** Complete.
 
+## Evaluation contract after review
+
+`evaluate_control_horizon` reports spectral error at every lookahead, from step 1
+through the terminal prediction. Each causal Frame uses measured history followed
+by predictions, with the configured Segment, frequency geometry, and Frame Kernel.
+The hop still sets the spacing of Segments within a Frame Kernel. The evaluation
+reports a trailing Frame at every sample so its spectral and waveform lookaheads
+align, independently of the MPC Cost's scored-Frame grid. Windows lacking enough
+history or a complete recorded future are excluded and counted.
+
+Only actual-input evaluation can qualify a candidate. Pass explicit
+`ScientificThresholds` fixed on held-out calibration, with `calibration_identity`
+identifying that calibration record. The report retains the identity and numeric
+criteria in its metadata. Defaults or an empty identity yield insufficient
+evidence. The identity records caller-supplied provenance; it does not perform or
+replace calibration. Test fixtures use explicitly labeled synthetic criteria.
+The comparison wrapper loads the configured healthy reference geometry. A required
+spectral limit without complete spectral measurements yields insufficient evidence.
+
+Planned-input and zero-input evaluations are diagnostics. They withhold Plant
+accuracy scores and normalize growth against the measured history, recorded as
+`growth_reference: measurement_history`. Actual-input growth uses the recorded
+future. Planned-input reconstruction is reported separately using both absolute
+and relative numerical tolerances; reconstruction success does not confer candidate
+eligibility. Unavailable scalar metrics are `None`, and unavailable array entries
+are `NaN`.
+
 ## Evidence and scope
 
 The saved models report evaluation over 0.3 s but MPC recursively predicts 1.5 s. At the final step, actual-input replays have median predicted-to-recorded EEG RMS ratios of approximately 291 and 129. Replaying the actual inputs, rather than comparing the Plant with an abandoned plan, establishes this forecast defect.

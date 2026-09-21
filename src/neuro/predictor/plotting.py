@@ -19,7 +19,7 @@ MAX_PLOT_CHANNELS = 4
 
 
 def plot_training_curves(result: TrainingResult | RidgeTrainingResult, plot_path: Path | str) -> None:
-    """Plot training and validation loss curves with per-loss components if available.
+    """Plot Loss curves and components, leaving unexecuted terms absent from the plots.
 
     Parameters
     ----------

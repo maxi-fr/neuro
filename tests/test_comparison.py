@@ -229,10 +229,12 @@ def test_summarize_averages_paired_seeds_and_drops_failed_runs() -> None:
 
 
 def test_rows_survive_the_round_trip_a_resume_reads_them_back_through(tmp_path: Path) -> None:
+    """Resume restores numeric metrics while preserving Cost normalization metadata."""
     rows = [
         {"run": "a_s1", "arm": "a", "seed": 7000, "error": "", "seizure_burden": 0.25},
         {"run": "b_s1", "arm": "b", "seed": 7000, "error": "RuntimeError: diverged"},
     ]
+    rows[0]["cost_normalization"] = "channel_mean"
     write_rows(rows, tmp_path / "rows.csv")
 
     restored = read_rows(tmp_path / "rows.csv")
@@ -240,6 +242,8 @@ def test_rows_survive_the_round_trip_a_resume_reads_them_back_through(tmp_path: 
     assert [(row["arm"], row["seed"]) for row in restored] == [("a", 7000), ("b", 7000)]
     assert restored[0]["seizure_burden"] == pytest.approx(0.25)
     assert np.isnan(restored[1]["seizure_burden"])
+    assert restored[0]["cost_normalization"] == "channel_mean"
+    assert restored[1]["cost_normalization"] == ""
 
 
 def test_comparison_manifest_defaults_and_seed_tiers() -> None:

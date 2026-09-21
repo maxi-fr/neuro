@@ -67,7 +67,7 @@ def run_open_loop(config: dict, t_end: float) -> tuple[FloatArray, float]:
 def free_run(
     model: WaveformMLPModel | WaveformCNNModel, eeg: FloatArray, anchor: int, horizon: int
 ) -> tuple[FloatArray, FloatArray]:
-    """Free-run (zero control) ``horizon`` steps from ``anchor``; return (predicted, true) EEG."""
+    """Predict under zero control from the measurement at ``anchor`` and return future EEG pairs."""
     n_y, n_u, n_controls = model.n_y, model.n_u, model.n_controls
     y_hist = eeg[anchor - n_y + 1 : anchor + 1][None, ...]
     u_hist = np.zeros((1, n_u, n_controls))
@@ -77,7 +77,7 @@ def free_run(
 
 
 def main() -> None:
-    """Run the plant open-loop, overlay predictor forecasts on the realized EEG, and save a figure."""
+    """Plot open-loop Plant EEG and align forecasts at the samples following each anchor."""
     args = parse_args()
     config = load_config(args.config)
     t_end = args.t_end if args.t_end is not None else float(config["t_end"])

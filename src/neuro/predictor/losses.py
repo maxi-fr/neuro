@@ -14,6 +14,7 @@ from neuro.config import (
     StftGeometry,
     StftSpec,
 )
+from neuro.schedules import curriculum_completion, curriculum_span
 from neuro.spectral import LOG_FLOOR
 
 if TYPE_CHECKING:
@@ -88,15 +89,8 @@ class CurriculumMSE:
         )
 
     def trusted_length(self, epoch: int | None) -> int:
-        """Rollout prefix scored at ``epoch``: 1 -> ``span_steps``, linear over the curriculum window.
-
-        ``None`` is the terminal schedule (validation), which trusts the whole span.
-        """
-        if epoch is None:
-            return self.span_steps
-        span = max(self.curr_end - self.curr_start, 1)
-        frac = min(max((epoch - self.curr_start) / span, 0.0), 1.0)
-        return round(1 + (self.span_steps - 1) * frac)
+        """Score the shared rounded curriculum Span, or the full Span for validation."""
+        return curriculum_span(self.span_steps, self.curr_start, self.curr_end, epoch)
 
     def __call__(self, pred: Tensor, true: Tensor, ctx: LossContext) -> tuple[Tensor, dict[str, float]]:
         """Compute MSE across channels over the trusted rollout prefix."""
@@ -215,17 +209,12 @@ def build_losses(specs: LossSpecs | dict[str, LossSpec], fs: float) -> list[Loss
 
 
 def loss_eligibility_start(loss: Loss) -> int:
-    """Earliest training epoch where ``loss`` is active at its full Span, or 0 if disabled."""
+    """Combine Loss activation with the shared curriculum completion epoch."""
     if loss.weight <= 0.0:
         return 0
     start = loss.start_epoch
     if isinstance(loss, CurriculumMSE):
-        if loss.span_steps <= 1:
-            return start
-        epoch = max(start, loss.curr_start)
-        while loss.trusted_length(epoch) < loss.span_steps:
-            epoch += 1
-        return epoch
+        return max(start, curriculum_completion(loss.span_steps, loss.curr_start, loss.curr_end))
     return start
 
 

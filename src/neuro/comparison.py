@@ -317,7 +317,7 @@ def format_cost_report(metrics: dict[str, Any]) -> str:
 def score_run(
     config: dict[str, Any], u_max: float, *, threshold: float = SEIZURE_PTP_MV, output_dir: Path | None = None
 ) -> dict[str, Any]:
-    """Score one Simulation and optionally retain its component logs, resolved config, and scores."""
+    """Score one Simulation, including decomposed Costs, and optionally retain its logs and config."""
     config = lfp_logging(config)
     sim = Simulation.from_config(config)
     connectome = Connectome.from_config(config["dynamics"]["connectome"])
@@ -425,7 +425,7 @@ def write_rows(rows: list[dict[str, Any]], path: Path) -> None:
 
 
 def read_rows(path: Path) -> list[dict[str, Any]]:
-    """Read back a ``rows.csv``, restoring the types a resume compares and re-summarizes against."""
+    """Restore numeric CSV metrics while preserving identifiers and Cost normalization labels."""
     if not path.exists():
         return []
     with path.open(encoding="utf-8", newline="") as handle:
@@ -433,7 +433,7 @@ def read_rows(path: Path) -> list[dict[str, Any]]:
     for row in rows:
         row["seed"] = int(row["seed"])
         for key, value in row.items():
-            if key not in {"run", "arm", "error", "seed"}:
+            if key not in {"run", "arm", "error", "seed", "cost_normalization"}:
                 row[key] = float(value) if value else float("nan")
     return rows
 
@@ -445,9 +445,7 @@ def check_arm_eligibility(
     thresholds: ScientificThresholds | None = None,
     tolerances: NumericalTolerances | None = None,
 ) -> HorizonEligibility:
-    """Verify whether an arm's Predictor is eligible over the Control Horizon before running simulations."""
-    thresh = thresholds or ScientificThresholds()
-    tol = tolerances or NumericalTolerances()
+    """Check a learned arm using explicit calibrated criteria and full Control Horizon evidence."""
     config = cell_or_config.config if isinstance(cell_or_config, Cell) else cell_or_config
     controller = config.get("controller", {})
     problem = controller.get("problem")
@@ -456,8 +454,8 @@ def check_arm_eligibility(
     return check_candidate_eligibility(
         config,
         val_trajectories,
-        thresholds=thresh,
-        tolerances=tol,
+        thresholds=thresholds,
+        tolerances=tolerances,
     )
 
 
@@ -468,13 +466,11 @@ def validate_grid(
     thresholds: ScientificThresholds | None = None,
     tolerances: NumericalTolerances | None = None,
 ) -> None:
-    """Check every cell's wiring, and the arms' shared Plant and Control Budget, before any run."""
-    thresh = thresholds or ScientificThresholds()
-    tol = tolerances or NumericalTolerances()
+    """Check wiring and pairing, and require eligibility when validation recordings are supplied."""
     for cell in grid:
         validate_simulation_config(copy.deepcopy(cell.config))
         if val_trajectories is not None:
-            eligibility = check_arm_eligibility(cell, val_trajectories, thresholds=thresh, tolerances=tol)
+            eligibility = check_arm_eligibility(cell, val_trajectories, thresholds=thresholds, tolerances=tolerances)
             if not eligibility.passed:
                 msg = f"Arm {cell.arm!r} failed Control Horizon eligibility: {eligibility.reasons}"
                 raise ValueError(msg)

@@ -89,7 +89,7 @@ class TrainingResult:
     stopping_reason: str
 
     def save(self, artifact_dir: Path) -> None:
-        """Write the numpy-checkpoint and ``training_stats.json`` into ``artifact_dir``."""
+        """Save the selected checkpoint, Loss curves, eligibility epoch, and stopping reason."""
         self.predictor.save(artifact_dir / "model")
         stats = {
             "train_loss": self.train_losses,
@@ -388,7 +388,7 @@ def _train_observable_dmd(cfg: NNPredictorConfig, data_files: list[str], geom: S
 def _train_observable(
     cfg: NNPredictorConfig, data_files: list[str], geom: StftGeometry, *, seed_offset: int = 0
 ) -> TrainingResult:
-    """Train the autoregressive Observable MLP for one config and return everything the run produced."""
+    """Train an Observable Predictor and restore its best checkpoint from the eligible phase."""
     sim, trn = cfg.simulation, cfg.training
     seed = trn.seed + seed_offset
     torch.manual_seed(seed)
@@ -430,7 +430,7 @@ def _train_observable(
         y_target: Tensor,
         epoch: int | None,
     ) -> tuple[Tensor, dict[str, float | None]]:
-        """Roll out and score against the standardized Frame targets."""
+        """Score Frame targets with the epoch schedule and report unexecuted Losses as None."""
         ctx = LossContext(y_center=y_center, y_scale=y_scale, fs=fs_frame, epoch=epoch)
         pred_traj = model(y_hist, u_hist, u_future)
         return total_loss(losses, pred_traj, y_target, ctx)
@@ -620,7 +620,7 @@ def _train_waveform_dmd(cfg: NNPredictorConfig, data_files: list[str]) -> RidgeT
 
 
 def _train_waveform(cfg: NNPredictorConfig, data_files: list[str], *, seed_offset: int = 0) -> TrainingResult:
-    """Train the autoregressive waveform MLP for one config and return everything the run produced."""
+    """Train a waveform Predictor and restore its best checkpoint from the eligible phase."""
     sim, trn = cfg.simulation, cfg.training
     seed = trn.seed + seed_offset
     torch.manual_seed(seed)
@@ -662,7 +662,7 @@ def _train_waveform(cfg: NNPredictorConfig, data_files: list[str], *, seed_offse
         y_target: Tensor,
         epoch: int | None,
     ) -> tuple[Tensor, dict[str, float | None]]:
-        """Roll out and score against the standardized waveform targets."""
+        """Score waveform targets with the epoch schedule and report unexecuted Losses as None."""
         ctx = LossContext(y_center=y_center, y_scale=y_scale, fs=fs, epoch=epoch)
         pred_traj = model(y_hist, u_hist, u_future)
         return total_loss(losses, pred_traj, y_target, ctx)

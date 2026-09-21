@@ -9,7 +9,7 @@ from neuro.predictor.train import TrainingResult, train
 
 
 def main() -> None:
-    """Execute the main script."""
+    """Train a Predictor and report its eligible checkpoint epoch and evaluation metrics."""
     parser = argparse.ArgumentParser(description="Run torch NN Predictor on multiple trajectories.")
     parser.add_argument(
         "--config", type=str, default="configs/nn_predictor/nn_predictor_config.yaml", help="Path to config YAML."

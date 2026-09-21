@@ -35,7 +35,7 @@ class SumCost(CostFunction):
     costs: tuple[CostFunction, ...]
 
     def __init__(self, costs: Sequence[CostFunction], *, terminal: bool | None = None) -> None:
-        """Initialize from the sub-costs, which must agree on ``n`` and ``m``."""
+        """Combine dimension-compatible Costs, inheriting or explicitly setting their terminal role."""
         is_term = costs[0].terminal if terminal is None else terminal
         super().__init__(n=costs[0].n, m=costs[0].m, terminal=is_term)
         self.costs = tuple(costs)
@@ -613,7 +613,7 @@ class ExcludeInitialKnotState(CostFunction):
 
 
 def has_whole_horizon_cost(cost: CostFunction) -> bool:
-    """Whether ``cost`` or any :class:`SumCost` sub-cost is scored only through ``stage_costs``.
+    """Detect whole-horizon stage terms, excluding terminal Observable Frame hinges.
 
     Whole-horizon costs return ``0`` from ``evaluate`` and concentrate their value in
     ``stage_costs``; a native expansion-only solver would silently drop them.

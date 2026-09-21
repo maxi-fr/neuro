@@ -547,7 +547,7 @@ def build_waveform_problem(  # noqa: PLR0913 -- checkpoint plus the ten MPC cost
     kirchhoff: bool = False,
     reduce_kirchhoff: bool = False,
 ) -> Problem:
-    """Assemble the waveform MPC problem: model adapter, objective, box and Kirchhoff bounds.
+    """Assemble waveform MPC with stage and terminal spectral Frames and the Control Budget.
 
     The objective minimizes tracking deviation from the healthy reference operating point,
     quadratic and L1 control effort, and one-sided log-power Frame hinges against ``reference``.
@@ -925,7 +925,7 @@ class TrajOptMPCController(Controller[TrajOptMPCLog]):
         ref: FloatArray,  # noqa: ARG002 -- the goal is baked into the objective
         x_hat: FloatArray,
     ) -> tuple[FloatArray, TrajOptMPCLog]:
-        """Absorb the measurement and record the solved plan before shifting the Control Horizon.
+        """Absorb the measurement and record the solved plan and Cost contributions before shifting.
 
         The emitted control is always the ``(n_electrodes,)`` physical currents: under a Nullspace
         Frame the solver decides in the reduced ``v``, which is expanded through ``Z`` here.

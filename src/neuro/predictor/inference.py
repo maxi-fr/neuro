@@ -330,7 +330,7 @@ class ShiftRegisterModel(DiscreteDynamics, InferencePredictor):
         return jnp.concatenate([y_window.reshape(-1), u_window.reshape(-1)])
 
     def _rollout_one(self, y_hist: jax.Array, u_hist: jax.Array, u_future: jax.Array) -> jax.Array:
-        """Free-run one raw history under raw future controls using flat output state arrays."""
+        """Insert each candidate Control Current before predicting the next output from raw history."""
         y_window = (y_hist[-self.n_y :].reshape(self.n_y, self.n_outputs) - self.y_center) / self.y_scale
         u_window = (u_hist[-self.n_u :] - self.u_center) / self.u_scale
         u_future = (u_future - self.u_center) / self.u_scale
@@ -338,6 +338,7 @@ class ShiftRegisterModel(DiscreteDynamics, InferencePredictor):
         def step(
             carry: tuple[jax.Array, jax.Array], u_next: jax.Array
         ) -> tuple[tuple[jax.Array, jax.Array], jax.Array]:
+            """Insert the candidate Current and shift the next prediction into output history."""
             y_window, u_window = carry
             u_window = jnp.concatenate([u_window[1:], u_next[None]])
             y_next = self._predict(y_window, u_window)

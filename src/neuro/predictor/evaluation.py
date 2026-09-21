@@ -13,7 +13,7 @@ from neuro.predictor.data import load_trajectory
 from neuro.predictor.inference import InferencePredictor, ObservableCNNModel, ObservableMLPModel
 from neuro.predictor.replay import predict
 from neuro.run_view import Run
-from neuro.spectral import compute_log_power_frames
+from neuro.spectral import HealthyReference, compute_log_power_frames
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -34,14 +34,10 @@ def rollout_batches(
     stride: int = 25,
     start: int | None = None,
 ) -> Iterator[tuple[FloatArray, FloatArray]]:
-    """Yield one trajectory batch of predictions and targets with all output axes preserved.
+    """Batch causal Rollouts from measurements through t0 and targets starting at t0 + 1.
 
-    The whole t0 grid of a trajectory is primed and rolled out in one stateless jax ``free_run``
-    call, so every free-run score reads the same windows off one traversal rather than re-rolling
-    per metric. ``start`` overrides the first window index, so several models can share one t0
-    grid. The scores live on the sample grid -- one output per position -- so the waveform MLP is
-    the intended subject, not the observable predictor, whose ``free_run`` emits one Frame per
-    position.
+    Control history ends at t0 - 1; the candidate Current at t0 acts on the first prediction.
+    Waveform samples and Observable Frames retain their output axes.
     """
     k = model.priming_steps
     grid_start = k if start is None else start
@@ -214,7 +210,7 @@ def evaluate_observable_free_run(
     *,
     step_stride: int = 1,
 ) -> ObservableFrameMSE:
-    """Evaluate free-run Frame MSE per horizon step and pooled over all validation windows.
+    """Evaluate causal Frame MSE with the same histories and future targets as training.
 
     Parameters
     ----------
@@ -233,26 +229,13 @@ def evaluate_observable_free_run(
     ObservableFrameMSE
         Pooled and per-step MSE over raw log-power Frames.
     """
-    k = model.priming_steps
     sq_err = np.zeros(eval_steps, dtype=np.float64)
     n_windows = 0
 
-    for u, y in val_trajs:
-        t0s = list(range(k, len(y) - eval_steps + 1, step_stride))
-        if not t0s:
-            continue
-
-        y_pred = np.asarray(
-            model.free_run(
-                np.stack([y[t0 - k : t0] for t0 in t0s]),
-                np.stack([u[t0 - k : t0] for t0 in t0s]),
-                np.stack([u[t0 : t0 + eval_steps] for t0 in t0s]),
-            )
-        )
-        y_true = np.stack([y[t0 : t0 + eval_steps] for t0 in t0s])
+    for y_pred, y_true in rollout_batches(model, val_trajs, eval_steps, stride=step_stride):
         value_axes = (0, *range(2, y_pred.ndim))
         sq_err += ((y_pred - y_true) ** 2).sum(axis=value_axes)
-        n_windows += len(t0s)
+        n_windows += len(y_pred)
 
     if n_windows == 0:
         msg = "No validation trajectory is long enough to hold one free-run window."
@@ -296,13 +279,14 @@ class NumericalTolerances:
 
 @dataclass(frozen=True)
 class ScientificThresholds:
-    """Declared scientific acceptance thresholds fixed from held-out calibration."""
+    """Criteria fixed on held-out calibration, whose identity is required before qualification."""
 
     max_growth_ratio: float = 3.0
     max_nmse: float = 1.25
     max_spectral_error: float | None = None
     min_windows: int = 1
     min_reference_energy: float = 1e-8
+    calibration_identity: str = ""
 
 
 @dataclass(frozen=True)
@@ -325,6 +309,8 @@ class HorizonMetadata:
     horizon: int = 75
     dt: float = 0.02
     reference_identity: str = ""
+    scientific_thresholds: ScientificThresholds | None = None
+    growth_reference: str = "recorded_future"
 
 
 @dataclass
@@ -382,7 +368,223 @@ class ControlHorizonReport:
         }
 
 
-def evaluate_control_horizon(  # noqa: C901, PLR0912, PLR0913, PLR0915
+@dataclass
+class _HorizonWindows:
+    """Aligned predictions, recorded futures, and causal histories for one evaluation."""
+
+    predictions: list[FloatArray] = field(default_factory=list)
+    targets: list[FloatArray] = field(default_factory=list)
+    histories: list[FloatArray] = field(default_factory=list)
+    reconstruction_errors: list[float] = field(default_factory=list)
+    reconstructed: list[bool] = field(default_factory=list)
+    excluded: int = 0
+
+
+def _load_horizon_recordings(
+    recordings: list[tuple[FloatArray, FloatArray]] | list[Run] | Run | Path | tuple[FloatArray, FloatArray],
+    model: InferencePredictor,
+    dt: float,
+) -> list[Run | tuple[FloatArray, FloatArray]]:
+    """Load recordings using their raw sample period before checkpoint decimation."""
+    if isinstance(recordings, Run):
+        return [recordings]
+    if isinstance(recordings, Path):
+        if (recordings / "config.yaml").is_file() and (recordings / "log.npz").is_file():
+            return [Run.load(recordings)]
+        paths = sorted(recordings.glob("*.npz")) if recordings.is_dir() else [recordings]
+        downsample = getattr(model, "downsample", 1)
+        return [load_trajectory(str(path), None, downsample, dt / downsample) for path in paths]
+    if isinstance(recordings, tuple):
+        return [recordings]
+    return list(recordings)
+
+
+def _future_controls(
+    conditioning: str, controls: FloatArray, planned: FloatArray | None, index: int, horizon: int
+) -> FloatArray | None:
+    """Select the declared input sequence, excluding missing or incomplete saved plans."""
+    if conditioning == "actual":
+        return controls[index : index + horizon]
+    if conditioning == "zero":
+        return np.zeros((horizon, controls.shape[1]), dtype=np.float64)
+    if planned is None or index >= len(planned):
+        return None
+    plan = planned[index]
+    return plan if len(plan) == horizon and np.isfinite(plan).all() else None
+
+
+def _collect_horizon_windows(  # noqa: PLR0913 -- model, recordings, and declared evaluation grid
+    model: InferencePredictor,
+    recordings: list[Run | tuple[FloatArray, FloatArray]],
+    horizon: int,
+    dt: float,
+    *,
+    conditioning: str,
+    stride: int,
+    start: int | None,
+    history_steps: int,
+    tolerances: NumericalTolerances,
+) -> _HorizonWindows:
+    """Absorb causal measurements and retain only complete, sufficiently primed futures."""
+    windows = _HorizonWindows()
+    grid_start = model.priming_steps if start is None else start
+    for item in recordings:
+        if isinstance(item, Run):
+            times, controls = item.signal("controller", "u")
+            measurements = item.measurements()
+            planned = item.arrays.get("controller.planned_u")
+            saved = item.arrays.get("controller.predicted_y")
+        else:
+            controls, measurements = item
+            times = np.arange(len(measurements), dtype=np.float64) * dt
+            planned, saved = None, None
+        y = np.asarray(measurements, dtype=np.float64).reshape(len(measurements), -1)
+        state = model.initial_state()
+        previous = np.zeros(model.m, dtype=np.float64)
+        for index in range(len(y)):
+            state = model.absorb(state, y[index], previous)
+            previous = controls[index]
+            if index < grid_start or (index - grid_start) % stride:
+                continue
+            future = _future_controls(conditioning, controls, planned, index, horizon)
+            if index + horizon >= len(y) or index + 1 < history_steps or not model.is_ready(state) or future is None:
+                windows.excluded += 1
+                continue
+            prediction = np.asarray(predict(model, jnp.asarray(state), jnp.asarray(future), float(times[index]), dt))
+            windows.predictions.append(prediction[1:])
+            windows.targets.append(y[index + 1 : index + horizon + 1])
+            windows.histories.append(y[index - history_steps + 1 : index + 1])
+            if conditioning == "planned" and saved is not None and index < len(saved):
+                windows.reconstruction_errors.append(float(np.max(np.abs(prediction - saved[index]))))
+                windows.reconstructed.append(
+                    bool(
+                        np.allclose(
+                            prediction,
+                            saved[index],
+                            atol=tolerances.reconstruction_atol,
+                            rtol=tolerances.reconstruction_rtol,
+                        )
+                    )
+                )
+    return windows
+
+
+def _horizon_metrics(
+    windows: _HorizonWindows, horizon: int, conditioning: str, min_energy: float
+) -> tuple[dict[str, FloatArray], float]:
+    """Score matched accuracy, or counterfactual growth relative to measured history."""
+    metrics = {
+        name: np.full(horizon, np.nan)
+        for name in ("rmse", "nmse", "persistence_rmse", "persistence_nmse", "amplitude_growth", "energy_growth")
+    }
+    if not windows.predictions:
+        return metrics, 0.0
+    predicted = np.stack(windows.predictions)
+    recorded = np.stack(windows.targets)
+    history = np.stack(windows.histories)
+    pred_power = np.mean(predicted**2, axis=(0, 2))
+    ref_power = np.mean(recorded**2, axis=(0, 2)) if conditioning == "actual" else np.full(horizon, np.mean(history**2))
+    reference_energy = float(np.mean(ref_power))
+    valid = ref_power > min_energy
+    metrics["energy_growth"] = np.divide(pred_power, ref_power, out=np.full(horizon, np.nan), where=valid)
+    metrics["amplitude_growth"] = np.sqrt(metrics["energy_growth"])
+    if conditioning == "actual":
+        errors = np.mean((predicted - recorded) ** 2, axis=(0, 2))
+        persistence_errors = np.mean((history[:, -1:, :] - recorded) ** 2, axis=(0, 2))
+        metrics["rmse"] = np.sqrt(errors)
+        metrics["persistence_rmse"] = np.sqrt(persistence_errors)
+        metrics["nmse"] = np.divide(errors, ref_power, out=np.full(horizon, np.nan), where=valid)
+        metrics["persistence_nmse"] = np.divide(
+            persistence_errors, ref_power, out=np.full(horizon, np.nan), where=valid
+        )
+    return metrics, reference_energy
+
+
+def _spectral_errors(
+    windows: _HorizonWindows, model: InferencePredictor, geometry: StftGeometry | None, fs: float
+) -> FloatArray | None:
+    """Score causal Frames ending at every predicted sample, with the configured Frame Kernel."""
+    if not windows.predictions:
+        return None
+    if isinstance(model, (ObservableMLPModel, ObservableCNNModel)):
+        return np.mean((np.stack(windows.predictions) - np.stack(windows.targets)) ** 2, axis=(0, 2))
+    if geometry is None:
+        return None
+    support = geometry.sample_support_steps(fs)
+    errors = []
+    for prediction, target, history in zip(windows.predictions, windows.targets, windows.histories, strict=True):
+        predicted = np.concatenate([history[-(support - 1) :], prediction])
+        recorded = np.concatenate([history[-(support - 1) :], target])
+        errors.append(
+            [
+                float(
+                    np.mean(
+                        (
+                            compute_log_power_frames(predicted[i : i + support], geometry, fs=fs)
+                            - compute_log_power_frames(recorded[i : i + support], geometry, fs=fs)
+                        )
+                        ** 2
+                    )
+                )
+                for i in range(len(prediction))
+            ]
+        )
+    return np.mean(np.asarray(errors), axis=0)
+
+
+def _metric_snapshot(
+    metrics: dict[str, FloatArray], spectral: FloatArray | None, index: int
+) -> dict[str, float | None]:
+    """Expose one lookahead, representing unavailable measurements as None."""
+    result = {name: float(values[index]) if np.isfinite(values[index]) else None for name, values in metrics.items()}
+    result["growth_ratio"] = result["amplitude_growth"]
+    result["spectral_error"] = float(spectral[index]) if spectral is not None else None
+    return result
+
+
+def _horizon_eligibility(  # noqa: PLR0913 -- declared criteria and their required independent measurements
+    thresholds: ScientificThresholds | None,
+    metrics: dict[str, FloatArray],
+    spectral: FloatArray | None,
+    n_windows: int,
+    reference_energy: float,
+    *,
+    conditioning: str,
+) -> HorizonEligibility:
+    """Require calibrated criteria and every requested measurement before checking acceptance limits."""
+    criteria = thresholds or ScientificThresholds()
+    missing = []
+    if thresholds is None or not criteria.calibration_identity.strip():
+        missing.append("Unavailable calibration: supply criteria fixed on held-out data and their calibration identity")
+    if conditioning != "actual":
+        missing.append("Counterfactual diagnostics cannot establish actual-input candidate accuracy")
+    if n_windows < criteria.min_windows:
+        missing.append(f"Insufficient horizon coverage: {n_windows} valid windows, minimum {criteria.min_windows}")
+    if reference_energy <= criteria.min_reference_energy:
+        missing.append("Near-zero reference energy: normalized error and growth ratios are undefined")
+    if criteria.max_spectral_error is not None and (spectral is None or not np.isfinite(spectral).all()):
+        missing.append("Required spectral evidence is unavailable over the complete Control Horizon")
+    if missing:
+        return HorizonEligibility(EligibilityStatus.INSUFFICIENT_EVIDENCE, missing)
+    reasons = []
+    growth = metrics["amplitude_growth"]
+    if not np.isfinite(growth).all() or np.max(growth) > criteria.max_growth_ratio:
+        reasons.append(f"Amplitude growth ratio exceeds threshold {criteria.max_growth_ratio:.2f} or is undefined")
+    terminal_nmse = metrics["nmse"][-1]
+    if not np.isfinite(terminal_nmse) or terminal_nmse > criteria.max_nmse:
+        reasons.append(f"Terminal NMSE {terminal_nmse:.2f} exceeds threshold {criteria.max_nmse:.2f} or is undefined")
+    if (
+        spectral is not None
+        and criteria.max_spectral_error is not None
+        and np.mean(spectral) > criteria.max_spectral_error
+    ):
+        reasons.append(f"Spectral error exceeds threshold {criteria.max_spectral_error:.2f}")
+    return HorizonEligibility(
+        EligibilityStatus.FAIL if reasons else EligibilityStatus.PASS, reasons, passed=not reasons
+    )
+
+
+def evaluate_control_horizon(  # noqa: PLR0913 -- evaluation inputs, geometry, and provenance are independent
     model: InferencePredictor,
     recordings: list[tuple[FloatArray, FloatArray]] | list[Run] | Run | Path | tuple[FloatArray, FloatArray],
     horizon: int,
@@ -398,270 +600,75 @@ def evaluate_control_horizon(  # noqa: C901, PLR0912, PLR0913, PLR0915
     data_partition: str = "val",
     reference_identity: str = "",
 ) -> ControlHorizonReport:
-    """Evaluate Predictor accuracy and stability over the complete Control Horizon."""
-    thresh = thresholds or ScientificThresholds()
-    tol = tolerances or NumericalTolerances()
+    """Report causal lookahead metrics and qualify only calibrated actual-input evaluations.
+
+    Spectral Frames end at every lookahead, including the first and terminal predictions.
+    Planned and zero-input reports withhold Plant accuracy and measure growth relative to
+    observed history. Their reconstruction or growth diagnostics never qualify a candidate.
+    """
     sample_dt = float(getattr(model, "dt", 0.02) if dt is None else dt)
     geom = getattr(model, "geometry", None) if geometry is None else geometry
-
-    runs_or_trajs: list[Run | tuple[FloatArray, FloatArray]]
-    if isinstance(recordings, Run):
-        runs_or_trajs = [recordings]
-    elif isinstance(recordings, (str, Path)):
-        path = Path(recordings)
-        if (path / "config.yaml").is_file() and (path / "log.npz").is_file():
-            runs_or_trajs = [Run.load(path)]
-        elif path.is_dir():
-            npz_files = sorted(path.glob("*.npz"))
-            runs_or_trajs = [
-                load_trajectory(str(f), None, getattr(model, "downsample", 1), sample_dt) for f in npz_files
-            ]
-        else:
-            runs_or_trajs = [load_trajectory(str(path), None, getattr(model, "downsample", 1), sample_dt)]
-    elif isinstance(recordings, tuple) and len(recordings) == 2 and isinstance(recordings[0], np.ndarray):  # noqa: PLR2004 -- (u, y) pair
-        runs_or_trajs = [recordings]
-    elif isinstance(recordings, list):
-        runs_or_trajs = list(recordings)
-    else:
-        msg = f"Unsupported recordings format: {type(recordings)}"
-        raise TypeError(msg)
-
-    n_evaluated_windows = 0
-    n_excluded_windows = 0
-    all_pred: list[FloatArray] = []
-    all_true: list[FloatArray] = []
-    all_persist: list[FloatArray] = []
-    all_reconstruction_errors: list[float] = []
-
-    k = model.priming_steps
-    grid_start = k if start is None else start
-
-    for item in runs_or_trajs:
-        planned_u: FloatArray | None = None
-        predicted_y: FloatArray | None = None
-        if isinstance(item, Run):
-            times, u = item.signal("controller", "u")
-            y = item.measurements()
-            planned_u = item.arrays.get("controller.planned_u")
-            predicted_y = item.arrays.get("controller.predicted_y")
-        else:
-            u, y = item
-            u = np.asarray(u, dtype=np.float64)
-            y = np.asarray(y, dtype=np.float64)
-            times = np.arange(len(y), dtype=np.float64) * sample_dt
-
-        n_samples = len(y)
-        y_flat = y.reshape(n_samples, -1) if y.ndim > 2 else y  # noqa: PLR2004 -- 2D (time, channels) array
-
-        state = model.initial_state()
-        previous = np.zeros(model.m, dtype=np.float64)
-
-        for i in range(n_samples):
-            state = model.absorb(state, y_flat[i], previous)
-            previous = u[i]
-
-            if i < grid_start:
-                continue
-            if (i - grid_start) % stride != 0:
-                continue
-
-            if i + horizon >= n_samples:
-                n_excluded_windows += 1
-                continue
-
-            if conditioning == "actual":
-                u_future = u[i : i + horizon]
-            elif conditioning == "zero":
-                u_future = np.zeros((horizon, model.m), dtype=np.float64)
-            elif conditioning == "planned":
-                if planned_u is None or i >= len(planned_u):
-                    n_excluded_windows += 1
-                    continue
-                u_future = planned_u[i]
-            else:
-                msg = f"Unknown conditioning mode: {conditioning!r}"
-                raise ValueError(msg)
-
-            pred_raw = np.asarray(predict(model, jnp.asarray(state), jnp.asarray(u_future), float(times[i]), sample_dt))
-            pred_future = pred_raw[1:]
-            true_future = y_flat[i + 1 : i + 1 + horizon]
-            persist_future = np.broadcast_to(y_flat[i : i + 1], (horizon, y_flat.shape[1]))
-
-            all_pred.append(pred_future)
-            all_true.append(true_future)
-            all_persist.append(persist_future)
-            n_evaluated_windows += 1
-
-            if conditioning == "planned" and predicted_y is not None and i < len(predicted_y):
-                rec_err = float(np.max(np.abs(pred_raw - predicted_y[i])))
-                all_reconstruction_errors.append(rec_err)
-
-    total_windows = n_evaluated_windows + n_excluded_windows
-    lookahead_steps = np.arange(1, horizon + 1, dtype=np.float64)
-    lookahead_seconds = np.asarray(lookahead_steps * sample_dt, dtype=np.float64)
-
-    spectral_error: FloatArray | None = None
-    if n_evaluated_windows == 0:
-        rmse = np.zeros(horizon, dtype=np.float64)
-        nmse_vals = np.full(horizon, np.nan, dtype=np.float64)
-        persistence_rmse = np.zeros(horizon, dtype=np.float64)
-        persistence_nmse = np.full(horizon, np.nan, dtype=np.float64)
-        amplitude_growth = np.full(horizon, np.nan, dtype=np.float64)
-        energy_growth = np.full(horizon, np.nan, dtype=np.float64)
-        max_growth_ratio = float("nan")
-        mean_ref_energy = 0.0
-    else:
-        y_preds = np.stack(all_pred, axis=0)
-        y_trues = np.stack(all_true, axis=0)
-        y_persists = np.stack(all_persist, axis=0)
-        w_count, h_count, p_dim = y_preds.shape
-
-        sq_err = ((y_preds - y_trues) ** 2).sum(axis=(0, 2))
-        true_power = (y_trues**2).sum(axis=(0, 2))
-        pred_power = (y_preds**2).sum(axis=(0, 2))
-        persist_sq_err = ((y_persists - y_trues) ** 2).sum(axis=(0, 2))
-
-        mean_ref_energy = float(true_power.sum() / (w_count * h_count * p_dim))
-        rmse = np.sqrt(sq_err / (w_count * p_dim))
-        persistence_rmse = np.sqrt(persist_sq_err / (w_count * p_dim))
-
-        if mean_ref_energy <= thresh.min_reference_energy:
-            nmse_vals = np.full(horizon, np.nan, dtype=np.float64)
-            persistence_nmse = np.full(horizon, np.nan, dtype=np.float64)
-            amplitude_growth = np.full(horizon, np.nan, dtype=np.float64)
-            energy_growth = np.full(horizon, np.nan, dtype=np.float64)
-            max_growth_ratio = float("nan")
-        else:
-            nmse_vals = np.divide(sq_err, true_power, out=np.full_like(sq_err, np.nan), where=true_power > 0)
-            persistence_nmse = np.divide(
-                persist_sq_err, true_power, out=np.full_like(persist_sq_err, np.nan), where=true_power > 0
-            )
-            pred_rms = np.sqrt(pred_power / (w_count * p_dim))
-            true_rms = np.sqrt(true_power / (w_count * p_dim))
-            amplitude_growth = np.divide(pred_rms, true_rms, out=np.full_like(pred_rms, np.nan), where=true_rms > 0)
-            energy_growth = np.divide(
-                pred_power, true_power, out=np.full_like(pred_power, np.nan), where=true_power > 0
-            )
-            finite_growth = amplitude_growth[np.isfinite(amplitude_growth)]
-            max_growth_ratio = float(np.max(finite_growth)) if finite_growth.size > 0 else float("nan")
-
-        if isinstance(model, (ObservableMLPModel, ObservableCNNModel)):
-            spectral_error = ((y_preds - y_trues) ** 2).mean(axis=(0, 2))
-        elif geom is not None:
-            fs = 1.0 / sample_dt
-            support = geom.sample_support_steps(fs)
-            if horizon >= support:
-                pred_frames = [compute_log_power_frames(y_preds[w], geom, fs=fs) for w in range(w_count)]
-                true_frames = [compute_log_power_frames(y_trues[w], geom, fs=fs) for w in range(w_count)]
-                if pred_frames[0].shape[0] > 0:
-                    pf_arr = np.stack(pred_frames, axis=0)
-                    tf_arr = np.stack(true_frames, axis=0)
-                    spectral_error = ((pf_arr - tf_arr) ** 2).mean(axis=(0, 2, 3))
-
-    one_step_metrics: dict[str, float | None] = {
-        "rmse": float(rmse[0]) if n_evaluated_windows > 0 else float("nan"),
-        "nmse": float(nmse_vals[0]) if n_evaluated_windows > 0 else float("nan"),
-        "persistence_rmse": float(persistence_rmse[0]) if n_evaluated_windows > 0 else float("nan"),
-        "persistence_nmse": float(persistence_nmse[0]) if n_evaluated_windows > 0 else float("nan"),
-        "amplitude_growth": float(amplitude_growth[0]) if n_evaluated_windows > 0 else float("nan"),
-        "growth_ratio": float(amplitude_growth[0]) if n_evaluated_windows > 0 else float("nan"),
-        "energy_growth": float(energy_growth[0]) if n_evaluated_windows > 0 else float("nan"),
-        "spectral_error": float(spectral_error[0]) if spectral_error is not None and len(spectral_error) > 0 else None,
-    }
-    terminal_metrics: dict[str, float | None] = {
-        "rmse": float(rmse[-1]) if n_evaluated_windows > 0 else float("nan"),
-        "nmse": float(nmse_vals[-1]) if n_evaluated_windows > 0 else float("nan"),
-        "persistence_rmse": float(persistence_rmse[-1]) if n_evaluated_windows > 0 else float("nan"),
-        "persistence_nmse": float(persistence_nmse[-1]) if n_evaluated_windows > 0 else float("nan"),
-        "amplitude_growth": float(amplitude_growth[-1]) if n_evaluated_windows > 0 else float("nan"),
-        "growth_ratio": float(amplitude_growth[-1]) if n_evaluated_windows > 0 else float("nan"),
-        "energy_growth": float(energy_growth[-1]) if n_evaluated_windows > 0 else float("nan"),
-        "spectral_error": float(spectral_error[-1]) if spectral_error is not None and len(spectral_error) > 0 else None,
-    }
-
-    reconstruction: dict[str, Any] | None = None
-    if all_reconstruction_errors:
-        max_rec_err = float(np.max(all_reconstruction_errors))
-        reconstruction = {
-            "max_error": max_rec_err,
-            "is_reconstructed": bool(max_rec_err <= tol.reconstruction_atol),
-            "atol": tol.reconstruction_atol,
-        }
-
-    reasons: list[str] = []
-    status = EligibilityStatus.PASS
-
-    if n_evaluated_windows < thresh.min_windows:
-        status = EligibilityStatus.INSUFFICIENT_EVIDENCE
-        reasons.append(
-            f"Insufficient horizon coverage: {n_evaluated_windows} valid windows evaluated "
-            f"(minimum required: {thresh.min_windows})"
-        )
-    elif mean_ref_energy <= thresh.min_reference_energy:
-        status = EligibilityStatus.INSUFFICIENT_EVIDENCE
-        reasons.append(
-            f"Near-zero reference energy ({mean_ref_energy:.2e} <= {thresh.min_reference_energy:.2e}): "
-            "normalized error and growth ratios are undefined"
-        )
-    else:
-        if conditioning == "planned" and reconstruction is not None and not reconstruction["is_reconstructed"]:
-            status = EligibilityStatus.FAIL
-            reasons.append(
-                f"Saved-plan forecast reconstruction failed: max error {reconstruction['max_error']:.2e} "
-                f"exceeds tolerance {reconstruction['atol']:.2e}"
-            )
-        if conditioning in ("actual", "zero"):
-            if np.isnan(max_growth_ratio) or max_growth_ratio > thresh.max_growth_ratio:
-                status = EligibilityStatus.FAIL
-                reasons.append(
-                    f"Amplitude growth ratio {max_growth_ratio:.2f} exceeds threshold {thresh.max_growth_ratio:.2f}"
-                )
-            if np.isnan(terminal_metrics["nmse"]) or terminal_metrics["nmse"] > thresh.max_nmse:
-                status = EligibilityStatus.FAIL
-                reasons.append(f"Terminal NMSE {terminal_metrics['nmse']:.2f} exceeds threshold {thresh.max_nmse:.2f}")
-            if (
-                spectral_error is not None
-                and thresh.max_spectral_error is not None
-                and float(np.mean(spectral_error)) > thresh.max_spectral_error
-            ):
-                status = EligibilityStatus.FAIL
-                reasons.append(
-                    f"Spectral error {float(np.mean(spectral_error)):.2f} exceeds threshold {thresh.max_spectral_error:.2f}"
-                )
-
-    passed = status == EligibilityStatus.PASS
-    eligibility = HorizonEligibility(status=status, reasons=reasons, passed=passed)
-
-    metadata = HorizonMetadata(
-        checkpoint=checkpoint_id or type(model).__name__,
-        data_partition=data_partition,
-        preprocessing={"downsample": getattr(model, "downsample", 1), "dt": sample_dt},
-        sample_rate=1.0 / sample_dt,
-        horizon=horizon,
-        dt=sample_dt,
-        reference_identity=reference_identity,
-    )
-
-    return ControlHorizonReport(
-        metadata=metadata,
+    tol = tolerances or NumericalTolerances()
+    observable = isinstance(model, (ObservableMLPModel, ObservableCNNModel))
+    history_steps = max(1, model.priming_steps)
+    if geom is not None and not observable:
+        history_steps = max(history_steps, geom.sample_support_steps(1 / sample_dt) - 1)
+    windows = _collect_horizon_windows(
+        model,
+        _load_horizon_recordings(recordings, model, sample_dt),
+        horizon,
+        sample_dt,
         conditioning=conditioning,
-        n_evaluated_windows=n_evaluated_windows,
-        n_excluded_windows=n_excluded_windows,
-        total_windows=total_windows,
-        lookahead_steps=lookahead_steps,
-        lookahead_seconds=lookahead_seconds,
-        rmse=rmse,
-        nmse=nmse_vals,
-        persistence_rmse=persistence_rmse,
-        persistence_nmse=persistence_nmse,
-        amplitude_growth=amplitude_growth,
-        energy_growth=energy_growth,
-        spectral_error=spectral_error,
-        one_step_metrics=one_step_metrics,
-        terminal_metrics=terminal_metrics,
-        max_growth_ratio=max_growth_ratio,
-        reference_energy=mean_ref_energy,
-        eligibility=eligibility,
+        stride=stride,
+        start=start,
+        history_steps=history_steps,
+        tolerances=tol,
+    )
+    metrics, reference_energy = _horizon_metrics(
+        windows, horizon, conditioning, (thresholds or ScientificThresholds()).min_reference_energy
+    )
+    spectral = _spectral_errors(windows, model, geom, 1 / sample_dt) if conditioning == "actual" else None
+    reconstruction = None
+    if windows.reconstruction_errors:
+        reconstruction = {
+            "max_error": float(np.max(windows.reconstruction_errors)),
+            "is_reconstructed": all(windows.reconstructed),
+            "atol": tol.reconstruction_atol,
+            "rtol": tol.reconstruction_rtol,
+        }
+    steps = np.arange(1, horizon + 1, dtype=np.float64)
+    return ControlHorizonReport(
+        metadata=HorizonMetadata(
+            checkpoint=checkpoint_id or type(model).__name__,
+            data_partition=data_partition,
+            preprocessing={"downsample": getattr(model, "downsample", 1), "dt": sample_dt},
+            sample_rate=1 / sample_dt,
+            horizon=horizon,
+            dt=sample_dt,
+            reference_identity=reference_identity,
+            scientific_thresholds=thresholds,
+            growth_reference="recorded_future" if conditioning == "actual" else "measurement_history",
+        ),
+        conditioning=conditioning,
+        n_evaluated_windows=len(windows.predictions),
+        n_excluded_windows=windows.excluded,
+        total_windows=len(windows.predictions) + windows.excluded,
+        lookahead_steps=steps,
+        lookahead_seconds=steps * sample_dt,
+        rmse=metrics["rmse"],
+        nmse=metrics["nmse"],
+        persistence_rmse=metrics["persistence_rmse"],
+        persistence_nmse=metrics["persistence_nmse"],
+        amplitude_growth=metrics["amplitude_growth"],
+        energy_growth=metrics["energy_growth"],
+        spectral_error=spectral,
+        one_step_metrics=_metric_snapshot(metrics, spectral, 0),
+        terminal_metrics=_metric_snapshot(metrics, spectral, -1),
+        max_growth_ratio=float(np.max(metrics["amplitude_growth"])),
+        reference_energy=reference_energy,
+        eligibility=_horizon_eligibility(
+            thresholds, metrics, spectral, len(windows.predictions), reference_energy, conditioning=conditioning
+        ),
         reconstruction=reconstruction,
     )
 
@@ -680,9 +687,7 @@ def check_candidate_eligibility(  # noqa: PLR0913 -- model, trajectories, horizo
     thresholds: ScientificThresholds | None = None,
     tolerances: NumericalTolerances | None = None,
 ) -> HorizonEligibility:
-    """Check candidate eligibility over the Control Horizon before closed-loop deployment."""
-    thresh = thresholds or ScientificThresholds()
-    tol = tolerances or NumericalTolerances()
+    """Check calibrated candidate criteria using the configured reference geometry and controller period."""
     if trajectories is None:
         return HorizonEligibility(
             status=EligibilityStatus.INSUFFICIENT_EVIDENCE,
@@ -690,6 +695,9 @@ def check_candidate_eligibility(  # noqa: PLR0913 -- model, trajectories, horizo
             passed=False,
         )
 
+    geometry = None
+    checkpoint_id = ""
+    reference_identity = ""
     if isinstance(model_or_config, dict):
         problem = (
             model_or_config["controller"]["problem"]
@@ -704,8 +712,15 @@ def check_candidate_eligibility(  # noqa: PLR0913 -- model, trajectories, horizo
                 passed=False,
             )
         model = InferencePredictor.load(Path(artifact_path))
+        checkpoint_id = str(artifact_path)
         eval_horizon = int(problem.get("horizon", 75)) if horizon is None else horizon
-        eval_dt = float(problem.get("dt", getattr(model, "dt", 0.02))) if dt is None else dt
+        controller = model_or_config.get("controller", problem)
+        eval_dt = float(controller.get("dt", getattr(model, "dt", 0.02))) if dt is None else dt
+        reference = problem.get("reference")
+        if reference is not None:
+            reference_identity = str(reference)
+            envelope = HealthyReference.load(reference).observable
+            geometry = envelope.geometry if envelope is not None else None
     else:
         model = model_or_config
         eval_horizon = getattr(model, "horizon", 75) if horizon is None else horizon
@@ -717,7 +732,10 @@ def check_candidate_eligibility(  # noqa: PLR0913 -- model, trajectories, horizo
         horizon=eval_horizon,
         dt=eval_dt,
         conditioning="actual",
-        thresholds=thresh,
-        tolerances=tol,
+        geometry=geometry,
+        checkpoint_id=checkpoint_id,
+        reference_identity=reference_identity,
+        thresholds=thresholds,
+        tolerances=tolerances,
     )
     return report.eligibility

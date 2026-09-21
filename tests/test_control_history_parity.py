@@ -7,7 +7,7 @@ import pytest
 import torch
 
 from neuro.config import StftGeometry
-from neuro.predictor.evaluation import rollout_batches
+from neuro.predictor.evaluation import evaluate_observable_free_run, rollout_batches
 from neuro.predictor.inference import (
     InferencePredictor,
     ObservableCNNModel,
@@ -384,3 +384,38 @@ def test_replay_predictions_matches_free_run_and_mpc() -> None:
     free_run_pred = np.asarray(jax_model.free_run(y_hist[None], u_hist[None], u_future[None]))[0]
 
     np.testing.assert_allclose(predictions[t0, 1:], free_run_pred, rtol=1e-5, atol=1e-5)
+
+
+def test_observable_evaluation_scores_an_exact_control_response() -> None:
+    """Observable evaluation scores y[t+1] = u[t] with zero error for changing inputs."""
+    geom = StftGeometry(n_segment=4, n_hop=1)
+    n_values = geom.n_values(50.0)
+    module = AutoregressiveMLP(
+        n_y=2,
+        n_u=1,
+        horizon=3,
+        n_channels=1,
+        n_controls=1,
+        n_outputs=n_values,
+        hidden_size=8,
+        depth=0,
+        activation="relu",
+        residual=False,
+        dt=0.02,
+        y_std=Standardizer(center=np.zeros((1, n_values)), scale=np.ones((1, n_values))),
+        u_std=Standardizer(center=np.zeros(1), scale=np.ones(1)),
+        geometry=geom,
+    )
+    layer = module.layers[0]
+    assert isinstance(layer, torch.nn.Linear)
+    with torch.no_grad():
+        layer.weight.zero_()
+        layer.bias.zero_()
+        layer.weight[:, -1] = 1.0
+    meta, arrays = module.to_checkpoint()
+    model = ObservableMLPModel.from_checkpoint(meta, arrays)
+    u = np.arange(10, dtype=np.float64)[:, None]
+    y = np.zeros((10, 1, n_values))
+    y[1:] = u[:-1, :, None]
+    result = evaluate_observable_free_run(model, [(u, y)], 3)
+    np.testing.assert_allclose(result.per_step, 0.0, atol=1e-12)

@@ -14,6 +14,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from neuro.metrics import DEFAULT_HOP_S, METRICS
 from neuro.provenance import check_excitation_alignment
+from neuro.schedules import curriculum_completion
 from neuro.seizure_calibration import SEIZURE_PTP_MV
 
 if TYPE_CHECKING:
@@ -367,23 +368,14 @@ class LossSpecs(StrictConfig):
         return {name: spec for name in self.__class__.model_fields if (spec := getattr(self, name)) is not None}
 
     def eligibility_start(self, fs: float) -> int:
-        """First training epoch where every enabled Loss is active and every curriculum at full Span."""
+        """Combine enabled Loss activation with the shared effective curriculum schedule."""
         starts = [0]
         for spec in self.active().values():
             if spec.weight <= 0.0:
                 continue
             start = spec.start_epoch
             if isinstance(spec, CurriculumMSESpec):
-                span_steps = spec.span_steps(fs)
-                if span_steps > 1:
-                    span = max(spec.curr_end - spec.curr_start, 1)
-                    epoch = max(start, spec.curr_start)
-                    while True:
-                        frac = min(max((epoch - spec.curr_start) / span, 0.0), 1.0)
-                        if round(1 + (span_steps - 1) * frac) >= span_steps:
-                            break
-                        epoch += 1
-                    start = epoch
+                start = max(start, curriculum_completion(spec.span_steps(fs), spec.curr_start, spec.curr_end))
             starts.append(start)
         return max(starts)
 
@@ -660,6 +652,7 @@ class NNPredictorConfig(StrictConfig):
 
     @model_validator(mode="after")
     def _validate_losses_and_horizon(self) -> Self:
+        """Validate Loss geometry, target Span, and an epoch budget that reaches eligibility."""
         if self.observable is not None:
             _validate_observable_losses(self.training.losses, self.observable, self.fs)
             min_n_u = self.observable.min_past_controls()
