@@ -33,6 +33,8 @@ def _():
         extract_state_action_pairs,
         horizon_statistics,
         print_ood_report,
+        select_ood_candidate_states,
+        simulate_ras_branch,
     )
     from neuro.predictor.data import frame_aligned_controls, load_trajectory, reduce_trajectory_to_frames
     from neuro.predictor.inference import InferencePredictor
@@ -56,6 +58,8 @@ def _():
         plt,
         print_ood_report,
         reduce_trajectory_to_frames,
+        select_ood_candidate_states,
+        simulate_ras_branch,
         sys,
         yaml,
     )
@@ -235,15 +239,23 @@ def _(
         full_width=True,
     )
 
+    custom_train_data_input = mo.ui.text(
+        value="",
+        label="Training Dataset Directory (Optional override; auto-detected from model if blank)",
+        placeholder="e.g. data/experiment_excited_60ms/train",
+        full_width=True,
+    )
+
     mo.vstack(
         [
             mo.md("### ⚙️ Experiment Run Selection"),
             mo.hstack([architecture_filter, run_select], justify="start"),
             custom_run_input,
+            custom_train_data_input,
             mo.hstack([k_slider, n_trajs_slider, rep_select], justify="start"),
         ]
     )
-    return custom_run_input, run_select
+    return custom_run_input, custom_train_data_input, run_select
 
 
 @app.cell
@@ -253,10 +265,10 @@ def _(
     Path,
     StftGeometry,
     custom_run_input,
+    custom_train_data_input,
     extract_run_clinical_metrics,
     extract_state_action_pairs,
     frame_aligned_controls,
-    glob,
     load_trajectory,
     mo,
     n_trajs_slider,
@@ -317,8 +329,41 @@ def _(
     except (OSError, ValueError, KeyError):
         clinical_metrics = {}
 
+    # Auto-detect training dataset path from predictor configuration, or use UI override / fallbacks
+    detected_data_dir = "data/experiment_excited_60ms/train"
+    model_dir = Path(model_path).parent
+    for cand_yaml in model_dir.glob("*.yaml"):
+        try:
+            with cand_yaml.open(encoding="utf-8") as f_y:
+                y_data = yaml.safe_load(f_y)
+                if isinstance(y_data, dict) and "simulation" in y_data and "data_path" in y_data["simulation"]:
+                    detected_data_dir = str(y_data["simulation"]["data_path"])
+                    break
+        except (OSError, yaml.YAMLError, KeyError):
+            pass
+
+    custom_train_raw = custom_train_data_input.value.strip()
+    resolved_train_dir = Path(custom_train_raw or detected_data_dir)
+    train_files = sorted(resolved_train_dir.glob("*.npz"))[: n_trajs_slider.value]
+    if not train_files:
+        for fallback in [
+            Path("data/experiment_excited_long/train"),
+            Path("data/experiment_excited_60ms/train"),
+            Path("data/experiment_excited_100ms/train"),
+        ]:
+            if fallback.exists() and list(fallback.glob("*.npz")):
+                resolved_train_dir = fallback
+                train_files = sorted(resolved_train_dir.glob("*.npz"))[: n_trajs_slider.value]
+                break
+
+    if not train_files:
+        _err_msg = (
+            f"No training trajectory files (.npz) found in '{resolved_train_dir}'.\n"
+            "Please specify a valid training dataset directory via the UI text box."
+        )
+        raise FileNotFoundError(_err_msg)
+
     # Load training trajectories to establish reference and calibration partitions
-    train_files = sorted(glob("data/experiment_excited_long/train/*.npz"))[: n_trajs_slider.value]
     trajs: list[tuple[np.ndarray, np.ndarray]] = []
     fs = 50.0  # Decimated sampling rate
 
@@ -354,13 +399,22 @@ def _(
     - **Configured Predictor**: `{model_display_name}` (`{model_path}`)
     - **Model Architecture**: `{model.__class__.__name__}` (observable dimension $p = {model.p}$)
     - **State Representation**: `{geom_desc}`
+    - **Training Dataset Source**: `{resolved_train_dir}` ({len(train_files)} files loaded)
     - **Normalization**: Standardized using reference statistics $\\mu_j$ and $\\sigma_j$.
     - **Reference Set**: `{ood_index.reference_count:,}` standardized vectors $\\mathcal{{Z}}_\\text{{ref}}$ spanning {len(ref_trajs)} trajectories.
     - **Held-out ID Calibration Set**: `{ood_index.calibration_count:,}` standardized vectors from {len(cal_trajs)} trajectories.
     - **Dimension**: $D = {ood_index.dimension}$ features.
     - **Dispersion ($CV$)**: `{cv:.4f}`.
     """)
-    return cal_trajs, clinical_metrics, model, ood_index, run_dir
+    return (
+        cal_trajs,
+        clinical_metrics,
+        geom,
+        model,
+        ood_index,
+        resolved_train_dir,
+        run_dir,
+    )
 
 
 @app.cell
@@ -1175,6 +1229,267 @@ def _(horizon, mo, mpc_percentiles, planned_u, plt, step_slider):
     """
 
     mo.vstack([mo.as_html(fig_rollout), mo.md(info_md)])
+    return
+
+
+@app.cell
+def _(mo):
+    mo.md(r"""
+    ---
+    ## 7. Closing the Loop: OOD Candidate States & Dataset Extension
+
+    ### Active Data Aggregation via Branch Simulation
+    When closed-loop MPC fails to contain epileptic activity (or operates near uncontained seizure dynamics),
+    the dynamics model is queried in unsupported regions ($q \ge 0.95$). As outlined in Section 16 of `docs/mpc_ood_experiment.md` (*"Closing the Data-Collection Loop"*), these queries reveal regions of state-action space that are crucial to the controller but underrepresented in the training data.
+
+    ### Option B Branching Strategy
+    To expand training coverage:
+    1. We identify **Candidate States** $(t^*, x_{t^*})$ where the realized knot 0 query is out-of-distribution ($q \ge q^*$).
+    2. We branch new simulation rollouts starting from each candidate state using **Random Amplitude Schedule (RAS)** excitation.
+    3. The simulation replays the recorded closed-loop control currents and biophysical state up to $t^*$, branches forward under RAS excitation for $T_\text{branch}$ seconds, and preserves a $T_\text{hist}$ preceding history buffer (absorbing STFT warm-up and model input lag).
+    4. The generated `.npz` branch trajectories are added directly to the training dataset.
+    """)
+    return
+
+
+@app.cell
+def _(mo, resolved_train_dir):
+    ood_threshold_slider = mo.ui.slider(
+        start=0.80,
+        stop=0.99,
+        step=0.01,
+        value=0.95,
+        label="Candidate OOD Percentile Threshold (q*)",
+    )
+
+    branch_dur_slider = mo.ui.slider(
+        start=1.0,
+        stop=8.0,
+        step=0.5,
+        value=4.0,
+        label="Branch RAS Duration (s)",
+    )
+
+    branch_hist_slider = mo.ui.slider(
+        start=0.5,
+        stop=4.0,
+        step=0.5,
+        value=2.0,
+        label="Preceding History Buffer (s)",
+    )
+
+    ras_seeds_input = mo.ui.text(
+        value="101, 102, 103",
+        label="Branch RAS Excitation Seeds",
+        placeholder="e.g. 101, 102, 103",
+    )
+
+    target_data_dir_input = mo.ui.text(
+        value=str(resolved_train_dir),
+        label="Target Training Dataset Directory to Extend",
+        placeholder="e.g. data/experiment_excited_60ms/train",
+        full_width=True,
+    )
+
+    extend_btn = mo.ui.run_button(
+        label="Simulate RAS Branches & Extend Dataset",
+        kind="warn",
+    )
+
+    mo.vstack(
+        [
+            mo.md("### Candidate State Discovery & Dataset Extension Settings"),
+            mo.hstack([ood_threshold_slider, branch_dur_slider, branch_hist_slider], justify="start"),
+            mo.hstack([ras_seeds_input, extend_btn], justify="start"),
+            target_data_dir_input,
+        ]
+    )
+    return (
+        branch_dur_slider,
+        branch_hist_slider,
+        extend_btn,
+        ood_threshold_slider,
+        ras_seeds_input,
+        target_data_dir_input,
+    )
+
+
+@app.cell
+def _(
+    mo,
+    ood_index,
+    ood_threshold_slider,
+    rep_select,
+    run_dir,
+    select_ood_candidate_states,
+):
+    found_candidates = select_ood_candidate_states(
+        run_dir,
+        ood_index=ood_index,
+        threshold=ood_threshold_slider.value,
+        min_interval_s=1.5,
+        max_candidates=5,
+        n_u=rep_select.value,
+    )
+
+    if not found_candidates:
+        cand_selector = mo.ui.dropdown(
+            options={"None found": None},
+            value=None,
+            label="Candidate State Selector",
+        )
+        _cands_view = mo.callout(
+            mo.md(
+                f"No candidate states found exceeding $q \\ge {ood_threshold_slider.value:.2f}$ in `{run_dir.name}`. "
+                "Try selecting an uncontained seizure run (e.g. `fast_linear_kw5_s7002` or `s7004`) or lowering the threshold."
+            ),
+            kind="info",
+        )
+    else:
+        _opts = {
+            f"Candidate #{i + 1}: t* = {c.t_star:.2f}s (Decision {c.decision_idx}, q = {c.ood_score:.4f})": i
+            for i, c in enumerate(found_candidates)
+        }
+        _opts["All Found Candidates"] = -1
+        cand_selector = mo.ui.dropdown(
+            options=_opts,
+            value=-1,
+            label="Candidate(s) to Branch From",
+        )
+
+        _cand_table_rows = "\n".join(
+            f"| Candidate {i + 1} | Decision #{c.decision_idx} | **`{c.t_star:.2f}s`** | **`{c.ood_score:.4f}`** | `{c.run_dir.name}` |"
+            for i, c in enumerate(found_candidates)
+        )
+        _cands_view = mo.vstack(
+            [
+                mo.md(f"""
+                #### Discovered Candidate States ($q \\ge {ood_threshold_slider.value:.2f}$):
+                | Candidate | Knot 0 Decision Step | Timestamp ($t^*$) | OOD Score ($q$) | Source Run |
+                | :--- | :---: | :---: | :---: | :--- |
+                {_cand_table_rows}
+                """),
+                cand_selector,
+            ]
+        )
+
+    mo.vstack([_cands_view])
+    return cand_selector, found_candidates
+
+
+@app.cell
+def _(
+    Path,
+    branch_dur_slider,
+    branch_hist_slider,
+    cand_selector,
+    extend_btn,
+    extract_state_action_pairs,
+    found_candidates,
+    frame_aligned_controls,
+    geom,
+    load_trajectory,
+    mo,
+    np,
+    ood_index,
+    ras_seeds_input,
+    reduce_trajectory_to_frames,
+    rep_select,
+    simulate_ras_branch,
+    target_data_dir_input,
+):
+    if not extend_btn.value:
+        _branch_view = mo.md(
+            "*(Click **Simulate RAS Branches & Extend Dataset** to run Option B branching and add trajectories.)*"
+        )
+    elif not found_candidates:
+        _branch_view = mo.callout(
+            mo.md("Cannot extend dataset: no candidate states found above threshold."), kind="danger"
+        )
+    else:
+        try:
+            _seeds = tuple(int(s.strip()) for s in ras_seeds_input.value.split(",") if s.strip())
+        except ValueError:
+            _seeds = (101, 102, 103)
+
+        _sel_val = cand_selector.value
+        if _sel_val is None or _sel_val == -1:
+            _target_cands = found_candidates
+        elif isinstance(_sel_val, int) and 0 <= _sel_val < len(found_candidates):
+            _target_cands = [found_candidates[_sel_val]]
+        else:
+            _target_cands = found_candidates
+
+        _dest_dir = Path(target_data_dir_input.value.strip())
+        _dest_dir.mkdir(parents=True, exist_ok=True)
+
+        _created_branches = []
+        for _idx_c, _cand in enumerate(_target_cands):
+            _paths = simulate_ras_branch(
+                _cand,
+                ras_seeds=_seeds,
+                duration_s=branch_dur_slider.value,
+                history_s=branch_hist_slider.value,
+                output_dir=_dest_dir,
+                amp=2.0,
+                prefix=f"cand{_idx_c + 1}",
+            )
+            _created_branches.extend((_cand, _p) for _p in _paths)
+
+        _rows = []
+        for _cand, _b_path in _created_branches:
+            with np.load(_b_path) as _d:
+                _s_t = np.asarray(_d["sensor_0.t"], dtype=np.float64)
+                _s_y = np.asarray(_d["sensor_0.y_mea"], dtype=np.float64)
+                _rel_t_star = float(_d["metadata_relative_t_star"])
+
+            _u_data, _y_data = load_trajectory(str(_b_path), None, downsample=200, dt=0.0001)
+            _dur = float(_s_t[-1] - _s_t[0])
+
+            _mask_pre = _s_t < _rel_t_star
+            _mask_post = _s_t >= _rel_t_star
+            _rms_pre = float(np.sqrt(np.mean(_s_y[_mask_pre] ** 2))) if np.any(_mask_pre) else 0.0
+            _rms_post = float(np.sqrt(np.mean(_s_y[_mask_post] ** 2))) if np.any(_mask_post) else 0.0
+
+            if geom is not None:
+                _y_frames = reduce_trajectory_to_frames(_y_data, geom, fs=50.0)
+                if _y_frames.ndim > 2:
+                    _y_frames = _y_frames.reshape(len(_y_frames), -1)
+                _u_frames = frame_aligned_controls(_u_data, geom, fs=50.0)[: len(_y_frames)]
+            else:
+                _y_frames = _y_data
+                _u_frames = _u_data
+            _min_len = min(len(_y_frames), len(_u_frames))
+            _z_b, _ = extract_state_action_pairs([(_u_frames[:_min_len], _y_frames[:_min_len])], n_u=rep_select.value)
+            _d_b = ood_index.compute_distances(_z_b)
+            _q_b = ood_index.percentiles(_d_b)
+            _max_q = float(np.max(_q_b)) if len(_q_b) > 0 else 0.0
+
+            _rows.append(
+                f"| `{_b_path.name}` | {_dur:.2f}s | {_rms_pre:.2f} mV | {_rms_post:.2f} mV | **{_max_q:.4f}** |"
+            )
+
+        _report_table = "\n".join(_rows)
+        _branch_view = mo.vstack(
+            [
+                mo.callout(
+                    mo.md(
+                        f"**Dataset Extended Successfully!**\n\n"
+                        f"Generated **{len(_created_branches)}** new Option B branch trajectories saved to `{_dest_dir}`. "
+                        f"These trajectories are now ready for model retraining."
+                    ),
+                    kind="success",
+                ),
+                mo.md(f"""
+                #### Branched Trajectory Electrophysiology & OOD Evaluation:
+                | Branch Trajectory File | Total Duration | Pre-$t^*$ LFP RMS | Post-$t^*$ LFP RMS | Peak $q(z)$ |
+                | :--- | :---: | :---: | :---: | :--- |
+                {_report_table}
+                """),
+            ]
+        )
+
+    mo.vstack([_branch_view])
     return
 
 

@@ -4,6 +4,7 @@ from typing import TYPE_CHECKING, cast
 import numpy as np
 
 from neuro.ood import (
+    CandidateState,
     OODIndex,
     binned_prediction_error,
     evaluate_prediction_errors,
@@ -13,7 +14,10 @@ from neuro.ood import (
     format_ood_report,
     horizon_statistics,
     print_ood_report,
+    select_ood_candidate_states,
+    simulate_ras_branch,
 )
+from neuro.predictor.data import load_trajectory
 
 if TYPE_CHECKING:
     from neuro.predictor.inference import InferencePredictor
@@ -262,3 +266,97 @@ def test_evaluate_prediction_errors_with_history() -> None:
     assert len(q1) > 0
     assert len(q_max) == len(e_max)
     assert len(q_max) > 0
+
+
+def test_select_ood_candidate_states(tmp_path: Path) -> None:
+    """select_ood_candidate_states selects peak OOD decisions and enforces minimum intervals."""
+    cfg_file = tmp_path / "config.yaml"
+    cfg_file.write_text("dynamics:\n  seed: 7000\ncontroller:\n  dt: 0.06\n", encoding="utf-8")
+
+    n_decisions = 20
+    t_ctrl = np.arange(n_decisions, dtype=np.float64) * 0.06
+    warmup = np.zeros(n_decisions, dtype=bool)
+    warmup[:2] = True  # First 2 warmup
+
+    pred_y = np.zeros((n_decisions, 5, 4), dtype=np.float64)
+    plan_u = np.zeros((n_decisions, 4, 2), dtype=np.float64)
+
+    mock_log = tmp_path / "log.npz"
+    np.savez(
+        mock_log,
+        allow_pickle=True,
+        **{
+            "controller.t": t_ctrl,
+            "controller.u": np.zeros((n_decisions, 2)),
+            "controller.predicted_y": pred_y,
+            "controller.planned_u": plan_u,
+            "controller.warmup": warmup,
+        },
+    )
+
+    # 18 valid decisions
+    scores = np.full(18, 0.4, dtype=np.float64)
+    # Burst 1: decisions 3 and 4 (valid[3]=5 at t=0.30s, valid[4]=6 at t=0.36s)
+    scores[3] = 0.96
+    scores[4] = 0.98  # higher peak
+    # Burst 2: decision 12 (valid[12]=14 at t=0.84s)
+    scores[12] = 0.97
+
+    candidates = select_ood_candidate_states(
+        tmp_path, ood_scores=scores, threshold=0.95, min_interval_s=0.3, max_candidates=5
+    )
+
+    assert len(candidates) == 2
+    # Chronologically sorted
+    assert candidates[0].decision_idx == 6
+    assert np.isclose(candidates[0].t_star, 0.36)
+    assert np.isclose(candidates[0].ood_score, 0.98)
+    assert candidates[0].seed == 7000
+
+    assert candidates[1].decision_idx == 14
+    assert np.isclose(candidates[1].t_star, 0.84)
+    assert np.isclose(candidates[1].ood_score, 0.97)
+
+
+def test_simulate_ras_branch(tmp_path: Path) -> None:
+    """simulate_ras_branch produces compatible trajectory archives with history buffer."""
+    run_dir = Path("artifacts/canonical_predictors_comparison/1_observable_mlp/runs/fast_linear_kw5_s7000")
+    if not run_dir.exists():
+        return
+
+    candidate = CandidateState(
+        run_dir=run_dir,
+        seed=7000,
+        decision_idx=10,
+        t_star=0.60,
+        ood_score=0.98,
+    )
+
+    branch_files = simulate_ras_branch(
+        candidate,
+        ras_seeds=[101, 102],
+        duration_s=0.2,
+        history_s=0.1,
+        output_dir=tmp_path / "branches",
+        amp=2.0,
+    )
+
+    assert len(branch_files) == 2
+    for bf in branch_files:
+        assert bf.exists()
+        with np.load(bf) as data:
+            assert "sensor_0.t" in data
+            assert "sensor_0.y_mea" in data
+            assert "controller.t" in data
+            assert "controller.u" in data
+            assert "metadata_candidate_t_star" in data
+            assert np.isclose(float(data["metadata_candidate_t_star"]), 0.60)
+            assert np.isclose(float(data["metadata_relative_t_star"]), 0.10)
+
+        # Verify load_trajectory loads cleanly with valid shapes
+        u_data, y_data = load_trajectory(str(bf), None, downsample=200, dt=0.0001)
+        assert len(u_data) == len(y_data)
+        assert u_data.ndim == 2
+        assert y_data.ndim == 2
+        assert u_data.shape[1] == 3
+        assert y_data.shape[1] == 62

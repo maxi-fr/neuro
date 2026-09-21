@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import itertools
 import json
+from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Self
@@ -9,9 +10,12 @@ from typing import TYPE_CHECKING, Any, Self
 import numpy as np
 import torch
 import yaml
+from simulate.simulation import Simulation
+
+from neuro.control.schedule import ScheduleController, build_input_schedule
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Mapping, Sequence
 
     from neuro.predictor.inference import InferencePredictor
     from neuro.types import FloatArray, IntArray
@@ -872,3 +876,281 @@ CRITERION 5: Multi-Step Rollout Error vs. Maximum Violation (Q_H)
 def print_ood_report(defs: dict[str, Any]) -> None:
     """Print structured text-based OOD evaluation metrics to stdout."""
     print(format_ood_report(defs))  # noqa: T201 -- intentional CLI report output
+
+
+@dataclass(frozen=True)
+class CandidateState:
+    """Recorded closed-loop transition flagged as an out-of-distribution candidate state."""
+
+    run_dir: Path
+    seed: int
+    decision_idx: int
+    t_star: float
+    ood_score: float
+
+
+def select_ood_candidate_states(  # noqa: PLR0913 -- candidate selection requires run, thresholds, index, and intervals
+    run_dir: Path | str,
+    *,
+    ood_index: OODIndex | None = None,
+    ood_scores: FloatArray | None = None,
+    threshold: float = 0.95,
+    min_interval_s: float = 1.5,
+    max_candidates: int = 5,
+    n_u: int = 0,
+) -> list[CandidateState]:
+    """Select candidate decision steps exceeding an OOD percentile threshold.
+
+    Parameters
+    ----------
+    run_dir : Path | str
+        Directory of the closed-loop MPC run containing ``config.yaml`` and ``log.npz``.
+    ood_index : OODIndex | None, optional
+        Fitted empirical support index used to evaluate realized knot 0 queries if
+        ``ood_scores`` is not provided.
+    ood_scores : FloatArray | None, optional
+        Precomputed knot 0 percentile scores corresponding to valid decisions.
+    threshold : float, default=0.95
+        Minimum OOD percentile for a decision step to qualify as a candidate state.
+    min_interval_s : float, default=1.5
+        Minimum physical time interval in seconds between consecutive candidate states.
+    max_candidates : int, default=5
+        Maximum number of candidate states to return.
+    n_u : int, default=0
+        Past Control Current steps used when extracting queries from ``log.npz``.
+
+    Returns
+    -------
+    list[CandidateState]
+        Discovered candidate states sorted chronologically by decision time.
+    """
+    r_path = Path(run_dir)
+    cfg_file = r_path / "config.yaml"
+    log_file = r_path / "log.npz"
+
+    if not cfg_file.exists() or not log_file.exists():
+        msg = f"Run artifacts missing at {r_path}"
+        raise FileNotFoundError(msg)
+
+    with cfg_file.open(encoding="utf-8") as f:
+        cfg = yaml.safe_load(f) or {}
+
+    seed = int(cfg.get("dynamics", {}).get("seed", 0))
+
+    if ood_scores is None:
+        if ood_index is None:
+            msg = "Either ood_index or ood_scores must be provided."
+            raise ValueError(msg)
+        queries, _, valid_decisions = extract_mpc_rollout_queries(log_file, n_u=n_u)
+        q0 = queries[:, 0, :]
+        distances = ood_index.compute_distances(q0)
+        scores = ood_index.percentiles(distances)
+    else:
+        scores = np.asarray(ood_scores, dtype=np.float64)
+        with np.load(log_file) as log_data:
+            if "controller.warmup" in log_data:
+                valid_decisions = np.where(~log_data["controller.warmup"].astype(bool))[0]
+            else:
+                valid_decisions = np.arange(len(scores))
+
+    with np.load(log_file) as log_data:
+        t_ctrl = np.asarray(log_data["controller.t"], dtype=np.float64)
+
+    t_valid = t_ctrl[valid_decisions]
+
+    candidate_indices = np.where(scores >= threshold)[0]
+    if len(candidate_indices) == 0:
+        return []
+
+    ranked = candidate_indices[np.argsort(-scores[candidate_indices])]
+    selected: list[int] = []
+
+    for idx in ranked:
+        t_cand = t_valid[idx]
+        if any(abs(t_cand - t_valid[prev]) < min_interval_s for prev in selected):
+            continue
+        selected.append(idx)
+        if len(selected) >= max_candidates:
+            break
+
+    selected.sort()
+
+    return [
+        CandidateState(
+            run_dir=r_path,
+            seed=seed,
+            decision_idx=int(valid_decisions[idx]),
+            t_star=float(t_valid[idx]),
+            ood_score=float(scores[idx]),
+        )
+        for idx in selected
+    ]
+
+
+def _slice_and_save_branch(  # noqa: PLR0913 -- helper for branch trajectory slicing and persistence
+    sim: Simulation,
+    candidate: CandidateState,
+    *,
+    ras_seed: int,
+    t_start: float,
+    t_star: float,
+    t_end: float,
+    out_dir: Path,
+    prefix: str,
+) -> Path:
+    """Slice simulation records to history buffer and save compressed archive."""
+    if sim.logger is None:
+        msg = "Simulation logger missing after run."
+        raise RuntimeError(msg)
+
+    s_t_raw, s_y_raw = sim.logger.signal("sensor_0", "y_mea")
+    c_t_raw, c_u_raw = sim.logger.signal("controller", "u")
+    s_t = np.asarray(s_t_raw, dtype=np.float64)
+    s_y = np.asarray(s_y_raw, dtype=np.float64)
+    c_t = np.asarray(c_t_raw, dtype=np.float64)
+    c_u = np.asarray(c_u_raw, dtype=np.float64)
+
+    # Slice sensor EEG
+    s_mask = (s_t >= t_start) & (s_t <= t_end)
+    sliced_s_t = s_t[s_mask] - t_start
+    sliced_s_y = s_y[s_mask]
+
+    # Slice controller u ensuring first control covers t_start
+    idx_c_start = max(0, int(np.searchsorted(c_t, t_start, side="right") - 1))
+    idx_c_end = int(np.searchsorted(c_t, t_end, side="right"))
+    sliced_c_t = np.maximum(0.0, c_t[idx_c_start:idx_c_end] - t_start)
+    sliced_c_u = c_u[idx_c_start:idx_c_end]
+
+    save_dict: dict[str, np.ndarray] = {
+        "sensor_0.t": sliced_s_t,
+        "sensor_0.y_mea": sliced_s_y,
+        "controller.t": sliced_c_t,
+        "controller.u": sliced_c_u,
+    }
+
+    # Dynamics LFP slice if logged
+    try:
+        d_t_raw, d_lfp_raw = sim.logger.signal("dynamics", "lfp")
+        d_t = np.asarray(d_t_raw, dtype=np.float64)
+        d_lfp = np.asarray(d_lfp_raw, dtype=np.float64)
+        d_mask = (d_t >= t_start) & (d_t <= t_end)
+        save_dict["dynamics.t"] = d_t[d_mask] - t_start
+        save_dict["dynamics.lfp"] = d_lfp[d_mask]
+    except (KeyError, ValueError):
+        pass
+
+    save_dict["metadata_candidate_t_star"] = np.array(t_star, dtype=np.float64)
+    save_dict["metadata_relative_t_star"] = np.array(t_star - t_start, dtype=np.float64)
+    save_dict["metadata_source_run"] = np.array(str(candidate.run_dir))
+    save_dict["metadata_dynamics_seed"] = np.array(candidate.seed, dtype=np.int64)
+    save_dict["metadata_ras_seed"] = np.array(ras_seed, dtype=np.int64)
+    save_dict["metadata_ood_score"] = np.array(candidate.ood_score, dtype=np.float64)
+
+    out_file = out_dir / f"{prefix}_s{candidate.seed}_t{t_star:.2f}_ras{ras_seed}.npz"
+    np.savez_compressed(out_file, allow_pickle=True, **save_dict)
+    return out_file
+
+
+def simulate_ras_branch(  # noqa: PLR0913 -- branch simulation requires duration, history, seeds, and schedule parameters
+    candidate: CandidateState,
+    *,
+    ras_seeds: Sequence[int] = (101, 102, 103),
+    duration_s: float = 4.0,
+    history_s: float = 2.0,
+    output_dir: Path | str = Path("data/extended_train"),
+    amp: float = 2.0,
+    hold_ms: list[float] | None = None,
+    prefix: str = "cand",
+) -> list[Path]:
+    """Simulate Option B Random Amplitude Schedule (RAS) branches from a candidate state.
+
+    Parameters
+    ----------
+    candidate : CandidateState
+        Candidate state providing decision time ``t_star``, seed, and closed-loop run path.
+    ras_seeds : Sequence[int], default=(101, 102, 103)
+        Random seeds for the Random Amplitude Schedule excitation signals.
+    duration_s : float, default=4.0
+        Duration of the active Random Amplitude Schedule excitation segment in seconds.
+    history_s : float, default=2.0
+        Preceding history buffer duration retained before ``t_star`` in seconds.
+    output_dir : Path | str, default=Path("data/extended_train")
+        Directory where generated branch trajectory ``.npz`` files will be saved.
+    amp : float, default=2.0
+        Excitation current amplitude in mA.
+    hold_ms : list[float] | None, optional
+        Hold durations in milliseconds. Defaults to ``[60.0, 120.0, 240.0, 600.0, 1200.0]``.
+    prefix : str, default="cand"
+        File name prefix for emitted trajectory files.
+
+    Returns
+    -------
+    list[Path]
+        Paths of saved branch trajectory archives.
+    """
+    out_dir = Path(output_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    if hold_ms is None:
+        hold_ms = [60.0, 120.0, 240.0, 600.0, 1200.0]
+
+    cfg_file = candidate.run_dir / "config.yaml"
+    log_file = candidate.run_dir / "log.npz"
+
+    if not cfg_file.exists() or not log_file.exists():
+        msg = f"Candidate run artifacts missing at {candidate.run_dir}"
+        raise FileNotFoundError(msg)
+
+    with cfg_file.open(encoding="utf-8") as f:
+        run_cfg = yaml.safe_load(f) or {}
+
+    with np.load(log_file) as log_data:
+        u_rec = np.asarray(log_data["controller.u"], dtype=np.float64)
+
+    t_star = float(candidate.t_star)
+    t_end = t_star + duration_s
+    t_start = max(0.0, t_star - history_s)
+    dt_u = float(run_cfg.get("controller", {}).get("dt", 0.06))
+
+    n_prefix = min(len(u_rec), round(t_star / dt_u))
+    n_branch = max(1, round(duration_s / dt_u))
+    n_total = n_prefix + n_branch
+    n_controls = u_rec.shape[1]
+
+    created_paths: list[Path] = []
+    for ras_seed in ras_seeds:
+        ras_u = build_input_schedule(
+            input_type="ras",
+            n_steps=n_branch,
+            transient_steps=0,
+            n_controls=n_controls,
+            amp=amp,
+            hold_ms=hold_ms,
+            dt=dt_u,
+            rng=np.random.default_rng(ras_seed),
+        )
+        full_u = np.zeros((n_total, n_controls), dtype=np.float64)
+        full_u[:n_prefix] = u_rec[:n_prefix]
+        full_u[n_prefix:] = ras_u[: n_total - n_prefix]
+
+        sim_cfg = deepcopy(run_cfg)
+        sim_cfg["t_end"] = t_end
+        sim_cfg.setdefault("dynamics", {})["seed"] = candidate.seed
+        sim_cfg["controller"] = {"class_path": "neuro.control.zero.ZeroController", "dt": dt_u, "n_u": n_controls}
+
+        sim = Simulation.from_config(sim_cfg)
+        sim.controller = ScheduleController(dt=dt_u, schedule=full_u)
+        sim.run()
+
+        out_file = _slice_and_save_branch(
+            sim=sim,
+            candidate=candidate,
+            ras_seed=ras_seed,
+            t_start=t_start,
+            t_star=t_star,
+            t_end=t_end,
+            out_dir=out_dir,
+            prefix=prefix,
+        )
+        created_paths.append(out_file)
+
+    return created_paths
