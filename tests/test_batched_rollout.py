@@ -108,10 +108,10 @@ def test_accumulate_rollout_errors_matches_per_window_loop() -> None:
     k = model.priming_steps
     for u, y in trajs:
         for t0 in range(k, len(y) - _STEPS, 7):
-            y_pred = np.asarray(model.free_run(y[t0 - k : t0][None], u[t0 - k : t0][None], u[t0 : t0 + _STEPS][None]))[
-                0
-            ]
-            y_true = y[t0 : t0 + _STEPS]
+            y_pred = np.asarray(
+                model.free_run(y[t0 - k + 1 : t0 + 1][None], u[t0 - k : t0][None], u[t0 : t0 + _STEPS][None])
+            )[0]
+            y_true = y[t0 + 1 : t0 + 1 + _STEPS]
             ref[0] += ((y_pred - y_true) ** 2).sum(axis=1)
             ref[1] += (y_true**2).sum(axis=1)
             ref[2] += (y_pred**2).sum(axis=1)

@@ -69,11 +69,11 @@ def free_run(
 ) -> tuple[FloatArray, FloatArray]:
     """Free-run (zero control) ``horizon`` steps from ``anchor``; return (predicted, true) EEG."""
     n_y, n_u, n_controls = model.n_y, model.n_u, model.n_controls
-    y_hist = eeg[anchor - n_y : anchor][None, ...]
+    y_hist = eeg[anchor - n_y + 1 : anchor + 1][None, ...]
     u_hist = np.zeros((1, n_u, n_controls))
     u_future = np.zeros((1, horizon, n_controls))
     preds = np.asarray(model.free_run(y_hist, u_hist, u_future))[0]
-    return preds, eeg[anchor : anchor + horizon]
+    return preds, eeg[anchor + 1 : anchor + 1 + horizon]
 
 
 def main() -> None:
@@ -92,17 +92,17 @@ def main() -> None:
     model = loaded
 
     n_y, horizon = model.n_y, model.horizon
-    anchors = np.linspace(n_y + 1, len(eeg) - horizon - 1, args.anchors).astype(int)
+    anchors = np.linspace(n_y, len(eeg) - horizon - 2, args.anchors).astype(int)
     time = np.arange(len(eeg)) * dt_model
 
     fig, (ax_power, ax_chan) = plt.subplots(1, 2, figsize=(13, 4.2))
 
     power = (eeg**2).mean(axis=1)
-    ax_power.plot(time, power, color="k", lw=0.8, label="plant EEG power")
+    ax_power.plot(time, power, color="k", lw=0.8, alpha=0.5, label="realized plant")
     rmses = []
     for anchor in anchors:
         pred, true = free_run(model, eeg, anchor, horizon)
-        horizon_t = (np.arange(horizon) + anchor) * dt_model
+        horizon_t = (np.arange(1, horizon + 1) + anchor) * dt_model
         ax_power.plot(horizon_t, (pred**2).mean(axis=1), color="C3", lw=1.5)
         rmses.append(float(np.sqrt(((pred - true) ** 2).mean())))
     ax_power.plot([], [], color="C3", lw=1.5, label=f"{horizon}-step free-run forecast")
@@ -110,7 +110,7 @@ def main() -> None:
     ax_power.legend(loc="upper left", fontsize=8)
 
     pred, true = free_run(model, eeg, anchors[len(anchors) // 2], horizon)
-    horizon_t = np.arange(horizon) * dt_model
+    horizon_t = np.arange(1, horizon + 1) * dt_model
     for channel in range(min(N_CHANNELS_TO_PLOT, pred.shape[1])):
         ax_chan.plot(horizon_t, true[:, channel], color=f"C{channel}", lw=1.3)
         ax_chan.plot(horizon_t, pred[:, channel], color=f"C{channel}", lw=1.3, ls="--")

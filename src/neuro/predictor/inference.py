@@ -195,10 +195,10 @@ class ShiftRegisterModel(DiscreteDynamics, InferencePredictor):
 
     The state is the flattened ``(n_history, n_outputs)`` standardized output window followed by
     the raw control window. Both MLP and CNN runtimes therefore share Priming, State Absorption,
-    and Rollout while each supplies its own one-step feature map and checkpoint format. The
-    ``discrete_dynamics`` shifts the newest control into the control window before predicting, so
-    the predicted position depends on the Control Current applied at that step. ``free_run`` uses
-    the training-aligned recursion and shifts the future control after each prediction.
+    and Rollout while each supplies its own one-step feature map and checkpoint format. Both
+    ``discrete_dynamics`` and ``free_run`` shift the newest candidate control into the control
+    window before predicting, matching the training forward pass where newly applied inputs act on
+    the next transition.
     """
 
     n_y: int = eqx.field(static=True)
@@ -339,11 +339,10 @@ class ShiftRegisterModel(DiscreteDynamics, InferencePredictor):
             carry: tuple[jax.Array, jax.Array], u_next: jax.Array
         ) -> tuple[tuple[jax.Array, jax.Array], jax.Array]:
             y_window, u_window = carry
+            u_window = jnp.concatenate([u_window[1:], u_next[None]])
             y_next = self._predict(y_window, u_window)
-            return (
-                jnp.concatenate([y_window[1:], y_next[None]]),
-                jnp.concatenate([u_window[1:], u_next[None]]),
-            ), y_next
+            y_window = jnp.concatenate([y_window[1:], y_next[None]])
+            return (y_window, u_window), y_next
 
         (_, _), preds = jax.lax.scan(step, (y_window, u_window), u_future)
         return preds * self.y_scale + self.y_center

@@ -98,7 +98,7 @@ def test_waveform_cross_side_parity(depth: int, activation: Activation, residual
         standardized = module(y_hist, u_hist, u_future).numpy()[0]
     want = module.y_std.inverse_transform(standardized)
 
-    got = np.asarray(jax_model.free_run(y_raw[:t0][None], u_raw[:t0][None], u_raw[t0 : t0 + _HORIZON][None]))[0]
+    got = np.asarray(jax_model.free_run(y_raw[: k + 1][None], u_raw[:k][None], u_raw[k : k + _HORIZON][None]))[0]
     assert got.shape == (_HORIZON, _N_EEG)
     np.testing.assert_allclose(got, want, rtol=_RTOL, atol=_ATOL)
 
@@ -148,7 +148,7 @@ def test_cross_side_parity_with_distinct_output_width() -> None:
         standardized = module(y_hist, u_hist, u_future).numpy()[0]
     want = module.y_std.inverse_transform(standardized)
 
-    got = np.asarray(jax_model.free_run(y_raw[:t0][None], u_raw[:t0][None], u_raw[t0 : t0 + horizon][None]))[0]
+    got = np.asarray(jax_model.free_run(y_raw[: k + 1][None], u_raw[:k][None], u_raw[k : k + horizon][None]))[0]
     assert got.shape == (horizon, n_outputs)
     np.testing.assert_allclose(got, want, rtol=_RTOL, atol=_ATOL)
 
@@ -244,6 +244,6 @@ def test_observable_cross_side_parity(depth: int, activation: Activation, residu
         standardized = module(y_hist, u_hist, u_future).numpy()[0]
     want = module.y_std.inverse_transform(standardized)
 
-    got = np.asarray(jax_model.free_run(y_raw[:t0][None], u_raw[:t0][None], u_raw[t0 : t0 + _HORIZON][None]))[0]
+    got = np.asarray(jax_model.free_run(y_raw[: k + 1][None], u_raw[:k][None], u_raw[k : k + _HORIZON][None]))[0]
     assert got.shape == (_HORIZON, module.n_channels, module.n_outputs // module.n_channels)
     np.testing.assert_allclose(got, want, rtol=1e-4, atol=1e-5)

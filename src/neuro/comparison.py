@@ -23,12 +23,20 @@ from simulate.simulation import Simulation
 
 from neuro.config import SEED_TIERS, StrictConfig, resolve_seeds, resolve_simulation_config
 from neuro.connectome import Connectome
+from neuro.predictor.evaluation import (
+    EligibilityStatus,
+    HorizonEligibility,
+    NumericalTolerances,
+    ScientificThresholds,
+    check_candidate_eligibility,
+)
 from neuro.seizure import EZ_REGIONS, PZ_REGIONS, SEIZURE_PTP_MV, spread_profile_from_lfp, spread_summary
 from neuro.validation import validate_simulation_config
 
 if TYPE_CHECKING:
     from simulate.logger.base import BaseLogger
 
+    from neuro.run_view import Run
     from neuro.types import FloatArray
 
 
@@ -378,8 +386,44 @@ def read_rows(path: Path) -> list[dict[str, Any]]:
     return rows
 
 
-def validate_grid(grid: list[Cell]) -> None:
+def check_arm_eligibility(
+    cell_or_config: Cell | dict[str, Any],
+    val_trajectories: list[tuple[FloatArray, FloatArray]] | list[Run] | Run | Path | None = None,
+    *,
+    thresholds: ScientificThresholds | None = None,
+    tolerances: NumericalTolerances | None = None,
+) -> HorizonEligibility:
+    """Verify whether an arm's Predictor is eligible over the Control Horizon before running simulations."""
+    thresh = thresholds or ScientificThresholds()
+    tol = tolerances or NumericalTolerances()
+    config = cell_or_config.config if isinstance(cell_or_config, Cell) else cell_or_config
+    controller = config.get("controller", {})
+    problem = controller.get("problem")
+    if problem is None or "artifact" not in problem:
+        return HorizonEligibility(status=EligibilityStatus.PASS, reasons=["No learned Predictor in arm"], passed=True)
+    return check_candidate_eligibility(
+        config,
+        val_trajectories,
+        thresholds=thresh,
+        tolerances=tol,
+    )
+
+
+def validate_grid(
+    grid: list[Cell],
+    val_trajectories: list[tuple[FloatArray, FloatArray]] | list[Run] | Run | Path | None = None,
+    *,
+    thresholds: ScientificThresholds | None = None,
+    tolerances: NumericalTolerances | None = None,
+) -> None:
     """Check every cell's wiring, and the arms' shared Plant and Control Budget, before any run."""
+    thresh = thresholds or ScientificThresholds()
+    tol = tolerances or NumericalTolerances()
     for cell in grid:
         validate_simulation_config(copy.deepcopy(cell.config))
+        if val_trajectories is not None:
+            eligibility = check_arm_eligibility(cell, val_trajectories, thresholds=thresh, tolerances=tol)
+            if not eligibility.passed:
+                msg = f"Arm {cell.arm!r} failed Control Horizon eligibility: {eligibility.reasons}"
+                raise ValueError(msg)
     check_arms_are_paired(grid)
