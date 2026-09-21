@@ -1,33 +1,218 @@
 \chapter{Model Predictive Control Framework}
 \label{ch:mpc_framework}
 
-% Core Research Question:
-% How do we formulate and solve a receding-horizon optimal control problem that quenches
-% seizure recruitment in real time while respecting physiological safety constraints?
+The data-driven predictor developed in Chapter~\ref{ch:data_driven_predictor_design} supplies a forward model of the neural response to electrical stimulation. This chapter deploys that model within a receding-horizon optimisation framework to find stimulation currents that suppress seizures while strictly respecting physiological safety constraints.
 
-% Contents:
-% - Receding-Horizon Control Formulation: Discrete-time optimal control problem (OCP) over the Control Horizon
-%   using the primed surrogate Predictor as the internal dynamic model.
-% - Safety and Actuation Constraints (Control Budget):
-%   * Kirchhoff's Current Law (sum of electrode currents equals zero: zero charge accumulation in the head).
-%   * Hard per-electrode current limits (|u_p| <= 2 mA) and slew-rate limits.
-%   * Zero-order hold actuation over controller sampling intervals.
-% - Cost Function Design:
-%   * Seizure-suppression costs: Set-based spectral costs penalizing power above healthy baseline vs. waveform tracking.
-%   * Stimulation regularization: L2 penalties (energy/current magnitude) vs. L1 penalties (charge minimization / sparsity)
-%     and smooth approximations.
-% - Stimulation Modes & Scheduling:
-%   * Continuous current stimulation.
-%   * Pulse-based stimulation: Mixed-Integer formulation (binary scheduling variables delta_{j|k}), continuous relaxation
-%     with schedule recovery, and continuous pulse-timing alternatives.
-% - Numerical Transcription and Real-Time Solvers:
-%   * Direct single shooting (sensitivities across rollouts) vs. multiple shooting.
-%   * Resulting optimization classes: Convex QP (linear DMDc + quadratic cost) vs. non-convex NLP/SQP (nonlinear MLP).
-%   * Computational tractability and update deadline considerations.
+\section{Receding-Horizon Control}
+\label{sec:receding_horizon_control}
 
-% Mapping from Previous Structure:
-% - Extracted from the control theory parts of Chapter 3 (03_foundations.tex, Sec. 3.3:
-%   Receding horizon control, linear/nonlinear MPC, shooting transcriptions, output feedback, cost design,
-%   mixed-integer MPC) and Chapter 4 (04_methodology.tex, Sec. 4.4: MPC objectives,
-%   Kirchhoff constraints, suppression costs, stimulation penalties, solvers; Sec. 4.5: Pulse-based control,
-%   mixed-integer OCP, relaxations, recovery).
+A discrete-time prediction model provides the basis for \ac{mpc}. Let $k \in \mathbb{N}$ denote the current discrete time step. The predictor evolves according to
+%
+\begin{equation*}
+    \mathbf{x}_{k+1} = \mathbf{f}(\mathbf{x}_k, \mathbf{u}_k) \,,
+\end{equation*}
+%
+where $\mathbf{x}_k \in \mathbb{R}^{n_x}$ is the model state, $\mathbf{u}_k \in \mathbb{R}^{n_u}$ is the applied control input, and $\mathbf{f}$ is the transition map. As described in Chapter~\ref{ch:data_driven_predictor_design}, the model state $\mathbf{x}_k$ need not coincide with the physical state of the underlying neural plant from Chapter~\ref{ch:biological_plant_modeling}.
+
+Given a current state estimate $\hat{\mathbf{x}}_k$, the controller simulates future trajectories over a finite prediction horizon $H \in \mathbb{N}_{>0}$. Let $\mathbf{x}_{j|k}$ and $\mathbf{u}_{j|k}$ denote the predicted state and candidate input at step $k+j$, respectively. The open-loop predicted sequence incurs a finite-horizon cost
+%
+\begin{equation}
+    J_H\!\left(\hat{\mathbf{x}}_k, \mathbf{u}_{0|k}, \dots, \mathbf{u}_{H-1|k}\right)
+    = \sum_{j=0}^{H-1} \ell\!\left(\mathbf{x}_{j|k}, \mathbf{u}_{j|k}\right)
+      + V_\mathrm{f}\!\left(\mathbf{x}_{H|k}\right) \,,
+    \label{eq:mpc_cost}
+\end{equation}
+%
+where $\ell$ evaluates the stage cost at each intermediate step and $V_\mathrm{f}$ assigns a terminal cost to the final predicted state.
+
+The core mechanism of \ac{mpc} is the repeated solution of an \ac{ocp}. At step $k$, the controller minimises~\eqref{eq:mpc_cost} subject to the predicted dynamics and operational bounds, yielding
+%
+\begin{align}
+    \underset{\mathbf{u}_{0|k}, \dots, \mathbf{u}_{H-1|k}}{\operatorname{minimise}} \quad &
+    J_H\!\left(\hat{\mathbf{x}}_k, \mathbf{u}_{0|k}, \dots, \mathbf{u}_{H-1|k}\right) \nonumber \\
+    \operatorname{subject~to} \quad &
+    \mathbf{x}_{0|k} = \hat{\mathbf{x}}_k, \nonumber \\
+    & \mathbf{x}_{j+1|k} = \mathbf{f}\!\left(\mathbf{x}_{j|k}, \mathbf{u}_{j|k}\right),
+      \quad j = 0, \dots, H-1, \nonumber \\
+    & \mathbf{u}_{j|k} \in \mathbb{U}, \qquad j = 0, \dots, H-1, \nonumber \\
+    & \mathbf{x}_{j|k} \in \mathbb{X}, \qquad j = 1, \dots, H-1, \nonumber \\
+    & \mathbf{x}_{H|k} \in \mathbb{X}_\mathrm{f} \,.
+    \label{eq:ocp}
+\end{align}
+%
+The compact sets $\mathbb{U} \subset \mathbb{R}^{n_u}$ and $\mathbb{X} \subset \mathbb{R}^{n_x}$ encode constraints on the stimulation amplitude and safety bounds, while $\mathbb{X}_\mathrm{f} \subseteq \mathbb{X}$ serves as an optional terminal constraint set.
+
+Although~\eqref{eq:ocp} computes an entire optimal input sequence, the controller applies only the first element $\mathbf{u}_{0|k}$ to the physical plant. At step $k+1$, a new state estimate $\hat{\mathbf{x}}_{k+1}$ becomes available, and the horizon shifts forward. The solver then computes a new plan. Figure~\ref{fig:receding_horizon} illustrates this receding-horizon principle, which introduces feedback to reject disturbances and modeling errors.
+
+\begin{figure}[htbp]
+    \centering
+    \includegraphics[width=0.9\linewidth]{figures/03_foundations/receding_horizon}
+    \caption{The receding-horizon principle in \ac{mpc}. At step $k$, an optimal input sequence is planned over the prediction horizon $H$. Only the first element (solid bar) is applied. At step $k+1$, the horizon shifts, the measurement is updated, and a new plan is computed.}
+    \label{fig:receding_horizon}
+\end{figure}
+
+The formulation in~\eqref{eq:ocp} evaluates a deterministic transition model without anticipating future measurement noise or plant variations, an approach known as certainty-equivalent \ac{mpc}~\cite{Rawlings2017}. Feedback compensates for mismatch implicitly. Alternatively, robust and stochastic \ac{mpc} variants explicitly incorporate uncertainty bounds or disturbance distributions into the predicted sequences~\cite{Mayne2000, Mesbah2016, Hewing2020}. Certainty-equivalent control is often preferred when probabilistic models of the plant variations remain unavailable or intractable to evaluate in real time.
+
+Theoretical frameworks employ carefully constructed terminal costs $V_\mathrm{f}$ and sets $\mathbb{X}_\mathrm{f}$ to establish formal certificates of stability and recursive feasibility~\cite{Rawlings2017}. Such rigorous certificates are exceptionally challenging to derive for general data-driven nonlinear systems with complex constraints. In the absence of terminal ingredients, sufficiently long horizons and appropriate stage costs can provide practical stabilising properties that must be assessed through numerical simulation~\cite{Gruene2017}. This simulation-based validation approach aligns with the framework's evaluation in Chapter~\ref{ch:experiments_discussion}.
+
+\section{Linear and Nonlinear MPC}
+\label{sec:linear_nonlinear_mpc}
+
+The complexity of solving the \ac{ocp} in~\eqref{eq:ocp} depends decisively on the choice of transition model $\mathbf{f}$. An affine data-driven model yields linear dynamic constraints. If the stage cost $\ell$ is convex quadratic and the constraint sets are polyhedral, the resulting \ac{ocp} is a \ac{qp}. An online \ac{qp} solver can efficiently isolate the unique global optimum of a strictly convex formulation, making linear \ac{mpc} numerically robust and well-suited for high-frequency control applications~\cite{Rawlings2017}.
+
+Linear models are not restricted to capturing locally linear systems. Koopman operator theory demonstrates that fully nonlinear dynamics can be represented linearly when projected into an appropriate function space of observables~\cite{Rowley2009, Brunton2016}. Data-driven techniques like \ac{dmdc} leverage this principle by identifying an affine map for the chosen observables, permitting linear \ac{mpc} to manipulate fundamentally nonlinear physical processes.
+
+Conversely, deploying a nonlinear predictor, such as an \ac{mlp}, results in a non-convex \ac{nlp}. Although nonlinear predictors may capture intricate neural dynamics more accurately across diverse regimes, the corresponding \ac{nlp} is considerably more challenging to solve. Optimisation routines may converge to distinct local minima depending on the initialisation, and certifying global optimality within strict real-time deadlines is generally infeasible~\cite{Findeisen2002}. Therefore, selecting between linear and nonlinear \ac{mpc} demands balancing enhanced predictive accuracy against essential numerical tractability.
+
+\section{Transcription and Numerical Solution}
+\label{sec:transcription}
+
+Numerical solution algorithms require the \ac{ocp} to be transcribed into a finite-dimensional mathematical program. For discrete-time prediction models, transcription strategies differ in how they handle predicted states, leading to either direct single shooting or direct multiple shooting.
+
+Direct single shooting eliminates the predicted states from the decision vector, optimising only the $H n_u$ candidate inputs. The method computes states recursively through rollout maps $\boldsymbol{\varphi}_j$, defined as
+%
+\begin{align}
+    \boldsymbol{\varphi}_0(\mathbf{x})
+    &= \mathbf{x}, \nonumber \\
+    \boldsymbol{\varphi}_1(\mathbf{x}, \mathbf{u}_0)
+    &= \mathbf{f}(\mathbf{x}, \mathbf{u}_0), \nonumber \\
+    \boldsymbol{\varphi}_{j+1}(\mathbf{x}, \mathbf{u}_0, \dots, \mathbf{u}_j)
+    &= \mathbf{f}\!\left(
+       \boldsymbol{\varphi}_j(\mathbf{x}, \mathbf{u}_0, \dots, \mathbf{u}_{j-1}),
+       \mathbf{u}_j\right),
+       \qquad j = 1, \dots, H-1 \,. \label{eq:single_shooting}
+\end{align}
+%
+Substituting $\mathbf{x}_{j|k} = \boldsymbol{\varphi}_j(\hat{\mathbf{x}}_k, \mathbf{u}_{0|k}, \dots, \mathbf{u}_{j-1|k})$ directly into the cost and constraint functions ensures that every intermediate iterate respects the model dynamics. However, single shooting compounds the model sensitivities across the horizon. Let $\mathbf{A}_q = \partial\mathbf{f}/\partial\mathbf{x} (\mathbf{x}_{q|k},\mathbf{u}_{q|k})$ and $\mathbf{B}_q = \partial\mathbf{f}/\partial\mathbf{u} (\mathbf{x}_{q|k},\mathbf{u}_{q|k})$ denote the step Jacobians. The state sensitivity to a prior input $r < j$ is given by the product
+%
+\begin{equation*}
+    \frac{\partial \mathbf{x}_{j|k}}{\partial \mathbf{u}_{r|k}}
+    = \mathbf{A}_{j-1}\mathbf{A}_{j-2}\cdots\mathbf{A}_{r+1}\mathbf{B}_r \,.
+\end{equation*}
+%
+Multiplying many transition Jacobians can severely degrade the conditioning of the numerical problem and amplify early-input sensitivities, complicating gradient-based optimisation for extended prediction horizons.
+
+Direct multiple shooting mitigates this issue by treating the $(H+1)n_x$ predicted state variables as additional decision variables. To enforce dynamic consistency, the formulation introduces one-step continuity constraints~\cite{Bock1984}:
+%
+\begin{equation}
+    \mathbf{x}_{0|k} = \hat{\mathbf{x}}_k, \qquad
+    \mathbf{x}_{j+1|k} - \mathbf{f}\!\left(\mathbf{x}_{j|k}, \mathbf{u}_{j|k}\right)
+    = \mathbf{0},
+    \quad j = 0, \dots, H-1 \,. \label{eq:multiple_shooting}
+\end{equation}
+%
+While the solver iterates, these continuity constraints may temporarily remain violated. Intermediate iterates thus comprise disconnected trajectory segments, as illustrated in Figure~\ref{fig:shooting}. Although multiple shooting increases the problem size, it avoids lengthy Jacobian products and provides sparse problem structures that modern solvers exploit efficiently. State constraints can also be enforced directly on the explicit state variables.
+
+\begin{figure}[htbp]
+    \centering
+    \includegraphics[width=0.9\linewidth]{figures/03_foundations/shooting}
+    \caption{Direct single and multiple shooting transcriptions over a prediction horizon. Single shooting simulates the entire rollout sequentially. Multiple shooting incorporates the intermediate states as decision variables; the illustrated gaps vanish once the solver satisfies the dynamic equality constraints.}
+    \label{fig:shooting}
+\end{figure}
+
+Once transcribed, a nonlinear model yields an \ac{nlp}. Standard solution techniques include \ac{sqp} methods, which iteratively solve quadratic approximations of the constraints and Lagrangian, and primal-dual interior-point methods, which handle inequality constraints through sequence of barrier subproblems~\cite{Waechter2006, Nocedal2006}.
+
+\section{Output Feedback}
+\label{sec:output_feedback}
+
+The \ac{ocp} formulation in~\eqref{eq:ocp} fundamentally assumes that a state estimate $\hat{\mathbf{x}}_k$ is available at each time step. For the high-dimensional, delayed network model introduced in Chapter~\ref{ch:biological_plant_modeling}, however, the full physiological state is completely unobservable. Constructing a state observer to reconstruct millions of coupled neural-mass variables and distributed history terms is practically infeasible. Instead, the framework relies on the input-output prediction model developed in Chapter~\ref{ch:data_driven_predictor_design}, which consolidates delayed observations directly into a finite-history prediction state, enabling effective output feedback without reconstructing the internal biological plant.
+
+\section{Cost Function Design}
+\label{sec:cost_design}
+
+The stage cost $\ell$ orchestrates the controller's behaviour by quantifying penalties along the predicted horizon. It is typically separated into state-dependent performance terms and input-dependent regularisation,
+%
+\begin{equation*}
+    \ell(\mathbf{x}, \mathbf{u})
+    = \ell_\mathrm{x}(\mathbf{x}) + \ell_\mathrm{u}(\mathbf{u}) \,.
+\end{equation*}
+%
+Standard \ac{mpc} implementations often employ tracking costs that penalise deviations from a specified reference trajectory. However, seizure suppression constitutes an economic or set-based control objective rather than a strict tracking task~\cite{Ellis2014}. A set-based cost $\ell_\mathrm{x}$ can remain zero while the brain dynamics reside within an acceptable healthy regime, applying penalties strictly when pathological dynamics emerge. Such a formulation allows either raw waveform samples or derived spectral quantities to evaluate performance.
+
+To penalise the stimulation effort and preserve battery life, common choices for $\ell_\mathrm{u}$ include the $\ell_1$-norm and the squared $\ell_2$-norm:
+%
+\begin{equation}
+    \ell_\mathrm{u}^{(1)}(\mathbf{u})
+    = w_1\|\mathbf{u}\|_1,
+    \qquad
+    \ell_\mathrm{u}^{(2)}(\mathbf{u})
+    = w_2\|\mathbf{u}\|_2^2 \,,
+    \label{eq:input_penalty}
+\end{equation}
+%
+where $w_1$ and $w_2$ represent positive scaling weights. Integrating the $\ell_1$ penalty over the horizon is proportional to the total delivered charge. While $\ell_1$ is convex, it is non-differentiable at zero and promotes sparse stimulation schedules. In contrast, the $\ell_2$ penalty aggressively suppresses large current magnitudes and maintains smoothness, but it lacks a direct physical equivalence to electrical energy without incorporating dynamic impedance information.
+
+\subsection{Seizure-Suppression Costs}
+\label{sec:seizure_suppression_costs}
+% Formulate waveform-based and spectral suppression Costs and their intended behavior.
+% Explain construction of the healthy spectral reference and normalization of Cost terms.
+% Keep the controller's suppression Cost distinct from the Predictor's training Loss
+% and from the post hoc Closed-Loop Evaluation Score used in Chapter 5.
+
+\subsection{Stimulation Penalties}
+\label{sec:stimulation_penalties}
+% Define L2 and L1 current penalties, weight scaling, and the behavior to be compared.
+% Describe the smooth L1 surrogate where it is used in the evaluated method.
+% End with the complete continuous optimization problem, collecting dynamics, Costs,
+% and constraints before extending the formulation to pulses.
+
+\section{Pulse-Based Stimulation}
+\label{sec:pulse_based_stimulation}
+
+Continuous penalty terms alone cannot explicitly enforce a sparse, on-off pulse schedule. To rigidly schedule pulsatile stimulation, \ac{mpc} incorporates binary indicator variables $\delta_{j|k} \in \{0, 1\}$. These binary variables dictate whether active stimulation is permitted at step $j$ along the prediction horizon. Under symmetric amplitude limits $u_\mathrm{max} > 0$, an active interval is regulated via big-M constraints:
+%
+\begin{equation*}
+    -\delta_{j|k} \, u_\mathrm{max} \leq u_{p,j|k} \leq \delta_{j|k} \, u_\mathrm{max},
+    \qquad p = 1, \dots, P, \quad j = 0, \dots, H-1 \,,
+\end{equation*}
+%
+where $u_{p,j|k}$ denotes the current through electrode $p$. When $\delta_{j|k}=0$, the constraints force all associated currents to zero. When $\delta_{j|k}=1$, continuous modulations within $\pm u_\mathrm{max}$ are permitted~\cite{Bemporad1999}.
+The summation $\sum_{j=0}^{H-1}\delta_{j|k}$ directly measures the total active duration. It is crucial to note that this sum counts enabled sampling intervals, not discrete pulses, as a single physiological pulse might span several consecutive computational steps.
+
+Introducing binary variables to a linear \ac{qp} results in a \ac{miqp}, whereas a nonlinear model produces a \ac{minlp}. Standard solution algorithms like branch-and-bound partition the binary choices and employ continuous relaxations to bound the objective value on each subtree~\cite{Belotti2013}. For a \ac{miqp}, the convex relaxation reliably supplies valid lower bounds, allowing solvers to certify global optimality. For a \ac{minlp}, a locally optimal continuous relaxation lacks this bounding property, severely complicating the certification procedure. To reduce the combinatorial complexity and shrink the discrete decision space, control blocking can enforce identical binary decisions across clusters of consecutive intervals, albeit at the expense of restricting the allowable schedules~\cite{Cagienard2007}.
+
+A heuristic alternative avoids the mixed-integer solver entirely by solving a continuous relaxation where $\delta_{j|k} \in [0, 1]$, then projecting the result back to a valid binary schedule through rounding. However, rounding can drastically alter the predicted state trajectory, exceed the maximum allowed active time, or eliminate problem feasibility completely. While specific \ac{ocp} structures and integration schemes admit theoretical approximation bounds for such rounding~\cite{Sager2012}, these guarantees do not universally extend to arbitrary data-driven predictors.
+
+A fundamentally distinct approach involves treating the onset timing of pulses directly as continuous decision variables. Because a discrete-time formulation cannot naturally resolve events occurring between sampling intervals, sub-sample timing variables require a specially structured continuous-time prediction model or a hybrid parameterisation capable of expressing intra-sample transitions.
+
+\subsection{Pulse Definition and Scheduling Variables}
+\label{sec:pulse_definition}
+% Define a pulse before introducing its decision variables and admissible schedules.
+% QUESTION: Is the objective to restrict current magnitude, total stimulation time,
+% the number of distinct pulses, or some stated combination?
+% QUESTION: Does a binary variable denote an active interval or a pulse onset?
+% Summing active steps counts enabled intervals; consecutive enabled steps can form one pulse.
+% QUESTION: Are pulse shape, duration, polarity, and electrode pattern fixed?
+% Which of amplitude, duration/duty cycle, and timing should be optimized?
+
+\subsection{Mixed-Integer Formulation}
+\label{sec:mixed_integer_formulation}
+% Couple binary scheduling decisions to admissible currents and define the pulse budget.
+% State which decisions are shared across electrodes and which are electrode-specific.
+% Derive the resulting optimization class from the chosen Predictor, Cost, and constraints.
+% Explain the solution approach and any schedule simplifications needed for tractability.
+% QUESTION: What is the smallest pulse formulation that tests the intended idea before
+% adding amplitude or duty-cycle optimization?
+
+\subsection{Continuous Relaxation and Schedule Recovery}
+\label{sec:relaxation_recovery}
+% Define a relaxation of binary activation variables and how a deliverable schedule
+% would be recovered. Explain how feasibility and predicted suppression would be rechecked.
+% QUESTION: Which recovery rule preserves the chosen pulse budget and current constraints?
+% Distinguish this procedure from continuous optimization of pulse onset times.
+
+\subsection{Continuous Pulse-Timing Alternative}
+\label{sec:continuous_pulse_timing}
+% Formulate onset times as continuous decisions (if this alternative remains in scope)
+% Explain how candidate pulses occurring within a sampling interval affect prediction.
+% Develope a continuous-time Predictor required
+% Compare the formulations conceptually with L2/L1 continuous stimulation here.
+% Chapter 5 compares their suppression, stimulation use, and computational cost.
+
+\section{Numerical Solution and Receding-Horizon Application}
+\label{sec:numerical_solution_application}
+% Explain the transcriptions and solution methods studied, including single/multiple
+% shooting and NARX/PCMS formulations if retained as part of the investigation.
+% State how Costs spanning multiple samples or Frames enter the optimization.
+% Avoid a software architecture account.
+% Chapter 5 contains solver comparison protocols and results, not first definitions.

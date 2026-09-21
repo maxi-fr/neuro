@@ -1,29 +1,254 @@
 \chapter{Data-Driven Predictor Design}
 \label{ch:data_driven_predictor_design}
 
-% Core Research Question:
-% How do we learn a computationally tractable surrogate model that forecasts future
-% seizure dynamics directly from causal EEG measurements and candidate control currents?
+To suppress seizures via closed-loop feedback, a controller must anticipate how candidate electrical stimuli alter future neural dynamics. The mechanistic plant models described in Chapter~\ref{ch:biological_plant_modeling} are heavily parameterized, non-differentiable, and too computationally demanding to evaluate within an online control loop. Furthermore, the internal cortical states of these networks are not directly observable; only delayed, spatially aggregated scalp \ac{eeg} measurements are available.
 
-% Contents:
-% - The Prediction Dilemma: Severe partial observability of scalp EEG, intractability of full-state
-%   Kalman observers for high-dimensional delayed networks, and the necessity of data-driven input-output surrogate models.
-% - Signal Representations:
-%   * Waveform representation on the decimated 50 Hz grid.
-%   * Spectral Observables via the Short-Time Fourier Transform (STFT): Segments, Frames, and Frame Kernels;
-%     why spectral power removes phase-jitter sensitivity while linearizing oscillatory seizure dynamics.
-% - Model Architectures:
-%   * Autoregressive input-output formulation with history states (d_y, d_u).
-%   * Linear/Affine: Dynamic Mode Decomposition with Control (DMDc) and connection to Koopman observable theory.
-%   * Nonlinear: Multilayer Perceptrons (MLPs) and residual one-step predictors.
-% - Dynamic State Handling: Causal State Absorption and Priming from trailing EEG history.
-% - Offline Training Methodology:
-%   * Identification dataset generation under exploratory stimulation.
-%   * One-step least squares vs. multi-step Rollout training objectives.
-%   * Waveform vs. spectral training losses and curriculum training strategies.
+Consequently, this thesis relies on data-driven input-output surrogate models. These models learn a computationally tractable forward mapping directly from causal \ac{eeg} measurements and control currents to future observations. This chapter develops the components of the prediction framework: the signal representations that construct the observables, the model architectures that forecast their evolution, and the offline methodologies used to train them.
 
-% Mapping from Previous Structure:
-% - Extracted from the signal processing and SysID parts of Chapter 3 (03_foundations.tex,
-%   Sec. 3.2: STFT, periodograms, Welch averaging, frame kernels; Sec. 3.4: NARX, MLPs, DMDc)
-%   and Chapter 4 (04_methodology.tex, Sec. 4.2: Waveform vs. Spectral Observables,
-%   Predictor model classes; Sec. 4.3: Identification data, training losses, curricula).
+\section{Signal Representations}
+\label{sec:signal_representations}
+
+The choice of what to predict determines the required complexity of the forward model and the behavior of the resulting controller. This section formulates two candidate prediction representations: the raw \ac{eeg} waveform and a constructed spectral observable.
+
+\subsection{Waveform Representation}
+\label{sec:waveform_representation}
+
+% Define the future EEG waveform to be predicted, the measured history, and the past
+% and candidate future currents conditioning the prediction. Motivate this representation.
+
+The most direct prediction target is the preprocessed time-domain \ac{eeg} waveform. As described in Chapter~\ref{ch:biological_plant_modeling}, the raw signal is filtered and decimated to a \SI{50}{\hertz} grid, producing one waveform sample every \SI{20}{\milli\second}. A waveform predictor must map a history of these voltage samples and past currents to future voltage samples.
+
+This representation retains all information available in the measured channel, requiring no further transformation before training. However, requiring the surrogate model to forecast exact instantaneous sample values means it must track the phase of oscillatory dynamics precisely. If the model misaligns a predicted high-frequency oscillation, the point-wise prediction error will be large even if the frequency and amplitude are correct, penalizing phase jitter heavily.
+
+\subsection{Spectral Observables via the Short-Time Fourier Transform}
+\label{sec:spectral_observables}
+
+Reading \ac{eeg} through its power spectrum is standard practice. Seizing nodes carry substantially more power in low-frequency bands than background nodes, and tracking this power directly avoids the phase-sensitivity of waveform prediction. To recover the time axis and produce a signal the loop can act on causally, we employ the \ac{stft} to construct spectral observables.
+
+The \ac{stft} cuts the sampled channel $y_k$ into segments of $L_\mathrm{s}$ samples spaced $H_\mathrm{s}$ samples apart, multiplies each segment by a taper $g_n$, and transforms it. Segment $q$ starts at sample $q H_\mathrm{s}$, so with $n$ counting samples from the start of a segment its coefficients are
+%
+\begin{equation}
+    Y_q(f_\nu) = \sum_{n=0}^{L_\mathrm{s}-1} g_n \, y_{q H_\mathrm{s} + n}
+    \, \mathrm{e}^{-\mathrm{i} 2 \pi \nu n / L_\mathrm{s}},
+    \qquad f_\nu = \nu \, f_\mathrm{s} / L_\mathrm{s} \,,
+    \label{eq:stft}
+\end{equation}
+%
+where $\nu = 0, \dots, L_\mathrm{s}/2$ indexes the frequency bins and $f_\nu$ is the frequency each bin sits at. The segment length $L_\mathrm{s}$ and the hop $H_\mathrm{s}$ fix the grid.
+Segment $q$ ends at sample $q H_\mathrm{s} + L_\mathrm{s} - 1$ and uses no sample after it, ensuring causal online operation. Each spectrum lags the oldest sample it carries by $L_\mathrm{s} \, \Delta t$ seconds. The segment length $L_\mathrm{s}$ fixes the resolution $\Delta f = f_\mathrm{s}/L_\mathrm{s}$. A smooth taper like the periodic Hann window suppresses sidelobes and prevents low-frequency power from leaking across the band~\cite{Oppenheim2010}.
+
+Only the magnitude of~\eqref{eq:stft} is retained, discarding the phase that shifts with every hop. Each segment is reduced to the one-sided power spectral density, the periodogram of segment $q$:
+%
+\begin{equation}
+    \hat{\Phi}_q(f_\nu) = \frac{\alpha_\nu \, |Y_q(f_\nu)|^2}
+    {f_\mathrm{s} \sum_{n=0}^{L_\mathrm{s}-1} g_n^2},
+    \qquad
+    \alpha_\nu =
+    \begin{cases}
+        1, & \nu \in \{0, \, L_\mathrm{s}/2\}, \\
+        2, & \text{otherwise} \,.
+    \end{cases}
+    \label{eq:periodogram}
+\end{equation}
+%
+Dividing by the taper energy normalizes the density, so the result does not depend on segment length or taper attenuation~\cite{Oppenheim2010}.
+
+Equation~\eqref{eq:periodogram} provides a noisy spectral representation. For a Gaussian process, the standard deviation of the periodogram equals its mean~\cite{Oppenheim2010}, and lengthening the segment only adds bins rather than reducing scatter. The variance is reduced by averaging over a trailing group of segments:
+%
+\begin{equation}
+    \bar{\Phi}_q(f_\nu) = \sum_{q'=0}^{L_\mathrm{k}-1} \kappa_{q'} \,
+    \hat{\Phi}_{q-q'}(f_\nu) \,,
+    \label{eq:frame_kernel}
+\end{equation}
+%
+with non-negative weights $\kappa_{q'}$ summing to one over a width of $L_\mathrm{k}$ segments. This frame kernel acts as a Welch estimate recomputed at every hop. The kernel costs a further $(L_\mathrm{k} - 1) H_\mathrm{s}$ samples of delay but reduces variance without sacrificing frequency resolution.
+
+The resulting smoothed spectral power isolates the energetic footprint of a seizure, effectively linearizing the oscillatory dynamics and ignoring phase jitter. The geometry of the transform---$L_\mathrm{s}$, $H_\mathrm{s}$, and $L_\mathrm{k}$---is kept parameterized here; its optimal selection depends on the closed-loop task and is addressed in Chapter~\ref{ch:experiments_discussion}.
+
+\section{Predictor Model Architectures}
+\label{sec:predictor_model_architectures}
+
+The continuous-time biological dynamics must be approximated by a discrete-time prediction model that maps candidate inputs to future outputs. When the physical state is unobservable, recorded input-output trajectories can identify this map.
+
+\subsection{Autoregressive Input-Output Formulation}
+
+An autoregressive model predicts the next output from a finite history of past outputs and exogenous inputs. For nonlinear systems, this is a \ac{narx} model~\cite{Chen1989}. Let $d_\mathrm{y} \in \mathbb{N}$ be the output-history length and $d_\mathrm{u} \in \mathbb{N}$ the input-history length. The history state is
+%
+\begin{equation}
+    \mathbf{h}_k
+    = \begin{bmatrix}
+        \mathbf{y}_k^\mathsf{T} & \mathbf{y}_{k-1}^\mathsf{T} & \cdots &
+        \mathbf{y}_{k-d_\mathrm{y}+1}^\mathsf{T} &
+        \mathbf{u}_{k-1}^\mathsf{T} & \mathbf{u}_{k-2}^\mathsf{T} & \cdots &
+        \mathbf{u}_{k-d_\mathrm{u}+1}^\mathsf{T}
+      \end{bmatrix}^\mathsf{T}
+    \in \mathbb{R}^{n_h} \,,
+    \label{eq:history_state}
+\end{equation}
+%
+with $n_h = d_\mathrm{y}n_y + (d_\mathrm{u}-1)n_u$. The parameterised one-step forward model is
+%
+\begin{equation}
+    \hat{\mathbf{y}}_{k+1}
+    = \mathbf{f}_{\boldsymbol{\theta}}\!\left(\mathbf{h}_k,\mathbf{u}_k\right) \,,
+    \label{eq:controlled_autoregression}
+\end{equation}
+%
+where $\boldsymbol{\theta}$ contains the model parameters. Multi-step prediction is achieved by repeatedly shifting the oldest entries out of the history and substituting the predicted output $\hat{\mathbf{y}}_{k+1}$ and candidate input $\mathbf{u}_k$.
+
+Fitting the parameters requires an empirical distribution $\mathcal{D}$ of sampled trajectories. The standard one-step least-squares objective minimizes the immediate prediction error:
+%
+\begin{equation}
+    \underset{\boldsymbol{\theta}}{\operatorname{minimise}}
+    \quad
+    \mathbb{E}_{\mathcal{D}}\!\left[
+      \left\|\mathbf{y}_{k+1}
+      - \mathbf{f}_{\boldsymbol{\theta}}(\mathbf{h}_k,\mathbf{u}_k)\right\|_2^2
+    \right] \,.
+    \label{eq:one_step_identification}
+\end{equation}
+%
+However, one-step errors do not guarantee accurate multi-step rollouts, as errors can accumulate when predictions feed back into the history state~\cite{Farina2011}. An alternative is to directly optimize the multi-step rollout:
+%
+\begin{equation}
+    \underset{\boldsymbol{\theta}}{\operatorname{minimise}}
+    \quad
+    \frac{1}{H}
+    \sum_{j=1}^{H}
+    \mathbb{E}_{\mathcal{D}}\!\left[
+      \left\|\mathbf{y}_{k+j}
+      - \hat{\mathbf{y}}_{j|k}(\boldsymbol{\theta})\right\|_2^2
+    \right] \,,
+    \label{eq:multi_step_identification}
+\end{equation}
+%
+where $\hat{\mathbf{y}}_{j|k}(\boldsymbol{\theta})$ is the recursively predicted output~\cite{Ljung1999}.
+
+\subsection{Multilayer Perceptron Predictor}
+
+An \ac{mlp} can parameterise the nonlinear map in~\eqref{eq:controlled_autoregression} by composing affine transformations and element-wise nonlinear activations~\cite{Goodfellow2016}. Let the network input be $\boldsymbol{\xi}_k = \begin{bmatrix}\mathbf{h}_k^\mathsf{T}&\mathbf{u}_k^\mathsf{T}\end{bmatrix}^\mathsf{T}$. For $L-1$ hidden layers, the network is defined by
+%
+\begin{align}
+    \mathbf{a}^{(0)}_k
+    &= \boldsymbol{\xi}_k \,, \nonumber \\
+    \mathbf{a}^{(\ell)}_k
+    &= \boldsymbol{\sigma}^{(\ell)}\!\left(
+       \mathbf{W}^{(\ell)}\mathbf{a}^{(\ell-1)}_k
+       + \mathbf{b}^{(\ell)}\right),
+       \qquad \ell = 1, \dots, L-1 \,, \nonumber \\
+    \mathbf{f}_{\boldsymbol{\theta}}(\mathbf{h}_k,\mathbf{u}_k)
+    &= \mathbf{W}^{(L)}\mathbf{a}^{(L-1)}_k + \mathbf{b}^{(L)} \,,
+    \label{eq:mlp_predictor}
+\end{align}
+%
+where $\mathbf{W}^{(\ell)}$ and $\mathbf{b}^{(\ell)}$ are weights and biases, and $\boldsymbol{\sigma}^{(\ell)}$ acts element-wise.
+
+Alternatively, the predictor can learn a residual update to the latest output:
+%
+\begin{equation}
+    \mathbf{f}_{\boldsymbol{\theta}}(\mathbf{h}_k,\mathbf{u}_k)
+    = \mathbf{y}_k
+    + \mathbf{g}_{\boldsymbol{\theta}}(\mathbf{h}_k,\mathbf{u}_k) \,.
+    \label{eq:residual_predictor}
+\end{equation}
+%
+If $\mathbf{g}_{\boldsymbol{\theta}} = \mathbf{0}$, the model acts as a persistence predictor. Training this \ac{mlp} on multi-step objectives requires backpropagating through the rollout graph, accumulating transition Jacobians along the sequence~\cite{Goodfellow2016}.
+
+\subsection{Dynamic Mode Decomposition with Control}
+
+If the chosen observable captures enough of the underlying dynamics, a linear evolution law may suffice. \Ac{dmdc} extends \ac{dmd} to incorporate exogenous actuation~\cite{Proctor2016}. Using the history state~\eqref{eq:history_state} as delay coordinates, we formulate an affine next-output model:
+%
+\begin{equation}
+    \hat{\mathbf{y}}_{k+1}
+    = \mathbf{A}_\mathrm{y}\mathbf{h}_k
+    + \mathbf{B}_\mathrm{y}\mathbf{u}_k
+    + \mathbf{c}_\mathrm{y} \,,
+    \label{eq:output_dmdc}
+\end{equation}
+%
+where $\mathbf{A}_\mathrm{y}$ maps the history, $\mathbf{B}_\mathrm{y}$ maps the input, and $\mathbf{c}_\mathrm{y}$ is an offset. This structured affine transition is closely connected to finite-dimensional Koopman approximations~\cite{Rowley2009, Williams2015, Brunton2016}.
+
+Given $N_\mathrm{d}$ sampled triples $(\mathbf{h}^{(i)},\mathbf{u}^{(i)},\mathbf{y}_+^{(i)})$, we center them around their means to form the snapshot matrices:
+%
+\begin{align}
+    \mathbf{H}
+    &= \begin{bmatrix}
+        \mathbf{h}^{(1)}-\bar{\mathbf{h}} & \cdots &
+        \mathbf{h}^{(N_\mathrm{d})}-\bar{\mathbf{h}}
+      \end{bmatrix}, \nonumber \\
+    \boldsymbol{\Upsilon}
+    &= \begin{bmatrix}
+        \mathbf{u}^{(1)}-\bar{\mathbf{u}} & \cdots &
+        \mathbf{u}^{(N_\mathrm{d})}-\bar{\mathbf{u}}
+      \end{bmatrix}, \nonumber \\
+    \mathbf{Y}_+
+    &= \begin{bmatrix}
+        \mathbf{y}_+^{(1)}-\bar{\mathbf{y}}_+ & \cdots &
+        \mathbf{y}_+^{(N_\mathrm{d})}-\bar{\mathbf{y}}_+
+      \end{bmatrix} \,.
+    \label{eq:dmdc_snapshots}
+\end{align}
+%
+Defining $\boldsymbol{\Omega}= \begin{bmatrix}\mathbf{H}^\mathsf{T}&\boldsymbol{\Upsilon}^\mathsf{T}\end{bmatrix}^\mathsf{T}$ and $\mathbf{G}=\begin{bmatrix}\mathbf{A}_\mathrm{y}&\mathbf{B}_\mathrm{y}\end{bmatrix}$, the one-step identification~\eqref{eq:one_step_identification} reduces to:
+%
+\begin{equation}
+    \underset{\mathbf{G}}{\operatorname{minimise}}
+    \quad
+    \left\|\mathbf{Y}_+-\mathbf{G}\boldsymbol{\Omega}\right\|_\mathrm{F}^2 \,.
+    \label{eq:dmdc_least_squares}
+\end{equation}
+%
+A truncated \ac{svd} of $\boldsymbol{\Omega} \approx \mathbf{U}_\rho\boldsymbol{\Sigma}_\rho \mathbf{V}_\rho^\mathsf{T}$ yields the regularized estimate:
+%
+\begin{equation}
+    \mathbf{G}_\rho
+    = \begin{bmatrix}\mathbf{A}_{\mathrm{y},\rho} & \mathbf{B}_{\mathrm{y},\rho}\end{bmatrix}
+    = \mathbf{Y}_+\mathbf{V}_\rho\boldsymbol{\Sigma}_\rho^{-1}\mathbf{U}_\rho^\mathsf{T} \,,
+    \qquad
+    \mathbf{c}_{\mathrm{y},\rho}
+    = \bar{\mathbf{y}}_+
+    - \mathbf{A}_{\mathrm{y},\rho}\bar{\mathbf{h}}
+    - \mathbf{B}_{\mathrm{y},\rho}\bar{\mathbf{u}} \,.
+    \label{eq:dmdc_solution}
+\end{equation}
+%
+This truncated pseudo-inverse regularizes the fit by projecting onto the leading singular directions of the regressor space. Unlike the MLP, DMDc provides affine dynamic constraints for the resulting MPC problem (Chapter~\ref{ch:mpc_framework}).
+
+\section{Dynamic State Handling}
+\label{sec:dynamic_state_handling}
+
+% Causal State Absorption and Priming from trailing EEG history.
+To initiate a prediction, the model must be initialized with an accurate history state $\mathbf{h}_k$. In an online setting, this state is absorbed causally from the trailing \ac{eeg} measurements and previously applied stimulation currents. This initialization process, or priming, ensures the predictor is anchored to the true network dynamics before simulating candidate trajectories forward.
+
+\section{Offline Training Methodology}
+\label{sec:offline_training_methodology}
+
+The prediction tasks are cast as identification problems evaluated offline using simulated trajectory data. This section outlines the structures used for training the models; the specific datasets and experimental configurations are detailed in Chapter~\ref{ch:experiments_discussion}.
+
+\subsection{Identification Data and Prediction Task}
+
+% Describe simulated training data, seizure regimes, and stimulation used to identify
+% the response to currents rather than only autonomous dynamics.
+% Define history/target construction, prediction duration, and normalization.
+% Explain separation of training, selection, and final evaluation data at trajectory level.
+% Put experimental dataset sizes and scenario-specific settings in Chapter 5.
+
+To identify a causal input-output mapping, the training dataset must expose the network's response to actuation across both healthy and seizing regimes. Exploratory stimulation sequences are applied to the simulated plant to gather rich identification data, ensuring that the effects of applied currents are properly represented. Data is strictly separated at the trajectory level into training, validation, and testing sets.
+
+\subsection{Waveform and Spectral Training Losses}
+
+% Formulate waveform error, spectral error, and the combinations to be investigated.
+% Distinguish a spectral Loss on predicted waveforms from prediction of spectral Observables.
+% For the former, STFT geometry defines error scoring; for the latter, it defines the target.
+% Introduce the Loss geometry, weights, and scored Spans without claiming selected values.
+
+When training neural networks or fitting \ac{dmdc} matrices, the choice of loss function directs the model's focus. A waveform predictor might be trained purely on mean squared error of future voltage samples (the one-step or multi-step objectives~\eqref{eq:one_step_identification}, \eqref{eq:multi_step_identification}). Alternatively, a waveform model can be trained using a spectral loss, where the model outputs predicted waveforms but is scored based on the \ac{stft} periodograms of those predictions. In contrast, a spectral observable predictor directly targets the values of the frame kernel~\eqref{eq:frame_kernel} and is scored on its ability to forecast those spectral states.
+
+\subsection{Training Strategies and Selection Criteria}
+
+% Describe fitting procedures and curriculum strategies that are part of the investigation.
+% Define the criterion used to select geometry, Loss settings, and model configurations.
+% Chapter 5: give search spaces/budgets, compare outcomes, and justify the configurations
+% carried into later experiments. Reserve independent evaluation data for final comparisons.
+
+Fitting these models involves searching over network architectures, history lengths, and \ac{stft} geometries. Complex predictors may require curriculum strategies, such as transitioning from one-step optimization to multi-step rollouts during training to stabilize gradients. The specific choices of geometry and network hyperparameters are selected based on their validation performance and evaluated for their final closed-loop control utility in Chapter~\ref{ch:experiments_discussion}.

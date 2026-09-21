@@ -1,27 +1,158 @@
 \chapter{Biological Plant Modeling}
 \label{ch:biological_plant_modeling}
 
-% Core Research Question:
-% How do we construct a rigorous, whole-brain biophysical ground-truth simulation
-% testbed of focal epilepsy with multi-channel scalp sensing and actuation?
+This chapter constructs the rigorous, whole-brain biophysical simulation testbed that serves as the ground-truth plant throughout this work. Designing and evaluating closed-loop controllers requires a simulated environment that captures both the internal nonlinear dynamics of epileptic seizures and the physical interfaces through which a device interacts with the brain. To this end, the chapter merges the theoretical foundations of neural mass modeling with the specific neuroanatomical and electrophysiological configuration used for the experiments. It begins by defining the local cortical dynamics and their spatial coupling, continues with the assignment of epileptogenic and propagation regions, and concludes by specifying the measurement and stimulation pipelines that form the boundaries of the control problem.
 
-% Contents:
-% - Neural Mass Dynamics: Three-population Jansen-Rit cortical column equations and synaptic filtering kernels.
-% - Bifurcation Regimes: Parameterization of healthy background tissue, autonomous Epileptogenic Zone (EZ),
-%   and vulnerable Propagation Zone (PZ).
-% - Whole-Brain Network: 76-region structural connectome coupling with distance-dependent axonal conduction delays
-%   (stochastic delay differential equation system).
-% - Electrical Sensing Interface: Regional Local Field Potentials (LFPs) projected to 62 scalp EEG channels via
-%   volume-conduction Leadfield matrix.
-% - Electrical Actuation Interface: Transcranial scalp currents mapped to regional electric fields and somatic
-%   Stimulation Drives via ROAST finite-element head modeling (TP9-CP5-Ex8 montage).
-% - Signal Conditioning: Causal fourth-order Butterworth low-pass filtering (25 Hz cutoff) and decimation to 50 Hz discrete grid.
-% - Plant Calibration: Empirical recalibration of global coupling factor K and noise intensity sigma for realistic
-%   seizure escape and recruitment dynamics.
+\section{The Jansen-Rit Neural Mass Model}
 
-% Mapping from Previous Structure:
-% - Merges the biophysical modeling theory from Chapter 3 (03_foundations.tex, Sec. 3.1:
-%   Jansen-Rit equations, bifurcation regimes, connectome coupling, delays, and dipole/leadfield electrophysiology)
-%   with the concrete simulation setup from Chapter 4 (04_methodology.tex, Sec. 4.1:
-%   76-region TVB setup, EZ/PZ temporal-lobe partition, ROAST TP9-CP5-Ex8 montage, Heun integration,
-%   and causal anti-aliasing filtering/decimation).
+A neural mass model abandons the individual neuron and describes a cortical macro-column by the mean membrane potential and mean firing rate of whole populations. This approximation is justified when the quantity of interest---the extracellular field---is itself a spatial average over millions of cells \cite{LopesDaSilva1974,Buzsaki2012}. The formalism, originally introduced to explain thalamic alpha rhythms \cite{LopesDaSilva1974}, was given its three-population form by Jansen and Rit, who demonstrated its capacity to reproduce both resting alpha activity and visual evoked potentials from a single parameter set \cite{Jansen1995}. The appeal of the Jansen-Rit model for this work lies in its combination of physiological interpretability and its ability to produce the spike-wave morphological waveforms characteristic of epileptic seizures \cite{Wendling2002,Yu2024}. This differentiates it from simpler two-state models, which collapse the synaptic filtering that dictates the frequency of the resulting rhythm and often produce oscillations without recognizable seizure morphologies \cite{David2003}.
+
+Each node $i$ comprises a population of \acp{py} that projects to, and receives feedback from, a population of \acp{ein} and a population of \acp{iin}, wired as shown in Figure~\ref{fig:microcircuit}. The excitatory branch forms a positive feedback loop and the inhibitory branch a negative one. The competition between the two produces the oscillations the model is built to explain. The strengths of the four intra-columnar projections are the average synaptic contact numbers $c_1$ to $c_4$, held at the standard proportions $c_2 = 0.8\,c_1$ and $c_3 = c_4 = 0.25\,c_1$, such that a single number $c_1$ scales the whole microcircuit \cite{Jansen1995}.
+
+\begin{figure}
+    \centering
+    % PLACEHOLDER -- see figures/03_foundations/PLACEHOLDER_jansen_rit_microcircuit.md
+    \framebox[0.8\linewidth]{\rule{0pt}{5cm}\itshape Jansen-Rit microcircuit block diagram}
+    \caption{Block diagram of one Jansen-Rit node. The \ac{py} population excites the \acp{ein} through $c_1$ and the \acp{iin} through $c_3$, and receives excitatory feedback through $c_2$ and inhibitory feedback through $c_4$. Each population filters its incoming firing rate with the postsynaptic potential kernel $h_\mathrm{e}$ or $h_\mathrm{i}$ and converts the resulting potential back to a firing rate with the sigmoid $S$. The background input $I$, the network input $I_{\mathrm{coup},i}$ and the noise $\zeta_i$ enter the excitatory branch, the stimulation drive $s_i$ enters at the pyramidal soma, and the node output $y_{\mathrm{LFP},i} = x_{i,2} - x_{i,3}$ is tapped there.}
+    \label{fig:microcircuit}
+\end{figure}
+
+Every population converts its input in two stages. The first is a linear pulse-to-wave operator turning an incoming mean firing rate into an average \ac{psp} by convolution with the impulse response
+%
+\begin{equation}
+    h_\mathrm{e}(t) = A\,a\,t\,\mathrm{e}^{-a t}, \qquad
+    h_\mathrm{i}(t) = B\,b\,t\,\mathrm{e}^{-b t}, \qquad t \geq 0 \,,
+    \label{eq:psp_kernel}
+\end{equation}
+%
+in which the synaptic gains $A$ and $B$ set the amplitude of the excitatory and inhibitory \ac{psp} in \si{\milli\volt}, and the rate constants $a$ and $b$ set the reciprocal lumped time constants of dendritic delay and membrane decay. The second stage is a static wave-to-pulse operator mapping the mean membrane potential $v$ of a population onto its mean firing rate through the sigmoid
+%
+\begin{equation}
+    S(v) = \frac{2 e_0}{1 + \exp\!\big(r (v_0 - v)\big)} \,,
+    \label{eq:sigmoid}
+\end{equation}
+%
+whose ceiling $2 e_0$ is the maximum population firing rate, whose midpoint $v_0$ is the potential at which half the population fires, and whose steepness $r$ reflects the spread of firing thresholds across the cells of the population.
+
+Because the kernel in \eqref{eq:psp_kernel} is the Green's function of a second-order linear operator, the convolution can be written as a pair of first-order differential equations. The three populations together give the six states $x_{i,1}$ to $x_{i,6}$ per node. The potentials $x_{i,1}$, $x_{i,2}$ and $x_{i,3}$ are the \ac{psp} of the pyramidal, excitatory and inhibitory branches, and $x_{i,4}$, $x_{i,5}$ and $x_{i,6}$ are their respective time derivatives. The dynamics of node $i$ are therefore given by the state-space form
+%
+\begin{align}
+    \dot{x}_{i,1} &= x_{i,4}, \nonumber \\
+    \dot{x}_{i,4} &= A_i a\, S\!\left(x_{i,2} - x_{i,3} + s_i\right) - 2 a\, x_{i,4} - a^2 x_{i,1}, \nonumber \\
+    \dot{x}_{i,2} &= x_{i,5}, \nonumber \\
+    \dot{x}_{i,5} &= A_i a \left[ I + c_2 S\!\left(c_1 x_{i,1}\right) + I_{\mathrm{coup},i} \right] - 2 a\, x_{i,5} - a^2 x_{i,2} + \zeta_i, \label{eq:jr_node} \\
+    \dot{x}_{i,3} &= x_{i,6}, \nonumber \\
+    \dot{x}_{i,6} &= B b\, c_4 S\!\left(c_3 x_{i,1}\right) - 2 b\, x_{i,6} - b^2 x_{i,3} \,, \nonumber
+\end{align}
+%
+where $I$ is the constant excitatory background input standing in for afferents the model does not resolve, $I_{\mathrm{coup},i}$ is the incoming firing rate from the rest of the network, and $s_i$ is the externally applied electrical stimulation drive. The term $\zeta_i$ is Gaussian white noise of intensity $\sigma$ entering the excitatory loop. This noise plays a fundamental role: for nodes situated near their bifurcation point, noise is the mechanism that randomly pushes the local dynamics from a quiescent attractor into an oscillating one. It therefore ensures that simulated seizures start at irregular times and that consecutive runs differ naturally \cite{Yu2024}.
+
+The quantity read out of a node is the net depolarisation of the pyramidal population,
+%
+\begin{equation}
+    y_{\mathrm{LFP},i}(t) = x_{i,2}(t) - x_{i,3}(t) \,,
+    \label{eq:lfp}
+\end{equation}
+%
+which represents the difference between the excitatory and inhibitory \ac{psp} arriving at the pyramidal soma. This local signal serves as a proxy for the \ac{lfp} and forms the basis for the simulated extracellular field. Importantly, $y_{\mathrm{LFP},i}$ is also the argument of the pyramidal sigmoid in \eqref{eq:jr_node}, meaning the output of a node and its own primary internal feedback are identically the same signal.
+
+\section{Regional Excitability and Seizure Onset}
+\label{sec:excitability}
+
+The excitatory synaptic gain $A_i$ is the parameter deciding the dynamic regime a node settles into, which is why it carries a regional index while every other parameter in \eqref{eq:jr_node} is shared across the network. Increasing $A_i$ strengthens the excitatory feedback loop relative to the inhibitory one. As it increases, the node passes through a Hopf bifurcation from a stable fixed point (around which noise produces low-amplitude alpha-band fluctuations) to a large-amplitude limit cycle characterized by spike-wave morphology.
+
+Following the excitability partition established for whole-brain epilepsy models \cite{Yu2024}, three distinct levels are configured to model focal epilepsy. Healthy background tissue takes $A_i = 3.25\,\si{\milli\volt}$ and rests at the stable fixed point. The \ac{ez} takes $A_i = 3.6\,\si{\milli\volt}$ and oscillates autonomously, needing no external network input to spontaneously seize. Finally, the \ac{pz} takes an intermediate value of $A_i = 3.4\,\si{\milli\volt}$, leaving it just below its own bifurcation threshold but sufficiently excitable that coupling from an active \ac{ez} can readily recruit it into the seizure.
+
+\begin{figure}
+    \centering
+    \includegraphics[width=0.9\linewidth]{figures/03_foundations/excitability_regimes}
+    \caption{Jansen-Rit dynamics at the three excitability levels. Left, the local field potential $y_\mathrm{LFP}$ over \SI{4}{\second} of simulation following a \SI{4}{\second} transient; right, the corresponding Welch power spectral density, averaged over three segments of $2^{14}$ samples. Rows (a), (b) and (d) are uncoupled nodes: background tissue and the \ac{pz} both fluctuate around their fixed point at low amplitude, while the \ac{ez} has crossed into a large-amplitude spike-wave limit cycle with pronounced harmonics. Row (c) is the same \ac{pz} node embedded in the 76-region network alongside three \ac{ez} nodes, where coupling recruits it into an oscillation of \ac{ez}-like amplitude, the propagation the controller has to prevent. All runs use the parameters of Table~\ref{tab:jr_params} and the same noise seed.}
+    \label{fig:bifurcation}
+\end{figure}
+
+The specific anatomical assignment of these zones is modeled after classical mesial temporal lobe epilepsy, one of the most common and pharmacoresistant focal epilepsies in humans. The \ac{ez} is defined in the left hemisphere encompassing the hippocampus, parahippocampal cortex, and amygdala. These deeply situated limbic structures are highly interconnected and frequently serve as the initial generators of seizure activity. The immediate \ac{pz} is configured in the adjacent left inferior temporal cortex and left ventral temporal cortex. This partition reflects the typical clinical pattern where paroxysmal activity originates in mesial temporal structures before spreading outward to lateral temporal neocortex. Figure~\ref{fig:bifurcation} illustrates these three dynamical regimes, showing how the vulnerable \ac{pz} node fluctuates innocuously in isolation but is recruited into high-amplitude oscillations when coupled to the seizing \ac{ez}.
+
+\section{Connectome Coupling and Conduction Delays}
+\label{sec:connectome}
+
+Scaling from an isolated column to a whole-brain simulation involves specifying the topology and timing of inter-regional communication. The structural connectivity matrix $\mathbf{W} \in \mathbb{R}^{N \times N}$ dictates this architecture over the $N=76$ regions provided by the default cortical parcellation of The Virtual Brain (TVB) \cite{SanzLeon2013}. The matrix entry $w_{ij}$ quantifies the density of connecting fibres between regions $i$ and $j$. Because diffusion-weighted tractography recovers fibre bundles without distinguishing their direction, the connectivity matrix is symmetric. A single global coupling factor $K$ scales the entire network to balance local and global dynamics.
+
+Because long-range cortico-cortical projections are carried by axons, the transmitted signal is a firing rate rather than a potential, and its arrival is delayed by finite conduction velocities. This delay is determined by the physical tract length $\ell_{ij}$ between regions and an assumed uniform conduction speed $c$, yielding the delay matrix $\mathbf{D} \in \mathbb{R}^{N \times N}$ with entries $d_{ij} = \ell_{ij} / c$. The delayed presynaptic firing from connected regions enters the excitatory \ac{psp} channel of the receiving node. Thus, the total incoming network coupling term in \eqref{eq:jr_node} takes the form
+%
+\begin{equation}
+    I_{\mathrm{coup},i}(t) = K \sum_{j=1}^{N} w_{ij}\, S\!\big(y_{\mathrm{LFP},j}(t - d_{ij})\big) \,.
+    \label{eq:coupling}
+\end{equation}
+%
+Together, \eqref{eq:jr_node} and \eqref{eq:coupling} constitute a stochastic delay differential equation system governing the $6N$-dimensional continuous-time state $\mathbf{x}(t) = \big[x_{1, 1}(t), \dots, x_{N, 6}(t)\big]^\top$. With physical tract lengths on the order of \SI{100}{\milli\metre} and a conduction speed around \SI{50}{\milli\metre\per\milli\second}, inter-regional delays span several milliseconds. These delays are directly comparable to the fundamental synaptic time constants of the model and thus critically shape the phase relationships that dictate whether an actively seizing region will recruit its vulnerable neighbors \cite{SanzLeon2015}.
+
+\section{Electrical Interfaces}
+
+While the delay differential equations describe the hidden biological states, a closed-loop controller can only interact with the brain through physical interfaces. The control problem is defined by the limited spatial footprint of these sensory and actuation pathways.
+
+\subsection{EEG Measurement}
+
+The regional variable $y_{\mathrm{LFP},i}$ represents the net depolarisation of the pyramidal population. Biophysically, the synaptic currents entering the apical dendrites, along with the return currents at the soma, form a dipole oriented along the somato-dendritic axis of the cell. Because pyramidal neurons are aligned perpendicularly to the cortical sheet, their dipoles sum coherently across the spatial extent of a region rather than cancelling out, dominating the extracellular field \cite{Buzsaki2012}. Neural mass models conventionally take $y_{\mathrm{LFP},i}$ as a linear proxy for the regional macroscopic dipole moment. Because the model lacks intrinsic geometric scales, \eqref{eq:lfp} predicts the temporal waveform of the \ac{lfp} but leaves its absolute amplitude in arbitrary units.
+
+The signals measurable at the scalp are generated from these regional dipoles via volume conduction through the head tissues. The quasi-static approximation of Maxwell's equations makes this relationship strictly linear \cite{Buzsaki2012}. Letting $\mathbf{y}_\mathrm{LFP}(t) \in \mathbb{R}^{N}$ collect the source \acp{lfp}, the voltages recorded across $M$ scalp channels are
+%
+\begin{equation}
+    \mathbf{y}_\mathrm{EEG}(t) = \mathbf{L}_\mathrm{EEG}\, \mathbf{y}_\mathrm{LFP}(t) \,,
+    \label{eq:eeg}
+\end{equation}
+%
+where the \ac{eeg} lead field matrix $\mathbf{L}_\mathrm{EEG} \in \mathbb{R}^{M \times N}$ defines the voltage observed at electrode $m$ per unit dipole moment originating in region $i$ \cite{SanzLeon2015}. For this simulation, $\mathbf{L}_\mathrm{EEG}$ is constructed using the surface projection supplied with TVB, which initially maps 16,384 cortical vertices to 62 standard scalp electrodes. Summing the columns belonging to each of the 76 anatomical regions collapses the operator to the required $62 \times 76$ dimensions. Due to the undetermined dipole scale, the resulting $\mathbf{y}_\mathrm{EEG}$ retains the arbitrary amplitude units of the source model. Consequently, all signal thresholds and control costs in later chapters are defined relative to the simulated healthy baseline rather than physical voltages.
+
+\subsection{Stimulation Interface}
+
+Therapeutic electrical actuation operates in the reverse direction. Transcranial currents injected via scalp electrodes produce a widespread electric field inside the head. The component of this field aligned with the somato-dendritic axis alters the transmembrane potential of the pyramidal cells. This exogenous polarization shifts the operating point of the cellular population on its activation sigmoid without directly injecting a synaptic firing rate \cite{Buzsaki2012}. Within the Jansen-Rit formulation, this macroscopic mechanism is modeled by introducing the additive stimulation drive $s_i$ inside the argument of the pyramidal sigmoid, as specified in \eqref{eq:jr_node} \cite{Kunze2016,Merlet2013,Yu2024}.
+
+This study uses the TP9-CP5-Ex8 stimulation montage, which places active electrodes near the left temporal lobe (closest to the assumed \ac{ez}) with a return electrode (Ex8) located below the inion. The electric fields are computed using the ROAST finite-element head model \cite{Huang2019}, noting that ROAST internally substitutes the requested TP9 label with the nearby TPP9 position from its standardized cap. Collecting the electrode currents in $\mathbf{u} \in \mathbb{R}^{P}$, the regional membrane perturbations are
+%
+\begin{equation}
+    s_i(t) = \lambda_\mathrm{p}\sum_{p=1}^{P}u_p(t)\, \mathbf{E}_{p,i}^{\mathsf{T}}\mathbf{n}_i \,,
+    \label{eq:regional_stimulation_projection}
+\end{equation}
+%
+where $\mathbf{E}_{p,i}$ is the basis electric field generated at the centroid of region $i$ by a \SI{1}{\milli\ampere} current applied at electrode $p$, and $\mathbf{n}_i$ is the region's outward cortical normal. The parameter $\lambda_\mathrm{p} = \SI{0.35}{\milli\metre}$ is the assumed somatic polarisation length, selected from the physiological range for deep-layer pyramidal cells \cite{Radman2009}. The resulting drive $s_i$ has units of millivolts. All control interventions are strictly bound by per-electrode safety limits $|u_p| \leq \SI{2}{\milli\ampere}$ and must obey Kirchhoff's current law, $\sum_{p=1}^{P}u_p = 0$, ensuring no net charge accumulates in the tissue.
+
+Helmholtz reciprocity dictates that the lead field relating a neural source to a pair of scalp electrodes is structurally identical to the field that the same electrode pair produces in the brain when driven by unit current \cite{Malmivuo1995}. Under ideal geometric conditions, $\mathbf{L}_\mathrm{EEG}^\top$ and the stimulation projection matrix would be proportional. In this practical setup, however, they are derived differently: Ex8 is absent from the 62-channel measurement montage, and the ROAST forward model samples the electric field volumetrically along specific normals rather than integrating dipolar sources over surface patches. Thus, the measurement and stimulation maps remain mathematically distinct operators in the loop.
+
+\section{Signal Conditioning}
+
+The physical forward model generates continuous-time signals with broad spectral content, but digital feedback control operates on a discrete grid. Because the dominant pathological oscillations of the simulated seizure emerge around \SIrange{3}{4}{\hertz} and most of the relevant variance sits below \SI{12}{\hertz}, a \SI{50}{\hertz} sampling rate is sufficient to retain frequencies up to the \SI{25}{\hertz} Nyquist limit while minimizing the dimensionality of the discrete prediction problem.
+
+To prevent high-frequency noise from aliasing into this target band during decimation, every raw \ac{eeg} channel is first filtered by a causal fourth-order Butterworth low-pass filter with a \SI{25}{\hertz} cutoff. The continuous plant is integrated at a \SI{10}{\kilo\hertz} resolution ($\Delta t = \SI{0.1}{\milli\second}$) using a Heun method; the filtered output is subsequently decimated by a factor of 200, yielding one discrete waveform measurement every \SI{20}{\milli\second}. It is critical that this conditioning stage uses a strictly causal filter rather than a zero-phase offline filter, as future signal samples are fundamentally inaccessible during real-time closed-loop execution.
+
+\section{Plant Calibration}
+
+The global coupling factor $K$ and the internal noise intensity $\sigma$ uniquely determine the macroscopic transition dynamics of the network. These two parameters were calibrated jointly to satisfy the desired clinical propagation profile for the specified temporal-lobe partition. The continuous plant is integrated using the stochastic Heun scheme, where random increments with intensity $\sigma$ drive the excitatory loop of each node at every step. The calibration criteria required that the simulation readily exhibit autonomous seizure activity localized in the \ac{ez}, followed by subsequent recruitment of the \ac{pz} and the broader left hemisphere, while largely sparing the right hemisphere from rapid generalization. The selected values, $K=0.60$ and $\sigma=\SI{280}{\per\second}$, were found to robustly reproduce this behavior. Detailed calibration sweeps and objective formulations are reserved for the appendix.
+
+\begin{table}
+    \centering
+    \caption{Parameters of the Jansen-Rit network model. Values follow the original single-column fit \cite{Jansen1995} and the whole-brain epilepsy model of Yu et al.~\cite{Yu2024}. The global coupling factor $K$ and the noise intensity $\sigma$ were recalibrated for the specific connectome configuration used here. Rate constants are given both as inverse time constants and as the corresponding time constants.}
+    \label{tab:jr_params}
+    \begin{tabular}{llll}
+        \toprule
+        Symbol & Description & Value & Unit \\
+        \midrule
+        $A_i$   & Excitatory synaptic gain (background / \ac{pz} / \ac{ez}) & 3.25 / 3.4 / 3.6 & \si{\milli\volt} \\
+        $B$     & Inhibitory synaptic gain                        & 22    & \si{\milli\volt} \\
+        $a$     & Excitatory rate constant ($\tau_\mathrm{e} = \SI{10}{\milli\second}$)  & 100 & \si{\per\second} \\
+        $b$     & Inhibitory rate constant ($\tau_\mathrm{i} = \SI{20}{\milli\second}$)  & 50  & \si{\per\second} \\
+        $c_1$   & Pyramidal-to-excitatory synaptic contacts        & 135   & -- \\
+        $c_2$   & Excitatory-to-pyramidal synaptic contacts        & 108   & -- \\
+        $c_3$   & Pyramidal-to-inhibitory synaptic contacts        & 33.75 & -- \\
+        $c_4$   & Inhibitory-to-pyramidal synaptic contacts        & 33.75 & -- \\
+        $e_0$   & Half the maximum population firing rate          & 2.5   & \si{\per\second} \\
+        $v_0$   & Sigmoid midpoint potential                       & 6     & \si{\milli\volt} \\
+        $r$     & Sigmoid steepness                                & 0.56  & \si{\per\milli\volt} \\
+        $I$     & Constant excitatory background input             & 90    & \si{\per\second} \\
+        $\sigma$ & Noise intensity on the excitatory loop          & 280   & \si{\per\second} \\
+        $K$     & Global coupling factor                           & 0.60  & -- \\
+        $c$     & Axonal conduction speed                          & 50    & \si{\milli\metre\per\milli\second} \\
+        \bottomrule
+    \end{tabular}
+\end{table}
+
+The physical plant and its interfaces are now fully specified. The remaining challenge involves designing a controller capable of regulating this massive, $6N$-dimensional delayed stochastic system by observing only $M$ linear surface mixtures and acting entirely through $P$ localized scalp currents. Chapter~\ref{ch:data_driven_predictor_design} develops the data-driven identification tools and spectral estimates that turn these raw traces into actionable predictions, and Chapter~\ref{ch:mpc_framework} formulates the control policies that leverage them.
