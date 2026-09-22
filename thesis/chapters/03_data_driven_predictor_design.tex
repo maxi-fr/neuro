@@ -35,9 +35,9 @@ The \ac{stft} cuts the sampled channel $y_k$ into segments of $L_\mathrm{s}$ sam
 \end{equation}
 %
 where $\nu = 0, \dots, L_\mathrm{s}/2$ indexes the frequency bins and $f_\nu$ is the frequency each bin sits at. The segment length $L_\mathrm{s}$ and the hop $H_\mathrm{s}$ fix the grid.
-Segment $q$ ends at sample $q H_\mathrm{s} + L_\mathrm{s} - 1$ and uses no sample after it, ensuring causal online operation. Each spectrum lags the oldest sample it carries by $L_\mathrm{s} \, \Delta t$ seconds. The segment length $L_\mathrm{s}$ fixes the resolution $\Delta f = f_\mathrm{s}/L_\mathrm{s}$. A smooth taper like the periodic Hann window suppresses sidelobes and prevents low-frequency power from leaking across the band~\cite{Oppenheim2010}.
+Segment $q$ ends at sample $q H_\mathrm{s} + L_\mathrm{s} - 1$ and uses no sample after it, ensuring causal online operation. Each spectrum lags the oldest sample it carries by $L_\mathrm{s} \, \Delta t$ seconds. The segment length $L_\mathrm{s}$ fixes the resolution $\Delta f = f_\mathrm{s}/L_\mathrm{s}$. A smooth taper like the periodic Hann window suppresses sidelobes and prevents low-frequency power from leaking across the band~\cite[sec.~10.2]{Oppenheim2010}. % cite-checked: SUPPORTED
 
-Only the magnitude of~\eqref{eq:stft} is retained, discarding the phase that shifts with every hop. Each segment is reduced to the one-sided power spectral density, the periodogram of segment $q$:
+Only the magnitude of~\eqref{eq:stft} is retained, discarding the phase that shifts with every hop. Each segment is reduced to the one-sided power spectral density, namely the periodogram of segment $q$,
 %
 \begin{equation}
     \hat{\Phi}_q(f_\nu) = \frac{\alpha_\nu \, |Y_q(f_\nu)|^2}
@@ -51,9 +51,10 @@ Only the magnitude of~\eqref{eq:stft} is retained, discarding the phase that shi
     \label{eq:periodogram}
 \end{equation}
 %
-Dividing by the taper energy normalizes the density, so the result does not depend on segment length or taper attenuation~\cite{Oppenheim2010}.
+Dividing by the taper energy normalizes the density, so the result does not depend on segment length or taper attenuation~\cite[sec.~10.2]{Oppenheim2010}. % cite-checked: SUPPORTED
 
-Equation~\eqref{eq:periodogram} provides a noisy spectral representation. For a Gaussian process, the standard deviation of the periodogram equals its mean~\cite{Oppenheim2010}, and lengthening the segment only adds bins rather than reducing scatter. The variance is reduced by averaging over a trailing group of segments:
+Equation~\eqref{eq:periodogram} provides a noisy spectral representation. For a Gaussian process, the standard deviation of the periodogram equals its mean~\cite[sec.~10.2]{Oppenheim2010}, and lengthening the segment only adds bins rather than reducing scatter. % cite-checked: SUPPORTED
+The variance is reduced by averaging over a trailing group of segments,
 %
 \begin{equation}
     \bar{\Phi}_q(f_\nu) = \sum_{q'=0}^{L_\mathrm{k}-1} \kappa_{q'} \,
@@ -72,7 +73,8 @@ The continuous-time biological dynamics must be approximated by a discrete-time 
 
 \subsection{Autoregressive Input-Output Formulation}
 
-An autoregressive model predicts the next output from a finite history of past outputs and exogenous inputs. For nonlinear systems, this is a \ac{narx} model~\cite{Chen1989}. Let $d_\mathrm{y} \in \mathbb{N}$ be the output-history length and $d_\mathrm{u} \in \mathbb{N}$ the input-history length. The history state is
+An autoregressive model predicts the next output from a finite history of past outputs and exogenous inputs. For nonlinear systems, this is a \ac{narx} model~\cite{Chen1989}. % cite-checked: SUPPORTED
+Let $d_\mathrm{y} \in \mathbb{N}$ be the output-history length and $d_\mathrm{u} \in \mathbb{N}$ the input-history length. The history state is
 %
 \begin{equation}
     \mathbf{h}_k
@@ -96,7 +98,7 @@ with $n_h = d_\mathrm{y}n_y + (d_\mathrm{u}-1)n_u$. The parameterised one-step f
 %
 where $\boldsymbol{\theta}$ contains the model parameters. Multi-step prediction is achieved by repeatedly shifting the oldest entries out of the history and substituting the predicted output $\hat{\mathbf{y}}_{k+1}$ and candidate input $\mathbf{u}_k$.
 
-Fitting the parameters requires an empirical distribution $\mathcal{D}$ of sampled trajectories. The standard one-step least-squares objective minimizes the immediate prediction error:
+Fitting the parameters requires an empirical distribution $\mathcal{D}$ of sampled trajectories. The standard one-step least-squares objective minimizes the immediate prediction error,
 %
 \begin{equation}
     \underset{\boldsymbol{\theta}}{\operatorname{minimise}}
@@ -108,7 +110,8 @@ Fitting the parameters requires an empirical distribution $\mathcal{D}$ of sampl
     \label{eq:one_step_identification}
 \end{equation}
 %
-However, one-step errors do not guarantee accurate multi-step rollouts, as errors can accumulate when predictions feed back into the history state~\cite{Farina2011}. An alternative is to directly optimize the multi-step rollout:
+However, one-step errors do not guarantee accurate multi-step rollouts, as errors can accumulate when predictions feed back into the history state~\cite{Farina2011}. % cite-checked: SUPPORTED
+An alternative is to directly optimize the multi-step rollout,
 %
 \begin{equation}
     \underset{\boldsymbol{\theta}}{\operatorname{minimise}}
@@ -122,11 +125,12 @@ However, one-step errors do not guarantee accurate multi-step rollouts, as error
     \label{eq:multi_step_identification}
 \end{equation}
 %
-where $\hat{\mathbf{y}}_{j|k}(\boldsymbol{\theta})$ is the recursively predicted output~\cite{Ljung1999}.
+where $\hat{\mathbf{y}}_{j|k}(\boldsymbol{\theta})$ is the recursively predicted output~\cite[sec.~7.1]{Ljung1999}. % cite-checked: SUPPORTED
 
 \subsection{Multilayer Perceptron Predictor}
 
-An \ac{mlp} can parameterise the nonlinear map in~\eqref{eq:controlled_autoregression} by composing affine transformations and element-wise nonlinear activations~\cite{Goodfellow2016}. Let the network input be $\boldsymbol{\xi}_k = \begin{bmatrix}\mathbf{h}_k^\mathsf{T}&\mathbf{u}_k^\mathsf{T}\end{bmatrix}^\mathsf{T}$. For $L-1$ hidden layers, the network is defined by
+An \ac{mlp} can parameterise the nonlinear map in~\eqref{eq:controlled_autoregression} by composing affine transformations and element-wise nonlinear activations~\cite[ch.~6]{Goodfellow2016}. % cite-checked: SUPPORTED
+Let the network input be $\boldsymbol{\xi}_k = \begin{bmatrix}\mathbf{h}_k^\mathsf{T}&\mathbf{u}_k^\mathsf{T}\end{bmatrix}^\mathsf{T}$. For $L-1$ hidden layers, the network is defined by
 %
 \begin{align}
     \mathbf{a}^{(0)}_k
@@ -141,9 +145,9 @@ An \ac{mlp} can parameterise the nonlinear map in~\eqref{eq:controlled_autoregre
     \label{eq:mlp_predictor}
 \end{align}
 %
-where $\mathbf{W}^{(\ell)}$ and $\mathbf{b}^{(\ell)}$ are weights and biases, and $\boldsymbol{\sigma}^{(\ell)}$ acts element-wise.
+where in~\eqref{eq:mlp_predictor} $\mathbf{W}^{(\ell)}$ and $\mathbf{b}^{(\ell)}$ are weights and biases, and $\boldsymbol{\sigma}^{(\ell)}$ acts element-wise.
 
-Alternatively, the predictor can learn a residual update to the latest output:
+Alternatively, the predictor can learn a residual update to the latest output,
 %
 \begin{equation}
     \mathbf{f}_{\boldsymbol{\theta}}(\mathbf{h}_k,\mathbf{u}_k)
@@ -152,11 +156,12 @@ Alternatively, the predictor can learn a residual update to the latest output:
     \label{eq:residual_predictor}
 \end{equation}
 %
-If $\mathbf{g}_{\boldsymbol{\theta}} = \mathbf{0}$, the model acts as a persistence predictor. Training this \ac{mlp} on multi-step objectives requires backpropagating through the rollout graph, accumulating transition Jacobians along the sequence~\cite{Goodfellow2016}.
+In the residual formulation~\eqref{eq:residual_predictor}, if $\mathbf{g}_{\boldsymbol{\theta}} = \mathbf{0}$, the model acts as a persistence predictor. Training this \ac{mlp} on multi-step objectives requires backpropagating through the rollout graph, accumulating transition Jacobians along the sequence~\cite[sec.~10.2]{Goodfellow2016}. % cite-checked: SUPPORTED
 
 \subsection{Dynamic Mode Decomposition with Control}
 
-If the chosen observable captures enough of the underlying dynamics, a linear evolution law may suffice. \Ac{dmdc} extends \ac{dmd} to incorporate exogenous actuation~\cite{Proctor2016}. Using the history state~\eqref{eq:history_state} as delay coordinates, we formulate an affine next-output model:
+If the chosen observable captures enough of the underlying dynamics, a linear evolution law may suffice. \Ac{dmdc} extends \ac{dmd} to incorporate exogenous actuation~\cite{Proctor2016}. % cite-checked: SUPPORTED
+Using the history state~\eqref{eq:history_state} as delay coordinates, we formulate the affine next-output model
 %
 \begin{equation}
     \hat{\mathbf{y}}_{k+1}
@@ -166,9 +171,9 @@ If the chosen observable captures enough of the underlying dynamics, a linear ev
     \label{eq:output_dmdc}
 \end{equation}
 %
-where $\mathbf{A}_\mathrm{y}$ maps the history, $\mathbf{B}_\mathrm{y}$ maps the input, and $\mathbf{c}_\mathrm{y}$ is an offset. This structured affine transition is closely connected to finite-dimensional Koopman approximations~\cite{Rowley2009, Williams2015, Brunton2016}.
+where in~\eqref{eq:output_dmdc} $\mathbf{A}_\mathrm{y}$ maps the history, $\mathbf{B}_\mathrm{y}$ maps the input, and $\mathbf{c}_\mathrm{y}$ is an offset. This structured affine transition is closely connected to finite-dimensional Koopman approximations~\cite{Rowley2009, Williams2015, Brunton2016}. % cite-checked: SUPPORTED
 
-Given $N_\mathrm{d}$ sampled triples $(\mathbf{h}^{(i)},\mathbf{u}^{(i)},\mathbf{y}_+^{(i)})$, we center them around their means to form the snapshot matrices:
+Given $N_\mathrm{d}$ sampled triples $(\mathbf{h}^{(i)},\mathbf{u}^{(i)},\mathbf{y}_+^{(i)})$, we center them around their means to form the snapshot matrices
 %
 \begin{align}
     \mathbf{H}
@@ -189,7 +194,7 @@ Given $N_\mathrm{d}$ sampled triples $(\mathbf{h}^{(i)},\mathbf{u}^{(i)},\mathbf
     \label{eq:dmdc_snapshots}
 \end{align}
 %
-Defining $\boldsymbol{\Omega}= \begin{bmatrix}\mathbf{H}^\mathsf{T}&\boldsymbol{\Upsilon}^\mathsf{T}\end{bmatrix}^\mathsf{T}$ and $\mathbf{G}=\begin{bmatrix}\mathbf{A}_\mathrm{y}&\mathbf{B}_\mathrm{y}\end{bmatrix}$, the one-step identification~\eqref{eq:one_step_identification} reduces to:
+Defining $\boldsymbol{\Omega}= \begin{bmatrix}\mathbf{H}^\mathsf{T}&\boldsymbol{\Upsilon}^\mathsf{T}\end{bmatrix}^\mathsf{T}$ from the snapshot matrices~\eqref{eq:dmdc_snapshots} and $\mathbf{G}=\begin{bmatrix}\mathbf{A}_\mathrm{y}&\mathbf{B}_\mathrm{y}\end{bmatrix}$, the one-step identification~\eqref{eq:one_step_identification} reduces to the least-squares problem
 %
 \begin{equation}
     \underset{\mathbf{G}}{\operatorname{minimise}}
@@ -198,7 +203,7 @@ Defining $\boldsymbol{\Omega}= \begin{bmatrix}\mathbf{H}^\mathsf{T}&\boldsymbol{
     \label{eq:dmdc_least_squares}
 \end{equation}
 %
-A truncated \ac{svd} of $\boldsymbol{\Omega} \approx \mathbf{U}_\rho\boldsymbol{\Sigma}_\rho \mathbf{V}_\rho^\mathsf{T}$ yields the regularized estimate:
+A truncated \ac{svd} of $\boldsymbol{\Omega} \approx \mathbf{U}_\rho\boldsymbol{\Sigma}_\rho \mathbf{V}_\rho^\mathsf{T}$ yields the regularized solution to~\eqref{eq:dmdc_least_squares},
 %
 \begin{equation}
     \mathbf{G}_\rho
@@ -212,7 +217,7 @@ A truncated \ac{svd} of $\boldsymbol{\Omega} \approx \mathbf{U}_\rho\boldsymbol{
     \label{eq:dmdc_solution}
 \end{equation}
 %
-This truncated pseudo-inverse regularizes the fit by projecting onto the leading singular directions of the regressor space. Unlike the MLP, DMDc provides affine dynamic constraints for the resulting MPC problem (Chapter~\ref{ch:mpc_framework}).
+In~\eqref{eq:dmdc_solution}, the truncated pseudo-inverse regularizes the fit by projecting onto the leading singular directions of the regressor space. Unlike an \ac{mlp}, \ac{dmdc} provides affine dynamic constraints for the resulting \ac{mpc} problem (Chapter~\ref{ch:mpc_framework}).
 
 \section{Dynamic State Handling}
 \label{sec:dynamic_state_handling}
@@ -242,7 +247,7 @@ To identify a causal input-output mapping, the training dataset must expose the 
 % For the former, STFT geometry defines error scoring; for the latter, it defines the target.
 % Introduce the Loss geometry, weights, and scored Spans without claiming selected values.
 
-When training neural networks or fitting \ac{dmdc} matrices, the choice of loss function directs the model's focus. A waveform predictor might be trained purely on mean squared error of future voltage samples (the one-step or multi-step objectives~\eqref{eq:one_step_identification}, \eqref{eq:multi_step_identification}). Alternatively, a waveform model can be trained using a spectral loss, where the model outputs predicted waveforms but is scored based on the \ac{stft} periodograms of those predictions. In contrast, a spectral observable predictor directly targets the values of the frame kernel~\eqref{eq:frame_kernel} and is scored on its ability to forecast those spectral states.
+When training neural networks or fitting \ac{dmdc} matrices, the choice of loss function directs the model's focus. A waveform predictor might be trained purely on mean squared error of future voltage samples (the one-step or multi-step objectives~\eqref{eq:one_step_identification},~\eqref{eq:multi_step_identification}). Alternatively, a waveform model can be trained using a spectral loss, where the model outputs predicted waveforms but is scored based on the \ac{stft} periodograms of those predictions. In contrast, a spectral observable predictor directly targets the values of the frame kernel~\eqref{eq:frame_kernel} and is scored on its ability to forecast those spectral states.
 
 \subsection{Training Strategies and Selection Criteria}
 
