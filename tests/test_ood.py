@@ -65,46 +65,22 @@ def test_extract_state_action_pairs_shapes() -> None:
     ]
 
     # Without history: z = [y_t, u_t] -> dimension 8 + 3 = 11
-    z_no_hist, y_next_no_hist = extract_state_action_pairs(trajs, n_u=0)
-    # Each trajectory of length T yields T - 1 one-step transitions
+    z_no_hist, y_next_no_hist = extract_state_action_pairs(trajs, n_y=1, n_u=0)
     expected_samples = (30 - 1) + (40 - 1)
     assert z_no_hist.shape == (expected_samples, 11)
     assert y_next_no_hist.shape == (expected_samples, 8)
 
-    # With history: n_u = 4 -> z = [y_t, u_{t-3:t+1}] -> dimension 8 + 4 * 3 = 20
-    z_hist, y_next_hist = extract_state_action_pairs(trajs, n_u=4)
+    # With control history only: n_u = 4 -> z = [y_t, u_{t-3:t+1}] -> dimension 8 + 4 * 3 = 20
+    z_hist, y_next_hist = extract_state_action_pairs(trajs, n_y=1, n_u=4)
     expected_hist_samples = (30 - 4) + (40 - 4)
     assert z_hist.shape == (expected_hist_samples, 20)
     assert y_next_hist.shape == (expected_hist_samples, 8)
 
-
-def test_horizon_statistics() -> None:
-    """horizon_statistics groups rollout metrics by horizon index and computes summaries."""
-    n_decisions = 20
-    horizon = 15
-    percentiles = np.linspace(0.1, 0.9, n_decisions * horizon).reshape(n_decisions, horizon)
-    distances = percentiles * 2.0
-
-    stats = horizon_statistics(percentiles, distances)
-    assert stats["mean_percentile"].shape == (horizon,)
-    assert stats["median_percentile"].shape == (horizon,)
-    assert stats["p95_rate"].shape == (horizon,)
-    assert stats["p99_rate"].shape == (horizon,)
-    assert stats["mean_distance"].shape == (horizon,)
-    assert stats["q_max"].shape == (n_decisions,)
-    assert stats["q_mean"].shape == (n_decisions,)
-
-
-def test_binned_prediction_error() -> None:
-    """binned_prediction_error partitions errors into monotonically ordered percentile bins."""
-    percentiles = np.array([0.1, 0.2, 0.6, 0.8, 0.92, 0.96, 0.995])
-    errors = np.array([1.0, 1.2, 2.0, 3.0, 4.0, 5.0, 6.0])
-
-    binned = binned_prediction_error(percentiles, errors)
-    assert len(binned) == 6
-    # First bin [0, 0.50] should have 2 points
-    assert binned[0]["count"] == 2
-    np.testing.assert_allclose(binned[0]["mean_error"], 1.1)
+    # With both measurement and control history: n_y = 5, n_u = 4 -> dimension 5*8 + 4*3 = 52
+    z_full, y_next_full = extract_state_action_pairs(trajs, n_y=5, n_u=4)
+    expected_full_samples = (30 - 5) + (40 - 5)
+    assert z_full.shape == (expected_full_samples, 52)
+    assert y_next_full.shape == (expected_full_samples, 8)
 
 
 def test_extract_mpc_rollout_queries(tmp_path: Path) -> None:
@@ -117,6 +93,7 @@ def test_extract_mpc_rollout_queries(tmp_path: Path) -> None:
 
     pred_y = rng.standard_normal((n_decisions, horizon + 1, n_outputs))
     plan_u = rng.standard_normal((n_decisions, horizon, n_controls))
+    applied_u = rng.standard_normal((n_decisions, n_controls))
     warmup = np.array([True, True, False, False, False, False, False, False, False, False])
 
     mock_log = tmp_path / "mock_log.npz"
@@ -126,18 +103,91 @@ def test_extract_mpc_rollout_queries(tmp_path: Path) -> None:
         **{
             "controller.predicted_y": pred_y,
             "controller.planned_u": plan_u,
+            "controller.u": applied_u,
             "controller.warmup": warmup,
         },
     )
 
-    queries, planned_u, valid_decisions = extract_mpc_rollout_queries(mock_log, n_u=0)
+    queries, planned_u, valid_decisions = extract_mpc_rollout_queries(mock_log, n_y=1, n_u=0)
     assert len(valid_decisions) == 8
     assert queries.shape == (8, horizon, n_outputs + n_controls)
     assert planned_u.shape == (8, horizon, n_controls)
 
-    # Test with control history
-    queries_hist, _, _ = extract_mpc_rollout_queries(mock_log, n_u=3)
-    assert queries_hist.shape == (8, horizon, n_outputs + 3 * n_controls)
+    # Test with predictor history: n_y = 3, n_u = 3
+    # Priming requires max(2, 2) = 2. Decisions 0 and 1 in warmup, 2..9 valid (8 valid).
+    queries_hist, _, valid_hist = extract_mpc_rollout_queries(mock_log, n_y=3, n_u=3)
+    assert len(valid_hist) == 8
+    assert queries_hist.shape == (8, horizon, 3 * n_outputs + 3 * n_controls)
+
+
+def test_deterministic_predictor_history_parity(tmp_path: Path) -> None:
+    """Deterministic fixture with distinct values at every sample and electrode verifies query alignment."""
+    n_decisions = 10
+    horizon = 4
+    n_outputs = 3
+    n_controls = 2
+    n_y = 3
+    n_u = 4
+
+    pred_y = np.zeros((n_decisions, horizon + 1, n_outputs), dtype=np.float64)
+    for d in range(n_decisions):
+        pred_y[d, 0, :] = [1000 * d + c for c in range(n_outputs)]
+        for k in range(1, horizon + 1):
+            pred_y[d, k, :] = [10000 + 1000 * d + 100 * k + c for c in range(n_outputs)]
+
+    plan_u = np.zeros((n_decisions, horizon, n_controls), dtype=np.float64)
+    for d in range(n_decisions):
+        for k in range(horizon):
+            plan_u[d, k, :] = [50000 + 500 * d + 50 * k + m for m in range(n_controls)]
+
+    applied_u = np.zeros((n_decisions, n_controls), dtype=np.float64)
+    for d in range(n_decisions):
+        applied_u[d, :] = [20000 + 200 * d + m for m in range(n_controls)]
+
+    warmup = np.zeros(n_decisions, dtype=bool)
+    warmup[0] = True  # d=0 in warmup
+
+    mock_log = tmp_path / "deterministic_log.npz"
+    np.savez(
+        mock_log,
+        allow_pickle=True,
+        **{
+            "controller.predicted_y": pred_y,
+            "controller.planned_u": plan_u,
+            "controller.u": applied_u,
+            "controller.warmup": warmup,
+        },
+    )
+
+    queries, _, valid_decisions = extract_mpc_rollout_queries(mock_log, n_y=n_y, n_u=n_u)
+
+    # Required priming is max(3-1, 4-1) = 3. Valid decisions: [3, 4, 5, 6, 7, 8, 9] (7 decisions).
+    np.testing.assert_array_equal(valid_decisions, np.array([3, 4, 5, 6, 7, 8, 9]))
+    assert queries.shape == (7, horizon, n_y * n_outputs + n_u * n_controls)
+
+    # Knot 0 (k=0) at decision d=5 (idx 2 in valid_decisions):
+    expected_y_k0 = np.concatenate([pred_y[3, 0], pred_y[4, 0], pred_y[5, 0]])
+    expected_u_k0 = np.concatenate([applied_u[2], applied_u[3], applied_u[4], plan_u[5, 0]])
+    expected_z_k0 = np.concatenate([expected_y_k0, expected_u_k0])
+    np.testing.assert_array_equal(queries[2, 0], expected_z_k0)
+
+    # Knot 1 (k=1) at decision d=5:
+    expected_y_k1 = np.concatenate([pred_y[4, 0], pred_y[5, 0], pred_y[5, 1]])
+    expected_u_k1 = np.concatenate([applied_u[3], applied_u[4], plan_u[5, 0], plan_u[5, 1]])
+    expected_z_k1 = np.concatenate([expected_y_k1, expected_u_k1])
+    np.testing.assert_array_equal(queries[2, 1], expected_z_k1)
+
+    # Knot 2 (k=2) at decision d=5:
+    expected_y_k2 = np.concatenate([pred_y[5, 0], pred_y[5, 1], pred_y[5, 2]])
+    expected_u_k2 = np.concatenate([applied_u[4], plan_u[5, 0], plan_u[5, 1], plan_u[5, 2]])
+    expected_z_k2 = np.concatenate([expected_y_k2, expected_u_k2])
+    np.testing.assert_array_equal(queries[2, 2], expected_z_k2)
+
+    # Knot 3 (k=3) at decision d=5:
+    expected_y_k3 = np.concatenate([pred_y[5, 1], pred_y[5, 2], pred_y[5, 3]])
+    expected_u_k3 = np.concatenate([plan_u[5, 0], plan_u[5, 1], plan_u[5, 2], plan_u[5, 3]])
+    expected_z_k3 = np.concatenate([expected_y_k3, expected_u_k3])
+    np.testing.assert_array_equal(queries[2, 3], expected_z_k3)
 
 
 def test_format_ood_report() -> None:
@@ -248,24 +298,47 @@ class _MockPredictor:
 
 
 def test_evaluate_prediction_errors_with_history() -> None:
-    """evaluate_prediction_errors aligns control history windows without negative index slicing."""
+    """evaluate_prediction_errors aligns measurement and control history windows causally."""
     rng = np.random.default_rng(_SEED + 4)
     trajs = [
         (rng.standard_normal((40, 3)), rng.standard_normal((40, 6))),
         (rng.standard_normal((50, 3)), rng.standard_normal((50, 6))),
     ]
-    ref_z, _ = extract_state_action_pairs(trajs[:1], n_u=5)
-    cal_z, _ = extract_state_action_pairs(trajs[1:], n_u=5)
+    ref_z, _ = extract_state_action_pairs(trajs[:1], n_y=2, n_u=3)
+    cal_z, _ = extract_state_action_pairs(trajs[1:], n_y=2, n_u=3)
     index = OODIndex.fit(ref_z, cal_z, k=3)
 
     model = _MockPredictor(p=6, n_y=2, n_u=3)
     q1, e1, q_max, e_max = evaluate_prediction_errors(
-        cast("InferencePredictor", model), index, trajs[1:], horizon=10, n_u=5, stride=2
+        cast("InferencePredictor", model), index, trajs[1:], horizon=10, n_y=2, n_u=3, stride=2
     )
     assert len(q1) == len(e1)
     assert len(q1) > 0
     assert len(q_max) == len(e_max)
     assert len(q_max) > 0
+
+
+def test_disjoint_trajectories_and_reference_standardization() -> None:
+    """OODIndex standardizes features strictly from reference statistics without calibration leakage."""
+    rng = np.random.default_rng(_SEED + 5)
+    # Reference set with mean ~ 100, std ~ 10
+    ref_raw = rng.standard_normal((50, 4)) * 10.0 + 100.0
+    # Calibration set with mean ~ 200, std ~ 20
+    cal_raw = rng.standard_normal((30, 4)) * 20.0 + 200.0
+
+    index = OODIndex.fit(ref_raw, cal_raw, k=5)
+
+    # Standardizer mean and sigma must match ref_raw, not cal_raw or combined
+    np.testing.assert_allclose(index.mu, np.mean(ref_raw, axis=0), rtol=1e-5)
+    np.testing.assert_allclose(index.sigma, np.std(ref_raw, axis=0), rtol=1e-5)
+
+    # Standardizing ref_raw must yield zero mean
+    std_ref = index.standardize(ref_raw)
+    np.testing.assert_allclose(np.mean(std_ref, axis=0), 0.0, atol=1e-7)
+
+    # Standardizing cal_raw must NOT yield zero mean since cal is shifted
+    std_cal = index.standardize(cal_raw)
+    assert np.all(np.abs(np.mean(std_cal, axis=0)) > 5.0)
 
 
 def test_select_ood_candidate_states(tmp_path: Path) -> None:

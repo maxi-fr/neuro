@@ -8,8 +8,8 @@ These six tickets expand the recommendations in the [investigation report](../..
 | [02. Control-history parity](02-control-history-parity.md) | Make training, offline Rollouts, and MPC agree on input timing. | None | Complete |
 | [03. Full-Control-Horizon validation](03-control-horizon-validation.md) | Report recursive error and growth through the terminal prediction, with explicit candidate eligibility. | 02 | Complete |
 | [04. Spectral Cost coverage and normalization](04-spectral-cost-coverage-and-normalization.md) | Score the full intended Control Horizon and make equivalent spectral weights comparable across Predictor families. | None | Complete |
-| [05. Retraining and matched closed-loop comparison](05-retraining-and-closed-loop-comparison.md) | Retrain and qualify replacement checkpoints, then measure suppression and charge in a reproducible comparison. | 01, 02, 03, 04; verified data | Ready for implementation |
-| [06. Predictor-history OOD](06-predictor-history-ood.md) | Calibrate OOD analysis against verified data using the actual Predictor input history. | 02, 05; verified data | Ready for implementation |
+| [05. Retraining and matched closed-loop comparison](05-retraining-and-closed-loop-comparison.md) | Retrain and qualify replacement checkpoints, then measure suppression and charge in a reproducible comparison. | 01, 02, 03, 04; verified data | Complete |
+| [06. Predictor-history OOD](06-predictor-history-ood.md) | Calibrate OOD analysis against verified data using the actual Predictor input history. | 02, 05; verified data | Complete |
 
 ## Preserve existing experiments
 

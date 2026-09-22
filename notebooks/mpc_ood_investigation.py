@@ -180,12 +180,12 @@ def _(Path, glob, mo, sys):
     )
 
     rep_options = {
-        "Instantaneous [y, u]": 0,
-        "Full History [y, u_hist, u]": 17,
+        "Predictor-Native History [y_hist, u_hist, u]": "native",
+        "Instantaneous Reduced Diagnostic [y, u]": "instant",
     }
-    default_rep_key = "Instantaneous [y, u]"
-    if cli_rep in ("17", "history"):
-        default_rep_key = "Full History [y, u_hist, u]"
+    default_rep_key = "Predictor-Native History [y_hist, u_hist, u]"
+    if cli_rep in ("0", "instant", "instantaneous"):
+        default_rep_key = "Instantaneous Reduced Diagnostic [y, u]"
 
     rep_select = mo.ui.dropdown(
         options=rep_options,
@@ -384,9 +384,17 @@ def _(
     ref_trajs = trajs[:n_ref]
     cal_trajs = trajs[n_ref:]
 
-    n_u_val = rep_select.value
-    z_ref, _ = extract_state_action_pairs(ref_trajs, n_u=n_u_val)
-    z_cal, _ = extract_state_action_pairs(cal_trajs, n_u=n_u_val)
+    if rep_select.value == "instant":
+        n_y_val = 1
+        n_u_val = 0
+        rep_desc = "Instantaneous Diagnostic [y, u]"
+    else:
+        n_y_val = int(getattr(model, "n_y", 1))
+        n_u_val = int(getattr(model, "n_u", 0))
+        rep_desc = f"Predictor-Native History (n_y={n_y_val}, n_u={n_u_val})"
+
+    z_ref, _ = extract_state_action_pairs(ref_trajs, n_y=n_y_val, n_u=n_u_val)
+    z_cal, _ = extract_state_action_pairs(cal_trajs, n_y=n_y_val, n_u=n_u_val)
 
     ood_index = OODIndex.fit(z_ref, z_cal, k=10)
     cv = ood_index.coefficient_of_variation()
@@ -397,8 +405,9 @@ def _(
     ### 📐 Active Closed-Loop MPC Run & Predictor Model {source_tag}
     - **Active Run**: `{run_dir.name}` (`{run_dir}`)
     - **Configured Predictor**: `{model_display_name}` (`{model_path}`)
-    - **Model Architecture**: `{model.__class__.__name__}` (observable dimension $p = {model.p}$)
+    - **Model Architecture**: `{model.__class__.__name__}` (observable dimension $p = {model.p}$, $n_y = {model.n_y}$, $n_u = {model.n_u}$)
     - **State Representation**: `{geom_desc}`
+    - **OOD History Mode**: `{rep_desc}`
     - **Training Dataset Source**: `{resolved_train_dir}` ({len(train_files)} files loaded)
     - **Normalization**: Standardized using reference statistics $\\mu_j$ and $\\sigma_j$.
     - **Reference Set**: `{ood_index.reference_count:,}` standardized vectors $\\mathcal{{Z}}_\\text{{ref}}$ spanning {len(ref_trajs)} trajectories.
@@ -411,6 +420,8 @@ def _(
         clinical_metrics,
         geom,
         model,
+        n_u_val,
+        n_y_val,
         ood_index,
         resolved_train_dir,
         run_dir,
@@ -574,21 +585,23 @@ def _(
     k_slider,
     mo,
     model,
+    n_u_val,
+    n_y_val,
     np,
     ood_index,
     plt,
-    rep_select,
     run_dir,
 ):
     active_k = k_slider.value
-    n_u_opt = rep_select.value
     log_file = run_dir / "log.npz"
 
     if not log_file.exists():
         _missing_log = f"Log file not found at {log_file}"
         raise FileNotFoundError(_missing_log)
 
-    mpc_queries, planned_u, _valid_decisions = extract_mpc_rollout_queries(log_file, n_u=n_u_opt)
+    mpc_queries, planned_u, _valid_decisions = extract_mpc_rollout_queries(
+        log_file, n_y=n_y_val, n_u=n_u_val, model=model
+    )
     n_decisions, horizon, dim = mpc_queries.shape
 
     flat_queries = mpc_queries.reshape(-1, dim)
@@ -1044,17 +1057,19 @@ def _(
     horizon,
     mo,
     model,
+    n_u_val,
+    n_y_val,
     np,
     ood_index,
     plt,
-    rep_select,
 ):
     q_1step, e_1step, q_max_r, e_max_r = evaluate_prediction_errors(
         model,
         ood_index,
         cal_trajs,
         horizon=horizon,
-        n_u=rep_select.value,
+        n_y=n_y_val,
+        n_u=n_u_val,
         stride=max(1, horizon // 6),
     )
 
@@ -1317,9 +1332,11 @@ def _(mo, resolved_train_dir):
 @app.cell
 def _(
     mo,
+    model,
+    n_u_val,
+    n_y_val,
     ood_index,
     ood_threshold_slider,
-    rep_select,
     run_dir,
     select_ood_candidate_states,
 ):
@@ -1329,7 +1346,9 @@ def _(
         threshold=ood_threshold_slider.value,
         min_interval_s=1.5,
         max_candidates=5,
-        n_u=rep_select.value,
+        n_y=n_y_val,
+        n_u=n_u_val,
+        model=model,
     )
 
     if not found_candidates:
@@ -1390,11 +1409,12 @@ def _(
     geom,
     load_trajectory,
     mo,
+    n_u_val,
+    n_y_val,
     np,
     ood_index,
     ras_seeds_input,
     reduce_trajectory_to_frames,
-    rep_select,
     simulate_ras_branch,
     target_data_dir_input,
 ):
@@ -1460,7 +1480,9 @@ def _(
                 _y_frames = _y_data
                 _u_frames = _u_data
             _min_len = min(len(_y_frames), len(_u_frames))
-            _z_b, _ = extract_state_action_pairs([(_u_frames[:_min_len], _y_frames[:_min_len])], n_u=rep_select.value)
+            _z_b, _ = extract_state_action_pairs(
+                [(_u_frames[:_min_len], _y_frames[:_min_len])], n_y=n_y_val, n_u=n_u_val
+            )
             _d_b = ood_index.compute_distances(_z_b)
             _q_b = ood_index.percentiles(_d_b)
             _max_q = float(np.max(_q_b)) if len(_q_b) > 0 else 0.0

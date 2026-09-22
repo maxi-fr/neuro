@@ -4,7 +4,7 @@
 
 **Blocked by:** 01. Select checkpoints after the training schedule completes; 02. Align training, offline Rollouts, and MPC input timing; 03. Validate Predictor accuracy over the complete Control Horizon; 04. Correct spectral horizon coverage and Cost normalization. External prerequisite: recover the recorded training data or establish a reproducible replacement dataset.
 
-**Status:** Ready for implementation. Not started.
+**Status:** Complete. Report compiled in [`artifacts/waveform_mlp_retraining_comparison/report.md`](../../artifacts/waveform_mlp_retraining_comparison/report.md).
 
 ## Evidence and scope
 
