@@ -1,5 +1,7 @@
 # TODO list
 
+* clean up old notebooks and scripts
+
 * Test cost functions with JR model as the MPC predictor!!!
 
 * add predictability of a number of seizing nodes to the predictability experiment

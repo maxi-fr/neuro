@@ -44,8 +44,8 @@ dev = [
 ]
 
 [project.optional-dependencies]
-cpu = ["torch>=2.9.1"]
-cu128 = ["torch>=2.9.1"]
+cpu = ["torch>=2.14.0"]
+cu130 = ["torch>=2.14.0"]
 
 
 [[tool.uv.index]]
@@ -54,19 +54,19 @@ url = "https://download.pytorch.org/whl/cpu"
 explicit = true
 
 [[tool.uv.index]]
-name = "pytorch-cu128"
-url = "https://download.pytorch.org/whl/cu128"
+name = "pytorch-cu130"
+url = "https://download.pytorch.org/whl/cu130"
 explicit = true
 
 [tool.uv]
 default-groups = ["dev"]
-conflicts = [[{ extra = "cpu" }, { extra = "cu128" }]]
+conflicts = [[{ extra = "cpu" }, { extra = "cu130" }]]
 
 [tool.uv.sources]
 simulate = { git = "https://github.com/maxi-fr/simulate.git" }
 torch = [
   { index = "pytorch-cpu", extra = "cpu" },
-  { index = "pytorch-cu128", extra = "cu128" },
+  { index = "pytorch-cu130", extra = "cu130" },
 ]
 trajopt = { git = "https://github.com/maxi-fr/trajopt.git" }
 latex-linting = { git = "https://github.com/maxi-fr/latex_linting" }
