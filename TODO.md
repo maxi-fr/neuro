@@ -2,6 +2,8 @@
 
 * clean up old notebooks and scripts
 
+* is the LOG_FLOOR really necessary?
+
 * Test cost functions with JR model as the MPC predictor!!!
 
 * add predictability of a number of seizing nodes to the predictability experiment

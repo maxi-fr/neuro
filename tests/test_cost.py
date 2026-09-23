@@ -560,6 +560,54 @@ def test_observable_frame_jax_reduction_agrees_with_canonical_numpy() -> None:
     np.testing.assert_allclose(np.asarray(jax_frames), numpy_frames, rtol=1e-10, atol=1e-12)
 
 
+@pytest.mark.parametrize(
+    "geom",
+    [
+        StftGeometry(
+            n_segment=20,
+            n_hop=5,
+            band_hz=(4.0, 24.0),
+            n_bin_pool=2,
+            kernel="hann",
+            kernel_width=3,
+            window="hann",
+            asymmetric_window=True,
+        ),
+        StftGeometry(
+            n_segment=20,
+            n_hop=5,
+            band_hz=(4.0, 24.0),
+            n_bin_pool=2,
+            kernel="exponential",
+            kernel_width=3,
+            window="hann_poisson",
+            asymmetric_window=True,
+        ),
+        StftGeometry(
+            n_segment=20,
+            n_hop=5,
+            band_hz=(4.0, 24.0),
+            n_bin_pool=2,
+            kernel="exponential",
+            kernel_width=3,
+            window="hann_poisson",
+            asymmetric_window=False,
+        ),
+    ],
+)
+def test_observable_frame_jax_reduction_agrees_with_canonical_numpy_asymmetric(geom: StftGeometry) -> None:
+    """The jax Observable reduction reproduces compute_log_power_frames with asymmetric windowing."""
+    rng = np.random.default_rng(_SEED + 20)
+    fs = 100.0
+    y = rng.standard_normal((200, 4))
+
+    numpy_frames = compute_log_power_frames(y, geom, fs=fs)
+    jax_frames = jax_compute_observable_frames(jnp.asarray(y), geom, fs=fs)
+
+    assert jax_frames.shape == numpy_frames.shape
+    np.testing.assert_allclose(np.asarray(jax_frames), numpy_frames, rtol=1e-10, atol=1e-12)
+
+
 def test_observable_frame_hinge_cost_scores_the_stage_waveform() -> None:
     """ObservableFrameHingeCost reduces the stage waveform to Frames and hinges them, whole-horizon."""
     rng = np.random.default_rng(_SEED + 21)

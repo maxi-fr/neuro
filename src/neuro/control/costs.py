@@ -9,7 +9,7 @@ import numpy as np
 from scipy.signal.windows import hann
 from trajopt.costs.base import CostFunction
 
-from neuro.spectral import LOG_FLOOR, ObservableEnvelope, _frame_kernel_weights
+from neuro.spectral import LOG_FLOOR, ObservableEnvelope, _frame_kernel_weights, compute_segment_window
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
@@ -280,15 +280,21 @@ def jax_compute_observable_frames(y: jax.Array, geometry: StftGeometry, *, fs: f
     """
     n_segment, n_hop = geometry.n_segment, geometry.n_hop
     n_raw_frames = (y.shape[0] - n_segment) // n_hop + 1
-    w_hann = jnp.asarray(hann(n_segment, sym=False))
+    w_seg = jnp.asarray(
+        compute_segment_window(
+            n_segment,
+            window=geometry.window,
+            asymmetric_window=geometry.asymmetric_window,
+        )
+    )
     segments = jnp.stack([y[m * n_hop : m * n_hop + n_segment] for m in range(n_raw_frames)])
-    spectrum = jnp.fft.rfft(segments * w_hann[None, :, None], axis=1)
+    spectrum = jnp.fft.rfft(segments * w_seg[None, :, None], axis=1)
 
     fold = np.full(n_segment // 2 + 1, 2.0)
     fold[0] = 1.0
     if n_segment % 2 == 0:
         fold[-1] = 1.0
-    power = jnp.abs(spectrum) ** 2 * jnp.asarray(fold)[None, :, None] / (fs * jnp.sum(w_hann**2))
+    power = jnp.abs(spectrum) ** 2 * jnp.asarray(fold)[None, :, None] / (fs * jnp.sum(w_seg**2))
     power = jnp.moveaxis(power, 2, 1)  # (n_raw_frames, n_channels, n_bins)
 
     bin_lo, bin_hi = geometry.bin_range(fs)

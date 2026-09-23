@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import dataclasses
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 import numpy as np
 import scipy.signal as sps
@@ -60,6 +60,51 @@ def _frame_kernel_weights(kernel: str, width: int) -> FloatArray:
     return np.asarray(weights / np.sum(weights), dtype=np.float64)
 
 
+def compute_segment_window(
+    n: int,
+    *,
+    window: Literal["hann", "hann_poisson"] = "hann",
+    asymmetric_window: bool = False,
+) -> FloatArray:
+    """Compute an STFT Segment window taper.
+
+    Parameters
+    ----------
+    n
+        Length of the Segment in samples.
+    window
+        Window function name (``"hann"`` or ``"hann_poisson"``).
+    asymmetric_window
+        Whether to use an asymmetric causal half-window taper peaking at the newest sample.
+
+    Returns
+    -------
+    FloatArray
+        Window coefficients of shape ``(n,)``.
+    """
+    if n <= 1:
+        return np.ones(n, dtype=np.float64)
+
+    if window == "hann":
+        if asymmetric_window:
+            return np.asarray(sps.windows.get_window("hann", 2 * n - 1, fftbins=False)[:n], dtype=np.float64)
+        return np.asarray(sps.windows.get_window("hann", n, fftbins=True), dtype=np.float64)
+
+    if window == "hann_poisson":
+        if asymmetric_window:
+            k = np.arange(n, dtype=np.float64)
+            w_hann = 0.5 * (1.0 - np.cos(np.pi * k / (n - 1.0)))
+            w_poisson = np.exp(-2.0 * (n - 1.0 - k) / (n - 1.0))
+            return np.asarray(w_hann * w_poisson, dtype=np.float64)
+        k = np.arange(n, dtype=np.float64)
+        w_hann = np.asarray(sps.windows.get_window("hann", n, fftbins=True), dtype=np.float64)
+        w_poisson = np.exp(-2.0 * np.abs(k - n / 2.0) / (n / 2.0))
+        return np.asarray(w_hann * w_poisson, dtype=np.float64)
+
+    msg = f"Invalid window name: {window!r}"
+    raise ValueError(msg)
+
+
 def compute_log_power_frames(y: FloatArray, geometry: StftGeometry, *, fs: float) -> FloatArray:
     """Reduce raw EEG trajectory to log-power Frames at the given Observable geometry.
 
@@ -84,13 +129,17 @@ def compute_log_power_frames(y: FloatArray, geometry: StftGeometry, *, fs: float
         return np.empty((0, n_channels, n_values), dtype=np.float64)
 
     n_raw_frames = (n_samples - geometry.n_segment) // geometry.n_hop + 1
-    w_hann = hann(geometry.n_segment, sym=False)
+    w_seg = compute_segment_window(
+        geometry.n_segment,
+        window=geometry.window,
+        asymmetric_window=geometry.asymmetric_window,
+    )
     segments = np.stack(
         [y[m * geometry.n_hop : m * geometry.n_hop + geometry.n_segment, :] for m in range(n_raw_frames)],
         axis=0,
     )
 
-    _, power = sps.periodogram(segments, fs=fs, window=w_hann, detrend=False, axis=1, scaling="density")
+    _, power = sps.periodogram(segments, fs=fs, window=w_seg, detrend=False, axis=1, scaling="density")
     power = np.asarray(power, dtype=np.float64).transpose(0, 2, 1)
 
     bin_lo, bin_hi = geometry.bin_range(fs)
@@ -224,13 +273,22 @@ class ObservableEnvelope:
                 msg = f"envelope at {path} has unknown kernel '{kernel_str}'."
                 raise ValueError(msg)
 
+            window_str = str(data["window"]) if "window" in data else "hann"
+            if window_str not in ("hann", "hann_poisson"):
+                msg = f"envelope at {path} has unknown window '{window_str}'."
+                raise ValueError(msg)
+
+            asymmetric_window = bool(data["asymmetric_window"]) if "asymmetric_window" in data else False
+
             geom = StftGeometry(
                 n_segment=int(data["n_segment"]),
                 n_hop=int(data["n_hop"]),
                 band_hz=band_hz,
                 n_bin_pool=int(data["n_bin_pool"]),
-                kernel=kernel_str,
+                kernel=kernel_str,  # type: ignore[arg-type]
                 kernel_width=int(data["kernel_width"]),
+                window=window_str,  # type: ignore[arg-type]
+                asymmetric_window=asymmetric_window,
             )
 
             expected_values = geom.n_values(fs)
@@ -298,13 +356,22 @@ class HealthyReference:
                     msg = f"envelope at {path} has unknown kernel '{kernel_str}'."
                     raise ValueError(msg)
 
+                window_str = str(data["window"]) if "window" in data else "hann"
+                if window_str not in ("hann", "hann_poisson"):
+                    msg = f"envelope at {path} has unknown window '{window_str}'."
+                    raise ValueError(msg)
+
+                asymmetric_window = bool(data["asymmetric_window"]) if "asymmetric_window" in data else False
+
                 geom = StftGeometry(
                     n_segment=int(data["n_segment"]),
                     n_hop=int(data["n_hop"]),
                     band_hz=band_hz,
                     n_bin_pool=int(data["n_bin_pool"]),
-                    kernel=kernel_str,
+                    kernel=kernel_str,  # type: ignore[arg-type]
                     kernel_width=int(data["kernel_width"]),
+                    window=window_str,  # type: ignore[arg-type]
+                    asymmetric_window=asymmetric_window,
                 )
                 expected_values = geom.n_values(fs)
                 if power.shape[1] != expected_values:

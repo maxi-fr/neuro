@@ -1,6 +1,6 @@
 import importlib.util
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal, cast
 
 import jax.numpy as jnp
 import numpy as np
@@ -8,6 +8,7 @@ import pytest
 import scipy.signal as sps
 import torch
 import yaml
+from pydantic import ValidationError
 from scipy.signal.windows import hann
 
 from neuro.config import StftGeometry, StftSpec
@@ -21,6 +22,7 @@ from neuro.spectral import (
     PsdEnvelope,
     compute_log_power_frames,
     compute_periodograms,
+    compute_segment_window,
     hinge_penalty,
     windowed_mean_square,
 )
@@ -535,3 +537,152 @@ def test_healthy_reference_serialization_round_trip(tmp_path: Path) -> None:
     assert ref.psd.power.shape == (n_channels, geom.n_segment // 2 + 1)
     assert ref.observable.power.shape == (n_channels, geom.n_values(50.0))
     assert ref.ms.power.shape == (n_channels,)
+
+
+def test_build_healthy_psd_asymmetric_window(tmp_path: Path) -> None:
+    """build_healthy_psd records asymmetric window parameters in the archive and loads cleanly."""
+    build_script = Path(__file__).parents[1] / "scripts" / "build_healthy_psd.py"
+    spec = importlib.util.spec_from_file_location("build_healthy_psd", build_script)
+    assert spec is not None
+    assert spec.loader is not None
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    rng = np.random.default_rng(_SEED + 30)
+    data_dir = tmp_path / "data"
+    data_dir.mkdir(parents=True)
+    n_samples, n_channels = 200, 3
+
+    np.savez(
+        data_dir / "traj_0.npz",
+        allow_pickle=True,
+        **{
+            "sensor_0.y_mea": rng.standard_normal((n_samples, n_channels)),
+            "controller.u": rng.standard_normal((n_samples, 2)),
+        },
+    )
+
+    config_path = tmp_path / "cfg.yaml"
+    config_path.write_text(
+        yaml.dump({"experiments": [{"dynamics": {"dt": 0.02}, "estimator": {"downsample": 1}}]}),
+        encoding="utf-8",
+    )
+    output_path = tmp_path / "healthy_asym.npz"
+    geom = StftGeometry(
+        n_segment=40,
+        n_hop=20,
+        band_hz=(3.0, 15.0),
+        n_bin_pool=2,
+        window="hann",
+        asymmetric_window=True,
+    )
+
+    mod.build_healthy_psd(
+        config_path=config_path,
+        data_dir=data_dir,
+        output_path=output_path,
+        quantile=0.85,
+        geometry=geom,
+    )
+
+    ref = HealthyReference.load(output_path)
+    assert ref.observable is not None
+    assert ref.observable.geometry.window == "hann"
+    assert ref.observable.geometry.asymmetric_window is True
+    obs = ObservableEnvelope.load(output_path)
+    assert obs.geometry.window == "hann"
+    assert obs.geometry.asymmetric_window is True
+
+
+def test_compute_segment_window_symmetric() -> None:
+    """Symmetric segment window matches periodic Hann, and n=1 returns a single 1.0."""
+    w_sym = compute_segment_window(50, window="hann", asymmetric_window=False)
+    expected = hann(50, sym=False)
+    np.testing.assert_allclose(w_sym, expected, rtol=1e-12, atol=1e-15)
+
+    w_hp = compute_segment_window(50, window="hann_poisson", asymmetric_window=False)
+    assert w_hp.shape == (50,)
+    assert np.all(np.isfinite(w_hp))
+    assert np.isclose(w_hp.max(), 1.0)
+    assert not np.allclose(w_hp, w_sym)
+
+    w_one = compute_segment_window(1, window="hann")
+    assert w_one.shape == (1,)
+    assert w_one[0] == 1.0
+
+    with pytest.raises(ValueError, match="Invalid window name"):
+        compute_segment_window(50, window=cast("Any", "nonexistent"))
+
+
+def test_compute_segment_window_asymmetric() -> None:
+    """Asymmetric windows rise smoothly to 1.0 at newest sample and reduce center-of-energy delay."""
+    n = 50
+    w_asym_hann = compute_segment_window(n, window="hann", asymmetric_window=True)
+    assert w_asym_hann.shape == (n,)
+    assert w_asym_hann[0] == 0.0
+    assert w_asym_hann[-1] == 1.0
+    assert np.all(np.diff(w_asym_hann) >= 0.0)
+
+    # Center of energy: should be shifted closer to n-1 than symmetric Hann
+    w_hann = hann(n, sym=False)
+    center_hann = np.sum(np.arange(n) * (w_hann**2)) / np.sum(w_hann**2)
+    center_asym_hann = np.sum(np.arange(n) * (w_asym_hann**2)) / np.sum(w_asym_hann**2)
+    assert center_asym_hann > center_hann
+
+    # Hann-Poisson asymmetric: center of energy shifted even closer to n-1
+    w_asym_hp = compute_segment_window(n, window="hann_poisson", asymmetric_window=True)
+    assert w_asym_hp.shape == (n,)
+    assert w_asym_hp[0] == 0.0
+    assert w_asym_hp[-1] == 1.0
+    assert np.all(np.diff(w_asym_hp) >= 0.0)
+
+    center_asym_hp = np.sum(np.arange(n) * (w_asym_hp**2)) / np.sum(w_asym_hp**2)
+    assert center_asym_hp > center_asym_hann
+
+
+def test_stft_geometry_window_validation() -> None:
+    """StftGeometry accepts valid window configurations and rejects invalid ones."""
+    geom_default = StftGeometry(n_segment=50, n_hop=5)
+    assert geom_default.window == "hann"
+    assert geom_default.asymmetric_window is False
+
+    geom_asym = StftGeometry(n_segment=50, n_hop=5, window="hann", asymmetric_window=True)
+    assert geom_asym.window == "hann"
+    assert geom_asym.asymmetric_window is True
+
+    geom_hp = StftGeometry(n_segment=50, n_hop=5, window="hann_poisson", asymmetric_window=True)
+    assert geom_hp.window == "hann_poisson"
+    assert geom_hp.asymmetric_window is True
+
+    with pytest.raises(ValidationError):
+        StftGeometry(n_segment=50, n_hop=5, window=cast("Any", "half_hann"))
+
+    with pytest.raises(ValidationError):
+        StftGeometry(n_segment=50, n_hop=5, window=cast("Any", "unknown_window"))
+
+
+def test_compute_log_power_frames_with_asymmetric_windows() -> None:
+    """compute_log_power_frames runs identically in shape and without NaNs under asymmetric windowing."""
+    rng = np.random.default_rng(_SEED + 50)
+    y = rng.standard_normal((200, 3))
+    fs = 50.0
+
+    geom_sym = StftGeometry(n_segment=50, n_hop=10, band_hz=(2.0, 20.0), n_bin_pool=1, window="hann")
+    geom_asym_hann = StftGeometry(
+        n_segment=50, n_hop=10, band_hz=(2.0, 20.0), n_bin_pool=1, window="hann", asymmetric_window=True
+    )
+    geom_asym_hp = StftGeometry(
+        n_segment=50, n_hop=10, band_hz=(2.0, 20.0), n_bin_pool=1, window="hann_poisson", asymmetric_window=True
+    )
+
+    frames_sym = compute_log_power_frames(y, geom_sym, fs=fs)
+    frames_asym_hann = compute_log_power_frames(y, geom_asym_hann, fs=fs)
+    frames_asym_hp = compute_log_power_frames(y, geom_asym_hp, fs=fs)
+
+    assert frames_asym_hann.shape == frames_sym.shape
+    assert frames_asym_hp.shape == frames_sym.shape
+    assert np.all(np.isfinite(frames_asym_hann))
+    assert np.all(np.isfinite(frames_asym_hp))
+    # Asymmetric windows should produce distinct power frames from symmetric Hann
+    assert not np.allclose(frames_asym_hann, frames_sym)
+    assert not np.allclose(frames_asym_hp, frames_asym_hann)

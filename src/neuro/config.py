@@ -181,6 +181,8 @@ class StftGeometry(ObservableGeometry):
     n_bin_pool: int = Field(default=1, ge=1)
     kernel: Literal["boxcar", "triangular", "hann", "exponential", "linear"] = "boxcar"
     kernel_width: int = Field(default=1, ge=1)
+    window: Literal["hann", "hann_poisson"] = "hann"
+    asymmetric_window: bool = False
 
     def bin_range(self, fs: float) -> tuple[int, int]:
         """Half-open rfft bin index range scored at ``fs``; includes DC unless band_hz excludes it."""

@@ -1,6 +1,6 @@
 import marimo
 
-__generated_with = "0.23.16"
+__generated_with = "0.24.2"
 app = marimo.App(width="full", app_title="STFT geometry explorer")
 
 
@@ -18,7 +18,7 @@ def _():
     from neuro.geometry import sensor_positions_mm
     from neuro.predictor.data import load_trajectory
     from neuro.seizure import EZ_REGIONS, spread_profile_from_lfp
-    from neuro.spectral import compute_log_power_frames
+    from neuro.spectral import compute_log_power_frames, compute_segment_window
 
     return (
         Connectome,
@@ -28,6 +28,7 @@ def _():
         antialias_filter,
         build_eeg_leadfield,
         compute_log_power_frames,
+        compute_segment_window,
         focal_channels,
         load_trajectory,
         mo,
@@ -79,6 +80,7 @@ def _(
     focal_regions = [*EZ_REGIONS, "lTCI", "lTCV"]
 
     trajectories = {name: load_trajectory(path, None, DOWNSAMPLE, DT)[1] for name, path in trajectory_paths.items()}
+
     lfp_trajectories = {}
     seizure_profiles = {}
     for name, path in trajectory_paths.items():
@@ -191,6 +193,12 @@ def _(mo, vertical_lines):
 def _(mo):
     segment = mo.ui.slider(0.02, 3.0, 0.02, value=1.0, label="`n_segment` (s)")
     hop = mo.ui.slider(0.02, 3.0, 0.02, value=0.10, label="`n_hop` (s)")
+    window = mo.ui.dropdown(
+        options=["hann", "hann_poisson"],
+        value="hann",
+        label="`window`",
+    )
+    asymmetric_window = mo.ui.checkbox(value=False, label="`asymmetric_window`")
     use_band = mo.ui.checkbox(value=True, label="Apply `band_hz`")
     band = mo.ui.range_slider(0.0, 25.0, 0.5, value=[1.0, 25.0], label="`band_hz` (Hz)")
     bin_pool = mo.ui.slider(1, 8, 1, value=1, label="`n_bin_pool`")
@@ -202,14 +210,24 @@ def _(mo):
 
     mo.hstack(
         [
-            mo.vstack([mo.md("#### Segment grid"), segment, hop]),
+            mo.vstack([mo.md("#### Segment grid"), segment, hop, window, asymmetric_window]),
             mo.vstack([mo.md("#### Frequency bins"), use_band, band, bin_pool]),
             mo.vstack([mo.md("#### Frame smoothing"), kernel, kernel_width]),
         ],
         justify="space-between",
         gap=3,
     )
-    return band, bin_pool, hop, kernel, kernel_width, segment, use_band
+    return (
+        asymmetric_window,
+        band,
+        bin_pool,
+        hop,
+        kernel,
+        kernel_width,
+        segment,
+        use_band,
+        window,
+    )
 
 
 @app.cell
@@ -217,6 +235,7 @@ def _(
     FS,
     StftGeometry,
     ValidationError,
+    asymmetric_window,
     band,
     bin_pool,
     hop,
@@ -225,8 +244,10 @@ def _(
     mo,
     segment,
     use_band,
+    window,
 ):
     geometry, geometry_error = None, None
+
     try:
         geometry = StftGeometry(
             n_segment=round(float(segment.value) * FS),
@@ -235,6 +256,8 @@ def _(
             n_bin_pool=int(bin_pool.value),
             kernel=kernel.value,
             kernel_width=int(kernel_width.value),
+            window=window.value,
+            asymmetric_window=asymmetric_window.value,
         )
         _bin_lo, _bin_hi = geometry.bin_range(FS)
         if _bin_hi <= _bin_lo:
@@ -252,25 +275,57 @@ def _(
 
 
 @app.cell
-def _(
-    FS,
-    compute_log_power_frames,
-    duration,
-    geometry,
-    lfp_trajectories,
-    np,
-    start_s,
-    trajectories,
-    trajectory,
-):
+def _(FS, compute_segment_window, geometry, mo, np, plt):
+    _w = compute_segment_window(
+        geometry.n_segment,
+        window=geometry.window,
+        asymmetric_window=geometry.asymmetric_window,
+    )
+    _n = geometry.n_segment
+    _t_ms = np.arange(_n) / FS * 1000.0
+    _w_sq = _w**2
+    _sum_sq = float(np.sum(_w_sq))
+    _center_idx = float(np.sum(np.arange(_n) * _w_sq) / _sum_sq) if _sum_sq > 0 else (_n - 1) / 2.0
+    _center_ms = _center_idx / FS * 1000.0
+    _group_delay_ms = (_n - 1.0 - _center_idx) / FS * 1000.0
+
+    _fig, _ax = plt.subplots(figsize=(8, 2.4), layout="constrained")
+    _ax.plot(_t_ms, _w, color="tab:blue", lw=1.8, label=f"{geometry.window}")
+    _ax.axvline(
+        _center_ms,
+        color="tab:orange",
+        ls="--",
+        lw=1.2,
+        label=f"Center of energy ({_center_ms:.1f} ms | delay {_group_delay_ms:.1f} ms)",
+    )
+    _ax.axvline(_t_ms[-1], color="tab:gray", ls=":", lw=1.0, label="Newest sample (t = 0 ms)")
+    _ax.set(
+        xlabel="Segment elapsed time (ms)",
+        ylabel="Taper weight",
+        title=f"Segment window function (effective group delay: {_group_delay_ms:.1f} ms)",
+        ylim=(-0.05, 1.05),
+    )
+    _ax.legend(fontsize=8, frameon=False, loc="upper left")
+    _ax.spines[["top", "right"]].set_visible(False)
+    mo.mpl.interactive(_fig)
+    return
+
+
+@app.cell
+def _(FS, duration, lfp_trajectories, np, start_s, trajectories, trajectory):
     def view_samples(y: np.ndarray) -> tuple[np.ndarray, float, float]:
-        """Clip the requested time view to a decimated EEG trajectory."""
+        """Clip the requested time view to a decimated trajectory."""
         start = min(float(start_s.value), y.shape[0] / FS - 1.0 / FS)
         stop = min(start + float(duration.value), y.shape[0] / FS)
         return y[round(start * FS) : round(stop * FS)], start, stop
 
     y_view, view_start, view_stop = view_samples(trajectories[trajectory.value])
     lfp_view, _, _ = view_samples(lfp_trajectories[trajectory.value])
+    return lfp_view, view_start, view_stop, y_view
+
+
+@app.cell
+def _(FS, compute_log_power_frames, geometry, np, view_start, y_view):
     frames = compute_log_power_frames(y_view, geometry, fs=FS)
     freqs = np.fft.rfftfreq(geometry.n_segment, d=1.0 / FS)
     _bin_lo, _bin_hi = geometry.bin_range(FS)
@@ -278,7 +333,7 @@ def _(
     n_values = freqs.size // geometry.n_bin_pool
     freqs = freqs[: n_values * geometry.n_bin_pool].reshape(n_values, geometry.n_bin_pool).mean(axis=1)
     frame_times = view_start + (np.arange(frames.shape[0]) * geometry.n_hop + geometry.sample_support_steps(FS)) / FS
-    return frame_times, frames, freqs, lfp_view, view_start, view_stop, y_view
+    return frame_times, frames, freqs
 
 
 @app.cell
@@ -442,27 +497,20 @@ def _(
 
 
 @app.cell
-def _(mo):
-    mo.md("""
+def _(geometry, mo):
+    mo.md(f"""
     ```python
-    "
-        "StftGeometry(
-    "
-        f"    n_segment={geometry.n_segment},
-    "
-        f"    n_hop={geometry.n_hop},
-    "
-        f"    band_hz={geometry.band_hz!r},
-    "
-        f"    n_bin_pool={geometry.n_bin_pool},
-    "
-        f"    kernel={geometry.kernel!r},
-    "
-        f"    kernel_width={geometry.kernel_width},
-    "
-        ")
-    "
-        "```
+    StftGeometry(
+        n_segment={geometry.n_segment},
+        n_hop={geometry.n_hop},
+        band_hz={geometry.band_hz!r},
+        n_bin_pool={geometry.n_bin_pool},
+        kernel={geometry.kernel!r},
+        kernel_width={geometry.kernel_width},
+        window={geometry.window!r},
+        asymmetric_window={geometry.asymmetric_window!r},
+    )
+    ```
     """)
     return
 

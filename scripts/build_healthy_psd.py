@@ -181,6 +181,8 @@ def build_healthy_psd(  # noqa: PLR0913
         "n_bin_pool": geometry.n_bin_pool,
         "kernel": geometry.kernel,
         "kernel_width": geometry.kernel_width,
+        "window": geometry.window,
+        "asymmetric_window": geometry.asymmetric_window,
         "plant_fingerprint": str(fp) if fp is not None else "",
     }
     if lfp_mean is not None:
@@ -267,6 +269,17 @@ def parse_args() -> argparse.Namespace:
         help="Frame Kernel width in frames (default: 1).",
     )
     parser.add_argument(
+        "--window",
+        default="hann",
+        choices=["hann", "hann_poisson"],
+        help="Segment window function (default: hann).",
+    )
+    parser.add_argument(
+        "--asymmetric-window",
+        action="store_true",
+        help="Use asymmetric causal STFT Segment window taper.",
+    )
+    parser.add_argument(
         "--segment-steps",
         type=int,
         default=None,
@@ -309,6 +322,8 @@ def main() -> None:
         or args.bin_pool > 1
         or args.kernel != "boxcar"
         or args.kernel_width > 1
+        or args.window != "hann"
+        or args.asymmetric_window
     ):
         first_cfg = _batch_configs(yaml.safe_load(args.config.read_text(encoding="utf-8")))[0]
         dt_plant = float(first_cfg["dynamics"]["dt"])
@@ -326,6 +341,8 @@ def main() -> None:
             n_bin_pool=args.bin_pool,
             kernel=args.kernel,
             kernel_width=args.kernel_width,
+            window=args.window,
+            asymmetric_window=args.asymmetric_window,
         )
 
     build_healthy_psd(
