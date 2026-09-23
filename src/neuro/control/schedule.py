@@ -4,7 +4,7 @@ import dataclasses
 from typing import TYPE_CHECKING, Any, Literal, Self
 
 import numpy as np
-from pydantic import Field, PositiveFloat
+from pydantic import Field, PositiveInt
 from simulate.controller import Controller
 
 from neuro.config import StrictConfig
@@ -40,15 +40,15 @@ def build_input_schedule(  # noqa: PLR0913
     transient_steps: int,
     n_controls: int,
     amp: float,
-    hold_ms: float | Sequence[float],
+    holds: int | Sequence[int] = 1,
     dt: float,
     rng: np.random.Generator,
 ) -> FloatArray:
     """Build the per-step tES schedule ``(n_steps, n_controls)``; zero during the leading transient.
 
     ``ras`` holds a random uniform amplitude per block, ``prbs`` a random binary +/-amp, and
-    ``multisine`` a random-phase sum of sinusoids; ``hold_ms`` sets the block length for the
-    first two.
+    ``multisine`` a random-phase sum of sinusoids; ``holds`` sets integer multiples of ``dt``
+    for the block length.
     """
     u = np.zeros((n_steps, n_controls))
     active = n_steps - transient_steps
@@ -56,11 +56,13 @@ def build_input_schedule(  # noqa: PLR0913
         return u
 
     if input_type in ("ras", "prbs"):
-        holds = np.atleast_1d(np.asarray(hold_ms, dtype=np.float64))
-        hold_steps = np.maximum(1, np.round(holds / (dt * 1000.0)).astype(int))
+        hold_steps = np.atleast_1d(np.asarray(holds, dtype=int))
+        if np.any(hold_steps < 1):
+            msg = f"all hold steps must be positive integers, got {holds}"
+            raise ValueError(msg)
         n_blocks = int(np.ceil(active / hold_steps.min()))
         if hold_steps.size > 1:
-            # Draw p ~ 1 / length so each entry gets an equal share of *time*: drawn uniformly, a
+            # Draw p ~ 1 / length so each entry gets an equal share of time: drawn uniformly, a
             # value's share is proportional to its own length and the longest hold eats the run.
             p = (1.0 / hold_steps) / np.sum(1.0 / hold_steps)
             lengths = rng.choice(hold_steps, size=n_blocks, p=p)
@@ -96,7 +98,7 @@ class _ScheduleControllerConfig(StrictConfig):
     amp: float = Field(ge=0)
     input_seed: int = Field(ge=0)
     transient_ms: float = Field(default=0.0, ge=0)
-    hold_ms: PositiveFloat | list[PositiveFloat] = 50.0
+    holds: PositiveInt | list[PositiveInt] = 1
 
 
 @dataclasses.dataclass(frozen=True)
@@ -125,7 +127,7 @@ class ScheduleController(Controller[ScheduleControllerLog]):
             transient_steps=round(cfg.transient_ms / (cfg.dt * 1000.0)),
             n_controls=cfg.n_u,
             amp=cfg.amp,
-            hold_ms=cfg.hold_ms,
+            holds=cfg.holds,
             dt=cfg.dt,
             rng=np.random.default_rng(cfg.input_seed),
         )

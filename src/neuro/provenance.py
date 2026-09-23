@@ -57,15 +57,13 @@ def check_excitation_alignment(data_dir: Path, downsample: int) -> None:
     if controller.get("input_type") not in ("ras", "prbs"):
         return
 
-    dt = float(controller["dt"])
-    holds = np.atleast_1d(np.asarray(controller.get("hold_ms", 50.0), dtype=np.float64))
-    # Mirrors the rounding ``build_input_schedule`` lays the blocks out on.
-    hold_steps = np.maximum(1, np.round(holds / (dt * 1000.0)).astype(int))
-    ragged = sorted(float(ms) for ms, steps in zip(holds, hold_steps, strict=True) if steps % downsample)
+    dt = float(controller.get("dt", 1e-4))
+    hold_multipliers = np.atleast_1d(np.asarray(controller.get("holds", 1), dtype=int))
+    ragged = sorted(int(h) for h in hold_multipliers if (h * dt) % (downsample * 1e-4) != 0.0)
     if ragged:
         warnings.warn(
-            f"excitation holds {ragged} ms in {data_dir} are not whole multiples of the "
-            f"{downsample * dt:g} s predictor step; the strided control records commands the plant "
+            f"excitation holds {ragged} in {data_dir} are not whole multiples of the "
+            f"{downsample * 1e-4:g} s predictor step; the strided control records commands the plant "
             f"only partly held.",
             stacklevel=2,
         )

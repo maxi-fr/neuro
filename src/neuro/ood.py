@@ -1161,7 +1161,7 @@ def simulate_ras_branch(  # noqa: PLR0913 -- branch simulation requires duration
     history_s: float = 2.0,
     output_dir: Path | str = Path("data/extended_train"),
     amp: float = 2.0,
-    hold_ms: list[float] | None = None,
+    holds: int | list[int] = 1,
     prefix: str = "cand",
 ) -> list[Path]:
     """Simulate Option B Random Amplitude Schedule (RAS) branches from a candidate state.
@@ -1180,8 +1180,8 @@ def simulate_ras_branch(  # noqa: PLR0913 -- branch simulation requires duration
         Directory where generated branch trajectory ``.npz`` files will be saved.
     amp : float, default=2.0
         Excitation current amplitude in mA.
-    hold_ms : list[float] | None, optional
-        Hold durations in milliseconds. Defaults to ``[60.0, 120.0, 240.0, 600.0, 1200.0]``.
+    holds : int | list[int], default=1
+        Hold duration in integer multiples of controller ``dt``.
     prefix : str, default="cand"
         File name prefix for emitted trajectory files.
 
@@ -1192,8 +1192,6 @@ def simulate_ras_branch(  # noqa: PLR0913 -- branch simulation requires duration
     """
     out_dir = Path(output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    if hold_ms is None:
-        hold_ms = [60.0, 120.0, 240.0, 600.0, 1200.0]
 
     cfg_file = candidate.run_dir / "config.yaml"
     log_file = candidate.run_dir / "log.npz"
@@ -1226,7 +1224,7 @@ def simulate_ras_branch(  # noqa: PLR0913 -- branch simulation requires duration
             transient_steps=0,
             n_controls=n_controls,
             amp=amp,
-            hold_ms=hold_ms,
+            holds=holds,
             dt=dt_u,
             rng=np.random.default_rng(ras_seed),
         )

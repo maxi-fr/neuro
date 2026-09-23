@@ -65,7 +65,7 @@ def test_input_schedule_obeys_kirchhoff_current_law(
         transient_steps=transient_steps,
         n_controls=n_controls,
         amp=amp,
-        hold_ms=10.0,
+        holds=1,
         dt=1e-4,
         rng=np.random.default_rng(0),
     )
@@ -78,56 +78,66 @@ def test_input_schedule_obeys_kirchhoff_current_law(
 
 
 def test_mixed_hold_schedule_spans_the_requested_block_lengths() -> None:
-    """A sequence ``hold_ms`` draws each block's length from it, so the excitation is broadband.
-
-    Run-length encode the schedule and check both that no run is shorter than the shortest
-    requested hold and that the longest hold is actually used -- a single short hold leaves the
-    low-frequency band the MPC commands in unexcited (see the ``build_input_schedule`` docstring).
-    """
-    dt, holds = 1e-4, [10.0, 50.0, 200.0]
+    """A sequence ``holds`` draws each block's length from it, so the excitation is broadband."""
+    holds = [1, 5, 20]
     schedule = build_input_schedule(
         input_type="ras",
         n_steps=200_000,
         transient_steps=0,
         n_controls=3,
         amp=3.0,
-        hold_ms=holds,
-        dt=dt,
+        holds=holds,
+        dt=0.01,
         rng=np.random.default_rng(0),
     )
 
     changes = np.flatnonzero(np.any(np.diff(schedule, axis=0) != 0.0, axis=1)) + 1
     runs = np.diff(np.concatenate([[0], changes, [len(schedule)]]))
-    expected = [round(h / (dt * 1000.0)) for h in holds]
-    assert runs[:-1].min() >= min(expected)
-    assert set(runs[:-1].tolist()) <= set(expected)
-    assert max(expected) in runs.tolist()
+    assert runs[:-1].min() >= min(holds)
+    assert set(runs[:-1].tolist()) <= set(holds)
+    assert max(holds) in runs.tolist()
 
 
 def test_mixed_hold_schedule_splits_time_evenly_across_holds() -> None:
-    """Each entry in ``hold_ms`` occupies a roughly equal share of the schedule's *time*.
+    """Each entry in ``holds`` occupies a roughly equal share of the schedule's *time*.
 
     Drawn uniformly over the values, a hold's share of time is proportional to its own length, so
-    on ``[75, 200, 2000]`` the 2000 ms entry would take ~88 % of every trajectory and leave almost
-    no short-hold data. The inverse-length weighting is what lets the grid span 75-2000 ms at all.
+    on ``[1, 4, 16]`` the 16-step entry would take ~76 % of every trajectory and leave almost
+    no single-step hold data. The inverse-length weighting ensures roughly equal share of time.
     """
-    dt, holds = 1e-4, [75.0, 200.0, 2000.0]
+    holds = [1, 4, 16]
     schedule = build_input_schedule(
         input_type="ras",
-        n_steps=4_000_000,
+        n_steps=400_000,
         transient_steps=0,
         n_controls=3,
         amp=3.0,
-        hold_ms=holds,
-        dt=dt,
+        holds=holds,
+        dt=0.01,
         rng=np.random.default_rng(0),
     )
 
     changes = np.flatnonzero(np.any(np.diff(schedule, axis=0) != 0.0, axis=1)) + 1
     runs = np.diff(np.concatenate([[0], changes, [len(schedule)]]))[:-1]
-    expected = [round(h / (dt * 1000.0)) for h in holds]
-    share = np.array([runs[runs == length].sum() for length in expected], dtype=np.float64)
-    np.testing.assert_allclose(share / share.sum(), 1.0 / len(expected), atol=0.05)
+    share = np.array([runs[runs == length].sum() for length in holds], dtype=np.float64)
+    np.testing.assert_allclose(share / share.sum(), 1.0 / len(holds), atol=0.05)
+
+
+def test_schedule_controller_from_config_with_holds() -> None:
+    """from_config validates holds and instantiates schedule matching dt."""
+    cfg = {
+        "dt": 0.02,
+        "input_type": "ras",
+        "duration": 1.0,
+        "n_u": 3,
+        "amp": 2.5,
+        "input_seed": 42,
+        "holds": [1, 2],
+    }
+    controller = ScheduleController.from_config(cfg)
+    assert controller.dt == 0.02
+    assert controller.n_u == 3
+    assert controller.schedule.shape == (50, 3)
 
 
 def _run_threshold_controller(

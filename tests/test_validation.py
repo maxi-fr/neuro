@@ -323,29 +323,29 @@ def test_undecimated_predictor_needs_no_filter(config: dict[str, Any], tmp_path:
         validate_simulation_config(config)
 
 
-def _excitation(hold_ms: list[float]) -> dict[str, Any]:
-    """A generating config whose excitation holds each amplitude for ``hold_ms``."""
+def _excitation(holds: list[int], dt: float = 0.01) -> dict[str, Any]:
+    """A generating config whose excitation holds each amplitude for integer multiples of ``dt``."""
     return {
         **_plant(),
         "controller": {
             "class_path": "neuro.control.schedule.ScheduleController",
-            "dt": _PLANT_DT,
+            "dt": dt,
             "input_type": "ras",
-            "hold_ms": hold_ms,
+            "holds": holds,
         },
     }
 
 
 def test_ragged_excitation_holds_warn(tmp_path: Path) -> None:
     """A hold shorter than the predictor's step switches the input off the grid it is strided on."""
-    (tmp_path / "exp.yaml").write_text(yaml.safe_dump({"experiments": [_excitation([10.0, 100.0])]}))
-    with pytest.warns(UserWarning, match=r"\[10\.0\] ms"):
+    (tmp_path / "exp.yaml").write_text(yaml.safe_dump({"experiments": [_excitation([1, 2], dt=0.01)]}))
+    with pytest.warns(UserWarning, match=r"\[1\]"):
         check_excitation_alignment(tmp_path, _DOWNSAMPLE)
 
 
 def test_aligned_excitation_holds_are_quiet(tmp_path: Path) -> None:
     """Holds that are whole multiples of the predictor's step raise nothing."""
-    (tmp_path / "exp.yaml").write_text(yaml.safe_dump({"experiments": [_excitation([20.0, 100.0])]}))
+    (tmp_path / "exp.yaml").write_text(yaml.safe_dump({"experiments": [_excitation([1, 2], dt=0.02)]}))
     with warnings.catch_warnings():
         warnings.simplefilter("error")
         check_excitation_alignment(tmp_path, _DOWNSAMPLE)
