@@ -71,11 +71,8 @@ all trials finish, so the run is not done when the last file appears.
   — but it would allow a real montage *search* rather than accepting the given three. It also
   emits **`leadfield_V`**, which `yu_dynamic` requires and the current NPZ lacks; that is probably
   the stronger reason to run it.
-- **The plant's `stimulation` default** is still `_NullConfig`, not `roast_3d`. `jansen_rit_baseline`,
-  `jansen_rit_seizure` and `experiment` omit a stimulation block and pair `ZeroController` with
-  `n_u: 1`; defaulting them to a 3-control model breaks them. "No stimulation block" therefore
-  still means no stimulation, and `roast_3d` is the default *model of record* — every config that
-  stimulates uses it. Flipping the plant default means fixing those three configs first.
+- **The plant's `stimulation` default** is `_Roast3DConfig` (the canonical 3-electrode montage
+  `[TP9, CP5, Ex8]` with `data/roast_field_projection_3d.npz`).
 - **Duty cycle.** The working threshold policy runs at 95 %, not the 20 % of the `analytical` era.
   That is inherent to a propagation block without lasting effects; implementing Yu §2.4 is what
   would change it.

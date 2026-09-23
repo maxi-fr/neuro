@@ -521,15 +521,15 @@ class JansenRitModel(DiscreteDynamics, InferencePredictor):
 
 def _build_stim_model(stimulation: dict[str, Any], conn: Connectome) -> StimulationModel:
     """Instantiate a StimulationModel from a config dict."""
-    model_kind = stimulation.get("model", "none")
-    if model_kind == "analytical":
+    model_kind = stimulation.get("model", "roast_3d")
+    if model_kind == "none":
+        stim_cfg = _NullConfig.model_validate(stimulation)
+    elif model_kind == "analytical":
         stim_cfg = _AnalyticalConfig.model_validate(stimulation)
-    elif model_kind == "roast_3d":
-        stim_cfg = _Roast3DConfig.model_validate(stimulation)
     elif model_kind == "yu_dynamic":
         stim_cfg = _DynamicYuConfig.model_validate(stimulation)
     else:
-        stim_cfg = _NullConfig.model_validate(stimulation)
+        stim_cfg = _Roast3DConfig.model_validate(stimulation)
     return build_stimulation(stim_cfg, conn)
 
 
@@ -561,6 +561,11 @@ def _resolve_model(  # noqa: PLR0913, PLR0917 -- model resolution parameters
             msg = "connectome must be provided when stimulation is given as a dict"
             raise ValueError(msg)
         stim: StimulationModel | None = _build_stim_model(stimulation, conn)
+    elif stimulation is None and conn is not None:
+        try:
+            stim = build_stimulation(_Roast3DConfig(), conn)
+        except (ValueError, FileNotFoundError, KeyError):
+            stim = None
     else:
         stim = stimulation
 

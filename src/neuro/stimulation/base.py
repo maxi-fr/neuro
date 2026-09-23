@@ -2,10 +2,10 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from pathlib import Path  # noqa: TC003  (pydantic resolves the schemas' annotations at runtime)
-from typing import TYPE_CHECKING, Annotated, Literal, Self
+from typing import TYPE_CHECKING, Annotated, Any, Literal, Self
 
 import numpy as np
-from pydantic import Field, model_validator
+from pydantic import Discriminator, Field, Tag, model_validator
 
 from neuro.config import StrictConfig
 
@@ -93,7 +93,17 @@ class _DynamicYuConfig(StrictConfig):
     scale_factor: float = Field(default=1.0, gt=0.0)
 
 
+def _stim_discriminator(v: Any) -> str:  # noqa: ANN401 -- pydantic discriminator receives raw input
+    """Extract model discriminator tag, defaulting to roast_3d when omitted."""
+    if isinstance(v, dict):
+        return str(v.get("model", "roast_3d"))
+    return str(getattr(v, "model", "roast_3d"))
+
+
 StimulationConfig = Annotated[
-    _NullConfig | _AnalyticalConfig | _Roast3DConfig | _DynamicYuConfig,
-    Field(discriminator="model"),
+    Annotated[_Roast3DConfig, Tag("roast_3d")]
+    | Annotated[_NullConfig, Tag("none")]
+    | Annotated[_AnalyticalConfig, Tag("analytical")]
+    | Annotated[_DynamicYuConfig, Tag("yu_dynamic")],
+    Discriminator(_stim_discriminator),
 ]

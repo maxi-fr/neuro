@@ -60,13 +60,21 @@ def test_config_rejects_mismatched_spread_list(connectome: Connectome) -> None:
         _build({"model": "analytical", "electrodes": ["CP5", "T7"], "spread": [1.0, 2.0, 3.0]}, connectome)
 
 
+def test_stimulation_config_defaults_to_roast_3d() -> None:
+    """Empty dict or omitted model in StimulationConfig defaults to canonical roast_3d montage."""
+    cfg = _STIM_ADAPTER.validate_python({})
+    assert cfg.model == "roast_3d"
+    assert str(cfg.field_projection_path) == "data/roast_field_projection_3d.npz"
+    assert cfg.electrodes == ["TP9", "CP5", "Ex8"]
+
+
 # --------------------------------------------------------------------------------------
 # none
 # --------------------------------------------------------------------------------------
 
 
 def test_null_stim_drives_nothing(connectome: Connectome) -> None:
-    """The default model keeps one control electrode whose drive is always zero."""
+    """The null model keeps one control electrode whose drive is always zero."""
     stim = _build({"model": "none"}, connectome)
     assert isinstance(stim, NullStim)
     assert stim.n_controls == 1
