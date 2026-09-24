@@ -821,6 +821,10 @@ def resolve_data_files(config: NNPredictorConfig, data_path_override: str | None
         raise ValueError(msg)
     data_files = sorted(str(p) for p in data_path.glob("*.npz"))
     if not data_files:
+        data_files = sorted(str(p) for p in data_path.glob("*/log.npz"))
+    if not data_files:
+        data_files = sorted(str(p) for p in data_path.rglob("*.npz"))
+    if not data_files:
         msg = f"No .npz data files found in: {data_path}"
         raise ValueError(msg)
     check_excitation_alignment(data_path, config.simulation.downsample)

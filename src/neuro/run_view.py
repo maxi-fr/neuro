@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import asdict, dataclass, field
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
@@ -9,11 +10,14 @@ import yaml
 
 from neuro.config import StftGeometry
 from neuro.eeg import build_eeg_leadfield
+from neuro.seizure import SEIZURE_PTP_MV, spread_profile_from_lfp
+from neuro.stimulation.base import select_rows
 
 if TYPE_CHECKING:
-    from pathlib import Path
-
     from neuro.types import FloatArray
+
+
+_NEAR_ZERO_THRESHOLD = 1e-6
 
 
 @dataclass(frozen=True)
@@ -119,6 +123,45 @@ class Run:
             return [str(label) for label in labels[: self.eeg()[1].shape[1]]]
         indices = {str(label): index for index, label in enumerate(labels)}
         return [str(labels[indices[label] if isinstance(label, str) else label]) for label in selected]
+
+    def electrode_labels(self) -> list[str]:
+        """Return electrode labels for stimulation channels."""
+        stim = self.config.get("dynamics", {}).get("stimulation", {})
+        path_str = stim.get("field_projection_path")
+        n_u = self.arrays["controller.u"].shape[-1] if "controller.u" in self.arrays else 0
+        if path_str is not None and n_u > 0:
+            path = Path(path_str)
+            if path.exists():
+                with np.load(path) as projection:
+                    labels = projection["channel_labels"]
+                wanted = stim.get("electrodes")
+                rows = select_rows(labels, wanted) if wanted else slice(None)
+                selected = [str(label) for label in labels[rows]]
+                if len(selected) == n_u:
+                    return selected
+        return [f"E{i}" for i in range(n_u)]
+
+    def metrics(self) -> dict[str, Any]:
+        """Compute key summary metrics for this closed-loop run."""
+        results: dict[str, Any] = {"Run": self.directory.name}
+        if "sensor_0.y_mea" in self.arrays or "sensor_0.eeg" in self.arrays:
+            _, y = self.eeg()
+            results["EEG Energy mean(y²)"] = round(float(np.mean(y**2)), 4)
+        if "controller.u" in self.arrays:
+            _, u = self.signal("controller", "u")
+            u_flat = u.reshape(u.shape[0], -1)
+            results["Control Energy Σu²"] = round(float(np.sum(u_flat**2)), 4)
+            results["Control L1 Σ|u|"] = round(float(np.sum(np.abs(u_flat))), 4)
+            results["Max |u|"] = round(float(np.max(np.abs(u_flat))), 4)
+            results["KCL Max |Σu|"] = f"{float(np.max(np.abs(u_flat.sum(axis=-1)))):.2e}"
+            near_zero = np.abs(u_flat) < _NEAR_ZERO_THRESHOLD
+            results["Mean Active Electrodes"] = round(float((~near_zero).sum(axis=1).mean()), 2)
+        if "dynamics.lfp" in self.arrays:
+            _, lfp_arr = self.signal("dynamics", "lfp")
+            dt = float(self.config.get("dynamics", {}).get("dt", 1e-4))
+            profile = spread_profile_from_lfp(lfp_arr.T, dt, threshold=SEIZURE_PTP_MV)
+            results["Seizure Burden mean s(t)"] = round(float(profile.burden()), 4)
+        return results
 
 
 def discover_runs(root: Path) -> list[Path]:
