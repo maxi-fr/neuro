@@ -27,13 +27,15 @@ def plant_fingerprint(config: Mapping[str, Any]) -> str:
 
 
 def _generating_config(data_dir: Path) -> dict[str, Any] | None:
-    """Get the config ``run_simulation`` copied in beside the trajectories, or ``None`` if unrecoverable.
-
-    In an ``experiments:`` batch the first entry carries the full config and the rest are seed-only
-    overrides, so the first entry is the run.
-    """
+    """Get the config ``run_simulation`` copied in beside the trajectories, or ``None`` if unrecoverable."""
     configs = sorted(data_dir.glob("*.yaml"))
-    if len(configs) != 1:
+    if not configs:
+        configs = sorted(data_dir.parent.glob("*.yaml"))
+    if not configs:
+        configs = sorted(data_dir.parent.parent.glob(f"{data_dir.parent.name}.yaml"))
+    if not configs:
+        configs = sorted(data_dir.glob("*/config.yaml"))
+    if not configs:
         return None
     raw = yaml.safe_load(configs[0].read_text())
     return raw["experiments"][0] if "experiments" in raw else raw

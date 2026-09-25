@@ -128,6 +128,14 @@ def _(Run, mo, mode, root, run_choice):
     return selected_names, selected_runs
 
 
+@app.cell(hide_code=True)
+def _(mo, selected_runs):
+    _rows = [run.metrics() for run in selected_runs]
+    _table = mo.ui.table(_rows, selection=None) if _rows else mo.md("")
+    mo.accordion({"📊 Run Metrics Summary": _table})
+    return
+
+
 @app.cell
 def _(mo, restored, root, selected_runs):
     replay_paths = {
@@ -208,7 +216,17 @@ def _(mo, restored, selected_runs):
         label="EEG channels",
     )
     output_channels = channel_picker("controller.predicted_y", restored.output_channels, "Predictor output indices")
-    electrodes = channel_picker("controller.u", restored.electrodes, "Stimulation electrodes")
+    _elec_labels = next((run.electrode_labels() for run in selected_runs if "controller.u" in run.arrays), [])
+    _elec_options = {label: index for index, label in enumerate(_elec_labels)}
+    electrodes = (
+        mo.ui.multiselect(
+            options=_elec_options,
+            value=[label for label, index in _elec_options.items() if index in restored.electrodes],
+            label="Stimulation electrodes",
+        )
+        if _elec_options
+        else channel_picker("controller.u", restored.electrodes, "Stimulation electrodes")
+    )
     regions = channel_picker("dynamics.lfp", restored.regions, "LFP regions (optional)")
     mo.hstack([eeg_channels, output_channels, electrodes, regions])
     return eeg_channels, electrodes, output_channels, regions
