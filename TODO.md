@@ -4,13 +4,11 @@
 
 * is the LOG_FLOOR really necessary?
 
-* Test cost functions with JR model as the MPC predictor!!!
-
 * add predictability of a number of seizing nodes to the predictability experiment
-* Electrode montage experiment
-  * use unsnooze
 
-* why in config.py is setdefault used? - shouldn't defaults be set in jansen_rit.py for example
+* try training waveform only on stft loss
+
+* figure out this roast field projection matrix thing
 
 ## Refactors
 
@@ -18,25 +16,12 @@
 
 ## Not urgent
 
-* MPC metric: solver iterations, pred error along horizon
-
 * EEG sensors shouldnt run at 10kHz, find realistic value (maybe just same as MPC)
 
 * investigate running controller slower than predictor model. Less decision variables but still prediction model with high resolution
   * Idea: dynamics faster than input can affect
 
 * reservoir computer w. hopf nodes
-
-### Efficiency
-
-* possible to remove torch.cat from AutoregressiveMLP.forward? for efficiency?
-  > in other branch: perf/predictor-rollout-optimization
-
-* Direct GPU Vectorized Slicing for `TrajectoryWindowDataset`:
-  * Prototype benchmarked in `scratch/benchmark_slicing.py`.
-  * Packs continuous standardized trajectories directly into GPU VRAM (`cuda:0`) and gathers mini-batches via strided tensor indexing without host-to-device transfers or Python item loops.
-  * Delivers 450k+ samples/s data throughput and an additional ~7–16% end-to-end training speedup.
-  * Trade-off: requires the continuous dataset to fit in GPU VRAM (takes ~334 MB for 800 trajectories of 8s, but scales with dataset duration/trials). Best suited for massive sweeps where dataset fits comfortably in VRAM.
 
 ## Other
 
@@ -48,8 +33,6 @@
 ## MPC package (trajopt)
 
 * make fully yaml configurable - also cost functions, constraints, etc.
-* compare to MPC implementation here
-* Add output function y = g(x). Would simplify cost fucntions etc.
 
 ## python-project-template
 

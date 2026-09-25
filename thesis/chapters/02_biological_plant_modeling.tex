@@ -1,7 +1,7 @@
 \chapter{Biological Plant Modeling}
 \label{ch:biological_plant_modeling}
 
-This chapter constructs the whole-brain biophysical simulation testbed that serves as the ground-truth plant throughout this work. Designing and evaluating closed-loop controllers requires a simulated environment capturing both internal nonlinear dynamics and physical input-output interfaces. To this end, the chapter merges neural mass modeling theory with the neuroanatomical and electrophysiological configuration of the testbed. It begins by defining local cortical dynamics and spatial coupling, followed by the assignment of epileptogenic and propagation regions. The chapter concludes by specifying the measurement and stimulation pipelines that form the boundaries of the control problem.
+This chapter constructs the whole-brain biophysical simulation model that serves as the ground-truth plant throughout this work. Designing and evaluating closed-loop controllers requires a simulated environment capturing both internal nonlinear dynamics and physical input-output interfaces. It begins by defining local neural mass dynamics and spatial coupling, followed by the assignment of epileptogenic and propagation regions. The chapter concludes by specifying the measurement and stimulation pipelines that form the boundaries of the control problem.
 
 \section{The Jansen-Rit Neural Mass Model}
 
@@ -12,13 +12,14 @@ They demonstrated that a single parameter set reproduces both resting alpha acti
 The Jansen-Rit model combines physiological interpretability with the capacity to produce the spike-wave waveforms characteristic of epileptic seizures~\cite{Wendling2002,Yu2024}. % cite-checked: SUPPORTED
 This distinguishes it from simpler two-state models that collapse synaptic filtering and fail to reproduce realistic seizure morphologies~\cite{David2003}. % cite-checked: SUPPORTED
 
-Each node $i$ comprises a population of \acp{py} that projects to, and receives feedback from, a population of \acp{ein} and a population of \acp{iin}, wired as shown in Figure~\ref{fig:microcircuit}. The excitatory branch forms a positive feedback loop and the inhibitory branch a negative one. The competition between the two produces the oscillations the model is built to explain. The strengths of the four intra-columnar projections are the average synaptic contact numbers $c_1$ to $c_4$, held at standard proportions $c_2 = 0.8\,c_1$ and $c_3 = c_4 = 0.25\,c_1$. Thus, a single parameter $c_1$ scales the entire microcircuit~\cite{Jansen1995}. % cite-checked: SUPPORTED
+Each node $i$ comprises a population of \acp{py} that projects to and % what is a node? This is not explained yet. Maybe we should state somewhere that we model the whole brain as a network of neural mass models - this should be in the introduction of this chapter
+receives feedback from, a population of \acp{ein} and a population of \acp{iin}, wired as shown in Figure~\ref{fig:microcircuit}. The excitatory branch forms a positive feedback loop and the inhibitory branch a negative one. The competition between the two produces the oscillations the model is built to explain. The strengths of the four intra-columnar projections are the average synaptic contact numbers $c_1$ to $c_4$, held at standard proportions $c_2 = 0.8\,c_1$ and $c_3 = c_4 = 0.25\,c_1$. Thus, a single parameter $c_1$ scales the entire microcircuit~\cite{Jansen1995}. % cite-checked: SUPPORTED
 
 \begin{figure}
     \centering
     % PLACEHOLDER -- see figures/03_foundations/PLACEHOLDER_jansen_rit_microcircuit.md
     \framebox[0.8\linewidth]{\rule{0pt}{5cm}\itshape Jansen-Rit microcircuit block diagram}
-    \caption{Block diagram of one Jansen-Rit node. The \ac{py} population excites the \acp{ein} through $c_1$ and the \acp{iin} through $c_3$, and receives excitatory feedback through $c_2$ and inhibitory feedback through $c_4$. Each population filters its incoming firing rate with the postsynaptic potential kernel $h_\mathrm{e}$ or $h_\mathrm{i}$ and converts the resulting potential back to a firing rate with the sigmoid $S$. The background input $I$, the network input $I_{\mathrm{coup},i}$ and the noise $\zeta_i$ enter the excitatory branch, the stimulation drive $s_i$ enters at the pyramidal soma, and the node output $y_{\mathrm{LFP},i} = x_{i,2} - x_{i,3}$ is tapped there.}
+    \caption{Block diagram of one Jansen-Rit node. The \ac{py} population excites the \acp{ein} through $c_1$ and the \acp{iin} through $c_3$ and receives excitatory feedback through $c_2$ and inhibitory feedback through $c_4$. Each population filters its incoming firing rate with the postsynaptic potential kernel $h_\mathrm{e}$ or $h_\mathrm{i}$ and converts the resulting potential back to a firing rate with the sigmoid $S$. The background input $I$, the network input $I_{\mathrm{coup},i}$ and the noise $\zeta_i$ enter the excitatory branch, the stimulation drive $s_i$ enters at the pyramidal soma and the node output $y_{\mathrm{LFP},i} = x_{i,2} - x_{i,3}$ is tapped there.}
     \label{fig:microcircuit}
 \end{figure}
 
@@ -30,16 +31,17 @@ Every population converts its input in two stages. The first is a linear pulse-t
     \label{eq:psp_kernel}
 \end{equation}
 %
-in which the synaptic gains $A$ and $B$ set the amplitude of the excitatory and inhibitory \ac{psp} in \si{\milli\volt}, and the rate constants $a$ and $b$ set the reciprocal lumped time constants of dendritic delay and membrane decay. The second stage is a static wave-to-pulse operator mapping the mean membrane potential $v$ of a population onto its mean firing rate through the sigmoid
+in which the synaptic gains $A$ and $B$ set the amplitude of the excitatory and inhibitory \ac{psp} in \si{\milli\volt} and the rate constants $a$ and $b$ set the reciprocal lumped time constants of dendritic delay and membrane decay. The second stage is a static wave-to-pulse operator mapping the mean membrane potential $v$ of a population onto its mean firing rate through the sigmoid
 %
 \begin{equation}
     S(v) = \frac{2 e_0}{1 + \exp\!\big(r (v_0 - v)\big)} \,,
     \label{eq:sigmoid}
 \end{equation}
 %
-whose ceiling $2 e_0$ in~\eqref{eq:sigmoid} is the maximum population firing rate, whose midpoint $v_0$ is the potential at which half the population fires, and whose steepness $r$ reflects the spread of firing thresholds across the cells of the population.
+whose ceiling $2 e_0$ in~\eqref{eq:sigmoid} is the maximum population firing rate, whose midpoint $v_0$ is the potential at which half the population fires and whose steepness $r$ reflects the spread of firing thresholds across the cells of the population.
 
-Because the kernel in~\eqref{eq:psp_kernel} is the Green's function of a second-order linear operator, the convolution can be written as a pair of first-order differential equations. The three populations together give the six states $x_{i,1}$ to $x_{i,6}$ per node. The potentials $x_{i,1}$, $x_{i,2}$ and $x_{i,3}$ are the \ac{psp} of the pyramidal, excitatory and inhibitory branches, and $x_{i,4}$, $x_{i,5}$ and $x_{i,6}$ are their respective time derivatives. The dynamics of node $i$ are therefore given by the state-space form
+Because the kernel in~\eqref{eq:psp_kernel} is the Green's function of a % maybe we can use a different word than kernel here because the term is used somewhere else as well. Unless it's the standard way in the literature
+second-order linear operator, the convolution can be written as a pair of first-order differential equations. Together the three populations give the six states $x_{i,1}$ to $x_{i,6}$ per node. The potentials $x_{i,1}$, $x_{i,2}$ and $x_{i,3}$ are the \ac{psp} of the pyramidal, excitatory and inhibitory branches and $x_{i,4}$, $x_{i,5}$ and $x_{i,6}$ are their respective time derivatives. The dynamics of node $i$ are therefore given by the state-space form
 %
 \begin{align}
     \dot{x}_{i,1} &= x_{i,4}, \nonumber \\
@@ -50,7 +52,10 @@ Because the kernel in~\eqref{eq:psp_kernel} is the Green's function of a second-
     \dot{x}_{i,6} &= B b\, c_4 S\!\left(c_3 x_{i,1}\right) - 2 b\, x_{i,6} - b^2 x_{i,3} \,, \nonumber
 \end{align}
 %
-where $I$ is the constant excitatory background input standing in for afferents the model does not resolve, $I_{\mathrm{coup},i}$ is the incoming firing rate from the rest of the network, and $s_i$ is the externally applied electrical stimulation drive. The term $\zeta_i$ is Gaussian white noise of intensity $\sigma$ entering the excitatory loop. This noise plays a fundamental role: for nodes situated near their bifurcation point, noise is the mechanism that randomly pushes the local dynamics from a quiescent attractor into an oscillating one. It therefore ensures that simulated seizures start at irregular times and that consecutive runs differ naturally~\cite{Yu2024}. % cite-checked: SUPPORTED
+where $I$ is the constant excitatory background input standing in for afferents the model does not resolve, $I_{\mathrm{coup},i}$ is the incoming firing rate from the rest of the network and $s_i$ is the % maybe "net drive" instead of "firing rate" since there is a coupling constant I_coup is not exactly the sum of the firing rates, no?
+externally applied electrical stimulation drive. The term $\zeta_i$ is Gaussian white noise of intensity $\sigma$ entering the excitatory loop. % "intensity"? no it should say "standard deviation" or variance sigma^2
+This noise plays a fundamental role: for nodes situated near their bifurcation point, noise is the mechanism that randomly pushes the local dynamics from a quiescent attractor into an oscillating one. It therefore % is quiescent necessary?
+ensures that simulated seizures start at irregular times and that consecutive runs differ naturally~\cite{Yu2024}. % cite-checked: SUPPORTED
 
 The quantity read out of a node is the net depolarisation of the pyramidal population,
 %
@@ -59,12 +64,13 @@ The quantity read out of a node is the net depolarisation of the pyramidal popul
     \label{eq:lfp}
 \end{equation}
 %
-which represents the difference between the excitatory and inhibitory \ac{psp} arriving at the pyramidal soma. This local signal serves as a proxy for the \ac{lfp} and forms the basis for the simulated extracellular field. Importantly, $y_{\mathrm{LFP},i}$ is also the argument of the pyramidal sigmoid in~\eqref{eq:jr_node}, meaning the output of a node and its own primary internal feedback are identically the same signal.
+which represents the difference between the excitatory and inhibitory \ac{psp} arriving at the pyramidal soma. This local signal serves as a proxy for the \ac{lfp} and forms the basis for the simulated extracellular field. Importantly, $y_{\mathrm{LFP},i}$ is also the argument of the pyramidal sigmoid in~\eqref{eq:jr_node}, meaning the output of a node and its own primary internal feedback are the same signal.
 
 \section{Regional Excitability and Seizure Onset}
 \label{sec:excitability}
 
-The excitatory synaptic gain $A_i$ determines the dynamic regime a node settles into, carrying a regional index while other parameters in~\eqref{eq:jr_node} remain globally shared. Increasing $A_i$ strengthens the excitatory loop relative to the inhibitory one. As $A_i$ rises, the node undergoes a Hopf bifurcation from a stable fixed point to a large-amplitude limit cycle characterized by spike-wave morphology.
+The excitatory synaptic gain $A_i$ determines the dynamic regime a node settles into, carrying a regional index while other parameters in~\eqref{eq:jr_node} remain globally shared. % why does it carry the index is not explained? Generally the first two sentences are quite unclear
+Increasing $A_i$ strengthens the excitatory loop relative to the inhibitory one. As $A_i$ rises, the node undergoes a Hopf bifurcation from a stable fixed point to a large-amplitude limit cycle characterized by spike-wave morphology.
 
 Following the excitability partition for whole-brain epilepsy models~\cite{Yu2024}, three distinct levels are configured. % cite-checked: SUPPORTED
 Healthy background tissue takes $A_i = 3.25\,\si{\milli\volt}$ and rests at the stable fixed point. The \ac{ez} takes $A_i = 3.6\,\si{\milli\volt}$ and oscillates autonomously, needing no external network input to spontaneously seize. Finally, the \ac{pz} takes an intermediate value of $A_i = 3.4\,\si{\milli\volt}$, leaving it just below its own bifurcation threshold but sufficiently excitable that coupling from an active \ac{ez} can readily recruit it into the seizure.
@@ -73,10 +79,10 @@ Healthy background tissue takes $A_i = 3.25\,\si{\milli\volt}$ and rests at the 
     \centering
     \includegraphics[width=0.9\linewidth]{figures/03_foundations/excitability_regimes}
     \caption{Jansen-Rit dynamics at the three excitability levels. Left, the local field potential $y_\mathrm{LFP}$ over \SI{4}{\second} of simulation following a \SI{4}{\second} transient; right, the corresponding Welch power spectral density, averaged over three segments of $2^{14}$ samples. Rows (a), (b) and (d) are uncoupled nodes: background tissue and the \ac{pz} both fluctuate around their fixed point at low amplitude, while the \ac{ez} has crossed into a large-amplitude spike-wave limit cycle with pronounced harmonics. Row (c) is the same \ac{pz} node embedded in the 76-region network alongside three \ac{ez} nodes, where coupling recruits it into an oscillation of \ac{ez}-like amplitude, the propagation the controller has to prevent. All runs use the parameters of Table~\ref{tab:jr_params} and the same noise seed.}
-    \label{fig:bifurcation}
+    \label{fig:bifurcation} % figure has to be cited before it is shown, no? - should be a linting rule?
 \end{figure}
 
-The specific anatomical assignment of these zones is modeled after classical mesial temporal lobe epilepsy, one of the most common and pharmacoresistant focal epilepsies in humans. The \ac{ez} is defined in the left hemisphere encompassing the hippocampus, parahippocampal cortex, and amygdala. These deeply situated limbic structures are highly interconnected and frequently serve as the initial generators of seizure activity. The immediate \ac{pz} is configured in the adjacent left inferior temporal cortex and left ventral temporal cortex. This partition reflects the typical clinical pattern where paroxysmal activity originates in mesial temporal structures before spreading outward to lateral temporal neocortex. Figure~\ref{fig:bifurcation} illustrates these three dynamical regimes, showing how the vulnerable \ac{pz} node fluctuates innocuously in isolation but is recruited into high-amplitude oscillations when coupled to the seizing \ac{ez}.
+The specific anatomical assignment of these zones is modeled after classical mesial temporal lobe epilepsy, one of the most common and pharmacoresistant focal epilepsies in humans. The \ac{ez} is defined in the left hemisphere encompassing the hippocampus, parahippocampal cortex and amygdala. These deeply situated limbic structures are highly interconnected and frequently serve as the initial generators of seizure activity. The immediate \ac{pz} is configured in the adjacent left inferior temporal cortex and left ventral temporal cortex. This partition reflects the typical clinical pattern where paroxysmal activity originates in mesial temporal structures before spreading outward to lateral temporal neocortex. Figure~\ref{fig:bifurcation} illustrates these three dynamical regimes, showing how the vulnerable \ac{pz} node fluctuates innocuously in isolation but is recruited into high-amplitude oscillations when coupled to the seizing \ac{ez}.
 
 \section{Connectome Coupling and Conduction Delays}
 \label{sec:connectome}
@@ -84,7 +90,7 @@ The specific anatomical assignment of these zones is modeled after classical mes
 Scaling from an isolated column to a whole-brain simulation involves specifying the topology and timing of inter-regional communication. The structural connectivity matrix $\mathbf{W} \in \mathbb{R}^{N \times N}$ dictates this architecture over the $N=76$ regions provided by the default cortical parcellation of The Virtual Brain (TVB)~\cite{SanzLeon2013}. % cite-checked: SUPPORTED
 The matrix entry $w_{ij}$ quantifies the density of connecting fibres between regions $i$ and $j$. Because diffusion-weighted tractography recovers fibre bundles without distinguishing their direction, the connectivity matrix is symmetric. A single global coupling factor $K$ scales the entire network to balance local and global dynamics.
 
-Because long-range cortico-cortical projections are carried by axons, the transmitted signal is a firing rate rather than a potential, and its arrival is delayed by finite conduction velocities. This delay is determined by the physical tract length $\ell_{ij}$ between regions and an assumed uniform conduction speed $c$, yielding the delay matrix $\mathbf{D} \in \mathbb{R}^{N \times N}$ with entries $d_{ij} = \ell_{ij} / c$. The delayed presynaptic firing from connected regions enters the excitatory \ac{psp} channel of the receiving node. Thus, the total incoming network coupling term in~\eqref{eq:jr_node} takes the form
+Because long-range cortico-cortical projections are carried by axons, the transmitted signal is a firing rate rather than a potential and its arrival is delayed by finite conduction velocities. This delay is determined by the physical tract length $\ell_{ij}$ between regions and an assumed uniform conduction speed $c$, yielding the delay matrix $\mathbf{D} \in \mathbb{R}^{N \times N}$ with entries $d_{ij} = \ell_{ij} / c$. The delayed presynaptic firing from connected regions enters the excitatory \ac{psp} channel of the receiving node. Thus, the total incoming network coupling term in~\eqref{eq:jr_node} takes the form
 %
 \begin{equation}
     I_{\mathrm{coup},i}(t) = K \sum_{j=1}^{N} w_{ij}\, S\!\big(y_{\mathrm{LFP},j}(t - d_{ij})\big) \,.
@@ -124,11 +130,11 @@ Collecting the electrode currents in $\mathbf{u} \in \mathbb{R}^{P}$, the region
     \label{eq:regional_stimulation_projection}
 \end{equation}
 %
-where $\mathbf{E}_{p,i}$ in~\eqref{eq:regional_stimulation_projection} is the basis electric field generated at the centroid of region $i$ by a \SI{1}{\milli\ampere} current applied at electrode $p$, and $\mathbf{n}_i$ is the region's outward cortical normal. The parameter $\lambda_\mathrm{p} = \SI{0.35}{\milli\metre}$ is the assumed somatic polarisation length, selected from the physiological range for deep-layer pyramidal cells~\cite{Radman2009}. % cite-checked: SUPPORTED
+where $\mathbf{E}_{p,i}$ in~\eqref{eq:regional_stimulation_projection} is the basis electric field generated at the centroid of region $i$ by a \SI{1}{\milli\ampere} current applied at electrode $p$ and $\mathbf{n}_i$ is the region's outward cortical normal. The parameter $\lambda_\mathrm{p} = \SI{0.35}{\milli\metre}$ is the assumed somatic polarisation length, selected from the physiological range for deep-layer pyramidal cells~\cite{Radman2009}. % cite-checked: SUPPORTED
 The resulting drive $s_i$ has units of millivolts. All control interventions are strictly bound by per-electrode safety limits $|u_p| \leq \SI{2}{\milli\ampere}$ and must obey Kirchhoff's current law, $\sum_{p=1}^{P}u_p = 0$, ensuring no net charge accumulates in the tissue.
 
 Helmholtz reciprocity dictates that the lead field relating a neural source to a pair of scalp electrodes is structurally identical to the field that the same electrode pair produces in the brain when driven by unit current~\cite[ch.~11]{Malmivuo1995}. % cite-checked: SUPPORTED
-Under ideal geometric conditions, $\mathbf{L}_\mathrm{EEG}^\mathsf{T}$ and the stimulation projection matrix would be proportional. In this practical setup, however, they are derived differently: Ex8 is absent from the 62-channel measurement montage, and the ROAST forward model samples the electric field volumetrically along specific normals rather than integrating dipolar sources over surface patches. Thus, the measurement and stimulation maps remain mathematically distinct operators in the loop.
+Under ideal geometric conditions, $\mathbf{L}_\mathrm{EEG}^\mathsf{T}$ and the stimulation projection matrix would be proportional. In this practical setup, however, they are derived differently: Ex8 is absent from the 62-channel measurement montage and the ROAST forward model samples the electric field volumetrically along specific normals rather than integrating dipolar sources over surface patches. Thus, the measurement and stimulation maps remain mathematically distinct operators in the loop.
 
 \section{Signal Conditioning}
 
@@ -167,4 +173,4 @@ The global coupling factor $K$ and the internal noise intensity $\sigma$ uniquel
     \end{tabular}
 \end{table}
 
-The physical plant and its interfaces are now fully specified. The remaining challenge involves designing a controller capable of regulating this massive, $6N$-dimensional delayed stochastic system by observing only $M$ linear surface mixtures and acting entirely through $P$ localized scalp currents. Chapter~\ref{ch:data_driven_predictor_design} develops the data-driven identification tools and spectral estimates that turn these raw traces into actionable predictions, and Chapter~\ref{ch:mpc_framework} formulates the control policies that leverage them.
+The physical plant and its interfaces are now fully specified. The remaining challenge involves designing a controller capable of regulating this massive, $6N$-dimensional delayed stochastic system by observing only $M$ linear surface mixtures and acting entirely through $P$ localized scalp currents. Chapter~\ref{ch:data_driven_predictor_design} develops the data-driven identification tools and spectral estimates that turn these raw traces into actionable predictions and Chapter~\ref{ch:mpc_framework} formulates the control policies that leverage them.
