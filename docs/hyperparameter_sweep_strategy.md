@@ -4,6 +4,8 @@ This document lists the hyperparameter sweep experiments for surrogate Predictor
 
 Training and offline evaluation horizons are at most $1.0\,\text{s}$. The MPC Control Horizon is fixed at $1.0\,\text{s}$ through experiment 2.3; experiment 2.4 may test longer lookahead. The Waveform curriculum MSE span is at most $0.25\,\text{s}$; a spectral loss may score the remainder of the $1.0\,\text{s}$ training rollout. The $700*$ Plant seeds are reserved for closed-loop evaluation and are distinct from training-data generation seeds. Historical champion configs are references, not baselines for this new sweep.
 
+Since training happens mostly on GPU and closed-loop runs mostly on CPU experiments can be pipelined. Once a predictors Tier 1 experiment is done it's Tier 2 experiments can already start while other predictors are training. This has to be carefully managed as to not exhaust the computers resources.
+
 ## Baseline and calibration before the sweeps
 
 Freeze one explicit baseline per Predictor family before varying its hyperparameters. These are starting values for the new code and data, not claims that the historical champions remain optimal:
