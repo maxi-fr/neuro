@@ -10,18 +10,22 @@ import pytest
 import torch
 from trajopt.transcription.ipopt import Ipopt
 
+from neuro.config import StftGeometry
 from neuro.control.casadi import (
     CasADiMPCController,
     CasADiMPCLog,
     CasADiWaveformProblem,
+    _compute_casadi_observable_frames,
     _output_casadi,
     _step_casadi,
     build_casadi_waveform_problem,
+    decompose_casadi_cost,
 )
-from neuro.control.mpc import TrajOptMPCController, build_waveform_problem
+from neuro.control.costs import jax_compute_observable_frames
+from neuro.control.mpc import TrajOptMPCController, build_waveform_problem, decompose_cost
 from neuro.predictor.inference import WaveformMLPModel
 from neuro.predictor.module import AutoregressiveMLP
-from neuro.spectral import HealthyReference
+from neuro.spectral import HealthyReference, ObservableEnvelope
 from neuro.transforms import Standardizer
 from neuro.validation import validate_simulation_config
 
@@ -78,6 +82,7 @@ def _build_checkpoint(
     depth: int = 2,
     activation: Activation = "relu",
     residual: bool = True,
+    dt: float = 0.01,
 ) -> Path:
     rng = np.random.default_rng(_SEED)
     in_size = n_y * n_channels + n_u * n_controls
@@ -98,7 +103,7 @@ def _build_checkpoint(
         depth=depth,
         activation=activation,
         residual=residual,
-        dt=0.01,
+        dt=dt,
         y_std=Standardizer(center=scalers["y_mean"], scale=scalers["y_scale"]),
         u_std=Standardizer(center=scalers["u_mean"], scale=scalers["u_scale"]),
     )
@@ -341,3 +346,217 @@ def test_reproduces_mpc_controller_golden_parity(tmp_path: Path) -> None:
 
     np.testing.assert_allclose(controls, _WAVEFORM_PARITY_CONTROLS, atol=1e-4)
     np.testing.assert_allclose(costs, _WAVEFORM_PARITY_COSTS, atol=1e-4)
+
+
+def _write_reference(tmp_path: Path, geom: StftGeometry, n_channels: int = 2, fs: float = 100.0) -> Path:
+    n_values = geom.n_values(fs)
+    ref_path = tmp_path / "healthy_ref.npz"
+    np.savez_compressed(
+        ref_path,
+        eeg_mean=np.zeros(n_channels),
+        Pref_frames=np.full((n_channels, n_values), -2.0),
+        fs=fs,
+        n_segment=geom.n_segment,
+        n_hop=geom.n_hop,
+        band_hz=np.asarray(geom.band_hz if geom.band_hz is not None else [-1.0, -1.0]),
+        n_bin_pool=geom.n_bin_pool,
+        kernel=geom.kernel,
+        kernel_width=geom.kernel_width,
+    )
+    return ref_path
+
+
+def test_configuration_constructs_controller_with_all_costs(tmp_path: Path) -> None:
+    """Configuration constructs the continuous CasADi controller with all Cost options."""
+    geom = StftGeometry(n_segment=20, n_hop=5, kernel="hann", kernel_width=2)
+    fs = 100.0
+    dt = 1.0 / fs
+    artifact = _build_checkpoint(tmp_path, depth=1, horizon=25, dt=dt)
+    ref_path = _write_reference(tmp_path, geom, n_channels=2, fs=fs)
+
+    config = {
+        "controller": {
+            "class_path": "neuro.control.casadi.CasADiMPCController",
+            "dt": dt,
+            "problem": {
+                "class_path": "neuro.control.casadi.build_casadi_waveform_problem",
+                "artifact": str(artifact),
+                "horizon": 25,
+                "u_max": 0.5,
+                "w_y": 1.2,
+                "w_y_terminal": 2.5,
+                "w_u": 0.1,
+                "w_u_l1": 0.3,
+                "w_hinge": 1.5,
+                "reference": str(ref_path),
+                "kirchhoff": True,
+            },
+        }
+    }
+
+    controller = CasADiMPCController.from_config(config["controller"])
+    assert isinstance(controller, CasADiMPCController)
+    assert controller.horizon == 25
+    assert controller.problem.w_y == 1.2
+    assert controller.problem.w_y_terminal == 2.5
+    assert controller.problem.w_u == 0.1
+    assert controller.problem.w_u_l1 == 0.3
+    assert controller.problem.w_hinge == 1.5
+    assert controller.problem.envelope is not None
+    support = geom.sample_support_steps(fs)
+    assert controller.model.n_history >= support
+
+    sim_config = {
+        "dynamics": {"class_path": "neuro.jansen_rit.JansenRitDynamics", "dt": dt},
+        "estimator": {"class_path": "neuro.filtering.PassThroughEstimator", "dt": dt},
+        "sensors": {"class_path": "simulate.sensor.GaussianSensor", "dt": dt},
+        "controller": config["controller"],
+    }
+    validate_simulation_config(sim_config)
+
+
+@pytest.mark.parametrize(
+    ("w_y", "w_y_terminal", "w_u", "w_u_l1", "w_hinge"),
+    [
+        (1.5, 3.5, 0.0, 0.0, 0.0),
+        (0.0, 0.0, 0.8, 0.0, 0.0),
+        (0.0, 0.0, 0.0, 1.2, 0.0),
+        (0.0, 0.0, 0.0, 0.0, 2.5),
+        (1.2, 2.8, 0.4, 0.7, 1.8),
+    ],
+)
+def test_casadi_and_trajopt_agree_on_every_cost_contribution(
+    tmp_path: Path,
+    w_y: float,
+    w_y_terminal: float,
+    w_u: float,
+    w_u_l1: float,
+    w_hinge: float,
+) -> None:
+    """CasADi and trajopt decompose_cost agree on every Cost contribution and total Cost."""
+    geom = StftGeometry(n_segment=15, n_hop=5, kernel="hann", kernel_width=2)
+    fs = 100.0
+    dt = 1.0 / fs
+    horizon = 6
+    artifact = _build_checkpoint(tmp_path, depth=1, horizon=horizon, dt=dt)
+    ref_path = _write_reference(tmp_path, geom, n_channels=2, fs=fs)
+    ref = HealthyReference.load(ref_path)
+
+    prob_trajopt = build_waveform_problem(
+        artifact,
+        horizon=horizon,
+        u_max=0.8,
+        w_y=w_y,
+        w_y_terminal=w_y_terminal,
+        w_u=w_u,
+        w_u_l1=w_u_l1,
+        w_hinge=w_hinge,
+        reference=ref,
+        kirchhoff=True,
+    )
+    prob_casadi = build_casadi_waveform_problem(
+        artifact,
+        horizon=horizon,
+        u_max=0.8,
+        w_y=w_y,
+        w_y_terminal=w_y_terminal,
+        w_u=w_u,
+        w_u_l1=w_u_l1,
+        w_hinge=w_hinge,
+        reference=ref,
+        kirchhoff=True,
+    )
+
+    model = prob_trajopt.model
+    rng = np.random.default_rng(_SEED + 10)
+    x0 = rng.standard_normal(model.n)
+    u_seq = rng.uniform(-0.5, 0.5, (horizon, model.m))
+
+    states = [x0]
+    curr_x = x0
+    for k in range(horizon):
+        curr_x = np.asarray(model.discrete_dynamics(jnp.asarray(curr_x), jnp.asarray(u_seq[k]), 0.0, dt))
+        states.append(curr_x)
+    states_jax = jnp.asarray(np.array(states))
+
+    decomp_trajopt = decompose_cost(prob_trajopt, states_jax, jnp.asarray(u_seq), dt=dt)
+    decomp_casadi = decompose_casadi_cost(prob_casadi, x0, u_seq)
+
+    np.testing.assert_allclose(decomp_casadi["cost_tracking"], decomp_trajopt["cost_tracking"], rtol=1e-10, atol=1e-10)
+    np.testing.assert_allclose(
+        decomp_casadi["cost_quadratic_effort"], decomp_trajopt["cost_quadratic_effort"], rtol=1e-10, atol=1e-10
+    )
+    np.testing.assert_allclose(
+        decomp_casadi["cost_sparse_effort"], decomp_trajopt["cost_sparse_effort"], rtol=1e-10, atol=1e-10
+    )
+    np.testing.assert_allclose(decomp_casadi["cost_spectral"], decomp_trajopt["cost_spectral"], rtol=1e-10, atol=1e-10)
+    np.testing.assert_allclose(decomp_casadi["cost_total"], decomp_trajopt["cost_total"], rtol=1e-10, atol=1e-10)
+
+
+def test_spectral_cost_preserves_frame_geometry_and_history(tmp_path: Path) -> None:
+    """Spectral Observable Frame computation in CasADi preserves Frame geometry, pooling, and history."""
+    fs = 100.0
+    geometries = [
+        StftGeometry(n_segment=20, n_hop=5, kernel_width=1, n_bin_pool=1),
+        StftGeometry(n_segment=20, n_hop=5, kernel="hann", kernel_width=3, n_bin_pool=2),
+        StftGeometry(n_segment=16, n_hop=8, kernel="triangular", kernel_width=2, n_bin_pool=1),
+    ]
+
+    for geom in geometries:
+        rng = np.random.default_rng(_SEED + 20)
+        support = geom.sample_support_steps(fs)
+        horizon = 10
+        total_samples = support - 1 + horizon + 1
+        y = rng.standard_normal((total_samples, 2))
+
+        jax_frames = np.asarray(jax_compute_observable_frames(jnp.asarray(y), geom, fs=fs))
+        y_sx_list = [ca.SX(y[i : i + 1, :].T) for i in range(total_samples)]
+        ca_frames = _compute_casadi_observable_frames(y_sx_list, geom, fs=fs)
+        assert len(ca_frames) == len(jax_frames)
+        for i, f_sx in enumerate(ca_frames):
+            f_val = np.asarray(ca.Function(f"f_{i}", [], [f_sx])()["o0"])
+            np.testing.assert_allclose(f_val, jax_frames[i], rtol=1e-10, atol=1e-12)
+
+
+def test_configured_controller_with_all_costs_returns_feasible_currents_and_decomposed_log(tmp_path: Path) -> None:
+    """Configured controller with all Costs returns bounded, balanced currents and decomposed log."""
+    geom = StftGeometry(n_segment=15, n_hop=5, kernel="hann", kernel_width=2)
+    fs = 100.0
+    dt = 1.0 / fs
+    horizon = 5
+    artifact = _build_checkpoint(tmp_path, depth=0, horizon=horizon, dt=dt)
+    ref_path = _write_reference(tmp_path, geom, n_channels=2, fs=fs)
+    ref = HealthyReference.load(ref_path)
+
+    u_max = 0.6
+    prob_casadi = build_casadi_waveform_problem(
+        artifact,
+        horizon=horizon,
+        u_max=u_max,
+        w_y=1.0,
+        w_y_terminal=2.5,
+        w_u=0.1,
+        w_u_l1=0.2,
+        w_hinge=1.5,
+        reference=ref,
+        kirchhoff=True,
+    )
+    controller = CasADiMPCController(dt=dt, problem=prob_casadi)
+
+    rng = np.random.default_rng(_SEED + 30)
+    for k in range(10):
+        meas = rng.standard_normal(2)
+        u, log = controller.update(k * dt, ref=np.zeros(2), x_hat=meas)
+        if not log.warmup:
+            assert log.success
+            assert np.all(np.abs(u) <= u_max + 1e-6)
+            assert np.sum(u) == pytest.approx(0.0, abs=1e-6)
+            assert np.all(np.abs(log.planned_u) <= u_max + 1e-6)
+            np.testing.assert_allclose(np.sum(log.planned_u, axis=1), 0.0, atol=1e-6)
+
+            assert log.cost_tracking >= 0.0
+            assert log.cost_quadratic_effort >= 0.0
+            assert log.cost_sparse_effort >= 0.0
+            assert log.cost_spectral >= 0.0
+            expected_tot = log.cost_tracking + log.cost_quadratic_effort + log.cost_sparse_effort + log.cost_spectral
+            assert log.cost == pytest.approx(expected_tot, rel=1e-5)
