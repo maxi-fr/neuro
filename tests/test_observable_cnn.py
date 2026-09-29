@@ -29,7 +29,7 @@ if TYPE_CHECKING:
 
 
 def _model(
-    *, n_values: int = 4, residual: bool = True, n_y: int = 3, activation: Activation = "relu"
+    *, n_values: int = 4, residual: bool = True, n_y: int = 3, n_controls: int = 1, activation: Activation = "relu"
 ) -> AutoregressiveCNN:
     """Build a small structured CNN with nontrivial channel-frequency standardizers."""
     rng = np.random.default_rng(27 + n_values)
@@ -40,7 +40,7 @@ def _model(
         n_u=2,
         horizon=3,
         n_channels=2,
-        n_controls=1,
+        n_controls=n_controls,
         n_outputs=2 * n_values,
         hidden_size=4,
         depth=2,
@@ -51,7 +51,7 @@ def _model(
         dt=0.04,
         geometry=geometry,
         y_std=Standardizer(center=rng.normal(size=(2, n_values)), scale=rng.uniform(0.5, 2.0, (2, n_values))),
-        u_std=Standardizer(center=np.array([0.4]), scale=np.array([1.7])),
+        u_std=Standardizer(center=np.full(n_controls, 0.4), scale=np.full(n_controls, 1.7)),
     )
     with torch.no_grad():
         for parameter in model.parameters():

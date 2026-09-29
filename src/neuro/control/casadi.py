@@ -12,6 +12,7 @@ from simulate.controller import Controller
 
 from neuro.predictor.inference import (
     InferencePredictor,
+    ObservableCNNModel,
     ObservableMLPModel,
     WaveformMLPModel,
 )
@@ -62,7 +63,7 @@ class CasADiWaveformProblem:
 class CasADiObservableProblem:
     """Continuous Observable Frame optimal control problem definition for CasADi."""
 
-    model: ObservableMLPModel
+    model: ObservableMLPModel | ObservableCNNModel
     horizon: int
     u_max: FloatArray
     w_u: float
@@ -104,25 +105,89 @@ def _mlp_forward_ca(
     """Evaluate an MLP forward pass symbolically."""
     for w, b in zip(weights[:-1], biases[:-1], strict=True):
         z = ca.mtimes(ca.SX(np.asarray(w, dtype=np.float64)), x) + ca.SX(np.asarray(b, dtype=np.float64).reshape(-1, 1))
-        if activation == "relu":
-            x = ca.fmax(z, 0.0)
-        elif activation == "tanh":
-            x = ca.tanh(z)
-        elif activation == "softplus":
-            m = ca.fmax(z, 0.0)
-            x = m + ca.log(ca.exp(-m) + ca.exp(z - m))
-        else:
-            msg = f"unsupported activation: {activation}"
-            raise ValueError(msg)
+        x = _activation_ca(z, activation)
     w_last = np.asarray(weights[-1], dtype=np.float64)
     b_last = np.asarray(biases[-1], dtype=np.float64).reshape(-1, 1)
     return ca.mtimes(ca.SX(w_last), x) + ca.SX(b_last)
 
 
+def _activation_ca(z: ca.SX, activation: Activation) -> ca.SX:
+    """Apply the Predictor activation, using stable shifted log-sum-exp for softplus."""
+    if activation == "relu":
+        return ca.fmax(z, 0.0)
+    if activation == "tanh":
+        return ca.tanh(z)
+    if activation == "softplus":
+        m = ca.fmax(z, 0.0)
+        return m + ca.log(ca.exp(-m) + ca.exp(z - m))
+    msg = f"unsupported activation: {activation}"
+    raise ValueError(msg)
+
+
+def _cnn_convolution_ca(inputs: list[ca.SX], weight: FloatArray, bias: FloatArray) -> list[ca.SX]:
+    """Apply one causal time-frequency correlation with zero padding and unit stride."""
+    n_time, n_values = inputs[0].shape
+    outputs: list[ca.SX] = []
+    for output_channel in range(weight.shape[0]):
+        kernel_time, kernel_frequency = weight.shape[2:]
+        frequency_left = (kernel_frequency - 1) // 2
+        rows: list[ca.SX] = []
+        for t in range(n_time):
+            cells: list[ca.SX] = []
+            for frequency in range(n_values):
+                value = ca.SX(float(bias[output_channel]))
+                for input_channel, input_matrix in enumerate(inputs):
+                    for kt in range(kernel_time):
+                        source_time = t + kt - kernel_time + 1
+                        if source_time < 0:
+                            continue
+                        for kf in range(kernel_frequency):
+                            source_frequency = frequency + kf - frequency_left
+                            if 0 <= source_frequency < n_values:
+                                value += (
+                                    float(weight[output_channel, input_channel, kt, kf])
+                                    * input_matrix[source_time, source_frequency]
+                                )
+                cells.append(value)
+            rows.append(ca.horzcat(*cells))
+        outputs.append(ca.vertcat(*rows))
+    return outputs
+
+
+def _observable_cnn_forward_ca(y_window: ca.SX, u_window: ca.SX, model: ObservableCNNModel) -> ca.SX:
+    """Evaluate causal time-frequency CNN convolutions and dense Control Current head."""
+    n_time = model.n_y
+    n_values = model.n_values
+    n_outputs = model.n_outputs
+    start = (model.n_history - n_time) * n_outputs
+    inputs = [
+        ca.vertcat(
+            *[
+                ca.horzcat(
+                    *[y_window[start + t * n_outputs + channel * n_values + frequency] for frequency in range(n_values)]
+                )
+                for t in range(n_time)
+            ]
+        )
+        for channel in range(model.n_channels)
+    ]
+    for layer, (weight, bias) in enumerate(zip(model.conv_weights, model.conv_biases, strict=True)):
+        inputs = _cnn_convolution_ca(inputs, np.asarray(weight, dtype=np.float64), np.asarray(bias, dtype=np.float64))
+        if layer < len(model.conv_weights) - 1:
+            inputs = [_activation_ca(matrix, model.activation) for matrix in inputs]
+    features = ca.vertcat(*[matrix[n_time - 1, frequency] for matrix in inputs for frequency in range(n_values)])
+    return _mlp_forward_ca(
+        ca.vertcat(features, u_window),
+        tuple(np.asarray(weight, dtype=np.float64) for weight in model.head_weights),
+        tuple(np.asarray(bias, dtype=np.float64) for bias in model.head_biases),
+        model.activation,
+    )
+
+
 def _step_casadi(
     x: ca.SX,
     u: ca.SX,
-    model: WaveformMLPModel | ObservableMLPModel,
+    model: WaveformMLPModel | ObservableMLPModel | ObservableCNNModel,
 ) -> tuple[ca.SX, ca.SX]:
     """Advance one step in the CasADi graph: return (x_next, y_next_physical)."""
     n_history = model.n_history
@@ -140,15 +205,16 @@ def _step_casadi(
     u_scale_tiled = np.tile(np.asarray(model.u_scale, dtype=np.float64), n_u).reshape(-1, 1)
     u_std = (u_window - ca.SX(u_center_tiled)) / ca.SX(u_scale_tiled)
 
-    y_mlp_in = y_window[(n_history - n_y) * n_outputs :]
-    mlp_in = ca.vertcat(y_mlp_in, u_std)
-
-    z = _mlp_forward_ca(
-        mlp_in,
-        tuple(np.asarray(w, dtype=np.float64) for w in model.weights),
-        tuple(np.asarray(b, dtype=np.float64) for b in model.biases),
-        model.activation,
-    )
+    if isinstance(model, ObservableCNNModel):
+        z = _observable_cnn_forward_ca(y_window, u_std, model)
+    else:
+        y_mlp_in = y_window[(n_history - n_y) * n_outputs :]
+        z = _mlp_forward_ca(
+            ca.vertcat(y_mlp_in, u_std),
+            tuple(np.asarray(w, dtype=np.float64) for w in model.weights),
+            tuple(np.asarray(b, dtype=np.float64) for b in model.biases),
+            model.activation,
+        )
     if model.residual:
         y_last = y_window[(n_history - 1) * n_outputs :]
         z_next = z + y_last
@@ -165,7 +231,7 @@ def _step_casadi(
     return next_x, y_out
 
 
-def _output_casadi(x: ca.SX, model: WaveformMLPModel | ObservableMLPModel) -> ca.SX:
+def _output_casadi(x: ca.SX, model: WaveformMLPModel | ObservableMLPModel | ObservableCNNModel) -> ca.SX:
     """Evaluate physical output for a state in the CasADi graph."""
     n_history = model.n_history
     n_outputs = model.n_outputs
@@ -226,7 +292,7 @@ def build_casadi_waveform_problem(  # noqa: PLR0913 -- checkpoint plus the MPC c
 
 
 def build_casadi_observable_problem(  # noqa: PLR0913 -- checkpoint plus the MPC cost/bound knobs
-    artifact: str | Path | ObservableMLPModel,
+    artifact: str | Path | ObservableMLPModel | ObservableCNNModel,
     *,
     horizon: int,
     u_max: ArrayLike,
@@ -237,10 +303,14 @@ def build_casadi_observable_problem(  # noqa: PLR0913 -- checkpoint plus the MPC
     kirchhoff: bool = True,
     solver_options: dict[str, Any] | None = None,
 ) -> CasADiObservableProblem:
-    """Assemble an Observable MLP problem with Frame hinge and smooth current effort."""
-    base = artifact if isinstance(artifact, ObservableMLPModel) else InferencePredictor.load(artifact)
-    if not isinstance(base, ObservableMLPModel):
-        msg = f"Observable MLP checkpoint required, got {type(base).__name__}"
+    """Assemble an Observable MLP or CNN problem with Frame hinge and smooth current effort."""
+    base = (
+        artifact
+        if isinstance(artifact, (ObservableMLPModel, ObservableCNNModel))
+        else InferencePredictor.load(artifact)
+    )
+    if not isinstance(base, (ObservableMLPModel, ObservableCNNModel)):
+        msg = f"Observable MLP or CNN checkpoint required, got {type(base).__name__}"
         raise TypeError(msg)
     ref = HealthyReference.load(reference) if isinstance(reference, (str, Path)) else reference
     if w_hinge > 0 and (ref is None or ref.observable is None):
@@ -269,14 +339,14 @@ def build_casadi_observable_problem(  # noqa: PLR0913 -- checkpoint plus the MPC
 
 
 class CasADiMPCController(Controller[CasADiMPCLog]):
-    """Receding-horizon continuous MPC for waveform or Observable MLP Predictors."""
+    """Receding-horizon continuous MPC for waveform MLP and Observable MLP or CNN Predictors."""
 
     def __init__(
         self,
         dt: float,
         problem: CasADiWaveformProblem | CasADiObservableProblem,
     ) -> None:
-        """Initialize the CasADi continuous MLP controller."""
+        """Initialize the CasADi continuous Predictor controller."""
         super().__init__(dt)
         self.problem = problem
         self.model = problem.model
