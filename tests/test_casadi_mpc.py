@@ -18,12 +18,13 @@ from neuro.control.casadi import (
     _compute_casadi_observable_frames,
     _output_casadi,
     _step_casadi,
+    build_casadi_observable_problem,
     build_casadi_waveform_problem,
     decompose_casadi_cost,
 )
-from neuro.control.costs import jax_compute_observable_frames
+from neuro.control.costs import ObservableHingeCost, jax_compute_observable_frames
 from neuro.control.mpc import TrajOptMPCController, build_waveform_problem, decompose_cost
-from neuro.predictor.inference import WaveformMLPModel
+from neuro.predictor.inference import ObservableMLPModel, WaveformMLPModel
 from neuro.predictor.module import AutoregressiveMLP
 from neuro.spectral import HealthyReference, ObservableEnvelope
 from neuro.transforms import Standardizer
@@ -142,6 +143,7 @@ def test_configuration_constructs_continuous_controller(tmp_path: Path) -> None:
 
     controller = CasADiMPCController.from_config(config["controller"])
     assert isinstance(controller, CasADiMPCController)
+    assert isinstance(controller.problem, CasADiWaveformProblem)
     assert controller.horizon == 3
     assert controller.n_controls == 2
     assert controller.problem.w_y == 1.5
@@ -396,6 +398,7 @@ def test_configuration_constructs_controller_with_all_costs(tmp_path: Path) -> N
 
     controller = CasADiMPCController.from_config(config["controller"])
     assert isinstance(controller, CasADiMPCController)
+    assert isinstance(controller.problem, CasADiWaveformProblem)
     assert controller.horizon == 25
     assert controller.problem.w_y == 1.2
     assert controller.problem.w_y_terminal == 2.5
@@ -560,3 +563,129 @@ def test_configured_controller_with_all_costs_returns_feasible_currents_and_deco
             assert log.cost_spectral >= 0.0
             expected_tot = log.cost_tracking + log.cost_quadratic_effort + log.cost_sparse_effort + log.cost_spectral
             assert log.cost == pytest.approx(expected_tot, rel=1e-5)
+
+
+def _observable_fixture(tmp_path: Path) -> tuple[Path, HealthyReference]:
+    """Save a small Observable MLP and a matching healthy Frame envelope."""
+    rng = np.random.default_rng(19)
+    geometry = StftGeometry(n_segment=20, n_hop=5, band_hz=(4.0, 16.0), n_bin_pool=2)
+    n_values = geometry.n_values(50.0)
+    n_outputs = 2 * n_values
+    model = AutoregressiveMLP(
+        n_y=2,
+        n_u=2,
+        horizon=3,
+        n_channels=2,
+        n_controls=2,
+        n_outputs=n_outputs,
+        hidden_size=4,
+        depth=1,
+        activation="softplus",
+        residual=True,
+        dt=0.1,
+        geometry=geometry,
+        y_std=Standardizer(center=rng.normal(size=n_outputs), scale=rng.uniform(0.5, 2.0, n_outputs)),
+        u_std=Standardizer(center=rng.normal(size=2), scale=rng.uniform(0.5, 2.0, 2)),
+    )
+    linears = [layer for layer in model.layers if isinstance(layer, torch.nn.Linear)]
+    for linear, (weight, bias) in zip(linears, _random_layers(rng, [2 * n_outputs + 4, 4, n_outputs]), strict=True):
+        with torch.no_grad():
+            linear.weight.copy_(torch.as_tensor(weight, dtype=torch.float32))
+            linear.bias.copy_(torch.as_tensor(bias, dtype=torch.float32))
+    artifact = tmp_path / "observable"
+    model.save(artifact)
+    return artifact, HealthyReference(observable=ObservableEnvelope(np.full((2, n_values), -0.4), 50.0, geometry))
+
+
+def test_observable_frame_rollout_and_cost_parity(tmp_path: Path) -> None:
+    """CasADi predicts and scores the same Frames as the incumbent Predictor and Costs."""
+    artifact, reference = _observable_fixture(tmp_path)
+    assert reference.observable is not None
+    model = ObservableMLPModel.load(artifact)
+    problem = build_casadi_observable_problem(
+        artifact, horizon=3, u_max=0.5, w_u=0.3, w_u_l1=0.2, w_hinge=1.7, reference=reference
+    )
+    controller = CasADiMPCController(0.1, problem)
+    rng = np.random.default_rng(22)
+    state = rng.normal(size=model.n)
+    controls = rng.uniform(-0.3, 0.3, size=(3, 2))
+    states = [state]
+    for control in controls:
+        states.append(np.asarray(model.discrete_dynamics(jnp.asarray(states[-1]), jnp.asarray(control), 0.0, model.dt)))
+    expected = np.stack([np.asarray(model.output(jnp.asarray(x))) for x in states])
+    actual = np.asarray(controller._predicted_y_fn(state, controls.reshape(-1))).T  # noqa: SLF001 -- fixed-sequence parity
+    np.testing.assert_allclose(actual, expected, atol=1e-10, rtol=1e-10)
+    assert actual.reshape(4, 2, -1).shape == (4, 2, reference.observable.power.shape[1])
+
+    total, tracking, quadratic, sparse, hinge = (
+        float(v)
+        for v in controller._costs_fn(state, controls.reshape(-1))  # noqa: SLF001 -- fixed-sequence parity
+    )
+    expected_hinge = sum(
+        float(ObservableHingeCost(reference.observable, w_hinge=1.7, horizon=3).evaluate(jnp.asarray(y)))
+        for y in expected[1:]
+    )
+    expected_quadratic = 0.3 / 3 * np.sum(controls**2)
+    expected_sparse = 0.2 / 3 * np.sum(np.sqrt(controls**2 + 1e-6))
+    np.testing.assert_allclose(
+        [tracking, quadratic, sparse, hinge, total],
+        [
+            0.0,
+            expected_quadratic,
+            expected_sparse,
+            expected_hinge,
+            expected_quadratic + expected_sparse + expected_hinge,
+        ],
+        rtol=1e-9,
+    )
+
+
+def test_observable_configured_update_and_warm_start(tmp_path: Path) -> None:
+    """Configured Observable control emits feasible currents, Cost parts, and a shifted plan."""
+    artifact, reference = _observable_fixture(tmp_path)
+    controller = CasADiMPCController.from_config(
+        {
+            "dt": 0.1,
+            "problem": {
+                "class_path": "neuro.control.casadi.build_casadi_observable_problem",
+                "artifact": str(artifact),
+                "horizon": 3,
+                "u_max": 0.5,
+                "w_u": 0.1,
+                "w_u_l1": 0.05,
+                "w_hinge": 1.0,
+                "reference": reference,
+                "kirchhoff": True,
+            },
+        }
+    )
+    _, warmup = controller.update(0.0, np.zeros(1), np.zeros(controller.model.n_outputs))
+    assert warmup.warmup
+    u, log = controller.update(0.1, np.zeros(1), np.zeros(controller.model.n_outputs))
+    assert log.success
+    assert log.predicted_y.shape == (4, controller.model.n_outputs)
+    np.testing.assert_allclose(u, log.planned_u[0])
+    np.testing.assert_allclose(log.planned_u.sum(axis=1), 0.0, atol=1e-6)
+    assert np.all(np.abs(log.planned_u) <= 0.5 + 1e-6)
+    np.testing.assert_allclose(log.cost, log.cost_spectral + log.cost_quadratic_effort + log.cost_sparse_effort)
+    np.testing.assert_allclose(controller._u_guess, np.vstack([log.planned_u[1:], log.planned_u[-1:]]))  # noqa: SLF001 -- warm-start contract
+
+
+def test_observable_failed_solve_issues_no_current(tmp_path: Path) -> None:
+    """An unsuccessful Observable solve reports its status and applies zero current."""
+    artifact, reference = _observable_fixture(tmp_path)
+    problem = build_casadi_observable_problem(
+        artifact,
+        horizon=3,
+        u_max=0.5,
+        w_hinge=1.0,
+        reference=reference,
+        solver_options={"ipopt.max_iter": 0},
+    )
+    controller = CasADiMPCController(0.1, problem)
+    measurement = np.zeros(controller.model.n_outputs)
+    controller.update(0.0, np.zeros(1), measurement)
+    u, log = controller.update(0.1, np.zeros(1), measurement)
+    assert not log.success
+    assert log.status == "Maximum_Iterations_Exceeded"
+    np.testing.assert_array_equal(u, np.zeros(2))
