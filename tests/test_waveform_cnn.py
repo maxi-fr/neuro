@@ -148,7 +148,7 @@ def test_cnn_discrete_step_uses_current_action_alignment() -> None:
     u_raw = rng.standard_normal((t0 + 3, module.n_controls))
     state = runtime.initial_state()
     for y_value, u_value in zip(y_raw[: t0 + 1], u_raw[: t0 + 1], strict=True):
-        state = runtime.absorb(state, y_value, u_value)
+        state = runtime.absorb(state, np.asarray(y_value, dtype=np.float64), np.asarray(u_value, dtype=np.float64))
     stepped = runtime.discrete_dynamics(jnp.asarray(state), jnp.asarray(u_raw[t0 + 1]), 0.0, runtime.dt)
     expected = np.asarray(runtime.free_run(y_raw[: t0 + 1][None], u_raw[: t0 + 1][None], u_raw[t0 + 1 :][None]))[0, 0]
     np.testing.assert_allclose(np.asarray(runtime.output(stepped)), expected, rtol=1e-5, atol=1e-6)

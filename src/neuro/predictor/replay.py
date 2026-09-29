@@ -47,7 +47,7 @@ def replay_predictions(
         previous = controls[i]
         if not model.is_ready(state):
             continue
-        observed[i] = np.asarray(model.output(jnp.asarray(state), jnp.asarray(previous), t))
+        observed[i] = np.asarray(model.output(jnp.asarray(state), jnp.asarray(previous), float(t)))
         if i + horizon >= len(times):
             continue
         predictions[i] = np.asarray(

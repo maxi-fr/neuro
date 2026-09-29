@@ -261,7 +261,7 @@ def load_field_projection_matrix(
             _logger.debug("ROAST loading failed, falling back to analytical model: %s", exc)
 
     labels, _ = sensor_positions_mm()
-    gamma = compute_gamma(connectome.centres, list(labels))
+    gamma = compute_gamma(connectome.centres, [str(x) for x in labels])
     l_stim = gamma.T
     desc = f"Analytical Coulomb volume potential (62 scalp channels) [Fallback: {p.name} has < {min_channels_for_roast} channels]"
     return l_stim, np.asarray(labels, dtype=np.str_), True, desc

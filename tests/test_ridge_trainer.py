@@ -91,7 +91,7 @@ def test_ridge_trainer_rejects_a_non_fittable_model() -> None:
     model = _mlp(1)
     assert not isinstance(model, RidgeFittable)
     with pytest.raises(TypeError, match="Ridge-Fittable"):
-        RidgeTrainer(ridge_lambda=0.0).fit(model, [])  # ty: ignore[invalid-argument-type] -- deliberately non-fittable
+        RidgeTrainer(ridge_lambda=0.0).fit(model, [])
 
 
 def test_ridge_trainer_fits_distinct_output_width() -> None:

@@ -42,7 +42,7 @@ def _toy_connectome(n_nodes: int = 3) -> Connectome:
         hemispheres=np.zeros(n_nodes, dtype=np.bool_),
         speed=speed,
         delays=tract_lengths / speed,
-        region_index={label: idx for idx, label in enumerate(labels)},
+        region_index={str(label): idx for idx, label in enumerate(labels)},
     )
 
 

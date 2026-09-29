@@ -19,7 +19,9 @@ if TYPE_CHECKING:
 _FILTERING_ESTIMATORS = frozenset(
     {"neuro.filtering.AntiAliasEstimator", "neuro.filtering.LowPassEstimator", "neuro.filtering.ObservableEstimator"}
 )
-_PREDICTIVE_CONTROLLERS = frozenset({"neuro.control.mpc.TrajOptMPCController"})
+_PREDICTIVE_CONTROLLERS = frozenset(
+    {"neuro.control.mpc.TrajOptMPCController", "neuro.control.casadi.CasADiMPCController"}
+)
 _JANSEN_RIT_PROBLEM = "neuro.predictor.jansen_rit.build_jansen_rit_problem"
 _ORACLE_ESTIMATOR = "neuro.predictor.oracle.JansenRitOracleEstimator"
 _REL_TOL = 1e-9
