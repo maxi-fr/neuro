@@ -6,7 +6,7 @@
 
 ## Acceptance criteria
 
-- [ ] The controller accepts an Observable MLP checkpoint and applies one zero-order-held Control Current per Predictor step after State Absorption.
-- [ ] The configured Cost supports the Observable hinge, quadratic current effort, and smooth L1 current effort, with the existing reference and terminal scoring.
-- [ ] CasADi and the current Predictor agree on fixed-sequence outputs, including Observable Frame timing and shape; each Cost contribution agrees on fixed predicted sequences.
-- [ ] The controller exposes a feasible physical plan, decomposed Cost, status, success flag, solve time, and shifted warm start through the same update contract.
+- [x] The controller accepts an Observable MLP checkpoint and applies one zero-order-held Control Current per Predictor step after State Absorption.
+- [x] The configured Cost supports the Observable hinge, quadratic current effort, and smooth L1 current effort, with the existing reference and terminal scoring.
+- [x] CasADi and the current Predictor agree on fixed-sequence outputs, including Observable Frame timing and shape; each Cost contribution agrees on fixed predicted sequences.
+- [x] The controller exposes a feasible physical plan, decomposed Cost, status, success flag, solve time, and shifted warm start through the same update contract.

@@ -12,9 +12,10 @@ from simulate.controller import Controller
 
 from neuro.predictor.inference import (
     InferencePredictor,
+    ObservableMLPModel,
     WaveformMLPModel,
 )
-from neuro.spectral import HealthyReference
+from neuro.spectral import HealthyReference, ObservableEnvelope
 
 if TYPE_CHECKING:
     from numpy.typing import ArrayLike
@@ -53,6 +54,21 @@ class CasADiWaveformProblem:
     w_y_terminal: float | None
     reference: HealthyReference | None
     target: FloatArray | None
+    kirchhoff: bool
+    solver_options: dict[str, Any] = dataclasses.field(default_factory=dict)
+
+
+@dataclasses.dataclass(frozen=True)
+class CasADiObservableProblem:
+    """Continuous Observable Frame optimal control problem definition for CasADi."""
+
+    model: ObservableMLPModel
+    horizon: int
+    u_max: FloatArray
+    w_u: float
+    w_u_l1: float
+    w_hinge: float
+    envelope: ObservableEnvelope | None
     kirchhoff: bool
     solver_options: dict[str, Any] = dataclasses.field(default_factory=dict)
 
@@ -106,7 +122,7 @@ def _mlp_forward_ca(
 def _step_casadi(
     x: ca.SX,
     u: ca.SX,
-    model: WaveformMLPModel,
+    model: WaveformMLPModel | ObservableMLPModel,
 ) -> tuple[ca.SX, ca.SX]:
     """Advance one step in the CasADi graph: return (x_next, y_next_physical)."""
     n_history = model.n_history
@@ -149,7 +165,7 @@ def _step_casadi(
     return next_x, y_out
 
 
-def _output_casadi(x: ca.SX, model: WaveformMLPModel) -> ca.SX:
+def _output_casadi(x: ca.SX, model: WaveformMLPModel | ObservableMLPModel) -> ca.SX:
     """Evaluate physical output for a state in the CasADi graph."""
     n_history = model.n_history
     n_outputs = model.n_outputs
@@ -209,15 +225,58 @@ def build_casadi_waveform_problem(  # noqa: PLR0913 -- checkpoint plus the MPC c
     )
 
 
+def build_casadi_observable_problem(  # noqa: PLR0913 -- checkpoint plus the MPC cost/bound knobs
+    artifact: str | Path | ObservableMLPModel,
+    *,
+    horizon: int,
+    u_max: ArrayLike,
+    w_u: float = 0.0,
+    w_u_l1: float = 0.0,
+    w_hinge: float = 0.0,
+    reference: HealthyReference | str | Path | None = None,
+    kirchhoff: bool = True,
+    solver_options: dict[str, Any] | None = None,
+) -> CasADiObservableProblem:
+    """Assemble an Observable MLP problem with Frame hinge and smooth current effort."""
+    base = artifact if isinstance(artifact, ObservableMLPModel) else InferencePredictor.load(artifact)
+    if not isinstance(base, ObservableMLPModel):
+        msg = f"Observable MLP checkpoint required, got {type(base).__name__}"
+        raise TypeError(msg)
+    ref = HealthyReference.load(reference) if isinstance(reference, (str, Path)) else reference
+    if w_hinge > 0 and (ref is None or ref.observable is None):
+        msg = "reference with an Observable envelope must be provided when w_hinge > 0"
+        raise ValueError(msg)
+    envelope = ref.observable if ref is not None else None
+    if w_hinge > 0 and envelope is not None:
+        from neuro.control.mpc import _validate_observable_envelope  # noqa: PLC0415 -- validation shared with trajopt
+
+        _validate_observable_envelope(envelope, base)
+        if envelope.power.size != base.n_outputs:
+            msg = "envelope Frame shape does not match model output size"
+            raise ValueError(msg)
+    u_max_arr = np.broadcast_to(np.atleast_1d(np.asarray(u_max, dtype=np.float64)), (base.n_controls,)).copy()
+    return CasADiObservableProblem(
+        model=base,
+        horizon=horizon,
+        u_max=u_max_arr,
+        w_u=w_u,
+        w_u_l1=w_u_l1,
+        w_hinge=w_hinge,
+        envelope=envelope,
+        kirchhoff=kirchhoff,
+        solver_options=dict(solver_options) if solver_options is not None else {},
+    )
+
+
 class CasADiMPCController(Controller[CasADiMPCLog]):
-    """Receding-horizon continuous MPC for the Waveform Predictor, driven by CasADi IPOPT."""
+    """Receding-horizon continuous MPC for waveform or Observable MLP Predictors."""
 
     def __init__(
         self,
         dt: float,
-        problem: CasADiWaveformProblem,
+        problem: CasADiWaveformProblem | CasADiObservableProblem,
     ) -> None:
-        """Initialize the CasADi continuous waveform MPC controller."""
+        """Initialize the CasADi continuous MLP controller."""
         super().__init__(dt)
         self.problem = problem
         self.model = problem.model
@@ -226,12 +285,39 @@ class CasADiMPCController(Controller[CasADiMPCLog]):
         self.n_electrodes = self.n_controls
         self.n_channels = int(self.model.n_channels)
         self.dt = float(dt)
+        if not np.isclose(self.dt, self.model.dt):
+            msg = f"controller dt ({self.dt}) must match Predictor step ({self.model.dt})"
+            raise ValueError(msg)
 
         self._state = np.asarray(self.model.initial_state(), dtype=np.float64)
         self._u_last = np.zeros(self.n_controls, dtype=np.float64)
         self._u_guess = np.zeros((self.horizon, self.n_controls), dtype=np.float64)
 
         self._build_solver()
+
+    def _observable_costs(self, u: ca.SX, y: ca.SX) -> tuple[ca.SX, ca.SX]:
+        """Score smooth current effort and the predicted Observable Frame hinge."""
+        if not isinstance(self.problem, CasADiObservableProblem):
+            return ca.SX(0.0), ca.SX(0.0)
+        sparse = ca.SX(0.0)
+        hinge = ca.SX(0.0)
+        if self.problem.w_u_l1 > 0:
+            sparse = (self.problem.w_u_l1 / self.horizon) * ca.sum1(ca.sqrt(u**2 + 1e-6))
+        if self.problem.w_hinge > 0 and self.problem.envelope is not None:
+            reference = ca.SX(np.asarray(self.problem.envelope.power, dtype=np.float64).reshape(-1, 1))
+            excess = ca.fmax(y - reference, 0.0)
+            hinge = (self.problem.w_hinge / (self.horizon * self.model.n_outputs)) * ca.sumsqr(excess)
+        return sparse, hinge
+
+    def _constraint_graph(self, parts: list[ca.SX]) -> ca.SX:
+        """Build Kirchhoff equality bounds for every planned Control Current."""
+        if parts:
+            self._lbg = np.zeros(len(parts))
+            self._ubg = np.zeros(len(parts))
+            return ca.vertcat(*parts)
+        self._lbg = -np.inf
+        self._ubg = np.inf
+        return ca.SX(0.0)
 
     def _build_solver(self) -> None:
         """Build the symbolic single-shooting NLP graph and compile the IPOPT solver."""
@@ -247,12 +333,15 @@ class CasADiMPCController(Controller[CasADiMPCLog]):
         y_preds = [y_0]
         cost_tracking = ca.SX(0.0)
         cost_effort = ca.SX(0.0)
+        cost_sparse = ca.SX(0.0)
+        cost_hinge = ca.SX(0.0)
         g_parts: list[ca.SX] = []
 
-        w_y = self.problem.w_y
-        w_y_terminal = self.problem.w_y_terminal
+        is_observable = isinstance(self.problem, CasADiObservableProblem)
+        w_y = 0.0 if is_observable else self.problem.w_y
+        w_y_terminal = None if is_observable else self.problem.w_y_terminal
         w_u = self.problem.w_u
-        target = self.problem.target
+        target = None if is_observable else self.problem.target
         target_sym = ca.SX(np.asarray(target, dtype=np.float64).reshape(-1, 1)) if target is not None else None
 
         for k in range(h):
@@ -269,21 +358,18 @@ class CasADiMPCController(Controller[CasADiMPCLog]):
             if w_u > 0:
                 cost_effort = cost_effort + (w_u / h) * ca.sumsqr(u_k)
 
+            sparse_k, hinge_k = self._observable_costs(u_k, y_next)
+            cost_sparse = cost_sparse + sparse_k
+            cost_hinge = cost_hinge + hinge_k
+
             if self.problem.kirchhoff:
                 g_parts.append(ca.sum1(u_k))
 
             x_curr = x_next
 
-        cost_total = cost_tracking + cost_effort
+        cost_total = cost_tracking + cost_effort + cost_sparse + cost_hinge
 
-        if g_parts:
-            g_sym = ca.vertcat(*g_parts)
-            self._lbg = np.zeros(len(g_parts))
-            self._ubg = np.zeros(len(g_parts))
-        else:
-            g_sym = ca.SX(0.0)
-            self._lbg = -np.inf
-            self._ubg = np.inf
+        g_sym = self._constraint_graph(g_parts)
 
         self._lbx = np.tile(-self.problem.u_max, h)
         self._ubx = np.tile(self.problem.u_max, h)
@@ -304,14 +390,16 @@ class CasADiMPCController(Controller[CasADiMPCLog]):
 
         self._solver = ca.nlpsol("solver", "ipopt", nlp, opts)
         self._predicted_y_fn = ca.Function("pred_y", [x0_sym, u_sym], [ca.horzcat(*y_preds)])
-        self._costs_fn = ca.Function("costs", [x0_sym, u_sym], [cost_total, cost_tracking, cost_effort])
+        self._costs_fn = ca.Function(
+            "costs", [x0_sym, u_sym], [cost_total, cost_tracking, cost_effort, cost_sparse, cost_hinge]
+        )
 
     @classmethod
     def from_config(cls, config: dict[str, Any]) -> Self:
         """Instantiate controller from a configuration dictionary."""
         dt = float(config["dt"])
         prob_cfg = config["problem"]
-        if isinstance(prob_cfg, CasADiWaveformProblem):
+        if isinstance(prob_cfg, (CasADiWaveformProblem, CasADiObservableProblem)):
             problem = prob_cfg
         elif isinstance(prob_cfg, dict):
             cfg = prob_cfg.copy()
@@ -335,7 +423,7 @@ class CasADiMPCController(Controller[CasADiMPCLog]):
         ref: FloatArray,  # noqa: ARG002 -- reference target is set in problem
         x_hat: FloatArray,
     ) -> tuple[FloatArray, CasADiMPCLog]:
-        """Absorb measurement, solve the continuous MPC problem, and emit the first Control Current."""
+        """Absorb a measurement, solve at the Predictor step, and emit the first Control Current."""
         self._state = np.asarray(self.model.absorb(self._state, np.asarray(x_hat).reshape(-1), self._u_last))
 
         if not self.model.is_ready(self._state):
@@ -348,7 +436,7 @@ class CasADiMPCController(Controller[CasADiMPCLog]):
                 warmup=True,
                 status="warmup",
                 solve_time=0.0,
-                predicted_y=np.full((self.horizon + 1, self.n_channels), np.nan),
+                predicted_y=np.full((self.horizon + 1, self.model.n_outputs), np.nan),
                 planned_u=np.full((self.horizon, self.n_controls), np.nan),
                 cost_spectral=0.0,
                 cost_quadratic_effort=0.0,
@@ -384,13 +472,13 @@ class CasADiMPCController(Controller[CasADiMPCLog]):
             if res is not None:
                 planned_u = np.asarray(res["x"], dtype=np.float64).reshape(self.horizon, self.n_controls)
                 predicted_y = np.asarray(self._predicted_y_fn(self._state, res["x"]), dtype=np.float64).T
-                cost_tot, cost_track, cost_effort = (
+                cost_tot, cost_track, cost_effort, cost_sparse, cost_hinge = (
                     float(v) for v in self._costs_fn(self._state, res["x"])
                 )
             else:
                 planned_u = np.full((self.horizon, self.n_controls), np.nan)
-                predicted_y = np.full((self.horizon + 1, self.n_channels), np.nan)
-                cost_tot, cost_track, cost_effort = 0.0, 0.0, 0.0
+                predicted_y = np.full((self.horizon + 1, self.model.n_outputs), np.nan)
+                cost_tot, cost_track, cost_effort, cost_sparse, cost_hinge = 0.0, 0.0, 0.0, 0.0, 0.0
 
             return u_zero, CasADiMPCLog(
                 u=u_zero,
@@ -401,9 +489,9 @@ class CasADiMPCController(Controller[CasADiMPCLog]):
                 solve_time=solve_time,
                 predicted_y=predicted_y,
                 planned_u=planned_u,
-                cost_spectral=0.0,
+                cost_spectral=cost_hinge,
                 cost_quadratic_effort=cost_effort,
-                cost_sparse_effort=0.0,
+                cost_sparse_effort=cost_sparse,
                 cost_tracking=cost_track,
                 normalization="channel_mean",
             )
@@ -413,7 +501,7 @@ class CasADiMPCController(Controller[CasADiMPCLog]):
         self._u_last = u_cmd
         self._u_guess = np.vstack([u_plan[1:], u_plan[-1:]])
 
-        cost_tot, cost_track, cost_effort = (
+        cost_tot, cost_track, cost_effort, cost_sparse, cost_hinge = (
             float(v) for v in self._costs_fn(self._state, res["x"])
         )
         predicted_y = np.asarray(self._predicted_y_fn(self._state, res["x"]), dtype=np.float64).T
@@ -427,9 +515,9 @@ class CasADiMPCController(Controller[CasADiMPCLog]):
             solve_time=solve_time,
             predicted_y=predicted_y,
             planned_u=u_plan.copy(),
-            cost_spectral=0.0,
+            cost_spectral=cost_hinge,
             cost_quadratic_effort=cost_effort,
-            cost_sparse_effort=0.0,
+            cost_sparse_effort=cost_sparse,
             cost_tracking=cost_track,
             normalization="channel_mean",
         )
