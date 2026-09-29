@@ -27,6 +27,7 @@ dependencies = [
     "trajopt[solvers]",
     "tabulate>=0.10.0",
     "latex-linting",
+    "casadi>=3.8.1",
 ]
 
 

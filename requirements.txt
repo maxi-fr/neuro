@@ -27,6 +27,17 @@ autopep8==2.3.2 \
     --hash=sha256:89440a4f969197b69a995e4ce0661b031f455a9f776d2c5ba3dbd83466931758 \
     --hash=sha256:ce8ad498672c845a0c3de2629c15b635ec2b05ef8177a6e7c91c74f3e9b51128
     # via tvb-library
+casadi==3.8.1 \
+    --hash=sha256:04141daf3ab7934f881a476294bf965173d1599412db0baf19f65341a612f217 \
+    --hash=sha256:110714f57e36e5f9b917de7af6d00cfd41e46ad16f9d265da9965c18a152206d \
+    --hash=sha256:1d3a4f124b28cd4bd0e4218777ab6e8ee204c74a9a8db86cbd21d76703b9c96a \
+    --hash=sha256:61e53644a4a00965a45a5170b2b26e12489952a106aab0ef5118cbcfb772de65 \
+    --hash=sha256:67bb7c3fd247cd840521d820aba9d7021d4d60d61732861d53ada20844a9410a \
+    --hash=sha256:7376d81ef20b65e021cc74ff729fea6b37db0a5f6392876130d0cbbc99dc226c \
+    --hash=sha256:99c32594513bec827ba51e6b24f6d84bb94abbf95f7fe9c2b924f62bec3e02ea \
+    --hash=sha256:c9d161e1427dc306a34ad33bccd25e70d8dd863bad2ee3b4194afb5f0d8d2c8d \
+    --hash=sha256:dd7c359faa65c1ab77e3ddfe179fa725ff28f4c9f9b1c90a95e7a7bb3495be5d
+    # via neuro
 certifi==2026.7.22 \
     --hash=sha256:62f22742b58a1a33014a2b6b706588a8d7e2a88ae7bd1a6ebe8c992928483775 \
     --hash=sha256:741e2c3b351ddf169a738da9f2c048608ff7f2c5cc02f1ebc6b118bb090d5d55
@@ -1036,6 +1047,7 @@ numpy==2.5.3 \
     --hash=sha256:f9a2353b37a1a9e78fd82b27ad7e2a32a2d036604d18f02b05e3136c62ca3b09 \
     --hash=sha256:ffdc76bfcae6b255dff75202c5e7feaf95b40246bc0a17944facc1fecf9f79ab
     # via
+    #   casadi
     #   clarabel
     #   contourpy
     #   cyipopt
