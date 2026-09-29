@@ -12,7 +12,6 @@ from pydantic import ValidationError
 from scipy.signal.windows import hann
 
 from neuro.config import StftGeometry, StftSpec
-from neuro.control.costs import jax_compute_log_power_frames
 from neuro.predictor.losses import LossContext, StftLoss
 from neuro.spectral import (
     LOG_FLOOR,
@@ -259,21 +258,6 @@ def test_torch_reduction_agrees_with_canonical_numpy(
 
     assert torch_frames.shape == numpy_frames.shape
     np.testing.assert_allclose(torch_frames, numpy_frames, rtol=1e-10, atol=1e-12)
-
-
-def test_jax_reduction_agrees_with_canonical_numpy() -> None:
-    """The JAX reduction inside the waveform spectral hinge matches canonical NumPy to float tolerance."""
-    rng = np.random.default_rng(_SEED + 3)
-    n_samples, n_channels, fs, window, hop = 120, 3, 50.0, 40, 20
-    y = rng.standard_normal((n_samples, n_channels))
-
-    geom = StftGeometry(n_segment=window, n_hop=hop, band_hz=(1.25, 25.0))
-    numpy_frames = compute_log_power_frames(y, geom, fs=fs)
-
-    jax_frames = jax_compute_log_power_frames(jnp.asarray(y), fs=fs, window=window, hop=hop)
-
-    assert jax_frames.shape == numpy_frames.shape
-    np.testing.assert_allclose(np.asarray(jax_frames), numpy_frames, rtol=1e-10, atol=1e-12)
 
 
 def test_observable_envelope_save_load_round_trip(tmp_path: Path) -> None:

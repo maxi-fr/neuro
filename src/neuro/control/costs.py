@@ -6,7 +6,6 @@ import equinox as eqx
 import jax
 import jax.numpy as jnp
 import numpy as np
-from scipy.signal.windows import hann
 from trajopt.costs.base import CostFunction
 
 from neuro.spectral import LOG_FLOOR, ObservableEnvelope, _frame_kernel_weights, compute_segment_window
@@ -17,7 +16,6 @@ if TYPE_CHECKING:
     from trajopt.dynamics.base import AbstractModel
 
     from neuro.config import StftGeometry
-    from neuro.spectral import PsdEnvelope
     from neuro.types import FloatArray
 
 
@@ -26,7 +24,7 @@ class SumCost(CostFunction):
 
     ``stage_costs`` adds the sub-costs' stacked values: a per-knot cost such as
     :class:`L1ControlCost` contributes one entry per stage, while a whole-horizon cost such as
-    :class:`SpectralHingeCost` concentrates its value in a single entry, so
+    :class:`ObservableFrameHingeCost` concentrates its value in a single entry, so
     ``Objective.cost`` reports the exact total either way. ``evaluate`` sums the per-knot
     evaluations, which is what per-knot Taylor expansions (native solvers, the multiple-shooting
     Hessian) consume.
@@ -144,131 +142,6 @@ class ReducedEffortCost(CostFunction):
             return jnp.zeros(())
         v = jnp.asarray(u)
         return (self.w_u / self.horizon) * (jnp.sum(v**2) + jnp.sum(v) ** 2)
-
-
-class SpectralHingeCost(CostFunction):
-    """Mean squared one-sided log excess of the predicted spectrum over a healthy envelope.
-
-    A whole-horizon functional: window ``m`` covers the Frames ``y_{m*hop} .. y_{m*hop + window
-    - 1}`` the stage trajectory carries, so no single knot holds enough history to score it
-    (``window`` typically exceeds the predictor's history window). ``stage_costs`` decodes those
-    Frames straight out of the stage states via the model's output function and computes
-    the exact windowed hinge with ``jnp.fft``; ``evaluate`` returns ``0`` at any single knot, so
-    per-knot local expansions (native solvers) degrade to the quadratic/L1 objective rather than
-    mis-score the hinge. The transcription path (single-shooting and multiple-shooting Ipopt)
-    evaluates the exact hinge through ``stage_costs``.
-
-    The stage trajectory carries exactly ``horizon`` Frames, so the window grid always spans a
-    whole Control Horizon. It spans the Control Horizon's first ``horizon`` Frames rather than
-    its last: the final Frame lives only in the terminal knot, which a Cost reads one state at a
-    time, and an FFT window straddling that knot does not split into a stage term plus a terminal
-    term. The grid is anchored one Frame earlier instead -- one sample of phase, not a shorter
-    horizon.
-
-    The periodogram convention is that of :func:`neuro.spectral.compute_periodograms` and of
-    the training loss: periodic Hann, no per-segment detrend, one-sided and density-scaled.
-    The DC bin is not scored. The reduction is a mean over ``(window, channel, bin)`` -- never
-    over windows alone -- so ``w_psd`` stays independent of the window count and a hot
-    sub-window cannot be cancelled by a cold one.
-    """
-
-    model: AbstractModel
-    window: int = eqx.field(static=True)
-    hop: int = eqx.field(static=True)
-    fs: float = eqx.field(static=True)
-    w: jax.Array
-    power: jax.Array
-
-    def __init__(
-        self,
-        model: AbstractModel,
-        envelope: PsdEnvelope,
-        *,
-        w_psd: float,
-        horizon: int,
-    ) -> None:
-        """Initialize from the dynamical model, the healthy envelope and the spectral weight.
-
-        Parameters
-        ----------
-        model
-            Dynamical model implementing output evaluation.
-        envelope
-            The healthy reference envelope; its ``window``/``hop`` geometry drives the Cost.
-        w_psd
-            Weight on the spectral Cost; ``0`` disables it.
-        horizon
-            Control Horizon in steps, which is the Frame count the stage trajectory carries;
-            must be at least ``envelope.window``.
-        """
-        super().__init__(n=model.n, m=model.m)
-        if model.p is None:
-            msg = "model must define an output dimension p"
-            raise ValueError(msg)
-        self.model = model
-        self.window = int(envelope.window)
-        self.hop = int(envelope.hop)
-        self.fs = float(envelope.fs)
-        if envelope.power.shape[0] != model.p:
-            msg = f"envelope has {envelope.power.shape[0]} channels but the model outputs {model.p}"
-            raise ValueError(msg)
-        if horizon < self.window:
-            msg = f"horizon ({horizon}) is shorter than the envelope window ({self.window})"
-            raise ValueError(msg)
-        self.w = jnp.asarray(w_psd)
-        self.power = jnp.asarray(envelope.power)
-
-    def evaluate(
-        self,
-        x: jax.Array,
-        u: jax.Array | None = None,
-        t: float | jax.Array = 0.0,
-    ) -> jax.Array:
-        """Return ``0``: the hinge is whole-horizon and is scored by :meth:`stage_costs`."""
-        del x, u, t
-        return jnp.zeros(())
-
-    def stage_costs(self, X: jax.Array, U: jax.Array, t: jax.Array) -> jax.Array:
-        """Evaluate the exact windowed hinge over the stage Frames, concentrated in entry 0.
-
-        Parameters
-        ----------
-        X
-            Stage states ``(horizon, n)``, one Frame each.
-        """
-        del U, t
-        y = jax.vmap(self.model.output)(X)  # (horizon, n_channels)
-        log_power = jax_compute_log_power_frames(y, fs=self.fs, window=self.window, hop=self.hop)
-        log_excess = log_power - jnp.log(self.power[None, :, 1:])
-        hinge = jnp.maximum(0.0, log_excess) ** 2
-        return jnp.zeros(X.shape[0]).at[0].set(self.w * jnp.mean(hinge))
-
-
-def jax_compute_log_power_frames(
-    y: jax.Array,
-    *,
-    fs: float,
-    window: int,
-    hop: int,
-) -> jax.Array:
-    """Log-power Frames of ``y`` ``(H, n_channels)`` on the unpooled, unbanded waveform STFT grid.
-
-    Returns ``(n_windows, n_channels, window // 2)`` excluding DC.
-    """
-    n_windows = (y.shape[0] - window) // hop + 1
-    segments = jnp.stack([y[m * hop : m * hop + window] for m in range(n_windows)])
-    w_hann = jnp.asarray(hann(window, sym=False))
-    y_tapered = segments * w_hann[None, :, None]
-    spectrum = jnp.fft.rfft(y_tapered, axis=1)
-    power = jnp.abs(spectrum) ** 2
-    n_bins = window // 2 + 1
-    fold = np.full(n_bins, 2.0)
-    fold[0] = 1.0
-    if window % 2 == 0:
-        fold[-1] = 1.0
-    power = power * jnp.asarray(fold)[None, :, None] / (fs * jnp.sum(w_hann**2))
-    power = jnp.moveaxis(power, 2, 1)  # (n_windows, n_channels, n_bins)
-    return jnp.log(power[..., 1:] + LOG_FLOOR)
 
 
 def jax_compute_observable_frames(y: jax.Array, geometry: StftGeometry, *, fs: float) -> jax.Array:
@@ -626,6 +499,4 @@ def has_whole_horizon_cost(cost: CostFunction) -> bool:
     """
     if isinstance(cost, SumCost):
         return any(has_whole_horizon_cost(sub) for sub in cost.costs)
-    if isinstance(cost, ObservableFrameHingeCost):
-        return not cost.terminal
-    return isinstance(cost, SpectralHingeCost)
+    return isinstance(cost, ObservableFrameHingeCost) and not cost.terminal

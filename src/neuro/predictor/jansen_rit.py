@@ -19,7 +19,6 @@ from neuro.control.costs import (
     ExcludeInitialKnotState,
     L1ControlCost,
     ObservableFrameHingeCost,
-    SpectralHingeCost,
 )
 from neuro.control.mpc import _combine_costs, kirchhoff_constraint
 from neuro.jansen_rit import JansenRitDynamics, JansenRitParams
@@ -33,7 +32,7 @@ if TYPE_CHECKING:
     from numpy.typing import ArrayLike
     from trajopt.costs.base import CostFunction
 
-    from neuro.spectral import HealthyReference, ObservableEnvelope, PsdEnvelope
+    from neuro.spectral import HealthyReference, ObservableEnvelope
     from neuro.types import FloatArray, IntArray
 
 
@@ -581,8 +580,8 @@ def _resolve_model(  # noqa: PLR0913, PLR0917 -- model resolution parameters
     )
 
 
-def _validate_jansen_rit_envelope(envelope: PsdEnvelope | ObservableEnvelope, model: JansenRitModel) -> None:
-    """Ensure the healthy envelope matches the Jansen-Rit Predictor's channels and knot rate.
+def _validate_jansen_rit_envelope(envelope: ObservableEnvelope, model: JansenRitModel) -> None:
+    """Ensure the healthy Observable envelope matches the Jansen-Rit Predictor's channels and knot rate.
 
     The stage trajectory a hinge Cost reduces carries one sample per Control Horizon knot, so the
     envelope must have been measured at ``1 / knot_dt`` -- the integration rate only when
@@ -624,37 +623,32 @@ def _resolve_jansen_rit_target(
     raise ValueError(msg)
 
 
-def _resolve_jansen_rit_envelopes(
+def _resolve_jansen_rit_envelope(
     ref: HealthyReference | None,
     *,
-    w_psd: float,
     w_hinge: float,
-) -> tuple[PsdEnvelope | None, ObservableEnvelope | None]:
-    """Extract and validate spectral envelopes from the healthy reference."""
-    psd_envelope = ref.psd if ref is not None and w_psd > 0 else None
-    if w_psd > 0 and psd_envelope is None:
-        msg = "reference does not carry a PSD envelope required when w_psd > 0"
+) -> ObservableEnvelope | None:
+    """Extract and validate the Observable envelope from the healthy reference."""
+    if w_hinge <= 0:
+        return None
+    if ref is None:
+        msg = "reference must be provided when w_hinge > 0"
         raise ValueError(msg)
-    obs_envelope = ref.observable if ref is not None and w_hinge > 0 else None
-    if w_hinge > 0 and obs_envelope is None:
+    if ref.observable is None:
         msg = "reference does not carry an Observable envelope required when w_hinge > 0"
         raise ValueError(msg)
-    return psd_envelope, obs_envelope
+    return ref.observable
 
 
 def _check_healthy_reference(
     ref: HealthyReference | None,
     *,
     tracking_active: bool,
-    w_psd: float,
     w_hinge: float,
 ) -> HealthyReference | None:
     """Validate presence of the HealthyReference container."""
     if tracking_active and ref is None:
         msg = "reference must be provided when w_y > 0"
-        raise ValueError(msg)
-    if w_psd > 0 and ref is None:
-        msg = "reference must be provided when w_psd > 0"
         raise ValueError(msg)
     if w_hinge > 0 and ref is None:
         msg = "reference must be provided when w_hinge > 0"
@@ -678,7 +672,6 @@ def build_jansen_rit_problem(  # noqa: PLR0913 -- problem construction arguments
     w_u: float = 0.0,
     w_y_terminal: float | None = None,
     w_u_l1: float = 0.0,
-    w_psd: float = 0.0,
     w_hinge: float = 0.0,
     reference: HealthyReference | None = None,
     kirchhoff: bool = False,
@@ -692,7 +685,6 @@ def build_jansen_rit_problem(  # noqa: PLR0913 -- problem construction arguments
     ref = _check_healthy_reference(
         reference,
         tracking_active=tracking_active,
-        w_psd=w_psd,
         w_hinge=w_hinge,
     )
     is_identity = (
@@ -713,11 +705,7 @@ def build_jansen_rit_problem(  # noqa: PLR0913 -- problem construction arguments
     if w_u_l1 > 0:
         costs.append(L1ControlCost(n=n, m=m, w_l1=w_u_l1, horizon=horizon))
 
-    psd_envelope, obs_envelope = _resolve_jansen_rit_envelopes(ref, w_psd=w_psd, w_hinge=w_hinge)
-
-    if psd_envelope is not None:
-        _validate_jansen_rit_envelope(psd_envelope, resolved_model)
-        costs.append(SpectralHingeCost(resolved_model, psd_envelope, w_psd=w_psd, horizon=horizon))
+    obs_envelope = _resolve_jansen_rit_envelope(ref, w_hinge=w_hinge)
     if obs_envelope is not None:
         _validate_jansen_rit_envelope(obs_envelope, resolved_model)
         costs.append(ObservableFrameHingeCost(resolved_model, obs_envelope, w_hinge=w_hinge, horizon=horizon))

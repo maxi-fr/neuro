@@ -25,18 +25,16 @@ from neuro.control.costs import (
     ObservableFrameHingeCost,
     ObservableHingeCost,
     ReducedEffortCost,
-    SpectralHingeCost,
     SumCost,
     compute_waveform_observable_frames,
     frame_grid_offsets,
     has_whole_horizon_cost,
-    jax_compute_log_power_frames,
     jax_compute_observable_frames,
 )
 from neuro.control.mpc import build_waveform_problem, decompose_cost, kirchhoff_basis
 from neuro.predictor.inference import WaveformMLPModel
 from neuro.predictor.module import AutoregressiveMLP
-from neuro.spectral import HealthyReference, ObservableEnvelope, PsdEnvelope, compute_log_power_frames
+from neuro.spectral import HealthyReference, ObservableEnvelope, compute_log_power_frames
 from neuro.transforms import Standardizer
 
 if TYPE_CHECKING:
@@ -295,153 +293,6 @@ def test_sum_cost_composes_evaluate_and_stage_costs() -> None:
     np.testing.assert_allclose(
         total, float(jnp.sum(l1.stage_costs(jnp.asarray(x_seq), jnp.asarray(u_seq), jnp.zeros(horizon))))
     )
-
-
-def test_spectral_hinge_jax_reduction_agrees_with_canonical_numpy() -> None:
-    """The jax reduction helper inside SpectralHingeCost agrees with canonical NumPy to float tolerance."""
-    rng = np.random.default_rng(_SEED + 10)
-    horizon, n_channels, fs, window, hop = 100, 3, 50.0, 50, 25
-    y = rng.standard_normal((horizon, n_channels))
-
-    geom = StftGeometry(n_segment=window, n_hop=hop, band_hz=(1.0, 25.0))
-    numpy_frames = compute_log_power_frames(y, geom, fs=fs)
-
-    jax_frames = jax_compute_log_power_frames(jnp.asarray(y), fs=fs, window=window, hop=hop)
-
-    assert jax_frames.shape == numpy_frames.shape
-    np.testing.assert_allclose(np.asarray(jax_frames), numpy_frames, rtol=1e-10, atol=1e-12)
-
-
-def test_spectral_hinge_cost_is_model_free_and_scores_stage_trajectory() -> None:
-    """SpectralHingeCost constructs without a model instance and scores every stage Frame."""
-    rng = np.random.default_rng(_SEED + 11)
-    n_y, n_channels, n_u, n_controls = 4, 3, 2, 2
-    horizon, window, hop, fs = 100, 50, 25, 50.0
-    n = n_y * n_channels + n_u * n_controls
-    m = n_controls
-
-    y_center = rng.uniform(-1.0, 1.0, n_channels)
-    y_scale = rng.uniform(0.5, 2.0, n_channels)
-    envelope_power = rng.uniform(0.1, 1.0, (n_channels, window // 2 + 1))
-    envelope = PsdEnvelope(
-        power=envelope_power,
-        fs=fs,
-        window=window,
-        hop=hop,
-    )
-
-    model = _DummyModel(n=n, m=m, p=n_channels, n_y=n_y, center=y_center, scale=y_scale)
-    cost = SpectralHingeCost(model, envelope, w_psd=10.0, horizon=horizon)
-
-    # evaluate returns 0 for native expansions
-    x_single = jnp.asarray(rng.standard_normal(n))
-    np.testing.assert_equal(float(cost.evaluate(x_single)), 0.0)
-
-    # stage_costs decodes every stage state and scores the exact windowed hinge
-    X = rng.standard_normal((horizon, n))
-    U = rng.standard_normal((horizon, m))
-    stage_vals = cost.stage_costs(jnp.asarray(X), jnp.asarray(U), jnp.zeros(horizon))
-
-    # Entries past 0 must be 0
-    np.testing.assert_array_equal(np.asarray(stage_vals[1:]), np.zeros(horizon - 1))
-
-    # Check value at index 0 against NumPy
-    z_last = slice((n_y - 1) * n_channels, n_y * n_channels)
-    y_stage = X[:, z_last] * y_scale + y_center  # (horizon, n_channels)
-    geom = StftGeometry(n_segment=window, n_hop=hop, band_hz=(1.0, 25.0))
-    numpy_frames = compute_log_power_frames(y_stage, geom, fs=fs)
-    assert numpy_frames.shape[0] == (horizon - window) // hop + 1
-    log_excess = numpy_frames - np.log(envelope_power[None, :, 1:])
-    want_value = 10.0 * float(np.mean(np.maximum(0.0, log_excess) ** 2))
-    np.testing.assert_allclose(float(stage_vals[0]), want_value, rtol=1e-10, atol=1e-12)
-
-
-def test_spectral_hinge_window_grid_spans_a_whole_control_horizon() -> None:
-    """The grid holds the ``horizon`` windows the Control Horizon implies, not ``horizon - 1``.
-
-    ``configs/simulation/mse02_psd_mpc_spectral.yaml`` runs horizon 75 at window 50, hop 25:
-    two windows. Scoring one Frame fewer silently drops the second, leaving the horizon's last
-    third unpriced.
-    """
-    rng = np.random.default_rng(_SEED + 13)
-    n_y, n_channels, n_u, n_controls = 4, 2, 2, 2
-    horizon, window, hop, fs = 75, 50, 25, 50.0
-    n = n_y * n_channels + n_u * n_controls
-
-    envelope = PsdEnvelope(
-        power=rng.uniform(0.1, 1.0, (n_channels, window // 2 + 1)),
-        fs=fs,
-        window=window,
-        hop=hop,
-    )
-    model = _DummyModel(n=n, m=n_controls, p=n_channels, n_y=n_y)
-    SpectralHingeCost(model, envelope, w_psd=1.0, horizon=horizon)
-
-    X = jnp.asarray(rng.standard_normal((horizon, n)))
-    frames = jax_compute_log_power_frames(jax.vmap(model.output)(X), fs=fs, window=window, hop=hop)
-    assert frames.shape[0] == 2
-
-    # One Frame short of the Control Horizon the grid loses a whole window, so the value moves.
-    short = jax_compute_log_power_frames(jax.vmap(model.output)(X[1:]), fs=fs, window=window, hop=hop)
-    assert short.shape[0] == 1
-
-
-def test_spectral_hinge_pins_a_seeded_rollout(tmp_path: Path) -> None:
-    """Pin the hinge on a fixed seeded model rollout, guarding the window grid's anchor.
-
-    Before the model-free refactor the Cost stepped the model once more to recover the terminal
-    knot's Frame and scored ``y_1 .. y_H``; this exact rollout scored ``100.35113257399541``
-    there, over 3 windows. A Cost sees the terminal knot one state at a time, and an FFT window
-    straddling it does not split into a stage term plus a terminal term, so the grid is anchored
-    one Frame earlier and scores ``y_0 .. y_{H-1}`` -- the same 3 windows spanning the same
-    Control Horizon, shifted by one sample.
-    """
-    n_y, n_u, n_channels, n_controls = 4, 3, 2, 2
-    horizon, window, hop, fs = 100, 50, 25, 50.0
-    artifact = _build_checkpoint(
-        tmp_path, n_y=n_y, n_u=n_u, horizon=horizon, n_channels=n_channels, n_controls=n_controls
-    )
-    model = WaveformMLPModel.load(artifact)
-
-    rng = np.random.default_rng(_SEED + 21)
-    envelope = PsdEnvelope(power=rng.uniform(0.1, 1.0, (n_channels, window // 2 + 1)), fs=fs, window=window, hop=hop)
-    x0 = np.asarray(model.initial_state())
-    x0[: n_y * n_channels] = rng.standard_normal(n_y * n_channels)
-    U = jnp.asarray(rng.standard_normal((horizon, n_controls)))
-    states = [jnp.asarray(x0)]
-    for u in U:
-        states.append(model.discrete_dynamics(states[-1], u, 0.0, 0.0))
-    X = jnp.stack(states[:-1])
-
-    cost = SpectralHingeCost(model, envelope, w_psd=10.0, horizon=horizon)
-    assert jax_compute_log_power_frames(jax.vmap(model.output)(X), fs=fs, window=window, hop=hop).shape[0] == 3
-
-    value = float(cost.stage_costs(X, U, jnp.zeros(horizon))[0])
-    np.testing.assert_allclose(value, 95.680650452903251, rtol=1e-9)
-
-
-def test_spectral_hinge_cost_validation() -> None:
-    """SpectralHingeCost rejects mismatched channel counts or horizons shorter than window."""
-    envelope = PsdEnvelope(
-        power=np.ones((3, 26)),
-        fs=50.0,
-        window=50,
-        hop=25,
-    )
-    # Channel count mismatch (envelope has 3, n_channels=2)
-    with pytest.raises(ValueError, match="envelope has 3 channels but the model outputs 2"):
-        SpectralHingeCost(
-            _DummyModel(n=10, m=2, p=2, n_y=2),
-            envelope,
-            w_psd=1.0,
-            horizon=60,
-        )
-
-    # Horizon equal to the window still scores one whole window; anything shorter cannot.
-    model = _DummyModel(n=12, m=2, p=3, n_y=2)
-    assert SpectralHingeCost(model, envelope, w_psd=1.0, horizon=50).window == 50
-    with pytest.raises(ValueError, match="horizon \\(40\\) is shorter than the envelope window \\(50\\)"):
-        SpectralHingeCost(model, envelope, w_psd=1.0, horizon=40)
 
 
 def test_observable_hinge_cost_matches_numpy_reference() -> None:

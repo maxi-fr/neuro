@@ -34,7 +34,6 @@ from neuro.control.costs import (
     ObservableFrameHingeCost,
     ObservableHingeCost,
     ReducedEffortCost,
-    SpectralHingeCost,
     SumCost,
     has_whole_horizon_cost,
 )
@@ -763,11 +762,8 @@ def _diagonal_r(c: CostFunction) -> jax.Array | None:
 def _is_spectral_cost(c: CostFunction) -> bool:
     """Identify whether a CostFunction represents an Observable or spectral hinge."""
     return (
-        isinstance(c, (ObservableFrameHingeCost, ObservableHingeCost, SpectralHingeCost))
-        or (
-            isinstance(c, OutputCost)
-            and isinstance(c.cost, (ObservableFrameHingeCost, ObservableHingeCost, SpectralHingeCost))
-        )
+        isinstance(c, (ObservableFrameHingeCost, ObservableHingeCost))
+        or (isinstance(c, OutputCost) and isinstance(c.cost, (ObservableFrameHingeCost, ObservableHingeCost)))
         or (isinstance(c, ExcludeInitialKnotState) and _is_spectral_cost(c.inner))
     )
 

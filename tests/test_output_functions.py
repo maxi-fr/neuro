@@ -19,8 +19,6 @@ from neuro.control.costs import (
     ExcludeInitialKnotState,
     ObservableFrameHingeCost,
     ObservableHingeCost,
-    SpectralHingeCost,
-    jax_compute_log_power_frames,
     jax_compute_observable_frames,
 )
 from neuro.control.mpc import (
@@ -31,7 +29,7 @@ from neuro.control.mpc import (
 from neuro.jansen_rit import JansenRitParams
 from neuro.predictor.inference import ObservableMLPModel, WaveformMLPModel
 from neuro.predictor.jansen_rit import JansenRitModel, build_jansen_rit_problem
-from neuro.spectral import HealthyReference, ObservableEnvelope, PsdEnvelope
+from neuro.spectral import HealthyReference, ObservableEnvelope
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -308,40 +306,6 @@ def test_jansen_rit_output_cost_tracking_equivalence() -> None:
         val_manual = manual_cost(x, u)
         val_new = float(cost_new.evaluate(x, u))
         np.testing.assert_allclose(val_new, val_manual, rtol=1e-10, atol=1e-12)
-
-
-def test_spectral_hinge_cost_output_equivalence(tmp_path: Path) -> None:
-    """Verify SpectralHingeCost produces identical values when decoding through model.output."""
-    n_channels = 2
-    horizon = 20
-    window = 10
-    hop = 5
-    stem = _build_synthetic_checkpoint(tmp_path, is_observable=False, n_channels=n_channels, n_y=4)
-    model = WaveformMLPModel.load(stem)
-
-    envelope = PsdEnvelope(
-        power=np.ones((n_channels, window // 2 + 1)),
-        fs=100.0,
-        window=window,
-        hop=hop,
-    )
-    cost = SpectralHingeCost(model, envelope, w_psd=2.5, horizon=horizon)
-
-    rng = np.random.default_rng(_SEED + 1)
-    X = jnp.asarray(rng.standard_normal((horizon, model.n)))
-    U = jnp.zeros((horizon, model.m))
-    t = jnp.zeros(horizon)
-
-    val_cost = cost.stage_costs(X, U, t)
-
-    newest = np.asarray(X)[..., (model.n_y - 1) * model.n_channels : model.n_y * model.n_channels]
-    y_incumbent = newest * np.asarray(model.y_scale) + np.asarray(model.y_center)
-    log_power = jax_compute_log_power_frames(jnp.asarray(y_incumbent), fs=100.0, window=window, hop=hop)
-    log_excess = log_power - jnp.log(jnp.asarray(envelope.power)[None, :, 1:])
-    expected_stage_cost = float(2.5 * jnp.mean(jnp.maximum(0.0, log_excess) ** 2))
-
-    np.testing.assert_allclose(float(val_cost[0]), expected_stage_cost, rtol=1e-10, atol=1e-12)
-    np.testing.assert_array_equal(np.asarray(val_cost[1:]), np.zeros(horizon - 1))
 
 
 def test_observable_frame_hinge_cost_output_equivalence(tmp_path: Path) -> None:

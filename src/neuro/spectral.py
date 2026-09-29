@@ -20,8 +20,7 @@ LOG_FLOOR = 1e-8
 def compute_periodograms(y: FloatArray, *, fs: float, window: int, hop: int) -> FloatArray:
     """Periodograms of every length-``window`` slice of ``y`` ``(n_samples, n_channels)``, hopped by ``hop``.
 
-    One-sided, density-scaled, periodic Hann, no per-segment detrend -- the geometry
-    :class:`neuro.control.costs.SpectralHingeCost` replicates with ``jnp.fft``, and the
+    One-sided, density-scaled, periodic Hann, no per-segment detrend -- the
     same convention the training loss uses, so that a segment-length change is not also a change
     of implicit high-pass.
     Returns ``(n_windows, n_channels, window // 2 + 1)`` including the DC bin (the MPC cost drops it
