@@ -6,7 +6,7 @@
 
 ## Acceptance criteria
 
-- [ ] Configuration enables the cap with either Observable Predictor architecture and the existing Observable Cost options.
-- [ ] Each binary decision controls all electrodes for one native Predictor step; a disabled step has zero physical Control Current.
-- [ ] Returned plans respect the cap, per-electrode bounds, and explicit Kirchhoff balance.
-- [ ] The controller reports binary plans and solver outcomes, shifts successful plans, and issues no new Control Current after a failed solve.
+- [x] Configuration enables the cap with either Observable Predictor architecture and the existing Observable Cost options.
+- [x] Each binary decision controls all electrodes for one native Predictor step; a disabled step has zero physical Control Current.
+- [x] Returned plans respect the cap, per-electrode bounds, and explicit Kirchhoff balance.
+- [x] The controller reports binary plans and solver outcomes, shifts successful plans, and issues no new Control Current after a failed solve.
