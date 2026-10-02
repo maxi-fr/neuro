@@ -74,6 +74,7 @@ class CasADiWaveformProblem:
     solver_options: dict[str, Any] = dataclasses.field(default_factory=dict)
     max_active_intervals: int | None = None
     w_active: float | None = None
+    integer_solver: str = "bonmin"
 
 
 @dataclasses.dataclass(frozen=True)
@@ -91,6 +92,7 @@ class CasADiObservableProblem:
     solver_options: dict[str, Any] = dataclasses.field(default_factory=dict)
     max_active_intervals: int | None = None
     w_active: float | None = None
+    integer_solver: str = "bonmin"
 
 
 def _resolve_waveform_target(
@@ -479,8 +481,9 @@ def build_casadi_waveform_problem(  # noqa: PLR0913 -- checkpoint plus the MPC c
     solver_options: dict[str, Any] | None = None,
     max_active_intervals: int | None = None,
     w_active: float | None = None,
+    integer_solver: str = "bonmin",
 ) -> CasADiWaveformProblem:
-    """Assemble waveform Costs with an optional active-step cap or penalty."""
+    """Assemble waveform Costs with an optional active-step cap or penalty and integer solver."""
     if isinstance(artifact, (WaveformMLPModel, WaveformCNNModel)):
         base = artifact
     else:
@@ -513,6 +516,7 @@ def build_casadi_waveform_problem(  # noqa: PLR0913 -- checkpoint plus the MPC c
     u_max_arr = np.broadcast_to(np.atleast_1d(np.asarray(u_max, dtype=np.float64)), (base.n_controls,)).copy()
     _validate_active_cap(max_active_intervals, horizon)
     _validate_active_weight(max_active_intervals, w_active)
+    _validate_integer_solver(integer_solver)
 
     return CasADiWaveformProblem(
         model=base,
@@ -531,6 +535,7 @@ def build_casadi_waveform_problem(  # noqa: PLR0913 -- checkpoint plus the MPC c
         solver_options=dict(solver_options) if solver_options is not None else {},
         max_active_intervals=max_active_intervals,
         w_active=w_active,
+        integer_solver=integer_solver,
     )
 
 
@@ -547,8 +552,9 @@ def build_casadi_observable_problem(  # noqa: PLR0913 -- checkpoint plus the MPC
     solver_options: dict[str, Any] | None = None,
     max_active_intervals: int | None = None,
     w_active: float | None = None,
+    integer_solver: str = "bonmin",
 ) -> CasADiObservableProblem:
-    """Assemble Observable Costs with an optional active-step cap or penalty."""
+    """Assemble Observable Costs with an optional active-step cap or penalty and integer solver."""
     base = (
         artifact
         if isinstance(artifact, (ObservableMLPModel, ObservableCNNModel))
@@ -572,6 +578,7 @@ def build_casadi_observable_problem(  # noqa: PLR0913 -- checkpoint plus the MPC
     u_max_arr = np.broadcast_to(np.atleast_1d(np.asarray(u_max, dtype=np.float64)), (base.n_controls,)).copy()
     _validate_active_cap(max_active_intervals, horizon)
     _validate_active_weight(max_active_intervals, w_active)
+    _validate_integer_solver(integer_solver)
     return CasADiObservableProblem(
         model=base,
         horizon=horizon,
@@ -584,6 +591,7 @@ def build_casadi_observable_problem(  # noqa: PLR0913 -- checkpoint plus the MPC
         solver_options=dict(solver_options) if solver_options is not None else {},
         max_active_intervals=max_active_intervals,
         w_active=w_active,
+        integer_solver=integer_solver,
     )
 
 
@@ -601,6 +609,13 @@ def _validate_active_weight(cap: int | None, weight: float | None) -> None:
         raise ValueError(msg)
     if cap is not None and weight is not None:
         msg = "max_active_intervals and w_active are mutually exclusive"
+        raise ValueError(msg)
+
+
+def _validate_integer_solver(solver: str) -> None:
+    """Accept the supported CasADi integer NLP backends."""
+    if solver not in {"bonmin", "knitro"}:
+        msg = "integer_solver must be 'bonmin' or 'knitro'"
         raise ValueError(msg)
 
 
@@ -642,7 +657,7 @@ class CasADiMPCController(Controller[CasADiMPCLog]):
         return ca.SX(0.0)
 
     def _build_solver(self) -> None:  # noqa: C901, PLR0915 -- single-shooting Costs and constraints share one graph
-        """Build single-shooting Costs and compile IPOPT or Bonmin."""
+        """Build single-shooting Costs and compile IPOPT or the configured integer solver."""
         h = self.horizon
         m = self.n_controls
         n_state = self.model.n
@@ -722,7 +737,7 @@ class CasADiMPCController(Controller[CasADiMPCLog]):
             )
 
         cost_active = (
-            self.problem.w_active * ca.sum1(active_sym)
+            (self.problem.w_active / h) * ca.sum1(active_sym)
             if active_sym is not None and self.problem.w_active is not None
             else ca.SX(0.0)
         )
@@ -756,10 +771,14 @@ class CasADiMPCController(Controller[CasADiMPCLog]):
             "ipopt.hessian_approximation": "limited-memory",
         }
         if integer_mode:
-            opts = {"print_time": False, "bonmin.print_level": 0, "discrete": [False] * (h * m) + [True] * h}
+            opts = {
+                "print_time": False,
+                "discrete": [False] * (h * m) + [True] * h,
+                **({"bonmin.print_level": 0} if self.problem.integer_solver == "bonmin" else {}),
+            }
         opts.update(self.problem.solver_options)
 
-        self._solver = ca.nlpsol("solver", "bonmin" if integer_mode else "ipopt", nlp, opts)
+        self._solver = ca.nlpsol("solver", self.problem.integer_solver if integer_mode else "ipopt", nlp, opts)
         self._predicted_y_fn = ca.Function("pred_y", [x0_sym, u_sym], [ca.horzcat(*y_preds)])
         self._costs_fn = ca.Function(
             "costs",
@@ -798,6 +817,82 @@ class CasADiMPCController(Controller[CasADiMPCLog]):
             raise TypeError(msg)
         return cls(dt=dt, problem=problem)
 
+    def solve_state(
+        self,
+        x0: FloatArray,
+        initial_u: FloatArray | None = None,
+        initial_active: FloatArray | None = None,
+    ) -> CasADiMPCLog:
+        """Solve a fixed Predictor state with an optional primal guess, without updating controller history.
+
+        Parameters
+        ----------
+        x0
+            Predictor state of shape ``(n_state,)``.
+        initial_u
+            Control guess of shape ``(horizon, n_controls)``.
+        initial_active
+            Binary activation guess of shape ``(horizon,)`` for integer mode.
+        """
+        state = np.asarray(x0, dtype=np.float64).reshape(self.model.n)
+        u_guess = (
+            np.zeros((self.horizon, self.n_controls), dtype=np.float64)
+            if initial_u is None
+            else np.asarray(initial_u, dtype=np.float64).reshape(self.horizon, self.n_controls)
+        )
+        guess = u_guess.reshape(-1)
+        if self._integer_mode:
+            active_guess = (
+                np.zeros(self.horizon, dtype=np.float64)
+                if initial_active is None
+                else np.asarray(initial_active, dtype=np.float64).reshape(self.horizon)
+            )
+            guess = np.concatenate((guess, active_guess))
+        started = time.perf_counter()
+        try:
+            result = self._solver(x0=guess, p=state, lbx=self._lbx, ubx=self._ubx, lbg=self._lbg, ubg=self._ubg)
+            solve_time = time.perf_counter() - started
+            stats = self._solver.stats()
+            success = bool(stats["success"])
+            status = str(stats.get("return_status", "unknown"))
+        except Exception as exc:  # noqa: BLE001 -- report solver failure in the benchmark result
+            result = None
+            solve_time = time.perf_counter() - started
+            success = False
+            status = str(exc)
+
+        if result is None:
+            planned_u = np.full((self.horizon, self.n_controls), np.nan)
+            planned_active = np.full(self.horizon, np.nan) if self._integer_mode else None
+            predicted_y = np.full((self.horizon + 1, self.model.n_outputs), np.nan)
+            costs = (0.0,) * 6
+        else:
+            decision = np.asarray(result["x"], dtype=np.float64).reshape(-1)
+            planned_u = decision[: self.horizon * self.n_controls].reshape(self.horizon, self.n_controls)
+            planned_active = decision[self.horizon * self.n_controls :] if self._integer_mode else None
+            predicted_y = np.asarray(self._predicted_y_fn(state, planned_u.reshape(-1)), dtype=np.float64).T
+            costs = self._evaluate_costs(state, planned_u.reshape(-1), planned_active)
+        cost_tot, cost_track, cost_effort, cost_sparse, cost_spectral, cost_active = costs
+        u_cmd = planned_u[0].copy() if success else np.zeros(self.n_controls, dtype=np.float64)
+        return CasADiMPCLog(
+            u=u_cmd,
+            cost=cost_tot,
+            success=success,
+            warmup=False,
+            status=status,
+            solve_time=solve_time,
+            predicted_y=predicted_y,
+            planned_u=planned_u,
+            planned_active=planned_active,
+            active_count=float(np.sum(planned_active)) if planned_active is not None else None,
+            cost_active=cost_active,
+            cost_spectral=cost_spectral,
+            cost_quadratic_effort=cost_effort,
+            cost_sparse_effort=cost_sparse,
+            cost_tracking=cost_track,
+            normalization="channel_mean",
+        )
+
     def update(
         self,
         t: float,  # noqa: ARG002 -- the goal is baked into the objective
@@ -828,96 +923,13 @@ class CasADiMPCController(Controller[CasADiMPCLog]):
                 normalization="channel_mean",
             )
 
-        u_guess_flat = self._u_guess.reshape(-1)
-        guess = np.concatenate((u_guess_flat, self._active_guess)) if self._integer_mode else u_guess_flat
-        started = time.perf_counter()
-        try:
-            res = self._solver(
-                x0=guess,
-                p=self._state,
-                lbx=self._lbx,
-                ubx=self._ubx,
-                lbg=self._lbg,
-                ubg=self._ubg,
-            )
-            solve_time = time.perf_counter() - started
-            stats = self._solver.stats()
-            success = bool(stats["success"])
-            status = str(stats.get("return_status", "unknown"))
-        except Exception as exc:  # noqa: BLE001 -- handle unexpected solver failure
-            solve_time = time.perf_counter() - started
-            success = False
-            status = str(exc)
-            res = None
-
-        if not success or res is None:
-            u_zero = np.zeros(self.n_controls, dtype=np.float64)
-            self._u_last = u_zero
-            if res is not None:
-                decision = np.asarray(res["x"], dtype=np.float64).reshape(-1)
-                planned_u = decision[: self.horizon * self.n_controls].reshape(self.horizon, self.n_controls)
-                planned_active = decision[self.horizon * self.n_controls :] if self._integer_mode else None
-                predicted_y = np.asarray(self._predicted_y_fn(self._state, planned_u.reshape(-1)), dtype=np.float64).T
-                cost_tot, cost_track, cost_effort, cost_sparse, cost_spectral, cost_active = self._evaluate_costs(
-                    self._state, planned_u.reshape(-1), planned_active
-                )
-            else:
-                planned_u = np.full((self.horizon, self.n_controls), np.nan)
-                planned_active = np.full(self.horizon, np.nan) if self._integer_mode else None
-                predicted_y = np.full((self.horizon + 1, self.model.n_outputs), np.nan)
-                cost_tot, cost_track, cost_effort, cost_sparse, cost_spectral, cost_active = (0.0,) * 6
-
-            return u_zero, CasADiMPCLog(
-                u=u_zero,
-                cost=cost_tot,
-                success=False,
-                warmup=False,
-                status=status,
-                solve_time=solve_time,
-                predicted_y=predicted_y,
-                planned_u=planned_u,
-                planned_active=planned_active,
-                active_count=float(np.sum(planned_active)) if planned_active is not None else None,
-                cost_active=cost_active,
-                cost_spectral=cost_spectral,
-                cost_quadratic_effort=cost_effort,
-                cost_sparse_effort=cost_sparse,
-                cost_tracking=cost_track,
-                normalization="channel_mean",
-            )
-
-        decision = np.asarray(res["x"], dtype=np.float64).reshape(-1)
-        u_plan = decision[: self.horizon * self.n_controls].reshape(self.horizon, self.n_controls)
-        active_plan = decision[self.horizon * self.n_controls :] if self._integer_mode else None
-        u_cmd = u_plan[0].copy()
-        self._u_last = u_cmd
-        self._u_guess = np.vstack([u_plan[1:], u_plan[-1:]])
-        if active_plan is not None:
-            self._active_guess = np.concatenate((active_plan[1:], active_plan[-1:]))
-
-        cost_tot, cost_track, cost_effort, cost_sparse, cost_spectral, cost_active = self._evaluate_costs(
-            self._state, u_plan.reshape(-1), active_plan
-        )
-        predicted_y = np.asarray(self._predicted_y_fn(self._state, u_plan.reshape(-1)), dtype=np.float64).T
-
-        return u_cmd, CasADiMPCLog(
-            u=u_cmd,
-            cost=cost_tot,
-            success=True,
-            warmup=False,
-            status=status,
-            solve_time=solve_time,
-            predicted_y=predicted_y,
-            planned_u=u_plan.copy(),
-            planned_active=active_plan.copy() if active_plan is not None else None,
-            active_count=float(np.sum(active_plan)) if active_plan is not None else None,
-            cost_active=cost_active,
-            cost_spectral=cost_spectral,
-            cost_quadratic_effort=cost_effort,
-            cost_sparse_effort=cost_sparse,
-            cost_tracking=cost_track,
-            normalization="channel_mean",
-        )
+        log = self.solve_state(self._state, self._u_guess, self._active_guess if self._integer_mode else None)
+        self._u_last = log.u.copy()
+        if log.success:
+            self._u_guess = np.vstack((log.planned_u[1:], log.planned_u[-1:]))
+            if log.planned_active is not None:
+                self._active_guess = np.concatenate((log.planned_active[1:], log.planned_active[-1:]))
+        return log.u, log
 
     def decompose_cost(self, x0: FloatArray, u: FloatArray, active: FloatArray | None = None) -> dict[str, Any]:
         """Decompose the optimal control cost for a fixed sequence of states and controls.

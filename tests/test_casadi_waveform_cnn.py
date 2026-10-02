@@ -62,17 +62,13 @@ def test_waveform_cnn_one_step_and_horizon_rollout_parity(
     step_fn = ca.Function("step", [x_sym, u_sym], list(_step_casadi(x_sym, u_sym, model)))
     out_fn = ca.Function("out", [x_sym], [_output_casadi(x_sym, model)])
 
-    expected_next_x = np.asarray(
-        model.discrete_dynamics(jnp.asarray(state), jnp.asarray(controls[0]), 0.0, model.dt)
-    )
+    expected_next_x = np.asarray(model.discrete_dynamics(jnp.asarray(state), jnp.asarray(controls[0]), 0.0, model.dt))
     expected_next_y = np.asarray(model.output(jnp.asarray(expected_next_x)))
     actual_next_x, actual_next_y = step_fn(state, controls[0])
 
     np.testing.assert_allclose(np.asarray(actual_next_x).reshape(-1), expected_next_x, rtol=1e-9, atol=1e-9)
     np.testing.assert_allclose(np.asarray(actual_next_y).reshape(-1), expected_next_y, rtol=1e-9, atol=1e-9)
-    np.testing.assert_allclose(
-        np.asarray(out_fn(actual_next_x)).reshape(-1), expected_next_y, rtol=1e-9, atol=1e-9
-    )
+    np.testing.assert_allclose(np.asarray(out_fn(actual_next_x)).reshape(-1), expected_next_y, rtol=1e-9, atol=1e-9)
 
     # Control Horizon rollout parity check
     states_jax = [state]
@@ -179,9 +175,7 @@ def test_waveform_cnn_cost_parity_with_trajopt(
     np.testing.assert_allclose(
         decomp_casadi["cost_spectral"], float(decomp_trajopt["cost_spectral"]), rtol=1e-8, atol=1e-8
     )
-    np.testing.assert_allclose(
-        decomp_casadi["cost_total"], float(decomp_trajopt["cost_total"]), rtol=1e-8, atol=1e-8
-    )
+    np.testing.assert_allclose(decomp_casadi["cost_total"], float(decomp_trajopt["cost_total"]), rtol=1e-8, atol=1e-8)
 
 
 def test_waveform_cnn_configured_controller_emits_feasible_plan(tmp_path: Path) -> None:

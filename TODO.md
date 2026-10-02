@@ -37,3 +37,7 @@
 ## python-project-template
 
 * Needs updating with the stuff from here
+
+## Latex lint
+
+* add section length requirement

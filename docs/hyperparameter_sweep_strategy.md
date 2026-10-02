@@ -103,7 +103,7 @@ Tier 1 experiments run through Optuna (`scripts/sweep_nn_predictor.py`). All tri
     * Output delay order ($H_y$): $[1, 2, 4, 8]$
     * Control delay order ($H_u$): $[1, 2, 4, 8]$
   * **Sub-experiment B (SVD truncation):**
-    * Energy cutoff: $[0.80, 0.85, 0.90, 0.95, 0.99, 0.999]$
+    * Energy cutoff: $[0.80, 0.85, 0.90, 0.95, 0.99, 0.999, 1.0]$
   * **Sub-experiment C (Ridge regularization):**
     * `training.dmd_lambda`: $[0, 10^{-8}, 10^{-6}, 10^{-4}, 10^{-2}]$, with the selected embedding and energy cutoff.
 

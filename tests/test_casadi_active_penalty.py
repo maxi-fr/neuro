@@ -21,7 +21,7 @@ if TYPE_CHECKING:
 @pytest.mark.parametrize("observable", [False, True])
 @pytest.mark.parametrize("cnn", [False, True])
 def test_active_penalty_cost_and_physical_plan(tmp_path: Path, *, observable: bool, cnn: bool) -> None:
-    """The weighted binary count augments existing Costs on four Predictor representations."""
+    """The horizon-normalized binary count augments Costs on four Predictor representations."""
     if observable:
         if cnn:
             artifact = tmp_path / "observable_cnn"
@@ -43,7 +43,7 @@ def test_active_penalty_cost_and_physical_plan(tmp_path: Path, *, observable: bo
     active = np.array([1.0, 0.0])
     state = np.zeros(problem.model.n)
     costs = controller.decompose_cost(state, controls, active)
-    assert costs["cost_active"] == pytest.approx(0.7)
+    assert costs["cost_active"] == pytest.approx(0.35)
     assert costs["active_count"] == 1
     assert costs["cost_total"] == pytest.approx(
         costs["cost_tracking"]
@@ -63,7 +63,7 @@ def test_active_penalty_cost_and_physical_plan(tmp_path: Path, *, observable: bo
     np.testing.assert_allclose(current, log.planned_u[0])
     assert log.active_count == pytest.approx(float(np.sum(log.planned_active)))
     assert log.active_count is not None
-    assert log.cost_active == pytest.approx(0.7 * log.active_count)
+    assert log.cost_active == pytest.approx(0.7 * log.active_count / problem.horizon)
     np.testing.assert_allclose(controller._active_guess, np.r_[log.planned_active[1:], log.planned_active[-1]])  # noqa: SLF001 -- shifted warm-start contract
 
 
@@ -84,6 +84,27 @@ def test_active_penalty_configuration_rejects_cap_and_invalid_weights(tmp_path: 
     else:
         with pytest.raises(ValueError, match="mutually exclusive"):
             build_casadi_waveform_problem(artifact, horizon=2, u_max=0.5, w_y=0.0, w_active=0.2, max_active_intervals=1)
+
+
+def test_integer_solver_selection_and_fixed_state_solve(tmp_path: Path) -> None:
+    """Solver selection validates backends and a fixed-state solve leaves controller history untouched."""
+    artifact, _ = _observable_fixture(tmp_path)
+    with pytest.raises(ValueError, match="integer_solver"):
+        build_casadi_observable_problem(artifact, horizon=2, u_max=0.5, w_active=0.2, integer_solver="bad")
+    knitro_problem = build_casadi_observable_problem(
+        artifact, horizon=2, u_max=0.5, w_active=0.2, integer_solver="knitro"
+    )
+    assert knitro_problem.integer_solver == "knitro"
+    problem = build_casadi_observable_problem(artifact, horizon=2, u_max=0.5, w_active=0.2)
+    controller = CasADiMPCController(problem.model.dt, problem)
+    state = np.zeros(problem.model.n)
+    initial_u = np.zeros((problem.horizon, problem.model.n_controls))
+    initial_active = np.zeros(problem.horizon)
+    before_state = controller._state.copy()  # noqa: SLF001 -- verify benchmark solve is side-effect-free
+    log = controller.solve_state(state, initial_u, initial_active)
+    assert log.success
+    np.testing.assert_array_equal(controller._state, before_state)  # noqa: SLF001 -- verify no state mutation
+    np.testing.assert_array_equal(controller._u_guess, initial_u)  # noqa: SLF001 -- verify no guess mutation
 
 
 def test_active_penalty_failed_solve_applies_zero_current(tmp_path: Path) -> None:
