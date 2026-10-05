@@ -1,0 +1,198 @@
+% TikZ block diagram of one Jansen-Rit neural mass microcircuit
+% Parameters and equations follow Section 2.1 and Eq. (2.1)-(2.4)
+\begin{tikzpicture}[
+    >=Stealth,
+    font=\small,
+    % Block styles
+    block/.style={
+        draw=black!80,
+        fill=white,
+        line width=0.75pt,
+        rounded corners=2.5pt,
+        align=center,
+        inner sep=4pt,
+        minimum height=1.15cm,
+        minimum width=1.85cm
+    },
+    gain/.style={
+        draw=black!75,
+        fill=black!4,
+        line width=0.75pt,
+        rounded corners=2pt,
+        align=center,
+        inner sep=2pt,
+        minimum size=0.72cm,
+        font=\small\bfseries
+    },
+    sum/.style={
+        circle,
+        draw=black!80,
+        fill=white,
+        line width=0.75pt,
+        inner sep=0pt,
+        minimum size=0.6cm,
+        font=\normalsize
+    },
+    % Group container styles
+    groupbox/.style={
+        draw=black!35,
+        line width=0.6pt,
+        rounded corners=6pt,
+        fill=black!2,
+        inner sep=9pt
+    },
+    grouplabel/.style={
+        font=\footnotesize\bfseries,
+        text=black!85
+    },
+    % Signal styles
+    signal/.style={
+        ->,
+        line width=0.75pt,
+        draw=black!85
+    },
+    stimsignal/.style={
+        ->,
+        line width=1.1pt,
+        draw=accentcolor
+    },
+    branchdot/.style={
+        circle,
+        fill=black!85,
+        inner sep=0pt,
+        minimum size=3.5pt
+    }
+]
+
+    % =========================================================================
+    % ROW 1 (TOP): EXCITATORY INTERNEURONS (eIN)
+    % Feedback branch: flows Right-to-Left
+    % =========================================================================
+    \node[gain] (ein_c1) at (3.8, 2.6) {$c_1$};
+    \node[block] (ein_sig) at (2.0, 2.6) {Sigmoid $S$\\ \scriptsize (wave-to-pulse)};
+    \node[gain] (ein_c2) at (0.2, 2.6) {$c_2$};
+    \node[sum] (ein_sum) at (-1.4, 2.6) {$\sum$};
+    \node[block] (ein_he) at (-3.1, 2.6) {$h_\mathrm{e}(t)$\\ \scriptsize Gain $A_i,\, a$};
+
+    % Group box for eIN
+    \begin{scope}[on background layer]
+        \node[groupbox, fit=(ein_he) (ein_sum) (ein_c2) (ein_sig) (ein_c1), inner xsep=12pt, inner ysep=10pt] (ein_box) {};
+    \end{scope}
+    % Title placed above top-right border
+    \node[grouplabel, anchor=south east] at ([xshift=-6pt, yshift=2pt]ein_box.north east) {Excitatory Interneurons (\acs{ein})};
+
+    % External inputs entering eIN summing junction from above (math symbols only)
+    \coordinate (in_bg) at (-2.6, 3.8);
+    \coordinate (in_coup) at (-1.6, 3.8);
+    \coordinate (in_noise) at (-0.6, 3.8);
+
+    \draw[signal] (in_bg) node[above, font=\small] {$I$}
+        -- ([xshift=-0.18cm]ein_sum.north) node[left, pos=0.85, font=\tiny] {$+$};
+    \draw[signal] (in_coup) node[above, font=\small] {$I_{\mathrm{coup},i}$}
+        -- (ein_sum.north) node[right, pos=0.85, font=\tiny] {$+$};
+    \draw[signal] (in_noise) node[above, font=\small] {$\zeta_i$}
+        -- ([xshift=0.18cm]ein_sum.north) node[right, pos=0.85, font=\tiny] {$+$};
+
+
+    % =========================================================================
+    % ROW 0 (MIDDLE): PYRAMIDAL POPULATION (PY)
+    % Signal flows Left-to-Right
+    % =========================================================================
+    % Somatic summation junctions
+    \node[sum] (soma_diff) at (-4.8, 0) {$\sum$};
+    \node[sum] (soma_stim) at (-2.2, 0) {$\sum$};
+
+    % Core PY blocks
+    \node[block] (py_sig) at (-0.2, 0) {Sigmoid $S$\\ \scriptsize (wave-to-pulse)};
+    \node[block] (py_he) at (2.6, 0) {$h_\mathrm{e}(t)$\\ \scriptsize Gain $A_i,\, a$};
+
+    % Group box for PY (enclosing somatic junctions, sigmoid, and PSP filter)
+    \begin{scope}[on background layer]
+        \node[groupbox, fit=(soma_diff) (soma_stim) (py_sig) (py_he), inner xsep=12pt, inner ysep=10pt] (py_box) {};
+    \end{scope}
+    % Title placed above top-right border
+    \node[grouplabel, anchor=south east] at ([xshift=-6pt, yshift=2pt]py_box.north east) {Pyramidal Population (\acs{py})};
+
+
+    % =========================================================================
+    % ROW -1 (BOTTOM): INHIBITORY INTERNEURONS (iIN)
+    % Feedback branch: flows Right-to-Left
+    % =========================================================================
+    \node[gain] (iin_c3) at (3.8, -2.6) {$c_3$};
+    \node[block] (iin_sig) at (2.0, -2.6) {Sigmoid $S$\\ \scriptsize (wave-to-pulse)};
+    \node[gain] (iin_c4) at (0.2, -2.6) {$c_4$};
+    \node[block] (iin_hi) at (-3.1, -2.6) {$h_\mathrm{i}(t)$\\ \scriptsize Gain $B,\, b$};
+
+    % Group box for iIN
+    \begin{scope}[on background layer]
+        \node[groupbox, fit=(iin_hi) (iin_c4) (iin_sig) (iin_c3), inner xsep=12pt, inner ysep=10pt] (iin_box) {};
+    \end{scope}
+    % Title placed above top-right border
+    \node[grouplabel, anchor=south east] at ([xshift=-6pt, yshift=2pt]iin_box.north east) {Inhibitory Interneurons (\acs{iin})};
+
+
+    % =========================================================================
+    % CONNECTIONS & SIGNAL ROUTING
+    % =========================================================================
+
+    % 1. PY feedforward output x_{i,1} branching to eIN and iIN
+    \coordinate (py_out) at (5.0, 0);
+    \node[branchdot] (dot_py) at (py_out) {};
+    \draw[signal] (py_he.east) -- (py_out);
+    % x_1 placed cleanly to the right of the vertical branching arrow
+    \node[right=3pt, font=\small] at (py_out) {$x_{i,1}$};
+
+    % Branch to eIN: up, then left into c1
+    \draw[signal] (py_out) |- (ein_c1.east);
+
+    % Branch to iIN: down, then left into c3
+    \draw[signal] (py_out) |- (iin_c3.east);
+
+    % 2. eIN internal connections (Right-to-Left)
+    \draw[signal] (ein_c1.west) -- (ein_sig.east);
+    \draw[signal] (ein_sig.west) -- (ein_c2.east);
+    \draw[signal] (ein_c2.west) -- (ein_sum.east) node[below, pos=0.75, font=\tiny] {$+$};
+    \draw[signal] (ein_sum.west) -- (ein_he.east);
+
+    % 3. iIN internal connections (Right-to-Left)
+    \draw[signal] (iin_c3.west) -- (iin_sig.east);
+    \draw[signal] (iin_sig.west) -- (iin_c4.east);
+    \draw[signal] (iin_c4.west) -- (iin_hi.east);
+
+    % 4. Feedback lines to somatic subtractor (soma_diff)
+    % Excitatory feedback x_{i,2}: exits eIN left, turns down along vertical bus x = -4.8
+    \draw[signal] (ein_he.west) -- (-4.8, 2.6)
+        -- (soma_diff.north)
+        node[pos=0.45, left, font=\small] {$x_{i,2}$}
+        node[pos=0.92, right, font=\tiny] {$+$};
+
+    % Inhibitory feedback x_{i,3}: exits iIN left, turns up along vertical bus x = -4.8
+    % Inhibitory synapse: filled circle before subtractor junction
+    \draw[line width=0.75pt, draw=black!85] (iin_hi.west) -- (-4.8, -2.6)
+        -- ([yshift=-4pt]soma_diff.south)
+        node[pos=0.45, left, font=\small] {$x_{i,3}$};
+    % Filled circle at inhibitory terminal
+    \node[circle, fill=black!85, inner sep=0pt, minimum size=5pt] at ([yshift=-2.5pt]soma_diff.south) {};
+    \node[right, font=\tiny] at ([xshift=3pt, yshift=-7pt]soma_diff.south) {$-$};
+
+    % 5. Somatic current balance, LFP tap, and Stimulation injection
+    % Main wire carries y_{LFP,i} directly from somatic subtractor to stimulation adder
+    \draw[signal] (soma_diff.east) -- (soma_stim.west)
+        node[pos=0.45, above, font=\small\bfseries, text=accentcolor!90!black] {$y_{\mathrm{LFP},i}$}
+        node[pos=0.88, above, font=\tiny] {$+$};
+
+    % Stimulation drive s_i entering soma_stim from above (math symbol only)
+    \draw[stimsignal] (-2.2, 1.0)
+        node[above, font=\small\bfseries, text=accentcolor] {$s_i$}
+        -- (soma_stim.north)
+        node[right, pos=0.85, font=\tiny, text=accentcolor] {$+$};
+
+    % Line from soma_stim to py_sig
+    \draw[signal] (soma_stim.east) -- (py_sig.west)
+        node[pos=0.55, above, font=\footnotesize] {$v$};
+
+    % Line from py_sig to py_he
+    \draw[signal] (py_sig.east) -- (py_he.west)
+        node[pos=0.5, above, font=\footnotesize] {$S(v)$};
+
+\end{tikzpicture}

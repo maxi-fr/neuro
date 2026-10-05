@@ -56,7 +56,7 @@ Figure~\ref{fig:receding_horizon} illustrates this receding-horizon principle, w
 
 \begin{figure}[htbp]
     \centering
-    \includegraphics[width=0.9\linewidth]{figures/03_foundations/receding_horizon}
+    \includegraphics[width=0.9\linewidth]{figures/04_mpc_framework/receding_horizon}
     \caption{The receding-horizon principle in \ac{mpc}. At step $k$, an optimal input sequence is planned over the prediction horizon $H$. Only the first element (solid bar) is applied. At step $k+1$, the horizon shifts, the measurement is updated, and a new plan is computed.}
     \label{fig:receding_horizon}
 \end{figure}
@@ -71,7 +71,7 @@ Such rigorous certificates are difficult to derive for general data-driven nonli
 In the absence of terminal ingredients, sufficiently long horizons and appropriate stage costs can provide practical stabilising properties that must be assessed through numerical simulation~\cite[ch.~6]{Gruene2017}. % cite-checked: SUPPORTED
 This simulation-based validation approach aligns with the framework's evaluation in Chapter~\ref{ch:experiments_discussion}.
 
-\section{Linear and Nonlinear MPC}
+\section{Linear and Nonlinear \acs{mpc}}
 \label{sec:linear_nonlinear_mpc}
 
 The complexity of solving the \ac{ocp} in~\eqref{eq:ocp} depends on the choice of transition model $\mathbf{f}$.
@@ -138,7 +138,7 @@ State constraints can also be enforced directly on the explicit state variables.
 
 \begin{figure}[htbp]
     \centering
-    \includegraphics[width=0.9\linewidth]{figures/03_foundations/shooting}
+    \includegraphics[width=0.9\linewidth]{figures/04_mpc_framework/shooting}
     \caption{Direct single and multiple shooting transcriptions over a prediction horizon. Single shooting simulates the entire rollout sequentially. Multiple shooting incorporates the intermediate states as decision variables; the illustrated gaps vanish once the solver satisfies the dynamic equality constraints.}
     \label{fig:shooting}
 \end{figure}

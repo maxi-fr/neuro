@@ -13,7 +13,16 @@ This chapter develops the components of the prediction framework: the signal rep
 \label{sec:signal_representations}
 
 The choice of what to predict determines the required complexity of the forward model and the behavior of the resulting controller.
-This section formulates two candidate prediction representations: the raw \ac{eeg} waveform and a constructed spectral observable.
+This section formulates two candidate prediction representations: the time-domain \ac{eeg} waveform and a constructed spectral observable.
+Both begin with the scalp signal produced by the plant in Chapter~\ref{ch:biological_plant_modeling}, but the predictor operates on a slower discrete grid than the plant integrator.
+The \SI{0.1}{\milli\second} plant step resolves synaptic dynamics and conduction delays; it is not the required prediction interval.
+In the simulated seizures, the dominant oscillation lies around \SIrange{3}{4}{\hertz}, with most relevant variation below \SI{12}{\hertz}.
+A \SI{50}{\hertz} waveform grid therefore retains the targeted low-frequency activity while limiting the number of steps in each prediction horizon.
+
+Before selecting every 200th plant sample, a causal fourth-order Butterworth low-pass filter with a \SI{25}{\hertz} cutoff attenuates higher-frequency content in each raw \ac{eeg} channel.
+The resulting waveform has one sample every \SI{20}{\milli\second}.
+The cutoff lies at the \SI{25}{\hertz} Nyquist frequency of this grid, so attenuation near Nyquist is finite and some higher-frequency content can still alias into the sampled signal.
+The filter is causal because an online controller has no access to future samples.
 
 \subsection{Waveform Representation}
 \label{sec:waveform_representation}
@@ -22,8 +31,8 @@ This section formulates two candidate prediction representations: the raw \ac{ee
 % and candidate future currents conditioning the prediction. Motivate this representation.
 
 The most direct prediction target is the preprocessed time-domain \ac{eeg} waveform.
-As described in Chapter~\ref{ch:biological_plant_modeling}, the raw signal is filtered and decimated to a \SI{50}{\hertz} grid, producing one waveform sample every \SI{20}{\milli\second}.
-A waveform predictor must map a history of these voltage samples and past currents to future voltage samples.
+The waveform target is the filtered and decimated \SI{50}{\hertz} channel signal defined above.
+A waveform predictor must map a history of these simulated channel samples and past currents to future channel samples.
 
 This representation retains all information available in the measured channel, requiring no further transformation before training.
 However, requiring the surrogate model to forecast exact instantaneous sample values means it must track the phase of oscillatory dynamics precisely.
@@ -187,6 +196,8 @@ Alternatively, the predictor can learn a residual update to the latest output,
 In the residual formulation~\eqref{eq:residual_predictor}, if $\mathbf{g}_{\boldsymbol{\theta}} = \mathbf{0}$, the model acts as a persistence predictor.
 Training this \ac{mlp} on multi-step objectives requires backpropagating through the rollout graph, accumulating transition Jacobians along the sequence~\cite[sec.~10.2]{Goodfellow2016}. % cite-checked: SUPPORTED
 
+\subsection{CNN Predictor}
+%TODO
 \subsection{Dynamic Mode Decomposition with Control}
 
 If the chosen observable captures enough of the underlying dynamics, a linear evolution law may suffice.

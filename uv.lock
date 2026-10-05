@@ -1195,7 +1195,7 @@ wheels = [
 [[package]]
 name = "latex-linting"
 version = "0.1.0"
-source = { git = "https://github.com/maxi-fr/latex_linting#799c3d38c8c1b6ff751f151baf6652cd284f2f21" }
+source = { git = "https://github.com/maxi-fr/latex_linting#7bfc69a89299bc6d608be287e35a50c013c091c8" }
 dependencies = [
     { name = "fonttools" },
     { name = "httpx" },
