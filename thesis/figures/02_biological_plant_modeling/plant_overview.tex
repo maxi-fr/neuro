@@ -1,0 +1,17 @@
+\begin{tikzpicture}[
+    >=Stealth,
+    font=\small,
+    block/.style={draw=black!75, rounded corners=2pt, align=center,
+        minimum height=1.25cm, inner xsep=7pt, line width=0.7pt},
+    map/.style={block, fill=black!4, minimum width=2.5cm},
+    network/.style={block, fill=accentcolor!10, minimum width=3.1cm},
+    flow/.style={->, line width=0.8pt, draw=black!85}
+]
+    \node[map] (stim) at (-4.9,0) {Stimulation map\\$\mathbf{L}_{\mathrm{stim}}$};
+    \node[network] (plant) at (0,0) {Delayed stochastic\\Jansen--Rit network\\$\mathbf{x}(t)\in\mathbb{R}^{6N}$};
+    \node[map] (eeg) at (4.9,0) {Measurement map\\$\mathbf{L}_{\mathrm{EEG}}$};
+    \draw[flow] (-7.3,0) node[left] {$\mathbf{u}(t)$} -- (stim.west);
+    \draw[flow] (stim.east) -- node[above] {$\mathbf{s}(t)$} (plant.west);
+    \draw[flow] (plant.east) -- node[above] {$\mathbf{y}_{\mathrm{reg}}(t)$} (eeg.west);
+    \draw[flow] (eeg.east) -- (7.3,0) node[right] {$\mathbf{y}_{\mathrm{EEG}}(t)$};
+\end{tikzpicture}

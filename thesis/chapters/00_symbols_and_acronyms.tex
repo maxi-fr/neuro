@@ -12,16 +12,16 @@ A running index is italic, a naming index upright.
     \multicolumn{3}{l}{\itshape Indices and dimensions} \\
     $i, j$ & Brain region index & -- \\
     $N$ & Number of brain regions & -- \\
-    $m$ & \acs{eeg} channel index & -- \\
-    $M$ & Number of \acs{eeg} channels & -- \\
+    $m$ & \acs*{eeg} channel index & -- \\
+    $M$ & Number of \acs*{eeg} channels & -- \\
     $p$ & Stimulation electrode index & -- \\
     $P$ & Number of stimulation electrodes & -- \\
     \midrule
     \multicolumn{3}{l}{\itshape Plant state and dynamics} \\
-    $x_{i,1}, x_{i,2}, x_{i,3}$ & Pyramidal, excitatory and inhibitory \acs{psp} of region $i$ & \si{\milli\volt} \\
-    $x_{i,4}, x_{i,5}, x_{i,6}$ & Time derivatives of the three \acs{psp} & \si{\milli\volt\per\second} \\
-    $\mathbf{x}$ & Full plant state, $6N$ entries & -- \\
-    $h_\mathrm{e}, h_\mathrm{i}$ & Excitatory and inhibitory \acs{psp} impulse response & \si{\milli\volt\per\second} \\
+    $x_{i,1}, x_{i,2}, x_{i,3}$ & Pyramidal, excitatory and inhibitory \acs*{psp} of region $i$ & \si{\milli\volt} \\
+    $x_{i,4}, x_{i,5}, x_{i,6}$ & Time derivatives of the three \acs*{psp} & \si{\milli\volt\per\second} \\
+    $\mathbf{x}$ & Current regional state vector, $6N$ entries & -- \\
+    $h_\mathrm{e}, h_\mathrm{i}$ & Excitatory and inhibitory \acs*{psp} impulse response & \si{\milli\volt\per\second} \\
     $S(v)$ & Wave-to-pulse sigmoid & \si{\per\second} \\
     $A_i$ & Regional excitatory synaptic gain & \si{\milli\volt} \\
     $B$ & Inhibitory synaptic gain & \si{\milli\volt} \\
@@ -32,10 +32,10 @@ A running index is italic, a naming index upright.
     $v_0$ & Sigmoid midpoint potential & \si{\milli\volt} \\
     $r$ & Sigmoid steepness & \si{\per\milli\volt} \\
     $I$ & Constant excitatory background input & \si{\per\second} \\
-    $\zeta_i(t)$ & Gaussian white-noise drive on the excitatory loop, with variance parameter $\sigma^2$ & $\mathrm{mV}\,\mathrm{s}^{-2}$ \\
-    $\sigma$ & White-noise amplitude & $\mathrm{mV}\,\mathrm{s}^{-3/2}$ \\
-    $\xi_{i,k}$ & Integrated noise draw for node $i$ at plant step $k$ & \si{\milli\volt\per\second} \\
-    $Z_{i,k}$ & Independent standard normal draw & -- \\
+    $\zeta_i(t)$ & Gaussian white-noise input to the excitatory branch & \si{\per\second} \\
+    $\sigma$ & White-noise amplitude & \si{\second^{-1/2}} \\ % latex-lint:ignore=TYPO-05
+    $\xi_{i,k}$ & Noise increment in the excitatory derivative state at plant step $k$ & \si{\milli\volt\per\second} \\
+    $\eta_{i,k}$ & Independent standard normal draw & -- \\
     $\mathbf{e}_5$ & Fifth unit vector, selecting the excitatory derivative state & -- \\
     $\Delta t_\mathrm{p}$ & Plant integration step & \si{\second} \\
     \midrule
@@ -49,9 +49,9 @@ A running index is italic, a naming index upright.
     $I_{\mathrm{coup},i}$ & Network coupling input to region $i$ & \si{\per\second} \\
     \midrule
     \multicolumn{3}{l}{\itshape Electrical interfaces} \\
-    $y_{\mathrm{LFP},i}$, $\mathbf{y}_\mathrm{LFP}$ & Regional \acs{lfp} and its stacked vector & \si{\milli\volt} \\
-    $\mathbf{y}_\mathrm{EEG}$ & Scalp \acs{eeg} channel amplitudes & -- \\
-    $\mathbf{L}_\mathrm{EEG}$ & \acs{eeg} lead field, $M \times N$ & -- \\
+    $y_{\mathrm{reg},i}$, $\mathbf{y}_\mathrm{reg}$ & Regional output and its stacked vector & \si{\milli\volt} \\
+    $\mathbf{y}_\mathrm{EEG}$ & Scalp \acs*{eeg} channel amplitudes & -- \\
+    $\mathbf{L}_\mathrm{EEG}$ & \acs*{eeg} lead field, $M \times N$ & -- \\
     $\mathbf{L}_\mathrm{stim}$ & Stimulation lead field, $N \times P$ & -- \\
     $\mathbf{u}$, $u_p$ & Electrode current vector and current at electrode $p$ & \si{\milli\ampere} \\
     $\mathbf{s}$, $s_i$ & Stimulation drive and its regional entries & \si{\milli\volt} \\
@@ -72,22 +72,22 @@ A running index is italic, a naming index upright.
     $\mathbf{x}_{j|k}$ & Prediction $j$ steps ahead of step $k$ & -- \\
     $\mathbf{f}$ & One-step transition function of the prediction model & -- \\
     $\boldsymbol{\varphi}_j$ & Single-shooting rollout map over $j$ steps & -- \\
-    $d_\mathrm{y}, d_\mathrm{u}$ & \acs{narx} output and input history lengths & -- \\
+    $d_\mathrm{y}, d_\mathrm{u}$ & \acs*{narx} output and input history lengths & -- \\
     $\mathbf{h}_k$, $n_h$ & Input-output history state and its dimension & -- \\
     $\boldsymbol{\theta}$ & Prediction-model parameters & -- \\
-    $\boldsymbol{\xi}_k$ & \acs{mlp} input & -- \\
-    $L$ & Number of affine layers in the \acs{mlp} & -- \\
-    $\mathbf{a}^{(\ell)}_k$ & \acs{mlp} layer activation & -- \\
-    $\mathbf{W}^{(\ell)}$, $\mathbf{b}^{(\ell)}$ & \acs{mlp} layer weights and biases & -- \\
+    $\boldsymbol{\xi}_k$ & \acs*{mlp} input & -- \\
+    $L$ & Number of affine layers in the \acs*{mlp} & -- \\
+    $\mathbf{a}^{(\ell)}_k$ & \acs*{mlp} layer activation & -- \\
+    $\mathbf{W}^{(\ell)}$, $\mathbf{b}^{(\ell)}$ & \acs*{mlp} layer weights and biases & -- \\
     $\mathcal{D}$ & Identification sample distribution & -- \\
     $N_\mathrm{d}$ & Identification sample count & -- \\
     $\mathbf{H}$ & Centred history snapshots & -- \\
     $\mathbf{Y}_+$ & Centred successor-output snapshots & -- \\
     $\boldsymbol{\Upsilon}$ & Centred input snapshots & -- \\
-    $\boldsymbol{\Omega}$ & Stacked \acs{dmdc} regressors & -- \\
-    $\mathbf{A}_\mathrm{y}$, $\mathbf{B}_\mathrm{y}$, $\mathbf{c}_\mathrm{y}$ & Affine \acs{dmdc} output-map parameters & -- \\
-    $\mathbf{G}$ & Combined \acs{dmdc} regression matrix & -- \\
-    $\rho$ & Retained \acs{svd} rank & -- \\
+    $\boldsymbol{\Omega}$ & Stacked \acs*{dmdc} regressors & -- \\
+    $\mathbf{A}_\mathrm{y}$, $\mathbf{B}_\mathrm{y}$, $\mathbf{c}_\mathrm{y}$ & Affine \acs*{dmdc} output-map parameters & -- \\
+    $\mathbf{G}$ & Combined \acs*{dmdc} regression matrix & -- \\
+    $\rho$ & Retained \acs*{svd} rank & -- \\
     $\ell$ & Stage cost & -- \\
     $\ell_\mathrm{x}$, $\ell_\mathrm{u}$ & State-dependent and input-dependent stage-cost terms & -- \\
     $V_\mathrm{f}$ & Terminal cost & -- \\
