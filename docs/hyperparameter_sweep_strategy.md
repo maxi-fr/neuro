@@ -70,12 +70,16 @@ Tier 1 experiments run through Optuna (`scripts/sweep_nn_predictor.py`). All tri
 * **Target metric:** Multi-step `val_log_mse` across the full frame Control Horizon.
 * **Fixed configuration:** Fixed Observable geometry, residual connection enabled.
 * **Sub-experiments:**
-  * **Sub-experiment A (Convolutional structure):**
-    * Channel filters (`hidden_size`): $[16, 32, 64, 128]$
-    * Depth: $[1, 2, 3]$
-    * Time kernel size ($K_t$): $[3, 5]$
-    * Frequency kernel size ($K_f$): $[3, 5]$
-  * **Sub-experiment B (Optimizer tuning):**
+  * **Sub-experiment A (Convolutional structure and capacity):**
+    * Output history length (`model.n_y`): Integer range $[3, 12]$ (spans $180\,\text{ms}$ to $720\,\text{ms}$ Frame history)
+    * Activation (`model.activation`): `[tanh, softplus]`
+    * Channel filters (`hidden_size`): $[16, 32, 64]$ (pruned $128$ to enforce $\le 3\,\text{h}$ trial duration)
+    * Depth: $[1, 2]$ (pruned $3$ to enforce $\le 3\,\text{h}$ trial duration)
+    * Time kernel size ($K_t$): $[2, 3, 4, 5]$
+    * Frequency kernel size ($K_f$): $[1, 2, 3, 4, 5, 7]$
+    * *Execution note:* Skip already run configurations (i.e. combinations where $n_y=5, \text{activation}=\text{tanh}, (K_t, K_f) \in \{3, 5\}^2$).
+  * **Sub-experiment B (Optimizer tuning — skipped):**
+    * *Status:* Retained in specification but skipped during execution to prioritize structural search under the fixed baseline optimizer parameters (`lr`: $10^{-4}$, `weight_decay`: $10^{-5}$, `batch_size`: 256).
     * `training.learning_rate`: Log-uniform $[1.0 \times 10^{-4}, 3.0 \times 10^{-3}]$
     * `training.weight_decay`: Log-uniform $[1.0 \times 10^{-6}, 1.0 \times 10^{-3}]$
 
@@ -86,8 +90,8 @@ Tier 1 experiments run through Optuna (`scripts/sweep_nn_predictor.py`). All tri
 * **Fixed configuration:** Provisional sampling rate $f_s = 100\,\text{Hz}$, curriculum MSE span $0.25\,\text{s}$, STFT span $1.0\,\text{s}$, calibrated fixed loss weights, residual connection enabled.
 * **Sub-experiments:**
   * **Sub-experiment A (Model capacity):**
-    * `model.hidden_size`: $[64, 128, 256, 512]$
-    * `model.depth`: $[1, 2, 3, 4]$
+    * `model.hidden_size`: $[64, 128, 256]$ (pruned $512$ to maintain $\le 3\,\text{h}$ training budget)
+    * `model.depth`: $[1, 2, 3]$ (pruned $4$ to maintain $\le 3\,\text{h}$ training budget)
     * `model.activation`: `[tanh, softplus]`
   * **Sub-experiment B (Optimizer tuning):**
     * `training.learning_rate`: Log-uniform $[1.0 \times 10^{-4}, 2.0 \times 10^{-3}]$
@@ -129,7 +133,7 @@ Tier 2 experiments evaluate the full closed-loop control system against the nonl
   * **Sub-experiment B (Sparse control weight $w_{l1}$):**
     * Candidate values: $[0, 0.01, 0.1]$ at the selected $w_u$, only if a sparse-control comparison is still wanted.
 
-### 2.2 Observable STFT geometry exploration
+### 2.2 Observable MLP STFT geometry exploration
 
 * **Purpose:** Determine the optimal Observable representation balancing detection latency, frequency resolution, and estimator variance. Rather than testing all 72 combinatorial options, the search runs in four decoupled sub-experiments.
 * **Target metric:** Seizure Burden, Delivered Charge, and recruitment detection latency across all canonical seeds.
@@ -163,7 +167,21 @@ Tier 2 experiments evaluate the full closed-loop control system against the nonl
       1. Asymmetric Hann (`asymmetric_window: true`): Energy concentrated at newest samples.
       2. Symmetric Hann (`asymmetric_window: false`): Standard Hann window with energy center at $N/2$.
 
-### 2.3 Waveform Loss and Cost formulation
+### 2.3 Observable CNN STFT geometry exploration
+
+* **Purpose:** Determine whether changing the Observable representation improves closed-loop control with the tuned Observable CNN, while balancing detection latency, frequency resolution, and estimator variance.
+* **Prerequisite:** Complete the Observable CNN Tier 1 optimization in Section 1.2 at the baseline geometry. Freeze its selected architecture, optimizer, training schedule, and other non-geometry settings as the CNN geometry-sweep baseline. Calibrate the Observable CNN controller effort weight on its newly trained baseline checkpoint before the geometry sweep; do not assume the Observable MLP effort setting transfers to the CNN.
+* **Target metric:** Seizure Burden, Delivered Charge, recruitment detection latency, solver solve time, and IPOPT success rate across all canonical seeds. Offline validation loss is a qualification and stability check, not the cross-geometry ranking metric.
+* **Training protocol:** Retrain the frozen CNN configuration from scratch for every candidate geometry using the same training data, training/validation split, preprocessing procedure, and training-data seeds. Regenerate geometry-dependent standardizers, checkpoints, healthy references, and controller artifacts for each candidate. Keep the CNN hyperparameters and calibrated controller cost weights fixed across candidates. For every geometry, recompute the minimum valid control history with `observable.min_past_controls()`.
+* **Simulation protocol:** Use the Tier 2 canonical seeds `[7000, 7001, 7002, 7004, 7005]`, Plant duration $12.0\,\text{s}$, and otherwise identical Plant and controller settings. Set controller `dt` and horizon steps to preserve each candidate's knot interval and the $1.0\,\text{s}$ Control Horizon: `n_hop=3` uses $dt=0.06\,\text{s}$ and 17 steps; `n_hop=5` uses $dt=0.10\,\text{s}$ and 10 steps.
+* **Sub-experiments:** Use the same four-stage, decoupled candidate sequence as the Observable MLP exploration in Section 2.2. Advance each stage using the selected candidate from the preceding stage:
+  * **Sub-experiment A (Dynamical backbone grid):** Four combinations of `n_segment` $\in \{25,50\}$ and `n_hop` $\in \{3,5\}$; fix `band_hz: [1.0, 25.0]`, linear kernel $K=1$, and asymmetric Hann.
+  * **Sub-experiment B (Spectral band and DC screening):** On the winning backbone from A, compare `band_hz: [0.0, 25.0]`, `[1.0, 25.0]`, and `[3.0, 12.0]`; fix $K=1$ and asymmetric Hann.
+  * **Sub-experiment C (Linear frame kernel width):** On the winning backbone and band from B, compare $K \in \{1,4,7\}$ with linear ramp weights and asymmetric Hann.
+  * **Sub-experiment D (Window taper causal delay ablation):** On the winning backbone, band, and $K$ from C, compare asymmetric and symmetric Hann.
+* **Selection and reporting:** Apply the same predeclared selection rule at each stage, considering Seizure Burden and Delivered Charge together and using recruitment detection latency as the latency measure. Report all candidate results, seed-level values, aggregation method, solver outcomes, and the selected geometry. Do not select by offline loss alone or compare raw validation losses across different geometries.
+
+### 2.4 Waveform Loss and Cost formulation
 
 * **Purpose:** Determine the optimal training loss composition and receding-horizon cost function for Waveform models, testing the alignment between time-domain tracking and spectral excess penalties and evaluating whether joint supervision provides a closed-loop advantage over pure single-objective control.
 * **Target metric:** Seizure Burden, Delivered Charge, Propagation Zone containment, and IPOPT solve time per decision step across canonical seeds.
@@ -182,7 +200,7 @@ Tier 2 experiments evaluate the full closed-loop control system against the nonl
       * Voltage tracking terminal weight: $w_{y,\text{terminal}} \in [1 \times, 2 \times, 5 \times, 10 \times] w_y$
       * Spectral hinge terminal weight: $w_{\text{hinge},\text{terminal}} \in [1 \times, 2 \times, 5 \times, 10 \times] w_\text{hinge}$
 
-### 2.4 Control Horizon lookahead sweep
+### 2.5 Control Horizon lookahead sweep
 
 * **Purpose:** Determine the optimal planning lookahead for the receding-horizon controller, trading off long-range trajectory foresight against IPOPT solve time per decision step.
 * **Target metric:** Seizure Burden, solve time, and IPOPT iteration count.
@@ -191,7 +209,7 @@ Tier 2 experiments evaluate the full closed-loop control system against the nonl
   * Lookahead durations: $[0.6\,\text{s}, 0.8\,\text{s}, 1.0\,\text{s}, 1.2\,\text{s}, 1.5\,\text{s}]$
   * Corresponding steps depend on the knot interval ($H = T / \Delta t$).
 
-### 2.5 Predictor family champion comparison
+### 2.6 Predictor family champion comparison
 
 * **Purpose:** Benchmark the final champion model from each Predictor family under identical closed-loop Plant conditions to determine the top overall architecture.
 * **Target metric:** Seizure Burden, Delivered Charge, and Propagation Zone containment across all canonical seeds.
