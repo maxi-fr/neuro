@@ -3040,7 +3040,7 @@ wheels = [
 [[package]]
 name = "trajopt"
 version = "0.1.0"
-source = { git = "https://github.com/maxi-fr/trajopt.git#5c9e374cf7f8c5530f0d7cb25776ddfa64f27bcd" }
+source = { git = "https://github.com/maxi-fr/trajopt.git#31a1d27e76b9ba815c1088ca52a7af0577c9e955" }
 dependencies = [
     { name = "equinox" },
     { name = "jax" },

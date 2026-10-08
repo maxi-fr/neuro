@@ -10,6 +10,7 @@ import pytest
 import torch
 from trajopt.constraints.linear import LinearConstraint
 from trajopt.costs.output import OutputCost
+from trajopt.costs.pseudo_huber import PseudoHuberControlCost
 from trajopt.dynamics.base import DiscreteDynamics
 from trajopt.mpc import MPC
 from trajopt.solvers.altro import ALTRO
@@ -21,7 +22,6 @@ from neuro.comparison import cost_metrics, format_cost_report
 from neuro.config import StftGeometry
 from neuro.control.costs import (
     ExcludeInitialKnotState,
-    L1ControlCost,
     ObservableFrameHingeCost,
     ObservableHingeCost,
     ReducedEffortCost,
@@ -265,14 +265,14 @@ def test_native_solver_converges_on_smooth_l1(tmp_path: Path) -> None:
     np.testing.assert_allclose(np.sum(np.asarray(mpc.controls), axis=1), np.zeros(horizon), atol=1e-4)
 
 
-def test_l1_cost_stage_values_match_epigraph() -> None:
-    """The smooth surrogate's per-knot values match the epigraph's on fixed controls, up to ``eps``."""
+def test_pseudo_huber_cost_stage_values_match_epigraph() -> None:
+    """The smooth surrogate's per-knot values match the epigraph's on fixed controls, up to delta."""
     rng = np.random.default_rng(_SEED + 8)
     horizon, m = 5, 2
     u_seq = rng.uniform(-0.8, 0.8, (horizon, m))
     w_l1 = 0.5
     epigraph = (w_l1 / horizon) * np.sum(np.abs(u_seq))
-    surrogate = L1ControlCost(n=4, m=m, w_l1=w_l1, horizon=horizon).stage_costs(
+    surrogate = PseudoHuberControlCost(n=4, m=m, weight=w_l1 / horizon, delta=1e-3).stage_costs(
         jnp.zeros((horizon, 4)), jnp.asarray(u_seq), jnp.zeros(horizon)
     )
     np.testing.assert_allclose(float(jnp.sum(surrogate)), epigraph, atol=1e-3)
@@ -284,14 +284,20 @@ def test_sum_cost_composes_evaluate_and_stage_costs() -> None:
     n, m, horizon = 4, 2, 5
     x_seq = rng.standard_normal((horizon, n))
     u_seq = rng.standard_normal((horizon, m))
-    quadratic = L1ControlCost(n=n, m=m, w_l1=0.0, horizon=horizon)
-    l1 = L1ControlCost(n=n, m=m, w_l1=0.5, horizon=horizon)
-    combined = SumCost([quadratic, l1])
+    c1 = PseudoHuberControlCost(n=n, m=m, weight=0.1, delta=1e-3)
+    c2 = PseudoHuberControlCost(n=n, m=m, weight=0.5, delta=1e-3)
+    combined = SumCost([c1, c2])
     per_knot = combined.evaluate(jnp.asarray(x_seq[0]), jnp.asarray(u_seq[0]))
-    np.testing.assert_allclose(float(per_knot), float(l1.evaluate(jnp.asarray(x_seq[0]), jnp.asarray(u_seq[0]))))
+    np.testing.assert_allclose(
+        float(per_knot),
+        float(c1.evaluate(jnp.asarray(x_seq[0]), jnp.asarray(u_seq[0])))
+        + float(c2.evaluate(jnp.asarray(x_seq[0]), jnp.asarray(u_seq[0]))),
+    )
     total = float(jnp.sum(combined.stage_costs(jnp.asarray(x_seq), jnp.asarray(u_seq), jnp.zeros(horizon))))
     np.testing.assert_allclose(
-        total, float(jnp.sum(l1.stage_costs(jnp.asarray(x_seq), jnp.asarray(u_seq), jnp.zeros(horizon))))
+        total,
+        float(jnp.sum(c1.stage_costs(jnp.asarray(x_seq), jnp.asarray(u_seq), jnp.zeros(horizon))))
+        + float(jnp.sum(c2.stage_costs(jnp.asarray(x_seq), jnp.asarray(u_seq), jnp.zeros(horizon)))),
     )
 
 
@@ -511,7 +517,7 @@ def test_observable_frame_hinge_is_zero_under_the_envelope_and_registered_whole_
     np.testing.assert_allclose(float(stage_vals[0]), 0.0, atol=0.0)
 
     assert has_whole_horizon_cost(cost)
-    assert has_whole_horizon_cost(SumCost([L1ControlCost(n=n, m=m, w_l1=1.0, horizon=horizon), cost]))
+    assert has_whole_horizon_cost(SumCost([PseudoHuberControlCost(n=n, m=m, weight=1.0, delta=1e-3), cost]))
 
 
 def test_observable_frame_hinge_cost_validation() -> None:

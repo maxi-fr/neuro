@@ -18,10 +18,18 @@ from trajopt.constraints.horizon import LinearHorizonConstraint
 from trajopt.constraints.linear import LinearConstraint
 from trajopt.costs.objective import Objective
 from trajopt.costs.output import OutputCost
+from trajopt.costs.pseudo_huber import PseudoHuberControlCost
 from trajopt.costs.quadratic import DiagonalCost
 from trajopt.dynamics.base import DiscreteDynamics
 from trajopt.mpc import MPC
-from trajopt.problem import BoundaryConditions, Problem, retarget_problem
+from trajopt.problem import (
+    BoundaryConditions,
+    Problem,
+    _EpigraphModel,
+    _EpigraphStageCost,
+    add_l1_epigraph,
+    retarget_problem,
+)
 from trajopt.program import WarmStart
 from trajopt.solvers.altro import ALTRO
 from trajopt.solvers.boxqp import BoxQP
@@ -47,7 +55,6 @@ from trajopt.transcription.single_shooting import (
 
 from neuro.control.costs import (
     ExcludeInitialKnotState,
-    L1ControlCost,
     ObservableFrameHingeCost,
     ObservableHingeCost,
     ReducedEffortCost,
@@ -1059,6 +1066,175 @@ class AugmentedActivationModel(DiscreteDynamics, InferencePredictor):
         return cls(base)
 
 
+class EpigraphInferenceModel(DiscreteDynamics, InferencePredictor):
+    """DiscreteDynamics and InferencePredictor adapter for _EpigraphModel, stripping trailing slack coordinates."""
+
+    epigraph_model: _EpigraphModel
+    base_model: InferencePredictor
+    n_y: int = eqx.field(static=True)
+    n_u: int = eqx.field(static=True)
+    n_channels: int = eqx.field(static=True)
+    n_controls: int = eqx.field(static=True)
+    n_outputs: int = eqx.field(static=True)
+    dt: float = eqx.field(static=True)
+
+    def __init__(self, epigraph_model: _EpigraphModel) -> None:
+        """Wrap an _EpigraphModel, forwarding InferencePredictor methods to the underlying model."""
+        super().__init__(n=epigraph_model.n, m=epigraph_model.m, ne=epigraph_model.ne, p=epigraph_model.p)
+        self.epigraph_model = epigraph_model
+        base_model = epigraph_model.original
+        if not isinstance(base_model, InferencePredictor):
+            msg = f"epigraph_model.original ({type(base_model).__name__}) must implement InferencePredictor"
+            raise TypeError(msg)
+        self.base_model = base_model
+        self.n_y = int(base_model.n_y)
+        self.n_u = int(base_model.n_u)
+        self.n_channels = int(base_model.n_channels)
+        self.n_controls = int(getattr(base_model, "n_controls", base_model.m))
+        self.n_outputs = int(base_model.n_outputs)
+        self.dt = float(base_model.dt)
+
+    def output(
+        self,
+        x: jax.Array,
+        u: jax.Array | None = None,
+        t: float | jax.Array = 0.0,
+    ) -> jax.Array:
+        """Evaluate physical output, dropping epigraph slack coordinates."""
+        return self.epigraph_model.output(x, u, t)
+
+    def output_state_jacobian(
+        self,
+        x: jax.Array,
+        u: jax.Array | None = None,
+        t: float | jax.Array = 0.0,
+    ) -> jax.Array:
+        """Return the output state Jacobian of shape (p, n)."""
+        return self.epigraph_model.output_state_jacobian(x, u, t)
+
+    def output_control_jacobian(
+        self,
+        x: jax.Array,
+        u: jax.Array,
+        t: float | jax.Array = 0.0,
+    ) -> jax.Array:
+        """Append zero epigraph columns to the output control Jacobian."""
+        return self.epigraph_model.output_control_jacobian(x, u, t)
+
+    def has_control_feedthrough(self) -> bool:
+        """Whether the model's output function depends directly on Control Current."""
+        return self.epigraph_model.has_control_feedthrough()
+
+    def discrete_dynamics(
+        self,
+        x: jax.Array,
+        u: jax.Array,
+        t: float | jax.Array,
+        dt: float | jax.Array,
+    ) -> jax.Array:
+        """Advance one step with physical controls u[:base_model.m]."""
+        return self.epigraph_model.discrete_dynamics(x, u, t, dt)
+
+    def state_jacobian(
+        self,
+        x: jax.Array,
+        u: jax.Array,
+        t: float | jax.Array = 0.0,
+        *args: float | jax.Array,
+    ) -> jax.Array:
+        """Return the dynamics state Jacobian of shape (n, n)."""
+        return self.epigraph_model.state_jacobian(x, u, t, *args)
+
+    def control_jacobian(
+        self,
+        x: jax.Array,
+        u: jax.Array,
+        t: float | jax.Array = 0.0,
+        *args: float | jax.Array,
+    ) -> jax.Array:
+        """Append zero epigraph columns to the control Jacobian."""
+        return self.epigraph_model.control_jacobian(x, u, t, *args)
+
+    def state_diff(self, x: jax.Array, x0: jax.Array) -> jax.Array:
+        """Retain the original model's error-state coordinates."""
+        return self.epigraph_model.state_diff(x, x0)
+
+    def errstate_jacobian(self, x: jax.Array) -> jax.Array:
+        """Retain the original error-state Jacobian of shape (n, ne)."""
+        return self.epigraph_model.errstate_jacobian(x)
+
+    def absorb(self, state: FloatArray, y: FloatArray, u: FloatArray) -> FloatArray:
+        """Absorb measurement and physical control history, stripping epigraph slacks."""
+        return self.base_model.absorb(state, y, u[: self.base_model.m])
+
+    def is_ready(self, state: FloatArray) -> bool:
+        """Report readiness from base model."""
+        return self.base_model.is_ready(state)
+
+    def initial_state(self) -> FloatArray:
+        """Return base model's initial state."""
+        return self.base_model.initial_state()
+
+    def min_past_controls(self) -> int:
+        """Minimum past control steps required by the underlying model or geometry."""
+        fn = getattr(self.base_model, "min_past_controls", None)
+        if callable(fn):
+            return int(fn())
+        geom = getattr(self.base_model, "geometry", None)
+        if geom is not None:
+            geom_fn = getattr(geom, "min_past_controls", None)
+            if callable(geom_fn):
+                return int(geom_fn())
+        return getattr(self.base_model, "n_u", 1)
+
+    @property
+    def n_history(self) -> int:
+        """History buffer length of the base model if defined, else n_y."""
+        return getattr(self.base_model, "n_history", getattr(self.base_model, "n_y", 1))
+
+    @property
+    def y_scale(self) -> FloatArray | None:
+        """Physical observation scale vector from base model."""
+        return getattr(self.base_model, "y_scale", None)
+
+    @property
+    def y_center(self) -> FloatArray | None:
+        """Physical observation centering vector from base model."""
+        return getattr(self.base_model, "y_center", None)
+
+    def past_outputs(self, x: jax.Array, count: int) -> jax.Array:
+        """Extract physical past outputs through the base model."""
+        return self.base_model.past_outputs(x, count)
+
+    def with_history(self, n_history: int) -> EpigraphInferenceModel:
+        """Return a copy wrapping base_model with extended history."""
+        extended = cast("DiscreteDynamics", self.base_model.with_history(n_history))
+        return EpigraphInferenceModel(_EpigraphModel(extended))
+
+    def free_run(
+        self,
+        y_hists: FloatArray,
+        u_hists: FloatArray,
+        u_futures: FloatArray,
+    ) -> jax.Array:
+        """Free-run with the physical controls u[..., :base_model.m]."""
+        u_f = np.asarray(u_futures, dtype=np.float64)
+        u_h = np.asarray(u_hists, dtype=np.float64)
+        u_f_phys = u_f[..., : self.base_model.m]
+        u_h_phys = u_h[..., : self.base_model.m] if u_h.shape[-1] == self.m else u_h
+        return self.base_model.free_run(y_hists, u_h_phys, u_f_phys)
+
+    def to_checkpoint(self) -> tuple[dict[str, Any], dict[str, FloatArray]]:
+        """Return base model checkpoint."""
+        return self.base_model.to_checkpoint()
+
+    @classmethod
+    def from_checkpoint(cls, meta: dict[str, Any], arrays: dict[str, FloatArray]) -> Self:
+        """Rebuild base model then wrap."""
+        base = cast("DiscreteDynamics", inference_from_checkpoint(meta, arrays))
+        return cls(_EpigraphModel(base))
+
+
 def _resolve_waveform_target(
     ref: HealthyReference | None,
     base: WaveformMLPModel | WaveformCNNModel,
@@ -1104,7 +1280,40 @@ def _waveform_terminal_cost(
     return _combine_costs([base_terminal, frame_hinge.as_terminal()])
 
 
-def build_waveform_problem(  # noqa: PLR0913 -- checkpoint plus the ten MPC cost/bound knobs
+def _wrap_epigraph_if_requested(
+    problem: NeuroProblem,
+    w_u_l1: float,
+    l1_mode: str,
+) -> NeuroProblem:
+    """Wrap problem with exact L1 epigraph reformulation when requested."""
+    if l1_mode not in ("smooth", "epigraph"):
+        msg = f"l1_mode must be 'smooth' or 'epigraph', got {l1_mode!r}"
+        raise ValueError(msg)
+    if w_u_l1 > 0 and l1_mode == "epigraph":
+        epi_problem = add_l1_epigraph(problem, weight=w_u_l1)
+        epi_model = EpigraphInferenceModel(cast("_EpigraphModel", epi_problem.model))
+        return NeuroProblem(
+            model=epi_model,
+            obj=epi_problem.obj,
+            constraints=epi_problem.constraints,
+            N=epi_problem.N,
+            dt=epi_problem.dt,
+            binary_control_indices=epi_problem.binary_control_indices,
+            horizon=problem.horizon,
+            u_max=problem.u_max,
+            w_active=problem.w_active,
+            w_hinge=problem.w_hinge,
+            w_u=problem.w_u,
+            w_u_l1=w_u_l1,
+            kirchhoff=problem.kirchhoff,
+            envelope=problem.envelope,
+            max_active_intervals=problem.max_active_intervals,
+            continuous_problem=problem.continuous_problem,
+        )
+    return problem
+
+
+def build_waveform_problem(  # noqa: PLR0913 -- checkpoint plus the eleven MPC cost/bound knobs
     artifact: str | Path,
     *,
     horizon: int,
@@ -1117,7 +1326,8 @@ def build_waveform_problem(  # noqa: PLR0913 -- checkpoint plus the ten MPC cost
     reference: HealthyReference | None = None,
     kirchhoff: bool = False,
     reduce_kirchhoff: bool = False,
-) -> Problem:
+    l1_mode: str = "smooth",
+) -> NeuroProblem:
     """Assemble waveform MPC with stage and terminal spectral Frames and the Control Budget.
 
     The objective minimizes tracking deviation from the healthy reference operating point,
@@ -1158,6 +1368,9 @@ def build_waveform_problem(  # noqa: PLR0913 -- checkpoint plus the ten MPC cost
         Satisfy Kirchhoff's law by construction instead, parameterizing the currents as ``u = Z v``
         over `kirchhoff_basis`. The per-electrode limit is carried exactly, as the polytope
         ``[Z; -Z] v <= u_max``. Excludes ``kirchhoff``.
+    l1_mode
+        Sparsity reformulation mode: ``"smooth"`` (default pseudo-Huber surrogate) or
+        ``"epigraph"`` (exact L1 epigraph reformulation).
     """
     base = _load_waveform_runtime(artifact)
     envelope = _observable_envelope(reference, w_hinge)
@@ -1197,8 +1410,8 @@ def build_waveform_problem(  # noqa: PLR0913 -- checkpoint plus the ten MPC cost
     costs: list[CostFunction] = [ExcludeInitialKnotState(output_stage)]
     if reduce_kirchhoff:
         costs.append(ReducedEffortCost(n=n, m=m, w_u=w_u, horizon=horizon))
-    if w_u_l1 > 0:
-        costs.append(L1ControlCost(n=n, m=m, w_l1=w_u_l1, horizon=horizon))
+    if w_u_l1 > 0 and l1_mode == "smooth":
+        costs.append(PseudoHuberControlCost(n=n, m=m, weight=w_u_l1 / horizon, delta=1e-3))
     frame_hinge: ObservableFrameHingeCost | None = None
     if envelope is not None:
         frame_hinge = ObservableFrameHingeCost(model, envelope, w_hinge=w_hinge, horizon=horizon)
@@ -1212,7 +1425,7 @@ def build_waveform_problem(  # noqa: PLR0913 -- checkpoint plus the ten MPC cost
     terminal_cost = _waveform_terminal_cost(base_terminal, frame_hinge)
     objective = Objective(stage_cost=stage_cost, terminal_cost=terminal_cost, N=N)
 
-    return _assemble_problem(
+    problem = _assemble_problem(
         model,
         objective,
         N=N,
@@ -1225,6 +1438,7 @@ def build_waveform_problem(  # noqa: PLR0913 -- checkpoint plus the ten MPC cost
         w_hinge=w_hinge,
         envelope=envelope,
     )
+    return _wrap_epigraph_if_requested(problem, w_u_l1=w_u_l1, l1_mode=l1_mode)
 
 
 def _validate_integer_observable_problem_args(
@@ -1272,6 +1486,7 @@ def build_observable_problem(  # noqa: PLR0913 -- checkpoint plus the MPC cost/b
     reduce_kirchhoff: bool = False,
     w_active: float | None = None,
     max_active_intervals: int | None = None,
+    l1_mode: str = "smooth",
 ) -> NeuroProblem:
     """Assemble the observable MPC problem: model adapter, objective, box and Kirchhoff bounds.
 
@@ -1311,6 +1526,9 @@ def build_observable_problem(  # noqa: PLR0913 -- checkpoint plus the MPC cost/b
     max_active_intervals
         Upper bound on the number of enabled intervals per Control Horizon (activation cap).
         Mutually exclusive with ``w_active``.
+    l1_mode
+        Sparsity reformulation mode: ``"smooth"`` (default pseudo-Huber surrogate) or
+        ``"epigraph"`` (exact L1 epigraph reformulation).
     """
     base = (
         artifact
@@ -1348,8 +1566,8 @@ def build_observable_problem(  # noqa: PLR0913 -- checkpoint plus the MPC cost/b
     costs: list[CostFunction] = [ExcludeInitialKnotState(stage)]
     if reduce_kirchhoff:
         costs.append(ReducedEffortCost(n=n, m=m, w_u=w_u, horizon=horizon))
-    if w_u_l1 > 0:
-        costs.append(L1ControlCost(n=n, m=m, w_l1=w_u_l1, horizon=horizon))
+    if w_u_l1 > 0 and l1_mode == "smooth":
+        costs.append(PseudoHuberControlCost(n=n, m=m, weight=w_u_l1 / horizon, delta=1e-3))
     envelope = _observable_envelope(reference, w_hinge)
     # The stage trajectory carries every Frame of the Control Horizon but the last, which lives
     # only in the terminal knot; the terminal Cost scores it so no predicted Frame goes unpriced.
@@ -1378,9 +1596,10 @@ def build_observable_problem(  # noqa: PLR0913 -- checkpoint plus the MPC cost/b
             reduce_kirchhoff=reduce_kirchhoff,
             max_active_intervals=None,
             w_active=None,
+            l1_mode=l1_mode,
         )
 
-    return _assemble_problem(
+    problem = _assemble_problem(
         model,
         objective,
         N=N,
@@ -1397,6 +1616,7 @@ def build_observable_problem(  # noqa: PLR0913 -- checkpoint plus the MPC cost/b
         envelope=envelope,
         continuous_problem=cont_prob,
     )
+    return _wrap_epigraph_if_requested(problem, w_u_l1=w_u_l1, l1_mode=l1_mode)
 
 
 def _collect_leaf_costs(cost: CostFunction) -> list[CostFunction]:
@@ -1439,10 +1659,26 @@ def _stage_leaf_contributions(
     t_stage: jax.Array,
 ) -> tuple[float, float, float, float, float]:
     """Break one stage Cost leaf into (spectral, quadratic_effort, sparse_effort, tracking, active)."""
+    if isinstance(c, _EpigraphStageCost):
+        m_orig = c.original.m
+        sparse_val = float(jnp.sum(c.weight * jnp.sum(controls[:, m_orig:], axis=1)))
+        spectral_acc = 0.0
+        quad_acc = 0.0
+        sparse_acc = sparse_val
+        track_acc = 0.0
+        act_acc = 0.0
+        for sub_c in _collect_leaf_costs(c.original):
+            s, qe, se, tr, act = _stage_leaf_contributions(sub_c, states, controls[:, :m_orig], t_stage)
+            spectral_acc += s
+            quad_acc += qe
+            sparse_acc += se
+            track_acc += tr
+            act_acc += act
+        return spectral_acc, quad_acc, sparse_acc, track_acc, act_acc
     full_val = float(jnp.sum(c.stage_costs(states[:-1], controls, t_stage)))
     if _is_spectral_cost(c):
         return full_val, 0.0, 0.0, 0.0, 0.0
-    if isinstance(c, L1ControlCost):
+    if isinstance(c, PseudoHuberControlCost):
         return 0.0, 0.0, full_val, 0.0, 0.0
     if isinstance(c, ReducedEffortCost):
         return 0.0, full_val, 0.0, 0.0, 0.0
@@ -1514,6 +1750,9 @@ def decompose_cost(
         active_count = float(np.sum(np.round(np.asarray(controls)[:, problem.binary_control_indices])))
     else:
         ctrls_arr = np.asarray(controls)
+        m_phys = getattr(problem.model, "n_controls", ctrls_arr.shape[-1])
+        if ctrls_arr.shape[-1] == 2 * m_phys:
+            ctrls_arr = ctrls_arr[:, :m_phys]
         active_count = float(np.sum(np.any(np.abs(ctrls_arr) >= ACTIVE_CURRENT_THRESHOLD, axis=-1)))
 
     return {
@@ -1595,13 +1834,19 @@ class TrajOptMPCController(Controller[TrajOptMPCLog]):
         # Under reduction the decision variable is ``v``, one shorter than the montage; the Plant
         # takes electrode currents, so the basis is kept here to expand at the boundary.
         self._basis = np.asarray(model.basis, dtype=np.float64) if isinstance(model, NullspaceReducedModel) else None
-        if self._integer_mode:
+        if (
+            self._integer_mode
+            or isinstance(model, EpigraphInferenceModel)
+            or model.m == 2 * getattr(model, "n_controls", -1)
+        ):
             self.n_controls = int(self.model.n_controls)
             self.n_electrodes = self.n_controls
         else:
             self.n_controls = int(model.m)
             self.n_electrodes = model.m + 1 if self._basis is not None else model.m
-        self._u_guess = np.zeros((self.horizon, self.n_controls), dtype=np.float64)
+        self._epigraph_mode = bool(self.model.m == 2 * self.n_electrodes)
+        m_guess = self.model.m if self._epigraph_mode else self.n_controls
+        self._u_guess = np.zeros((self.horizon, m_guess), dtype=np.float64)
         self._active_guess = np.zeros(self.horizon, dtype=np.float64) if self._integer_mode else None
 
         cont_prob = getattr(problem, "continuous_problem", None)
@@ -1613,6 +1858,40 @@ class TrajOptMPCController(Controller[TrajOptMPCLog]):
             self._max_cap = getattr(problem, "max_active_intervals", None)
         else:
             self._cont_mpc = None
+
+    def _extract_plan(self, plan: np.ndarray, *, success: bool) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Extract physical planned controls, activation flags, and command from solver plan."""
+        if self._integer_mode:
+            planned_u = plan[:, :-1].copy()
+            planned_active = plan[:, -1].copy()
+            u_cmd = planned_u[0].copy() if success else np.zeros(self.n_electrodes, dtype=np.float64)
+        elif self._epigraph_mode:
+            m = self.n_electrodes
+            planned_u = plan[:, :m].copy()
+            planned_active = np.any(np.abs(planned_u) >= ACTIVE_CURRENT_THRESHOLD, axis=-1).astype(np.float64)
+            u_cmd = planned_u[0].copy() if success else np.zeros(self.n_electrodes, dtype=np.float64)
+        else:
+            planned_u = (plan if self._basis is None else plan @ self._basis.T).copy()
+            planned_active = np.any(np.abs(planned_u) >= ACTIVE_CURRENT_THRESHOLD, axis=-1).astype(np.float64)
+            u_solved = plan[0]
+            u_phys = u_solved if self._basis is None else self._basis @ u_solved
+            u_cmd = u_phys.copy() if success else np.zeros(self.n_electrodes, dtype=np.float64)
+        return planned_u, planned_active, u_cmd
+
+    def _prepare_warm_start_u(self, initial_u: FloatArray, initial_active: FloatArray | None) -> np.ndarray:
+        """Map user control guess into full solver decision coordinates."""
+        u_init = np.asarray(initial_u, dtype=np.float64).reshape(self.horizon, -1)
+        if self._integer_mode:
+            if initial_active is not None:
+                act_init = np.asarray(initial_active, dtype=np.float64).reshape(self.horizon, 1)
+            else:
+                act_init = (np.any(u_init != 0, axis=1, keepdims=True)).astype(np.float64)
+            return np.hstack([u_init, act_init])
+        if self._epigraph_mode and u_init.shape[1] == self.n_electrodes:
+            return np.hstack([u_init, np.abs(u_init)])
+        if self._basis is not None and u_init.shape[1] == self.n_electrodes:
+            return u_init @ self._basis
+        return u_init
 
     @classmethod
     def from_config(cls, config: dict[str, Any]) -> Self:
@@ -1700,22 +1979,20 @@ class TrajOptMPCController(Controller[TrajOptMPCLog]):
         u_solved = np.asarray(self.mpc.controls[0], dtype=np.float64)
         cost = float(self.mpc.cost())
         predicted_y = np.asarray(planned_outputs(self.model, self.mpc.states, self.mpc.controls, t, self.dt)).copy()
-        plan = np.asarray(self.mpc.controls)
-        if self._integer_mode:
-            planned_u = plan[:, :-1].copy()
-            planned_active = plan[:, -1].copy()
-            u_cmd = planned_u[0].copy() if solved.success else np.zeros(self.n_electrodes, dtype=np.float64)
-        else:
-            planned_u = (plan if self._basis is None else plan @ self._basis.T).copy()
-            planned_active = np.any(np.abs(planned_u) >= ACTIVE_CURRENT_THRESHOLD, axis=-1).astype(np.float64)
-            u_cmd = u_solved if self._basis is None else self._basis @ u_solved
+        planned_u, planned_active, u_cmd = self._extract_plan(
+            np.asarray(self.mpc.controls), success=bool(solved.success)
+        )
         costs_decomp = decompose_cost(self.mpc.problem, self.mpc.states, self.mpc.controls, t, self.dt)
         self.mpc.shift(self.dt)
         # ``_u_last`` feeds ``model.absorb``, which expands for itself, so the state keeps the
         # solver's own coordinates while the Plant and the log get the electrode currents.
         self._u_last = u_solved
         if solved.success:
-            self._u_guess = np.vstack((planned_u[1:], planned_u[-1:]))
+            if self._epigraph_mode:
+                u_shifted = np.vstack((planned_u[1:], planned_u[-1:]))
+                self._u_guess = np.hstack([u_shifted, np.abs(u_shifted)])
+            else:
+                self._u_guess = np.vstack((planned_u[1:], planned_u[-1:]))
             if self._integer_mode and planned_active is not None:
                 self._active_guess = np.concatenate((planned_active[1:], planned_active[-1:]))
         return u_cmd, TrajOptMPCLog(
@@ -1760,17 +2037,7 @@ class TrajOptMPCController(Controller[TrajOptMPCLog]):
         x0_arr = jnp.asarray(x0, dtype=jnp.float64).reshape(self.model.n)
         bc = BoundaryConditions(x0=x0_arr, t0=jnp.asarray(0.0, dtype=jnp.float64))
         if initial_u is not None:
-            u_init = np.asarray(initial_u, dtype=np.float64).reshape(self.horizon, -1)
-            if self._integer_mode:
-                if initial_active is not None:
-                    act_init = np.asarray(initial_active, dtype=np.float64).reshape(self.horizon, 1)
-                else:
-                    act_init = (np.any(u_init != 0, axis=1, keepdims=True)).astype(np.float64)
-                u_full = np.hstack([u_init, act_init])
-            elif self._basis is not None and u_init.shape[1] == self.n_electrodes:
-                u_full = u_init @ self._basis
-            else:
-                u_full = u_init
+            u_full = self._prepare_warm_start_u(initial_u, initial_active)
             ws = WarmStart.cold(self.problem, x0_arr)
             u_full_jax = jnp.asarray(u_full, dtype=jnp.float64)
             x_rollout = _rollout_states(self.problem.model, x0_arr, u_full_jax, float(self.problem.dt[0]))
@@ -1814,15 +2081,7 @@ class TrajOptMPCController(Controller[TrajOptMPCLog]):
                 normalization="channel_mean",
             )
 
-        plan = np.asarray(res.trajectory.U)
-        if self._integer_mode:
-            planned_u = plan[:, :-1].copy()
-            planned_active = plan[:, -1].copy()
-            u_cmd = planned_u[0].copy() if success else np.zeros(self.n_controls, dtype=np.float64)
-        else:
-            planned_u = (plan if self._basis is None else plan @ self._basis.T).copy()
-            planned_active = np.any(np.abs(planned_u) >= ACTIVE_CURRENT_THRESHOLD, axis=-1).astype(np.float64)
-            u_cmd = planned_u[0].copy() if success else np.zeros(self.n_controls, dtype=np.float64)
+        planned_u, planned_active, u_cmd = self._extract_plan(np.asarray(res.trajectory.U), success=success)
 
         predicted_y = np.asarray(planned_outputs(self.model, res.trajectory.X, res.trajectory.U, 0.0, self.dt)).copy()
         costs_decomp = decompose_cost(self.problem, res.trajectory.X, res.trajectory.U, 0.0, self.dt)

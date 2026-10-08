@@ -23,6 +23,7 @@ from neuro.control.mpc import (
     AugmentedActivationModel,
     CandidateMPCController,
     CanonicalDuals,
+    EpigraphInferenceModel,
     NeuroProblem,
     TrajOptMPCController,
     TrajOptMPCLog,
@@ -493,7 +494,7 @@ def test_build_observable_problem_assembles_and_solves(tmp_path: Path) -> None:
     x0 = np.asarray(model.initial_state())
     x0[: model.n_y * model.n_outputs] = rng.uniform(-1.0, 1.0, model.n_y * model.n_outputs)
     # Ipopt's 1e-8 default is below the noise floor of a float32 objective whose optimum sits
-    # inside L1ControlCost's eps=1e-3 smoothing radius, where curvature is 1/eps; the solve
+    # inside PseudoHuberControlCost's delta=1e-3 smoothing radius, where curvature is 1/delta; the solve
     # stalls there at a dual infeasibility of ~1e-2 with the objective already flat to 1e-6.
     solver = Ipopt(options={"print_level": 0, "hessian_approximation": "limited-memory", "tol": 1e-3})
     mpc = MPC(problem, solver, x0=jnp.asarray(x0))
@@ -1167,3 +1168,124 @@ def test_trajopt_mpc_controller_cont_polish(tmp_path: Path) -> None:
     u_cmd, log = ctrl.update(0.0, np.zeros(2), np.zeros(model.n_outputs))
     assert log.warmup
     assert u_cmd.shape == (2,)
+
+
+def test_build_waveform_problem_epigraph_construction(tmp_path: Path) -> None:
+    """Problem with l1_mode='epigraph' wraps model in EpigraphInferenceModel and sets augmented bounds."""
+    artifact = _build_checkpoint(tmp_path, n_channels=2, n_controls=2)
+    prob = build_waveform_problem(
+        artifact,
+        horizon=3,
+        u_max=1.0,
+        w_y=0.0,
+        w_u=0.1,
+        w_u_l1=0.5,
+        l1_mode="epigraph",
+    )
+    assert isinstance(prob.model, EpigraphInferenceModel)
+    assert prob.model.m == 4
+    assert prob.model.n_controls == 2
+    assert prob.w_u_l1 == 0.5
+
+    # Check that invalid l1_mode raises ValueError
+    with pytest.raises(ValueError, match="l1_mode must be 'smooth' or 'epigraph'"):
+        build_waveform_problem(
+            artifact,
+            horizon=3,
+            u_max=1.0,
+            w_y=0.0,
+            w_u_l1=0.5,
+            l1_mode="invalid",
+        )
+
+
+def test_build_observable_problem_epigraph_construction(tmp_path: Path) -> None:
+    """Observable problem with l1_mode='epigraph' wraps model and sets epigraph bounds."""
+    artifact, geom = _build_observable_checkpoint(tmp_path, n_channels=2, n_controls=2)
+    env_path = _write_envelope(tmp_path, geom)
+    prob = build_observable_problem(
+        artifact,
+        horizon=3,
+        u_max=1.0,
+        w_u_l1=0.5,
+        reference=HealthyReference.load(env_path),
+        l1_mode="epigraph",
+    )
+    assert isinstance(prob.model, EpigraphInferenceModel)
+    assert prob.model.m == 4
+    assert prob.model.n_controls == 2
+    assert prob.w_u_l1 == 0.5
+
+
+def test_epigraph_exact_zero_recovery(tmp_path: Path) -> None:
+    """Exact L1 epigraph recovers exact zero controls when sparse penalty dominates."""
+    artifact = _build_checkpoint(tmp_path, n_channels=2, n_controls=2)
+    # With tracking disabled (w_y=0) and w_u_l1 > 0, the optimal control is exactly 0.
+    prob = build_waveform_problem(
+        artifact,
+        horizon=4,
+        u_max=1.0,
+        w_y=0.0,
+        w_u=1e-3,
+        w_u_l1=1.0,
+        l1_mode="epigraph",
+    )
+    ctrl = TrajOptMPCController(dt=0.01, problem=prob)
+    assert ctrl._epigraph_mode  # noqa: SLF001 -- test verifies internal epigraph detection
+
+    # Prime controller past warmup
+    for k in range(ctrl.model.n_history):
+        u_cmd, log = ctrl.update(k * 0.01, ref=np.zeros(1), x_hat=np.zeros(2))
+
+    assert not log.warmup
+    assert log.success
+    # u_cmd and planned_u must be physical dimensions
+    assert u_cmd.shape == (2,)
+    assert log.planned_u.shape == (4, 2)
+    np.testing.assert_allclose(u_cmd, 0.0, atol=1e-5)
+    np.testing.assert_allclose(log.planned_u, 0.0, atol=1e-5)
+
+
+def test_trajopt_mpc_controller_epigraph_closed_loop(tmp_path: Path) -> None:
+    """TrajOptMPCController in epigraph mode produces physical outputs and warm-starts slack variables."""
+    artifact = _build_checkpoint(tmp_path, n_channels=2, n_controls=2)
+    prob = build_waveform_problem(
+        artifact,
+        horizon=3,
+        u_max=0.5,
+        w_y=1.0,
+        w_u=0.1,
+        w_u_l1=0.2,
+        reference=_ref(2),
+        kirchhoff=True,
+        l1_mode="epigraph",
+    )
+    ctrl = TrajOptMPCController(dt=0.01, problem=prob)
+    assert ctrl.n_electrodes == 2
+    assert ctrl._epigraph_mode  # noqa: SLF001 -- test verifies internal epigraph detection
+    assert ctrl._u_guess.shape == (3, 4)  # noqa: SLF001 -- verifies augmented guess dimensions
+
+    # Warmup steps
+    for k in range(ctrl.model.n_history - 1):
+        u_cmd, log = ctrl.update(k * 0.01, ref=np.zeros(1), x_hat=np.zeros(2))
+        assert log.warmup
+        assert u_cmd.shape == (2,)
+        np.testing.assert_array_equal(u_cmd, np.zeros(2))
+
+    # Stepping when ready
+    t_ready = (ctrl.model.n_history - 1) * 0.01
+    u_cmd, log = ctrl.update(t_ready, ref=np.zeros(1), x_hat=np.ones(2) * 0.5)
+    assert not log.warmup
+    assert log.success
+    assert u_cmd.shape == (2,)
+    assert log.planned_u.shape == (3, 2)
+    # Check that planned_active matches physical currents
+    expected_active = (np.abs(log.planned_u).max(axis=-1) > 1e-3).astype(np.float64)
+    np.testing.assert_allclose(log.planned_active, expected_active)
+    # Check that _u_guess was warm-started with [u_shifted, abs(u_shifted)]
+    assert ctrl._u_guess.shape == (3, 4)  # noqa: SLF001
+    np.testing.assert_allclose(
+        ctrl._u_guess[:, 2:],  # noqa: SLF001
+        np.abs(ctrl._u_guess[:, :2]),  # noqa: SLF001
+        atol=1e-8,
+    )

@@ -626,7 +626,7 @@ def test_observable_frame_rollout_and_cost_parity(tmp_path: Path) -> None:
         for y in expected[1:]
     )
     expected_quadratic = 0.3 / 3 * np.sum(controls**2)
-    expected_sparse = 0.2 / 3 * np.sum(np.sqrt(controls**2 + 1e-6))
+    expected_sparse = float(0.2 / 3 * np.sum(np.hypot(controls, 1e-3) - 1e-3))
     np.testing.assert_allclose(
         [tracking, quadratic, sparse, hinge, total],
         [

@@ -23,7 +23,7 @@ class SumCost(CostFunction):
     """Stage cost summing several sub-costs, each evaluated by its own path.
 
     ``stage_costs`` adds the sub-costs' stacked values: a per-knot cost such as
-    :class:`L1ControlCost` contributes one entry per stage, while a whole-horizon cost such as
+    :class:`~trajopt.costs.pseudo_huber.PseudoHuberControlCost` contributes one entry per stage, while a whole-horizon cost such as
     :class:`ObservableFrameHingeCost` concentrates its value in a single entry, so
     ``Objective.cost`` reports the exact total either way. ``evaluate`` sums the per-knot
     evaluations, which is what per-knot Taylor expansions (native solvers, the multiple-shooting
@@ -56,58 +56,6 @@ class SumCost(CostFunction):
         for cost in self.costs:
             total = total + cost.stage_costs(X, U, t)
         return total
-
-
-class L1ControlCost(CostFunction):
-    """Smooth surrogate for the horizon-mean L1 control penalty ``(w_l1 / horizon) * sum_k ||u_k||_1``.
-
-    The incumbent's epigraph reformulation needs slack variables, which trajopt's objective and
-    decision-vector layout cannot express, so the L1 becomes a per-knot stage cost. The plain
-    norm is kept smooth as ``sqrt(u^2 + eps^2)`` because this ticket's solver testing showed the
-    raw ``|u|`` kink breaks Ipopt's limited-memory search-direction computation (status -3
-    after hundreds of iterations, on a problem that converges in under 50 without it), while
-    the smooth surrogate converges to the same minimizer as the incumbent's epigraph (status 1,
-    acceptable level) and the native ALTRO backend solves it directly. Cost parity with the
-    epigraph is therefore approximate up to ``eps``, exact in the limit; ``eps = 1e-3`` keeps
-    the minimizer within the parity test's tolerance (measured at ``8e-4`` against the
-    incumbent's exact-zero controls, versus ``2.4e-2`` at ``eps = 1e-2``).
-    """
-
-    w_l1: jax.Array
-    eps: jax.Array
-    horizon: int = eqx.field(static=True)
-
-    def __init__(self, *, n: int, m: int, w_l1: float, horizon: int, eps: float = 1e-3) -> None:
-        """Initialize with the state/control dimensions, the weight, the horizon and the smoothness.
-
-        Parameters
-        ----------
-        n, m
-            Model state and control dimensions.
-        w_l1
-            Weight on the sparse-stimulation penalty; ``0`` disables it.
-        horizon
-            Control Horizon in steps, for the horizon-mean reduction.
-        eps
-            Smoothness radius of the surrogate; ``sqrt(u^2 + eps^2)`` replaces ``|u|``. Smaller
-            ``eps`` tightens the sparsity residual toward the epigraph's exact zeros at the
-            price of a stiffer solve; ``1e-3`` sits inside the parity tolerance.
-        """
-        super().__init__(n=n, m=m)
-        self.w_l1 = jnp.asarray(w_l1)
-        self.eps = jnp.asarray(eps)
-        self.horizon = int(horizon)
-
-    def evaluate(
-        self,
-        x: jax.Array,
-        u: jax.Array | None = None,
-        t: float | jax.Array = 0.0,
-    ) -> jax.Array:
-        """Evaluate the per-knot smooth L1 penalty ``(w_l1 / horizon) * sum(sqrt(u^2 + eps^2))``."""
-        del x, t
-        u_arr = jnp.asarray(u)
-        return (self.w_l1 / self.horizon) * jnp.sum(jnp.sqrt(u_arr**2 + self.eps**2))
 
 
 class ReducedEffortCost(CostFunction):

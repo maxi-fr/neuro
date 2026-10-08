@@ -701,7 +701,7 @@ class CasADiMPCController(Controller[CasADiMPCLog]):
                 cost_effort = cost_effort + (w_u / h) * ca.sumsqr(u_k)
 
             if w_u_l1 > 0:
-                cost_sparse = cost_sparse + (w_u_l1 / h) * ca.sum1(ca.sqrt(u_k**2 + 1e-6))
+                cost_sparse = cost_sparse + (w_u_l1 / h) * ca.sum1(ca.hypot(u_k, 1e-3) - 1e-3)
 
             if is_observable and self.problem.w_hinge > 0 and self.problem.envelope is not None:
                 reference = ca.SX(np.asarray(self.problem.envelope.power, dtype=np.float64).reshape(-1, 1))

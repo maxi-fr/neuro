@@ -10,6 +10,7 @@ from trajopt.constraints.bounds import ControlBound
 from trajopt.constraints.constraint_list import ConstraintList
 from trajopt.costs.objective import Objective
 from trajopt.costs.output import OutputCost
+from trajopt.costs.pseudo_huber import PseudoHuberControlCost
 from trajopt.costs.quadratic import DiagonalCost
 from trajopt.dynamics.base import DiscreteDynamics
 from trajopt.problem import Problem
@@ -17,7 +18,6 @@ from trajopt.problem import Problem
 from neuro.connectome import Connectome
 from neuro.control.costs import (
     ExcludeInitialKnotState,
-    L1ControlCost,
     ObservableFrameHingeCost,
 )
 from neuro.control.mpc import _combine_costs, kirchhoff_constraint
@@ -703,7 +703,7 @@ def build_jansen_rit_problem(  # noqa: PLR0913 -- problem construction arguments
     output_stage = OutputCost(resolved_model, stage_tracking)
     costs: list[CostFunction] = [ExcludeInitialKnotState(output_stage)]
     if w_u_l1 > 0:
-        costs.append(L1ControlCost(n=n, m=m, w_l1=w_u_l1, horizon=horizon))
+        costs.append(PseudoHuberControlCost(n=n, m=m, weight=w_u_l1 / horizon, delta=1e-3))
 
     obs_envelope = _resolve_jansen_rit_envelope(ref, w_hinge=w_hinge)
     if obs_envelope is not None:

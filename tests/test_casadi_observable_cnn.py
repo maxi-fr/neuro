@@ -8,7 +8,7 @@ import pytest
 from test_observable_cnn import _model
 
 from neuro.control.casadi import CasADiMPCController, build_casadi_observable_problem
-from neuro.control.costs import L1ControlCost, ObservableHingeCost
+from neuro.control.costs import ObservableHingeCost
 from neuro.predictor.inference import ObservableCNNModel
 from neuro.spectral import HealthyReference, ObservableEnvelope
 
@@ -57,9 +57,8 @@ def test_cnn_fixed_sequence_frame_and_cost_parity(
     )
     assert reference.observable is not None
     hinge_cost = ObservableHingeCost(reference.observable, w_hinge=1.4, horizon=3)
-    l1_cost = L1ControlCost(n=model.n, m=model.m, w_l1=0.2, horizon=3)
     expected_hinge = sum(float(hinge_cost.evaluate(jnp.asarray(frame))) for frame in expected[1:])
-    expected_sparse = sum(float(l1_cost.evaluate(jnp.asarray(state), jnp.asarray(control))) for control in controls)
+    expected_sparse = float(np.sum((0.2 / 3) * (np.hypot(controls, 1e-3) - 1e-3)))
     expected_quadratic = 0.3 / 3 * np.sum(controls**2)
     np.testing.assert_allclose(
         [tracking, quadratic, sparse, hinge, total],
