@@ -35,10 +35,10 @@ def test_three_arms_keep_shared_config_and_target_requires_four_completed_seeds(
     assert arms["penalized"]["controller"]["problem"]["w_active"] == 0.5
     assert "max_active_intervals" not in arms["continuous"]["controller"]["problem"]
     assert all(arm["t_end"] == 12.0 for arm in arms.values())
-    rows = [{"arm": "capped", "completed": True, "n_seizing_final": count} for count in (2, 3, 4, 4)] + [
+    rows = [{"arm": "capped", "completed": True, "n_seizing_final": count} for count in (2, 3, 4, 5, 6)] + [
         {"arm": "capped", "completed": False, "n_seizing_final": None}
     ]
-    assert target_summary(rows)["capped"] == {"suppressed_seeds": 4, "target_met": True, "completed_seeds": 4}
+    assert target_summary(rows)["capped"] == {"suppressed_seeds": 4, "target_met": True, "completed_seeds": 5}
 
 
 def test_solver_status_logger_accepts_status_longer_than_warmup() -> None:

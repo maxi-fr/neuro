@@ -292,13 +292,17 @@ def cost_metrics(logger: BaseLogger) -> dict[str, Any]:
         norm_sig = logger.signal("controller", "normalization")[1].reshape(-1)
         if len(norm_sig) > 0:
             norm_val = str(norm_sig[0])
-    return {
+    res = {
         "cost_spectral_mean": float(np.mean(spec[solved])),
         "cost_quadratic_effort_mean": float(np.mean(quad[solved])),
         "cost_sparse_effort_mean": float(np.mean(sparse[solved])),
         "cost_tracking_mean": float(np.mean(track[solved])),
         "cost_normalization": norm_val,
     }
+    if "active_count" in available:
+        act_sig = logger.signal("controller", "active_count")[1].reshape(-1)
+        res["active_count_mean"] = float(np.nanmean(act_sig[solved])) if len(act_sig[solved]) > 0 else float("nan")
+    return res
 
 
 def format_cost_report(metrics: dict[str, Any]) -> str:

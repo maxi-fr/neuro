@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+import dataclasses
 import itertools
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import jax.numpy as jnp
 import numpy as np
@@ -19,7 +20,10 @@ from neuro.config import StftGeometry
 from neuro.control.costs import ObservableHingeCost
 from neuro.control.mpc import (
     IPOPT_DEFAULTS,
+    AugmentedActivationModel,
+    CandidateMPCController,
     CanonicalDuals,
+    NeuroProblem,
     TrajOptMPCController,
     TrajOptMPCLog,
     _default_solver,
@@ -944,3 +948,222 @@ def test_default_ipopt_solver_options(tmp_path: Path) -> None:
     assert opts["print_level"] == 0
     assert opts["hessian_approximation"] == "limited-memory"
     assert opts["max_iter"] == 300
+
+
+def test_build_observable_problem_mixed_integer_validation(tmp_path: Path) -> None:
+    """build_observable_problem validates w_active and max_active_intervals domain rules."""
+    artifact, _ = _build_observable_checkpoint(tmp_path, n_channels=2, n_controls=2)
+
+    with pytest.raises(ValueError, match="mutually exclusive"):
+        build_observable_problem(artifact, horizon=3, u_max=1.0, w_active=0.1, max_active_intervals=2)
+
+    with pytest.raises(ValueError, match="w_active must be finite and nonnegative"):
+        build_observable_problem(artifact, horizon=3, u_max=1.0, w_active=-0.5)
+
+    with pytest.raises(ValueError, match="max_active_intervals must be an integer"):
+        build_observable_problem(artifact, horizon=3, u_max=1.0, max_active_intervals=-1)
+
+    with pytest.raises(ValueError, match="max_active_intervals must be an integer"):
+        build_observable_problem(artifact, horizon=3, u_max=1.0, max_active_intervals=5)
+
+    with pytest.raises(NotImplementedError, match="integer mode does not currently support reduce_kirchhoff"):
+        build_observable_problem(artifact, horizon=3, u_max=1.0, w_active=0.1, reduce_kirchhoff=True)
+
+
+def test_build_observable_problem_mixed_integer_structure(tmp_path: Path) -> None:
+    """build_observable_problem configures binary coordinates and horizon constraints."""
+    artifact, _ = _build_observable_checkpoint(tmp_path, n_channels=2, n_controls=2)
+    prob_w = build_observable_problem(artifact, horizon=3, u_max=1.0, w_active=0.2, kirchhoff=True)
+    assert prob_w.binary_control_indices == (2,)
+    assert isinstance(prob_w.model, AugmentedActivationModel)
+    assert prob_w.model.m == 3
+    assert prob_w.model.n_controls == 2
+    assert prob_w.horizon == 3
+    assert prob_w.w_active == 0.2
+
+    prob_cap = build_observable_problem(artifact, horizon=3, u_max=1.0, max_active_intervals=1, kirchhoff=True)
+    assert prob_cap.binary_control_indices == (2,)
+    assert len(prob_cap.constraints.horizon_constraints) == 1
+    assert prob_cap.max_active_intervals == 1
+
+
+@dataclasses.dataclass(frozen=True)
+class _PlanCheck:
+    objective: float
+    hinge_cost: float
+    effort_cost: float
+    activation_cost: float
+    current_violation: float
+    balance_violation: float
+    integrality_violation: float
+    predicted_y: FloatArray
+
+
+def _check_plan(
+    problem: NeuroProblem,
+    state: FloatArray,
+    planned_u: FloatArray,
+    planned_active: FloatArray,
+) -> _PlanCheck:
+    model: Any = problem.model
+    h = problem.horizon
+    m = model.n_controls
+    p = model.n_outputs
+    u = np.asarray(planned_u, dtype=np.float64).reshape(h, m)
+    active = np.asarray(planned_active, dtype=np.float64).reshape(h)
+    state_arr = np.asarray(state, dtype=np.float64).reshape(-1)
+    n_output_state = model.n_history * p
+    y_history = state_arr[:n_output_state].reshape(model.n_history, p)
+    y_history = y_history * np.asarray(model.y_scale) + np.asarray(model.y_center)
+    u_history = state_arr[n_output_state:].reshape(model.n_u, m)
+    forecast = np.asarray(model.free_run(y_history[None], u_history[None], u[None])[0], dtype=np.float64).reshape(h, p)
+    initial_y = y_history[-1:]
+    predicted_y = np.concatenate((initial_y, forecast), axis=0)
+    envelope = problem.envelope
+    excess = np.maximum(forecast - np.asarray(envelope.power).reshape(1, p), 0.0) if envelope is not None else 0.0
+    hinge_cost = float(problem.w_hinge * np.sum(np.square(excess)) / (h * p))
+    effort_cost = float(problem.w_u * np.sum(u**2) / h)
+    activation_cost = float((problem.w_active or 0.0) * np.sum(active) / h)
+    sparse_cost = float(problem.w_u_l1 * np.sum(np.sqrt(u**2 + 1e-6)) / h)
+    current_violation = float(np.max(np.maximum(np.abs(u) - np.asarray(problem.u_max)[None, :] * active[:, None], 0.0)))
+    balance_violation = float(np.max(np.abs(np.sum(u, axis=1)))) if problem.kirchhoff else 0.0
+    integrality_violation = float(np.max(np.abs(active - np.round(active))))
+    return _PlanCheck(
+        objective=hinge_cost + effort_cost + activation_cost + sparse_cost,
+        hinge_cost=hinge_cost,
+        effort_cost=effort_cost + sparse_cost,
+        activation_cost=activation_cost,
+        current_violation=current_violation,
+        balance_violation=balance_violation,
+        integrality_violation=integrality_violation,
+        predicted_y=predicted_y,
+    )
+
+
+def test_mixed_integer_mpc_controller_solve_and_update(tmp_path: Path) -> None:
+    """TrajOptMPCController solves binary mixed-integer plans certified by _check_plan."""
+    artifact, geom = _build_observable_checkpoint(tmp_path, n_channels=2, n_controls=2)
+    n_values = geom.n_values(50.0)
+    env_path = tmp_path / "obs_env_mi.npz"
+    np.savez_compressed(
+        env_path,
+        Pref_frames=np.full((2, n_values), -2.0),
+        fs=50.0,
+        n_segment=geom.n_segment,
+        n_hop=geom.n_hop,
+        band_hz=np.asarray(geom.band_hz if geom.band_hz is not None else [-1.0, -1.0]),
+        n_bin_pool=geom.n_bin_pool,
+        kernel=geom.kernel,
+        kernel_width=geom.kernel_width,
+    )
+
+    prob = build_observable_problem(
+        artifact,
+        horizon=2,
+        u_max=1.0,
+        w_u=1.0,
+        w_active=0.3,
+        reference=HealthyReference.load(env_path),
+        kirchhoff=True,
+    )
+    ctrl = TrajOptMPCController(dt=0.06, problem=prob)
+    assert ctrl.n_controls == 2
+    assert ctrl.n_electrodes == 2
+    assert ctrl.is_integer_mode
+
+    model = ObservableMLPModel.load(artifact)
+    x0 = np.asarray(model.initial_state())
+    x0[: model.n_y * model.n_outputs] = 0.1
+
+    log = ctrl.solve_state(x0)
+    assert log.success
+    assert log.planned_u.shape == (2, 2)
+    assert log.planned_active is not None
+    assert log.planned_active.shape == (2,)
+    assert log.active_count is not None
+
+    assert isinstance(ctrl.problem, NeuroProblem)
+    checked = _check_plan(ctrl.problem, x0, log.planned_u, log.planned_active)
+    assert checked.integrality_violation < 1e-4
+    assert checked.balance_violation < 1e-6
+    assert checked.current_violation < 1e-6
+    assert checked.objective == pytest.approx(log.cost, rel=1e-5)
+
+    u_cmd, update_log = ctrl.update(0.0, np.zeros(2), np.zeros(model.n_outputs))
+    assert u_cmd.shape == (2,)
+    assert update_log.planned_u.shape == (2, 2)
+
+
+def test_candidate_mpc_controller_update_and_config(tmp_path: Path) -> None:
+    """CandidateMPCController evaluates combinatorial schedules and builds from config."""
+    artifact, _ = _build_observable_checkpoint(tmp_path, n_channels=2, n_controls=2)
+    prob = build_observable_problem(artifact, horizon=3, u_max=1.0, kirchhoff=True)
+
+    ctrl = CandidateMPCController(
+        dt=0.06,
+        problem=prob,
+        blocks=[[0], [1, 2]],
+        w_active=0.3,
+    )
+    assert ctrl.n_controls == 2
+    assert ctrl.n_electrodes == 2
+    assert len(ctrl.schedules) == 4
+
+    model = ObservableMLPModel.load(artifact)
+    u_cmd, log = ctrl.update(0.0, np.zeros(2), np.zeros(model.n_outputs))
+    assert log.warmup
+    assert u_cmd.shape == (2,)
+
+    cfg = {
+        "class_path": "neuro.control.mpc.CandidateMPCController",
+        "dt": 0.06,
+        "blocks": [[0], [1, 2]],
+        "w_active": 0.3,
+        "problem": {
+            "class_path": "neuro.control.mpc.build_observable_problem",
+            "artifact": str(artifact),
+            "horizon": 3,
+            "u_max": 1.0,
+            "kirchhoff": True,
+        },
+    }
+    loaded = CandidateMPCController.from_config(cfg)
+    assert loaded.dt == 0.06
+    assert len(loaded.schedules) == 4
+
+
+def test_trajopt_mpc_controller_cont_polish(tmp_path: Path) -> None:
+    """TrajOptMPCController with init_mode='cont_polish' initializes from continuous relaxation."""
+    artifact, geom = _build_observable_checkpoint(tmp_path, n_channels=2, n_controls=2)
+    n_values = geom.n_values(50.0)
+    env_path = tmp_path / "obs_env_polish.npz"
+    np.savez_compressed(
+        env_path,
+        Pref_frames=np.full((2, n_values), -2.0),
+        fs=50.0,
+        n_segment=geom.n_segment,
+        n_hop=geom.n_hop,
+        band_hz=np.asarray(geom.band_hz if geom.band_hz is not None else [-1.0, -1.0]),
+        n_bin_pool=geom.n_bin_pool,
+        kernel=geom.kernel,
+        kernel_width=geom.kernel_width,
+    )
+
+    prob = build_observable_problem(
+        artifact,
+        horizon=2,
+        u_max=1.0,
+        max_active_intervals=1,
+        reference=HealthyReference.load(env_path),
+        kirchhoff=True,
+    )
+    assert prob.continuous_problem is not None
+
+    ctrl = TrajOptMPCController(dt=0.06, problem=prob, init_mode="cont_polish")
+    assert ctrl.init_mode == "cont_polish"
+    assert ctrl._cont_mpc is not None  # noqa: SLF001 -- test verifies internal continuous driver creation
+
+    model = ObservableMLPModel.load(artifact)
+    u_cmd, log = ctrl.update(0.0, np.zeros(2), np.zeros(model.n_outputs))
+    assert log.warmup
+    assert u_cmd.shape == (2,)

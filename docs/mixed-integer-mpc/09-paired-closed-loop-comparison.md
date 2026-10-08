@@ -12,4 +12,4 @@
 - [x] A failed solve stops its seed's run and preserves the solver status in the comparison result.
 - [x] The comparison distinguishes a horizon-local activation cap from realized duty cycle over the entire run and makes no claim of global optimality or real-time performance.
 
-The energy measure is the squared-current integral in mA²·s. It is an energy proxy; electrical energy in joules requires an electrode resistance that the Plant configuration does not supply. The experiment package is in `artifacts/mixed_integer_mpc/`.
+The energy measure is the squared-current integral in mA²·s. It is an energy proxy; electrical energy in joules requires an electrode resistance that the Plant configuration does not supply. The experiment package is in `artifacts/mixed_integer/03_casadi_paired_comparison/`.

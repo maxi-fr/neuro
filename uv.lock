@@ -1549,7 +1549,6 @@ source = { editable = "." }
 dependencies = [
     { name = "casadi" },
     { name = "cython" },
-    { name = "gurobipy" },
     { name = "h5py" },
     { name = "latex-linting" },
     { name = "marimo" },
@@ -1558,7 +1557,6 @@ dependencies = [
     { name = "pandas" },
     { name = "plotly" },
     { name = "pydantic" },
-    { name = "pyscipopt" },
     { name = "pyyaml" },
     { name = "scipy" },
     { name = "seaborn" },
@@ -1585,7 +1583,6 @@ dev = [
     { name = "ipykernel" },
     { name = "marimo" },
     { name = "pre-commit" },
-    { name = "pyomo" },
     { name = "pytest" },
     { name = "pytest-cov" },
     { name = "pytest-xdist" },
@@ -1593,12 +1590,16 @@ dev = [
     { name = "ty" },
     { name = "validate-pyproject" },
 ]
+minlp = [
+    { name = "gurobipy" },
+    { name = "pyomo" },
+    { name = "pyscipopt" },
+]
 
 [package.metadata]
 requires-dist = [
     { name = "casadi", specifier = ">=3.8.1" },
     { name = "cython", specifier = ">=3.3.0" },
-    { name = "gurobipy", specifier = ">=13.0.3" },
     { name = "h5py", specifier = ">=3.16.0" },
     { name = "latex-linting", git = "https://github.com/maxi-fr/latex_linting" },
     { name = "marimo", specifier = ">=0.23.10" },
@@ -1607,7 +1608,6 @@ requires-dist = [
     { name = "pandas", specifier = ">=3.0.3" },
     { name = "plotly", specifier = ">=6.8.0" },
     { name = "pydantic", specifier = ">=2.13.4" },
-    { name = "pyscipopt", specifier = ">=6.2.1" },
     { name = "pyyaml", specifier = ">=6.0.3" },
     { name = "scipy", specifier = ">=1.18.0" },
     { name = "seaborn", specifier = ">=0.13.2" },
@@ -1628,13 +1628,17 @@ dev = [
     { name = "ipykernel", specifier = ">=7.2.0" },
     { name = "marimo", specifier = ">=0.23.8" },
     { name = "pre-commit", specifier = ">=3.0.0" },
-    { name = "pyomo", specifier = ">=6.10.1" },
     { name = "pytest", specifier = ">=8.0.0" },
     { name = "pytest-cov", specifier = ">=4.1.0" },
     { name = "pytest-xdist", specifier = ">=3.8.0" },
     { name = "ruff", specifier = ">=0.3.0" },
     { name = "ty" },
     { name = "validate-pyproject", specifier = ">=0.23" },
+]
+minlp = [
+    { name = "gurobipy", specifier = ">=13.0.3" },
+    { name = "pyomo", specifier = ">=6.10.1" },
+    { name = "pyscipopt", specifier = ">=6.2.1" },
 ]
 
 [[package]]
@@ -2767,7 +2771,7 @@ wheels = [
 [[package]]
 name = "simulate"
 version = "2.0"
-source = { git = "https://github.com/maxi-fr/simulate.git#350c7135aba02bd4088baef8168994b713df5f85" }
+source = { git = "https://github.com/maxi-fr/simulate.git#bca88766d5b41e5c85b0c603f36dfca88e3d8cfe" }
 dependencies = [
     { name = "ipython" },
     { name = "matplotlib" },

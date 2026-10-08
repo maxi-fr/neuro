@@ -28,8 +28,6 @@ dependencies = [
     "tabulate>=0.10.0",
     "latex-linting",
     "casadi>=3.8.1",
-    "pyscipopt>=6.2.1",
-    "gurobipy>=13.0.3",
 ]
 
 
@@ -44,7 +42,11 @@ dev = [
     "ipykernel>=7.2.0",
     "marimo>=0.23.8",
     "pytest-xdist>=3.8.0",
+]
+minlp = [
+    "gurobipy>=13.0.3",
     "pyomo>=6.10.1",
+    "pyscipopt>=6.2.1",
 ]
 
 [project.optional-dependencies]

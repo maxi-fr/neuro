@@ -240,13 +240,23 @@ class PsdEnvelope:
         return envelope
 
 
-@dataclasses.dataclass(frozen=True)
+@dataclasses.dataclass(frozen=True, eq=False)
 class ObservableEnvelope:
     """Healthy Observable log-power Frame envelope plus the geometry it was measured with."""
 
     power: FloatArray
     fs: float
     geometry: StftGeometry
+
+    def __eq__(self, other: object) -> bool:
+        """Check equality between envelopes."""
+        if not isinstance(other, ObservableEnvelope):
+            return False
+        return self.fs == other.fs and self.geometry == other.geometry and np.array_equal(self.power, other.power)
+
+    def __hash__(self) -> int:
+        """Compute integer hash for JIT and Equinox caching."""
+        return hash((self.fs, self.geometry, self.power.shape, float(np.sum(self.power))))
 
     @classmethod
     def load(cls, path: str | Path) -> ObservableEnvelope:

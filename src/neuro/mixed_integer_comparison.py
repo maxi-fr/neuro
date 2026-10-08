@@ -13,13 +13,15 @@ from neuro.connectome import Connectome
 from neuro.seizure import SEIZURE_PTP_MV
 
 if TYPE_CHECKING:
+    from simulate.logger import BaseLogger
+
     from neuro.types import FloatArray
 
 
 SEEDS = (7000, 7001, 7002, 7004, 7005)
 CURRENT_ZERO_MA = 1e-6
 ACTIVE_DECISION_THRESHOLD = 0.5
-MAX_SEIZING_REGIONS_EXCLUSIVE = 5
+MAX_SEIZING_REGIONS = 5
 REQUIRED_SUPPRESSED_SEEDS = 4
 
 
@@ -77,6 +79,37 @@ def delivery_metrics(
     }
 
 
+def _extract_planned_active(logger: BaseLogger, available: set[str]) -> FloatArray | None:
+    """Extract planned activation decisions from the first Control Horizon step."""
+    if "planned_active" in available:
+        plans = logger.signal("controller", "planned_active")[1]
+        if plans.ndim > 1:
+            active = plans[:, 0]
+            if np.isfinite(active).any():
+                return active
+    return None
+
+
+def _extract_solve_times(
+    logger: BaseLogger,
+    control_t: FloatArray,
+    available: set[str],
+    failure: SolveFailureError | None,
+) -> FloatArray:
+    """Extract post-warmup solver runtimes, appending any terminal failure runtime."""
+    if "warmup" in available:
+        solved = logger.signal("controller", "warmup")[1].reshape(-1) == 0
+    else:
+        solved = np.ones(len(control_t), dtype=bool)
+    if "solve_time" in available:
+        times = logger.signal("controller", "solve_time")[1].reshape(-1)[solved]
+    else:
+        times = np.zeros(int(np.sum(solved)), dtype=np.float64)
+    if failure is not None:
+        times = np.append(times, failure.solve_time_s)
+    return times
+
+
 def score_seed(config: dict[str, Any], *, threshold: float = SEIZURE_PTP_MV) -> dict[str, Any]:
     """Run one Plant seed, stopping at the first failed solve and retaining its status."""
     config = lfp_logging(config)
@@ -87,8 +120,10 @@ def score_seed(config: dict[str, Any], *, threshold: float = SEIZURE_PTP_MV) -> 
     def stop_on_failure(t: float, ref: FloatArray, x_hat: FloatArray) -> tuple[FloatArray, Any]:
         """Prevent the Plant from advancing after a failed optimization."""
         current, log = original_update(t, ref, x_hat)
-        if not log.warmup and not log.success:
-            raise SolveFailureError(log.status, t, log.solve_time)
+        warmup = bool(getattr(log, "warmup", False))
+        success = bool(getattr(log, "success", True))
+        if not warmup and not success:
+            raise SolveFailureError(str(getattr(log, "status", "failed")), t, float(getattr(log, "solve_time", 0.0)))
         return current, log
 
     controller.update = stop_on_failure  # ty:ignore[invalid-assignment] -- wrap this run's controller update
@@ -105,18 +140,9 @@ def score_seed(config: dict[str, Any], *, threshold: float = SEIZURE_PTP_MV) -> 
     logger = sim.logger
     control_t, controls = logger.signal("controller", "u")
     available = {field for component, field in logger.signals() if component == "controller"}
-    active = None
-    if "planned_active" in available:
-        plans = logger.signal("controller", "planned_active")[1]
-        if plans.ndim > 1:
-            active = plans[:, 0]
-            if not np.isfinite(active).any():
-                active = None
+    active = _extract_planned_active(logger, available)
     end_s = float(failure.time_s if failure is not None else config["t_end"])
-    solved = logger.signal("controller", "warmup")[1].reshape(-1) == 0
-    times = logger.signal("controller", "solve_time")[1].reshape(-1)[solved]
-    if failure is not None:
-        times = np.append(times, failure.solve_time_s)
+    times = _extract_solve_times(logger, control_t, available, failure)
     result: dict[str, Any] = {
         "seed": config["dynamics"]["seed"],
         "completed": failure is None,
@@ -143,13 +169,11 @@ def score_seed(config: dict[str, Any], *, threshold: float = SEIZURE_PTP_MV) -> 
 
 
 def target_summary(rows: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
-    """Report completed seeds below five seizing regions per arm."""
+    """Report completed seeds at or below five seizing regions per arm."""
     summary = {}
     for arm in {row["arm"] for row in rows}:
         arm_rows = [row for row in rows if row["arm"] == arm]
-        suppressed = sum(
-            row["completed"] and row["n_seizing_final"] < MAX_SEIZING_REGIONS_EXCLUSIVE for row in arm_rows
-        )
+        suppressed = sum(row["completed"] and row["n_seizing_final"] <= MAX_SEIZING_REGIONS for row in arm_rows)
         summary[arm] = {
             "suppressed_seeds": suppressed,
             "target_met": suppressed >= REQUIRED_SUPPRESSED_SEEDS,
