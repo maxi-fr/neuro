@@ -34,9 +34,9 @@ if TYPE_CHECKING:
     from neuro.types import FloatArray
 
 _ROOT = Path(__file__).resolve().parent.parent
-_ORACLE = "configs/simulation/jansen_rit_oracle_mpc.yaml"
-_UNCONTROLLED = "configs/simulation/uncontrolled.yaml"
-_THRESHOLD = "configs/simulation/threshold_control.yaml"
+_UNCONTROLLED = "configs/comparison/champions/uncontrolled.yaml"
+_THRESHOLD = "configs/comparison/champions/threshold.yaml"
+_BASE = _THRESHOLD
 
 
 @pytest.fixture(scope="module")
@@ -46,9 +46,9 @@ def connectome() -> Connectome:
 
 def _manifest(**overrides: Any) -> ComparisonManifest:  # noqa: ANN401 -- mirrors the manifest's mixed field types
     fields: dict[str, Any] = {
-        "base": _ORACLE,
+        "base": _BASE,
         "seeds": [7000, 7001],
-        "arms": {"tracking": ArmSpec(), "terminal": ArmSpec(patch={"controller": {"problem": {"w_y_terminal": 10.0}}})},
+        "arms": {"tracking": ArmSpec(), "terminal": ArmSpec(patch={"controller": {"threshold": 15.0}})},
         "t_end": 4.0,
     }
     return ComparisonManifest(**(fields | overrides))
@@ -57,11 +57,11 @@ def _manifest(**overrides: Any) -> ComparisonManifest:  # noqa: ANN401 -- mirror
 def test_arm_patch_is_merged_without_touching_the_base_config() -> None:
     manifest = _manifest()
 
-    problem = arm_config(manifest, "terminal")["controller"]["problem"]
+    ctrl = arm_config(manifest, "terminal")["controller"]
 
-    assert problem["w_y_terminal"] == 10.0
-    assert problem["w_y"] == load_config(_ROOT / _ORACLE)["controller"]["problem"]["w_y"]
-    assert "w_y_terminal" not in arm_config(manifest, "tracking")["controller"]["problem"]
+    assert ctrl["threshold"] == 15.0
+    assert ctrl["window"] == load_config(_ROOT / _BASE)["controller"]["window"]
+    assert "threshold" not in manifest.arms["tracking"].patch.get("controller", {})
 
 
 def test_scoring_forces_the_lfp_log_the_spread_metrics_read() -> None:
@@ -139,7 +139,8 @@ def test_pairing_check_covers_the_threshold_arm_it_cannot_read_a_u_max_from() ->
 
 def test_an_unstimulated_arm_has_no_budget_to_compare() -> None:
     assert control_bound(load_config(_ROOT / _UNCONTROLLED)) is None
-    assert control_bound(load_config(_ROOT / _ORACLE)) == pytest.approx(2.0)
+    assert control_bound(load_config(_ROOT / _THRESHOLD)) == pytest.approx(2.0)
+    assert control_bound(load_config(_ROOT / _BASE)) == pytest.approx(2.0)
 
 
 def test_manifest_hash_tracks_the_content_not_the_object() -> None:
@@ -248,9 +249,9 @@ def test_rows_survive_the_round_trip_a_resume_reads_them_back_through(tmp_path: 
 
 def test_comparison_manifest_defaults_and_seed_tiers() -> None:
     """ComparisonManifest defaults seeds to medium and t_end to 12.0s."""
-    manifest = ComparisonManifest(base=_ORACLE, arms={"tracking": ArmSpec()})
+    manifest = ComparisonManifest(base=_BASE, arms={"tracking": ArmSpec()})
     assert manifest.seeds == [7000, 7001, 7002, 7004, 7005]
     assert manifest.t_end == 12.0
 
-    manifest_small = ComparisonManifest(base=_ORACLE, seeds="small", arms={"tracking": ArmSpec()})  # type: ignore[arg-type]
+    manifest_small = ComparisonManifest(base=_BASE, seeds="small", arms={"tracking": ArmSpec()})  # type: ignore[arg-type]
     assert manifest_small.seeds == [7000, 7001]

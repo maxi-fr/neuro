@@ -16,7 +16,7 @@ Every directory in the repository has a single, strictly enforced role:
 | Directory | Role & Policy | Prohibited Contents |
 | :--- | :--- | :--- |
 | `artifacts/<experiment>/` | **Permanent Home**: Self-contained directory holding all configs, models, plots, and `report.md`. | Ephemeral temp files or multi-gigabyte raw simulation rollouts. |
-| `configs/` | **Production Only**: Only for base simulation environments (e.g. `uncontrolled.yaml`, `threshold_control.yaml`, `jansen_rit_oracle_mpc.yaml`, `healthy_reference.yaml`). | **NEVER** put trial variants, comparison suites, or sweep templates here. |
+| `configs/` | **Production Only**: Only for base simulation environments (e.g. `uncontrolled.yaml`, `threshold_control.yaml`, `healthy_reference.yaml`). | **NEVER** put trial variants, comparison suites, or sweep templates here. |
 | `docs/` | **Permanent Specifications & ADRs**: Domain biology, physics, equations, and architecture decisions. | **NEVER** put experiment summaries, sweep results, or benchmark notes here. |
 | `results/` | **Ephemeral Staging Ground**: High-volume intermediate rollouts during active execution. Gitignored. | **NEVER** leave files in `results/` after concluding an experiment. Must be purged. |
 | `data/` | **Shared Static Inputs**: Static connectomes, head models, reference spectra. | Experiment outputs or trained models. |

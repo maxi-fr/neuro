@@ -112,7 +112,7 @@ class Run:
         )
 
     def eeg(self) -> tuple[FloatArray, FloatArray]:
-        """Read the Sensor's EEG log, including the explicit EEG field of oracle Sensors."""
+        """Read the Sensor's EEG log."""
         return self.signal("sensor_0", "eeg" if "sensor_0.eeg" in self.arrays else "y_mea")
 
     def eeg_channel_labels(self) -> list[str]:

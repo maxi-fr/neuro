@@ -777,8 +777,7 @@ predictor = InferencePredictor.load("artifacts/example_waveform_cnn/model")
 
 The loader reads `meta["model_type"]` and the optional Observable geometry, returning the matching
 waveform or Observable MLP/CNN runtime. `WaveformCNNModel.load` and `ObservableCNNModel.load` remain
-available when a caller wants an explicit representation check. A typed non-neural loader such as
-`JansenRitModel.load` continues to use its own checkpoint format. The runtime checkpoint stores
+available when a caller wants an explicit representation check. The runtime checkpoint stores
 weights, standardizer arrays, architecture fields (`depth`, `hidden_size`, kernel sizes, activation,
 residual), native time step, and Observable geometry where applicable.
 

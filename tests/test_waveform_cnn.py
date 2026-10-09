@@ -10,9 +10,7 @@ import torch
 
 from neuro.config import CurriculumMSESpec, LossSpecs, ModelConfig, NNPredictorConfig, SimulationConfig, TrainingConfig
 from neuro.control.mpc import build_waveform_problem
-from neuro.jansen_rit import JansenRitParams
 from neuro.predictor.inference import InferencePredictor, WaveformCNNModel, WaveformMLPModel
-from neuro.predictor.jansen_rit import JansenRitModel
 from neuro.predictor.module import AutoregressiveCNN, AutoregressiveMLP
 from neuro.predictor.train import TrainingResult, train
 from neuro.transforms import Standardizer
@@ -233,16 +231,6 @@ def test_cnn_closed_form_fits_reject_before_loading_data(fit: Literal["ridge", "
     )
     with pytest.raises(ValueError, match="gradient_descent"):
         train(config, ["does-not-exist.npz"])
-
-
-def test_jansen_rit_typed_load_does_not_use_neural_factory(tmp_path: Path) -> None:
-    """Concrete non-neural predictors continue to load through their own checkpoint format."""
-    model = JansenRitModel.from_plant_components(params=JansenRitParams(), dt=1e-4, n_nodes=1)
-    stem = tmp_path / "jansen"
-    model.save(stem)
-    loaded = JansenRitModel.load(stem)
-    assert loaded.n == model.n
-    np.testing.assert_allclose(np.asarray(loaded.initial_state()), np.asarray(model.initial_state()))
 
 
 def test_cnn_train_save_load_and_controller_smoke(tmp_path: Path) -> None:

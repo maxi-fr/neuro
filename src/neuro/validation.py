@@ -5,8 +5,6 @@ import warnings
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-import numpy as np
-
 from neuro.predictor.checkpoint import load_meta
 from neuro.provenance import TrainingProvenance, plant_fingerprint
 from neuro.spectral import HealthyReference, ObservableEnvelope
@@ -22,8 +20,6 @@ _FILTERING_ESTIMATORS = frozenset(
 _PREDICTIVE_CONTROLLERS = frozenset(
     {"neuro.control.mpc.TrajOptMPCController", "neuro.control.casadi.CasADiMPCController"}
 )
-_JANSEN_RIT_PROBLEM = "neuro.predictor.jansen_rit.build_jansen_rit_problem"
-_ORACLE_ESTIMATOR = "neuro.predictor.oracle.JansenRitOracleEstimator"
 _REL_TOL = 1e-9
 
 
@@ -265,78 +261,6 @@ def _check_waveform_predictor(
     return controller_dt
 
 
-def _check_jansen_rit_reference(config: Mapping[str, Any], problem: Mapping[str, Any]) -> None:
-    """Validate tracking reference for Jansen-Rit problems."""
-    w_y = float(problem.get("w_y", 1.0))
-    w_y_terminal = problem.get("w_y_terminal")
-    w_y_final = float(w_y_terminal) if w_y_terminal is not None else w_y
-    if w_y <= 0 and w_y_final <= 0:
-        return
-    ref_path = _reference_path(problem)
-    if ref_path is None:
-        msg = "controller.problem.reference must be provided when w_y > 0"
-        raise ConfigConsistencyError(msg)
-
-    ref = HealthyReference.load(ref_path)
-    dyn = config.get("dynamics", {})
-    leadfield = problem.get("leadfield")
-    params = problem.get("params") or dyn.get("params", {})
-    if leadfield is None:
-        if ref.lfp_mean is None:
-            msg = "reference does not carry an LFP mean vector for source-space tracking"
-            raise ConfigConsistencyError(msg)
-        n_nodes: int | None = None
-        if isinstance(params, dict) and isinstance(params.get("A"), (list, tuple)):
-            n_nodes = len(params["A"])
-        if n_nodes is not None and len(ref.lfp_mean) != n_nodes:
-            msg = f"reference LFP mean channel count ({len(ref.lfp_mean)}) must equal Jansen-Rit node count ({n_nodes})"
-            raise ConfigConsistencyError(msg)
-    else:
-        leadfield_arr = np.asarray(leadfield)
-        n_eeg, n_nodes = leadfield_arr.shape
-        if ref.eeg_mean is not None and len(ref.eeg_mean) == n_eeg:
-            return
-        if ref.lfp_mean is not None and len(ref.lfp_mean) == n_nodes:
-            return
-        msg = f"reference cannot be resolved to match leadfield dimensions ({leadfield_arr.shape})"
-        raise ConfigConsistencyError(msg)
-
-
-def _check_jansen_rit(config: Mapping[str, Any], problem: Mapping[str, Any], controller_dt: float) -> None:
-    """Require the Control Horizon knot period, oracle handover, and reference to agree with the Predictor."""
-    knot_dt = float(problem.get("dt", 1e-4)) * int(problem.get("substeps", 1))
-    if not math.isclose(controller_dt, knot_dt, rel_tol=_REL_TOL):
-        msg = (
-            f"controller.dt ({controller_dt}) must equal the knot period ({knot_dt} = "
-            f"{problem.get('substeps', 1)} steps of {problem.get('dt', 1e-4)}): the Rollout prices each "
-            f"control over one knot, and the loop would hold it for another span."
-        )
-        raise ConfigConsistencyError(msg)
-
-    estimator = config["estimator"]
-    if estimator["class_path"] == _ORACLE_ESTIMATOR:
-        estimator_dt = float(estimator["dt"])
-        predictor_dt = float(problem.get("dt", 1e-4))
-        if not math.isclose(estimator_dt, predictor_dt, rel_tol=_REL_TOL):
-            msg = (
-                f"estimator.dt ({estimator_dt}) must equal the Predictor's integration step ({predictor_dt}): "
-                f"the handover's delay buffer is sampled once per Estimator step and read back once per "
-                f"integration step."
-            )
-            raise ConfigConsistencyError(msg)
-
-        for key in ("connectome", "params"):
-            if estimator.get(key) != config["dynamics"].get(key):
-                what = "Connectome" if key == "connectome" else "parameters"
-                msg = (
-                    f"estimator.{key} does not match dynamics.{key}: the oracle handover would build the "
-                    f"{what} of a different network than the Plant it observes."
-                )
-                raise ConfigConsistencyError(msg)
-
-    _check_jansen_rit_reference(config, problem)
-
-
 def _check_observable_reference(problem: Mapping[str, Any], meta: Mapping[str, Any], controller_dt: float) -> None:
     """Validate observable healthy reference / envelope."""
     ref_path = _reference_path(problem)
@@ -392,10 +316,6 @@ def _check_predictor(config: Mapping[str, Any]) -> None:
         return
 
     problem = controller["problem"]
-    if problem.get("class_path") == _JANSEN_RIT_PROBLEM:
-        _check_jansen_rit(config, problem, float(controller["dt"]))
-        return
-
     meta = load_meta(problem["artifact"])
     provenance = TrainingProvenance.from_meta(meta)
     plant_dt = float(config["dynamics"]["dt"])

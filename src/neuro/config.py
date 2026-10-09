@@ -841,10 +841,6 @@ def resolve_artifact_dir(artifact: str | None, default_prefix: str) -> Path:
     return artifact_dir
 
 
-_ORACLE_ESTIMATOR = "neuro.predictor.oracle.JansenRitOracleEstimator"
-_JANSEN_RIT_PROBLEM = "neuro.predictor.jansen_rit.build_jansen_rit_problem"
-
-
 def _resolve_dynamics_config(dyn: dict[str, Any]) -> None:
     """Expand regime into canonical connectome, parameters and plant defaults."""
     regime = dyn.get("regime")
@@ -861,7 +857,7 @@ def _resolve_dynamics_config(dyn: dict[str, Any]) -> None:
 
         dyn.setdefault("class_path", "neuro.jansen_rit.JansenRitDynamics")
         dyn.setdefault("dt", 1e-4)
-        dyn.setdefault("initial_state", "rest")  # What is this?
+        dyn.setdefault("initial_state", "rest")
         dyn.setdefault("connectome", {"speed": 50.0, "K": 0.60})
         params.setdefault("sigma", 280.0)
         conn = Connectome.from_config(dyn["connectome"])
@@ -878,43 +874,8 @@ def _resolve_dynamics_config(dyn: dict[str, Any]) -> None:
         raise ValueError(msg)
 
 
-def _resolve_oracle_estimator(estimator: dict[str, Any], dyn: dict[str, Any]) -> None:
-    """Propagate plant components to oracle estimator when omitted."""
-    if estimator.get("class_path") != _ORACLE_ESTIMATOR:
-        return
-    if "connectome" not in estimator and "connectome" in dyn:
-        estimator["connectome"] = dyn["connectome"]
-    if "params" not in estimator and "params" in dyn:
-        estimator["params"] = dyn["params"]
-    elif isinstance(estimator.get("params"), dict) and estimator["params"].get("A") == "seizure":
-        from neuro.connectome import Connectome  # noqa: PLC0415
-        from neuro.seizure import build_seizure_a_gains  # noqa: PLC0415
-
-        conn = Connectome.from_config(estimator.get("connectome", dyn.get("connectome", {})))
-        estimator["params"]["A"] = build_seizure_a_gains(conn).tolist()
-
-
-def _resolve_oracle_problem(ctrl: dict[str, Any], dyn: dict[str, Any]) -> None:
-    """Propagate plant components to oracle problem when omitted."""
-    problem = ctrl.get("problem")
-    if not isinstance(problem, dict) or problem.get("class_path") != _JANSEN_RIT_PROBLEM:
-        return
-    if "connectome" not in problem and "connectome" in dyn:
-        problem["connectome"] = dyn["connectome"]
-    if "params" not in problem and "params" in dyn:
-        problem["params"] = dyn["params"]
-    elif isinstance(problem.get("params"), dict) and problem["params"].get("A") == "seizure":
-        from neuro.connectome import Connectome  # noqa: PLC0415
-        from neuro.seizure import build_seizure_a_gains  # noqa: PLC0415
-
-        conn = Connectome.from_config(problem.get("connectome", dyn.get("connectome", {})))
-        problem["params"]["A"] = build_seizure_a_gains(conn).tolist()
-    if "stimulation" not in problem and "stimulation" in dyn:
-        problem["stimulation"] = dyn["stimulation"]
-
-
 def _resolve_sensors_config(config: dict[str, Any], plant_dt: float) -> None:
-    """Expand sensors shorthands ('eeg', 'oracle') into full sensor definitions."""
+    """Expand sensors shorthand ('eeg') into full sensor definitions."""
     sensors = config.get("sensors")
     if sensors is None or sensors == "eeg":
         config["sensors"] = {
@@ -923,13 +884,8 @@ def _resolve_sensors_config(config: dict[str, Any], plant_dt: float) -> None:
             "std_dev": 0.0,
             "measurement": {"class_path": "neuro.eeg.EEGMeasurement"},
         }
-    elif sensors == "oracle":
-        config["sensors"] = {
-            "class_path": "neuro.predictor.oracle.FullStateSensor",
-            "dt": plant_dt,
-        }
     elif isinstance(sensors, str):
-        msg = f"Unknown sensors shorthand {sensors!r}. Expected 'eeg', 'oracle', or a sensor dict."
+        msg = f"Unknown sensors shorthand {sensors!r}. Expected 'eeg' or a sensor dict."
         raise ValueError(msg)
 
 
@@ -953,12 +909,5 @@ def resolve_simulation_config(config: dict[str, Any]) -> dict[str, Any]:
     )
 
     _resolve_sensors_config(resolved, plant_dt)
-
-    estimator = resolved.get("estimator")
-    if isinstance(estimator, dict):
-        _resolve_oracle_estimator(estimator, dyn)
-    ctrl = resolved.get("controller")
-    if isinstance(ctrl, dict):
-        _resolve_oracle_problem(ctrl, dyn)
 
     return resolved

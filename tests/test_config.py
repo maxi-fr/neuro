@@ -680,13 +680,10 @@ def test_resolve_simulation_config_immutability() -> None:
 
 
 def test_resolve_simulation_config_sensors_shorthands() -> None:
-    """resolve_simulation_config expands 'eeg' and 'oracle' sensor shorthands."""
+    """resolve_simulation_config expands 'eeg' sensor shorthand."""
     cfg_eeg = resolve_simulation_config({"dynamics": {"dt": 2e-4}, "sensors": "eeg"})
     assert cfg_eeg["sensors"]["class_path"] == "simulate.sensor.GaussianSensor"
     assert cfg_eeg["sensors"]["dt"] == 2e-4
-
-    cfg_oracle = resolve_simulation_config({"dynamics": {"dt": 1e-4}, "sensors": "oracle"})
-    assert cfg_oracle["sensors"]["class_path"] == "neuro.predictor.oracle.FullStateSensor"
 
     with pytest.raises(ValueError, match="Unknown sensors shorthand"):
         resolve_simulation_config({"sensors": "unknown"})
@@ -706,29 +703,3 @@ def test_resolve_simulation_config_dynamics_regimes() -> None:
 
     with pytest.raises(ValueError, match="Unknown dynamics regime"):
         resolve_simulation_config({"dynamics": {"regime": "unknown"}})
-
-
-def test_resolve_simulation_config_oracle_propagation() -> None:
-    """resolve_simulation_config propagates plant settings to oracle estimator and problem."""
-    cfg = {
-        "dynamics": {
-            "regime": "seizure",
-            "stimulation": {"model": "roast_3d", "field_projection_path": "data/roast_field_projection_3d.npz"},
-        },
-        "sensors": "oracle",
-        "estimator": {"class_path": "neuro.predictor.oracle.JansenRitOracleEstimator", "dt": 1e-4},
-        "controller": {
-            "class_path": "neuro.control.mpc.TrajOptMPCController",
-            "dt": 0.02,
-            "problem": {
-                "class_path": "neuro.predictor.jansen_rit.build_jansen_rit_problem",
-                "horizon": 10,
-            },
-        },
-    }
-    resolved = resolve_simulation_config(cfg)
-    assert resolved["estimator"]["connectome"] == resolved["dynamics"]["connectome"]
-    assert resolved["estimator"]["params"] == resolved["dynamics"]["params"]
-    assert resolved["controller"]["problem"]["connectome"] == resolved["dynamics"]["connectome"]
-    assert resolved["controller"]["problem"]["params"] == resolved["dynamics"]["params"]
-    assert resolved["controller"]["problem"]["stimulation"] == resolved["dynamics"]["stimulation"]

@@ -644,54 +644,6 @@ def test_mismatched_model_and_estimator_kinds(tmp_path: Path) -> None:
         validate_simulation_config(bad_cfg2)
 
 
-def _jansen_rit_loop(*, substeps: int = 20, controller_dt: float = 0.02, estimator_dt: float = 1e-3) -> dict[str, Any]:
-    """An oracle-handover Jansen-Rit MPC config: the Plant is its own Predictor, no checkpoint involved."""
-    connectome = {"speed": 50.0, "K": 0.6}
-    params = {"sigma": 280.0}
-    return {
-        "dynamics": {
-            "class_path": "neuro.jansen_rit.JansenRitDynamics",
-            "dt": _PLANT_DT,
-            "connectome": connectome,
-            "params": params,
-        },
-        "sensors": {"class_path": "neuro.predictor.oracle.FullStateSensor", "dt": _PLANT_DT},
-        "estimator": {
-            "class_path": "neuro.predictor.oracle.JansenRitOracleEstimator",
-            "dt": estimator_dt,
-            "connectome": connectome,
-            "params": params,
-        },
-        "controller": {
-            "class_path": "neuro.control.mpc.TrajOptMPCController",
-            "dt": controller_dt,
-            "problem": {
-                "class_path": "neuro.predictor.jansen_rit.build_jansen_rit_problem",
-                "dt": estimator_dt,
-                "substeps": substeps,
-                "horizon": 50,
-                "u_max": 2.0,
-                "connectome": connectome,
-                "params": params,
-                "reference": "data/healthy_lfp_knot20ms_frame500ms.npz",
-            },
-        },
-    }
-
-
-def test_jansen_rit_oracle_loop_validates_without_a_checkpoint() -> None:
-    """A Jansen-Rit problem carries no trained artifact, so the checkpoint checks do not apply."""
-    validate_simulation_config(_jansen_rit_loop())
-
-
-def test_jansen_rit_requires_reference_when_wy_positive() -> None:
-    """Jansen-Rit oracle config with w_y > 0 strictly requires a reference file."""
-    cfg = _jansen_rit_loop()
-    del cfg["controller"]["problem"]["reference"]
-    with pytest.raises(ConfigConsistencyError, match=r"controller\.problem\.reference must be provided when w_y > 0"):
-        validate_simulation_config(cfg)
-
-
 def test_waveform_predictor_requires_reference_when_wy_positive(config: dict[str, Any]) -> None:
     """Waveform predictor config with w_y > 0 strictly requires a reference file."""
     del config["controller"]["problem"]["reference"]
@@ -705,60 +657,6 @@ def test_waveform_predictor_reference_channel_count_mismatch(config: dict[str, A
     config["controller"]["problem"]["reference"] = str(bad_ref)
     with pytest.raises(ConfigConsistencyError, match="reference mean channel count"):
         validate_simulation_config(config)
-
-
-def test_jansen_rit_controller_dt_must_equal_the_knot_period() -> None:
-    """A controller stepping off the knot grid holds each control for a span the Predictor never priced."""
-    with pytest.raises(ConfigConsistencyError, match="knot period"):
-        validate_simulation_config(_jansen_rit_loop(controller_dt=0.01))
-
-
-def test_jansen_rit_oracle_estimator_must_run_at_the_predictor_step() -> None:
-    """The handover buffer is sampled at the Estimator's dt, which is the Predictor's integration step."""
-    cfg = _jansen_rit_loop()
-    cfg["estimator"]["dt"] = 2e-3
-    with pytest.raises(ConfigConsistencyError, match="integration step"):
-        validate_simulation_config(cfg)
-
-
-def test_jansen_rit_oracle_estimator_must_share_the_plant_network() -> None:
-    """A handover built on a different Connectome fills the delay buffer from the wrong network."""
-    cfg = _jansen_rit_loop()
-    cfg["estimator"]["connectome"] = {"speed": 10.0, "K": 0.6}
-    with pytest.raises(ConfigConsistencyError, match="Connectome"):
-        validate_simulation_config(cfg)
-
-
-def test_jansen_rit_missing_lfp_mean_raises(tmp_path: Path) -> None:
-    """Source-space Jansen-Rit tracking rejects a reference missing an LFP mean vector."""
-    ref_path = tmp_path / "eeg_only_ref.npz"
-    np.savez(ref_path, eeg_mean=np.zeros(20))
-    cfg = _jansen_rit_loop()
-    cfg["controller"]["problem"]["reference"] = str(ref_path)
-    with pytest.raises(ConfigConsistencyError, match="does not carry an LFP mean vector"):
-        validate_simulation_config(cfg)
-
-
-def test_jansen_rit_mismatched_lfp_channels_raises(tmp_path: Path) -> None:
-    """Source-space Jansen-Rit tracking rejects reference whose LFP channel count differs from node count."""
-    ref_path = tmp_path / "wrong_lfp_ref.npz"
-    np.savez(ref_path, lfp_mean=np.zeros(10))
-    cfg = _jansen_rit_loop()
-    cfg["controller"]["problem"]["reference"] = str(ref_path)
-    cfg["controller"]["problem"]["params"] = {"A": [3.25] * 76}
-    with pytest.raises(ConfigConsistencyError, match="must equal Jansen-Rit node count"):
-        validate_simulation_config(cfg)
-
-
-def test_jansen_rit_leadfield_dimension_mismatch_raises(tmp_path: Path) -> None:
-    """Projection-space Jansen-Rit tracking rejects reference matching neither EEG nor source dimensions."""
-    ref_path = tmp_path / "bad_leadfield_ref.npz"
-    np.savez(ref_path, eeg_mean=np.zeros(5), lfp_mean=np.zeros(50))
-    cfg = _jansen_rit_loop()
-    cfg["controller"]["problem"]["reference"] = str(ref_path)
-    cfg["controller"]["problem"]["leadfield"] = np.zeros((10, 76)).tolist()
-    with pytest.raises(ConfigConsistencyError, match="cannot be resolved to match leadfield dimensions"):
-        validate_simulation_config(cfg)
 
 
 def test_waveform_predictor_reference_without_mean_raises(config: dict[str, Any], tmp_path: Path) -> None:

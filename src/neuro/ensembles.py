@@ -32,7 +32,7 @@ if TYPE_CHECKING:
 
     from neuro.types import FloatArray
 
-PLANT_CONFIG = Path("configs/simulation/jansen_rit_oracle_mpc.yaml")
+PLANT_CONFIG = Path("configs/simulation/uncontrolled.yaml")
 GOOD_COMMAND = (2.0, 0.0, -2.0)
 
 PlantKind = Literal["healthy", "seizure"]

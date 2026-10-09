@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import dataclasses
 import itertools
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 import jax.numpy as jnp
 import numpy as np
@@ -1305,5 +1305,4 @@ def test_epigraph_weight_matches_horizon_normalized_surrogate(tmp_path: Path) ->
         w_u_l1=w_u_l1,
         l1_mode="epigraph",
     )
-    np.testing.assert_allclose(float(prob.obj.stage_cost.weight), w_u_l1 / horizon)
-
+    np.testing.assert_allclose(float(cast("Any", prob.obj.stage_cost).weight), w_u_l1 / horizon)
