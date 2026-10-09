@@ -48,7 +48,7 @@ def data_plant_fingerprint(data_dir: Path) -> str | None:
 
 
 def check_excitation_alignment(data_dir: Path, downsample: int) -> None:
-    """Warn when the excitation in ``data_dir`` switches off the grid ``downsample`` strides on.
+    """Warn when excitation transitions in ``data_dir`` miss the downsampled sample grid.
 
     A block boundary landing mid-step leaves the strided control recording a command the plant only
     partly held, so the predictor is identified against an input that was never applied.
@@ -61,7 +61,13 @@ def check_excitation_alignment(data_dir: Path, downsample: int) -> None:
 
     dt = float(controller.get("dt", 1e-4))
     hold_multipliers = np.atleast_1d(np.asarray(controller.get("holds", 1), dtype=int))
-    ragged = sorted(int(h) for h in hold_multipliers if (h * dt) % (downsample * 1e-4) != 0.0)
+    sample_dt = downsample * 1e-4
+    ragged = []
+    for h in hold_multipliers:
+        sample_ratio = (h * dt) / sample_dt
+        if not np.isclose(sample_ratio, np.rint(sample_ratio), rtol=0.0, atol=1e-9):
+            ragged.append(int(h))
+    ragged.sort()
     if ragged:
         warnings.warn(
             f"excitation holds {ragged} in {data_dir} are not whole multiples of the "

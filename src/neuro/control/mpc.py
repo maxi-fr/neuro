@@ -1273,11 +1273,12 @@ def _load_waveform_runtime(artifact: str | Path) -> WaveformMLPModel | WaveformC
 def _waveform_terminal_cost(
     base_terminal: CostFunction,
     frame_hinge: ObservableFrameHingeCost | None,
+    w_hinge_terminal: float | None = None,
 ) -> CostFunction:
     """Combine output tracking and optional terminal Frame hinge into the terminal Cost."""
     if frame_hinge is None:
         return base_terminal
-    return _combine_costs([base_terminal, frame_hinge.as_terminal()])
+    return _combine_costs([base_terminal, frame_hinge.as_terminal(w_hinge=w_hinge_terminal)])
 
 
 def _wrap_epigraph_if_requested(
@@ -1323,6 +1324,7 @@ def build_waveform_problem(  # noqa: PLR0913 -- checkpoint plus the eleven MPC c
     w_y_terminal: float | None = None,
     w_u_l1: float = 0.0,
     w_hinge: float = 0.0,
+    w_hinge_terminal: float | None = None,
     reference: HealthyReference | None = None,
     kirchhoff: bool = False,
     reduce_kirchhoff: bool = False,
@@ -1358,6 +1360,8 @@ def build_waveform_problem(  # noqa: PLR0913 -- checkpoint plus the eleven MPC c
     w_hinge
         Weight on the spectral hinge Cost: the mean squared amount by which predicted log-power Frames
         exceeds ``reference``'s healthy envelope. ``0`` (default) disables it.
+    w_hinge_terminal
+        Weight on the terminal knot spectral hinge Cost. When ``None`` (default), inherits ``w_hinge``.
     reference
         :class:`~neuro.spectral.HealthyReference` container carrying empirical channel
         means and/or Observable envelope. Required when ``w_y > 0`` or ``w_hinge > 0``.
@@ -1373,7 +1377,8 @@ def build_waveform_problem(  # noqa: PLR0913 -- checkpoint plus the eleven MPC c
         ``"epigraph"`` (exact L1 epigraph reformulation).
     """
     base = _load_waveform_runtime(artifact)
-    envelope = _observable_envelope(reference, w_hinge)
+    w_hinge_eff = max(w_hinge, w_hinge if w_hinge_terminal is None else w_hinge_terminal)
+    envelope = _observable_envelope(reference, w_hinge_eff)
     if envelope is not None:
         _validate_waveform_envelope(envelope, base)
         support = envelope.geometry.sample_support_steps(envelope.fs)
@@ -1396,7 +1401,7 @@ def build_waveform_problem(  # noqa: PLR0913 -- checkpoint plus the eleven MPC c
         reference,
         base,
         tracking_active=(w_y > 0 or w_y_final > 0),
-        w_hinge=w_hinge,
+        w_hinge=w_hinge_eff,
     )
 
     target = jnp.zeros(model.p) if target_val is None else jnp.asarray(target_val)
@@ -1422,7 +1427,7 @@ def build_waveform_problem(  # noqa: PLR0913 -- checkpoint plus the eleven MPC c
         base_terminal: CostFunction = OutputCost(model, DiagonalCost.terminal_tracking(Q_f, target, m=m))
     else:
         base_terminal = output_stage.as_terminal()
-    terminal_cost = _waveform_terminal_cost(base_terminal, frame_hinge)
+    terminal_cost = _waveform_terminal_cost(base_terminal, frame_hinge, w_hinge_terminal=w_hinge_terminal)
     objective = Objective(stage_cost=stage_cost, terminal_cost=terminal_cost, N=N)
 
     problem = _assemble_problem(

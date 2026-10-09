@@ -496,6 +496,56 @@ def test_casadi_and_trajopt_agree_on_every_cost_contribution(
     np.testing.assert_allclose(decomp_casadi["cost_total"], decomp_trajopt["cost_total"], rtol=1e-10, atol=1e-10)
 
 
+def test_casadi_and_trajopt_agree_on_terminal_hinge_weight(tmp_path: Path) -> None:
+    """CasADi and trajopt agree on cost when terminal hinge weight differs from stage hinge weight."""
+    geom = StftGeometry(n_segment=15, n_hop=5, kernel="hann", kernel_width=2)
+    fs = 100.0
+    dt = 1.0 / fs
+    horizon = 6
+    artifact = _build_checkpoint(tmp_path, depth=1, horizon=horizon, dt=dt)
+    ref_path = _write_reference(tmp_path, geom, n_channels=2, fs=fs)
+    ref = HealthyReference.load(ref_path)
+
+    prob_trajopt = build_waveform_problem(
+        artifact,
+        horizon=horizon,
+        u_max=0.8,
+        w_y=1.0,
+        w_hinge=2.0,
+        w_hinge_terminal=10.0,
+        reference=ref,
+        kirchhoff=True,
+    )
+    prob_casadi = build_casadi_waveform_problem(
+        artifact,
+        horizon=horizon,
+        u_max=0.8,
+        w_y=1.0,
+        w_hinge=2.0,
+        w_hinge_terminal=10.0,
+        reference=ref,
+        kirchhoff=True,
+    )
+
+    model = prob_trajopt.model
+    rng = np.random.default_rng(_SEED + 15)
+    x0 = rng.standard_normal(model.n)
+    u_seq = rng.uniform(-0.5, 0.5, (horizon, model.m))
+
+    states = [x0]
+    curr_x = x0
+    for k in range(horizon):
+        curr_x = np.asarray(model.discrete_dynamics(jnp.asarray(curr_x), jnp.asarray(u_seq[k]), 0.0, dt))
+        states.append(curr_x)
+    states_jax = jnp.asarray(np.array(states))
+
+    decomp_trajopt = decompose_cost(prob_trajopt, states_jax, jnp.asarray(u_seq), dt=dt)
+    decomp_casadi = decompose_casadi_cost(prob_casadi, x0, u_seq)
+
+    np.testing.assert_allclose(decomp_casadi["cost_spectral"], decomp_trajopt["cost_spectral"], rtol=1e-10, atol=1e-10)
+    np.testing.assert_allclose(decomp_casadi["cost_total"], decomp_trajopt["cost_total"], rtol=1e-10, atol=1e-10)
+
+
 def test_spectral_cost_preserves_frame_geometry_and_history(tmp_path: Path) -> None:
     """Spectral Observable Frame computation in CasADi preserves Frame geometry, pooling, and history."""
     fs = 100.0
