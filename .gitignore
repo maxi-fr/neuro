@@ -39,3 +39,4 @@ results/
 .claude/
 configs/comparison/
 .worktrees/
+thesis/out/

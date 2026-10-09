@@ -1289,3 +1289,21 @@ def test_trajopt_mpc_controller_epigraph_closed_loop(tmp_path: Path) -> None:
         np.abs(ctrl._u_guess[:, :2]),  # noqa: SLF001
         atol=1e-8,
     )
+
+
+def test_epigraph_weight_matches_horizon_normalized_surrogate(tmp_path: Path) -> None:
+    """Problem with l1_mode='epigraph' sets slack weight to w_u_l1 / horizon."""
+    artifact = _build_checkpoint(tmp_path, n_channels=2, n_controls=2)
+    horizon = 5
+    w_u_l1 = 0.5
+    prob = build_waveform_problem(
+        artifact,
+        horizon=horizon,
+        u_max=1.0,
+        w_y=0.0,
+        w_u=0.0,
+        w_u_l1=w_u_l1,
+        l1_mode="epigraph",
+    )
+    np.testing.assert_allclose(float(prob.obj.stage_cost.weight), w_u_l1 / horizon)
+

@@ -1285,12 +1285,12 @@ def _wrap_epigraph_if_requested(
     w_u_l1: float,
     l1_mode: str,
 ) -> NeuroProblem:
-    """Wrap problem with exact L1 epigraph reformulation when requested."""
+    """Wrap problem with exact L1 epigraph reformulation scaled by Control Horizon when requested."""
     if l1_mode not in ("smooth", "epigraph"):
         msg = f"l1_mode must be 'smooth' or 'epigraph', got {l1_mode!r}"
         raise ValueError(msg)
     if w_u_l1 > 0 and l1_mode == "epigraph":
-        epi_problem = add_l1_epigraph(problem, weight=w_u_l1)
+        epi_problem = add_l1_epigraph(problem, weight=w_u_l1 / problem.horizon)
         epi_model = EpigraphInferenceModel(cast("_EpigraphModel", epi_problem.model))
         return NeuroProblem(
             model=epi_model,
