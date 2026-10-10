@@ -1,34 +1,393 @@
+
 \chapter{Data-Driven Predictor Design}
 \label{ch:data_driven_predictor_design}
 
-%   Content:
-%   * we need prediction models for the MPC
-%       * only input-output data available
-%           * we assume biophysical plant model is not available
-%           * even if it was: JR all of the delay states would be too big for reasonable MPC compute times
-%       * Brain dynamics model not available/ hard to identify
-%           * spend some time talking about the attempts we made in the beginning for JR system identification
-%           * bifurcations make it hard (cite this one JAX tvb-optim paper)
-%       * upside of io models: no need for state estimation
+
+% Introduction (no section heading)
+% - MPC requires predictions under candidate stimulation currents
+% - Information available to the controller
+%   - Ground-truth Plant specified for simulation and evaluation
+%   - Assume its equations, parameters, and neural states
+%     are unavailable to the controller
+%   - Controller uses measured EEG and applied currents
+% - Motivation for data-driven input-output prediction
+%   - No explicit neural-state estimation required
+%   - Challenges of mechanistic modeling
+%     - Brain dynamics difficult to identify
+%     - Potential computational burden of delayed JR dynamics
+%     - Early JR identification attempts
+%       - Difficulties due to nonlinearities and bifurcations
+%       - Reference: JAX tvb-optim paper
+% - Specific prediction problem
+%   - Prediction of future multichannel seizure activity
+%     under candidate stimulation currents
+%   - Two target representations: EEG waveforms and
+%     time sequences of spectral observables
+%   - Relation to prior spectral prediction and control work
+%   - Distinction from static spectral characterization
+%   - Position relative to prior work without unsupported novelty claims
+% - Limitations
+%   - Stochastic dynamics and unknowable future noise
+% - Chapter roadmap
+
+
+\section{Prediction Problem}
+\label{sec:prediction_problem}
+
+\subsection{Input-Output Prediction Formulation}
+
+% - Discrete-time input-output prediction map
+%   - Signal definitions, dimensions, and time indexing
+%   - Inputs
+%     - Past EEG measurements / Observable Frames
+%     - Past applied stimulation currents
+%     - Candidate future stimulation currents
+%   - Outputs
+%     - Predicted future EEG / Observable Frames
+%     - Prediction Rollout over the Control Horizon
 %
-%   * prediction task/target
-%       > Here we can present the detectability/predictability investigations i did
-%           * either present here or mention here and present in Experiments chapter
-%       > mention the TKEO paper talking about epilepsy detectability
-%       * waveform
-%       * spectral observables
-%           * STFT introduction
+% - Temporal structure
+%   - Sampling rates and held stimulation currents
+%   - Current selected after observation k affects the transition to k+1
+%   - Distinguish EEG sample grid, spectral Frame grid, and controller update interval
+%   - History length and Control Horizon
+
+
+\subsection{Autoregressive Prediction}
+
+% - One-step prediction
+%   - Direct next-output or residual prediction
 %
-%   * model architectures
-%       * MLP
-%           * why: classic, basic NN, universal approximation theorem
-%       * CNN
-%           * why: to make use of the temporal and frequency axes
-%           * why: for waveform CNN: STFT is just a specific convolutional kernel, maybe learned is better
-%       * linear (DMD)
-%           * making linear MPC possible
-%           * koopman theory analogy
-%    * need some introduction into gradient descent, loss functions, etc.
+% - Initialization and measurement updates
+%   - Required measurement history
+%   - Measurement-driven internal state updates
 %
+% - Autoregressive Rollout
+%   - Repeated application of the one-step Predictor
+%   - Evolution without new measurement corrections
+%   - Accumulation of prediction errors
+
+
+\subsection{Control-Relevant Prediction Requirements}
+
+% - Detectability
+%   - Can seizure-related dynamics be detected in the observables?
+%   - TKEO paper: epilepsy detectability and Fourier features
 %
-%   > Question: do we answer the question that we like the spectral prediction models also because we can run the MPC purely in this spectral realm with a cost function defined in the spectral space.
+% - Detection latency
+%   - How quickly do observables reveal seizure-related activity?
+%   - Is detection early enough for effective control intervention?
+%   - Especially relevant for windowed spectral observables
+%
+% - Predictability
+%   - How far into the future can relevant dynamics be predicted?
+%   - Mention detectability and predictability investigations
+%     - Results belong in Chapter 5
+%
+% - Current sensitivity
+%   - Predictions must depend meaningfully on stimulation currents
+%   - Important for MPC optimization
+
+
+\section{Prediction Targets}
+\label{sec:prediction_targets}
+
+% Section introduction
+% - Choice of what the Predictor should forecast
+%   - Raw EEG waveforms or derived spectral observables
+%   - Prediction target affects what information is retained
+%   - Also affects the formulation of the MPC Cost
+%
+% - Motivation for spectral observables
+%   - Seizure-related activity often has characteristic rhythms
+%   - Frequency-domain quantities may capture relevant activity
+%     without requiring precise waveform phase prediction
+
+
+\subsection{Spectral Representation and STFT}
+
+% - Fourier transform and spectral power
+% - STFT
+%   - Segments, windowing, overlap, and hop length
+%   - Segment length sets frequency resolution
+%   - Hop length sets Frame update frequency
+%   - Taper leakage and frequency-bin pooling as secondary choices
+%
+% - Construction of spectral observables
+%   - Spectral frames and their timestamps
+%   - Power computation and scaling
+%   - Temporal smoothing across frames
+%     - Frame Kernel: weights and support
+%     - Frame Kernel sets temporal smoothing and responsiveness
+%   - Logarithmic transformation
+%
+% - Properties and limitations
+%   - Seizure-related oscillatory activity
+%   - Loss of phase information
+%   - Detection latency
+%   - Non-uniqueness of the underlying waveform
+
+
+\subsection{Waveform Versus Spectral Prediction}
+
+% - Waveform Predictor
+%   - Direct prediction of EEG amplitudes over time
+%   - Retains phase and precise timing information
+%   - Sensitive to stochastic waveform variations
+%   - Can be trained with waveform or spectral Loss
+%
+% - Direct spectral Frame Predictor
+%   - Predict spectral observables directly
+%   - Does not need to reconstruct the underlying waveform
+%   - Outputs align with a spectral MPC Cost
+%
+% - Design trade-offs
+%   - Waveform detail versus spectral abstraction
+%   - Phase sensitivity versus focus on seizure-related rhythms
+%   - Spectral processing required for waveform-based MPC Cost
+%   - Whether the output representation captures stimulation effects
+%
+% - Empirical comparison reserved for Chapter 5
+
+
+\section{Supervised Learning and Training Data}
+\label{sec:predictor_training}
+
+\subsection{Supervised Learning Foundations}
+
+% - Supervised learning problem
+%   - Learning a mapping from inputs to target outputs
+%   - Training examples and empirical Loss
+%
+% - Optimization
+%   - Batches and gradient descent
+%   - Backpropagation
+%
+% - Generalization
+%   - Training versus validation performance
+%   - Learning rate, regularization, early stopping
+
+
+\subsection{Training Data Generation}
+
+% - Plant Rollouts
+%   - Data source, number, and duration
+%   - Initial conditions and random seeds
+%   - Stimulated and unstimulated conditions
+%
+% - Stimulation signals
+%   - Signal type, amplitude, and hold times
+%   - Electrode constraints and feasible currents
+%
+% - Dataset coverage
+%   - Healthy, seizure onset, and recruited states
+%   - Balance across dynamical regimes
+%   - Excitation of control-relevant frequencies
+%   - Coverage of feasible stimulation inputs
+%   - Poor excitation of some control-input directions limits learned input sensitivity
+%
+% - Distribution shift
+%   - MPC may optimize currents outside the training distribution
+
+
+\subsection{Preprocessing and Dataset Construction}
+
+% - Signal preprocessing
+%   - EEG units
+%   - Causal filtering and downsampling
+%   - Alignment of EEG and stimulation currents
+%
+% - Construction of supervised examples
+%   - Input histories
+%   - Future candidate currents
+%   - Target outputs
+%
+% - Dependence between training samples
+%   - Overlapping segments produce correlated spectral Frames
+%   - Neighboring supervised examples are not independent
+%
+% - Dataset partitioning
+%   - Training, validation, and test split by independent Plant Rollout, not individual samples
+%   - Standardization fitted on training data only
+
+
+\subsection{Loss Functions and Training Strategies}
+
+% - Prediction Losses
+%   - Waveform mean squared error (MSE)
+%   - Spectral Loss
+%     - Definition and spectral processing
+%     - Differences from waveform Loss
+%
+% - Temporal training strategies
+%   - One-step Loss and teacher forcing
+%   - Multi-step Loss and free autoregressive Rollout
+%
+% - Relationship to MPC
+%   - Training Loss versus MPC Cost
+%   - Prediction accuracy versus control-relevant accuracy
+
+
+\section{Predictor Architectures}
+\label{sec:predictor_architectures}
+
+\subsection{Multilayer Perceptron (MLP)}
+
+% - Basic feedforward neural network
+%   - Flattened input history
+%   - Layers and activation functions
+%
+% - Motivation
+%   - Simple, classic general nonlinear Predictor
+%   - Nonlinear, history-dependent response to control inputs
+%   - Universal approximation theorem
+%     - Theoretical relevance and practical limitations
+
+
+\subsection{Convolutional Neural Network (CNN)}
+
+% - Convolutional architecture
+%   - Shared weights and receptive fields
+%   - Causality and temporal dependencies
+%
+% - Motivation for convolution
+%   - Exploit temporal structure of waveform inputs
+%   - Exploit temporal and frequency axes of spectral Frames
+%   - Shared local filters encode measurements; their features combine with currents for nonlinear response
+%
+% - Learned filters versus fixed signal processing
+%   - STFT as a bank of fixed convolution-like filters
+%   - CNN filters learned from training data
+%   - Potential advantages and limitations
+
+
+\subsection{Linear DMD-Based Predictor}
+
+% - Hankel-DMDc
+%   - Delay-coordinate embedding
+%   - Ridge regression / SVD-based identification
+%   - Effect of regularization on learned input sensitivity
+%   - Analogy to Koopman operator theory
+%
+% - Motivation
+%   - Linear data-driven baseline
+%   - Fixed additive effect of control inputs
+%   - Potential for linear prediction within MPC
+%   - Possibility of convex MPC formulations
+
+\subsection{Architectural Trade-Offs}
+
+% - Model capacity and expressiveness
+% - Required history and effective memory
+% - Inference cost
+% - Availability and cost of derivatives
+% - Suitability for waveform and spectral targets
+% - Implications for MPC optimization
+% - Compare candidate architectures in Chapter 5
+
+
+\section{Connection to Model Predictive Control}
+\label{sec:predictor_mpc_connection}
+
+% - Predictor interface with MPC
+%   - Candidate future stimulation currents as inputs
+%   - Predicted observables over the Control Horizon
+%   - Spectral predictions can feed a spectral Cost directly
+%
+% - Limitations for closed-loop optimization
+%   - MPC may exploit forecast errors
+%   - Inaccurate learned current sensitivity
+%   - Distribution shift under optimized currents
+%
+% - Scope of subsequent chapters
+%   - MPC formulation and optimization in Chapter 4
+%   - Experimental comparisons and outcomes in Chapter 5
+
+
+% ============================================================
+% Figures to plan
+% ============================================================
+
+% - Causal prediction timeline
+%   - Measurement history, current history, future currents
+%   - Prediction Rollout and Control Horizon
+%
+% - STFT geometry (there already exist nice ones in thesis\figures\03_data_driven_predictor_design\)
+%
+% - classic figure showing a MLP with one hidden layer and all the connections
+%
+% - figure showing our CNN architecture
+
+
+
+% ============================================================
+% Terminology Glossary / Writing Conventions
+% ============================================================
+
+% Plant and measurements
+% - Plant -> plant
+%   - Ground-truth biophysical simulator
+%   - Distinct from learned prediction models
+% - Control Current -> stimulation current / control input
+%   - Electrode currents, not regional stimulation drives
+%
+% Prediction models
+% - Predictor -> predictor / prediction model
+%   - Learned input-output dynamics model
+% - Observable -> observable / measured output
+%   - Causal quantity derived from EEG
+%   - May be a waveform signal or spectral representation
+% - Rollout -> rollout / predicted trajectory
+%   - Forward trajectory without measurement correction
+%   - Distinguish simulated Plant and predicted rollouts
+% - State Absorption -> measurement-driven state update
+%   - Ingesting the latest observation and control input
+%   - NOT the same as autoregressive prediction
+% - Priming -> history-based predictor initialization
+%   - Repeated state updates over an initial history
+% - Priming Steps -> required initialization history length
+%
+% Spectral processing
+% - Segment -> STFT segment
+%   - Fixed-length signal slice used for one Fourier transform
+% - Frame -> spectral frame / STFT frame
+%   - Spectrum associated with one segment and hop position
+% - Frame Kernel -> temporal smoothing kernel
+%   - Smoothing of power across the frame/time axis
+%   - Applied before logarithmic scaling
+%   - Distinct from frequency-bin pooling
+%   - Distinct from increasing the STFT segment length
+% - Spectral Frames -> spectral frames / spectral representations
+% - Frame Predictor -> spectral prediction model
+%   - Use more specific terminology for the predicted quantity
+%     where appropriate (e.g., log-power spectra)
+%
+% Prediction and control
+% - Control Horizon -> control horizon
+%   - Future time steps in the control optimization
+%   - Distinguish from prediction horizon if necessary
+% - Candidate future currents -> candidate control-input sequence
+% - One-step Predictor -> one-step-ahead prediction model
+% - Free Rollout -> free-running / recursive multi-step prediction
+% - Current sensitivity -> control-input sensitivity
+%
+% Training and objectives
+% - Loss -> training loss / loss function
+%   - Objective for offline predictor training
+% - Cost -> MPC/control cost / MPC objective
+%   - Objective minimized during MPC optimization
+% - Span -> loss evaluation span
+%   - Number of initial rollout samples scored by a loss term
+% - Training examples -> training samples / input-target pairs
+% - Teacher forcing -> keep, if applicable
+%
+% Architectures
+% - Hankel-DMDc -> delay-embedded DMD with control
+%
+% General conventions
+% - Prefer lowercase names in thesis prose
+% - Define mathematical objects independently of code classes
+% - Preserve distinctions between source-space and sensor-space
+% - Preserve distinctions between measurements, states, and inputs
+% - Preserve distinctions between training Loss and control Cost
+% - Introduce code-specific terminology only when necessary

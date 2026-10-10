@@ -16,6 +16,7 @@ Freeze one explicit baseline per Predictor family before varying its hyperparame
 | Observable CNN | Same Observable geometry; residual, $n_y=5$, $n_u=9$, depth 2, 16 filters, $3\times3$ kernels, tanh. |
 | Observable DMDc | Same Observable geometry; $n_y=1$, $n_u=9$, energy cutoff $0.99$, ridge parameter $10^{-6}$. |
 | Waveform MLP | $f_s=100\,\text{Hz}$; residual, $n_y=15$, $n_u=10$, depth 1, width 256, softplus; curriculum MSE span $0.25\,\text{s}$, STFT span $1.0\,\text{s}$ with 50-sample segments, 25-sample hops and $1$--$25\,\text{Hz}$ band. |
+| Waveform CNN | $f_s=100\,\text{Hz}$; residual, $n_y=15$, $n_u=10$, depth 2, 32 filters, $3$ temporal kernel, tanh; curriculum MSE span $0.25\,\text{s}$, STFT span $1.0\,\text{s}$ with 50-sample segments, 25-sample hops and $1$--$25\,\text{Hz}$ band. |
 
 The $100\,\text{Hz}$ Waveform rate is provisional until the rate decision; it represents $0.25\,\text{s}$ exactly. For neural baselines use AdamW, learning rate $10^{-4}$, weight decay $10^{-5}$, batch size 256, 150 epochs and patience 35; curriculum expansion begins at epoch 10 and completes by epoch 80. Use a fixed training/validation split and preprocessing within each family. Record the resolved baselines in local experiment configs before starting a sweep. For every changed Observable geometry, recompute the minimum valid control history with `observable.min_past_controls()`.
 
@@ -28,7 +29,7 @@ Keep these relative weights fixed in the subsequent comparisons. Judge their act
 
 For the new Observable MLP baseline, use $w_\text{hinge}=10$, $w_u=1$, and $w_{u,l1}=0$. This is the tested operating point from `observable_dataset_sensitivity_comparison`; use it as a starting point for the newly trained Predictor, not as a claim that the optimum transfers to changed Observable geometry or training data. The Waveform output-gradient calibration above does not apply to an Observable MLP.
 
-For the new Waveform MLP baseline, use $w_u=10$ and $w_{u,l1}=0$. This retains the historical Waveform effort scale as a starting value. Calibrate Waveform effort separately after training its new baseline checkpoint; the Observable MLP's $w_u=1$ does not transfer across the different state Costs and Predictor sensitivities.
+For the new Waveform MLP baseline, use $w_u=10$ and $w_{u,l1}=0$. This retains the historical Waveform effort scale as a starting value. Calibrate Waveform effort separately after training its new baseline checkpoint; the Observable MLP's $w_u=1$ does not transfer across the different state Costs and Predictor sensitivities. Waveform CNN adopts the same initial effort baseline ($w_u=10, w_{u,l1}=0$) under the continuous waveform controller.
 
 ---
 
@@ -96,8 +97,27 @@ Tier 1 experiments run through Optuna (`scripts/sweep_nn_predictor.py`). All tri
   * **Sub-experiment B (Optimizer tuning):**
     * `training.learning_rate`: Log-uniform $[1.0 \times 10^{-4}, 2.0 \times 10^{-3}]$
     * `training.weight_decay`: Log-uniform $[1.0 \times 10^{-6}, 1.0 \times 10^{-3}]$
+  * **Sub-experiment C (Autoregressive history length extension):**
+    * *Status:* Prospective extension. The initial capacity sweep froze $n_y = 15$ ($150\,\text{ms}$ at $100\,\text{Hz}$). If raw waveform state observability requires differing history context, evaluate $n_y \in [5, 10, 15, 20, 25]$ (spans $50\,\text{ms}$ to $250\,\text{ms}$) on the frozen capacity and optimizer champion.
 
-### 1.4 Hankel-DMDc subspace optimization
+### 1.4 Waveform CNN optimization
+
+* **Purpose:** Determine network capacity, convolutional kernel size, temporal history length, and activation function for high-rate raw EEG prediction under the calibrated fixed joint loss.
+* **Target metric:** Recursive rollout NMSE over $1.0\,\text{s}$ (`rollout_nmse`).
+* **Fixed configuration:** Provisional sampling rate $f_s = 100\,\text{Hz}$, curriculum MSE span $0.25\,\text{s}$, STFT span $1.0\,\text{s}$, calibrated fixed loss weights, residual connection enabled.
+* **Sub-experiments:**
+  * **Sub-experiment A (Convolutional structure, capacity, and history):**
+    * Output history length (`model.n_y`): Integer range $[5, 15]$ (spans $50\,\text{ms}$ to $150\,\text{ms}$ history at $100\,\text{Hz}$)
+    * Channel filters (`model.hidden_size`): $[16, 32, 64, 128]$
+    * Network depth (`model.depth`): $[1, 2, 3]$
+    * Time kernel size (`model.kernel_size`): $[3, 5, 7]$
+    * Activation (`model.activation`): `[tanh, softplus]`
+  * **Sub-experiment B (Optimizer tuning):**
+    * Retained in specification; executed after freezing the structural champion.
+    * `training.learning_rate`: Log-uniform $[1.0 \times 10^{-4}, 2.0 \times 10^{-3}]$
+    * `training.weight_decay`: Log-uniform $[1.0 \times 10^{-6}, 1.0 \times 10^{-3}]$
+
+### 1.5 Hankel-DMDc subspace optimization
 
 * **Purpose:** Identify linear state-space operators using dynamic mode decomposition with control.
 * **Target metric:** Multi-step linear recursive rollout `val_log_mse` over $1.0\,\text{s}$.
@@ -220,3 +240,4 @@ Tier 2 experiments evaluate the full closed-loop control system against the nonl
   4. `obs_cnn_champion`: Top Observable CNN model.
   5. `obs_dmd_champion`: Top Hankel-DMDc model.
   6. `waveform_mlp_champion`: Top Waveform MLP model.
+  7. `waveform_cnn_champion`: Top Waveform CNN model.

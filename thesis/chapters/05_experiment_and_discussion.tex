@@ -15,6 +15,8 @@
 % - Study 1: Offline Predictor Benchmarking:
 %   * Selection of STFT geometry: Trading temporal responsiveness against frequency resolution.
 %   * Training loss comparison: Multi-step Rollout stability of spectral training loss vs. raw MSE loss.
+%   * Prediction-target comparison: waveform Predictors trained with a spectral Loss vs. Predictors
+%     that forecast spectral Observable Frames directly; compare Control Horizon accuracy and response to current.
 %   * Model comparison: Linear DMDc vs. Nonlinear MLP over the Control Horizon.
 % - Study 2: Numerical Solver and Transcription Benchmarking:
 %   * Solve time, convergence reliability, and constraint satisfaction across horizon lengths.
@@ -22,6 +24,8 @@
 % - Study 3: Closed-Loop Seizure Suppression:
 %   * Proof of closed-loop efficacy: Attenuating seizure amplitude and preventing PZ recruitment via scalp EEG feedback.
 %   * Waveform MPC vs. Spectral MPC: Empirical demonstration of why waveform tracking fails while spectral MPC succeeds.
+%   * With the same spectral MPC Cost, compare waveform and direct spectral Predictors to isolate
+%     the effect of the prediction target on closed-loop Seizure Suppression.
 %   * Continuous vs. Pulse-Based Stimulation: Trade-offs between Seizure Burden reduction, stimulation duration,
 %     pulse counts, and solver complexity.
 % - Critical Discussion & Failure Analysis:
