@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import math
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 import equinox as eqx
 import jax
@@ -114,10 +114,23 @@ def test_observable_mlp_forward_parity() -> None:
     np.testing.assert_allclose(j_out, t_out, rtol=1e-5, atol=1e-6)
 
 
-def test_waveform_cnn_forward_parity() -> None:
+@pytest.mark.parametrize(
+    ("tapering_ratio", "head_depth", "head_width"),
+    [
+        (1.0, 1, "trunk"),
+        (0.75, 0, "trunk"),
+        (0.75, 2, "trunk"),
+        (0.75, 2, "geometric_mean"),
+    ],
+)
+def test_waveform_cnn_forward_parity(
+    tapering_ratio: float,
+    head_depth: int,
+    head_width: Literal["trunk", "geometric_mean"],
+) -> None:
     """Waveform CNN unrolled rollouts match between PyTorch and JAX to float32 tolerance."""
     rng = np.random.default_rng(44)
-    n_y, n_u, horizon, n_c, n_m, hidden = 4, 3, 4, 3, 2, 6
+    n_y, n_u, horizon, n_c, n_m, hidden = 4, 3, 4, 3, 2, 8
 
     t_model = TorchCNN(
         n_y=n_y,
@@ -130,6 +143,9 @@ def test_waveform_cnn_forward_parity() -> None:
         kernel_size=3,
         activation="tanh",
         residual=True,
+        tapering_ratio=tapering_ratio,
+        head_depth=head_depth,
+        head_width=head_width,
     )
     meta, arrays = t_model.to_checkpoint()
     j_model = JaxWaveformCNN.from_checkpoint(meta, arrays)
@@ -146,12 +162,25 @@ def test_waveform_cnn_forward_parity() -> None:
     np.testing.assert_allclose(j_out, t_out, rtol=1e-5, atol=1e-6)
 
 
-def test_observable_cnn_forward_parity() -> None:
+@pytest.mark.parametrize(
+    ("tapering_ratio", "head_depth", "head_width"),
+    [
+        (1.0, 1, "trunk"),
+        (0.75, 0, "trunk"),
+        (0.75, 2, "trunk"),
+        (0.75, 2, "geometric_mean"),
+    ],
+)
+def test_observable_cnn_forward_parity(
+    tapering_ratio: float,
+    head_depth: int,
+    head_width: Literal["trunk", "geometric_mean"],
+) -> None:
     """Observable CNN unrolled rollouts match between PyTorch and JAX to float32 tolerance."""
     rng = np.random.default_rng(45)
     geometry = StftGeometry(n_segment=16, n_hop=4, band_hz=(4.0, 20.0), n_bin_pool=2)
     n_vals = geometry.n_values(50.0)
-    n_y, n_u, horizon, n_c, n_m, hidden = 3, 2, 4, 2, 2, 6
+    n_y, n_u, horizon, n_c, n_m, hidden = 3, 2, 4, 2, 2, 8
 
     n_out = n_c * n_vals
     t_model = TorchCNN(
@@ -168,6 +197,9 @@ def test_observable_cnn_forward_parity() -> None:
         activation="relu",
         residual=True,
         geometry=geometry,
+        tapering_ratio=tapering_ratio,
+        head_depth=head_depth,
+        head_width=head_width,
     )
     meta, arrays = t_model.to_checkpoint()
     j_model = JaxObservableCNN.from_checkpoint(meta, arrays)

@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import itertools
+import math
 from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING, Any, Self, cast
+from typing import TYPE_CHECKING, Any, Literal, Self, cast
 
 import numpy as np
 import torch
@@ -396,6 +397,53 @@ def _cnn_output_shape(geometry: StftGeometry | None, n_channels: int, n_outputs:
     return n_outputs, n_outputs // n_channels
 
 
+def _cnn_channel_capacities(hidden_size: int, depth: int, tapering_ratio: float) -> list[int]:
+    """Calculate convolutional channel widths across layers with tapering."""
+    if depth < 1:
+        return []
+    channels = [hidden_size]
+    for _ in range(1, depth):
+        channels.append(max(1, math.floor(channels[-1] * tapering_ratio)))
+    return channels
+
+
+def _resolve_head_features(
+    head_width: Literal["trunk", "geometric_mean"],
+    in_features: int,
+    trunk_features: int,
+    n_outputs: int,
+) -> int:
+    """Resolve hidden layer width of the prediction head."""
+    if head_width == "geometric_mean":
+        return max(1, math.floor(math.isqrt(in_features * n_outputs)))
+    return trunk_features
+
+
+def _cnn_head(
+    in_features: int,
+    head_features: int,
+    n_outputs: int,
+    head_depth: int,
+    activation: Activation,
+) -> nn.Sequential:
+    """Build dense prediction head with configurable depth and width."""
+    if head_depth == 0:
+        return nn.Sequential(nn.Linear(in_features, n_outputs, dtype=torch.float32))
+    modules: list[nn.Module] = [
+        nn.Linear(in_features, head_features, dtype=torch.float32),
+        activation_module(activation),
+    ]
+    for _ in range(head_depth - 1):
+        modules.extend(
+            [
+                nn.Linear(head_features, head_features, dtype=torch.float32),
+                activation_module(activation),
+            ]
+        )
+    modules.append(nn.Linear(head_features, n_outputs, dtype=torch.float32))
+    return nn.Sequential(*modules)
+
+
 def _cnn_convolutions(  # noqa: PLR0913 -- explicit CNN architecture dimensions
     *,
     geometry: StftGeometry | None,
@@ -405,29 +453,29 @@ def _cnn_convolutions(  # noqa: PLR0913 -- explicit CNN architecture dimensions
     kernel_size: int,
     frequency_kernel_size: int,
     activation: Activation,
+    tapering_ratio: float = 1.0,
 ) -> tuple[nn.Sequential, int]:
-    """Build the representation-specific stride-one convolution stack and head width."""
+    """Build stride-one hidden convolutions with an activation after each layer and return the final width."""
+    channels = _cnn_channel_capacities(hidden_size, depth, tapering_ratio)
     convs: list[nn.Module] = []
     if geometry is None:
-        for i in range(depth):
-            convs.append(
-                nn.Conv1d(n_channels if i == 0 else hidden_size, hidden_size, kernel_size, dtype=torch.float32)
-            )
-            if i < depth - 1:
-                convs.append(activation_module(activation))
-        return nn.Sequential(*convs), hidden_size
-    for i in range(depth):
+        for i, c in enumerate(channels):
+            in_c = n_channels if i == 0 else channels[i - 1]
+            convs.append(nn.Conv1d(in_c, c, kernel_size, dtype=torch.float32))
+            convs.append(activation_module(activation))
+        return nn.Sequential(*convs), channels[-1]
+    for i, c in enumerate(channels):
+        in_c = n_channels if i == 0 else channels[i - 1]
         convs.append(
             nn.Conv2d(
-                n_channels if i == 0 else hidden_size,
-                hidden_size,
+                in_c,
+                c,
                 (kernel_size, frequency_kernel_size),
                 dtype=torch.float32,
             )
         )
-        if i < depth - 1:
-            convs.append(activation_module(activation))
-    return nn.Sequential(*convs), hidden_size
+        convs.append(activation_module(activation))
+    return nn.Sequential(*convs), channels[-1]
 
 
 def _cnn_standardizers(  # noqa: PLR0913 -- explicit standardizer dimensions
@@ -478,6 +526,9 @@ class AutoregressiveCNN(_AutoregressiveBase):
     y_scale: Tensor
     u_center: Tensor
     u_scale: Tensor
+    tapering_ratio: float
+    head_depth: int
+    head_width: Literal["trunk", "geometric_mean"]
 
     def __init__(  # noqa: PLR0913 -- architecture and standardizer record
         self,
@@ -498,6 +549,9 @@ class AutoregressiveCNN(_AutoregressiveBase):
         y_std: Standardizer | None = None,
         u_std: Standardizer | None = None,
         geometry: StftGeometry | None = None,
+        tapering_ratio: float = 1.0,
+        head_depth: int = 1,
+        head_width: Literal["trunk", "geometric_mean"] = "trunk",
     ) -> None:
         """Build a causal stride-one waveform or Observable CNN."""
         super().__init__()
@@ -506,6 +560,12 @@ class AutoregressiveCNN(_AutoregressiveBase):
             raise ValueError(msg)
         if kernel_size < 1 or frequency_kernel_size < 1:
             msg = "CNN kernel sizes must be at least 1."
+            raise ValueError(msg)
+        if tapering_ratio <= 0.0 or tapering_ratio > 1.0:
+            msg = "CNN tapering_ratio must be in (0.0, 1.0]."
+            raise ValueError(msg)
+        if head_depth < 0:
+            msg = "CNN head_depth must be non-negative."
             raise ValueError(msg)
         self.n_y, self.n_u, self.horizon = n_y, n_u, horizon
         self.n_channels, self.n_controls = n_channels, n_controls
@@ -517,6 +577,9 @@ class AutoregressiveCNN(_AutoregressiveBase):
         self.geometry = geometry
         self.downsample = 1
         self.provenance = TrainingProvenance()
+        self.tapering_ratio = float(tapering_ratio)
+        self.head_depth = int(head_depth)
+        self.head_width = head_width
 
         self.convs, feature_width = _cnn_convolutions(
             geometry=geometry,
@@ -526,13 +589,24 @@ class AutoregressiveCNN(_AutoregressiveBase):
             kernel_size=kernel_size,
             frequency_kernel_size=frequency_kernel_size,
             activation=activation,
+            tapering_ratio=self.tapering_ratio,
         )
+        trunk_features = feature_width
         if geometry is not None:
             feature_width *= self.n_values
-        self.head = nn.Sequential(
-            nn.Linear(feature_width + n_u * n_controls, hidden_size, dtype=torch.float32),
-            activation_module(activation),
-            nn.Linear(hidden_size, self.n_outputs, dtype=torch.float32),
+        in_features = feature_width + n_u * n_controls
+        head_features = _resolve_head_features(
+            head_width=head_width,
+            in_features=in_features,
+            trunk_features=trunk_features,
+            n_outputs=self.n_outputs,
+        )
+        self.head = _cnn_head(
+            in_features=in_features,
+            head_features=head_features,
+            n_outputs=self.n_outputs,
+            head_depth=head_depth,
+            activation=activation,
         )
 
         y_std, u_std = _cnn_standardizers(
@@ -605,6 +679,9 @@ class AutoregressiveCNN(_AutoregressiveBase):
             "hidden_size": self.hidden_size,
             "depth": self.depth,
             "kernel_size": self.kernel_size,
+            "tapering_ratio": self.tapering_ratio,
+            "head_depth": self.head_depth,
+            "head_width": self.head_width,
             "residual": int(self.residual),
             "dt": self.dt,
             "downsample": self.downsample,
@@ -651,6 +728,9 @@ class AutoregressiveCNN(_AutoregressiveBase):
             y_std=Standardizer.from_arrays(arrays, "y"),
             u_std=Standardizer.from_arrays(arrays, "u"),
             geometry=geometry,
+            tapering_ratio=float(meta.get("tapering_ratio", 1.0)),
+            head_depth=int(meta.get("head_depth", 0 if int(meta.get("n_head_layers", 2)) == 1 else 1)),
+            head_width=meta.get("head_width", "trunk"),
         )
         model.downsample = int(meta["downsample"])
         model.provenance = TrainingProvenance.from_meta(meta)

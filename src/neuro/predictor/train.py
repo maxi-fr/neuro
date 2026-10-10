@@ -246,7 +246,11 @@ def _prepare_observable(
             downsample=sim.downsample,
             y_std=data.y_std,
             u_std=data.u_std,
+            tapering_ratio=mdl.tapering_ratio,
+            head_depth=mdl.head_depth,
+            head_width=mdl.head_width,
             key=key,
+
         )
     else:
         model = ObservableMLPModel(
@@ -473,7 +477,11 @@ def _prepare_waveform(
             downsample=sim.downsample,
             y_std=data.y_std,
             u_std=data.u_std,
+            tapering_ratio=mdl.tapering_ratio,
+            head_depth=mdl.head_depth,
+            head_width=mdl.head_width,
             key=key,
+
         )
     else:
         model = WaveformMLPModel(

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import math
-from typing import TYPE_CHECKING, Any, Self
+from typing import TYPE_CHECKING, Any, Literal, Self
 
 import equinox as eqx
 import jax
@@ -18,6 +18,75 @@ if TYPE_CHECKING:
     from neuro.types import Activation, FloatArray
 
 
+def _cnn_channel_capacities(hidden_size: int, depth: int, tapering_ratio: float) -> list[int]:
+    """Calculate convolutional channel widths across layers with tapering."""
+    if depth < 1:
+        return []
+    channels = [hidden_size]
+    for _ in range(1, depth):
+        channels.append(max(1, math.floor(channels[-1] * tapering_ratio)))
+    return channels
+
+
+def _resolve_head_features(
+    head_width: Literal["trunk", "geometric_mean"],
+    in_features: int,
+    trunk_features: int,
+    n_outputs: int,
+) -> int:
+    """Resolve hidden layer width of the prediction head."""
+    if head_width == "geometric_mean":
+        return max(1, math.floor(math.isqrt(in_features * n_outputs)))
+    return trunk_features
+
+
+def _init_cnn_head_layers(
+    keys: jax.Array,
+    *,
+    in_features: int,
+    head_features: int,
+    n_outputs: int,
+    head_depth: int,
+) -> tuple[tuple[jax.Array, ...], tuple[jax.Array, ...]]:
+    """Initialize dense prediction head weights and biases."""
+    head_w: list[jax.Array] = []
+    head_b: list[jax.Array] = []
+    if head_depth == 0:
+        kw, kb = jax.random.split(keys[0])
+        bound = 1.0 / math.sqrt(in_features)
+        w = jax.random.uniform(kw, (n_outputs, in_features), minval=-bound, maxval=bound, dtype=jnp.float32)
+        b = jax.random.uniform(kb, (n_outputs,), minval=-bound, maxval=bound, dtype=jnp.float32)
+        head_w.append(w)
+        head_b.append(b)
+    else:
+        kw, kb = jax.random.split(keys[0])
+        bound = 1.0 / math.sqrt(in_features)
+        w = jax.random.uniform(kw, (head_features, in_features), minval=-bound, maxval=bound, dtype=jnp.float32)
+        b = jax.random.uniform(kb, (head_features,), minval=-bound, maxval=bound, dtype=jnp.float32)
+        head_w.append(w)
+        head_b.append(b)
+
+        bound_hidden = 1.0 / math.sqrt(head_features)
+        for d in range(1, head_depth):
+            kw, kb = jax.random.split(keys[d])
+            w = jax.random.uniform(
+                kw, (head_features, head_features), minval=-bound_hidden, maxval=bound_hidden, dtype=jnp.float32
+            )
+            b = jax.random.uniform(kb, (head_features,), minval=-bound_hidden, maxval=bound_hidden, dtype=jnp.float32)
+            head_w.append(w)
+            head_b.append(b)
+
+        kw, kb = jax.random.split(keys[head_depth])
+        w = jax.random.uniform(
+            kw, (n_outputs, head_features), minval=-bound_hidden, maxval=bound_hidden, dtype=jnp.float32
+        )
+        b = jax.random.uniform(kb, (n_outputs,), minval=-bound_hidden, maxval=bound_hidden, dtype=jnp.float32)
+        head_w.append(w)
+        head_b.append(b)
+
+    return tuple(head_w), tuple(head_b)
+
+
 def _init_cnn_waveform_layers(  # noqa: PLR0913 -- architecture initializer needs all layer hyperparams
     key: jax.Array,
     *,
@@ -28,15 +97,21 @@ def _init_cnn_waveform_layers(  # noqa: PLR0913 -- architecture initializer need
     n_u: int,
     n_controls: int,
     n_outputs: int,
+    tapering_ratio: float = 1.0,
+    head_depth: int = 1,
+    head_width: Literal["trunk", "geometric_mean"] = "trunk",
 ) -> tuple[tuple[jax.Array, ...], tuple[jax.Array, ...], tuple[jax.Array, ...], tuple[jax.Array, ...]]:
     """Initialize causal 1D temporal convolution weights and dense head weights."""
+    channels = _cnn_channel_capacities(hidden_size, depth, tapering_ratio)
+    trunk_features = channels[-1] if depth > 0 else hidden_size
+    n_head_layers = 1 if head_depth == 0 else head_depth + 1
+    keys = jax.random.split(key, depth + n_head_layers)
+
     conv_w: list[jax.Array] = []
     conv_b: list[jax.Array] = []
-    keys = jax.random.split(key, depth + 2)
-
     for i in range(depth):
-        in_c = n_channels if i == 0 else hidden_size
-        out_c = hidden_size
+        in_c = n_channels if i == 0 else channels[i - 1]
+        out_c = channels[i]
         kw, kb = jax.random.split(keys[i])
         bound = 1.0 / math.sqrt(in_c * kernel_size)
         w = jax.random.uniform(kw, (out_c, in_c, kernel_size), minval=-bound, maxval=bound, dtype=jnp.float32)
@@ -44,18 +119,16 @@ def _init_cnn_waveform_layers(  # noqa: PLR0913 -- architecture initializer need
         conv_w.append(w)
         conv_b.append(b)
 
-    head_in = hidden_size + n_u * n_controls
-    kw0, kb0 = jax.random.split(keys[depth])
-    bound0 = 1.0 / math.sqrt(head_in)
-    w0 = jax.random.uniform(kw0, (hidden_size, head_in), minval=-bound0, maxval=bound0, dtype=jnp.float32)
-    b0 = jax.random.uniform(kb0, (hidden_size,), minval=-bound0, maxval=bound0, dtype=jnp.float32)
-
-    kw1, kb1 = jax.random.split(keys[depth + 1])
-    bound1 = 1.0 / math.sqrt(hidden_size)
-    w1 = jax.random.uniform(kw1, (n_outputs, hidden_size), minval=-bound1, maxval=bound1, dtype=jnp.float32)
-    b1 = jax.random.uniform(kb1, (n_outputs,), minval=-bound1, maxval=bound1, dtype=jnp.float32)
-
-    return tuple(conv_w), tuple(conv_b), (w0, w1), (b0, b1)
+    in_features = trunk_features + n_u * n_controls
+    head_features = _resolve_head_features(head_width, in_features, trunk_features, n_outputs)
+    head_w, head_b = _init_cnn_head_layers(
+        keys[depth:],
+        in_features=in_features,
+        head_features=head_features,
+        n_outputs=n_outputs,
+        head_depth=head_depth,
+    )
+    return tuple(conv_w), tuple(conv_b), head_w, head_b
 
 
 def _init_cnn_observable_layers(  # noqa: PLR0913 -- architecture initializer needs all layer hyperparams
@@ -70,15 +143,21 @@ def _init_cnn_observable_layers(  # noqa: PLR0913 -- architecture initializer ne
     n_u: int,
     n_controls: int,
     n_outputs: int,
+    tapering_ratio: float = 1.0,
+    head_depth: int = 1,
+    head_width: Literal["trunk", "geometric_mean"] = "trunk",
 ) -> tuple[tuple[jax.Array, ...], tuple[jax.Array, ...], tuple[jax.Array, ...], tuple[jax.Array, ...]]:
     """Initialize causal 2D time-frequency convolution weights and dense head weights."""
+    channels = _cnn_channel_capacities(hidden_size, depth, tapering_ratio)
+    trunk_features = channels[-1] if depth > 0 else hidden_size
+    n_head_layers = 1 if head_depth == 0 else head_depth + 1
+    keys = jax.random.split(key, depth + n_head_layers)
+
     conv_w: list[jax.Array] = []
     conv_b: list[jax.Array] = []
-    keys = jax.random.split(key, depth + 2)
-
     for i in range(depth):
-        in_c = n_channels if i == 0 else hidden_size
-        out_c = hidden_size
+        in_c = n_channels if i == 0 else channels[i - 1]
+        out_c = channels[i]
         kw, kb = jax.random.split(keys[i])
         bound = 1.0 / math.sqrt(in_c * kernel_size * frequency_kernel_size)
         w = jax.random.uniform(
@@ -88,18 +167,16 @@ def _init_cnn_observable_layers(  # noqa: PLR0913 -- architecture initializer ne
         conv_w.append(w)
         conv_b.append(b)
 
-    head_in = hidden_size * n_values + n_u * n_controls
-    kw0, kb0 = jax.random.split(keys[depth])
-    bound0 = 1.0 / math.sqrt(head_in)
-    w0 = jax.random.uniform(kw0, (hidden_size, head_in), minval=-bound0, maxval=bound0, dtype=jnp.float32)
-    b0 = jax.random.uniform(kb0, (hidden_size,), minval=-bound0, maxval=bound0, dtype=jnp.float32)
-
-    kw1, kb1 = jax.random.split(keys[depth + 1])
-    bound1 = 1.0 / math.sqrt(hidden_size)
-    w1 = jax.random.uniform(kw1, (n_outputs, hidden_size), minval=-bound1, maxval=bound1, dtype=jnp.float32)
-    b1 = jax.random.uniform(kb1, (n_outputs,), minval=-bound1, maxval=bound1, dtype=jnp.float32)
-
-    return tuple(conv_w), tuple(conv_b), (w0, w1), (b0, b1)
+    in_features = trunk_features * n_values + n_u * n_controls
+    head_features = _resolve_head_features(head_width, in_features, trunk_features, n_outputs)
+    head_w, head_b = _init_cnn_head_layers(
+        keys[depth:],
+        in_features=in_features,
+        head_features=head_features,
+        n_outputs=n_outputs,
+        head_depth=head_depth,
+    )
+    return tuple(conv_w), tuple(conv_b), head_w, head_b
 
 
 class _CNNBase(AutoregressiveModel):
@@ -113,6 +190,9 @@ class _CNNBase(AutoregressiveModel):
     kernel_size: int = eqx.field(static=True)
     frequency_kernel_size: int | None = eqx.field(static=True)
     geometry: StftGeometry | None = eqx.field(static=True)
+    tapering_ratio: float = eqx.field(static=True, default=1.0)
+    head_depth: int = eqx.field(static=True, default=1)
+    head_width: Literal["trunk", "geometric_mean"] = eqx.field(static=True, default="trunk")
 
     def __init__(  # noqa: PLR0913 -- explicit portable CNN architecture record
         self,
@@ -124,6 +204,9 @@ class _CNNBase(AutoregressiveModel):
         kernel_size: int,
         frequency_kernel_size: int | None,
         geometry: StftGeometry | None,
+        tapering_ratio: float = 1.0,
+        head_depth: int = 1,
+        head_width: Literal["trunk", "geometric_mean"] = "trunk",
         **core: Any,  # noqa: ANN401 -- forwarded to AutoregressiveModel
     ) -> None:
         """Initialize CNN checkpoint arrays and shared runtime state."""
@@ -145,6 +228,9 @@ class _CNNBase(AutoregressiveModel):
         self.kernel_size = int(kernel_size)
         self.frequency_kernel_size = None if frequency_kernel_size is None else int(frequency_kernel_size)
         self.geometry = geometry
+        self.tapering_ratio = float(tapering_ratio)
+        self.head_depth = int(head_depth)
+        self.head_width = head_width
 
     @classmethod
     def _checkpoint_kwargs(cls, meta: dict[str, Any], arrays: dict[str, FloatArray]) -> dict[str, Any]:
@@ -180,6 +266,9 @@ class _CNNBase(AutoregressiveModel):
             "kernel_size": int(meta["kernel_size"]),
             "frequency_kernel_size": (int(meta["frequency_kernel_size"]) if geometry is not None else None),
             "geometry": geometry,
+            "tapering_ratio": float(meta.get("tapering_ratio", 1.0)),
+            "head_depth": int(meta.get("head_depth", 0 if int(meta.get("n_head_layers", 2)) == 1 else 1)),
+            "head_width": str(meta.get("head_width", "trunk")),
             "provenance": TrainingProvenance.from_meta(meta),
         }
 
@@ -210,6 +299,9 @@ class _CNNBase(AutoregressiveModel):
             "hidden_size": self.hidden_size,
             "depth": self.depth,
             "kernel_size": self.kernel_size,
+            "tapering_ratio": self.tapering_ratio,
+            "head_depth": self.head_depth,
+            "head_width": self.head_width,
             "residual": int(self.residual),
             "dt": self.dt,
             "downsample": self.downsample,
@@ -232,6 +324,7 @@ class _CNNBase(AutoregressiveModel):
         """Return an identical runtime with extended output history."""
         meta, arrays = self.to_checkpoint()
         return self.from_checkpoint(meta, arrays, n_history=n_history)
+
 
 
 class WaveformCNNModel(_CNNBase):
@@ -268,6 +361,9 @@ class WaveformCNNModel(_CNNBase):
         n_outputs: int | None = None,
         frequency_kernel_size: int | None = None,
         geometry: StftGeometry | None = None,
+        tapering_ratio: float = 1.0,
+        head_depth: int = 1,
+        head_width: Literal["trunk", "geometric_mean"] = "trunk",
     ) -> None:
         """Initialize waveform CNN weights and buffers."""
         n_out = n_channels if n_outputs is None else int(n_outputs)
@@ -287,6 +383,9 @@ class WaveformCNNModel(_CNNBase):
                 n_u=n_u,
                 n_controls=n_controls,
                 n_outputs=n_out,
+                tapering_ratio=tapering_ratio,
+                head_depth=head_depth,
+                head_width=head_width,
             )
         else:
             conv_w, conv_b, head_w, head_b = conv_weights, conv_biases, head_weights, head_biases
@@ -299,6 +398,9 @@ class WaveformCNNModel(_CNNBase):
             kernel_size=kernel_size,
             frequency_kernel_size=frequency_kernel_size,
             geometry=geometry,
+            tapering_ratio=tapering_ratio,
+            head_depth=head_depth,
+            head_width=head_width,
             n_y=n_y,
             n_u=n_u,
             horizon=horizon,
@@ -332,7 +434,7 @@ class WaveformCNNModel(_CNNBase):
     def _predict(self, y_window: jax.Array, u_window: jax.Array) -> jax.Array:
         """Apply causal temporal convolutions and dense head."""
         z = y_window
-        for i, (weight, bias) in enumerate(zip(self.conv_weights, self.conv_biases, strict=True)):
+        for weight, bias in zip(self.conv_weights, self.conv_biases, strict=True):
             z = jnp.asarray(z, dtype=weight.dtype)
             z = (
                 jax.lax.conv_general_dilated(
@@ -344,8 +446,7 @@ class WaveformCNNModel(_CNNBase):
                 )[0].T
                 + bias[None, :]
             )
-            if i < len(self.conv_weights) - 1:
-                z = _apply_activation(self.activation, z)
+            z = _apply_activation(self.activation, z)
         features = jnp.concatenate([z[-1], u_window.reshape(-1)])
         for i, (weight, bias) in enumerate(zip(self.head_weights, self.head_biases, strict=True)):
             features = features @ weight.T + bias
@@ -390,6 +491,9 @@ class ObservableCNNModel(_CNNBase):
         n_history: int | None = None,
         key: jax.Array | None = None,
         n_outputs: int | None = None,
+        tapering_ratio: float = 1.0,
+        head_depth: int = 1,
+        head_width: Literal["trunk", "geometric_mean"] = "trunk",
     ) -> None:
         """Initialize Observable CNN weights and buffers."""
         if n_outputs is not None:
@@ -417,6 +521,9 @@ class ObservableCNNModel(_CNNBase):
                 n_u=n_u,
                 n_controls=n_controls,
                 n_outputs=n_out,
+                tapering_ratio=tapering_ratio,
+                head_depth=head_depth,
+                head_width=head_width,
             )
         else:
             conv_w, conv_b, head_w, head_b = conv_weights, conv_biases, head_weights, head_biases
@@ -429,6 +536,9 @@ class ObservableCNNModel(_CNNBase):
             kernel_size=kernel_size,
             frequency_kernel_size=frequency_kernel_size,
             geometry=geometry,
+            tapering_ratio=tapering_ratio,
+            head_depth=head_depth,
+            head_width=head_width,
             n_y=n_y,
             n_u=n_u,
             horizon=horizon,
@@ -462,7 +572,7 @@ class ObservableCNNModel(_CNNBase):
     def _predict(self, y_window: jax.Array, u_window: jax.Array) -> jax.Array:
         """Apply causal time-frequency convolutions and preserve frequency positions."""
         z = y_window.reshape(self.n_y, self.n_channels, self.n_values).transpose(1, 0, 2)[None, ...]
-        for i, (weight, bias) in enumerate(zip(self.conv_weights, self.conv_biases, strict=True)):
+        for weight, bias in zip(self.conv_weights, self.conv_biases, strict=True):
             z = (
                 jax.lax.conv_general_dilated(
                     jnp.asarray(z, dtype=weight.dtype),
@@ -473,8 +583,7 @@ class ObservableCNNModel(_CNNBase):
                 )
                 + bias[None, :, None, None]
             )
-            if i < len(self.conv_weights) - 1:
-                z = _apply_activation(self.activation, z)
+            z = _apply_activation(self.activation, z)
         features = jnp.concatenate([z[0, :, -1, :].reshape(-1), u_window.reshape(-1)])
         for i, (weight, bias) in enumerate(zip(self.head_weights, self.head_biases, strict=True)):
             features = features @ weight.T + bias
@@ -486,6 +595,7 @@ class ObservableCNNModel(_CNNBase):
         if y_window.ndim > 2:  # noqa: PLR2004 -- 2D check for observable frame representation
             return prediction
         return prediction.reshape(-1)
+
 
     def free_run(
         self,

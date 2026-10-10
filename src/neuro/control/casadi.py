@@ -181,7 +181,7 @@ def _cnn_convolution_ca(inputs: list[ca.SX], weight: FloatArray, bias: FloatArra
 
 
 def _observable_cnn_forward_ca(y_window: ca.SX, u_window: ca.SX, model: ObservableCNNModel) -> ca.SX:
-    """Evaluate causal time-frequency CNN convolutions and dense Control Current head."""
+    """Activate every causal time-frequency convolution before the dense Control Current head."""
     n_time = model.n_y
     n_values = model.n_values
     n_outputs = model.n_outputs
@@ -197,10 +197,9 @@ def _observable_cnn_forward_ca(y_window: ca.SX, u_window: ca.SX, model: Observab
         )
         for channel in range(model.n_channels)
     ]
-    for layer, (weight, bias) in enumerate(zip(model.conv_weights, model.conv_biases, strict=True)):
+    for weight, bias in zip(model.conv_weights, model.conv_biases, strict=True):
         inputs = _cnn_convolution_ca(inputs, np.asarray(weight, dtype=np.float64), np.asarray(bias, dtype=np.float64))
-        if layer < len(model.conv_weights) - 1:
-            inputs = [_activation_ca(matrix, model.activation) for matrix in inputs]
+        inputs = [_activation_ca(matrix, model.activation) for matrix in inputs]
     features = ca.vertcat(*[matrix[n_time - 1, frequency] for matrix in inputs for frequency in range(n_values)])
     return _mlp_forward_ca(
         ca.vertcat(features, u_window),
@@ -211,13 +210,13 @@ def _observable_cnn_forward_ca(y_window: ca.SX, u_window: ca.SX, model: Observab
 
 
 def _waveform_cnn_forward_ca(y_window: ca.SX, u_window: ca.SX, model: WaveformCNNModel) -> ca.SX:
-    """Evaluate causal waveform convolutions and the dense Control Current head."""
+    """Activate every causal waveform convolution before the dense Control Current head."""
     start = (model.n_history - model.n_y) * model.n_outputs
     inputs = [
         ca.vertcat(*[y_window[start + t * model.n_outputs + channel] for t in range(model.n_y)])
         for channel in range(model.n_channels)
     ]
-    for layer, (weight, bias) in enumerate(zip(model.conv_weights, model.conv_biases, strict=True)):
+    for weight, bias in zip(model.conv_weights, model.conv_biases, strict=True):
         outputs = []
         for output_channel in range(weight.shape[0]):
             values = []
@@ -230,11 +229,7 @@ def _waveform_cnn_forward_ca(y_window: ca.SX, u_window: ca.SX, model: WaveformCN
                             value += float(weight[output_channel, input_channel, lag]) * channel_values[source]
                 values.append(value)
             outputs.append(ca.vertcat(*values))
-        inputs = (
-            [_activation_ca(values, model.activation) for values in outputs]
-            if layer < len(model.conv_weights) - 1
-            else outputs
-        )
+        inputs = [_activation_ca(values, model.activation) for values in outputs]
     features = ca.vertcat(*[values[-1] for values in inputs])
     return _mlp_forward_ca(
         ca.vertcat(features, u_window),
