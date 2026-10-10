@@ -250,7 +250,6 @@ def _prepare_observable(
             head_depth=mdl.head_depth,
             head_width=mdl.head_width,
             key=key,
-
         )
     else:
         model = ObservableMLPModel(
@@ -481,7 +480,6 @@ def _prepare_waveform(
             head_depth=mdl.head_depth,
             head_width=mdl.head_width,
             key=key,
-
         )
     else:
         model = WaveformMLPModel(

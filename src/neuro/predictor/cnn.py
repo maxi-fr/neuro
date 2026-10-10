@@ -326,7 +326,6 @@ class _CNNBase(AutoregressiveModel):
         return self.from_checkpoint(meta, arrays, n_history=n_history)
 
 
-
 class WaveformCNNModel(_CNNBase):
     """Unified Equinox causal waveform CNN predictor."""
 
@@ -595,7 +594,6 @@ class ObservableCNNModel(_CNNBase):
         if y_window.ndim > 2:  # noqa: PLR2004 -- 2D check for observable frame representation
             return prediction
         return prediction.reshape(-1)
-
 
     def free_run(
         self,

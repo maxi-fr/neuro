@@ -323,24 +323,39 @@ def smooth_frames(power: jax.Array, weights: jax.Array) -> jax.Array:
     return jnp.moveaxis(reshaped, -1, -2)
 
 
-def total_loss(
+def total_loss(  # noqa: PLR0913 -- Loss evaluation requires data, unit context, and both schedule masks
     losses: Sequence[Loss],
     pred: jax.Array,
     true: jax.Array,
     ctx: LossContext,
+    *,
     step_mask: jax.Array | None = None,
+    active_mask: jax.Array | None = None,
 ) -> tuple[jax.Array, dict[str, Any]]:
-    """Compute weighted sum of active loss terms and unweighted diagnostics."""
+    """Sum active Loss terms; dynamically inactive diagnostics are NaN for host-side reporting."""
     total = jnp.zeros((), dtype=pred.dtype)
     comps: dict[str, Any] = {}
 
-    for loss in losses:
+    for index, loss in enumerate(losses):
         if loss.weight <= 0.0 or (ctx.epoch is not None and ctx.epoch < loss.start_epoch):
             comps[loss.name] = None
             continue
-        val, diag = loss(pred, true, ctx, step_mask=step_mask)
+
+        def evaluate(term: Loss = loss) -> tuple[jax.Array, dict[str, Any]]:
+            """Evaluate one Loss with a fixed diagnostic structure."""
+            return term(pred, true, ctx, step_mask=step_mask)
+
+        if active_mask is None:
+            val, diag = evaluate()
+            comps[loss.name] = val
+        else:
+            shapes = jax.eval_shape(evaluate)
+            zeros = jax.tree.map(lambda shape: jnp.zeros(shape.shape, shape.dtype), shapes)
+            active = active_mask[index]
+            val, diag = jax.lax.cond(active, evaluate, lambda zeros=zeros: zeros)
+            comps[loss.name] = jnp.where(active, val, jnp.nan)
+            diag = {key: jnp.where(active, value, jnp.nan) for key, value in diag.items()}
         total = total + loss.weight * val
-        comps[loss.name] = val
         comps.update(diag)
 
     return total, comps
