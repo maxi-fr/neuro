@@ -1,2 +1,34 @@
 \chapter{Data-Driven Predictor Design}
 \label{ch:data_driven_predictor_design}
+
+%   Content:
+%   * we need prediction models for the MPC
+%       * only input-output data available
+%           * we assume biophysical plant model is not available
+%           * even if it was: JR all of the delay states would be too big for reasonable MPC compute times
+%       * Brain dynamics model not available/ hard to identify
+%           * spend some time talking about the attempts we made in the beginning for JR system identification
+%           * bifurcations make it hard (cite this one JAX tvb-optim paper)
+%       * upside of io models: no need for state estimation
+%
+%   * prediction task/target
+%       > Here we can present the detectability/predictability investigations i did
+%           * either present here or mention here and present in Experiments chapter
+%       > mention the TKEO paper talking about epilepsy detectability
+%       * waveform
+%       * spectral observables
+%           * STFT introduction
+%
+%   * model architectures
+%       * MLP
+%           * why: classic, basic NN, universal approximation theorem
+%       * CNN
+%           * why: to make use of the temporal and frequency axes
+%           * why: for waveform CNN: STFT is just a specific convolutional kernel, maybe learned is better
+%       * linear (DMD)
+%           * making linear MPC possible
+%           * koopman theory analogy
+%    * need some introduction into gradient descent, loss functions, etc.
+%
+%
+%   > Question: do we answer the question that we like the spectral prediction models also because we can run the MPC purely in this spectral realm with a cost function defined in the spectral space.
