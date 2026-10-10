@@ -73,7 +73,7 @@ def test_dmd_rank_truncation_and_lambda() -> None:
 
 def test_dmd_trainer_rejects_depth_gt_0() -> None:
     """DmdTrainer raises TypeError if model depth > 0."""
-    model = AutoregressiveMLP(
+    model = WaveformMLPModel(
         n_y=2,
         n_u=2,
         horizon=3,
@@ -82,10 +82,20 @@ def test_dmd_trainer_rejects_depth_gt_0() -> None:
         n_outputs=2,
         hidden_size=8,
         depth=1,
+        activation="relu",
+        residual=False,
+        dt=1e-3,
+        downsample=1,
+        y_center=np.zeros(2),
+        y_scale=np.ones(2),
+        u_center=np.zeros(1),
+        u_scale=np.ones(1),
+        weights=(np.zeros((8, 6)), np.zeros((2, 8))),
+        biases=(np.zeros(8), np.zeros(2)),
     )
     trainer = DmdTrainer()
     trajs = [(np.zeros((10, 1)), np.zeros((10, 2)))]
-    with pytest.raises(TypeError, match="DmdTrainer requires a depth-0 model"):
+    with pytest.raises(TypeError, match="DmdTrainer requires a depth-0"):
         trainer.fit(model, trajs)
 
 

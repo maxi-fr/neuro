@@ -28,6 +28,7 @@ dependencies = [
     "tabulate>=0.10.0",
     "latex-linting",
     "casadi>=3.8.1",
+    "optax>=0.2.8",
 ]
 
 

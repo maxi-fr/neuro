@@ -2,11 +2,11 @@ import importlib.util
 from pathlib import Path
 from typing import Any, Literal, cast
 
+import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
 import scipy.signal as sps
-import torch
 import yaml
 from pydantic import ValidationError
 from scipy.signal.windows import hann
@@ -223,7 +223,7 @@ def test_torch_reduction_agrees_with_canonical_numpy(
     width: int,
     n_segment: int,
 ) -> None:
-    """The torch reduction used by spectral training Loss matches canonical NumPy to float tolerance."""
+    """The reduction used by spectral training Loss matches canonical NumPy to float tolerance."""
     rng = np.random.default_rng(_SEED + 2)
     fs, n_hop, n_span, n_channels = 50.0, 8, 80, 2
     y = rng.standard_normal((n_span, n_channels))
@@ -245,19 +245,21 @@ def test_torch_reduction_agrees_with_canonical_numpy(
         start_epoch=0,
         geometry=geometry,
     )
-    ctx = LossContext(
-        y_center=torch.zeros(n_channels, dtype=torch.float64),
-        y_scale=torch.ones(n_channels, dtype=torch.float64),
-        fs=fs,
-        epoch=0,
-    )
-    # torch input is (batch=1, span, channels)
-    x_tensor = torch.as_tensor(y[None, :, :], dtype=torch.float64)
-    # log_spectrogram output: (batch, channel, frame, bin)
-    torch_frames = stft_loss.log_spectrogram(x_tensor, ctx).squeeze(0).permute(1, 0, 2).detach().numpy()
+    with jax.enable_x64():
+        ctx = LossContext(
+            y_center=jnp.zeros(n_channels, dtype=jnp.float64),
+            y_scale=jnp.ones(n_channels, dtype=jnp.float64),
+            fs=fs,
+            epoch=0,
+        )
+        # JAX input is (batch=1, span, channels)
+        x_arr = jnp.asarray(y[None, :, :], dtype=jnp.float64)
+        # log_spectrogram output: (batch, channel, frame, bin)
+        jax_spec = stft_loss.log_spectrogram(x_arr, ctx)
+        jax_frames = np.asarray(jnp.transpose(jnp.squeeze(jax_spec, axis=0), (1, 0, 2)))
 
-    assert torch_frames.shape == numpy_frames.shape
-    np.testing.assert_allclose(torch_frames, numpy_frames, rtol=1e-10, atol=1e-12)
+    assert jax_frames.shape == numpy_frames.shape
+    np.testing.assert_allclose(jax_frames, numpy_frames, rtol=1e-10, atol=1e-12)
 
 
 def test_observable_envelope_save_load_round_trip(tmp_path: Path) -> None:

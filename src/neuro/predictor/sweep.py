@@ -3,7 +3,6 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 import optuna
-import torch
 import yaml
 from simulate.config import deep_merge
 
@@ -77,7 +76,7 @@ def _run_trial(
         yaml.dump(config.model_dump(exclude={"sweep"}), f)
     try:
         result = train(config, data_files, seed_offset=trial.number)
-    except (ValueError, RuntimeError, torch.AcceleratorError) as exc:
+    except (ValueError, RuntimeError) as exc:
         err_msg = str(exc).lower()
         if "nan" in err_msg or "out of memory" in err_msg or "cuda" in err_msg:
             raise optuna.TrialPruned from exc

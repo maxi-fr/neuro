@@ -1,13 +1,14 @@
-"""Cover the torch training loop end to end: convergence, the best-model snapshot and seeding."""
+"""Cover the training loop end to end: convergence, the best-model snapshot and seeding."""
 
 from __future__ import annotations
 
 import json
 from typing import TYPE_CHECKING, cast
 
+import jax
+import jax.numpy as jnp
 import numpy as np
 import pytest
-import torch
 
 from neuro.config import (
     CurriculumMSESpec,
@@ -17,10 +18,15 @@ from neuro.config import (
     SimulationConfig,
     TrainingConfig,
 )
-from neuro.predictor.data import build_dataset_for_trajectory, fit_standardizers, prepare_datasets
+from neuro.predictor.data import (
+    batch_iterator,
+    build_dataset_for_trajectory,
+    fit_standardizers,
+    prepare_datasets,
+)
 from neuro.predictor.gradient import lr_schedule
 from neuro.predictor.losses import LossContext, build_losses, total_loss
-from neuro.predictor.module import AutoregressiveMLP
+from neuro.predictor.mlp import WaveformMLPModel
 from neuro.predictor.ridge import RidgeTrainer
 from neuro.predictor.train import TrainingResult, train
 
@@ -72,9 +78,13 @@ def _config(depth: int = 1, curr_start: int = 0, curr_end: int = 2, **training: 
     )
 
 
-def _weights(model: AutoregressiveMLP) -> list[np.ndarray]:
+def _weights(model: WaveformMLPModel) -> list[np.ndarray]:
     """Flat list of every weight and bias array, in forward order."""
-    return [p.detach().numpy() for p in model.parameters()]
+    res = []
+    for w, b in zip(model.weights, model.biases, strict=True):
+        res.append(np.asarray(w))
+        res.append(np.asarray(b))
+    return res
 
 
 def _wave_train(cfg: NNPredictorConfig, files: list[str], *, seed_offset: int = 0) -> TrainingResult:
@@ -84,7 +94,7 @@ def _wave_train(cfg: NNPredictorConfig, files: list[str], *, seed_offset: int = 
     return result
 
 
-def _validation_loss(cfg: NNPredictorConfig, files: list[str], model: AutoregressiveMLP) -> float:
+def _validation_loss(cfg: NNPredictorConfig, files: list[str], model: WaveformMLPModel) -> float:
     """Re-score ``model`` on the validation windows exactly as the training loop does."""
     mdl = cfg.model
     fs = cfg.fs
@@ -105,17 +115,17 @@ def _validation_loss(cfg: NNPredictorConfig, files: list[str], model: Autoregres
         global_scaling=cfg.training.global_scaling,
     )
 
-    val_loader = torch.utils.data.DataLoader(data.val_dataset, batch_size=cfg.training.batch_size, shuffle=False)
     ctx = LossContext(y_center=model.y_center, y_scale=model.y_scale, fs=fs, epoch=None)
     batch_losses: list[float] = []
     batch_sizes: list[int] = []
-    with torch.no_grad():
-        for y_hist, u_hist, u_future, y_future in val_loader:
-            b_size = y_hist.shape[0]
-            pred = model(y_hist, u_hist, u_future)
-            loss, _ = total_loss(losses, pred, y_future, ctx)
-            batch_losses.append(float(loss.detach()))
-            batch_sizes.append(b_size)
+    for y_hist, u_hist, u_future, y_future in batch_iterator(
+        data.val_dataset, batch_size=cfg.training.batch_size, shuffle=False
+    ):
+        b_size = y_hist.shape[0]
+        pred = model.rollout(y_hist, u_hist, u_future)
+        loss, _ = total_loss(losses, pred, y_future, ctx)
+        batch_losses.append(float(loss))
+        batch_sizes.append(b_size)
     if not batch_losses:
         return 0.0
     return float(np.average(batch_losses, weights=batch_sizes))
@@ -175,18 +185,17 @@ def test_save_round_trip_predicts_identically(files: list[str], tmp_path: Path) 
     assert result.log_energy is not None  # the waveform arm always scores it
     assert stats["log_energy"] == result.log_energy.pooled
 
-    loaded = AutoregressiveMLP.load(artifact_dir / "model")
+    loaded = WaveformMLPModel.load(artifact_dir / "model")
 
     u, y = result.val_trajs[0]
     n_y, n_u = result.predictor.n_y, result.predictor.n_u
     k = max(n_y, n_u)
-    y_hist = torch.as_tensor(result.predictor.y_std.transform(y[k - n_y : k]), dtype=torch.float32).unsqueeze(0)
-    u_hist = torch.as_tensor(result.predictor.u_std.transform(u[k - n_u : k]), dtype=torch.float32).unsqueeze(0)
-    u_future = torch.as_tensor(result.predictor.u_std.transform(u[k : k + _HORIZON]), dtype=torch.float32).unsqueeze(0)
-    with torch.no_grad():
-        want = result.predictor(y_hist, u_hist, u_future)
-        got = loaded(y_hist, u_hist, u_future)
-    np.testing.assert_array_equal(got.numpy(), want.numpy())
+    y_hist = jnp.asarray(result.predictor.y_std.transform(y[k - n_y : k]), dtype=jnp.float32)[None]
+    u_hist = jnp.asarray(result.predictor.u_std.transform(u[k - n_u : k]), dtype=jnp.float32)[None]
+    u_future = jnp.asarray(result.predictor.u_std.transform(u[k : k + _HORIZON]), dtype=jnp.float32)[None]
+    want = result.predictor.rollout(y_hist, u_hist, u_future)
+    got = loaded.rollout(y_hist, u_hist, u_future)
+    np.testing.assert_array_equal(np.asarray(got), np.asarray(want))
 
 
 def test_returned_artifact_is_the_best_epoch_not_the_last(files: list[str]) -> None:
@@ -203,7 +212,7 @@ def test_returned_artifact_is_the_best_epoch_not_the_last(files: list[str]) -> N
     assert int(np.argmin(result.val_losses)) == len(result.val_losses) - 3
     assert min(result.val_losses) < result.val_losses[-1]
 
-    assert _validation_loss(cfg, files, cast("AutoregressiveMLP", result.predictor)) == pytest.approx(
+    assert _validation_loss(cfg, files, cast("WaveformMLPModel", result.predictor)) == pytest.approx(
         min(result.val_losses)
     )
 
@@ -241,8 +250,8 @@ def test_depth0_ridge_fit_reproduces_the_exact_one_step_lstsq(files: list[str]) 
         global_scaling=trn.global_scaling,
     )
 
-    def build() -> AutoregressiveMLP:
-        return AutoregressiveMLP(
+    def build() -> WaveformMLPModel:
+        return WaveformMLPModel(
             n_y=mdl.n_y,
             n_u=mdl.n_u,
             horizon=horizon,
@@ -252,6 +261,7 @@ def test_depth0_ridge_fit_reproduces_the_exact_one_step_lstsq(files: list[str]) 
             hidden_size=mdl.hidden_size,
             depth=0,
             activation=mdl.activation,
+            residual=mdl.residual,
             dt=_DT,
             y_std=data.y_std,
             u_std=data.u_std,
@@ -281,12 +291,8 @@ def test_depth0_ridge_fit_reproduces_the_exact_one_step_lstsq(files: list[str]) 
     X_1step = np.hstack([X_all[:, :y_len], X_all[:, y_len + m : y_len + (mdl.n_u + 1) * m]])
     targets = Y_all[:, : data.n_channels] - X_all[:, y_len - data.n_channels : y_len]
     weight_bias, *_ = np.linalg.lstsq(np.hstack([X_1step, np.ones((X_1step.shape[0], 1))]), targets, rcond=None)
-    layer = model.layers[0]
-    assert isinstance(layer, torch.nn.Linear)
-    # The module's standardizers live in float32 buffers, so the ridge features differ from the
-    # pipeline's float64 windows at ~1e-7; the single layer must match at float32 precision.
-    np.testing.assert_allclose(layer.weight.detach().numpy(), weight_bias[:-1].T, rtol=1e-5, atol=1e-6)
-    np.testing.assert_allclose(layer.bias.detach().numpy(), weight_bias[-1], rtol=1e-5, atol=1e-6)
+    np.testing.assert_allclose(np.asarray(model.weights[0]), weight_bias[:-1].T, rtol=1e-5, atol=1e-6)
+    np.testing.assert_allclose(np.asarray(model.biases[0]), weight_bias[-1], rtol=1e-5, atol=1e-6)
 
 
 def test_same_seed_reproduces_and_offset_decorrelates(files: list[str]) -> None:
@@ -297,8 +303,8 @@ def test_same_seed_reproduces_and_offset_decorrelates(files: list[str]) -> None:
 
     assert first.train_losses == again.train_losses
     for got, want in zip(
-        _weights(cast("AutoregressiveMLP", again.predictor)),
-        _weights(cast("AutoregressiveMLP", first.predictor)),
+        _weights(cast("WaveformMLPModel", again.predictor)),
+        _weights(cast("WaveformMLPModel", first.predictor)),
         strict=True,
     ):
         np.testing.assert_array_equal(got, want)
@@ -307,8 +313,8 @@ def test_same_seed_reproduces_and_offset_decorrelates(files: list[str]) -> None:
     assert any(
         not np.array_equal(got, want)
         for got, want in zip(
-            _weights(cast("AutoregressiveMLP", shifted.predictor)),
-            _weights(cast("AutoregressiveMLP", first.predictor)),
+            _weights(cast("WaveformMLPModel", shifted.predictor)),
+            _weights(cast("WaveformMLPModel", first.predictor)),
             strict=True,
         )
     )
@@ -318,20 +324,15 @@ def test_same_seed_reproduces_and_offset_decorrelates(files: list[str]) -> None:
 def test_lr_schedule_ramps_in_then_anneals_to_zero(warmup_steps: int) -> None:
     """Warm-up climbs to the peak at ``warmup_steps``; the cosine still reaches 0 on the last step."""
     total_steps = 20
-    optimizer = torch.optim.AdamW(torch.nn.Linear(2, 2).parameters(), lr=1.0)
-    scheduler = lr_schedule(optimizer, warmup_steps=warmup_steps, total_steps=total_steps)
+    schedule = lr_schedule(warmup_steps=warmup_steps, total_steps=total_steps, learning_rate=1.0)
 
-    trace = []
-    for _ in range(total_steps):
-        trace.append(optimizer.param_groups[0]["lr"])
-        optimizer.step()
-        scheduler.step()
+    trace = [float(np.asarray(schedule(step))) for step in range(total_steps + 1)]
 
     assert np.argmax(trace) == warmup_steps
     assert trace[warmup_steps] == pytest.approx(1.0)
     assert trace[: warmup_steps + 1] == sorted(trace[: warmup_steps + 1])
     assert trace[warmup_steps:] == sorted(trace[warmup_steps:], reverse=True)
-    assert optimizer.param_groups[0]["lr"] == pytest.approx(0.0, abs=1e-12)
+    assert trace[-1] == pytest.approx(0.0, abs=1e-12)
 
 
 def test_warmup_shortens_the_first_epochs_without_changing_the_epoch_count(files: list[str]) -> None:
@@ -352,8 +353,8 @@ def test_depth0_gradient_descent_starts_from_random_init_and_runs_every_epoch(fi
     linear = _wave_train(_config(depth=0, epochs=3, curr_start=1, curr_end=1), files)
     nonlinear = _wave_train(_config(depth=1, epochs=3, curr_start=1, curr_end=1), files)
 
-    assert isinstance(linear.predictor, AutoregressiveMLP)
-    assert len(linear.predictor.layers) == 1
+    assert isinstance(linear.predictor, WaveformMLPModel)
+    assert len(linear.predictor.weights) == 1
     assert len(linear.train_losses) == 3
     assert len(nonlinear.train_losses) == 3
     assert np.isfinite(linear.free_run.pooled)

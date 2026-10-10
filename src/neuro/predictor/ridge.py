@@ -12,8 +12,8 @@ from neuro.types import RidgeFittable
 if TYPE_CHECKING:
     from pathlib import Path
 
+    from neuro.predictor.base import AutoregressiveModel
     from neuro.predictor.evaluation import LogEnergyError, ObservableFrameMSE
-    from neuro.predictor.module import AutoregressiveMLP
     from neuro.types import FloatArray
 
 
@@ -89,7 +89,7 @@ class RidgeTrainingResult:
         The held-out ``(u, y)`` trajectories, kept whole so the caller can plot free runs.
     """
 
-    predictor: AutoregressiveMLP
+    predictor: AutoregressiveModel
     candidates: dict[str, float]
     free_run: RolloutNMSE | ObservableFrameMSE
     log_energy: LogEnergyError | None

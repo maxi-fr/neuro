@@ -3,15 +3,17 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
 
+import jax
+import jax.numpy as jnp
 import numpy as np
-import torch
-from torch import Tensor
 
 from neuro.filtering import antialias_filter, lowpass_filter
 from neuro.spectral import compute_log_power_frames
 from neuro.transforms import Standardizer
 
 if TYPE_CHECKING:
+    from collections.abc import Iterator
+
     from neuro.config import StftGeometry
     from neuro.types import Float32Array, FloatArray, IntArray
 
@@ -214,7 +216,7 @@ def fit_standardizers(  # noqa: PLR0913
     )
 
 
-class TrajectoryWindowDataset(torch.utils.data.Dataset[tuple[Tensor, Tensor, Tensor, Tensor]]):
+class TrajectoryWindowDataset:
     """On-the-fly sliding window dataset over standardized continuous trajectories.
 
     Parameters
@@ -240,10 +242,10 @@ class TrajectoryWindowDataset(torch.utils.data.Dataset[tuple[Tensor, Tensor, Ten
         self.n_y = n_y
         self.n_u = n_u
         self.horizon = horizon
-        self.trajectories: list[tuple[Tensor, Tensor]] = [
+        self.trajectories: list[tuple[Float32Array, Float32Array]] = [
             (
-                torch.as_tensor(np.ascontiguousarray(u), dtype=torch.float32),
-                torch.as_tensor(np.ascontiguousarray(y), dtype=torch.float32),
+                np.asarray(u, dtype=np.float32),
+                np.asarray(y, dtype=np.float32),
             )
             for u, y in trajectories
         ]
@@ -265,20 +267,8 @@ class TrajectoryWindowDataset(torch.utils.data.Dataset[tuple[Tensor, Tensor, Ten
         """Total number of valid sliding windows across all trajectories."""
         return len(self._index_map)
 
-    def __getitem__(self, index: int) -> tuple[Tensor, Tensor, Tensor, Tensor]:
-        """Extract (y_hist, u_hist, u_future, y_future) for the window indexed by index.
-
-        Returns
-        -------
-        y_hist : Tensor
-            Past outputs/Frames of shape ``(n_y, *output_shape)``.
-        u_hist : Tensor
-            Past controls of shape ``(n_u, n_controls)``.
-        u_future : Tensor
-            Future controls of shape ``(horizon, n_controls)``.
-        y_future : Tensor
-            Future output targets of shape ``(horizon, *output_shape)``.
-        """
+    def __getitem__(self, index: int) -> tuple[Float32Array, Float32Array, Float32Array, Float32Array]:
+        """Extract (y_hist, u_hist, u_future, y_future) for the window indexed by index."""
         traj_idx, k = self._index_map[index]
         u, y = self.trajectories[traj_idx]
         y_hist = y[k - self.n_y + 1 : k + 1]
@@ -286,6 +276,51 @@ class TrajectoryWindowDataset(torch.utils.data.Dataset[tuple[Tensor, Tensor, Ten
         u_future = u[k : k + self.horizon]
         y_future = y[k + 1 : k + 1 + self.horizon]
         return y_hist, u_hist, u_future, y_future
+
+    def get_batch(self, indices: np.ndarray | list[int]) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array]:
+        """Gather and stack a batch of windows into JAX arrays."""
+        pairs = self._index_map[indices]
+        first_u, first_y = self.trajectories[0]
+        y_shape = first_y.shape[1:]
+        u_shape = first_u.shape[1:]
+
+        b_size = len(pairs)
+        y_hists = np.empty((b_size, self.n_y, *y_shape), dtype=np.float32)
+        u_hists = np.empty((b_size, self.n_u, *u_shape), dtype=np.float32)
+        u_futs = np.empty((b_size, self.horizon, *u_shape), dtype=np.float32)
+        y_futs = np.empty((b_size, self.horizon, *y_shape), dtype=np.float32)
+
+        for i in range(b_size):
+            traj_idx = int(pairs[i, 0])
+            k = int(pairs[i, 1])
+            u, y = self.trajectories[traj_idx]
+            y_hists[i] = y[k - self.n_y + 1 : k + 1]
+            u_hists[i] = u[k - self.n_u : k]
+            u_futs[i] = u[k : k + self.horizon]
+            y_futs[i] = y[k + 1 : k + 1 + self.horizon]
+
+        return jnp.asarray(y_hists), jnp.asarray(u_hists), jnp.asarray(u_futs), jnp.asarray(y_futs)
+
+
+def batch_iterator(
+    dataset: TrajectoryWindowDataset,
+    batch_size: int,
+    *,
+    rng: np.random.Generator | None = None,
+    shuffle: bool = True,
+) -> Iterator[tuple[jax.Array, jax.Array, jax.Array, jax.Array]]:
+    """Yield mini-batches of JAX arrays from dataset."""
+    n = len(dataset)
+    if n == 0:
+        return
+    indices = np.arange(n)
+    if shuffle:
+        if rng is None:
+            rng = np.random.default_rng()
+        rng.shuffle(indices)
+    for start in range(0, n, batch_size):
+        batch_idx = indices[start : start + batch_size]
+        yield dataset.get_batch(batch_idx)
 
 
 @dataclass(frozen=True)

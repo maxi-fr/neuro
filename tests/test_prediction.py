@@ -3,7 +3,6 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 import numpy as np
-import torch
 
 from neuro.config import StftGeometry
 from neuro.predictor.data import (
@@ -13,7 +12,7 @@ from neuro.predictor.data import (
     prepare_observable_datasets,
     reduce_trajectory_to_frames,
 )
-from neuro.predictor.module import AutoregressiveMLP
+from neuro.predictor.mlp import WaveformMLPModel
 from neuro.transforms import Standardizer
 
 if TYPE_CHECKING:
@@ -58,8 +57,10 @@ def test_prepare_datasets_builds_standardized_windows(tmp_path: Path) -> None:
     assert len(data.train_dataset) == x_manual.shape[0]
     for idx in range(len(data.train_dataset)):
         y_hist, u_hist, u_future, y_target = data.train_dataset[idx]
-        x_rec = np.concatenate([y_hist.numpy().reshape(-1), u_hist.numpy().reshape(-1), u_future.numpy().reshape(-1)])
-        y_rec = y_target.numpy().reshape(-1)
+        x_rec = np.concatenate(
+            [np.asarray(y_hist).reshape(-1), np.asarray(u_hist).reshape(-1), np.asarray(u_future).reshape(-1)]
+        )
+        y_rec = np.asarray(y_target).reshape(-1)
         np.testing.assert_allclose(x_rec, x_manual[idx], atol=1e-6)
         np.testing.assert_allclose(y_rec, y_manual[idx], atol=1e-6)
 
@@ -95,8 +96,10 @@ def test_prepare_datasets_holds_out_the_validation_trajectories(tmp_path: Path) 
     assert len(data.val_dataset) == x_manual.shape[0]
     for idx in range(len(data.val_dataset)):
         y_hist, u_hist, u_future, y_target = data.val_dataset[idx]
-        x_rec = np.concatenate([y_hist.numpy().reshape(-1), u_hist.numpy().reshape(-1), u_future.numpy().reshape(-1)])
-        y_rec = y_target.numpy().reshape(-1)
+        x_rec = np.concatenate(
+            [np.asarray(y_hist).reshape(-1), np.asarray(u_hist).reshape(-1), np.asarray(u_future).reshape(-1)]
+        )
+        y_rec = np.asarray(y_target).reshape(-1)
         np.testing.assert_allclose(x_rec, x_manual[idx], atol=1e-6)
         np.testing.assert_allclose(y_rec, y_manual[idx], atol=1e-6)
 
@@ -107,7 +110,7 @@ def test_checkpoint_round_trip(tmp_path: Path) -> None:
     rng = np.random.default_rng(_SEED)
     y_std = _standardizer(rng, n_channels)
     u_std = _standardizer(rng, n_controls)
-    model = AutoregressiveMLP(
+    model = WaveformMLPModel(
         n_y=2,
         n_u=2,
         horizon=3,
@@ -124,7 +127,7 @@ def test_checkpoint_round_trip(tmp_path: Path) -> None:
     checkpoint = tmp_path / "model"
     model.save(checkpoint)
 
-    loaded = AutoregressiveMLP.load(checkpoint)
+    loaded = WaveformMLPModel.load(checkpoint)
     assert loaded.n_channels == n_channels
     assert loaded.n_controls == n_controls
     assert loaded.depth == 1
@@ -132,13 +135,10 @@ def test_checkpoint_round_trip(tmp_path: Path) -> None:
     np.testing.assert_allclose(loaded.y_std.scale, y_std.scale)
     np.testing.assert_allclose(loaded.u_std.center, u_std.center)
     np.testing.assert_allclose(loaded.u_std.scale, u_std.scale)
-    for got, want in zip(
-        (m for m in loaded.layers if isinstance(m, torch.nn.Linear)),
-        (m for m in model.layers if isinstance(m, torch.nn.Linear)),
-        strict=True,
-    ):
-        np.testing.assert_array_equal(got.weight.detach().numpy(), want.weight.detach().numpy())
-        np.testing.assert_array_equal(got.bias.detach().numpy(), want.bias.detach().numpy())
+    for got, want in zip(loaded.weights, model.weights, strict=True):
+        np.testing.assert_array_equal(np.asarray(got), np.asarray(want))
+    for got, want in zip(loaded.biases, model.biases, strict=True):
+        np.testing.assert_array_equal(np.asarray(got), np.asarray(want))
 
 
 def test_load_trajectory_and_prepare_datasets_with_cutoff_hz(tmp_path: Path) -> None:
@@ -161,8 +161,10 @@ def test_load_trajectory_and_prepare_datasets_with_cutoff_hz(tmp_path: Path) -> 
     assert len(data.train_dataset) == x_manual.shape[0]
     for idx in range(len(data.train_dataset)):
         y_hist, u_hist, u_future, y_target = data.train_dataset[idx]
-        x_rec = np.concatenate([y_hist.numpy().reshape(-1), u_hist.numpy().reshape(-1), u_future.numpy().reshape(-1)])
-        y_rec = y_target.numpy().reshape(-1)
+        x_rec = np.concatenate(
+            [np.asarray(y_hist).reshape(-1), np.asarray(u_hist).reshape(-1), np.asarray(u_future).reshape(-1)]
+        )
+        y_rec = np.asarray(y_target).reshape(-1)
         np.testing.assert_allclose(x_rec, x_manual[idx], atol=1e-6)
         np.testing.assert_allclose(y_rec, y_manual[idx], atol=1e-6)
 

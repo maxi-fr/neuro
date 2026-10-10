@@ -4,10 +4,11 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+import equinox as eqx
+import jax
+import jax.numpy as jnp
 import numpy as np
 import pytest
-import torch
-from torch import nn
 
 from neuro.config import (
     CurriculumMSESpec,
@@ -20,13 +21,14 @@ from neuro.config import (
     TrainingConfig,
 )
 from neuro.predictor.gradient import fit_gradient_descent
-from neuro.predictor.module import AutoregressiveMLP, TrainingPredictor
+from neuro.predictor.mlp import ObservableMLPModel, WaveformMLPModel
 from neuro.predictor.ridge import RidgeTrainingResult
 from neuro.predictor.train import TrainingResult, train
 
 if TYPE_CHECKING:
     from pathlib import Path
 
+    from neuro.predictor.base import AutoregressiveModel
     from neuro.types import FloatArray
 
 _SEED = 21
@@ -72,9 +74,11 @@ def _wave_config(**training: object) -> NNPredictorConfig:
     )
 
 
-def _checkpoint_arrays(model: nn.Module) -> list[np.ndarray]:
+def _checkpoint_arrays(model: AutoregressiveModel) -> list[np.ndarray]:
     """Every trainable parameter, in forward order, as plain NumPy arrays."""
-    return [p.detach().cpu().numpy().astype(np.float64) for p in model.parameters()]
+    weights = getattr(model, "weights", ())
+    biases = getattr(model, "biases", ())
+    return [np.asarray(w, dtype=np.float64) for w in weights] + [np.asarray(b, dtype=np.float64) for b in biases]
 
 
 def _wave_train(cfg: NNPredictorConfig, files: list[str]) -> TrainingResult:
@@ -116,7 +120,7 @@ def test_waveform_save_round_trips_weights_standardizers_and_metadata(tmp_path: 
     artifact_dir = tmp_path / "wave"
     result.save(artifact_dir)
 
-    loaded = AutoregressiveMLP.load(artifact_dir / "model")
+    loaded = WaveformMLPModel.load(artifact_dir / "model")
 
     for got, want in zip(_checkpoint_arrays(loaded), _checkpoint_arrays(result.predictor), strict=True):
         np.testing.assert_array_equal(got, want)
@@ -131,26 +135,37 @@ def test_waveform_save_round_trips_weights_standardizers_and_metadata(tmp_path: 
     assert loaded.provenance == result.predictor.provenance
 
 
-class _TinyNet(nn.Module):
+class _TinyNet(eqx.Module):
     """A plain two-layer MLP, deliberately not one of the repo's modules."""
 
-    def __init__(self, n_in: int, n_out: int) -> None:
+    w1: jax.Array
+    b1: jax.Array
+    w2: jax.Array
+    b2: jax.Array
+
+    def __init__(self, n_in: int, n_out: int, key: jax.Array) -> None:
         """Build a two-layer MLP."""
-        super().__init__()
-        self.net = nn.Sequential(nn.Linear(n_in, 8), nn.ReLU(), nn.Linear(8, n_out))
+        k1, k2 = jax.random.split(key)
+        bound1 = 1.0 / np.sqrt(n_in)
+        self.w1 = jax.random.uniform(k1, (n_in, 8), minval=-bound1, maxval=bound1)
+        self.b1 = jnp.zeros(8)
+        bound2 = 1.0 / np.sqrt(8)
+        self.w2 = jax.random.uniform(k2, (8, n_out), minval=-bound2, maxval=bound2)
+        self.b2 = jnp.zeros(n_out)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def __call__(self, x: jax.Array) -> jax.Array:
         """Map ``(B, n_in)`` to ``(B, n_out)``."""
-        return self.net(x)
+        h = jax.nn.relu(x @ self.w1 + self.b1)
+        return h @ self.w2 + self.b2
 
 
-def test_gradient_descent_serves_any_torch_module() -> None:
-    """The shared fit regresses a foreign ``nn.Module``: the loss descends and stays finite."""
+def test_gradient_descent_serves_any_module() -> None:
+    """The shared fit regresses a foreign module: the loss descends and stays finite."""
     rng = np.random.default_rng(_SEED + 1)
     n_in, n_out, n_samples = 4, 2, 256
-    x = torch.as_tensor(rng.standard_normal((n_samples, n_in)), dtype=torch.float32)
-    w = rng.standard_normal((n_in, n_out))
-    y = torch.as_tensor(x.numpy() @ w + 0.05 * rng.standard_normal((n_samples, n_out)), dtype=torch.float32)
+    x = rng.standard_normal((n_samples, n_in)).astype(np.float32)
+    w = rng.standard_normal((n_in, n_out)).astype(np.float32)
+    y = x @ w + 0.05 * rng.standard_normal((n_samples, n_out)).astype(np.float32)
     cfg = TrainingConfig.model_validate(
         {
             "epochs": 20,
@@ -164,40 +179,39 @@ def test_gradient_descent_serves_any_torch_module() -> None:
     )
 
     def mse(
-        model: nn.Module,
-        y_hist: torch.Tensor,
-        u_hist: torch.Tensor,
-        u_future: torch.Tensor,
-        y_target: torch.Tensor,
+        model: _TinyNet,
+        y_hist: jax.Array,
+        u_hist: jax.Array,
+        u_future: jax.Array,
+        y_target: jax.Array,
         epoch: int | None,
-    ) -> tuple[torch.Tensor, dict[str, float]]:
-        return torch.mean((model(y_hist) - y_target) ** 2), {}
+    ) -> tuple[jax.Array, dict[str, float]]:
+        del u_hist, u_future, epoch
+        return jnp.mean((model(y_hist) - y_target) ** 2), {}
 
-    class _TupleDataset(torch.utils.data.Dataset[tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]]):
-        def __init__(self, y_h: torch.Tensor, u_h: torch.Tensor, u_f: torch.Tensor, y_t: torch.Tensor) -> None:
-            self.tensors = (y_h, u_h, u_f, y_t)
+    dummy_u = np.zeros((n_samples, 1), dtype=np.float32)
+    train_batches = [
+        (
+            x[i : i + cfg.batch_size],
+            dummy_u[i : i + cfg.batch_size],
+            dummy_u[i : i + cfg.batch_size],
+            y[i : i + cfg.batch_size],
+        )
+        for i in range(0, 200, cfg.batch_size)
+    ]
+    val_batches = [
+        (
+            x[i : i + cfg.batch_size],
+            dummy_u[i : i + cfg.batch_size],
+            dummy_u[i : i + cfg.batch_size],
+            y[i : i + cfg.batch_size],
+        )
+        for i in range(200, n_samples, cfg.batch_size)
+    ]
 
-        def __len__(self) -> int:
-            return len(self.tensors[0])
-
-        def __getitem__(self, index: int) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-            return (self.tensors[0][index], self.tensors[1][index], self.tensors[2][index], self.tensors[3][index])
-
-    dummy_u_train = torch.zeros((200, 1), dtype=torch.float32)
-    dummy_u_val = torch.zeros((56, 1), dtype=torch.float32)
-    train_loader = torch.utils.data.DataLoader(
-        _TupleDataset(x[:200], dummy_u_train, dummy_u_train, y[:200]),
-        batch_size=cfg.batch_size,
-        shuffle=True,
-    )
-    val_loader = torch.utils.data.DataLoader(
-        _TupleDataset(x[200:], dummy_u_val, dummy_u_val, y[200:]),
-        batch_size=cfg.batch_size,
-        shuffle=False,
-    )
-
-    model = _TinyNet(n_in, n_out)
-    fit = fit_gradient_descent(model, train_loader, val_loader, cfg, seed=_SEED, loss_fn=mse)
+    key = jax.random.PRNGKey(_SEED)
+    model = _TinyNet(n_in, n_out, key)
+    fit = fit_gradient_descent(model, train_batches, val_batches, cfg, seed=_SEED, loss_fn=mse)
     train_losses, val_losses = fit.train_losses, fit.val_losses
 
     assert len(train_losses) == len(val_losses) == 20
@@ -219,7 +233,7 @@ def test_ridge_fit_through_train_on_depth0_mlp(tmp_path: Path) -> None:
     result = train(cfg, _write_trajectories(tmp_path, dt=_WAVE_DT, t=_T))
 
     assert isinstance(result, RidgeTrainingResult)
-    assert isinstance(result.predictor, AutoregressiveMLP)
+    assert isinstance(result.predictor, WaveformMLPModel)
     assert result.predictor.depth == 0
     assert set(result.candidates) == {"rollout_nmse", "log_energy"}
     assert result.candidates["rollout_nmse"] == result.free_run.pooled
@@ -283,7 +297,7 @@ def test_observable_ridge_fit_through_train_on_depth0_mlp(tmp_path: Path) -> Non
     result = train(cfg, files)
 
     assert isinstance(result, RidgeTrainingResult)
-    assert isinstance(result.predictor, AutoregressiveMLP)
+    assert isinstance(result.predictor, ObservableMLPModel)
     assert result.predictor.depth == 0
     assert set(result.candidates) == {"val_loss", "val_log_mse"}
     assert result.candidates["val_log_mse"] == result.free_run.pooled
