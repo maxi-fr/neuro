@@ -1,10 +1,12 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+import math
+from typing import TYPE_CHECKING, Literal
 
 import jax
 import jax.numpy as jnp
 import numpy as np
+import pytest
 import torch
 
 from neuro.config import (
@@ -227,3 +229,84 @@ def test_observable_cnn_train_save_load_and_controller_smoke(tmp_path: Path) -> 
     assert isinstance(runtime, ObservableCNNModel)
     problem = build_observable_problem(artifact / "model", horizon=2, u_max=1.0, w_u=1.0)
     assert problem.model is not None
+
+
+@pytest.mark.parametrize(
+    ("tapering_ratio", "head_depth", "head_width"),
+    [
+        (0.5, 1, "trunk"),
+        (0.5, 0, "trunk"),
+        (0.5, 1, "geometric_mean"),
+    ],
+)
+def test_observable_cnn_tapering_and_head_depth_parity(
+    tapering_ratio: float,
+    head_depth: int,
+    head_width: Literal["trunk", "geometric_mean"],
+) -> None:
+    """Observable CNN supports tapering ratio and configurable head depth with Torch-JAX parity."""
+    rng = np.random.default_rng(808)
+    torch.manual_seed(808)
+    geometry = StftGeometry(n_segment=6, n_hop=2)
+    n_values = 4
+    hidden_size = 16
+    depth = 3
+    module = AutoregressiveCNN(
+        n_y=3,
+        n_u=2,
+        horizon=3,
+        n_channels=2,
+        n_controls=2,
+        n_outputs=2 * n_values,
+        hidden_size=hidden_size,
+        depth=depth,
+        kernel_size=3,
+        frequency_kernel_size=3,
+        activation="tanh",
+        residual=True,
+        dt=0.04,
+        geometry=geometry,
+        y_std=Standardizer(center=rng.normal(size=(2, n_values)), scale=rng.uniform(0.5, 2.0, (2, n_values))),
+        u_std=Standardizer(center=np.full(2, 0.4), scale=np.full(2, 1.7)),
+        tapering_ratio=tapering_ratio,
+        head_depth=head_depth,
+        head_width=head_width,
+    )
+    with torch.no_grad():
+        for parameter in module.parameters():
+            parameter.normal_(std=0.2)
+
+    conv_layers = [m for m in module.convs if isinstance(m, torch.nn.Conv2d)]
+    expected_channels = [
+        16,
+        math.floor(16 * tapering_ratio),
+        math.floor(math.floor(16 * tapering_ratio) * tapering_ratio),
+    ]
+    assert [layer.out_channels for layer in conv_layers] == expected_channels
+
+    head_linears = [m for m in module.head if isinstance(m, torch.nn.Linear)]
+    assert len(head_linears) == (head_depth + 1 if head_depth > 0 else 1)
+
+    meta, arrays = module.to_checkpoint()
+    assert meta["tapering_ratio"] == tapering_ratio
+    assert meta["head_depth"] == head_depth
+    assert meta["head_width"] == head_width
+
+    runtime = ObservableCNNModel.from_checkpoint(meta, arrays)
+    assert runtime.tapering_ratio == tapering_ratio
+    assert runtime.head_depth == head_depth
+    assert runtime.head_width == head_width
+
+    t0 = 7
+    k = t0 - 1
+    y_raw = rng.normal(size=(t0 + module.horizon, module.n_channels, n_values))
+    u_raw = rng.normal(size=(t0 + module.horizon, module.n_controls))
+    y_hist = torch.as_tensor(module.y_std.transform(y_raw[k - module.n_y + 1 : k + 1]), dtype=torch.float32).unsqueeze(
+        0
+    )
+    u_hist = torch.as_tensor(module.u_std.transform(u_raw[k - module.n_u : k]), dtype=torch.float32).unsqueeze(0)
+    u_future = torch.as_tensor(module.u_std.transform(u_raw[k : k + module.horizon]), dtype=torch.float32).unsqueeze(0)
+    with torch.no_grad():
+        expected = module.y_std.inverse_transform(module(y_hist, u_hist, u_future).numpy()[0])
+    actual = np.asarray(runtime.free_run(y_raw[: k + 1][None], u_raw[:k][None], u_raw[k : k + module.horizon][None]))[0]
+    np.testing.assert_allclose(actual, expected, rtol=1e-5, atol=1e-6)

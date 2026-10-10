@@ -59,13 +59,26 @@ class ModelConfig(StrictConfig):
     residual: bool = True
     kernel_size: int = Field(default=3, ge=1)
     frequency_kernel_size: int = Field(default=3, ge=1)
+    tapering_ratio: float = Field(default=1.0, gt=0.0, le=1.0)
+    head_depth: int = Field(default=1, ge=0)
+    head_width: Literal["trunk", "geometric_mean"] = "trunk"
 
     @model_validator(mode="after")
     def _validate_architecture_depth(self) -> Self:
-        """Require at least one convolutional layer for the CNN architecture."""
-        if self.architecture == "cnn" and self.depth < 1:
-            msg = "CNN predictors require model.depth >= 1."
-            raise ValueError(msg)
+        """Require at least one convolutional layer and non-zero channels for the CNN architecture."""
+        if self.architecture == "cnn":
+            if self.depth < 1:
+                msg = "CNN predictors require model.depth >= 1."
+                raise ValueError(msg)
+            c = self.hidden_size
+            for _ in range(1, self.depth):
+                c = math.floor(c * self.tapering_ratio)
+            if c < 1:
+                msg = (
+                    f"CNN tapering produces 0 channels at depth {self.depth} "
+                    f"with hidden_size={self.hidden_size} and tapering_ratio={self.tapering_ratio}."
+                )
+                raise ValueError(msg)
         return self
 
 
@@ -569,7 +582,7 @@ class NNSweepConfig(StrictConfig):
     mismatched name fails at build time.
     """
 
-    n_trials: int = Field(default=20, ge=1)
+    n_trials: int = Field(default=25, ge=1)
     artifact: str | None = None
     objective: str = "log_energy"
     model: dict[str, ParamSpec] = Field(default_factory=dict)

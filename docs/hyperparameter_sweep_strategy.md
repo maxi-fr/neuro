@@ -13,12 +13,12 @@ Freeze one explicit baseline per Predictor family before varying its hyperparame
 | Family | Initial baseline |
 | --- | --- |
 | Observable MLP | $f_s=50\,\text{Hz}$; $n_\text{seg}=25$, $n_\text{hop}=3$, $1$--$25\,\text{Hz}$, linear kernel $K=1$, asymmetric Hann; residual, $n_y=1$, $n_u=9$, depth 1, width 256, tanh. |
-| Observable CNN | Same Observable geometry; residual, $n_y=5$, $n_u=9$, depth 2, 16 filters, $3\times3$ kernels, tanh. |
+| Observable CNN | Same Observable geometry; residual, $n_y=5$, $n_u=9$, depth 2, 16 initial filters, $3\times3$ kernels, tanh; `tapering_ratio: 1.0`, `head_depth: 1`, `head_width: trunk`; batch size 512, learning rate $2\times10^{-4}$; retrain with activation after every convolution. |
 | Observable DMDc | Same Observable geometry; $n_y=1$, $n_u=9$, energy cutoff $0.99$, ridge parameter $10^{-6}$. |
 | Waveform MLP | $f_s=100\,\text{Hz}$; residual, $n_y=15$, $n_u=10$, depth 1, width 256, softplus; curriculum MSE span $0.25\,\text{s}$, STFT span $1.0\,\text{s}$ with 50-sample segments, 25-sample hops and $1$--$25\,\text{Hz}$ band. |
-| Waveform CNN | $f_s=100\,\text{Hz}$; residual, $n_y=15$, $n_u=10$, depth 2, 32 filters, $3$ temporal kernel, tanh; curriculum MSE span $0.25\,\text{s}$, STFT span $1.0\,\text{s}$ with 50-sample segments, 25-sample hops and $1$--$25\,\text{Hz}$ band. |
+| Waveform CNN | $f_s=100\,\text{Hz}$; residual, $n_y=15$, $n_u=10$, depth 2, 32 initial filters, $3$ temporal kernel, tanh; `tapering_ratio: 1.0`, `head_depth: 1`, `head_width: trunk`; batch size 512, learning rate $2\times10^{-4}$; retrain with activation after every convolution; curriculum MSE span $0.25\,\text{s}$, STFT span $1.0\,\text{s}$ with 50-sample segments, 25-sample hops and $1$--$25\,\text{Hz}$ band. |
 
-The $100\,\text{Hz}$ Waveform rate is provisional until the rate decision; it represents $0.25\,\text{s}$ exactly. For neural baselines use AdamW, learning rate $10^{-4}$, weight decay $10^{-5}$, batch size 256, 150 epochs and patience 35; curriculum expansion begins at epoch 10 and completes by epoch 80. Use a fixed training/validation split and preprocessing within each family. Record the resolved baselines in local experiment configs before starting a sweep. For every changed Observable geometry, recompute the minimum valid control history with `observable.min_past_controls()`.
+The $100\,\text{Hz}$ Waveform rate is provisional until the rate decision; it represents $0.25\,\text{s}$ exactly. For neural baselines use AdamW, learning rate $10^{-4}$, weight decay $10^{-5}$, batch size 256, 150 epochs and patience 35; curriculum expansion begins at epoch 10 and completes by epoch 80. For both CNN baselines, resource pilots, and architecture sweeps, use batch size 512 and learning rate $2\times10^{-4}$: double the learning rate alongside the increase from batch size 256 to 512. This is a starting scaling choice to validate in the pilots; keep these settings fixed across architecture candidates. Use a fixed training/validation split and preprocessing within each family. Record the resolved baselines in local experiment configs before starting a sweep. For every changed Observable geometry, recompute the minimum valid control history with `observable.min_past_controls()`.
 
 The [gradient calibration experiment](../artifacts/gradient_weight_calibration/report.md) on the current code and separate 20 ms excitation recordings sets one pilot ratio for each joint objective:
 
@@ -65,24 +65,35 @@ Tier 1 experiments run through Optuna (`scripts/sweep_nn_predictor.py`). All tri
     * `training.weight_decay`: Log-uniform $[1.0 \times 10^{-6}, 1.0 \times 10^{-3}]$
     * `training.batch_size`: $[128, 256, 512]$
 
-### 1.2 Observable CNN optimization
+### 1.2 Observable CNN architecture rerun
 
-* **Purpose:** Exploit spatio-temporal structure across EEG channels and frequency bins under a fixed representation.
-* **Target metric:** Multi-step `val_log_mse` across the full frame Control Horizon.
-* **Fixed configuration:** Fixed Observable geometry, residual connection enabled.
-* **Sub-experiments:**
-  * **Sub-experiment A (Convolutional structure and capacity):**
-    * Output history length (`model.n_y`): Integer range $[3, 12]$ (spans $180\,\text{ms}$ to $720\,\text{ms}$ Frame history)
-    * Activation (`model.activation`): `[tanh, softplus]`
-    * Channel filters (`hidden_size`): $[16, 32, 64]$ (pruned $128$ to enforce $\le 3\,\text{h}$ trial duration)
-    * Depth: $[1, 2]$ (pruned $3$ to enforce $\le 3\,\text{h}$ trial duration)
-    * Time kernel size ($K_t$): $[2, 3, 4, 5]$
-    * Frequency kernel size ($K_f$): $[1, 2, 3, 4, 5, 7]$
-    * *Execution note:* Skip already run configurations (i.e. combinations where $n_y=5, \text{activation}=\text{tanh}, (K_t, K_f) \in \{3, 5\}^2$).
-  * **Sub-experiment B (Optimizer tuning — skipped):**
-    * *Status:* Retained in specification but skipped during execution to prioritize structural search under the fixed baseline optimizer parameters (`lr`: $10^{-4}$, `weight_decay`: $10^{-5}$, `batch_size`: 256).
-    * `training.learning_rate`: Log-uniform $[1.0 \times 10^{-4}, 3.0 \times 10^{-3}]$
-    * `training.weight_decay`: Log-uniform $[1.0 \times 10^{-6}, 1.0 \times 10^{-3}]$
+* **Status:** Required fresh sweep. The initial and expanded old-architecture sweeps and standalone champion run are archived in [legacy CNN sweeps](../artifacts/legacy_cnn_sweeps/report.md). Their results remain historical evidence, not completed trials or champions for the updated architecture.
+* **Purpose:** Evaluate causal time-frequency feature extraction, tapering, dense-head capacity, and direct versus residual prediction under a fixed Observable representation.
+* **Target metric:** Multi-step `val_log_mse` over the $1.0\,\text{s}$ recursive rollout.
+* **Fixed configuration:** Baseline Observable geometry from the calibration section, $n_u=9$, AdamW learning rate $2\times10^{-4}$, weight decay $10^{-5}$, batch size 512, and the baseline training schedule and split.
+* **Sub-experiment A (Architecture):**
+  * `model.n_y`: Integer range $[3,12]$; effective history is bounded by the receptive field below.
+  * `model.hidden_size`: $[16,32,64,128]$, the first convolution's filter count. Restore 128 with tapering; its earlier exclusion was a runtime constraint, not evidence of poor forecasting performance.
+  * `model.depth`: $[1,2]$; reconsider depth 3 with tapering, subject to resource checks.
+  * `model.kernel_size`: $[2,3,4,5]$.
+  * `model.frequency_kernel_size`: $[1,2,3,4,5,7]$.
+  * `model.activation`: `[tanh, softplus]`.
+  * `model.tapering_ratio`: Float range $[0.5,1.0]$.
+  * `model.head_depth`: $[0,1,2]$ hidden dense layers.
+  * `model.head_width`: `[trunk, geometric_mean]`.
+  * `model.residual`: `[true, false]`; predict $\Delta y$ or $y$, respectively, and score both on reconstructed Observable Frames.
+* **Sub-experiment B (Optimizer tuning):** Freeze a qualified architecture, then compare learning rate log-uniform $[10^{-4},3\times10^{-3}]$ and weight decay log-uniform $[10^{-6},10^{-3}]$ in a separate fresh study. The old skipped optimizer stage is not a completed experiment.
+
+#### CNN rerun protocol shared with Section 1.4
+
+* **Sampler and trial budget:** Run 25 architecture trials per family in fresh studies, using `TPESampler(n_startup_trials=15, multivariate=True, seed=training.seed)`. This gives 15 random startup trials followed by 10 TPE-guided trials when all trials finish successfully. Startup accounting includes completed and pruned trials, but excludes failures; failed trials can therefore reduce the number of guided trials within the 25-trial budget. The sampler seed follows the fixed training seed. This runner change does not implement conditional sampling or enqueue anchor configurations.
+* **Architecture definition:** Every hidden convolution is followed by the chosen activation, including the final convolution. Select newest-time features, retain frequency positions for Observable Frames, concatenate flattened Control Current history, apply `[dense + activation]` $\times$ `head_depth`, and finish with a linear output. `residual: true` adds the latest measurement; `false` predicts the next measurement directly. Convolutions use stride one, without dilation or internal residual blocks.
+* **Tapering and head widths:** $H_1=\texttt{hidden_size}$ and $H_{l+1}=\lfloor H_l r\rfloor$; only positive channel widths are eligible. `trunk` uses $H_L$ for each hidden dense layer; `geometric_mean` uses $\lfloor\sqrt{D_{in}D_{out}}\rfloor$. Head width has no effect with `head_depth: 0`; tapering has no effect with `depth: 1`. Avoid trials that differ only in inactive settings.
+* **Linear-head ablation:** `head_depth: 0` imposes additive, fixed one-step Control Current sensitivity. Hidden head layers permit measurement-dependent control interactions. Both choices retain a nonlinear convolutional trunk.
+* **Effective history:** Record $R_t=1+\texttt{depth}(\texttt{kernel_size}-1)$ and $n_{effective}=\min(n_y,R_t)$ for every trial. Older measurements beyond $R_t$ cannot affect the newest-time features. For otherwise fixed settings, canonicalize histories exceeding $R_t$ to one representative value rather than repeat equivalent models. For example, the Waveform baseline with $n_y=15$, depth 2, and kernel 3 uses only five samples of measurement history. This update does not introduce dilation.
+* **Fresh execution and storage:** Retrain explicit baselines and all candidates from scratch. Do not resume archived SQLite studies, reuse old checkpoints, or skip combinations because they ran under the old architecture. Use new experiment folders under `artifacts/cnn_architecture_rerun/observable/` and `artifacts/cnn_architecture_rerun/waveform/`, with separate `architecture/` and `optimizer/` studies. Keep self-contained baseline and trial configs in those folders.
+* **Resource and qualification checks:** Pilot the baseline and representative widest/deepest candidates before launching the 25-trial study, including width-128 tapered stacks such as $128\to64\to32$ at depth 3 and ratio 0.5. Width 128 is eligible in both families; assess runtime for the full architecture rather than excluding the initial width alone. Tapering does not shrink the first convolution and has no effect at depth 1. Record parameter count, actual layer widths, memory use, training time, and controller derivative/solve cost for finalists. Retain the $\le3\,\text{h}$ per-trial target; tapering alone does not establish runtime or recursive stability. Apply the Tier 1 schedule, rollout, and stability gates. Conditional deduplication and resource limits must be implemented in the run configuration or runner before launch; this document does not imply that the current runner already enforces them.
+* **Reproducibility:** Save the source revision and any uncommitted patch, dependency versions, resolved configs, training-data identity and split, seeds, and activation-after-every-convolution convention in each new report. Old checkpoints may load in current code but produce different predictions; reproduce archived results only with the historical architecture. Freeze newly qualified champions for Tier 2 work.
 
 ### 1.3 Waveform MLP optimization
 
@@ -100,22 +111,23 @@ Tier 1 experiments run through Optuna (`scripts/sweep_nn_predictor.py`). All tri
   * **Sub-experiment C (Autoregressive history length extension):**
     * *Status:* Prospective extension. The initial capacity sweep froze $n_y = 15$ ($150\,\text{ms}$ at $100\,\text{Hz}$). If raw waveform state observability requires differing history context, evaluate $n_y \in [5, 10, 15, 20, 25]$ (spans $50\,\text{ms}$ to $250\,\text{ms}$) on the frozen capacity and optimizer champion.
 
-### 1.4 Waveform CNN optimization
+### 1.4 Waveform CNN architecture rerun
 
-* **Purpose:** Determine network capacity, convolutional kernel size, temporal history length, and activation function for high-rate raw EEG prediction under the calibrated fixed joint loss.
+* **Status:** Required fresh sweep. The old execution stopped during Trial 0 and produced no completed trial or champion. Its configs and study are archived in [legacy CNN sweeps](../artifacts/legacy_cnn_sweeps/report.md). The former Section 1.6 described this same interrupted campaign and is consolidated here.
+* **Purpose:** Evaluate convolutional capacity, effective temporal history, tapering, dense-head structure, activation, and direct versus residual prediction under the calibrated fixed joint Loss. Follow the shared CNN protocol in Section 1.2.
 * **Target metric:** Recursive rollout NMSE over $1.0\,\text{s}$ (`rollout_nmse`).
-* **Fixed configuration:** Provisional sampling rate $f_s = 100\,\text{Hz}$, curriculum MSE span $0.25\,\text{s}$, STFT span $1.0\,\text{s}$, calibrated fixed loss weights, residual connection enabled.
-* **Sub-experiments:**
-  * **Sub-experiment A (Convolutional structure, capacity, and history):**
-    * Output history length (`model.n_y`): Integer range $[5, 15]$ (spans $50\,\text{ms}$ to $150\,\text{ms}$ history at $100\,\text{Hz}$)
-    * Channel filters (`model.hidden_size`): $[16, 32, 64, 128]$
-    * Network depth (`model.depth`): $[1, 2, 3]$
-    * Time kernel size (`model.kernel_size`): $[3, 5, 7]$
-    * Activation (`model.activation`): `[tanh, softplus]`
-  * **Sub-experiment B (Optimizer tuning):**
-    * Retained in specification; executed after freezing the structural champion.
-    * `training.learning_rate`: Log-uniform $[1.0 \times 10^{-4}, 2.0 \times 10^{-3}]$
-    * `training.weight_decay`: Log-uniform $[1.0 \times 10^{-6}, 1.0 \times 10^{-3}]$
+* **Fixed configuration:** Provisional $f_s=100\,\text{Hz}$, $n_u=10$, curriculum MSE span $0.25\,\text{s}$, STFT span $1.0\,\text{s}$, weights $w_\text{mse}=1$, $w_\text{stft}=0.01$, AdamW learning rate $2\times10^{-4}$, weight decay $10^{-5}$, batch size 512, and the baseline training schedule and split. Use the same batch size for every architecture candidate; freeze any throughput-driven change before launching the study.
+* **Sub-experiment A (Architecture):**
+  * `model.n_y`: Integer range $[5,15]$; deduplicate histories exceeding the receptive field as described in Section 1.2.
+  * `model.hidden_size`: $[16,32,64,128]$ initial filters. Restore 128 with tapering; the interrupted old campaign did not establish a performance reason to exclude it.
+  * `model.depth`: $[1,2]$, subject to the pilot resource checks.
+  * `model.kernel_size`: $[3,5,7, 9, 11, 13, 15]$.
+  * `model.activation`: `[tanh, softplus]`.
+  * `model.tapering_ratio`: Float range $[0.5, 1.0]$.
+  * `model.head_depth`: $[0,1,2]$.
+  * `model.head_width`: `[trunk, geometric_mean]`.
+  * `model.residual`: `[true, false]`; score both on reconstructed EEG with the same Loss.
+* **Sub-experiment B (Optimizer tuning):** Freeze a qualified structural champion and use a separate fresh study for learning rate log-uniform $[10^{-4},2\times10^{-3}]$ and weight decay log-uniform $[10^{-6},10^{-3}]$.
 
 ### 1.5 Hankel-DMDc subspace optimization
 
@@ -130,6 +142,10 @@ Tier 1 experiments run through Optuna (`scripts/sweep_nn_predictor.py`). All tri
     * Energy cutoff: $[0.80, 0.85, 0.90, 0.95, 0.99, 0.999, 1.0]$
   * **Sub-experiment C (Ridge regularization):**
     * `training.dmd_lambda`: $[0, 10^{-8}, 10^{-6}, 10^{-4}, 10^{-2}]$, with the selected embedding and energy cutoff.
+
+### 1.6 Historical Waveform CNN campaign (archived)
+
+The old structure/capacity campaign was interrupted with no completed trials. Its execution record is preserved in [the archived Waveform report](../artifacts/legacy_cnn_sweeps/sweep_waveform_cnn_structure/report.md). Section 1.4 now defines the single replacement Waveform CNN campaign; Section 1.6 is retained only to resolve historical references.
 
 ---
 
@@ -190,7 +206,7 @@ Tier 2 experiments evaluate the full closed-loop control system against the nonl
 ### 2.3 Observable CNN STFT geometry exploration
 
 * **Purpose:** Determine whether changing the Observable representation improves closed-loop control with the tuned Observable CNN, while balancing detection latency, frequency resolution, and estimator variance.
-* **Prerequisite:** Complete the Observable CNN Tier 1 optimization in Section 1.2 at the baseline geometry. Freeze its selected architecture, optimizer, training schedule, and other non-geometry settings as the CNN geometry-sweep baseline. Calibrate the Observable CNN controller effort weight on its newly trained baseline checkpoint before the geometry sweep; do not assume the Observable MLP effort setting transfers to the CNN.
+* **Prerequisite:** Complete the updated-architecture Observable CNN rerun in Section 1.2 at the baseline geometry. Historical results in `artifacts/observable_cnn_stft_geometry_exploration/` used the old architecture and do not qualify the updated Predictor. Preserve those outputs and use a fresh directory for a geometry rerun. Freeze its selected architecture, optimizer, training schedule, and other non-geometry settings as the CNN geometry-sweep baseline. Calibrate the Observable CNN controller effort weight on its newly trained baseline checkpoint before the geometry sweep; do not assume the Observable MLP effort setting transfers to the CNN.
 * **Target metric:** Seizure Burden, Delivered Charge, recruitment detection latency, solver solve time, and IPOPT success rate across all canonical seeds. Offline validation loss is a qualification and stability check, not the cross-geometry ranking metric.
 * **Training protocol:** Retrain the frozen CNN configuration from scratch for every candidate geometry using the same training data, training/validation split, preprocessing procedure, and training-data seeds. Regenerate geometry-dependent standardizers, checkpoints, healthy references, and controller artifacts for each candidate. Keep the CNN hyperparameters and calibrated controller cost weights fixed across candidates. For every geometry, recompute the minimum valid control history with `observable.min_past_controls()`.
 * **Simulation protocol:** Use the Tier 2 canonical seeds `[7000, 7001, 7002, 7004, 7005]`, Plant duration $12.0\,\text{s}$, and otherwise identical Plant and controller settings. Set controller `dt` and horizon steps to preserve each candidate's knot interval and the $1.0\,\text{s}$ Control Horizon: `n_hop=3` uses $dt=0.06\,\text{s}$ and 17 steps; `n_hop=5` uses $dt=0.10\,\text{s}$ and 10 steps.
@@ -233,6 +249,7 @@ Tier 2 experiments evaluate the full closed-loop control system against the nonl
 
 * **Purpose:** Benchmark the final champion model from each Predictor family under identical closed-loop Plant conditions to determine the top overall architecture.
 * **Target metric:** Seizure Burden, Delivered Charge, and Propagation Zone containment across all canonical seeds.
+* **CNN eligibility:** Both CNN arms must use qualified, newly trained champions from Sections 1.2 and 1.4. Archived old-architecture champions must not populate these arms under the updated runtime.
 * **Arms:**
   1. `uncontrolled`: No stimulation baseline.
   2. `threshold`: Static heuristic stimulation triggered on regional amplitude.

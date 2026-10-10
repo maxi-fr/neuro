@@ -266,6 +266,9 @@ def _prepare_observable(
             y_std=data.y_std,
             u_std=data.u_std,
             geometry=geom,
+            tapering_ratio=mdl.tapering_ratio,
+            head_depth=mdl.head_depth,
+            head_width=mdl.head_width,
         )
     else:
         model = AutoregressiveMLP(
@@ -533,6 +536,9 @@ def _prepare_waveform(
             dt=sim.dt * sim.downsample,
             y_std=data.y_std,
             u_std=data.u_std,
+            tapering_ratio=mdl.tapering_ratio,
+            head_depth=mdl.head_depth,
+            head_width=mdl.head_width,
         )
     else:
         model = AutoregressiveMLP(

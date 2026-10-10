@@ -1,0 +1,44 @@
+simulation:
+  fs: 50.0
+  n_steps: null
+  data_path: "data/experiment_excited_60ms/train"
+
+model:
+  architecture: mlp
+  n_y: 1
+  n_u: 9
+  hidden_size: 256
+  depth: 1
+  activation: relu
+  residual: true
+
+observable:
+  n_segment: 25
+  n_hop: 3
+  band_hz: [1.0, 25.0]
+  n_bin_pool: 1
+  kernel: linear
+  kernel_width: 1
+  window: hann
+  asymmetric_window: true
+
+training:
+  fit: gradient_descent
+  train_split: 0.8
+  eval_horizon_s: 1.0
+  epochs: 150
+  batch_size: 256
+  learning_rate: 0.0001
+  weight_decay: 0.00005
+  patience: 35
+  scaler: standard
+  device: auto
+  seed: 69
+  losses:
+    curriculum_mse:
+      weight: 1.0
+      span_s: 1.0
+      curr_start: 10
+      curr_end: 80
+
+artifact: "artifacts/obs_mlp_relu"

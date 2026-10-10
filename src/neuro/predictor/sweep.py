@@ -139,10 +139,13 @@ class OptunaSweep:
         return _run_trial(config, self.data_files, trial, trial_dir, self.sweep)
 
     def run(self) -> optuna.Study:
-        """Create or resume the sqlite-backed study and run ``sweep.n_trials`` evaluations."""
+        """Run the configured trial budget with seeded multivariate TPE after fifteen random startup trials."""
         study_name = "nn_predictor_sweep"
         db_path = self.artifact_dir / f"{study_name}.db"
         storage = f"sqlite:///{db_path.resolve()}"
-        study = optuna.create_study(study_name=study_name, storage=storage, direction="minimize", load_if_exists=True)
+        sampler = optuna.samplers.TPESampler(n_startup_trials=15, multivariate=True, seed=self.cfg.training.seed)
+        study = optuna.create_study(
+            study_name=study_name, storage=storage, direction="minimize", load_if_exists=True, sampler=sampler
+        )
         study.optimize(self.objective, n_trials=self.sweep.n_trials)
         return study

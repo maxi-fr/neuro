@@ -528,6 +528,9 @@ class _CNNModel(ShiftRegisterModel):
     kernel_size: int = eqx.field(static=True)
     frequency_kernel_size: int | None = eqx.field(static=True)
     geometry: StftGeometry | None = eqx.field(static=True)
+    tapering_ratio: float = eqx.field(static=True, default=1.0)
+    head_depth: int = eqx.field(static=True, default=1)
+    head_width: str = eqx.field(static=True, default="trunk")
 
     def __init__(  # noqa: PLR0913 -- explicit portable CNN architecture record
         self,
@@ -539,6 +542,9 @@ class _CNNModel(ShiftRegisterModel):
         kernel_size: int,
         frequency_kernel_size: int | None,
         geometry: StftGeometry | None,
+        tapering_ratio: float = 1.0,
+        head_depth: int = 1,
+        head_width: str = "trunk",
         **core: Any,  # noqa: ANN401 -- explicit checkpoint fields are shared by both CNN variants
     ) -> None:
         """Copy CNN checkpoint arrays and initialize shared runtime state."""
@@ -560,6 +566,9 @@ class _CNNModel(ShiftRegisterModel):
         self.kernel_size = int(kernel_size)
         self.frequency_kernel_size = None if frequency_kernel_size is None else int(frequency_kernel_size)
         self.geometry = geometry
+        self.tapering_ratio = float(tapering_ratio)
+        self.head_depth = int(head_depth)
+        self.head_width = str(head_width)
 
     @classmethod
     def _checkpoint_kwargs(cls, meta: dict[str, Any], arrays: dict[str, FloatArray]) -> dict[str, Any]:
@@ -595,6 +604,9 @@ class _CNNModel(ShiftRegisterModel):
             "kernel_size": int(meta["kernel_size"]),
             "frequency_kernel_size": (int(meta["frequency_kernel_size"]) if geometry is not None else None),
             "geometry": geometry,
+            "tapering_ratio": float(meta.get("tapering_ratio", 1.0)),
+            "head_depth": int(meta.get("head_depth", 0 if int(meta.get("n_head_layers", 2)) == 1 else 1)),
+            "head_width": str(meta.get("head_width", "trunk")),
             "provenance": TrainingProvenance.from_meta(meta),
         }
 
@@ -625,6 +637,9 @@ class _CNNModel(ShiftRegisterModel):
             "hidden_size": self.hidden_size,
             "depth": self.depth,
             "kernel_size": self.kernel_size,
+            "tapering_ratio": self.tapering_ratio,
+            "head_depth": self.head_depth,
+            "head_width": self.head_width,
             "residual": int(self.residual),
             "dt": self.dt,
             "downsample": self.downsample,
@@ -658,9 +673,9 @@ class WaveformCNNModel(_CNNModel):
         return super().from_checkpoint(meta, arrays, n_history=n_history)
 
     def _predict(self, y_window: jax.Array, u_window: jax.Array) -> jax.Array:
-        """Apply causal temporal convolutions and the dense Control Current head."""
+        """Activate every causal temporal convolution before applying the dense Control Current head."""
         z = y_window
-        for i, (weight, bias) in enumerate(zip(self.conv_weights, self.conv_biases, strict=True)):
+        for weight, bias in zip(self.conv_weights, self.conv_biases, strict=True):
             z = jnp.asarray(z, dtype=weight.dtype)
             z = (
                 jax.lax.conv_general_dilated(
@@ -672,8 +687,7 @@ class WaveformCNNModel(_CNNModel):
                 )[0].T
                 + bias[None, :]
             )
-            if i < len(self.conv_weights) - 1:
-                z = _apply_activation(self.activation, z)
+            z = _apply_activation(self.activation, z)
         features = jnp.concatenate([z[-1], u_window.reshape(-1)])
         for i, (weight, bias) in enumerate(zip(self.head_weights, self.head_biases, strict=True)):
             features = features @ weight.T + bias
@@ -698,9 +712,9 @@ class ObservableCNNModel(_CNNModel):
         return super().from_checkpoint(meta, arrays, n_history=n_history)
 
     def _predict(self, y_window: jax.Array, u_window: jax.Array) -> jax.Array:
-        """Apply causal time-frequency convolutions and preserve frequency positions."""
+        """Activate every causal time-frequency convolution while preserving frequency positions."""
         z = y_window.reshape(self.n_y, self.n_channels, self.n_values).transpose(1, 0, 2)[None, ...]
-        for i, (weight, bias) in enumerate(zip(self.conv_weights, self.conv_biases, strict=True)):
+        for weight, bias in zip(self.conv_weights, self.conv_biases, strict=True):
             z = (
                 jax.lax.conv_general_dilated(
                     jnp.asarray(z, dtype=weight.dtype),
@@ -711,8 +725,7 @@ class ObservableCNNModel(_CNNModel):
                 )
                 + bias[None, :, None, None]
             )
-            if i < len(self.conv_weights) - 1:
-                z = _apply_activation(self.activation, z)
+            z = _apply_activation(self.activation, z)
         features = jnp.concatenate([z[0, :, -1, :].reshape(-1), u_window.reshape(-1)])
         for i, (weight, bias) in enumerate(zip(self.head_weights, self.head_biases, strict=True)):
             features = features @ weight.T + bias
