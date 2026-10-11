@@ -25,7 +25,7 @@ def load_trajectory(
     dt: float,
     cutoff_hz: float | None = None,
 ) -> tuple[FloatArray, FloatArray]:
-    """Decimate recorded EEG and sample held controls on the same timestamps.
+    """Decimate recorded EEG and held controls into owned arrays on matching timestamps.
 
     The EEG is causally low-passed (at ``cutoff_hz`` if specified, or at the decimated Nyquist
     rate) before striding. The control is strided unfiltered.
@@ -58,13 +58,13 @@ def load_trajectory(
             indices = np.searchsorted(data["controller.t"], times, side="right") - 1
             u_data = np.asarray(data["controller.u"][indices], dtype=np.float64)
         else:
-            u_data = np.asarray(data["controller.u"][:max_idx:downsample], dtype=np.float64)
+            u_data = np.array(data["controller.u"][:max_idx:downsample], dtype=np.float64, copy=True, order="C")
 
     if cutoff_hz is not None:
         y_filtered = lowpass_filter(y_full, 1.0 / dt, cutoff_hz)
     else:
         y_filtered = antialias_filter(y_full, 1.0 / dt, downsample)
-    y_data = np.asarray(y_filtered[::downsample], dtype=np.float64)
+    y_data = np.array(y_filtered[::downsample], dtype=np.float64, copy=True, order="C")
 
     return u_data, y_data
 
