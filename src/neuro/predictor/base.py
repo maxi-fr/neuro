@@ -242,9 +242,11 @@ class AutoregressiveModel(DiscreteDynamics, InferencePredictor):
 
     @property
     def y_std(self) -> Standardizer:
-        """Output Standardizer reconstructed from buffers."""
+        """Reconstruct the output Standardizer in waveform or channel-by-frequency shape."""
+        shape = (self.n_channels, -1) if getattr(self, "geometry", None) is not None else (-1,)
         return Standardizer(
-            center=np.asarray(self.y_center, dtype=np.float64), scale=np.asarray(self.y_scale, dtype=np.float64)
+            center=np.asarray(self.y_center, dtype=np.float64).reshape(shape),
+            scale=np.asarray(self.y_scale, dtype=np.float64).reshape(shape),
         )
 
     @property

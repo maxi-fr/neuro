@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-import jax.numpy as jnp
 import numpy as np
 import optuna
 import pytest
@@ -21,11 +20,9 @@ from neuro.config import (
 )
 from neuro.predictor.dmd import DmdTrainer, dmd
 from neuro.predictor.inference import ObservableMLPModel, WaveformMLPModel
-from neuro.predictor.module import AutoregressiveMLP
 from neuro.predictor.ridge import RidgeTrainingResult
 from neuro.predictor.sweep import OptunaSweep
 from neuro.predictor.train import train
-from neuro.transforms import Standardizer
 
 if TYPE_CHECKING:
     from pathlib import Path

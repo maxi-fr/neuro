@@ -11,7 +11,7 @@ import yaml
 from pydantic import ValidationError
 from scipy.signal.windows import hann
 
-from neuro.config import StftGeometry, StftSpec
+from neuro.config import StftGeometry
 from neuro.predictor.losses import LossContext, StftLoss
 from neuro.spectral import (
     LOG_FLOOR,
@@ -23,7 +23,6 @@ from neuro.spectral import (
     compute_periodograms,
     compute_segment_window,
     hinge_penalty,
-    windowed_mean_square,
 )
 
 _SEED = 11
@@ -216,7 +215,7 @@ def test_frame_sample_support_and_counts() -> None:
     [("boxcar", 1), ("triangular", 2), ("hann", 4), ("linear", 5), ("exponential", 5)],
 )
 @pytest.mark.parametrize("n_segment", [32, 33])
-def test_torch_reduction_agrees_with_canonical_numpy(
+def test_jax_reduction_agrees_with_canonical_numpy(
     band_hz: tuple[float, float] | None,
     n_bin_pool: int,
     kernel: Literal["boxcar", "triangular", "hann", "linear", "exponential"],

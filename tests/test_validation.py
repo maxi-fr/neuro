@@ -8,7 +8,7 @@ import pytest
 import yaml
 
 from neuro.config import StftGeometry
-from neuro.predictor.module import AutoregressiveMLP
+from neuro.predictor.mlp import ObservableMLPModel, WaveformMLPModel
 from neuro.provenance import (
     TrainingProvenance,
     check_excitation_alignment,
@@ -37,9 +37,9 @@ def _plant() -> dict[str, Any]:
 
 def _module(
     provenance: TrainingProvenance, *, dt: float = _PLANT_DT * _DOWNSAMPLE, downsample: int = _DOWNSAMPLE
-) -> AutoregressiveMLP:
-    """A tiny depth-0 MLP carrying ``provenance`` at the given rate and decimation."""
-    model = AutoregressiveMLP(
+) -> WaveformMLPModel:
+    """A tiny JAX MLP carrying ``provenance`` at the given rate and decimation."""
+    model = WaveformMLPModel(
         n_y=2,
         n_u=2,
         horizon=50,
@@ -72,12 +72,12 @@ def _obs_module(
     dt: float = 0.10,
     downsample: int = _DOWNSAMPLE,
     n_u: int = 4,
-) -> AutoregressiveMLP:
-    """A tiny depth-0 observable MLP carrying ``provenance`` and ``geom``."""
+) -> ObservableMLPModel:
+    """A tiny JAX Observable MLP carrying ``provenance`` and ``geom``."""
     fs = 1.0 / (_PLANT_DT * downsample)
     n_values = geom.n_values(fs)
     n_outputs = _N_CHANNELS * n_values
-    model = AutoregressiveMLP(
+    model = ObservableMLPModel(
         n_y=2,
         n_u=n_u,
         horizon=50,

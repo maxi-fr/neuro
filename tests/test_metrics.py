@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import equinox as eqx
+import jax
+import jax.numpy as jnp
 import numpy as np
 import pytest
-import torch
 
 from neuro.predictor.data import split_data_files
 from neuro.predictor.evaluation import (
@@ -12,8 +14,7 @@ from neuro.predictor.evaluation import (
     nmse,
     window_energy,
 )
-from neuro.predictor.inference import WaveformMLPModel
-from neuro.predictor.module import AutoregressiveMLP
+from neuro.predictor.mlp import WaveformMLPModel
 from neuro.transforms import Standardizer
 
 _RNG = np.random.default_rng(0)
@@ -50,10 +51,10 @@ def test_nmse_is_infinite_where_the_true_signal_is_silent() -> None:
     assert np.isinf(nmse(np.array([1.0, 0.0]), np.array([0.0, 0.0]))).all()
 
 
-def _tiny_mlp_model(*, n_y: int, n_u: int, horizon: int, n_eeg: int, n_controls: int) -> AutoregressiveMLP:
+def _tiny_mlp_model(*, n_y: int, n_u: int, horizon: int, n_eeg: int, n_controls: int) -> WaveformMLPModel:
     """A randomly-initialised MLP module, enough to free-run a rollout."""
     unit = Standardizer(center=np.zeros(n_eeg), scale=np.ones(n_eeg))
-    return AutoregressiveMLP(
+    return WaveformMLPModel(
         n_y=n_y,
         n_u=n_u,
         horizon=horizon,
@@ -69,20 +70,19 @@ def _tiny_mlp_model(*, n_y: int, n_u: int, horizon: int, n_eeg: int, n_controls:
     )
 
 
-def _silent_mlp_model(*, n_y: int, n_u: int, horizon: int, n_eeg: int, n_controls: int) -> AutoregressiveMLP:
+def _silent_mlp_model(*, n_y: int, n_u: int, horizon: int, n_eeg: int, n_controls: int) -> WaveformMLPModel:
     """An MLP module whose every weight is zero, so it free-runs to exactly zero.
 
     The residual skip is off: with it, a zero-weight stack would repeat the primed history's last
     sample instead of staying silent, and these tests are about the metrics on a zero predictor.
     """
     model = _tiny_mlp_model(n_y=n_y, n_u=n_u, horizon=horizon, n_eeg=n_eeg, n_controls=n_controls)
-    model.residual = False
-    with torch.no_grad():
-        for module in model.layers:
-            if isinstance(module, torch.nn.Linear):
-                module.weight.zero_()
-                module.bias.zero_()
-    return model
+    meta, arrays = model.to_checkpoint()
+    meta["residual"] = False
+    model = WaveformMLPModel.from_checkpoint(meta, arrays)
+    return eqx.tree_at(
+        lambda m: (m.weights, m.biases), model, replace_fn=lambda tree: jax.tree.map(jnp.zeros_like, tree)
+    )
 
 
 def test_evaluate_rollouts_pools_its_own_per_step_curve() -> None:

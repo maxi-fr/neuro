@@ -14,18 +14,34 @@ This project uses [uv](https://github.com/astral-sh/uv) for dependency managemen
     curl -LsSf https://astral.sh/uv/install.sh | sh
     ```
 
-2. Sync dependencies:
+2. Keep Windows and WSL environments separate. Before syncing or running commands,
+   set `$env:UV_PROJECT_ENVIRONMENT = ".venv-windows"` in PowerShell, or
+   `export UV_PROJECT_ENVIRONMENT=.venv-wsl` in WSL. Then sync dependencies:
 
     ```bash
     uv sync
     ```
 
-    Pytorch and dependencies using it need to be installed seperately:
+    This installs JAX for CPU execution on Windows, Linux, or macOS. For NVIDIA GPU
+    training on Linux or WSL2, install the CUDA 12 extra instead:
 
     ```bash
-    uv pip install torch --torch-backend=auto
-    uv pip install marker-pdf
+    uv sync --extra cuda12
+    uv run --extra cuda12 python -c "import jax; print(jax.devices())"
     ```
+
+    Native Windows supports CPU JAX; GPU execution requires WSL2. CUDA 12 supports
+    the GTX 1650; CUDA 13 requires newer GPU architectures. See the
+    [JAX installation guide](https://docs.jax.dev/en/latest/installation.html).
+
+    To avoid reserving most of the GTX 1650's 4 GB VRAM at startup, set
+    `XLA_PYTHON_CLIENT_PREALLOCATE=false` before launching JAX in WSL. Set
+    `training.device` to `auto`, `cpu`, or `cuda`; an explicit `cuda` request fails
+    when JAX cannot find a GPU. Pass `--extra cuda12` to `uv run` for GPU commands
+    so uv retains the optional CUDA packages.
+
+    The original implementation is preserved on `legacy_pytorch_training`.
+    Use a separate checkout and environment when switching to that branch.
 
 3. Set up pre-commit hooks (this will run linting, formatting, and tests on every commit):
 

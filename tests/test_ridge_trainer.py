@@ -2,13 +2,12 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 import numpy as np
 import pytest
-import torch
 
-from neuro.predictor.module import AutoregressiveMLP
+from neuro.predictor.mlp import WaveformMLPModel
 from neuro.predictor.ridge import RidgeTrainer, ridge
 from neuro.types import RidgeFittable
 
@@ -32,9 +31,9 @@ def test_ridge_leaves_the_bias_column_unregularized() -> None:
         np.testing.assert_allclose(A[:, i], P[i] / (diag[i] + lam), rtol=1e-10, atol=1e-12)
 
 
-def _mlp(depth: int) -> AutoregressiveMLP:
+def _mlp(depth: int) -> WaveformMLPModel:
     """A small depth-``depth`` waveform MLP, the natural fittable/non-fittable pair."""
-    return AutoregressiveMLP(
+    return WaveformMLPModel(
         n_y=2,
         n_u=2,
         horizon=3,
@@ -46,11 +45,12 @@ def _mlp(depth: int) -> AutoregressiveMLP:
     )
 
 
-def test_ridge_fittable_is_structural_on_the_mlp() -> None:
-    """Depth-0 is linear end-to-end and carries the capability; hidden layers are not fittable."""
+def test_ridge_mlp_rejects_hidden_layers_before_loading_data() -> None:
+    """Depth-0 exposes the readout fit; nonlinear MLPs reject it before reading trajectories."""
     assert isinstance(_mlp(0), RidgeFittable)
-    assert not isinstance(_mlp(1), RidgeFittable)
-    assert not isinstance(_mlp(2), RidgeFittable)
+    for depth in (1, 2):
+        with pytest.raises(TypeError, match="Ridge-Fittable"):
+            RidgeTrainer().fit(_mlp(depth), [])
 
 
 class _RecordingStub:
@@ -87,8 +87,8 @@ def test_ridge_trainer_fits_any_ridge_fittable_model() -> None:
 
 
 def test_ridge_trainer_rejects_a_non_fittable_model() -> None:
-    """A model without the capability fails at build time, before any fit runs."""
-    model = _mlp(1)
+    """A model with no readout methods fails before any fit runs."""
+    model = cast("RidgeFittable", object())
     assert not isinstance(model, RidgeFittable)
     with pytest.raises(TypeError, match="Ridge-Fittable"):
         RidgeTrainer(ridge_lambda=0.0).fit(model, [])
@@ -98,7 +98,7 @@ def test_ridge_trainer_fits_distinct_output_width() -> None:
     """RidgeTrainer fits a depth-0 MLP whose output width exceeds channel count."""
     rng = np.random.default_rng(123)
     n_channels, n_outputs, n_controls = 2, 4, 1
-    model = AutoregressiveMLP(
+    model = WaveformMLPModel(
         n_y=2,
         n_u=1,
         horizon=3,
@@ -115,7 +115,5 @@ def test_ridge_trainer_fits_distinct_output_width() -> None:
     ]
     fitted = RidgeTrainer(ridge_lambda=0.05).fit(model, trajs)
     assert fitted is model
-    layer = model.layers[0]
-    assert isinstance(layer, torch.nn.Linear)
-    assert layer.weight.shape == (n_outputs, 2 * n_outputs + 1 * n_controls)
-    assert layer.bias.shape == (n_outputs,)
+    assert model.weights[0].shape == (n_outputs, 2 * n_outputs + n_controls)
+    assert model.biases[0].shape == (n_outputs,)

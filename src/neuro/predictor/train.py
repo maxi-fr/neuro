@@ -35,7 +35,7 @@ from neuro.provenance import training_provenance
 if TYPE_CHECKING:
     from pathlib import Path
 
-    from neuro.config import NNPredictorConfig, StftGeometry
+    from neuro.config import NNPredictorConfig, StftGeometry, TrainingConfig
     from neuro.predictor.base import AutoregressiveModel
     from neuro.predictor.losses import Loss
     from neuro.types import FloatArray
@@ -150,10 +150,31 @@ def _du_sensitivity(
     return float(jnp.mean(frob_norms))
 
 
+def _training_device(config: TrainingConfig) -> jax.Device:
+    """Select the requested JAX backend and explain how to install CUDA when unavailable."""
+    if config.device == "auto":
+        return jax.devices()[0]
+    if config.device == "cpu":
+        return jax.devices("cpu")[0]
+    try:
+        return jax.devices("gpu")[0]
+    except RuntimeError as exc:
+        msg = "CUDA training requires a supported NVIDIA GPU and 'uv sync --extra cuda12' on Linux or WSL2."
+        raise RuntimeError(msg) from exc
+
+
 def train(
     cfg: NNPredictorConfig, data_files: list[str], *, seed_offset: int = 0
 ) -> TrainingResult | RidgeTrainingResult:
-    """Train the Predictor named by ``cfg`` for one config and return everything the run produced.
+    """Train and evaluate the configured Predictor on the requested JAX device."""
+    with jax.default_device(_training_device(cfg.training)):
+        return _train(cfg, data_files, seed_offset=seed_offset)
+
+
+def _train(
+    cfg: NNPredictorConfig, data_files: list[str], *, seed_offset: int = 0
+) -> TrainingResult | RidgeTrainingResult:
+    """Dispatch the configured Predictor fit and return everything the run produced.
 
     Dispatches on ``training.fit``: an NN config with ``training.fit: ridge`` routes to the Ridge
     Trainer for the depth-0 waveform MLP; any other NN config runs the generic gradient-descent

@@ -3,11 +3,11 @@ from __future__ import annotations
 import math
 from typing import TYPE_CHECKING, Literal
 
+import equinox as eqx
 import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
-import torch
 
 from neuro.config import (
     CurriculumMSESpec,
@@ -19,8 +19,9 @@ from neuro.config import (
     TrainingConfig,
 )
 from neuro.control.mpc import build_waveform_problem
-from neuro.predictor.inference import InferencePredictor, ObservableCNNModel, WaveformCNNModel, WaveformMLPModel
-from neuro.predictor.module import AutoregressiveCNN, AutoregressiveMLP
+from neuro.predictor.cnn import ObservableCNNModel, WaveformCNNModel
+from neuro.predictor.inference import InferencePredictor
+from neuro.predictor.mlp import WaveformMLPModel
 from neuro.predictor.train import TrainingResult, train
 from neuro.transforms import Standardizer
 
@@ -30,11 +31,10 @@ if TYPE_CHECKING:
     from neuro.types import Activation, FloatArray
 
 
-def _cnn(*, depth: int = 2, activation: Activation = "tanh", residual: bool = True) -> AutoregressiveCNN:
+def _cnn(*, depth: int = 2, activation: Activation = "tanh", residual: bool = True) -> WaveformCNNModel:
     """Build a small causal CNN with nontrivial output and control scaling."""
     rng = np.random.default_rng(91)
-    torch.manual_seed(91)
-    model = AutoregressiveCNN(
+    model = WaveformCNNModel(
         n_y=4,
         n_u=3,
         horizon=4,
@@ -49,10 +49,11 @@ def _cnn(*, depth: int = 2, activation: Activation = "tanh", residual: bool = Tr
         y_std=Standardizer(center=rng.uniform(-1.0, 1.0, 3), scale=rng.uniform(0.5, 2.0, 3)),
         u_std=Standardizer(center=rng.uniform(-1.0, 1.0, 2), scale=rng.uniform(0.5, 2.0, 2)),
     )
-    with torch.no_grad():
-        for parameter in model.parameters():
-            parameter.normal_(std=0.2)
-    return model
+    return eqx.tree_at(
+        lambda m: (m.conv_weights, m.conv_biases, m.head_weights, m.head_biases),
+        model,
+        replace_fn=lambda tree: jax.tree.map(lambda x: jax.random.normal(jax.random.PRNGKey(91), x.shape) * 0.2, tree),
+    )
 
 
 @pytest.mark.parametrize("geometry", [None, StftGeometry(n_segment=2, n_hop=1)])
@@ -64,7 +65,8 @@ def test_cnn_final_hidden_convolution_is_nonlinear(
     head_depth: int,
 ) -> None:
     """Both CNN representations activate their last convolution independently of head and prediction mode."""
-    module = AutoregressiveCNN(
+    model_type = WaveformCNNModel if geometry is None else ObservableCNNModel
+    module = model_type(
         n_y=1,
         n_u=1,
         horizon=1,
@@ -80,12 +82,12 @@ def test_cnn_final_hidden_convolution_is_nonlinear(
         geometry=geometry,
         head_depth=head_depth,
     )
-    with torch.no_grad():
-        for layer in (*module.convs, *module.head):
-            if isinstance(layer, (torch.nn.Conv1d, torch.nn.Conv2d, torch.nn.Linear)):
-                layer.weight.fill_(1.0)
-                assert layer.bias is not None
-                layer.bias.zero_()
+    module = eqx.tree_at(
+        lambda m: (m.conv_weights, m.head_weights), module, replace_fn=lambda tree: jax.tree.map(jnp.ones_like, tree)
+    )
+    module = eqx.tree_at(
+        lambda m: (m.conv_biases, m.head_biases), module, replace_fn=lambda tree: jax.tree.map(jnp.zeros_like, tree)
+    )
     y_shape = (1, 1, 1) if geometry is None else (1, 1, 1, 1)
     y = np.full(y_shape, 2.0)
     u = np.zeros((1, 1, 1))
@@ -96,15 +98,14 @@ def test_cnn_final_hidden_convolution_is_nonlinear(
         expected += 2.0
     runtime_type = WaveformCNNModel if geometry is None else ObservableCNNModel
     runtime = runtime_type.from_checkpoint(*module.to_checkpoint())
-    reloaded = AutoregressiveCNN.from_checkpoint(*module.to_checkpoint())
-    with torch.no_grad():
-        for model in (module, reloaded):
-            actual = model(
-                torch.as_tensor(y, dtype=torch.float32),
-                torch.as_tensor(u, dtype=torch.float32),
-                torch.as_tensor(u, dtype=torch.float32),
-            )
-            np.testing.assert_allclose(actual.numpy(), expected, rtol=1e-6)
+    reloaded = model_type.from_checkpoint(*module.to_checkpoint())
+    for model in (module, reloaded):
+        actual = model(
+            jnp.asarray(y, dtype=jnp.float32),
+            jnp.asarray(u, dtype=jnp.float32),
+            jnp.asarray(u, dtype=jnp.float32),
+        )
+        np.testing.assert_allclose(np.asarray(actual), expected, rtol=1e-6)
     np.testing.assert_allclose(np.asarray(runtime.free_run(y, u, u)), expected, rtol=1e-6)
 
 
@@ -112,12 +113,12 @@ def test_cnn_final_hidden_convolution_is_nonlinear(
     ("depth", "activation", "residual"),
     [(1, "relu", False), (2, "tanh", True), (3, "softplus", False)],
 )
-def test_cnn_torch_jax_parity_for_causal_multistep_rollout(
+def test_cnn_training_jax_parity_for_causal_multistep_rollout(
     depth: int,
     activation: Activation,
     residual: bool,  # noqa: FBT001 -- pytest parameterizes this boolean
 ) -> None:
-    """The JAX CNN runtime matches the torch rollout for nonsymmetric causal kernels."""
+    """The JAX CNN runtime matches the standardized training rollout for nonsymmetric causal kernels."""
     module = _cnn(depth=depth, activation=activation, residual=residual)
     runtime = WaveformCNNModel.from_checkpoint(*module.to_checkpoint())
     rng = np.random.default_rng(123)
@@ -125,13 +126,12 @@ def test_cnn_torch_jax_parity_for_causal_multistep_rollout(
     y_raw = rng.standard_normal((t0 + module.horizon, module.n_channels))
     u_raw = rng.standard_normal((t0 + module.horizon, module.n_controls))
     k = t0 - 1
-    y_hist = torch.as_tensor(module.y_std.transform(y_raw[k - module.n_y + 1 : k + 1]), dtype=torch.float32).unsqueeze(
-        0
+    y_hist = jnp.expand_dims(
+        jnp.asarray(module.y_std.transform(y_raw[k - module.n_y + 1 : k + 1]), dtype=jnp.float32), 0
     )
-    u_hist = torch.as_tensor(module.u_std.transform(u_raw[k - module.n_u : k]), dtype=torch.float32).unsqueeze(0)
-    u_future = torch.as_tensor(module.u_std.transform(u_raw[k : k + module.horizon]), dtype=torch.float32).unsqueeze(0)
-    with torch.no_grad():
-        expected = module.y_std.inverse_transform(module(y_hist, u_hist, u_future).numpy()[0])
+    u_hist = jnp.expand_dims(jnp.asarray(module.u_std.transform(u_raw[k - module.n_u : k]), dtype=jnp.float32), 0)
+    u_future = jnp.expand_dims(jnp.asarray(module.u_std.transform(u_raw[k : k + module.horizon]), dtype=jnp.float32), 0)
+    expected = module.y_std.inverse_transform(np.asarray(module(y_hist, u_hist, u_future))[0])
     actual = np.asarray(runtime.free_run(y_raw[: k + 1][None], u_raw[:k][None], u_raw[k : k + module.horizon][None]))[0]
     np.testing.assert_allclose(actual, expected, rtol=1e-5, atol=1e-6)
 
@@ -142,47 +142,44 @@ def test_cnn_checkpoint_factory_and_typed_loaders(tmp_path: Path) -> None:
     stem = tmp_path / "cnn"
     module.save(stem)
     meta, arrays = module.to_checkpoint()
-    torch_reloaded = AutoregressiveCNN.from_checkpoint(meta, arrays)
+    training_reloaded = WaveformCNNModel.from_checkpoint(meta, arrays)
     generic = InferencePredictor.load(stem)
     direct = WaveformCNNModel.load(stem)
     assert isinstance(generic, WaveformCNNModel)
     assert isinstance(direct, WaveformCNNModel)
-    y_hist = torch.randn(1, module.n_y, module.n_channels)
-    u_hist = torch.randn(1, module.n_u, module.n_controls)
-    u_future = torch.randn(1, module.horizon, module.n_controls)
-    with torch.no_grad():
-        torch_expected = module(y_hist, u_hist, u_future)
-        torch_actual = torch_reloaded(y_hist, u_hist, u_future)
-    np.testing.assert_allclose(torch_actual.numpy(), torch_expected.numpy(), rtol=1e-6, atol=1e-6)
+    y_hist = jax.random.normal(jax.random.PRNGKey(0), (1, module.n_y, module.n_channels))
+    u_hist = jax.random.normal(jax.random.PRNGKey(0), (1, module.n_u, module.n_controls))
+    u_future = jax.random.normal(jax.random.PRNGKey(0), (1, module.horizon, module.n_controls))
+    training_expected = module(y_hist, u_hist, u_future)
+    training_actual = training_reloaded(y_hist, u_hist, u_future)
+    np.testing.assert_allclose(np.asarray(training_actual), np.asarray(training_expected), rtol=1e-6, atol=1e-6)
     runtime_stem = tmp_path / "cnn_runtime_roundtrip"
     direct.save(runtime_stem)
-    torch_from_runtime = AutoregressiveCNN.load(runtime_stem)
-    with torch.no_grad():
-        runtime_torch = torch_from_runtime(y_hist, u_hist, u_future)
-    np.testing.assert_allclose(runtime_torch.numpy(), torch_expected.numpy(), rtol=1e-6, atol=1e-6)
+    training_from_runtime = WaveformCNNModel.load(runtime_stem)
+    runtime_training = training_from_runtime(y_hist, u_hist, u_future)
+    np.testing.assert_allclose(np.asarray(runtime_training), np.asarray(training_expected), rtol=1e-6, atol=1e-6)
     rng = np.random.default_rng(405)
     t0 = 8
     y_raw = rng.standard_normal((t0 + module.horizon, module.n_channels))
     u_raw = rng.standard_normal((t0 + module.horizon, module.n_controls))
     k = t0 - 1
-    y_hist = torch.as_tensor(module.y_std.transform(y_raw[k - module.n_y + 1 : k + 1]), dtype=torch.float32).unsqueeze(
-        0
+    y_hist = jnp.expand_dims(
+        jnp.asarray(module.y_std.transform(y_raw[k - module.n_y + 1 : k + 1]), dtype=jnp.float32), 0
     )
-    u_hist = torch.as_tensor(module.u_std.transform(u_raw[k - module.n_u : k]), dtype=torch.float32).unsqueeze(0)
-    u_future = torch.as_tensor(module.u_std.transform(u_raw[k : k + module.horizon]), dtype=torch.float32).unsqueeze(0)
-    with torch.no_grad():
-        torch_rollout = module.y_std.inverse_transform(module(y_hist, u_hist, u_future).numpy()[0])
+    u_hist = jnp.expand_dims(jnp.asarray(module.u_std.transform(u_raw[k - module.n_u : k]), dtype=jnp.float32), 0)
+    u_future = jnp.expand_dims(jnp.asarray(module.u_std.transform(u_raw[k : k + module.horizon]), dtype=jnp.float32), 0)
+    training_rollout = module.y_std.inverse_transform(np.asarray(module(y_hist, u_hist, u_future))[0])
     jax_rollout = np.asarray(
         direct.free_run(y_raw[: k + 1][None], u_raw[:k][None], u_raw[k : k + module.horizon][None])
     )[0]
-    np.testing.assert_allclose(jax_rollout, torch_rollout, rtol=1e-5, atol=1e-6)
+    np.testing.assert_allclose(jax_rollout, training_rollout, rtol=1e-5, atol=1e-6)
     with pytest.raises(ValueError, match="model_type"):
         WaveformMLPModel.load(stem)
 
 
 def test_generic_waveform_mlp_load_regression(tmp_path: Path) -> None:
     """The generic loader reconstructs a waveform MLP checkpoint instead of falling into its ABC."""
-    module = AutoregressiveMLP(
+    module = WaveformMLPModel(
         n_y=2,
         n_u=2,
         horizon=2,
@@ -343,12 +340,11 @@ def test_waveform_cnn_tapering_and_head_depth_parity(
     head_depth: int,
     head_width: Literal["trunk", "geometric_mean"],
 ) -> None:
-    """Waveform CNN supports tapering ratio and configurable head depth with Torch-JAX parity."""
+    """Waveform CNN supports tapering ratio and configurable head depth with JAX checkpoint parity."""
     rng = np.random.default_rng(701)
-    torch.manual_seed(701)
     hidden_size = 16
     depth = 3
-    module = AutoregressiveCNN(
+    module = WaveformCNNModel(
         n_y=4,
         n_u=3,
         horizon=4,
@@ -366,19 +362,21 @@ def test_waveform_cnn_tapering_and_head_depth_parity(
         head_depth=head_depth,
         head_width=head_width,
     )
-    with torch.no_grad():
-        for parameter in module.parameters():
-            parameter.normal_(std=0.2)
+    module = eqx.tree_at(
+        lambda m: (m.conv_weights, m.conv_biases, m.head_weights, m.head_biases),
+        module,
+        replace_fn=lambda tree: jax.tree.map(lambda x: jax.random.normal(jax.random.PRNGKey(91), x.shape) * 0.2, tree),
+    )
 
-    conv_layers = [m for m in module.convs if isinstance(m, torch.nn.Conv1d)]
+    conv_layers = module.conv_weights
     expected_channels = [
         16,
         math.floor(16 * tapering_ratio),
         math.floor(math.floor(16 * tapering_ratio) * tapering_ratio),
     ]
-    assert [layer.out_channels for layer in conv_layers] == expected_channels
+    assert [layer.shape[0] for layer in conv_layers] == expected_channels
 
-    head_linears = [m for m in module.head if isinstance(m, torch.nn.Linear)]
+    head_linears = module.head_weights
     assert len(head_linears) == (head_depth + 1 if head_depth > 0 else 1)
 
     meta, arrays = module.to_checkpoint()
@@ -386,10 +384,10 @@ def test_waveform_cnn_tapering_and_head_depth_parity(
     assert meta["head_depth"] == head_depth
     assert meta["head_width"] == head_width
 
-    reloaded_torch = AutoregressiveCNN.from_checkpoint(meta, arrays)
-    assert reloaded_torch.tapering_ratio == tapering_ratio
-    assert reloaded_torch.head_depth == head_depth
-    assert reloaded_torch.head_width == head_width
+    reloaded_training = WaveformCNNModel.from_checkpoint(meta, arrays)
+    assert reloaded_training.tapering_ratio == tapering_ratio
+    assert reloaded_training.head_depth == head_depth
+    assert reloaded_training.head_width == head_width
 
     runtime = WaveformCNNModel.from_checkpoint(meta, arrays)
     assert runtime.tapering_ratio == tapering_ratio
@@ -400,12 +398,11 @@ def test_waveform_cnn_tapering_and_head_depth_parity(
     y_raw = rng.standard_normal((t0 + module.horizon, module.n_channels))
     u_raw = rng.standard_normal((t0 + module.horizon, module.n_controls))
     k = t0 - 1
-    y_hist = torch.as_tensor(module.y_std.transform(y_raw[k - module.n_y + 1 : k + 1]), dtype=torch.float32).unsqueeze(
-        0
+    y_hist = jnp.expand_dims(
+        jnp.asarray(module.y_std.transform(y_raw[k - module.n_y + 1 : k + 1]), dtype=jnp.float32), 0
     )
-    u_hist = torch.as_tensor(module.u_std.transform(u_raw[k - module.n_u : k]), dtype=torch.float32).unsqueeze(0)
-    u_future = torch.as_tensor(module.u_std.transform(u_raw[k : k + module.horizon]), dtype=torch.float32).unsqueeze(0)
-    with torch.no_grad():
-        expected = module.y_std.inverse_transform(module(y_hist, u_hist, u_future).numpy()[0])
+    u_hist = jnp.expand_dims(jnp.asarray(module.u_std.transform(u_raw[k - module.n_u : k]), dtype=jnp.float32), 0)
+    u_future = jnp.expand_dims(jnp.asarray(module.u_std.transform(u_raw[k : k + module.horizon]), dtype=jnp.float32), 0)
+    expected = module.y_std.inverse_transform(np.asarray(module(y_hist, u_hist, u_future))[0])
     actual = np.asarray(runtime.free_run(y_raw[: k + 1][None], u_raw[:k][None], u_raw[k : k + module.horizon][None]))[0]
     np.testing.assert_allclose(actual, expected, rtol=1e-5, atol=1e-6)

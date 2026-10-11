@@ -74,7 +74,7 @@ class RidgeTrainingResult:
 
     Attributes
     ----------
-    predictor : AutoregressiveMLP
+    predictor : WaveformMLPModel | ObservableMLPModel
         The trained module holding the fitted readout, with the standardizers as buffers and the
         recorded metadata (provenance, downsample) attached.
     candidates : dict[str, float]

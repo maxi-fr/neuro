@@ -106,7 +106,7 @@ class DmdTrainer:
         model: AutoregressiveModel,
         trajectories: list[tuple[FloatArray, FloatArray]],
     ) -> AutoregressiveModel:
-        """Fit ``model``'s readout via Hankel-DMDc and install the weights and affine bias."""
+        """Fit flattened standardized waveform or Observable outputs with Hankel-DMDc."""
         if getattr(model, "depth", 0) > 0 or not isinstance(model, RidgeFittable):
             msg = f"DmdTrainer requires a depth-0 RidgeFittable model, got {type(model).__name__}."
             raise TypeError(msg)
@@ -118,12 +118,12 @@ class DmdTrainer:
         y_list: list[FloatArray] = []
 
         for u_raw, y_raw in trajectories:
-            y_arr = np.asarray(y_raw, dtype=np.float64)
+            y_arr = model.y_std.transform(np.asarray(y_raw, dtype=np.float64))
             if y_arr.ndim > 2:  # noqa: PLR2004 -- 2D check for observable frames
                 y_arr = y_arr.reshape(len(y_arr), -1)
             x_traj, y_traj = build_dataset_for_trajectory(
                 model.u_std.transform(np.asarray(u_raw, dtype=np.float64)),
-                model.y_std.transform(y_arr),
+                y_arr,
                 model.n_y,
                 model.n_u,
                 model.horizon,

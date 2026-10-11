@@ -330,9 +330,9 @@ class Datasets:
     Attributes
     ----------
     train_dataset : TrajectoryWindowDataset
-        On-the-fly PyTorch Dataset of standardized training windows.
+        NumPy Dataset of standardized training windows.
     val_dataset : TrajectoryWindowDataset
-        On-the-fly PyTorch Dataset of standardized validation windows.
+        NumPy Dataset of standardized validation windows.
     y_std, u_std : Standardizer
         Fitted channel and control standardizers.
     train_trajs, val_trajs : list[tuple[FloatArray, FloatArray]]

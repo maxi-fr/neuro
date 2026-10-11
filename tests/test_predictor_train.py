@@ -201,7 +201,7 @@ def test_save_round_trip_predicts_identically(files: list[str], tmp_path: Path) 
 def test_returned_artifact_is_the_best_epoch_not_the_last(files: list[str]) -> None:
     """Early stopping must return the best epoch's weights, not an alias of the live module.
 
-    A torch module is mutable, so snapshotting it by reference would silently hand back the last
+    Returning the final model instead of the selected snapshot would silently hand back the last
     epoch. Stopping on ``patience`` guarantees the run ends on non-improving epochs, so the best
     epoch cannot be the last; re-scoring the returned artifact then pins which epoch it came from.
     """
@@ -361,11 +361,15 @@ def test_depth0_gradient_descent_starts_from_random_init_and_runs_every_epoch(fi
 
 
 def test_training_device_auto_and_explicit(files: list[str]) -> None:
-    """Training succeeds with default 'auto' device and explicit 'cpu'."""
+    """Training follows the default backend and honors an explicit CPU request."""
     auto_res = _wave_train(_config(device="auto"), files)
     assert len(auto_res.train_losses) == 3
     assert np.isfinite(auto_res.free_run.pooled)
+    assert isinstance(auto_res.predictor, WaveformMLPModel)
+    assert auto_res.predictor.weights[0].devices() == {jax.devices()[0]}
 
     cpu_res = _wave_train(_config(device="cpu"), files)
     assert len(cpu_res.train_losses) == 3
     assert np.isfinite(cpu_res.free_run.pooled)
+    assert isinstance(cpu_res.predictor, WaveformMLPModel)
+    assert cpu_res.predictor.weights[0].devices() == {jax.devices("cpu")[0]}

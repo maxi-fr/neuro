@@ -14,7 +14,7 @@ from neuro.predictor.base import AutoregressiveModel, _apply_activation, _standa
 from neuro.predictor.checkpoint import layer_arrays, layers_from_arrays, require_activation, require_model_type
 from neuro.predictor.data import build_dataset_for_trajectory
 from neuro.provenance import TrainingProvenance
-from neuro.transforms import Standardizer
+from neuro.transforms import Standardizer, zscore
 
 if TYPE_CHECKING:
     from neuro.types import Activation, FloatArray
@@ -159,7 +159,10 @@ class WaveformMLPModel(AutoregressiveModel):
         self,
         trajectories: list[tuple[FloatArray, FloatArray]],
     ) -> tuple[FloatArray, FloatArray]:
-        """Fold one-step input features and next-step targets into ``(G, P)``, bias column last."""
+        """Validate a depth-0 readout, then form ``(G, P)`` from flattened standardized outputs."""
+        if self.depth > 0:
+            msg = "Ridge-Fittable MLPs require depth-0; hidden layers need gradient_descent."
+            raise TypeError(msg)
         c = self.n_outputs
         m = self.n_controls
         y_len = self.n_y * c
@@ -172,7 +175,7 @@ class WaveformMLPModel(AutoregressiveModel):
             if y_arr.ndim > 2:  # noqa: PLR2004 -- 2D check for observable frame flattening
                 y_arr = y_arr.reshape(len(y_arr), -1)
             u_std = self.u_std.transform(np.asarray(u_raw, dtype=np.float64))
-            y_std = self.y_std.transform(y_arr)
+            y_std = zscore(y_arr, np.asarray(self.y_center), np.asarray(self.y_scale))
             X, Y = build_dataset_for_trajectory(u_std, y_std, self.n_y, self.n_u, self.horizon)
             X_1step = np.hstack([X[:, :y_len], X[:, y_len + m : y_len + (self.n_u + 1) * m]])
             X_design = np.hstack([X_1step, np.ones((X_1step.shape[0], 1))])

@@ -18,7 +18,6 @@ from neuro.transforms import Standardizer
 if TYPE_CHECKING:
     from pathlib import Path
 
-    from neuro.types import FloatArray
 
 _SEED = 7
 
@@ -105,7 +104,7 @@ def test_prepare_datasets_holds_out_the_validation_trajectories(tmp_path: Path) 
 
 
 def test_checkpoint_round_trip(tmp_path: Path) -> None:
-    """``AutoregressiveMLP.save``/``load`` persist and restore weights, metadata, and standardizers."""
+    """``WaveformMLPModel.save``/``load`` persist and restore weights, metadata, and standardizers."""
     n_channels, n_controls = 4, 2
     rng = np.random.default_rng(_SEED)
     y_std = _standardizer(rng, n_channels)

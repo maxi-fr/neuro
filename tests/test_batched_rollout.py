@@ -5,13 +5,12 @@ from __future__ import annotations
 import itertools
 from typing import TYPE_CHECKING
 
+import jax.numpy as jnp
 import numpy as np
 import pytest
-import torch
 
 from neuro.predictor.evaluation import accumulate_rollout_errors
-from neuro.predictor.inference import WaveformMLPModel
-from neuro.predictor.module import AutoregressiveMLP
+from neuro.predictor.mlp import WaveformMLPModel
 from neuro.transforms import Standardizer
 
 if TYPE_CHECKING:
@@ -33,7 +32,7 @@ def _model() -> WaveformMLPModel:
         (rng.standard_normal((out, inp)) / np.sqrt(inp), rng.standard_normal(out) * 0.1)
         for inp, out in itertools.pairwise([in_size, 7, _N_EEG])
     )
-    module = AutoregressiveMLP(
+    module = WaveformMLPModel(
         n_y=n_y,
         n_u=n_u,
         horizon=_STEPS,
@@ -47,11 +46,8 @@ def _model() -> WaveformMLPModel:
         y_std=y_std,
         u_std=u_std,
     )
-    linears = [m for m in module.layers if isinstance(m, torch.nn.Linear)]
-    with torch.no_grad():
-        for lin, (w, b) in zip(linears, layers, strict=True):
-            lin.weight.copy_(torch.as_tensor(w, dtype=torch.float32))
-            lin.bias.copy_(torch.as_tensor(b, dtype=torch.float32))
+    module.weights = tuple(jnp.asarray(w, dtype=jnp.float32) for w, _ in layers)
+    module.biases = tuple(jnp.asarray(b, dtype=jnp.float32) for _, b in layers)
     return WaveformMLPModel.from_checkpoint(*module.to_checkpoint())
 
 

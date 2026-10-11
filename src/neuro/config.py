@@ -406,7 +406,7 @@ class TrainingConfig(StrictConfig):
     """Optimisation and scaling settings for the NN predictor.
 
     ``fit`` names the algorithm the unified entry point routes to: ``gradient_descent`` serves any
-    torch module over the base protocol, ``ridge`` serves only the Ridge-Fittable depth-0 waveform
+    JAX Predictor over the base protocol, ``ridge`` serves only the Ridge-Fittable depth-0 waveform
     MLP and depth-0 observable MLP. A fit the configured model does not support fails at build time
     in :func:`neuro.predictor.train.train`, not mid-fit.
     """

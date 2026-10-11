@@ -7,13 +7,11 @@ import casadi as ca
 import jax.numpy as jnp
 import numpy as np
 import pytest
-import torch
 from trajopt.transcription.ipopt import Ipopt
 
 from neuro.config import StftGeometry
 from neuro.control.casadi import (
     CasADiMPCController,
-    CasADiMPCLog,
     CasADiWaveformProblem,
     _compute_casadi_observable_frames,
     _output_casadi,
@@ -24,8 +22,7 @@ from neuro.control.casadi import (
 )
 from neuro.control.costs import ObservableHingeCost, jax_compute_observable_frames
 from neuro.control.mpc import TrajOptMPCController, build_waveform_problem, decompose_cost
-from neuro.predictor.inference import ObservableMLPModel, WaveformMLPModel
-from neuro.predictor.module import AutoregressiveMLP
+from neuro.predictor.mlp import ObservableMLPModel, WaveformMLPModel
 from neuro.spectral import HealthyReference, ObservableEnvelope
 from neuro.transforms import Standardizer
 from neuro.validation import validate_simulation_config
@@ -93,7 +90,7 @@ def _build_checkpoint(
         "y_mean": rng.uniform(-1.0, 1.0, n_channels),
         "y_scale": rng.uniform(0.5, 2.0, n_channels),
     }
-    model = AutoregressiveMLP(
+    model = WaveformMLPModel(
         n_y=n_y,
         n_u=n_u,
         horizon=horizon,
@@ -108,12 +105,10 @@ def _build_checkpoint(
         y_std=Standardizer(center=scalers["y_mean"], scale=scalers["y_scale"]),
         u_std=Standardizer(center=scalers["u_mean"], scale=scalers["u_scale"]),
     )
-    linears = [m for m in model.layers if isinstance(m, torch.nn.Linear)]
     sizes = [in_size, *([5] * depth), n_channels]
-    with torch.no_grad():
-        for lin, (w, b) in zip(linears, _random_layers(rng, sizes), strict=True):
-            lin.weight.copy_(torch.as_tensor(w, dtype=torch.float32))
-            lin.bias.copy_(torch.as_tensor(b, dtype=torch.float32))
+    layers = _random_layers(rng, sizes)
+    model.weights = tuple(jnp.asarray(w, dtype=jnp.float32) for w, _ in layers)
+    model.biases = tuple(jnp.asarray(b, dtype=jnp.float32) for _, b in layers)
     path = tmp_path / f"art_{activation}_{depth}_{residual}"
     model.save(path)
     return path
@@ -621,7 +616,7 @@ def _observable_fixture(tmp_path: Path) -> tuple[Path, HealthyReference]:
     geometry = StftGeometry(n_segment=20, n_hop=5, band_hz=(4.0, 16.0), n_bin_pool=2)
     n_values = geometry.n_values(50.0)
     n_outputs = 2 * n_values
-    model = AutoregressiveMLP(
+    model = ObservableMLPModel(
         n_y=2,
         n_u=2,
         horizon=3,
@@ -637,11 +632,9 @@ def _observable_fixture(tmp_path: Path) -> tuple[Path, HealthyReference]:
         y_std=Standardizer(center=rng.normal(size=n_outputs), scale=rng.uniform(0.5, 2.0, n_outputs)),
         u_std=Standardizer(center=rng.normal(size=2), scale=rng.uniform(0.5, 2.0, 2)),
     )
-    linears = [layer for layer in model.layers if isinstance(layer, torch.nn.Linear)]
-    for linear, (weight, bias) in zip(linears, _random_layers(rng, [2 * n_outputs + 4, 4, n_outputs]), strict=True):
-        with torch.no_grad():
-            linear.weight.copy_(torch.as_tensor(weight, dtype=torch.float32))
-            linear.bias.copy_(torch.as_tensor(bias, dtype=torch.float32))
+    layers = _random_layers(rng, [2 * n_outputs + 4, 4, n_outputs])
+    model.weights = tuple(jnp.asarray(w, dtype=jnp.float32) for w, _ in layers)
+    model.biases = tuple(jnp.asarray(b, dtype=jnp.float32) for _, b in layers)
     artifact = tmp_path / "observable"
     model.save(artifact)
     return artifact, HealthyReference(observable=ObservableEnvelope(np.full((2, n_values), -0.4), 50.0, geometry))
