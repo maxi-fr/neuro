@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -166,7 +167,9 @@ def _training_device(config: TrainingConfig) -> jax.Device:
 def train(
     cfg: NNPredictorConfig, data_files: list[str], *, seed_offset: int = 0
 ) -> TrainingResult | RidgeTrainingResult:
-    """Train and evaluate the configured Predictor on the requested JAX device."""
+    """Train on the requested JAX device, avoiding eager GPU memory reservation by default."""
+    if cfg.training.device != "cpu":
+        os.environ.setdefault("XLA_PYTHON_CLIENT_PREALLOCATE", "false")
     with jax.default_device(_training_device(cfg.training)):
         return _train(cfg, data_files, seed_offset=seed_offset)
 

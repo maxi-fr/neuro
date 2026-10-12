@@ -34,9 +34,10 @@ This project uses [uv](https://github.com/astral-sh/uv) for dependency managemen
     the GTX 1650; CUDA 13 requires newer GPU architectures. See the
     [JAX installation guide](https://docs.jax.dev/en/latest/installation.html).
 
-    To avoid reserving most of the GTX 1650's 4 GB VRAM at startup, set
-    `XLA_PYTHON_CLIENT_PREALLOCATE=false` before launching JAX in WSL. Set
-    `training.device` to `auto`, `cpu`, or `cuda`; an explicit `cuda` request fails
+    GPU training disables JAX's eager GPU memory preallocation by default to
+    reduce startup OOMs on smaller cards. Set `XLA_PYTHON_CLIENT_PREALLOCATE`
+    before launching Python to override that default. Set `training.device` to
+    `auto`, `cpu`, or `cuda`; an explicit `cuda` request fails
     when JAX cannot find a GPU. Pass `--extra cuda12` to `uv run` for GPU commands
     so uv retains the optional CUDA packages.
 
