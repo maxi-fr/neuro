@@ -14,9 +14,9 @@ This project uses [uv](https://github.com/astral-sh/uv) for dependency managemen
     curl -LsSf https://astral.sh/uv/install.sh | sh
     ```
 
-2. Keep Windows and WSL environments separate. Before syncing or running commands,
-   set `$env:UV_PROJECT_ENVIRONMENT = ".venv-windows"` in PowerShell, or
-   `export UV_PROJECT_ENVIRONMENT=.venv-wsl` in WSL. Then sync dependencies:
+2. Use separate repository copies on Windows and WSL. Keep the WSL copy under
+   your Linux user directory. Each copy uses its own default `.venv`.
+   Sync dependencies in that copy:
 
     ```bash
     uv sync
