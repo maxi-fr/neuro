@@ -27,123 +27,147 @@ It then introduces the waveform and spectral prediction targets, followed by the
 The resulting prediction models are subsequently used in the \ac{mpc} framework developed in Chapter~\ref{ch:mpc_framework}.
 
 
+
 \section{Prediction Problem}
 \label{sec:prediction_problem}
 
 \subsection{Input-Output Prediction Formulation}
 
-% - Discrete-time input-output prediction map
+% - Available information
+%   - Measured EEG or derived spectral observables
+%   - Previously applied stimulation currents
+%   - No access to internal neural states
+%
+% - One-step input-output prediction problem
+%   - Discrete-time prediction mapping
 %   - Signal definitions, dimensions, and time indexing
-%   - Inputs
-%     - Past EEG measurements / Observable Frames
-%     - Past applied stimulation currents
-%     - Candidate future stimulation currents
-%   - Outputs
-%     - Predicted future EEG / Observable Frames
-%     - Prediction Rollout over the Control Horizon
+%   - Finite observation and input histories
+%     - Represent information about unmeasured neural dynamics
+%     - No explicit neural-state estimation required
+%   - Predict next observable under the relevant stimulation current
+%   - Direct next-output versus residual prediction (if used)
 %
-% - Temporal structure
-%   - Sampling rates and held stimulation currents
-%   - Current selected after observation k affects the transition to k+1
-%   - Distinguish EEG sample grid, spectral Frame grid, and controller update interval
-%   - History length and Control Horizon
-
-
-\subsection{Autoregressive Prediction}
-
-% - One-step prediction
-%   - Direct next-output or residual prediction
+% - Temporal conventions
+%   - Waveform sample grid, spectral Frame grid,
+%     and controller update interval
+%   - Current selected after observation k affects
+%     the transition to k+1
+%   - Causal availability of observations
+%   - Held stimulation currents
 %
-% - Initialization and measurement updates
-%   - Required measurement history
-%   - Measurement-driven internal state updates
+% - Recursive use for MPC
+%   - One-step model applied under candidate future currents
+%   - Predicted outputs used for subsequent prediction steps
+%   - Prediction errors may accumulate
+%   - Detailed MPC formulation in Chapter 4
 %
-% - Autoregressive Rollout
-%   - Repeated application of the one-step Predictor
-%   - Evolution without new measurement corrections
-%   - Accumulation of prediction errors
-
-
-\subsection{Control-Relevant Prediction Requirements}
-
-% - Detectability
-%   - Can seizure-related dynamics be detected in the observables?
-%   - TKEO paper: epilepsy detectability and Fourier features
-%
-% - Detection latency
-%   - How quickly do observables reveal seizure-related activity?
-%   - Is detection early enough for effective control intervention?
-%   - Especially relevant for windowed spectral observables
-%
-% - Predictability
-%   - How far into the future can relevant dynamics be predicted?
-%   - Mention detectability and predictability investigations
-%     - Results belong in Chapter 5
-%
-% - Current sensitivity
-%   - Predictions must depend meaningfully on stimulation currents
-%   - Important for MPC optimization
+% - Control relevance
+%   - Accurate evolution of observed activity
+%   - Accurate response to stimulation currents
+%   - Observables must reveal seizure-related dynamics
+%     sufficiently early for intervention
+%   - Predictability over the relevant horizon
+%   - Motivates comparison of waveform and spectral targets
 
 
 \section{Prediction Targets}
 \label{sec:prediction_targets}
 
 % Section introduction
-% - Choice of what the Predictor should forecast
-%   - Raw EEG waveforms or derived spectral observables
-%   - Prediction target affects what information is retained
-%   - Also affects the formulation of the MPC Cost
+% - Choice of prediction target
+%   - EEG waveforms
+%   - STFT-derived spectral power observables
 %
-% - Motivation for spectral observables
-%   - Seizure-related activity often has characteristic rhythms
-%   - Frequency-domain quantities may capture relevant activity
-%     without requiring precise waveform phase prediction
+% - Motivation for comparing representations
+%   - Seizure-related activity exhibits characteristic
+%     oscillatory patterns
+%   - Waveform and spectral representations retain
+%     different aspects of the measured activity
+%   - TKEO paper: spectral and energy-based features
+%     for epilepsy-related classification
+%   - Classification findings motivate spectral observables,
+%     but do not establish their suitability for predictive control
 
 
 \subsection{Spectral Representation and STFT}
 
 % - Fourier transform and spectral power
-% - STFT
-%   - Segments, windowing, overlap, and hop length
-%   - Segment length sets frequency resolution
-%   - Hop length sets Frame update frequency
-%   - Taper leakage and frequency-bin pooling as secondary choices
+%   - Frequency bins, magnitude, power, and phase
 %
-% - Construction of spectral observables
-%   - Spectral frames and their timestamps
+% - Short-time Fourier transform (STFT)
+%   - Segments, tapering, overlap, and hop length
+%   - Segment length and frequency resolution
+%   - Hop length and Frame update frequency
+%   - Spectral leakage and frequency-bin pooling
+%
+% - Construction of causal spectral observables
+%   - Spectral Frames and their timestamps
 %   - Power computation and scaling
-%   - Temporal smoothing across frames
-%     - Frame Kernel: weights and support
-%     - Frame Kernel sets temporal smoothing and responsiveness
+%   - Temporal smoothing across Frames
+%     - Frame Kernel: weights and temporal support
+%     - Smoothing versus responsiveness to changes
 %   - Logarithmic transformation
+%   - Required measurement history
 %
-% - Properties and limitations
-%   - Seizure-related oscillatory activity
-%   - Loss of phase information
-%   - Detection latency
+% - Properties of spectral representations
+%   - Representation of seizure-related oscillatory activity
+%   - Loss of phase information in power spectra
 %   - Non-uniqueness of the underlying waveform
+%   - Frequency resolution versus temporal responsiveness
+%   - Effects of windowing and smoothing on detection latency
 
 
 \subsection{Waveform Versus Spectral Prediction}
 
-% - Waveform Predictor
-%   - Direct prediction of EEG amplitudes over time
-%   - Retains phase and precise timing information
-%   - Sensitive to stochastic waveform variations
-%   - Can be trained with waveform or spectral Loss
+% - Detectability of seizure-related activity
+%   - Waveform
+%     - Retains amplitude, phase, and temporal structure
+%     - May contain seizure-related changes in these quantities
+%   - Spectral
+%     - Emphasizes frequency-specific oscillatory power
+%     - May make rhythmic changes easier to distinguish
 %
-% - Direct spectral Frame Predictor
-%   - Predict spectral observables directly
-%   - Does not need to reconstruct the underlying waveform
-%   - Outputs align with a spectral MPC Cost
+% - Detection latency
+%   - Waveform
+%     - Sample-level temporal information
+%     - No additional STFT temporal aggregation
+%   - Spectral
+%     - Segment length, hop, and temporal smoothing
+%       affect responsiveness to emerging activity
+%     - Detection delay depends on the observable
+%       and detection criterion
 %
-% - Design trade-offs
-%   - Waveform detail versus spectral abstraction
-%   - Phase sensitivity versus focus on seizure-related rhythms
-%   - Spectral processing required for waveform-based MPC Cost
-%   - Whether the output representation captures stimulation effects
+% - Predictability
+%   - Waveform
+%     - Requires predicting phase-sensitive temporal evolution
+%     - Sensitive to stochastic waveform variations
+%   - Spectral
+%     - Does not require predicting precise waveform phase
+%     - Temporal aggregation may suppress some variability
+%     - Greater predictability is not guaranteed
 %
-% - Empirical comparison reserved for Chapter 5
+% - Representation of stimulation effects
+%   - Waveform
+%     - Retains detailed temporal stimulation responses
+%   - Spectral
+%     - Captures changes expressed in spectral power
+%     - May discard stimulation-induced waveform details
+%   - Both require accurate learned current sensitivity
+%
+% - Relationship to the MPC objective
+%   - Waveform predictions
+%     - Spectral processing required for spectral Cost
+%     - Retain information beyond the spectral objective
+%   - Direct spectral predictions
+%     - Outputs align directly with spectral Cost
+%     - No waveform reconstruction required
+%
+% - Empirical questions
+%   - Which representation reveals seizure activity sufficiently early?
+%   - Which representation is more predictable?
+%   - Which captures stimulation effects sufficiently accurately?
+%   - Experimental results and comparisons in Chapter 5
+
 
 
 \section{Supervised Learning and Training Data}
