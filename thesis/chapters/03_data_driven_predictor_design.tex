@@ -3,32 +3,28 @@
 \label{ch:data_driven_predictor_design}
 
 
-% Introduction (no section heading)
-% - MPC requires predictions under candidate stimulation currents
-% - Information available to the controller
-%   - Ground-truth Plant specified for simulation and evaluation
-%   - Assume its equations, parameters, and neural states
-%     are unavailable to the controller
-%   - Controller uses measured EEG and applied currents
-% - Motivation for data-driven input-output prediction
-%   - No explicit neural-state estimation required
-%   - Challenges of mechanistic modeling
-%     - Brain dynamics difficult to identify
-%     - Potential computational burden of delayed JR dynamics
-%     - Early JR identification attempts
-%       - Difficulties due to nonlinearities and bifurcations
-%       - Reference: JAX tvb-optim paper
-% - Specific prediction problem
-%   - Prediction of future multichannel seizure activity
-%     under candidate stimulation currents
-%   - Two target representations: EEG waveforms and
-%     time sequences of spectral observables
-%   - Relation to prior spectral prediction and control work
-%   - Distinction from static spectral characterization
-%   - Position relative to prior work without unsupported novelty claims
-% - Limitations
-%   - Stochastic dynamics and unknowable future noise
-% - Chapter roadmap
+\ac{mpc} requires a model capable of predicting how seizure-related neural activity evolves in response to stimulation currents.
+Chapter~\ref{ch:biological_plant_modeling} introduced the biophysical plant used for simulation and evaluation in this thesis.
+However, its governing equations, parameters, and internal neural states are assumed to be unavailable to the controller, which instead has access only to measured scalp \ac{eeg} signals and applied stimulation currents.
+One possible approach is to identify the underlying mechanistic dynamics from these measurements.
+However, parameter identification in brain network models is challenging near bifurcations, where the best agreement with empirical observations is often found.
+As discussed in~\cite{pille2025tvboptim}, backpropagation through time (BPTT) can produce exploding gradients in these regimes, making gradient-based identification unstable.
+This motivates the use of data-driven input-output models that learn the relationship between stimulation currents and EEG observations without requiring explicit identification of the underlying biophysical dynamics.
+This also avoids the need for state estimation.
+
+This chapter investigates two prediction targets: multichannel \ac{eeg} waveforms and spectral power features derived from the short-time Fourier transform (STFT).
+Waveform prediction retains the phase and temporal structure of the measured signals, whereas spectral power prediction describes their evolving frequency content without requiring the precise phase evolution of individual oscillations to be reproduced.
+The latter is particularly relevant for representing seizure-related oscillatory activity and allows predictions to be evaluated directly using spectral control objectives.
+
+Three families of data-driven models are investigated for these prediction tasks.
+Multilayer perceptrons (MLPs) provide a general-purpose nonlinear approach to learning input-output relationships from finite histories of observations and stimulation currents.
+Convolutional neural networks (CNNs) exploit local structure through shared filters, allowing temporal patterns in EEG waveforms or time-frequency patterns in spectral representations to be captured.
+Finally, Hankel dynamic mode decomposition with control (Hankel-DMDc) provides a linear approach based on delay-embedded observations.
+These architectures differ in their assumptions about the underlying input-output dynamics and provide alternative ways of representing the response to stimulation.
+
+The chapter first formulates the input-output prediction problem and identifies the requirements relevant to seizure control.
+It then introduces the waveform and spectral prediction targets, followed by the supervised learning framework, training data, training objectives, and predictor architectures.
+The resulting prediction models are subsequently used in the \ac{mpc} framework developed in Chapter~\ref{ch:mpc_framework}.
 
 
 \section{Prediction Problem}
@@ -286,7 +282,7 @@
 % - Compare candidate architectures in Chapter 5
 
 
-\section{Connection to Model Predictive Control}
+\section{Connection to \ac{mpc}}
 \label{sec:predictor_mpc_connection}
 
 % - Predictor interface with MPC
