@@ -167,7 +167,7 @@ Because the Gaussian white-noise drive enters only the excitatory velocity state
     =A_i a\int_{t_k}^{t_{k+1}}\zeta_i(t)\,\mathrm{d}t
     =A_i a\sigma\sqrt{\Delta t_\mathrm{p}}\,\eta_{i,k},
     \qquad
-    \eta_{i,k}\sim\mathcal{N}(0,1)\,.
+    \eta_{i,k}\sim\mathcal{N}(0, 1)\,.
 \end{equation*}
 %
 since
@@ -175,7 +175,7 @@ since
 \begin{equation*}
     \int_{t_k}^{t_{k+1}}\zeta_i(t)\,\mathrm{d}t
     \sim
-    \mathcal{N}\!\left(0,\sigma^2\Delta t_\mathrm{p}\right).
+    \mathcal{N}\!\left(0,\sigma^2\Delta t_\mathrm{p}\right)\,.
 \end{equation*}
 %
 The draws $\eta_{i,k}$ are independent across regions and integration steps.
@@ -349,7 +349,7 @@ Because the assumed proportionality between neural-mass output and physical dipo
 The actuation proceeds in the opposite physical direction.
 In \ac{tes}, currents applied at scalp electrodes generate a distributed electric field inside the head.
 The pyramidal populations are modeled as being polarized by the component of this field along their somato-dendritic axis.
-At the regional scale used here, that axis is approximated by the local cortical normal, so the normal electric-field component determines the effective membrane-potential perturbation~\cite{Buzsaki2012}. % cite-checked: SUPPORTED
+At the regional scale used here, that axis is approximated by the local cortical normal, so the normal electric-field component determines the effective membrane-potential perturbation~\cite{Buzsaki2012}. % cite-checked: SUPPORTED latex-lint: ignore = PROSE-03
 %At the regional scale used here, that axis is approximated by the regional orientation vector supplied with the \ac{tvb} connectivity and treated as a cortical-normal surrogate, so the field component along this orientation determines the effective membrane-potential perturbation~\cite{Buzsaki2012}. % note that for stimulation not TVB but ROAST is used
 %For mesial and non-neocortical regions such as the hippocampus and amygdala, this orientation is only a coarse modeling surrogate for the local somato-dendritic axis; the resulting stimulation sensitivity should therefore be interpreted at the regional-model level rather than as a detailed cellular polarization estimate.
 This motivates the additive perturbation $s_i$ in the argument of the pyramidal sigmoid in~\eqref{eq:jr_node}, rather than introducing stimulation as an additional synaptic firing-rate input~\cite{Kunze2016,Merlet2013,Yu2024}. % cite-checked: SUPPORTED
@@ -389,7 +389,7 @@ The currents satisfy
 %
 so that the applied montage injects no net current into the head.
 Although sensing and stimulation are both governed by volume conduction, the two lead fields used here are not transposes of one another.
-This does not violate Helmholtz reciprocity.
+This asymmetry does not violate Helmholtz reciprocity.
 Helmholtz reciprocity relates measurement and stimulation configurations only when source geometry, electrode pairs and referencing are matched~\cite[ch.~11]{Malmivuo1995}. % cite-checked: SUPPORTED
 Here, the main difference is that Ex8 is used in the stimulation montage but is absent from the 62-channel \ac{tvb} \ac{eeg} layout.
 

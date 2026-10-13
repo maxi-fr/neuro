@@ -697,7 +697,7 @@ kiwisolver==1.5.1 \
     --hash=sha256:f9b1c4900736e489a812c529100de4b8fb617d4db075e931e213c57424b83d9b \
     --hash=sha256:fc271a6f0a2126958f4090e5507b9da5848927dae331f8f763bd4aa642b3d2cd
     # via matplotlib
-latex-linting @ git+https://github.com/maxi-fr/latex_linting@7bfc69a89299bc6d608be287e35a50c013c091c8
+latex-linting @ git+https://github.com/maxi-fr/latex_linting@2506521597e8d2ea1a03dae78fbdee40824caa70
     # via neuro
 llvmlite==0.49.0 \
     --hash=sha256:00f16db782f4a13c78c5804aedc434e46794a77e89999a168f9401106270e50a \
