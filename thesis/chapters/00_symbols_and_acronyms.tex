@@ -36,7 +36,7 @@ A running index is italic, a naming index upright.
     $\sigma$ & White-noise amplitude & \si{\second^{-1/2}} \\ % latex-lint:ignore=TYPO-05
     $\xi_{i,k}$ & Noise increment in the excitatory derivative state at plant step $k$ & \si{\milli\volt\per\second} \\
     $\eta_{i,k}$ & Independent standard normal draw & -- \\
-    $\mathbf{e}_5$ & Fifth unit vector, selecting the excitatory derivative state & -- \\
+    $\hat{\mathbf{e}}_5$ & Fifth unit vector, selecting the excitatory derivative state & -- \\
     $\Delta t_\mathrm{p}$ & Plant integration step & \si{\second} \\
     \midrule
     \multicolumn{3}{l}{\itshape Network} \\
@@ -68,9 +68,9 @@ A running index is italic, a naming index upright.
     $H$ & Prediction horizon length & -- \\
     $\mathbf{x}$, $n_x$ & Prediction-model state and its dimension & -- \\
     $\hat{\mathbf{x}}_k$ & State estimate at control step $k$ & -- \\
-    $n_u$, $n_y$ & Input and output dimensions & -- \\
+    $n_y$ & Observable output dimension & -- \\
     $\mathbf{x}_{j|k}$ & Prediction $j$ steps ahead of step $k$ & -- \\
-    $\mathbf{f}$ & One-step transition function of the prediction model & -- \\
+    $\mathbf{f}_{\boldsymbol{\theta}}$ & One-step prediction function & -- \\
     $\boldsymbol{\varphi}_j$ & Single-shooting rollout map over $j$ steps & -- \\
     $d_\mathrm{y}, d_\mathrm{u}$ & \acs*{narx} output and input history lengths & -- \\
     $\mathbf{h}_k$, $n_h$ & Input-output history state and its dimension & -- \\
@@ -110,18 +110,19 @@ A running index is italic, a naming index upright.
     \midrule
     \multicolumn{3}{l}{\itshape Short-time Fourier transform} \\
     $f_\mathrm{s}$ & Sampling rate of the segmented signal & \si{\hertz} \\
-    $\Delta t$, $t_k$ & Sampling interval and the time of sample $k$ & \si{\second} \\
-    $n$ & Sample index within a segment & -- \\
-    $q$ & Segment index on the hop grid & -- \\
+    $n$, $q$ & Sample index and spectral-frame index & -- \\
+    $n_q$, $t_q$ & Latest sample index and time of frame $q$ & --, \si{\second} \\
     $L_\mathrm{s}$ & Segment length & -- \\
     $H_\mathrm{s}$ & Hop between consecutive segments & -- \\
-    $g_n$ & Hann taper applied to a segment & -- \\
-    $\nu$, $f_\nu$ & Frequency bin index and the frequency it sits at & --, \si{\hertz} \\
+    $x_{c,n}$, $\mathbf{x}_{q,c}$ & Channel sample and segment vector & \si{\volt} \\
+    $w_r$ & Taper weight at sample offset $r$ & -- \\
+    $m$, $f_m$ & Frequency-bin index and frequency & --, \si{\hertz} \\
     $\Delta f$ & Bin spacing, $f_\mathrm{s} / L_\mathrm{s}$ & \si{\hertz} \\
-    $Y_q(f_\nu)$ & \Ac{stft} coefficient of segment $q$ & -- \\
-    $\hat{\Phi}_q$, $\bar{\Phi}_q$ & Periodogram and its trailing average & -- \\
-    $\alpha_\nu$ & One-sided folding factor of the periodogram & -- \\
-    $\kappa_{q'}$, $L_\mathrm{k}$ & Averaging kernel weights and width & -- \\
+    $\mathbf{X}_{q,c}$, $X_{q,c,m}$ & Fourier coefficients and one bin & \si{\volt} \\
+    $S_{q,c,m}$, $\overline{S}_{q,c,m}$ & Power density and trailing average & \si{\volt\squared\per\hertz} \\
+    $z_{q,c,m}$ & Log-power feature & -- \\
+    $a_m$ & One-sided folding factor & -- \\
+    $\alpha_\ell$, $L_\mathrm{k}$ & Temporal-kernel weight and length & -- \\
     \bottomrule
 \end{tabular}
 

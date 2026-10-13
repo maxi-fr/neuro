@@ -92,7 +92,7 @@ Their relative performance is evaluated experimentally.
 Although the models are formulated as one-step predictors, multi-step forecasts are obtained by recursively applying the learned mapping under a sequence of candidate stimulation currents.
 Let $H$ denote the prediction horizon length and $j$ the step offset within the horizon.
 For recursive prediction, $\mathbf{y}_{j|k}$ denotes the observable predicted $j$ steps ahead using the information available at step $k$.
-The subscript identifies the prediction without an additional hat; in particular, $\mathbf{y}_{1|k}=\hat{\mathbf{y}}_{k+1}$.
+Such that $\mathbf{y}_{1|k}=\hat{\mathbf{y}}_{k+1}$.
 Starting from the measured history $\mathbf{h}_{0|k}=\mathbf{h}_k$, the prediction $j+1$ steps ahead is given by
 \begin{equation}
     \mathbf{y}_{j+1|k}
@@ -102,7 +102,7 @@ Starting from the measured history $\mathbf{h}_{0|k}=\mathbf{h}_k$, the predicti
         \mathbf{h}_{j|k},
         \mathbf{u}_{j|k}
     \right),
-    \qquad j=0,\ldots,H-1\,.
+    \qquad j=0,\ldots,H-1\,,
     \label{eq:recursive_predictor}
 \end{equation}
 where $\mathbf{u}_{j|k}$ is the candidate stimulation current for the interval from $k+j$ to $k+j+1$, and $\mathbf{h}_{j|k}$ is the corresponding history vector.
@@ -120,21 +120,21 @@ The resulting forecasts provide the predicted system response to candidate stimu
 
 Seizure-related neural activity often manifests as changes in the amplitude and frequency content of ongoing oscillations.
 Such changes can be characterized through spectral power without requiring the precise phase evolution of the underlying waveform to be reproduced.
-Energy-based features have also shown discriminative value in \ac{eeg} classification, including epilepsy-related tasks, although their usefulness for prediction under stimulation remains to be established.
+Energy-based features have also shown discriminative value in \ac{eeg} classification, including epilepsy-related tasks, although their usefulness for prediction under stimulation remains to be established~\cite{Chourdaki2026}. % cite-checked: SUPPORTED
 Spectral prediction therefore offers an alternative to modeling individual \ac{eeg} samples.
 However, unlike waveform observations, spectral power must be estimated over finite measurement intervals.
 The construction of these estimates determines which oscillatory features are retained, how variable they are, and how quickly changes in neural activity are reflected in the observable.
 
 The \ac{stft} provides a time-frequency representation by applying the discrete Fourier transform to successive, potentially overlapping signal segments~\cite{Oppenheim2010}. % cite-checked: SUPPORTED
-Let $x_c[n]$ denote the preprocessed \ac{eeg} signal in channel $c$, sampled at frequency $f_\mathrm{s}$, with $n_\mathrm{ch}$ channels in total.
+Let $x_{c,n}$ denote the preprocessed \ac{eeg} sample in channel $c$ at sample index $n$, acquired at frequency $f_\mathrm{s}$, with $M$ channels in total.
 The sample index $n$ is distinct from the prediction-step index $k$ introduced in the preceding subsection.
 For a segment length $L_\mathrm{s}$ and hop length $H_\mathrm{s}$, both expressed in samples, define the segment vector
 \begin{equation}
     \mathbf{x}_{q,c} =
     \begin{bmatrix}
-        x_c[qH_\mathrm{s}] &
+        x_{c,qH_\mathrm{s}} &
         \cdots &
-        x_c[qH_\mathrm{s}+L_\mathrm{s}-1]
+        x_{c,qH_\mathrm{s}+L_\mathrm{s}-1}
     \end{bmatrix}^{\mathsf{T}}\,,
 \end{equation}
 where $q$ indexes consecutive spectral frames.
@@ -146,6 +146,7 @@ Given a taper $\mathbf{w}\in\mathbb{R}^{L_\mathrm{s}}$, the corresponding Fourie
     \label{eq:causal_stft}
 \end{equation}
 where $\odot$ denotes element-wise multiplication and $\mathcal{F}_{+}$ retains the nonnegative-frequency coefficients of the $L_\mathrm{s}$-point discrete Fourier transform.
+The coefficient at frequency-bin index $m$ is denoted by $X_{q,c,m}$.
 For real-valued signals, these coefficients correspond to $m=0,\ldots,\lfloor L_\mathrm{s}/2\rfloor$, with frequencies
 \begin{equation}
     f_m=\frac{mf_\mathrm{s}}{L_\mathrm{s}},
@@ -204,13 +205,13 @@ As illustrated in Figure~\ref{fig:stft_geometry}, successive frames represent ov
 
 For the prediction target, the Fourier coefficients are converted to one-sided, density-scaled power estimates given by
 \begin{equation}
-    S_{q,c}[m]
+    S_{q,c,m}
     =
-    \frac{a_m|X_{q,c}[m]|^2}
-    {f_\mathrm{s}\sum_{r=0}^{L_\mathrm{s}-1}w[r]^2}\,,
+    \frac{a_m|X_{q,c,m}|^2}
+    {f_\mathrm{s}\sum_{r=0}^{L_\mathrm{s}-1}w_r^2}\,,
     \label{eq:stft_power_density}
 \end{equation}
-where $a_m=2$ for bins with a distinct negative-frequency counterpart and $a_m=1$ at zero frequency and, for even $L_\mathrm{s}$, at the Nyquist frequency.
+where $w_r$ is the taper weight at sample offset $r$, $a_m=2$ for bins with a distinct negative-frequency counterpart, and $a_m=1$ at zero frequency and, for even $L_\mathrm{s}$, at the Nyquist frequency.
 The denominator accounts for the sampling frequency and taper energy.
 When the input is expressed in volts, the resulting density has units of volts squared per hertz.
 
@@ -224,7 +225,7 @@ When the input is expressed in volts, the resulting density has units of volts s
 %     P_{q,c,b}
 %     =
 %     \frac{1}{|\mathcal{B}_b|}
-%     \sum_{m\in\mathcal{B}_b}S_{q,c}[m],
+%     \sum_{m\in\mathcal{B}_b}S_{q,c,m},
 %     \label{eq:stft_bin_pooling}
 % \end{equation}
 % where $|\mathcal{B}_b|$ is the number of bins in the group.
@@ -235,17 +236,17 @@ When the input is expressed in volts, the resulting density has units of volts s
 % A longer segment provides a finer frequency grid and, for a fixed frequency group, potentially more bins over which power can be combined.
 % This can yield a more stable estimate of power distributed across that group.
 The segment length determines the frequency resolution of the spectral estimate, with longer segments providing a finer frequency grid.
-Nevertheless, increasing segment length does not, by itself, guarantee a lower-variance estimate at an individual frequency bin: periodograms remain inherently variable even for stationary signals.
+Nevertheless, increasing segment length does not, by itself, guarantee a lower-variance estimate at an individual frequency bin: periodograms remain inherently variable even for stationary signals~\cite{Astfalck2024}.
 More importantly, longer segments combine activity over a longer interval.
 In the present application, this creates a tension between obtaining reliable estimates of oscillatory power and retaining the temporal changes that may signal seizure onset or recruitment.
 
 Additional variance reduction can be obtained by averaging power across consecutive spectral frames.
 For a causal temporal kernel of length $L_\mathrm{k}$, with nonnegative weights $\alpha_\ell$ satisfying $\sum_{\ell=0}^{L_\mathrm{k}-1}\alpha_\ell=1$, define
 \begin{equation}
-    \overline{S}_{q,c}[m]
+    \overline{S}_{q,c,m}
     =
     \sum_{\ell=0}^{L_\mathrm{k}-1}
-    \alpha_\ell S_{q-\ell,c}[m]\,.
+    \alpha_\ell S_{q-\ell,c,m}\,.
     \label{eq:stft_frame_smoothing}
 \end{equation}
 Here, $\ell=0$ refers to the latest frame, and $L_\mathrm{k}=1$ corresponds to no temporal smoothing.
@@ -283,12 +284,12 @@ Figure~\ref{fig:stft_resolution} illustrates the distinction between these two f
 The spectral observable is finally expressed on a logarithmic scale.
 This logarithmic representation is useful because changes in oscillatory power are often more naturally compared through relative rather than absolute differences.
 The logarithm maps multiplicative changes in power to additive differences, while compressing the range of the resulting features.
-To preserve the interpretation of $\overline{S}_{q,c}[m]$ as power density, the transformation is applied after temporal smoothing, yielding
+To preserve the interpretation of $\overline{S}_{q,c,m}$ as power density, the transformation is applied after temporal smoothing, yielding
 \begin{equation}
-    z_{q,c}[m]
+    z_{q,c,m}
     =
     \ln\left(
-        \overline{S}_{q,c}[m]+\varepsilon
+        \overline{S}_{q,c,m}+\varepsilon
     \right)\,,
     \label{eq:stft_log_power}
 \end{equation}
@@ -296,7 +297,7 @@ where $\varepsilon>0$ is a small floor preventing undefined values at zero power
 Averaging precedes the logarithm because mean power and mean log-power are different quantities.
 The decibel scale used in the figures is equivalent to a constant rescaling of the natural logarithm.
 
-Stacking $z_{q,c}[m]$ across the $n_\mathrm{ch}$ channels and $N_\mathrm{b}$ retained frequency bins within the selected band defines the spectral observable $\mathbf{y}_k\in\mathbb{R}^{n_\mathrm{ch}N_\mathrm{b}}$, with prediction step $k$ corresponding to spectral frame $q$.
+Stacking $z_{q,c,m}$ across the $M$ EEG channels and $N_\mathrm{b}$ retained frequency bins within the selected band defines the spectral observable $\mathbf{y}_k\in\mathbb{R}^{M N_\mathrm{b}}$, with prediction step $k$ corresponding to spectral frame $q$.
 Each step therefore advances by $H_\mathrm{s}$ waveform samples.
 Although the observable is updated at this rate, it summarizes a longer history of measurements.
 A fully supported smoothed frame depends on
@@ -311,9 +312,9 @@ Constructing $d_\mathrm{y}$ consecutive spectral observations requires $L_\mathr
 This history must be available to initialize the predictor, but thereafter each new frame requires only the next $H_\mathrm{s}$ samples.
 Because the segment and smoothing kernel contain no future measurements, the resulting representation remains causal.
 
-The support length should not be interpreted as a fixed delay before new neural activity becomes visible.
+The length of this measurement history should not be interpreted as a fixed detection delay.
 Once initialized, the next spectral frame can already reflect newly acquired samples, with their contribution determined by the taper and temporal kernel.
-The time required for a seizure-related change to become distinguishable from background fluctuations consequently depends not only on the support length, but also on its frequency content, magnitude, and the chosen processing parameters.
+The time required for a seizure-related change to become distinguishable from background fluctuations consequently depends on its frequency content, magnitude, and the chosen processing parameters.
 Figure~\ref{fig:stft_spectrogram} illustrates how recruitment of a simulated neural population produces changes in both the waveform and its time-varying spectrum.
 
 \begin{figure}[tbp]
@@ -342,54 +343,21 @@ Whether this trade-off improves prediction or control depends on the dynamics th
 \subsection{Waveform Versus Spectral Prediction}
 \label{sec:waveform_versus_spectral}
 
-The choice between waveform and spectral prediction is not merely a choice of signal representation.
-It determines which aspects of neural activity are observable to the prediction model, how rapidly changes can be reflected in its inputs, and which features of the response to stimulation can be predicted.
-A representation that makes seizure activity easier to identify is not necessarily more predictable, nor does accurate prediction alone guarantee that stimulation effects are represented sufficiently well for control.
+The stochastic drive of the biophysical plant makes exact waveform evolution uncertain over a prediction horizon.
+Even if a predictor captures an oscillation's amplitude and frequency, small phase errors can produce large sample-wise errors.
+Predicting spectral power avoids reproducing the individual Fourier phases and may therefore be easier.
+Yet the discarded phase information may help distinguish states that evolve differently under stimulation.
 
-Waveform observations retain sample-level amplitude, phase, and temporal structure, including transient changes that may accompany seizure onset or recruitment.
-Spectral observations instead emphasize the distribution of power across selected frequency bins.
-This spectral representation can make sustained rhythmic changes more apparent, as illustrated by the recruited oscillation in Figure~\ref{fig:stft_spectrogram}, while suppressing details unrelated to the retained spectral features.
-However, seizure-related activity is not guaranteed to produce a distinctive change in those features.
-In particular, spectral power cannot distinguish different waveform patterns with identical retained power distributions.
-The usefulness of either representation for identifying seizure activity must therefore be evaluated on the simulated measurements rather than assumed from its construction.
+Spectral prediction has its own difficulties.
+Individual power estimates fluctuate even during stationary activity, which may make spectral targets harder to learn.
+Averaging neighboring frames can reduce this variation, but spectral estimation over a longer measurement history, as in~\eqref{eq:stft_sample_support}, may increase detection delay.
+The hop length also limits how often a new estimate is available.
+These effects motivate tuning the \ac{stft} parameters for both target stability and temporal responsiveness.
 
-An equally important consideration is the time at which seizure-related changes become observable.
-Waveform measurements preserve the temporal information available at the downsampled sampling rate without additional \ac{stft} aggregation.
-Spectral observations are updated at the hop rate and reflect measurements distributed over the support defined in~\eqref{eq:stft_sample_support}.
-Their responsiveness depends on the combined effects of segment length, taper shape, hop length, and temporal smoothing.
-Reducing spectral variability through aggregation may make small changes easier to distinguish from background fluctuations, but excessive aggregation can also weaken or delay the appearance of rapid transitions.
-Consequently, greater temporal resolution does not automatically imply earlier reliable detection, and longer spectral support does not impose an equivalent fixed detection delay.
-Comparisons must consider detection times in physical units, rather than simply counting waveform samples or spectral frames.
-
-These differences also affect the difficulty of predicting future activity.
-Waveform prediction requires the model to reproduce phase-sensitive signal evolution.
-Even when the amplitude and frequency of an oscillation are predicted correctly, a phase error can produce a large discrepancy between predicted and measured samples.
-Furthermore, the stochastic drive of the biophysical plant, introduced in Chapter~\ref{ch:biological_plant_modeling}, produces future waveform variations that cannot be determined exactly from the available history.
-Spectral prediction removes the need to reproduce individual Fourier phases, while temporal smoothing can reduce some of the variability of the target.
-This reduced variability may simplify the prediction task, particularly over longer horizons.
-However, the information discarded during spectral processing may also contain cues about the future evolution of the system.
-Different neural states can produce similar power distributions yet evolve differently under the same stimulation.
-A smoother spectral target is therefore not necessarily more predictable.
-This distinction is particularly important for recursive multi-step forecasts, where small errors can propagate through subsequent predictions.
-
-For predictive control, the model must also represent how neural activity responds to changes in stimulation currents.
-Waveform prediction preserves detailed temporal responses, including phase and amplitude changes that might leave the selected power features nearly unchanged.
-Spectral prediction retains only the component of the stimulation response expressed through its frequency-specific power.
-The same aggregation that suppresses irrelevant fluctuations may therefore also suppress stimulation-induced changes that distinguish different future trajectories.
-Conversely, when the control objective concerns oscillatory power, predicting detailed waveform fluctuations may place unnecessary demands on the model.
-In either case, accurate forecasts under a particular stimulation sequence do not establish that the learned predictor correctly distinguishes the effects of alternative candidate currents.
-This control-input sensitivity is a separate requirement from predicting the unforced evolution of neural activity.
-
-Finally, the representation influences how predicted trajectories are evaluated within the \ac{mpc} objective.
-If the objective penalizes spectral activity, waveform predictions must first be transformed into the corresponding spectral quantities.
-Near the beginning of a prediction horizon, these computations combine predicted samples with the measurement history preceding the horizon.
-Waveform forecasts therefore retain more information than is directly required by a spectral objective, but their sample-wise prediction errors need not correspond closely to errors in the quantities penalized by the controller.
-When the control objective is formulated using the same spectral features as the predictor output, spectral forecasts can instead be evaluated directly, without reconstructing the waveform.
-This requires consistent frequency binning, scaling, temporal support, and timestamps.
-The corresponding control objectives are developed in Chapter~\ref{ch:mpc_framework}.
-
-The comparison consequently concerns three distinct properties: whether the representation reveals seizure-related activity sufficiently early, whether its future evolution can be predicted accurately over the relevant physical horizon, and whether the predictor captures the response to candidate stimulation currents.
-These questions motivate the supervised learning framework introduced in Section~\ref{sec:predictor_training} and the experimental comparisons presented in Chapter~\ref{ch:experiments_discussion}.
+For predictive control, the model must distinguish the effects of candidate stimulation currents.
+Spectral power may conceal phase or amplitude responses that leave the retained power features nearly unchanged.
+Whether the spectral representation still captures the responses needed for control must be tested.
+The waveform--spectral comparison and the choice of \ac{stft} parameters are evaluated in Chapter~\ref{ch:experiments_discussion}.
 
 
 \section{Supervised Learning and Training Data}

@@ -23,19 +23,19 @@ OUT = Path(__file__).with_suffix(".pdf")
 
 
 def _periodograms(y: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Hann periodograms of every segment, with the frequency axis and the frame times."""
+    """Return Hann periodograms and times of their latest samples."""
     n_frames = (y.size - N_SEGMENT) // N_HOP + 1
     taper = hann(N_SEGMENT, sym=False)
     segments = np.stack([y[q * N_HOP : q * N_HOP + N_SEGMENT] for q in range(n_frames)])
     spectrum = np.fft.rfft(segments * taper[None, :], axis=1)
     power = np.abs(spectrum) ** 2
     freqs = np.fft.rfftfreq(N_SEGMENT, d=1.0 / FS)
-    frame_times = (np.arange(n_frames) * N_HOP + N_SEGMENT) / FS
+    frame_times = (np.arange(n_frames) * N_HOP + N_SEGMENT - 1) / FS
     return freqs, frame_times, power
 
 
 def main() -> None:
-    """Write the two-panel segmentation-and-lattice figure."""
+    """Write the two-panel STFT geometry figure with a discrete-index taper."""
     t = np.arange(int(DURATION * FS)) / FS
     y = chirp(t, f0=F_START, t1=DURATION, f1=F_END, method="linear")
     freqs, frame_times, power = _periodograms(y)
@@ -51,7 +51,7 @@ def main() -> None:
     for q in range(N_DRAWN):
         base = -1.7 - 0.62 * q
         offset = q * N_HOP / FS
-        label = r"Hann taper $g[n]$" if q == 0 else None
+        label = r"Hann taper $w_r$" if q == 0 else None
         ax.fill_between(seg_t + offset, base, base + 0.5 * taper, color=f"C{q + 1}", alpha=0.35, lw=0)
         ax.plot(seg_t + offset, base + 0.5 * taper, lw=0.9, color=f"C{q + 1}", label=label)
         ax.text(
@@ -87,11 +87,11 @@ def main() -> None:
     ax.annotate(
         "",
         xy=(0.0, 112.0),
-        xytext=(N_SEGMENT / FS, 112.0),
+        xytext=((N_SEGMENT - 1) / FS, 112.0),
         arrowprops={"arrowstyle": "<->", "lw": 0.9, "color": "0.25"},
     )
     ax.text(
-        N_SEGMENT / FS + 0.03,
+        (N_SEGMENT - 1) / FS + 0.03,
         112.0,
         "samples spectrum $q = 0$ waits for",
         ha="left",

@@ -54,7 +54,7 @@ def _pz_trace() -> tuple[FloatArray, FloatArray]:
 
 
 def _periodograms(y: FloatArray) -> tuple[FloatArray, FloatArray, FloatArray]:
-    """Frequency axis, segment end times and periodograms of ``y`` in decibels, on the segmentation grid."""
+    """Return frequency bins, latest-sample times, and periodograms in decibels."""
     n_frames = (y.size - N_SEGMENT) // N_HOP + 1
     taper = hann(N_SEGMENT, sym=False)
     segments = np.stack([y[q * N_HOP : q * N_HOP + N_SEGMENT] for q in range(n_frames)])
@@ -65,12 +65,12 @@ def _periodograms(y: FloatArray) -> tuple[FloatArray, FloatArray, FloatArray]:
         fold[-1] = 1.0
     power = power * fold[None, :] / (FS * np.sum(taper**2))
     freqs = np.fft.rfftfreq(N_SEGMENT, d=1.0 / FS)
-    frame_times = (np.arange(n_frames) * N_HOP + N_SEGMENT) / FS
+    frame_times = (np.arange(n_frames) * N_HOP + N_SEGMENT - 1) / FS
     return freqs, frame_times, 10.0 * np.log10(power + LOG_FLOOR)
 
 
 def main() -> None:
-    """Write the trace-and-spectra figure."""
+    """Write the trace-and-spectra figure with a power-density colorbar."""
     t, y = _pz_trace()
     freqs, frame_times, power_db = _periodograms(y)
 
@@ -88,7 +88,7 @@ def main() -> None:
     edges_t = np.concatenate([[frame_times[0] - N_HOP / FS], frame_times])
     edges_f = np.concatenate([freqs - 0.5 * d_f, [freqs[-1] + 0.5 * d_f]])
     mesh = ax.pcolormesh(edges_t, edges_f, power_db.T, cmap="viridis", shading="flat")
-    fig.colorbar(mesh, ax=ax, label=r"$\hat{\Phi}_q$ / dB", pad=0.02)
+    fig.colorbar(mesh, ax=ax, label="Power density / dB", pad=0.02)
     ax.set_ylabel("Frequency / Hz")
     ax.set_xlabel("Time / s")
     ax.set_title("(b) Spectrogram", loc="left")
