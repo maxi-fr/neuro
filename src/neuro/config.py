@@ -136,6 +136,7 @@ class CurriculumMSESpec(SecondsSpanSpec):
 
     curr_start: int = Field(ge=0)
     curr_end: int = Field(ge=0)
+    unstandardized: bool = False
 
     @model_validator(mode="after")
     def _validate_curr_epochs(self) -> Self:

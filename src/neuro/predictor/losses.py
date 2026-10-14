@@ -17,19 +17,20 @@ from neuro.config import (
     StftSpec,
 )
 from neuro.schedules import curriculum_completion, curriculum_span
-from neuro.spectral import LOG_FLOOR
+from neuro.spectral import LOG_FLOOR, compute_segment_window
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
 
 class LossContext(eqx.Module):
-    """Unit recovery parameters, sample rate, and schedule clock for loss computation."""
+    """Unit recovery, sample rate, schedule clock, and standardized boundary measurement history."""
 
     y_center: jax.Array
     y_scale: jax.Array
     fs: float = eqx.field(static=True)
     epoch: int | None = eqx.field(static=True, default=None)
+    y_hist: jax.Array | None = None
 
     def to_raw(self, x: jax.Array) -> jax.Array:
         """Map standardized channel tensor back to raw units."""
@@ -72,24 +73,26 @@ class Loss(Protocol):
 
 @dataclass(frozen=True)
 class CurriculumMSE:
-    """Curriculum mean squared error loss on standardized channels."""
+    """Curriculum MSE in standardized or recovered raw units."""
 
     weight: float
     span_steps: int
     start_epoch: int
     curr_start: int
     curr_end: int
+    unstandardized: bool = False
     name: str = "curriculum_mse"
 
     @classmethod
     def from_spec(cls, spec: CurriculumMSESpec, fs: float, name: str = "curriculum_mse") -> CurriculumMSE:
-        """Instantiate from a CurriculumMSESpec at sampling rate ``fs``."""
+        """Build a curriculum Loss in configured units."""
         return cls(
             weight=spec.weight,
             span_steps=spec.span_steps(fs),
             start_epoch=spec.start_epoch,
             curr_start=spec.curr_start,
             curr_end=spec.curr_end,
+            unstandardized=spec.unstandardized,
             name=name,
         )
 
@@ -104,18 +107,21 @@ class CurriculumMSE:
         ctx: LossContext,
         step_mask: jax.Array | None = None,
     ) -> tuple[jax.Array, dict[str, Any]]:
-        """Compute MSE across channels over the trusted rollout prefix."""
+        """Score the trusted Rollout prefix in configured units, including dynamic masks."""
+        residual = pred[:, : self.span_steps] - true[:, : self.span_steps]
+        if self.unstandardized:
+            residual = residual * ctx.y_scale
         if step_mask is not None:
             mask = step_mask[: self.span_steps]
             # Average SE over batch and channel/frequency dimensions, leaving step dimension
-            diff_sq = (pred[:, : self.span_steps] - true[:, : self.span_steps]) ** 2
+            diff_sq = residual**2
             reduce_axes = (0, *range(2, diff_sq.ndim))
             step_se = jnp.mean(diff_sq, axis=reduce_axes)
             mse = jnp.sum(mask * step_se) / jnp.maximum(jnp.sum(mask), 1.0)
             return mse, {"L": jnp.sum(mask)}
 
         length = self.trusted_length(ctx.epoch)
-        mse = jnp.mean((pred[:, :length] - true[:, :length]) ** 2)
+        mse = jnp.mean(residual[:, :length] ** 2)
         return mse, {"L": float(length)}
 
 
@@ -141,11 +147,25 @@ class StftLoss:
         )
 
     def log_spectrogram(self, x: jax.Array, ctx: LossContext) -> jax.Array:
-        """Pooled log power per batch, output axis, Frame, and frequency bin in raw units."""
+        """Recover log-power Frames using boundary history and the configured taper."""
         geom = self.geometry
         bin_lo, bin_hi = geom.bin_range(ctx.fs)
-        raw = jnp.moveaxis(ctx.to_raw(x[:, : self.span_steps]), 1, -1)
-        power = spectrogram(raw, geom.n_segment, geom.n_hop, fs=ctx.fs)[..., bin_lo:bin_hi]
+        raw_fut = ctx.to_raw(x[:, : self.span_steps])
+        prefix_len = geom.sample_support_steps(ctx.fs) - geom.n_hop
+        if ctx.y_hist is not None and prefix_len > 0:
+            if ctx.y_hist.shape[1] < prefix_len:
+                msg = f"Measurement history must contain at least {prefix_len} samples."
+                raise ValueError(msg)
+            raw_hist = ctx.to_raw(ctx.y_hist[:, -prefix_len:])
+            raw_fut = jnp.concatenate([raw_hist, raw_fut], axis=1)
+        elif ctx.y_hist is not None:
+            raw_fut = raw_fut[:, -prefix_len:]
+        raw = jnp.moveaxis(raw_fut, 1, -1)
+        window = jnp.asarray(
+            compute_segment_window(geom.n_segment, window=geom.window, asymmetric_window=geom.asymmetric_window),
+            dtype=raw.dtype,
+        )
+        power = spectrogram(raw, geom.n_segment, geom.n_hop, fs=ctx.fs, window=window)[..., bin_lo:bin_hi]
         power = pool_bins(power, geom.n_bin_pool)
         weights = frame_kernel(geom.kernel, geom.kernel_width, power)
         power = smooth_frames(power, weights)
@@ -158,12 +178,12 @@ class StftLoss:
         ctx: LossContext,
         step_mask: jax.Array | None = None,
     ) -> tuple[jax.Array, dict[str, Any]]:
-        """Compute mean squared log-power difference over frames, channels, and bins."""
+        """Score log-power Frame residuals and report the actual scored Frame count."""
         del step_mask
         residual = self.log_spectrogram(pred, ctx) - self.log_spectrogram(true, ctx)
         weights = frame_kernel(self.geometry.kernel, self.geometry.kernel_width, residual)
         diag = {
-            "M_out": float(self.geometry.n_frames(self.span_steps, ctx.fs)),
+            "M_out": float(residual.shape[2]),
             "K_eff": jnp.sum(weights) ** 2 / jnp.sum(weights**2),
         }
         return jnp.mean(residual**2), diag
@@ -259,14 +279,15 @@ def specs_eligibility_start(specs: LossSpecs | dict[str, LossSpec] | None, fs: f
     return eligibility_start_epoch(build_losses(specs, fs))
 
 
-def spectrogram(x: jax.Array, n_segment: int, n_hop: int, fs: float) -> jax.Array:
-    """Hopped periodograms of ``x`` ``(..., n)`` -> ``(..., n_frames, n_segment // 2 + 1)``."""
+def spectrogram(x: jax.Array, n_segment: int, n_hop: int, fs: float, *, window: jax.Array | None = None) -> jax.Array:
+    """Compute hopped periodograms using the supplied taper or periodic Hann."""
     t_len = x.shape[-1]
     n_frames = (t_len - n_segment) // n_hop + 1
     idx = jnp.arange(n_segment)[None, :] + jnp.arange(n_frames)[:, None] * n_hop
     segments = x[..., idx]
 
-    window = 0.5 - 0.5 * jnp.cos(2.0 * jnp.pi * jnp.arange(n_segment, dtype=x.dtype) / n_segment)
+    if window is None:
+        window = 0.5 - 0.5 * jnp.cos(2.0 * jnp.pi * jnp.arange(n_segment, dtype=x.dtype) / n_segment)
     spectrum = jnp.fft.rfft(segments * window, n=n_segment, axis=-1)
     psd = (spectrum.real**2 + spectrum.imag**2) / (fs * jnp.sum(window**2))
 

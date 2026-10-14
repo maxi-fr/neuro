@@ -65,7 +65,7 @@ def fit_gradient_descent[ModelT: eqx.Module](  # noqa: PLR0913, PLR0912, PLR0915
     eligibility_start: int = 0,
     loss_fn: Callable[..., Any] | None = None,
 ) -> GradientFitResult[ModelT]:
-    """Fit trainable parameters with fixed Standardizers and dynamically masked Loss schedules."""
+    """Fit masked Losses with boundary history separate from Predictor input history."""
     if cfg.epochs <= eligibility_start:
         msg = (
             f"Training epochs ({cfg.epochs}) cannot reach schedule eligibility start ({eligibility_start}); "
@@ -129,14 +129,18 @@ def fit_gradient_descent[ModelT: eqx.Module](  # noqa: PLR0913, PLR0912, PLR0915
         step_mask: jax.Array,
         active_mask: jax.Array,
     ) -> tuple[ModelT, optax.OptState, jax.Array, dict[str, float | None]]:
-        """Train one batch without retracing when Loss schedules change."""
+        """Train with full Loss history without retracing schedule changes."""
         y_hist, u_hist, u_future, y_target = batch
 
         def compute(mod: ModelT) -> tuple[jax.Array, dict[str, float | None]]:
-            """Score the masked Rollout."""
+            """Score the masked Rollout with full boundary history."""
             rollout_fn: Any = getattr(mod, "rollout", mod)
-            pred = rollout_fn(y_hist, u_hist, u_future)
-            loss_val, parts = total_loss(losses, pred, y_target, ctx, step_mask=step_mask, active_mask=active_mask)
+            model_history = y_hist[:, -mod.n_y :] if isinstance(mod, AutoregressiveModel) else y_hist
+            pred = rollout_fn(model_history, u_hist, u_future)
+            batch_ctx = eqx.tree_at(lambda context: context.y_hist, ctx, y_hist, is_leaf=lambda x: x is None)
+            loss_val, parts = total_loss(
+                losses, pred, y_target, batch_ctx, step_mask=step_mask, active_mask=active_mask
+            )
             return loss_val, parts
 
         return optimizer_step(m, opt_s, compute)
@@ -147,11 +151,13 @@ def fit_gradient_descent[ModelT: eqx.Module](  # noqa: PLR0913, PLR0912, PLR0915
         batch: tuple[jax.Array, jax.Array, jax.Array, jax.Array],
         eval_ctx: LossContext,
     ) -> tuple[jax.Array, dict[str, float | None]]:
-        """Score a validation batch with every enabled Loss at its full Span."""
+        """Validate full Loss Spans using boundary history and the Predictor input window."""
         y_hist, u_hist, u_future, y_target = batch
         rollout_fn: Any = getattr(m, "rollout", m)
-        pred = rollout_fn(y_hist, u_hist, u_future)
-        return total_loss(losses, pred, y_target, eval_ctx, step_mask=None)
+        model_history = y_hist[:, -m.n_y :] if isinstance(m, AutoregressiveModel) else y_hist
+        pred = rollout_fn(model_history, u_hist, u_future)
+        batch_ctx = eqx.tree_at(lambda context: context.y_hist, eval_ctx, y_hist, is_leaf=lambda x: x is None)
+        return total_loss(losses, pred, y_target, batch_ctx, step_mask=None)
 
     def _step_custom(
         m: ModelT,

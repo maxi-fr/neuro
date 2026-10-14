@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from typing import TYPE_CHECKING
 
 import equinox as eqx
@@ -18,6 +19,7 @@ from neuro.config import (
     NNSweepConfig,
     SimulationConfig,
     StftGeometry,
+    StftSpec,
     TrainingConfig,
 )
 from neuro.predictor.gradient import fit_gradient_descent
@@ -315,3 +317,37 @@ def test_observable_ridge_fit_on_depth2_mlp_fails_at_build_time(tmp_path: Path) 
     cfg = _obs_config(fit="ridge").model_copy(update={"model": ModelConfig(n_y=2, n_u=8, hidden_size=4, depth=2)})
     with pytest.raises(ValueError, match="depth-0 MLP"):
         train(cfg, files)
+
+
+@pytest.mark.parametrize("fit", ["gradient_descent", "ridge", "dmd"])
+def test_waveform_spectral_score_and_boundary_history(tmp_path: Path, fit: str) -> None:
+    """STFT runs score boundary Frames despite short model history and persist the common metric."""
+    spec = StftSpec(
+        weight=1.0,
+        n_span=32,
+        n_segment=16,
+        n_hop=4,
+        kernel_width=3,
+        window="hann_poisson",
+        asymmetric_window=True,
+    )
+    cfg = _wave_config(
+        fit=fit,
+        epochs=1,
+        losses=LossSpecs(stft=spec),
+        eval_horizon_s=0.032,
+    )
+    if fit != "gradient_descent":
+        cfg = cfg.model_copy(update={"model": cfg.model.model_copy(update={"depth": 0})})
+    result = train(cfg, _write_trajectories(tmp_path, dt=_WAVE_DT, t=_T))
+    assert result.spectral_free_run is not None
+    assert result.spectral_free_run.per_step.shape == (8,)
+    assert np.isfinite(result.spectral_free_run.pooled)
+    assert result.predictor.n_y == 2
+    if isinstance(result, TrainingResult):
+        assert result.train_components["M_out"] == [8.0]
+        assert result.val_components["M_out"] == [8.0]
+    result.save(tmp_path / "artifacts")
+    stats = json.loads((tmp_path / "artifacts" / "training_stats.json").read_text())
+    assert stats["frame_mse"] == result.spectral_free_run.pooled
+    assert stats["frame_mse_per_step"] == result.spectral_free_run.per_step.tolist()

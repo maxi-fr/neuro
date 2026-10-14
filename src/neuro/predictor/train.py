@@ -14,8 +14,10 @@ from neuro.predictor.data import (
     Datasets,
     TrajectoryWindowDataset,
     batch_iterator,
+    load_trajectory,
     prepare_datasets,
     prepare_observable_datasets,
+    split_data_files,
 )
 from neuro.predictor.dmd import DmdTrainer
 from neuro.predictor.evaluation import (
@@ -23,12 +25,12 @@ from neuro.predictor.evaluation import (
     ObservableFrameMSE,
     RolloutNMSE,
     evaluate_free_run,
-    evaluate_observable_free_run,
+    evaluate_spectral_free_run,
     free_run_stats,
 )
 from neuro.predictor.gradient import fit_gradient_descent
 from neuro.predictor.inference import inference_from_checkpoint
-from neuro.predictor.losses import LossContext, build_losses, eligibility_start_epoch
+from neuro.predictor.losses import LossContext, StftLoss, build_losses, eligibility_start_epoch
 from neuro.predictor.mlp import ObservableMLPModel, WaveformMLPModel
 from neuro.predictor.ridge import RidgeTrainer, RidgeTrainingResult
 from neuro.provenance import training_provenance
@@ -37,7 +39,7 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from neuro.config import NNPredictorConfig, StftGeometry, TrainingConfig
-    from neuro.predictor.base import AutoregressiveModel
+    from neuro.predictor.base import AutoregressiveModel, InferencePredictor
     from neuro.predictor.losses import Loss
     from neuro.types import FloatArray
 
@@ -94,9 +96,10 @@ class TrainingResult:
     eligibility_start: int
     selected_epoch: int
     stopping_reason: str
+    spectral_free_run: ObservableFrameMSE | None = None
 
     def save(self, artifact_dir: Path) -> None:
-        """Save the selected checkpoint, Loss curves, eligibility epoch, and stopping reason."""
+        """Save the checkpoint, Loss curves, selection details, and native and spectral scores."""
         self.predictor.save(artifact_dir / "model")
         stats = {
             "train_loss": self.train_losses,
@@ -107,7 +110,7 @@ class TrainingResult:
             "eligibility_start": self.eligibility_start,
             "selected_epoch": self.selected_epoch,
             "stopping_reason": self.stopping_reason,
-            **free_run_stats(self.free_run, self.log_energy),
+            **free_run_stats(self.free_run, self.log_energy, self.spectral_free_run),
         }
         (artifact_dir / "training_stats.json").write_text(json.dumps(stats, indent=2))
 
@@ -119,7 +122,7 @@ def _du_sensitivity(
     n_probes: int = _DU_PROBES,
     key: jax.Array | None = None,
 ) -> float:
-    """Mean Frobenius norm of d(Rollout)/d(future Control Currents) estimated via reverse-mode VJPs.
+    """Estimate Control Current sensitivity using only the Predictor input history.
 
     Uses the Hutchinson trace estimator: for random Gaussian projections ``v ~ N(0, I)``,
     ``E[||J^T v||^2] = ||J||_F^2``. Reverse-mode vector-Jacobian products on batched representative
@@ -132,6 +135,7 @@ def _du_sensitivity(
 
     indices = np.arange(n_total) if n_total <= _DU_WINDOWS else np.linspace(0, n_total - 1, _DU_WINDOWS, dtype=int)
     y_hist, u_hist, u_future, _ = val_dataset.get_batch(indices)
+    y_hist = y_hist[:, -model.n_y :]
     batch_size = y_hist.shape[0]
 
     out, vjp_fn = jax.vjp(lambda u: model.rollout(y_hist, u_hist, u), u_future)
@@ -319,7 +323,7 @@ def _evaluate_val_mse(
 
 
 def _train_observable_ridge(cfg: NNPredictorConfig, data_files: list[str], geom: StftGeometry) -> RidgeTrainingResult:
-    """Fit the single layer of a depth-0 Observable MLP by closed-form ridge."""
+    """Fit Observable ridge and score held-out raw recordings on the common Frame grid."""
     if cfg.model.depth > 0:
         msg = f"'training.fit: ridge' requires a depth-0 MLP, got model.depth = {cfg.model.depth}."
         raise ValueError(msg)
@@ -335,7 +339,9 @@ def _train_observable_ridge(cfg: NNPredictorConfig, data_files: list[str], geom:
     model.downsample = sim.downsample
     eval_steps = max(1, round(trn.eval_horizon_s * fs_frame))
     inference = inference_from_checkpoint(*model.to_checkpoint())
-    frame_mse = evaluate_observable_free_run(inference, data.val_trajs, eval_steps)
+    frame_mse = evaluate_spectral_free_run(
+        inference, _raw_validation_trajectories(cfg, data_files), eval_steps, geometry=geom, fs=cfg.fs
+    )
 
     val_frame_loss = _evaluate_val_mse(model, data.val_dataset, batch_size=trn.batch_size)
 
@@ -352,7 +358,7 @@ def _train_observable_ridge(cfg: NNPredictorConfig, data_files: list[str], geom:
 
 
 def _train_observable_dmd(cfg: NNPredictorConfig, data_files: list[str], geom: StftGeometry) -> RidgeTrainingResult:
-    """Fit the single layer of a depth-0 Observable MLP by closed-form Hankel-DMDc."""
+    """Fit Observable DMD and score held-out raw recordings on the common Frame grid."""
     if cfg.model.depth > 0:
         msg = f"'training.fit: dmd' requires a depth-0 MLP, got model.depth = {cfg.model.depth}."
         raise ValueError(msg)
@@ -368,7 +374,9 @@ def _train_observable_dmd(cfg: NNPredictorConfig, data_files: list[str], geom: S
     model.downsample = sim.downsample
     eval_steps = max(1, round(trn.eval_horizon_s * fs_frame))
     inference = inference_from_checkpoint(*model.to_checkpoint())
-    frame_mse = evaluate_observable_free_run(inference, data.val_trajs, eval_steps)
+    frame_mse = evaluate_spectral_free_run(
+        inference, _raw_validation_trajectories(cfg, data_files), eval_steps, geometry=geom, fs=cfg.fs
+    )
 
     val_frame_loss = _evaluate_val_mse(model, data.val_dataset, batch_size=trn.batch_size)
 
@@ -387,7 +395,7 @@ def _train_observable_dmd(cfg: NNPredictorConfig, data_files: list[str], geom: S
 def _train_observable(
     cfg: NNPredictorConfig, data_files: list[str], geom: StftGeometry, *, seed_offset: int = 0
 ) -> TrainingResult:
-    """Train an Observable Predictor and restore its best checkpoint from the eligible phase."""
+    """Train an Observable Predictor and evaluate its checkpoint on the common Frame grid."""
     sim, trn = cfg.simulation, cfg.training
     seed = trn.seed + seed_offset
     fs_frame = geom.frame_rate(cfg.fs)
@@ -419,7 +427,9 @@ def _train_observable(
     model.provenance = training_provenance(data_files, sim.cutoff_hz)
     model.downsample = sim.downsample
     inference = inference_from_checkpoint(*model.to_checkpoint())
-    frame_mse = evaluate_observable_free_run(inference, data.val_trajs, eval_steps)
+    frame_mse = evaluate_spectral_free_run(
+        inference, _raw_validation_trajectories(cfg, data_files), eval_steps, geometry=geom, fs=cfg.fs
+    )
     return TrainingResult(
         predictor=model,
         candidates={
@@ -453,10 +463,29 @@ def _train_ridge(cfg: NNPredictorConfig, data_files: list[str]) -> RidgeTraining
     return _train_waveform_ridge(cfg, data_files)
 
 
+def _raw_validation_trajectories(cfg: NNPredictorConfig, data_files: list[str]) -> list[tuple[FloatArray, FloatArray]]:
+    """Load held-out raw EEG using the same partition and preprocessing as training."""
+    _, val_files = split_data_files(data_files, cfg.training.train_split)
+    sim = cfg.simulation
+    return [load_trajectory(path, sim.n_steps, sim.downsample, sim.dt, cutoff_hz=sim.cutoff_hz) for path in val_files]
+
+
+def _waveform_spectral_score(
+    cfg: NNPredictorConfig, model: InferencePredictor, trajectories: list[tuple[FloatArray, FloatArray]]
+) -> ObservableFrameMSE | None:
+    """Score waveform forecasts in log-power when an STFT Loss geometry is configured."""
+    spec = None if cfg.training.losses is None else cfg.training.losses.stft
+    if spec is None:
+        return None
+    geom = spec.geometry()
+    frames = max(1, round(cfg.training.eval_horizon_s * geom.frame_rate(cfg.fs)))
+    return evaluate_spectral_free_run(model, trajectories, frames, geometry=geom, fs=cfg.fs)
+
+
 def _prepare_waveform(
     cfg: NNPredictorConfig, data_files: list[str], *, depth: int, seed: int = 0
 ) -> tuple[Datasets, AutoregressiveModel, list[Loss]]:
-    """Build prepared datasets and the configured autoregressive waveform Predictor.
+    """Build waveform datasets with enough boundary history for every enabled STFT Loss.
 
     Shared by the two waveform arms, which differ only in ``depth`` (0 on the ridge arm,
     ``cfg.model.depth`` on the gradient-descent arm); the built losses ride along for the
@@ -469,11 +498,21 @@ def _prepare_waveform(
     fs = cfg.fs
     losses = build_losses(trn.losses, fs)
     horizon = max(loss.span_steps for loss in losses)
+    history_steps = max(
+        [
+            mdl.n_y,
+            *(
+                loss.geometry.sample_support_steps(fs) - loss.geometry.n_hop
+                for loss in losses
+                if isinstance(loss, StftLoss) and loss.weight > 0
+            ),
+        ]
+    )
     data = prepare_datasets(
         data_files,
         sim.n_steps,
         sim.downsample,
-        mdl.n_y,
+        history_steps,
         mdl.n_u,
         horizon,
         sim.dt,
@@ -527,7 +566,7 @@ def _prepare_waveform(
 
 
 def _train_waveform_ridge(cfg: NNPredictorConfig, data_files: list[str]) -> RidgeTrainingResult:
-    """Fit the single layer of a depth-0 waveform MLP by closed-form ridge.
+    """Fit waveform ridge and report native and configured spectral forecast scores.
 
     The exact 1-step least-squares fit the gradient-descent arm no longer runs: the Ridge
     Trainer folds the same features and targets into normal equations from the raw training
@@ -547,6 +586,7 @@ def _train_waveform_ridge(cfg: NNPredictorConfig, data_files: list[str]) -> Ridg
     eval_steps = max(1, round(trn.eval_horizon_s * fs))
     inference = inference_from_checkpoint(*model.to_checkpoint())
     rollout, log_energy = evaluate_free_run(inference, data.val_trajs, eval_steps, fs)
+    spectral = _waveform_spectral_score(cfg, inference, data.val_trajs)
     return RidgeTrainingResult(
         predictor=model,
         candidates={
@@ -554,13 +594,14 @@ def _train_waveform_ridge(cfg: NNPredictorConfig, data_files: list[str]) -> Ridg
             "log_energy": log_energy.pooled,
         },
         free_run=rollout,
+        spectral_free_run=spectral,
         log_energy=log_energy,
         val_trajs=data.val_trajs,
     )
 
 
 def _train_waveform_dmd(cfg: NNPredictorConfig, data_files: list[str]) -> RidgeTrainingResult:
-    """Fit the single layer of a depth-0 waveform MLP by closed-form Hankel-DMDc."""
+    """Fit waveform DMD and report native and configured spectral forecast scores."""
     if cfg.model.architecture != "mlp":
         msg = "'training.fit: dmd' supports waveform MLP predictors only."
         raise ValueError(msg)
@@ -580,6 +621,7 @@ def _train_waveform_dmd(cfg: NNPredictorConfig, data_files: list[str]) -> RidgeT
     eval_steps = max(1, round(trn.eval_horizon_s * fs))
     inference = inference_from_checkpoint(*model.to_checkpoint())
     rollout, log_energy = evaluate_free_run(inference, data.val_trajs, eval_steps, fs)
+    spectral = _waveform_spectral_score(cfg, inference, data.val_trajs)
     return RidgeTrainingResult(
         predictor=model,
         candidates={
@@ -587,13 +629,14 @@ def _train_waveform_dmd(cfg: NNPredictorConfig, data_files: list[str]) -> RidgeT
             "log_energy": log_energy.pooled,
         },
         free_run=rollout,
+        spectral_free_run=spectral,
         log_energy=log_energy,
         val_trajs=data.val_trajs,
     )
 
 
 def _train_waveform(cfg: NNPredictorConfig, data_files: list[str], *, seed_offset: int = 0) -> TrainingResult:
-    """Train a waveform Predictor and restore its best checkpoint from the eligible phase."""
+    """Train with boundary-aware Losses and report native and configured spectral forecast scores."""
     sim, trn = cfg.simulation, cfg.training
     seed = trn.seed + seed_offset
     fs = cfg.fs
@@ -626,6 +669,7 @@ def _train_waveform(cfg: NNPredictorConfig, data_files: list[str], *, seed_offse
     model.downsample = sim.downsample
     inference = inference_from_checkpoint(*model.to_checkpoint())
     rollout, log_energy = evaluate_free_run(inference, data.val_trajs, eval_steps, fs)
+    spectral = _waveform_spectral_score(cfg, inference, data.val_trajs)
     return TrainingResult(
         predictor=model,
         candidates={
@@ -638,6 +682,7 @@ def _train_waveform(cfg: NNPredictorConfig, data_files: list[str], *, seed_offse
         train_components=fit.train_components,
         val_components=fit.val_components,
         free_run=rollout,
+        spectral_free_run=spectral,
         log_energy=log_energy,
         val_trajs=data.val_trajs,
         du_sensitivity=du_sensitivity,
