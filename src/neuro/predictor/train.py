@@ -229,7 +229,7 @@ def _train(
 def _prepare_observable(
     cfg: NNPredictorConfig, data_files: list[str], geom: StftGeometry, *, depth: int, seed: int = 0
 ) -> tuple[Datasets, AutoregressiveModel, list[Loss]]:
-    """Build prepared Observable datasets and the configured autoregressive Predictor."""
+    """Build per-coordinate mean/std-scaled Observable datasets and the configured Predictor."""
     sim, mdl, trn = cfg.simulation, cfg.model, cfg.training
     if trn.losses is None:
         msg = "the observable arm requires 'training.losses' (for the curriculum MSE)."
@@ -248,8 +248,6 @@ def _prepare_observable(
         sim.dt,
         trn.train_split,
         geom,
-        scaler=trn.scaler,
-        global_scaling=trn.global_scaling,
         cutoff_hz=sim.cutoff_hz,
     )
     n_values = geom.n_values(fs)
@@ -306,7 +304,7 @@ def _evaluate_val_mse(
     val_dataset: TrajectoryWindowDataset,
     batch_size: int = 256,
 ) -> float:
-    """Score ``model`` over mini-batches of ``val_dataset`` with sample-weighted mean squared error."""
+    """Score validation mini-batches with sample-weighted MSE in original output units."""
     if len(val_dataset) == 0:
         return 0.0
     val_loss_sum = 0.0
@@ -315,7 +313,8 @@ def _evaluate_val_mse(
         b_size = y_hist.shape[0]
         total_samples += b_size
         pred = model.rollout(y_hist, u_hist, u_future)
-        loss = jnp.mean((pred - y_target) ** 2)
+        scale = model.y_scale.reshape(pred.shape[2:])
+        loss = jnp.mean(((pred - y_target) * scale) ** 2)
         val_loss_sum += float(loss) * b_size
     if total_samples == 0:
         return 0.0
@@ -485,7 +484,7 @@ def _waveform_spectral_score(
 def _prepare_waveform(
     cfg: NNPredictorConfig, data_files: list[str], *, depth: int, seed: int = 0
 ) -> tuple[Datasets, AutoregressiveModel, list[Loss]]:
-    """Build waveform datasets with enough boundary history for every enabled STFT Loss.
+    """Build per-channel mean/std-scaled waveform datasets with boundary history for every enabled STFT Loss.
 
     Shared by the two waveform arms, which differ only in ``depth`` (0 on the ridge arm,
     ``cfg.model.depth`` on the gradient-descent arm); the built losses ride along for the
@@ -517,8 +516,6 @@ def _prepare_waveform(
         horizon,
         sim.dt,
         trn.train_split,
-        scaler=trn.scaler,
-        global_scaling=trn.global_scaling,
         cutoff_hz=sim.cutoff_hz,
     )
     key = jax.random.PRNGKey(seed)

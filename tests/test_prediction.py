@@ -38,12 +38,12 @@ def _standardizer(rng: np.random.Generator, dim: int) -> Standardizer:
 
 
 def test_prepare_datasets_builds_standardized_windows(tmp_path: Path) -> None:
-    """``prepare_datasets`` returns standardized windows matching manual normalization."""
+    """Waveform windows use the fixed per-channel training mean/std transformation."""
     n_eeg, n_controls, n_steps = 6, 2, 250
     n_y, n_u, horizon = 4, 3, 5
     files = [_write_trajectory(tmp_path / f"traj_{i}.npz", n_steps, n_eeg, n_controls) for i in range(2)]
 
-    data = prepare_datasets(files, n_steps, 1, n_y, n_u, horizon, 1e-4, 0.5, scaler="standard", global_scaling=False)
+    data = prepare_datasets(files, n_steps, 1, n_y, n_u, horizon, 1e-4, 0.5)
 
     assert data.n_channels == n_eeg
     assert data.n_controls == n_controls
@@ -65,7 +65,7 @@ def test_prepare_datasets_builds_standardized_windows(tmp_path: Path) -> None:
 
 
 def test_prepare_datasets_supports_optional_n_steps(tmp_path: Path) -> None:
-    """``load_trajectory`` and ``prepare_datasets`` read the complete trajectory when ``n_steps`` is None."""
+    """Complete trajectories support fixed mean/std window preparation when ``n_steps`` is None."""
     n_eeg, n_controls, n_steps = 6, 2, 250
     n_y, n_u, horizon = 4, 3, 5
     files = [_write_trajectory(tmp_path / f"traj_{i}.npz", n_steps, n_eeg, n_controls) for i in range(2)]
@@ -74,18 +74,18 @@ def test_prepare_datasets_supports_optional_n_steps(tmp_path: Path) -> None:
     assert u.shape == (n_steps, n_controls)
     assert y.shape == (n_steps, n_eeg)
 
-    data = prepare_datasets(files, None, 1, n_y, n_u, horizon, 1e-4, 0.5, scaler="standard", global_scaling=False)
+    data = prepare_datasets(files, None, 1, n_y, n_u, horizon, 1e-4, 0.5)
     assert data.n_channels == n_eeg
     assert len(data.train_dataset) == n_steps - horizon - max(n_y - 1, n_u)
 
 
 def test_prepare_datasets_holds_out_the_validation_trajectories(tmp_path: Path) -> None:
-    """The validation windows are exactly the ones built from the held-out trajectories."""
+    """Validation windows reuse training mean/std statistics on held-out trajectories."""
     n_eeg, n_controls, n_steps = 4, 2, 200
     n_y, n_u, horizon = 3, 2, 4
     files = [_write_trajectory(tmp_path / f"traj_{i}.npz", n_steps, n_eeg, n_controls) for i in range(3)]
 
-    data = prepare_datasets(files, n_steps, 1, n_y, n_u, horizon, 1e-4, 0.67, scaler="standard", global_scaling=False)
+    data = prepare_datasets(files, n_steps, 1, n_y, n_u, horizon, 1e-4, 0.67)
 
     assert len(data.val_trajs) == 1
     u_val, y_val = data.val_trajs[0]
@@ -141,7 +141,7 @@ def test_checkpoint_round_trip(tmp_path: Path) -> None:
 
 
 def test_load_trajectory_and_prepare_datasets_with_cutoff_hz(tmp_path: Path) -> None:
-    """load_trajectory and prepare_datasets apply custom lowpass cutoff_hz when supplied."""
+    """Custom lowpass filtering precedes fixed per-channel mean/std window preparation."""
     n_eeg, n_controls, n_steps = 4, 2, 200
     n_y, n_u, horizon = 3, 2, 4
     files = [_write_trajectory(tmp_path / f"traj_{i}.npz", n_steps, n_eeg, n_controls) for i in range(2)]
@@ -150,9 +150,7 @@ def test_load_trajectory_and_prepare_datasets_with_cutoff_hz(tmp_path: Path) -> 
     assert u.shape == (n_steps // 2, n_controls)
     assert y.shape == (n_steps // 2, n_eeg)
 
-    data = prepare_datasets(
-        files, n_steps, 2, n_y, n_u, horizon, 1e-4, 0.5, scaler="standard", global_scaling=False, cutoff_hz=45.0
-    )
+    data = prepare_datasets(files, n_steps, 2, n_y, n_u, horizon, 1e-4, 0.5, cutoff_hz=45.0)
     assert data.n_channels == n_eeg
     x_manual, y_manual = build_dataset_for_trajectory(
         data.u_std.transform(u), data.y_std.transform(y), n_y, n_u, horizon
@@ -188,7 +186,7 @@ def test_reduce_trajectory_to_frames() -> None:
 
 
 def test_prepare_observable_datasets(tmp_path: Path) -> None:
-    """prepare_observable_datasets builds Frame-grid datasets with subhop expansion and fits standardizers."""
+    """Observable windows retain Frame geometry with per-coordinate mean/std and sub-hop expansion."""
     n_eeg, n_controls, n_steps = 3, 2, 500
     n_y, n_u, horizon = 3, 2, 4
     geometry = StftGeometry(n_segment=64, n_hop=16, band_hz=[4.0, 30.0], n_bin_pool=2, kernel_width=5)
@@ -207,8 +205,6 @@ def test_prepare_observable_datasets(tmp_path: Path) -> None:
         dt,
         0.5,
         geometry,
-        scaler="standard",
-        global_scaling=False,
         subhop_offsets=True,
     )
 
@@ -237,8 +233,6 @@ def test_prepare_observable_datasets(tmp_path: Path) -> None:
         dt,
         0.5,
         geometry,
-        scaler="standard",
-        global_scaling=False,
         subhop_offsets=False,
     )
     assert len(data_no_subhop.train_trajs) == 1

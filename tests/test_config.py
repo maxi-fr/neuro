@@ -53,14 +53,13 @@ def test_defaults_applied_for_missing_sections() -> None:
 
 
 def test_known_keys_parsed() -> None:
-    """Test Known keys parsed."""
+    """Known optimizer and preprocessing keys are parsed without scaling choices."""
     raw = {
         "simulation": {"dt": 1e-4, "downsample": 100, "n_steps": 50000, "data_path": "data/x", "cutoff_hz": 45.0},
         "model": {"n_y": 14, "hidden_size": 64},
         "training": {
             **_VALID_TRAINING,
             "epochs": 15,
-            "scaler": "robust",
             "device": "cuda",
         },
     }
@@ -70,7 +69,6 @@ def test_known_keys_parsed() -> None:
     assert cfg.simulation.cutoff_hz == 45.0
     assert cfg.model.n_y == 14
     assert cfg.model.hidden_size == 64
-    assert cfg.training.scaler == "robust"
     assert cfg.training.device == "cuda"
     assert cfg.training.epochs == 15
 
@@ -726,3 +724,22 @@ def test_model_config_tapering_and_head_settings() -> None:
 
     with pytest.raises(ValidationError, match="CNN tapering produces 0 channels"):
         ModelConfig(architecture="cnn", depth=4, hidden_size=2, tapering_ratio=0.5)
+
+
+@pytest.mark.parametrize("value", [True, False])
+def test_curriculum_mse_rejects_units_option(*, value: bool) -> None:
+    """Loss units cannot be changed by configuration."""
+    with pytest.raises(ValidationError, match="unstandardized"):
+        CurriculumMSESpec.model_validate(
+            {"weight": 1.0, "span_s": 1.0, "curr_start": 0, "curr_end": 0, "unstandardized": value}
+        )
+
+
+@pytest.mark.parametrize(
+    ("option", "value"),
+    [("scaler", "standard"), ("scaler", "robust"), ("global_scaling", False), ("global_scaling", True)],
+)
+def test_training_rejects_scaling_options(option: str, *, value: str | bool) -> None:
+    """Training always uses per-coordinate mean/std scaling."""
+    with pytest.raises(ValidationError, match=option):
+        TrainingConfig.model_validate({**_VALID_TRAINING, option: value})

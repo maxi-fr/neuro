@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING
 
 import jax
 import jax.numpy as jnp
@@ -194,11 +194,9 @@ def fit_standardizers(  # noqa: PLR0913
     downsample: int,
     dt: float,
     train_split: float,
-    scaler: Literal["standard", "robust"],
-    global_scaling: bool,
     cutoff_hz: float | None = None,
 ) -> TrajectorySplit:
-    """Split ``data_files`` by trajectory, load both sides, and fit the y/u standardizers on the training split."""
+    """Split recordings and fit per-coordinate y/u means and standard deviations on training data only."""
     train_files, val_files = split_data_files(data_files, train_split)
 
     def load(files: list[str]) -> list[tuple[FloatArray, FloatArray]]:
@@ -211,8 +209,8 @@ def fit_standardizers(  # noqa: PLR0913
     return TrajectorySplit(
         train_trajs=train_trajs,
         val_trajs=load(val_files),
-        y_std=Standardizer.fit(all_y_train, kind=scaler, global_scaling=global_scaling),
-        u_std=Standardizer.fit(all_u_train, kind=scaler, global_scaling=global_scaling),
+        y_std=Standardizer.fit(all_y_train),
+        u_std=Standardizer.fit(all_u_train),
     )
 
 
@@ -364,19 +362,15 @@ def prepare_datasets(  # noqa: PLR0913, PLR0917
     dt: float,
     train_split: float,
     *,
-    scaler: Literal["standard", "robust"],
-    global_scaling: bool,
     cutoff_hz: float | None = None,
 ) -> Datasets:
-    """Split ``data_files`` by trajectory, standardize, and build on-the-fly window datasets."""
+    """Build waveform windows using training-only per-channel mean/std scaling."""
     split = fit_standardizers(
         data_files,
         n_steps_cfg=n_steps_cfg,
         downsample=downsample,
         dt=dt,
         train_split=train_split,
-        scaler=scaler,
-        global_scaling=global_scaling,
         cutoff_hz=cutoff_hz,
     )
     y_std, u_std = split.y_std, split.u_std
@@ -461,12 +455,10 @@ def prepare_observable_datasets(  # noqa: PLR0913, PLR0917 -- one flat call from
     train_split: float,
     geometry: StftGeometry,
     *,
-    scaler: Literal["standard", "robust"],
-    global_scaling: bool,
     cutoff_hz: float | None = None,
     subhop_offsets: bool = True,
 ) -> Datasets:
-    """Split ``data_files`` by trajectory, reduce to Frames, standardize, and build sliding windows on the Frame grid.
+    """Build Frame-grid windows with training-only mean/std scaling per channel-frequency coordinate.
 
     Parameters
     ----------
@@ -488,10 +480,6 @@ def prepare_observable_datasets(  # noqa: PLR0913, PLR0917 -- one flat call from
         Fraction of trajectories held for training.
     geometry : StftGeometry
         Observable STFT geometry defining the Frame reduction.
-    scaler : Literal["standard", "robust"]
-        Standardizer scaling algorithm.
-    global_scaling : bool
-        Whether scale is shared across outputs.
     cutoff_hz : float | None, optional
         Explicit lowpass filter cutoff frequency in Hz.
     subhop_offsets : bool, default=True
@@ -523,8 +511,8 @@ def prepare_observable_datasets(  # noqa: PLR0913, PLR0917 -- one flat call from
     all_y_train = np.concatenate([y for _, y in train_trajs], axis=0)
     all_u_train = np.concatenate([u for u, _ in train_trajs], axis=0)
 
-    y_std = Standardizer.fit(all_y_train, kind=scaler, global_scaling=global_scaling)
-    u_std = Standardizer.fit(all_u_train, kind=scaler, global_scaling=global_scaling)
+    y_std = Standardizer.fit(all_y_train)
+    u_std = Standardizer.fit(all_u_train)
 
     train_dataset = TrajectoryWindowDataset(
         [(u_std.transform(u), y_std.transform(y)) for u, y in train_trajs],

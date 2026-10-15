@@ -132,11 +132,10 @@ class SecondsSpanSpec(LossSpec):
 
 
 class CurriculumMSESpec(SecondsSpanSpec):
-    """Curriculum MSE loss spec: ramps trusted rollout length over curr_start -> curr_end."""
+    """Original-output-unit MSE with trusted Rollout length ramped over curr_start -> curr_end."""
 
     curr_start: int = Field(ge=0)
     curr_end: int = Field(ge=0)
-    unstandardized: bool = False
 
     @model_validator(mode="after")
     def _validate_curr_epochs(self) -> Self:
@@ -425,8 +424,6 @@ class TrainingConfig(StrictConfig):
     train_split: float = Field(default=0.8, gt=0, lt=1)
     seed: int = Field(default=69, ge=0)
     patience: int = Field(default=50, ge=1)
-    scaler: Literal["standard", "robust"] = "standard"
-    global_scaling: bool = False
     device: Literal["auto", "cpu", "cuda"] = "auto"
     eval_horizon_s: float = Field(gt=0)
     # ``None`` only on the observable path, whose loss is a fixed MSE on the frame grid rather

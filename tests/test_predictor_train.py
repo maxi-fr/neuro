@@ -95,7 +95,7 @@ def _wave_train(cfg: NNPredictorConfig, files: list[str], *, seed_offset: int = 
 
 
 def _validation_loss(cfg: NNPredictorConfig, files: list[str], model: WaveformMLPModel) -> float:
-    """Re-score ``model`` on the validation windows exactly as the training loop does."""
+    """Re-score validation windows with fixed per-channel mean/std preprocessing."""
     mdl = cfg.model
     fs = cfg.fs
     assert cfg.training.losses is not None
@@ -111,8 +111,6 @@ def _validation_loss(cfg: NNPredictorConfig, files: list[str], model: WaveformML
         horizon,
         _DT,
         cfg.training.train_split,
-        scaler=cfg.training.scaler,
-        global_scaling=cfg.training.global_scaling,
     )
 
     ctx = LossContext(y_center=model.y_center, y_scale=model.y_scale, fs=fs, epoch=None)
@@ -218,7 +216,7 @@ def test_returned_artifact_is_the_best_epoch_not_the_last(files: list[str]) -> N
 
 
 def test_depth0_ridge_fit_reproduces_the_exact_one_step_lstsq(files: list[str]) -> None:
-    """The Ridge Trainer on a depth-0 MLP reproduces the exact 1-step least-squares.
+    """The Ridge Trainer reproduces 1-step least squares with fixed per-channel mean/std scaling.
 
     The gradient-descent arm no longer runs a closed-form warm start, so this least-squares is
     the Ridge Trainer's own contract: the ridge fit folds the same features and targets into
@@ -237,8 +235,6 @@ def test_depth0_ridge_fit_reproduces_the_exact_one_step_lstsq(files: list[str]) 
         horizon,
         _DT,
         trn.train_split,
-        scaler=trn.scaler,
-        global_scaling=trn.global_scaling,
     )
     split = fit_standardizers(
         files,
@@ -246,8 +242,6 @@ def test_depth0_ridge_fit_reproduces_the_exact_one_step_lstsq(files: list[str]) 
         downsample=1,
         dt=_DT,
         train_split=trn.train_split,
-        scaler=trn.scaler,
-        global_scaling=trn.global_scaling,
     )
 
     def build() -> WaveformMLPModel:
