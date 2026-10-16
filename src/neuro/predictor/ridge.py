@@ -12,8 +12,8 @@ from neuro.types import RidgeFittable
 if TYPE_CHECKING:
     from pathlib import Path
 
+    from neuro.predictor.base import AutoregressiveModel
     from neuro.predictor.evaluation import LogEnergyError, ObservableFrameMSE
-    from neuro.predictor.module import AutoregressiveMLP
     from neuro.types import FloatArray
 
 
@@ -74,7 +74,7 @@ class RidgeTrainingResult:
 
     Attributes
     ----------
-    predictor : AutoregressiveMLP
+    predictor : WaveformMLPModel | ObservableMLPModel
         The trained module holding the fitted readout, with the standardizers as buffers and the
         recorded metadata (provenance, downsample) attached.
     candidates : dict[str, float]
@@ -85,20 +85,23 @@ class RidgeTrainingResult:
         log-power Frame MSE on the observable kind.
     log_energy : LogEnergyError | None
         Free-run windowed-energy log-ratio error on ``val_trajs``. ``None`` on the observable kind.
+    spectral_free_run : ObservableFrameMSE | None
+        Common log-power Frame MSE when waveform STFT geometry is configured.
     val_trajs : list[tuple[FloatArray, FloatArray]]
         The held-out ``(u, y)`` trajectories, kept whole so the caller can plot free runs.
     """
 
-    predictor: AutoregressiveMLP
+    predictor: AutoregressiveModel
     candidates: dict[str, float]
     free_run: RolloutNMSE | ObservableFrameMSE
     log_energy: LogEnergyError | None
     val_trajs: list[tuple[FloatArray, FloatArray]]
+    spectral_free_run: ObservableFrameMSE | None = None
 
     def save(self, artifact_dir: Path) -> None:
-        """Write the numpy-checkpoint and ``training_stats.json`` into ``artifact_dir``."""
+        """Persist the checkpoint and native and configured spectral evaluation scores."""
         self.predictor.save(artifact_dir / "model")
-        stats: dict[str, object] = dict(free_run_stats(self.free_run, self.log_energy))
+        stats: dict[str, object] = dict(free_run_stats(self.free_run, self.log_energy, self.spectral_free_run))
         if "val_loss" in self.candidates:
             stats["val_loss"] = self.candidates["val_loss"]
         (artifact_dir / "training_stats.json").write_text(json.dumps(stats, indent=2))

@@ -29,6 +29,9 @@ data
 external/
 *.npy
 *.npz
+!tests/data/
+!tests/data/predictor_migration/
+!tests/data/predictor_migration/*.npz
 notebooks/layouts/
 notebooks/assets/
 *scratch*
@@ -40,3 +43,4 @@ results/
 configs/comparison/
 .worktrees/
 thesis/out/
+thesis/tmp/

@@ -1,0 +1,13 @@
+[project]
+name = "thesis"
+version = "0.1.0"
+description = "Master's thesis document and figures"
+requires-python = ">=3.13"
+dependencies = [
+    "latex-linting",
+    "neuro",
+]
+
+[tool.uv.sources]
+latex-linting = { git = "https://github.com/maxi-fr/latex_linting" }
+neuro = { workspace = true }

@@ -53,14 +53,13 @@ def test_defaults_applied_for_missing_sections() -> None:
 
 
 def test_known_keys_parsed() -> None:
-    """Test Known keys parsed."""
+    """Known optimizer and preprocessing keys are parsed without scaling choices."""
     raw = {
         "simulation": {"dt": 1e-4, "downsample": 100, "n_steps": 50000, "data_path": "data/x", "cutoff_hz": 45.0},
         "model": {"n_y": 14, "hidden_size": 64},
         "training": {
             **_VALID_TRAINING,
             "epochs": 15,
-            "scaler": "robust",
             "device": "cuda",
         },
     }
@@ -70,7 +69,6 @@ def test_known_keys_parsed() -> None:
     assert cfg.simulation.cutoff_hz == 45.0
     assert cfg.model.n_y == 14
     assert cfg.model.hidden_size == 64
-    assert cfg.training.scaler == "robust"
     assert cfg.training.device == "cuda"
     assert cfg.training.epochs == 15
 
@@ -680,13 +678,10 @@ def test_resolve_simulation_config_immutability() -> None:
 
 
 def test_resolve_simulation_config_sensors_shorthands() -> None:
-    """resolve_simulation_config expands 'eeg' and 'oracle' sensor shorthands."""
+    """resolve_simulation_config expands 'eeg' sensor shorthand."""
     cfg_eeg = resolve_simulation_config({"dynamics": {"dt": 2e-4}, "sensors": "eeg"})
     assert cfg_eeg["sensors"]["class_path"] == "simulate.sensor.GaussianSensor"
     assert cfg_eeg["sensors"]["dt"] == 2e-4
-
-    cfg_oracle = resolve_simulation_config({"dynamics": {"dt": 1e-4}, "sensors": "oracle"})
-    assert cfg_oracle["sensors"]["class_path"] == "neuro.predictor.oracle.FullStateSensor"
 
     with pytest.raises(ValueError, match="Unknown sensors shorthand"):
         resolve_simulation_config({"sensors": "unknown"})
@@ -708,27 +703,43 @@ def test_resolve_simulation_config_dynamics_regimes() -> None:
         resolve_simulation_config({"dynamics": {"regime": "unknown"}})
 
 
-def test_resolve_simulation_config_oracle_propagation() -> None:
-    """resolve_simulation_config propagates plant settings to oracle estimator and problem."""
-    cfg = {
-        "dynamics": {
-            "regime": "seizure",
-            "stimulation": {"model": "roast_3d", "field_projection_path": "data/roast_field_projection_3d.npz"},
-        },
-        "sensors": "oracle",
-        "estimator": {"class_path": "neuro.predictor.oracle.JansenRitOracleEstimator", "dt": 1e-4},
-        "controller": {
-            "class_path": "neuro.control.mpc.TrajOptMPCController",
-            "dt": 0.02,
-            "problem": {
-                "class_path": "neuro.predictor.jansen_rit.build_jansen_rit_problem",
-                "horizon": 10,
-            },
-        },
-    }
-    resolved = resolve_simulation_config(cfg)
-    assert resolved["estimator"]["connectome"] == resolved["dynamics"]["connectome"]
-    assert resolved["estimator"]["params"] == resolved["dynamics"]["params"]
-    assert resolved["controller"]["problem"]["connectome"] == resolved["dynamics"]["connectome"]
-    assert resolved["controller"]["problem"]["params"] == resolved["dynamics"]["params"]
-    assert resolved["controller"]["problem"]["stimulation"] == resolved["dynamics"]["stimulation"]
+def test_model_config_tapering_and_head_settings() -> None:
+    """ModelConfig validates tapering ratio, head depth, head width, and channel underflow."""
+    cfg = ModelConfig(architecture="cnn", depth=3, hidden_size=64, tapering_ratio=0.5, head_depth=0)
+    assert cfg.tapering_ratio == 0.5
+    assert cfg.head_depth == 0
+    assert cfg.head_width == "trunk"
+
+    with pytest.raises(ValidationError):
+        ModelConfig(architecture="cnn", depth=2, tapering_ratio=0.0)
+
+    with pytest.raises(ValidationError):
+        ModelConfig(architecture="cnn", depth=2, tapering_ratio=1.5)
+
+    with pytest.raises(ValidationError):
+        ModelConfig(architecture="cnn", depth=2, head_depth=-1)
+
+    with pytest.raises(ValidationError):
+        ModelConfig(architecture="cnn", depth=2, head_width="invalid")  # ty: ignore[invalid-argument-type]
+
+    with pytest.raises(ValidationError, match="CNN tapering produces 0 channels"):
+        ModelConfig(architecture="cnn", depth=4, hidden_size=2, tapering_ratio=0.5)
+
+
+@pytest.mark.parametrize("value", [True, False])
+def test_curriculum_mse_rejects_units_option(*, value: bool) -> None:
+    """Loss units cannot be changed by configuration."""
+    with pytest.raises(ValidationError, match="unstandardized"):
+        CurriculumMSESpec.model_validate(
+            {"weight": 1.0, "span_s": 1.0, "curr_start": 0, "curr_end": 0, "unstandardized": value}
+        )
+
+
+@pytest.mark.parametrize(
+    ("option", "value"),
+    [("scaler", "standard"), ("scaler", "robust"), ("global_scaling", False), ("global_scaling", True)],
+)
+def test_training_rejects_scaling_options(option: str, *, value: str | bool) -> None:
+    """Training always uses per-coordinate mean/std scaling."""
+    with pytest.raises(ValidationError, match=option):
+        TrainingConfig.model_validate({**_VALID_TRAINING, option: value})

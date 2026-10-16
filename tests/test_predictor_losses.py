@@ -1,12 +1,13 @@
-"""Pin the torch losses: the spectrogram against SciPy, and curriculum MSE scheduling."""
+"""Pin the losses: the spectrogram against SciPy, and curriculum MSE scheduling."""
 
 from __future__ import annotations
 
 import itertools
 
+import jax
+import jax.numpy as jnp
 import numpy as np
 import pytest
-import torch
 from scipy.signal import spectrogram as scipy_spectrogram
 from scipy.signal.windows import hann
 
@@ -22,7 +23,7 @@ from neuro.predictor.losses import (
     spectrogram,
     total_loss,
 )
-from neuro.predictor.module import AutoregressiveMLP
+from neuro.predictor.mlp import WaveformMLPModel
 
 _SEED = 3
 
@@ -33,9 +34,9 @@ def _model(
     horizon: int,
     k: int,
     n_controls: int,
-) -> AutoregressiveMLP:
-    torch.manual_seed(_SEED)
-    return AutoregressiveMLP(
+) -> WaveformMLPModel:
+    key = jax.random.PRNGKey(_SEED)
+    return WaveformMLPModel(
         n_y=n_y,
         n_u=n_u,
         horizon=horizon,
@@ -45,6 +46,7 @@ def _model(
         hidden_size=8,
         depth=1,
         activation="tanh",
+        key=key,
     )
 
 
@@ -70,7 +72,8 @@ def test_spectrogram_matches_scipy(n_segment: int, fs: float) -> None:
         mode="psd",
         axis=-1,
     )
-    got = spectrogram(torch.as_tensor(x), n_segment, n_hop, fs=fs).numpy()
+    with jax.enable_x64():
+        got = np.asarray(spectrogram(jnp.asarray(x), n_segment, n_hop, fs=fs))
 
     assert got.shape == (4, want.shape[-1], n_segment // 2 + 1)
     np.testing.assert_allclose(got, np.moveaxis(want, -2, -1), rtol=1e-10, atol=0.0)
@@ -78,8 +81,8 @@ def test_spectrogram_matches_scipy(n_segment: int, fs: float) -> None:
 
 def _stft_ctx(c: int, fs: float = 1.0, epoch: int | None = 0) -> LossContext:
     return LossContext(
-        y_center=torch.zeros(c, dtype=torch.float64),
-        y_scale=torch.ones(c, dtype=torch.float64),
+        y_center=jnp.zeros(c, dtype=jnp.float64),
+        y_scale=jnp.ones(c, dtype=jnp.float64),
         fs=fs,
         epoch=epoch,
     )
@@ -92,10 +95,12 @@ def test_stft_welch_endpoint_scores_each_sample_separately() -> None:
     batch-pooled PSD term had.
     """
     n_span, c = 32, 2
-    t = torch.arange(n_span, dtype=torch.float64)
-    tone = torch.sin(2 * torch.pi * 0.2 * t).reshape(1, n_span, 1).repeat(1, 1, c)
-    true = torch.cat([tone, tone], dim=0)
-    pred = torch.cat([tone * 2.0, tone * 0.5], dim=0)  # +6 dB and -6 dB: exact cancellation if pooled
+    t = np.arange(n_span, dtype=np.float64)
+    tone = np.sin(2 * np.pi * 0.2 * t).reshape(1, n_span, 1).repeat(c, axis=-1)
+    true = jnp.asarray(np.concatenate([tone, tone], axis=0))
+    pred = jnp.asarray(
+        np.concatenate([tone * 2.0, tone * 0.5], axis=0)
+    )  # +6 dB and -6 dB: exact cancellation if pooled
 
     loss_fn = StftLoss(
         weight=1.0,
@@ -109,7 +114,8 @@ def test_stft_welch_endpoint_scores_each_sample_separately() -> None:
             kernel_width=1,
         ),
     )
-    value, diag = loss_fn(pred, true, _stft_ctx(c))
+    with jax.enable_x64():
+        value, diag = loss_fn(pred, true, _stft_ctx(c))
 
     assert diag["M_out"] == 1.0
     assert float(value) > 1.0  # a pooled loss would report ~0 here
@@ -119,8 +125,9 @@ def test_stft_welch_endpoint_scores_each_sample_separately() -> None:
 def test_frame_kernel_effective_dof(kernel: str, want: float) -> None:
     """K_eff / n follows the shape table: boxcar keeps every degree of freedom, Hann two thirds."""
     width = 200
-    weights = frame_kernel(kernel, width, torch.zeros(1, dtype=torch.float64))
-    k_eff = float(weights.sum() ** 2 / (weights**2).sum())
+    with jax.enable_x64():
+        weights = frame_kernel(kernel, width, jnp.zeros(1, dtype=jnp.float64))
+        k_eff = float(jnp.sum(weights) ** 2 / jnp.sum(weights**2))
     assert k_eff / width == pytest.approx(want, abs=0.01)
 
 
@@ -128,8 +135,8 @@ def test_stft_frame_kernel_pools_before_the_log() -> None:
     """A frame kernel shortens the frame axis and is reported through M_out and K_eff."""
     n_span, c, n_segment, n_hop, width = 40, 2, 8, 4, 3
     rng = np.random.default_rng(_SEED + 7)
-    pred = torch.as_tensor(rng.standard_normal((3, n_span, c)))
-    true = torch.as_tensor(rng.standard_normal((3, n_span, c)))
+    pred = jnp.asarray(rng.standard_normal((3, n_span, c)))
+    true = jnp.asarray(rng.standard_normal((3, n_span, c)))
 
     loss_fn = StftLoss(
         weight=1.0,
@@ -176,11 +183,11 @@ def test_curriculum_scores_only_the_trusted_prefix() -> None:
     """Only the trusted prefix reaches the MSE, and its width is reported as the 'L' diagnostic."""
     rng = np.random.default_rng(_SEED + 3)
     batch, span_steps, c = 4, 10, 3
-    pred = torch.as_tensor(rng.standard_normal((batch, span_steps, c)))
-    true = torch.as_tensor(rng.standard_normal((batch, span_steps, c)))
+    pred = jnp.asarray(rng.standard_normal((batch, span_steps, c)))
+    true = jnp.asarray(rng.standard_normal((batch, span_steps, c)))
     ctx = LossContext(
-        y_center=torch.zeros(c, dtype=torch.float64),
-        y_scale=torch.ones(c, dtype=torch.float64),
+        y_center=jnp.zeros(c, dtype=jnp.float64),
+        y_scale=jnp.ones(c, dtype=jnp.float64),
         fs=1.0,
         epoch=0,
     )
@@ -190,8 +197,8 @@ def test_curriculum_scores_only_the_trusted_prefix() -> None:
 
     assert diag["L"] == 1.0
     # At L = 1 the loss must equal the plain MSE of the first step alone.
-    expected = torch.mean((pred[:, 0] - true[:, 0]) ** 2)
-    torch.testing.assert_close(value, expected)
+    expected = jnp.mean((pred[:, 0] - true[:, 0]) ** 2)
+    np.testing.assert_allclose(value, expected, rtol=1e-5, atol=1e-6)
 
 
 def test_stft_is_gated_off_until_start_epoch() -> None:
@@ -200,11 +207,11 @@ def test_stft_is_gated_off_until_start_epoch() -> None:
     n_y, n_u, horizon, c, n_controls, batch, w_stft = 2, 2, 6, 5, 2, 32, 0.1
     model = _model(n_y, n_u, horizon, c, n_controls)
 
-    y_hist = torch.as_tensor(rng.standard_normal((batch, n_y, c)), dtype=torch.float32)
-    u_hist = torch.as_tensor(rng.standard_normal((batch, n_u, n_controls)), dtype=torch.float32)
-    u_future = torch.as_tensor(rng.standard_normal((batch, horizon, n_controls)), dtype=torch.float32)
-    true_traj = torch.as_tensor(rng.standard_normal((batch, horizon, c)), dtype=torch.float32)
-    pred_traj = model(y_hist, u_hist, u_future)
+    y_hist = jnp.asarray(rng.standard_normal((batch, n_y, c)), dtype=jnp.float32)
+    u_hist = jnp.asarray(rng.standard_normal((batch, n_u, n_controls)), dtype=jnp.float32)
+    u_future = jnp.asarray(rng.standard_normal((batch, horizon, n_controls)), dtype=jnp.float32)
+    true_traj = jnp.asarray(rng.standard_normal((batch, horizon, c)), dtype=jnp.float32)
+    pred_traj = model.rollout(y_hist, u_hist, u_future)
 
     losses: list[Loss] = [
         CurriculumMSE(weight=1.0, span_steps=horizon, start_epoch=0, curr_start=0, curr_end=0),
@@ -217,14 +224,14 @@ def test_stft_is_gated_off_until_start_epoch() -> None:
     ]
 
     ctx_gated = LossContext(
-        y_center=torch.zeros(c, dtype=torch.float32),
-        y_scale=torch.ones(c, dtype=torch.float32),
+        y_center=jnp.zeros(c, dtype=jnp.float32),
+        y_scale=jnp.ones(c, dtype=jnp.float32),
         fs=1.0,
         epoch=5,
     )
     ctx_active = LossContext(
-        y_center=torch.zeros(c, dtype=torch.float32),
-        y_scale=torch.ones(c, dtype=torch.float32),
+        y_center=jnp.zeros(c, dtype=jnp.float32),
+        y_scale=jnp.ones(c, dtype=jnp.float32),
         fs=1.0,
         epoch=10,
     )
@@ -234,11 +241,11 @@ def test_stft_is_gated_off_until_start_epoch() -> None:
 
     assert comps_gated["stft"] is None
     assert comps_gated["curriculum_mse"] is not None
-    assert float(total_gated.detach()) == pytest.approx(comps_gated["curriculum_mse"])
+    assert float(total_gated) == pytest.approx(comps_gated["curriculum_mse"])
     assert comps_active["stft"] is not None
     assert comps_active["curriculum_mse"] is not None
     assert comps_active["stft"] > 0.0
-    assert float(total_active.detach()) == pytest.approx(comps_active["curriculum_mse"] + w_stft * comps_active["stft"])
+    assert float(total_active) == pytest.approx(comps_active["curriculum_mse"] + w_stft * comps_active["stft"])
 
 
 def test_build_losses_instantiates_from_specs() -> None:

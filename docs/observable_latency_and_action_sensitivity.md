@@ -97,7 +97,7 @@ Below are six concrete proposals addressing both bottlenecks while preserving th
      $$\hat{\mathbf{y}}_{k+1} = \mathbf{y}_k + f(\mathbf{Y}_k, \mathbf{U}_k)$$
      when `residual: true` (standard across all trained checkpoints).
   2. The model already models increments $\Delta \mathbf{y}_k$ rather than absolute state.
-  3. A control-affine reformulation $\hat{\mathbf{y}}_{k+1} = f(\mathbf{Y}_k) + \mathbf{B}(\mathbf{Y}_k)\mathbf{u}_k$ would require rewriting JAX/PyTorch model classes, serialization schemas, and validation routines without solving the core data-weighting problem.
+  3. A control-affine reformulation $\hat{\mathbf{y}}_{k+1} = f(\mathbf{Y}_k) + \mathbf{B}(\mathbf{Y}_k)\mathbf{u}_k$ would require rewriting JAX/Equinox model classes, serialization schemas, and validation routines without solving the core data-weighting problem.
   4. Coupling the residual architecture with **Proposals 2.1 and 2.3** (effort calibration + short-hold excitation data) directly resolves action sensitivity without architectural churn.
 
 ---

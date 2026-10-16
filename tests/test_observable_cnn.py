@@ -1,11 +1,13 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+import math
+from typing import TYPE_CHECKING, Literal
 
+import equinox as eqx
 import jax
 import jax.numpy as jnp
 import numpy as np
-import torch
+import pytest
 
 from neuro.config import (
     CurriculumMSESpec,
@@ -17,8 +19,8 @@ from neuro.config import (
     TrainingConfig,
 )
 from neuro.control.mpc import build_observable_problem
-from neuro.predictor.inference import InferencePredictor, ObservableCNNModel
-from neuro.predictor.module import AutoregressiveCNN
+from neuro.predictor.cnn import ObservableCNNModel
+from neuro.predictor.inference import InferencePredictor
 from neuro.predictor.train import TrainingResult, train
 from neuro.transforms import Standardizer
 
@@ -30,12 +32,11 @@ if TYPE_CHECKING:
 
 def _model(
     *, n_values: int = 4, residual: bool = True, n_y: int = 3, n_controls: int = 1, activation: Activation = "relu"
-) -> AutoregressiveCNN:
+) -> ObservableCNNModel:
     """Build a small structured CNN with nontrivial channel-frequency standardizers."""
     rng = np.random.default_rng(27 + n_values)
-    torch.manual_seed(27 + n_values)
     geometry = StftGeometry(n_segment=6, n_hop=2) if n_values == 4 else StftGeometry(n_segment=2, n_hop=1, n_bin_pool=2)
-    model = AutoregressiveCNN(
+    model = ObservableCNNModel(
         n_y=n_y,
         n_u=2,
         horizon=3,
@@ -53,13 +54,14 @@ def _model(
         y_std=Standardizer(center=rng.normal(size=(2, n_values)), scale=rng.uniform(0.5, 2.0, (2, n_values))),
         u_std=Standardizer(center=np.full(n_controls, 0.4), scale=np.full(n_controls, 1.7)),
     )
-    with torch.no_grad():
-        for parameter in model.parameters():
-            parameter.normal_(std=0.2)
-    return model
+    return eqx.tree_at(
+        lambda m: (m.conv_weights, m.conv_biases, m.head_weights, m.head_biases),
+        model,
+        replace_fn=lambda tree: jax.tree.map(lambda x: jax.random.normal(jax.random.PRNGKey(91), x.shape) * 0.2, tree),
+    )
 
 
-def test_observable_cnn_torch_jax_parity_and_frequency_order() -> None:
+def test_observable_cnn_training_jax_parity_and_frequency_order() -> None:
     """Causal time-frequency convolution preserves frequency order across the runtime boundary."""
     model = _model()
     runtime = ObservableCNNModel.from_checkpoint(*model.to_checkpoint())
@@ -68,11 +70,10 @@ def test_observable_cnn_torch_jax_parity_and_frequency_order() -> None:
     k = t0 - 1
     y_raw = rng.normal(size=(t0 + model.horizon, model.n_channels, model.n_outputs // model.n_channels))
     u_raw = rng.normal(size=(t0 + model.horizon, model.n_controls))
-    y_hist = torch.as_tensor(model.y_std.transform(y_raw[k - model.n_y + 1 : k + 1]), dtype=torch.float32).unsqueeze(0)
-    u_hist = torch.as_tensor(model.u_std.transform(u_raw[k - model.n_u : k]), dtype=torch.float32).unsqueeze(0)
-    u_future = torch.as_tensor(model.u_std.transform(u_raw[k : k + model.horizon]), dtype=torch.float32).unsqueeze(0)
-    with torch.no_grad():
-        expected = model.y_std.inverse_transform(model(y_hist, u_hist, u_future).numpy()[0])
+    y_hist = jnp.expand_dims(jnp.asarray(model.y_std.transform(y_raw[k - model.n_y + 1 : k + 1]), dtype=jnp.float32), 0)
+    u_hist = jnp.expand_dims(jnp.asarray(model.u_std.transform(u_raw[k - model.n_u : k]), dtype=jnp.float32), 0)
+    u_future = jnp.expand_dims(jnp.asarray(model.u_std.transform(u_raw[k : k + model.horizon]), dtype=jnp.float32), 0)
+    expected = model.y_std.inverse_transform(np.asarray(model(y_hist, u_hist, u_future))[0])
     actual = np.asarray(runtime.free_run(y_raw[: k + 1][None], u_raw[:k][None], u_raw[k : k + model.horizon][None]))[0]
     np.testing.assert_allclose(actual, expected, rtol=1e-5, atol=1e-6)
     assert actual.shape == (model.horizon, model.n_channels, 4)
@@ -87,13 +88,12 @@ def test_observable_cnn_singleton_frequency_and_short_history() -> None:
     u_hist_raw = rng.normal(size=(1, model.n_u, model.n_controls))
     future = np.zeros((1, model.horizon, model.n_controls))
     future[:, 0] = rng.normal(size=(1, model.n_controls))
-    y_standardized = torch.as_tensor(model.y_std.transform(y[0]), dtype=torch.float32).unsqueeze(0)
-    u_standardized = torch.as_tensor(model.u_std.transform(u_hist_raw[0]), dtype=torch.float32).unsqueeze(0)
-    u_future_standardized = torch.as_tensor(model.u_std.transform(future[0]), dtype=torch.float32).unsqueeze(0)
-    with torch.no_grad():
-        expected = model.y_std.inverse_transform(
-            model(y_standardized, u_standardized, u_future_standardized).numpy()[0]
-        )
+    y_standardized = jnp.expand_dims(jnp.asarray(model.y_std.transform(y[0]), dtype=jnp.float32), 0)
+    u_standardized = jnp.expand_dims(jnp.asarray(model.u_std.transform(u_hist_raw[0]), dtype=jnp.float32), 0)
+    u_future_standardized = jnp.expand_dims(jnp.asarray(model.u_std.transform(future[0]), dtype=jnp.float32), 0)
+    expected = model.y_std.inverse_transform(
+        np.asarray(model(y_standardized, u_standardized, u_future_standardized))[0]
+    )
     result = np.asarray(runtime.free_run(y, u_hist_raw, future))[0]
     assert result.shape == (model.horizon, model.n_channels, 1)
     np.testing.assert_allclose(result, expected, rtol=1e-5, atol=1e-6)
@@ -110,16 +110,15 @@ def test_observable_cnn_generic_checkpoint_factory(tmp_path: Path) -> None:
     assert loaded.geometry == model.geometry
 
     roundtrip_meta, roundtrip_arrays = loaded.to_checkpoint()
-    torch_loaded = AutoregressiveCNN.from_checkpoint(roundtrip_meta, roundtrip_arrays)
+    training_loaded = ObservableCNNModel.from_checkpoint(roundtrip_meta, roundtrip_arrays)
     rng = np.random.default_rng(702)
     y_raw = rng.normal(size=(model.n_y, model.n_channels, model.n_values))
     u_raw = rng.normal(size=(model.n_u + model.horizon, model.n_controls))
-    y_hist = torch.as_tensor(model.y_std.transform(y_raw), dtype=torch.float32).unsqueeze(0)
-    u_hist = torch.as_tensor(model.u_std.transform(u_raw[: model.n_u]), dtype=torch.float32).unsqueeze(0)
-    u_future = torch.as_tensor(model.u_std.transform(u_raw[model.n_u :]), dtype=torch.float32).unsqueeze(0)
-    with torch.no_grad():
-        expected = model.y_std.inverse_transform(model(y_hist, u_hist, u_future).numpy()[0])
-        actual = torch_loaded.y_std.inverse_transform(torch_loaded(y_hist, u_hist, u_future).numpy()[0])
+    y_hist = jnp.expand_dims(jnp.asarray(model.y_std.transform(y_raw), dtype=jnp.float32), 0)
+    u_hist = jnp.expand_dims(jnp.asarray(model.u_std.transform(u_raw[: model.n_u]), dtype=jnp.float32), 0)
+    u_future = jnp.expand_dims(jnp.asarray(model.u_std.transform(u_raw[model.n_u :]), dtype=jnp.float32), 0)
+    expected = model.y_std.inverse_transform(np.asarray(model(y_hist, u_hist, u_future))[0])
+    actual = training_loaded.y_std.inverse_transform(np.asarray(training_loaded(y_hist, u_hist, u_future))[0])
     np.testing.assert_allclose(actual, expected, rtol=1e-5, atol=1e-6)
 
 
@@ -227,3 +226,84 @@ def test_observable_cnn_train_save_load_and_controller_smoke(tmp_path: Path) -> 
     assert isinstance(runtime, ObservableCNNModel)
     problem = build_observable_problem(artifact / "model", horizon=2, u_max=1.0, w_u=1.0)
     assert problem.model is not None
+
+
+@pytest.mark.parametrize(
+    ("tapering_ratio", "head_depth", "head_width"),
+    [
+        (0.5, 1, "trunk"),
+        (0.5, 0, "trunk"),
+        (0.5, 1, "geometric_mean"),
+    ],
+)
+def test_observable_cnn_tapering_and_head_depth_parity(
+    tapering_ratio: float,
+    head_depth: int,
+    head_width: Literal["trunk", "geometric_mean"],
+) -> None:
+    """Observable CNN supports tapering ratio and configurable head depth with JAX checkpoint parity."""
+    rng = np.random.default_rng(808)
+    geometry = StftGeometry(n_segment=6, n_hop=2)
+    n_values = 4
+    hidden_size = 16
+    depth = 3
+    module = ObservableCNNModel(
+        n_y=3,
+        n_u=2,
+        horizon=3,
+        n_channels=2,
+        n_controls=2,
+        n_outputs=2 * n_values,
+        hidden_size=hidden_size,
+        depth=depth,
+        kernel_size=3,
+        frequency_kernel_size=3,
+        activation="tanh",
+        residual=True,
+        dt=0.04,
+        geometry=geometry,
+        y_std=Standardizer(center=rng.normal(size=(2, n_values)), scale=rng.uniform(0.5, 2.0, (2, n_values))),
+        u_std=Standardizer(center=np.full(2, 0.4), scale=np.full(2, 1.7)),
+        tapering_ratio=tapering_ratio,
+        head_depth=head_depth,
+        head_width=head_width,
+    )
+    module = eqx.tree_at(
+        lambda m: (m.conv_weights, m.conv_biases, m.head_weights, m.head_biases),
+        module,
+        replace_fn=lambda tree: jax.tree.map(lambda x: jax.random.normal(jax.random.PRNGKey(91), x.shape) * 0.2, tree),
+    )
+
+    conv_layers = module.conv_weights
+    expected_channels = [
+        16,
+        math.floor(16 * tapering_ratio),
+        math.floor(math.floor(16 * tapering_ratio) * tapering_ratio),
+    ]
+    assert [layer.shape[0] for layer in conv_layers] == expected_channels
+
+    head_linears = module.head_weights
+    assert len(head_linears) == (head_depth + 1 if head_depth > 0 else 1)
+
+    meta, arrays = module.to_checkpoint()
+    assert meta["tapering_ratio"] == tapering_ratio
+    assert meta["head_depth"] == head_depth
+    assert meta["head_width"] == head_width
+
+    runtime = ObservableCNNModel.from_checkpoint(meta, arrays)
+    assert runtime.tapering_ratio == tapering_ratio
+    assert runtime.head_depth == head_depth
+    assert runtime.head_width == head_width
+
+    t0 = 7
+    k = t0 - 1
+    y_raw = rng.normal(size=(t0 + module.horizon, module.n_channels, n_values))
+    u_raw = rng.normal(size=(t0 + module.horizon, module.n_controls))
+    y_hist = jnp.expand_dims(
+        jnp.asarray(module.y_std.transform(y_raw[k - module.n_y + 1 : k + 1]), dtype=jnp.float32), 0
+    )
+    u_hist = jnp.expand_dims(jnp.asarray(module.u_std.transform(u_raw[k - module.n_u : k]), dtype=jnp.float32), 0)
+    u_future = jnp.expand_dims(jnp.asarray(module.u_std.transform(u_raw[k : k + module.horizon]), dtype=jnp.float32), 0)
+    expected = module.y_std.inverse_transform(np.asarray(module(y_hist, u_hist, u_future))[0])
+    actual = np.asarray(runtime.free_run(y_raw[: k + 1][None], u_raw[:k][None], u_raw[k : k + module.horizon][None]))[0]
+    np.testing.assert_allclose(actual, expected, rtol=1e-5, atol=1e-6)

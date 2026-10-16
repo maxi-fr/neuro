@@ -5,7 +5,6 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 import pytest
-import torch
 
 from neuro.comparison import Cell, check_arm_eligibility, validate_grid
 from neuro.config import StftGeometry
@@ -16,8 +15,7 @@ from neuro.predictor.evaluation import (
     check_candidate_eligibility,
     evaluate_control_horizon,
 )
-from neuro.predictor.inference import WaveformMLPModel
-from neuro.predictor.module import AutoregressiveMLP
+from neuro.predictor.mlp import WaveformMLPModel
 from neuro.run_view import Run
 from neuro.spectral import compute_log_power_frames
 from neuro.transforms import Standardizer
@@ -40,7 +38,7 @@ def _create_synthetic_model(
     downsample: int = 200,
 ) -> WaveformMLPModel:
     """Create a deterministic linear MLP with state matrix scaled by ``gain``."""
-    module = AutoregressiveMLP(
+    module = WaveformMLPModel(
         n_y=n_y,
         n_u=n_u,
         horizon=horizon,
@@ -56,14 +54,11 @@ def _create_synthetic_model(
         u_std=Standardizer(center=np.zeros(n_controls), scale=np.ones(n_controls)),
     )
     module.downsample = downsample
-    layer = module.layers[0]
-    assert isinstance(layer, torch.nn.Linear)
-    with torch.no_grad():
-        layer.weight.zero_()
-        layer.bias.zero_()
-        y_t_start = (n_y - 1) * n_channels
-        for c in range(n_channels):
-            layer.weight[c, y_t_start + c] = gain
+    weight = np.zeros(module.weights[0].shape, dtype=np.float64)
+    y_t_start = (n_y - 1) * n_channels
+    for c in range(n_channels):
+        weight[c, y_t_start + c] = gain
+    module = module.with_readout(weight, np.zeros(n_channels))
     meta, arrays = module.to_checkpoint()
     return WaveformMLPModel.from_checkpoint(meta, arrays)
 

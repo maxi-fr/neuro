@@ -19,7 +19,7 @@ def save_checkpoint(path: str | Path, *, meta: dict[str, Any], arrays: dict[str,
     """Persist ``meta`` and ``arrays`` into one ``.npz`` at ``path``, a suffix-less stem.
 
     ``meta`` is stored as a 0-d unicode array holding JSON, so loading needs no ``allow_pickle``;
-    every weight and standardizer rides as its own NumPy array, which is what lets a torch-free
+    every weight and standardizer rides as its own NumPy array, which is what lets a framework-independent
     reader consume the checkpoint later. The layout is the one the checkpoint readers read, so
     the incumbent control path keeps loading what ``save`` writes.
     """
@@ -66,7 +66,7 @@ def layer_arrays(
     """Key one MLP block's weights and biases as ``<prefix>.<i>.weight`` / ``<prefix>.<i>.bias``.
 
     This and :func:`layers_from_arrays` are the one place the block key convention is written, so
-    the torch writer and the jax reader cannot drift apart on it.
+    the checkpoint writer and reader cannot drift apart on it.
     """
     arrays: dict[str, FloatArray] = {}
     for i, (weight, bias) in enumerate(zip(weights, biases, strict=True)):

@@ -1,17 +1,19 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING
 
+import jax
+import jax.numpy as jnp
 import numpy as np
-import torch
-from torch import Tensor
 
 from neuro.filtering import antialias_filter, lowpass_filter
 from neuro.spectral import compute_log_power_frames
 from neuro.transforms import Standardizer
 
 if TYPE_CHECKING:
+    from collections.abc import Iterator
+
     from neuro.config import StftGeometry
     from neuro.types import Float32Array, FloatArray, IntArray
 
@@ -23,7 +25,7 @@ def load_trajectory(
     dt: float,
     cutoff_hz: float | None = None,
 ) -> tuple[FloatArray, FloatArray]:
-    """Decimate recorded EEG and sample held controls on the same timestamps.
+    """Decimate recorded EEG and held controls into owned arrays on matching timestamps.
 
     The EEG is causally low-passed (at ``cutoff_hz`` if specified, or at the decimated Nyquist
     rate) before striding. The control is strided unfiltered.
@@ -56,13 +58,13 @@ def load_trajectory(
             indices = np.searchsorted(data["controller.t"], times, side="right") - 1
             u_data = np.asarray(data["controller.u"][indices], dtype=np.float64)
         else:
-            u_data = np.asarray(data["controller.u"][:max_idx:downsample], dtype=np.float64)
+            u_data = np.array(data["controller.u"][:max_idx:downsample], dtype=np.float64, copy=True, order="C")
 
     if cutoff_hz is not None:
         y_filtered = lowpass_filter(y_full, 1.0 / dt, cutoff_hz)
     else:
         y_filtered = antialias_filter(y_full, 1.0 / dt, downsample)
-    y_data = np.asarray(y_filtered[::downsample], dtype=np.float64)
+    y_data = np.array(y_filtered[::downsample], dtype=np.float64, copy=True, order="C")
 
     return u_data, y_data
 
@@ -192,11 +194,9 @@ def fit_standardizers(  # noqa: PLR0913
     downsample: int,
     dt: float,
     train_split: float,
-    scaler: Literal["standard", "robust"],
-    global_scaling: bool,
     cutoff_hz: float | None = None,
 ) -> TrajectorySplit:
-    """Split ``data_files`` by trajectory, load both sides, and fit the y/u standardizers on the training split."""
+    """Split recordings and fit per-coordinate y/u means and standard deviations on training data only."""
     train_files, val_files = split_data_files(data_files, train_split)
 
     def load(files: list[str]) -> list[tuple[FloatArray, FloatArray]]:
@@ -209,12 +209,12 @@ def fit_standardizers(  # noqa: PLR0913
     return TrajectorySplit(
         train_trajs=train_trajs,
         val_trajs=load(val_files),
-        y_std=Standardizer.fit(all_y_train, kind=scaler, global_scaling=global_scaling),
-        u_std=Standardizer.fit(all_u_train, kind=scaler, global_scaling=global_scaling),
+        y_std=Standardizer.fit(all_y_train),
+        u_std=Standardizer.fit(all_u_train),
     )
 
 
-class TrajectoryWindowDataset(torch.utils.data.Dataset[tuple[Tensor, Tensor, Tensor, Tensor]]):
+class TrajectoryWindowDataset:
     """On-the-fly sliding window dataset over standardized continuous trajectories.
 
     Parameters
@@ -240,10 +240,10 @@ class TrajectoryWindowDataset(torch.utils.data.Dataset[tuple[Tensor, Tensor, Ten
         self.n_y = n_y
         self.n_u = n_u
         self.horizon = horizon
-        self.trajectories: list[tuple[Tensor, Tensor]] = [
+        self.trajectories: list[tuple[Float32Array, Float32Array]] = [
             (
-                torch.as_tensor(np.ascontiguousarray(u), dtype=torch.float32),
-                torch.as_tensor(np.ascontiguousarray(y), dtype=torch.float32),
+                np.asarray(u, dtype=np.float32),
+                np.asarray(y, dtype=np.float32),
             )
             for u, y in trajectories
         ]
@@ -265,20 +265,8 @@ class TrajectoryWindowDataset(torch.utils.data.Dataset[tuple[Tensor, Tensor, Ten
         """Total number of valid sliding windows across all trajectories."""
         return len(self._index_map)
 
-    def __getitem__(self, index: int) -> tuple[Tensor, Tensor, Tensor, Tensor]:
-        """Extract (y_hist, u_hist, u_future, y_future) for the window indexed by index.
-
-        Returns
-        -------
-        y_hist : Tensor
-            Past outputs/Frames of shape ``(n_y, *output_shape)``.
-        u_hist : Tensor
-            Past controls of shape ``(n_u, n_controls)``.
-        u_future : Tensor
-            Future controls of shape ``(horizon, n_controls)``.
-        y_future : Tensor
-            Future output targets of shape ``(horizon, *output_shape)``.
-        """
+    def __getitem__(self, index: int) -> tuple[Float32Array, Float32Array, Float32Array, Float32Array]:
+        """Extract (y_hist, u_hist, u_future, y_future) for the window indexed by index."""
         traj_idx, k = self._index_map[index]
         u, y = self.trajectories[traj_idx]
         y_hist = y[k - self.n_y + 1 : k + 1]
@@ -286,6 +274,51 @@ class TrajectoryWindowDataset(torch.utils.data.Dataset[tuple[Tensor, Tensor, Ten
         u_future = u[k : k + self.horizon]
         y_future = y[k + 1 : k + 1 + self.horizon]
         return y_hist, u_hist, u_future, y_future
+
+    def get_batch(self, indices: np.ndarray | list[int]) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array]:
+        """Gather and stack a batch of windows into JAX arrays."""
+        pairs = self._index_map[indices]
+        first_u, first_y = self.trajectories[0]
+        y_shape = first_y.shape[1:]
+        u_shape = first_u.shape[1:]
+
+        b_size = len(pairs)
+        y_hists = np.empty((b_size, self.n_y, *y_shape), dtype=np.float32)
+        u_hists = np.empty((b_size, self.n_u, *u_shape), dtype=np.float32)
+        u_futs = np.empty((b_size, self.horizon, *u_shape), dtype=np.float32)
+        y_futs = np.empty((b_size, self.horizon, *y_shape), dtype=np.float32)
+
+        for i in range(b_size):
+            traj_idx = int(pairs[i, 0])
+            k = int(pairs[i, 1])
+            u, y = self.trajectories[traj_idx]
+            y_hists[i] = y[k - self.n_y + 1 : k + 1]
+            u_hists[i] = u[k - self.n_u : k]
+            u_futs[i] = u[k : k + self.horizon]
+            y_futs[i] = y[k + 1 : k + 1 + self.horizon]
+
+        return jnp.asarray(y_hists), jnp.asarray(u_hists), jnp.asarray(u_futs), jnp.asarray(y_futs)
+
+
+def batch_iterator(
+    dataset: TrajectoryWindowDataset,
+    batch_size: int,
+    *,
+    rng: np.random.Generator | None = None,
+    shuffle: bool = True,
+) -> Iterator[tuple[jax.Array, jax.Array, jax.Array, jax.Array]]:
+    """Yield mini-batches of JAX arrays from dataset."""
+    n = len(dataset)
+    if n == 0:
+        return
+    indices = np.arange(n)
+    if shuffle:
+        if rng is None:
+            rng = np.random.default_rng()
+        rng.shuffle(indices)
+    for start in range(0, n, batch_size):
+        batch_idx = indices[start : start + batch_size]
+        yield dataset.get_batch(batch_idx)
 
 
 @dataclass(frozen=True)
@@ -295,9 +328,9 @@ class Datasets:
     Attributes
     ----------
     train_dataset : TrajectoryWindowDataset
-        On-the-fly PyTorch Dataset of standardized training windows.
+        NumPy Dataset of standardized training windows.
     val_dataset : TrajectoryWindowDataset
-        On-the-fly PyTorch Dataset of standardized validation windows.
+        NumPy Dataset of standardized validation windows.
     y_std, u_std : Standardizer
         Fitted channel and control standardizers.
     train_trajs, val_trajs : list[tuple[FloatArray, FloatArray]]
@@ -329,19 +362,15 @@ def prepare_datasets(  # noqa: PLR0913, PLR0917
     dt: float,
     train_split: float,
     *,
-    scaler: Literal["standard", "robust"],
-    global_scaling: bool,
     cutoff_hz: float | None = None,
 ) -> Datasets:
-    """Split ``data_files`` by trajectory, standardize, and build on-the-fly window datasets."""
+    """Build waveform windows using training-only per-channel mean/std scaling."""
     split = fit_standardizers(
         data_files,
         n_steps_cfg=n_steps_cfg,
         downsample=downsample,
         dt=dt,
         train_split=train_split,
-        scaler=scaler,
-        global_scaling=global_scaling,
         cutoff_hz=cutoff_hz,
     )
     y_std, u_std = split.y_std, split.u_std
@@ -426,12 +455,10 @@ def prepare_observable_datasets(  # noqa: PLR0913, PLR0917 -- one flat call from
     train_split: float,
     geometry: StftGeometry,
     *,
-    scaler: Literal["standard", "robust"],
-    global_scaling: bool,
     cutoff_hz: float | None = None,
     subhop_offsets: bool = True,
 ) -> Datasets:
-    """Split ``data_files`` by trajectory, reduce to Frames, standardize, and build sliding windows on the Frame grid.
+    """Build Frame-grid windows with training-only mean/std scaling per channel-frequency coordinate.
 
     Parameters
     ----------
@@ -453,10 +480,6 @@ def prepare_observable_datasets(  # noqa: PLR0913, PLR0917 -- one flat call from
         Fraction of trajectories held for training.
     geometry : StftGeometry
         Observable STFT geometry defining the Frame reduction.
-    scaler : Literal["standard", "robust"]
-        Standardizer scaling algorithm.
-    global_scaling : bool
-        Whether scale is shared across outputs.
     cutoff_hz : float | None, optional
         Explicit lowpass filter cutoff frequency in Hz.
     subhop_offsets : bool, default=True
@@ -488,8 +511,8 @@ def prepare_observable_datasets(  # noqa: PLR0913, PLR0917 -- one flat call from
     all_y_train = np.concatenate([y for _, y in train_trajs], axis=0)
     all_u_train = np.concatenate([u for u, _ in train_trajs], axis=0)
 
-    y_std = Standardizer.fit(all_y_train, kind=scaler, global_scaling=global_scaling)
-    u_std = Standardizer.fit(all_u_train, kind=scaler, global_scaling=global_scaling)
+    y_std = Standardizer.fit(all_y_train)
+    u_std = Standardizer.fit(all_u_train)
 
     train_dataset = TrajectoryWindowDataset(
         [(u_std.transform(u), y_std.transform(y)) for u, y in train_trajs],

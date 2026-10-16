@@ -1,14 +1,14 @@
 import marimo
 
-__generated_with = "0.23.16"
+__generated_with = "0.24.2"
 app = marimo.App(width="medium", app_title="STFT Loss Walkthrough")
 
 
 @app.cell
 def _():
+    import jax.numpy as jnp
     import marimo as mo
     import numpy as np
-    import torch
     from matplotlib import pyplot as plt
     from pydantic import ValidationError
 
@@ -26,6 +26,7 @@ def _():
         WaveformMLPModel,
         build_eeg_leadfield,
         frame_kernel,
+        jnp,
         load_trajectory,
         mo,
         np,
@@ -33,7 +34,6 @@ def _():
         pool_bins,
         smooth_frames,
         spectrogram,
-        torch,
     )
 
 
@@ -207,17 +207,18 @@ def _(
     LOG_FLOOR,
     frame_kernel,
     fs,
+    jnp,
     np,
     pool_bins,
     smooth_frames,
     spec,
     spectrogram,
-    torch,
 ):
     def stages(y):
-        """Run one ``(span, channels)`` rollout through steps 1-7, keeping every intermediate."""
-        raw = torch.as_tensor(y[None, : spec.n_span], dtype=torch.float64).transpose(1, 2)
-        segments = raw.unfold(dimension=-1, size=spec.n_segment, step=spec.n_hop)
+        """Keep every JAX STFT intermediate for one ``(span, channels)`` Rollout."""
+        raw = jnp.asarray(y[None, : spec.n_span], dtype=jnp.float64).transpose(0, 2, 1)
+        starts = jnp.arange(0, raw.shape[-1] - spec.n_segment + 1, spec.n_hop)
+        segments = raw[..., starts[:, None] + jnp.arange(spec.n_segment)]
         power = spectrogram(raw, spec.n_segment, spec.n_hop, fs=fs)
         bin_lo, bin_hi = spec.bin_range(fs)
         banded = power[..., bin_lo:bin_hi]
@@ -230,11 +231,11 @@ def _(
             "banded": np.asarray(banded[0]),
             "pooled": np.asarray(pooled[0]),
             "smoothed": np.asarray(smoothed[0]),
-            "log": np.asarray(torch.log(smoothed[0] + LOG_FLOOR)),
+            "log": np.asarray(jnp.log(smoothed[0] + LOG_FLOOR)),
             "weights": np.asarray(weights),
         }
 
-    taper = np.asarray(torch.hann_window(spec.n_segment, periodic=True, dtype=torch.float64))
+    taper = np.asarray(jnp.hanning(spec.n_segment + 1)[:-1])
     return stages, taper
 
 

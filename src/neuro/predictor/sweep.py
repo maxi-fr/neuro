@@ -3,7 +3,6 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 import optuna
-import torch
 import yaml
 from simulate.config import deep_merge
 
@@ -77,7 +76,7 @@ def _run_trial(
         yaml.dump(config.model_dump(exclude={"sweep"}), f)
     try:
         result = train(config, data_files, seed_offset=trial.number)
-    except (ValueError, RuntimeError, torch.AcceleratorError) as exc:
+    except (ValueError, RuntimeError) as exc:
         err_msg = str(exc).lower()
         if "nan" in err_msg or "out of memory" in err_msg or "cuda" in err_msg:
             raise optuna.TrialPruned from exc
@@ -139,10 +138,13 @@ class OptunaSweep:
         return _run_trial(config, self.data_files, trial, trial_dir, self.sweep)
 
     def run(self) -> optuna.Study:
-        """Create or resume the sqlite-backed study and run ``sweep.n_trials`` evaluations."""
+        """Run the configured trial budget with seeded multivariate TPE after fifteen random startup trials."""
         study_name = "nn_predictor_sweep"
         db_path = self.artifact_dir / f"{study_name}.db"
         storage = f"sqlite:///{db_path.resolve()}"
-        study = optuna.create_study(study_name=study_name, storage=storage, direction="minimize", load_if_exists=True)
+        sampler = optuna.samplers.TPESampler(n_startup_trials=15, multivariate=True, seed=self.cfg.training.seed)
+        study = optuna.create_study(
+            study_name=study_name, storage=storage, direction="minimize", load_if_exists=True, sampler=sampler
+        )
         study.optimize(self.objective, n_trials=self.sweep.n_trials)
         return study

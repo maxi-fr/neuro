@@ -1,0 +1,65 @@
+\begin{tikzpicture}[
+    >=Stealth,
+    thesis figure,
+    block/.style={draw=black!70, fill=white, align=center,
+        minimum height=0.9cm, inner sep=4pt},
+    signal/.style={->, line width=0.8pt, draw=black!85},
+    offline/.style={->, dashed, line width=0.8pt, draw=accentcolor!85!black},
+    group/.style={draw=black!45, rounded corners=3pt, fill=black!3}
+]
+    \node[anchor=west, thesis heading] at (0,0.45) {Online feedback};
+
+    \path[group, fill=accentcolor!4] (1.6,0) rectangle (6.9,-5.25);
+    \node[anchor=west] at (1.8,-0.3) {\acs{mpc}};
+    \node[block, minimum width=4.5cm] (objective) at (4.25,-1.15)
+        {Control objective and constraints};
+    \node[block, minimum width=4.5cm] (optimize) at (4.25,-2.7)
+        {Optimization};
+    \node[block, minimum width=4.5cm] (prediction) at (4.25,-4.55)
+        {Prediction model};
+
+    \node[align=center, thesis secondary] at (0.75,-0.65)
+        {Healthy\\reference};
+    \draw[signal] (0,-1.15) -- (objective.west);
+    \draw[signal] (objective) -- (optimize);
+    \draw[signal] (2.4,-3.15) -- (2.4,-4.10);
+    \node[thesis secondary, align=center] at (3.2,-3.63)
+        {Candidate\\currents};
+    \draw[signal] (6.1,-4.10) -- (6.1,-3.15);
+    \node[thesis secondary, align=center] at (5.1,-3.63)
+        {Predicted\\measurements};
+
+    \path[group] (8.2,-1.65) rectangle (15.7,-3.75);
+    \node[anchor=west, thesis secondary] at (8.4,-1.90)
+        {Biophysical plant model};
+    \node[block, minimum width=2.0cm] (stim) at (9.4,-2.7)
+        {Stimulation\\mapping};
+    \node[block, minimum width=2.1cm] (neural) at (11.95,-2.7)
+        {Regional\\neural dynamics};
+    \node[block, minimum width=2.0cm] (measure) at (14.5,-2.7)
+        {\acs{eeg}\\measurement};
+    \draw[signal] (optimize) -- (stim);
+    \node[thesis secondary] at (7.55,-2.4) {First input};
+    \draw[signal] (stim) -- (neural);
+    \draw[signal] (neural) -- (measure);
+
+    \node[block, minimum width=3.6cm] (process) at (11.7,-4.55)
+        {Measurement processing};
+    \draw[signal] (measure.east) -- (15.9,-2.7) |- (process.east);
+    \node[thesis secondary, anchor=west] at (14.6,-4.25) {\acs{eeg}};
+    \draw[signal] (process.west) -- (prediction.east);
+
+    \draw[black!25] (0,-6.65) -- (16.2,-6.65);
+    \node[anchor=west, thesis heading] at (0,-7.1)
+        {Offline identification};
+    \node[block, minimum width=4.5cm] (identify) at (4.25,-8.15)
+        {System identification};
+    \node[block, minimum width=4.5cm] (data) at (9.4,-8.15)
+        {Plant-generated data\\Applied currents and \acs{eeg}};
+    \draw[offline, preaction={draw=white, line width=2.5pt}]
+        (9.4,-3.75) -- (data.north);
+    \draw[offline] (data) -- (identify);
+    \draw[offline] (identify.north) -- (prediction.south);
+    \node[thesis secondary, text=accentcolor!85!black, anchor=west]
+        at (4.4,-6.0) {Parameters};
+\end{tikzpicture}

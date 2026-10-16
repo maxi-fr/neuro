@@ -129,6 +129,33 @@ def test_optuna_sweep_merges_suggested_params_into_the_config(tmp_path: Path, mo
     assert captured[0].model.hidden_size == 4  # untouched base values survive the merge
 
 
+def test_sweep_runs_25_trials_with_15_seeded_random_startup_trials(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The persisted sweep starts with fifteen random trials before using multivariate TPE."""
+    cfg = _wave_config()
+    sweep = OptunaSweep(cfg, [], tmp_path)
+
+    def objective(trial: optuna.trial.Trial) -> float:
+        """Score two interacting parameters without training a Predictor."""
+        x = trial.suggest_float("x", -1.0, 1.0)
+        y = trial.suggest_float("y", -1.0, 1.0)
+        return (x - y) ** 2 + x**2
+
+    monkeypatch.setattr(sweep, "objective", objective)
+    study = sweep.run()
+    random_study = optuna.create_study(sampler=optuna.samplers.RandomSampler(seed=cfg.training.seed))
+    random_study.optimize(objective, n_trials=16)
+
+    assert len(study.trials) == 25
+    assert all(trial.state == optuna.trial.TrialState.COMPLETE for trial in study.trials)
+    assert [trial.params for trial in study.trials[:15]] == [trial.params for trial in random_study.trials[:15]]
+    assert study.trials[15].params != random_study.trials[15].params
+    assert isinstance(study.sampler, optuna.samplers.TPESampler)
+    assert study.sampler._multivariate  # noqa: SLF001 -- Optuna has no public accessor for this sampler setting
+    assert (tmp_path / "nn_predictor_sweep.db").is_file()
+
+
 @pytest.mark.parametrize(
     ("config", "sweep_factory"),
     [

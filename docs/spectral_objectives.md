@@ -106,7 +106,7 @@ returns a scalar. Each is pushed through `log_spectrogram` independently:
 | 6 | `smooth_frames(frame_kernel(...))` — valid-support convolution along $m$ | `(B, C, M_out, F')` |
 | 7 | `log(· + LOG_FLOOR)` | `(B, C, M_out, F')` |
 | 8 | `pred − true`, square | `(B, C, M_out, F')` |
-| 9 | `torch.mean` over every axis | `()` |
+| 9 | `jax.numpy.mean` over every axis | `()` |
 
 Written out, with $b$ over the batch, $c$ over channels, $m$ over frames and $f$ over pooled bins:
 
@@ -251,7 +251,7 @@ or the envelope geometry changes.
 | pre-log pooling | bins and Frames, configurable | the envelope's bin pool and Frame Kernel |
 | reduction | mean over $(b, c, m, f)$ after the square | mean over $(m, c, f)$ after the square |
 | geometry source | `StftSpec`, in samples | the envelope's `StftGeometry` |
-| transform | `torch.fft.rfft` | `jax.numpy.fft.rfft` for waveform Predictors |
+| transform | `jax.numpy.fft.rfft` | `jax.numpy.fft.rfft` for waveform Predictors |
 | differentiable w.r.t. | model parameters | the control sequence $u$ |
 | evaluated | once per training batch | once per solver iteration, per control step |
 

@@ -7,7 +7,6 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
-import torch
 from trajopt.constraints.linear import LinearConstraint
 from trajopt.costs.output import OutputCost
 from trajopt.costs.pseudo_huber import PseudoHuberControlCost
@@ -32,8 +31,7 @@ from neuro.control.costs import (
     jax_compute_observable_frames,
 )
 from neuro.control.mpc import build_waveform_problem, decompose_cost, kirchhoff_basis
-from neuro.predictor.inference import WaveformMLPModel
-from neuro.predictor.module import AutoregressiveMLP
+from neuro.predictor.mlp import WaveformMLPModel
 from neuro.spectral import HealthyReference, ObservableEnvelope, compute_log_power_frames
 from neuro.transforms import Standardizer
 
@@ -140,7 +138,7 @@ def _build_checkpoint(
         "y_mean": rng.uniform(-1.0, 1.0, n_channels),
         "y_scale": rng.uniform(0.5, 2.0, n_channels),
     }
-    model = AutoregressiveMLP(
+    model = WaveformMLPModel(
         n_y=n_y,
         n_u=n_u,
         horizon=horizon,
@@ -154,25 +152,22 @@ def _build_checkpoint(
         y_std=Standardizer(center=scalers["y_mean"], scale=scalers["y_scale"]),
         u_std=Standardizer(center=scalers["u_mean"], scale=scalers["u_scale"]),
     )
-    linears = [m for m in model.layers if isinstance(m, torch.nn.Linear)]
     sizes = [in_size, *([5] * depth), n_channels]
-    with torch.no_grad():
-        if equilibrium_at is not None and depth == 0:
-            u_0_std = (np.zeros(n_controls) - scalers["u_mean"]) / scalers["u_scale"]
-            w = np.zeros((n_channels, in_size), dtype=np.float64)
-            b_mat = np.zeros((n_channels, n_controls), dtype=np.float64)
-            b_mat[0, 0] = 1.0
-            b_mat[0, 1] = -1.0
-            b_mat[1, 0] = -1.0
-            b_mat[1, 1] = 1.0
-            w[:, in_size - n_controls : in_size] = b_mat
-            b = -b_mat @ u_0_std
-            linears[0].weight.copy_(torch.as_tensor(w, dtype=torch.float32))
-            linears[0].bias.copy_(torch.as_tensor(b, dtype=torch.float32))
-        else:
-            for lin, (w, b) in zip(linears, _random_layers(rng, sizes), strict=True):
-                lin.weight.copy_(torch.as_tensor(w, dtype=torch.float32))
-                lin.bias.copy_(torch.as_tensor(b, dtype=torch.float32))
+    if equilibrium_at is not None and depth == 0:
+        u_0_std = (np.zeros(n_controls) - scalers["u_mean"]) / scalers["u_scale"]
+        w = np.zeros((n_channels, in_size), dtype=np.float64)
+        b_mat = np.zeros((n_channels, n_controls), dtype=np.float64)
+        b_mat[0, 0] = 1.0
+        b_mat[0, 1] = -1.0
+        b_mat[1, 0] = -1.0
+        b_mat[1, 1] = 1.0
+        w[:, in_size - n_controls : in_size] = b_mat
+        b = -b_mat @ u_0_std
+        model = model.with_readout(w, b)
+    else:
+        layers = _random_layers(rng, sizes)
+        model.weights = tuple(jnp.asarray(w, dtype=jnp.float32) for w, _ in layers)
+        model.biases = tuple(jnp.asarray(b, dtype=jnp.float32) for _, b in layers)
     path = tmp_path / "art"
     model.save(path)
     return path

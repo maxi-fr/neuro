@@ -1,8 +1,8 @@
 # NN Predictor — Training Setup
 
 A detailed, end-to-end description of how the neural-network EEG predictor is
-trained. The predictor is a [PyTorch](https://pytorch.org/) MLP or causal CNN, optimised with
-`torch.optim.AdamW`, that learns a **one-step-ahead** EEG or Observable map and is unrolled
+trained. The predictor is a [JAX](https://docs.jax.dev/) and Equinox MLP or causal CNN, optimised with
+`optax.adamw`, that learns a **one-step-ahead** EEG or Observable map and is unrolled
 autoregressively to produce a multi-step-ahead forecast conditioned on past outputs and
 past/future stimulation.
 
@@ -10,7 +10,8 @@ Source of truth:
 
 - Training loop: [`src/neuro/predictor/train.py`](../src/neuro/predictor/train.py)
 - Data loading & windowing: [`src/neuro/predictor/data.py`](../src/neuro/predictor/data.py)
-- torch module: [`src/neuro/predictor/module.py`](../src/neuro/predictor/module.py)
+- MLP models: [`src/neuro/predictor/mlp.py`](../src/neuro/predictor/mlp.py)
+- CNN models: [`src/neuro/predictor/cnn.py`](../src/neuro/predictor/cnn.py)
 - Losses: [`src/neuro/predictor/losses.py`](../src/neuro/predictor/losses.py)
 - Artifact + inference: [`src/neuro/predictor/inference.py`](../src/neuro/predictor/inference.py)
 - Shared metrics & artifact dispatch: [`src/neuro/artifacts.py`](../src/neuro/artifacts.py)
@@ -19,12 +20,9 @@ Source of truth:
   [`scripts/sweep_nn_predictor.py`](../scripts/sweep_nn_predictor.py)
 - Example configs: [`configs/nn_predictor/`](../configs/nn_predictor/)
 
-> Model training runs in **float32** for computational and memory efficiency: every `nn.Linear`
-> is built with `dtype=torch.float32` and batches crossing into torch go through
-> `torch.as_tensor(..., dtype=torch.float32)`. The exported neural checkpoint and downstream JAX
-> controller run in double precision (**float64**). The global default dtype is never changed,
-> so importing `neuro` cannot alter dtype behaviour for anything else in the process. Runtime
-> checkpoint arrays are loaded into the JAX controller in float64.
+> Training parameters and batches use **float32**. Portable checkpoints store NumPy arrays;
+> runtime state and controller calculations use **float64** with JAX x64 enabled by the caller.
+> Training and inference share the same Equinox model and causal recurrence.
 
 The `model.architecture` setting selects `mlp` (the historical default) or `cnn`. Both use the
 same training entry point, rollout timing, standardizers, checkpoint format, and gradient-descent
@@ -34,8 +32,8 @@ fit. CNN examples are [`waveform_cnn.yaml`](../configs/nn_predictor/waveform_cnn
 Run either example through the normal entry point (with the configured data path available locally):
 
 ```bash
-uv run --extra cpu python scripts/run_nn_predictor.py --config configs/nn_predictor/waveform_cnn.yaml
-uv run --extra cpu python scripts/run_nn_predictor.py --config configs/nn_predictor/observable_cnn.yaml
+uv run python scripts/run_nn_predictor.py --config configs/nn_predictor/waveform_cnn.yaml
+uv run python scripts/run_nn_predictor.py --config configs/nn_predictor/observable_cnn.yaml
 ```
 
 ---
@@ -261,24 +259,23 @@ training trajectories only** (so no validation statistics leak in) and reused fo
 - **`y_std`**: [`Standardizer`](../src/neuro/transforms.py), fit on the full continuous training EEG channels.
 - **`u_std`**: [`Standardizer`](../src/neuro/transforms.py), fit on the continuous training control signals.
 
-The `Standardizer` supports:
+The `Standardizer` always subtracts the training mean and divides by the training population
+standard deviation, separately for each channel or channel-frequency Observable coordinate.
+Constant coordinates use scale one. There are no `scaler` or `global_scaling` options.
 
-- `scaler = "standard"` → subtract mean, divide by std.
-- `scaler = "robust"` → subtract median, divide by IQR (robust to the large EEG bursts / bistable
-  jumps). Used by all shipped configs.
-- `global_scaling = true` → statistics pooled to **one** scalar shared across channels; `false` →
-  **per-channel**. All shipped configs use global scaling.
-
-Standardisation (per feature $j$): $\tilde{x} = (x - c_j)/s_j$, with $(c_j, s_j) = (\text{mean},
-\text{std})$ for standard, $(\text{median}, \text{IQR})$ for robust.
+Standardisation (per feature $j$): $\tilde{x} = (x - \mu_j)/\sigma_j$.
 In [`prepare_datasets`](../src/neuro/predictor/data.py), each continuous trajectory is transformed with
 `y_std` and `u_std` before sliding windows are built. The model operates directly in standardized channel
-space, and evaluation is done in raw EEG units via `y_std.inverse_transform` (Section 8).
+space. Losses recover original output units: raw EEG for Waveform MSE, log-power for Observable
+MSE, and raw EEG before waveform spectral/power calculations. Inference recovers output units
+via `y_std.inverse_transform` (Section 8).
 
-The statistics are fitted on the **concatenated raw training trajectories**, so every sample counts
-once. (Before the projection was removed they were fitted on the sliding windows instead, which
-weighted each sample by roughly $n_y$ and dropped the trailing `horizon` samples; under
-`scaler = "robust"` the median/IQR — and therefore every trained model — differ between the two.)
+The statistics are fitted on the **concatenated preprocessed training trajectories**, before
+sliding windows are built. Observable fitting uses the reduced Frames, including configured
+training sub-hop expansion. Validation statistics never enter either fit. The
+[dataset audit](../artifacts/output_scaling_audit/report.md) supports retaining mean/std scaling:
+some Observable coordinates have narrow IQRs that would substantially expand scaled extremes
+under median/IQR scaling. This does not establish an empirical training-performance advantage.
 
 ---
 
@@ -286,8 +283,8 @@ weighted each sample by roughly $n_y$ and dropped the trailing `horizon` samples
 
 ### 5.1 The one-step MLP $f_\theta$
 
-An `nn.ModuleList` of `nn.Linear` layers inside
-[`AutoregressiveMLP`](../src/neuro/predictor/module.py):
+Tuples of JAX weight and bias arrays inside
+[`WaveformMLPModel`](../src/neuro/predictor/mlp.py):
 
 $$
 f_\theta : \mathbb{R}^{\,n_y C + n_u m} \;\to\; \mathbb{R}^{C}.
@@ -310,8 +307,8 @@ sizes every layer.
   enforced by the config schema, so a typo fails at config load rather than hours into a sweep at
   MPC construction time.
 
-The layers are built with `dtype=torch.float32` and initialised by torch's default `nn.Linear`
-initialiser under `torch.manual_seed(training.seed + seed_offset)`.
+The layers use `jnp.float32` and fan-in-scaled uniform initialization from
+`jax.random.PRNGKey(training.seed + seed_offset)`.
 
 Everything the module sees is already **standardized** — the EEG block by `y_std`, the control blocks
 by `u_std`, applied to whole trajectories before the windows are built (§3.1). The module itself
@@ -319,8 +316,8 @@ knows nothing about raw units.
 
 ### 5.2 Autoregressive rollout $F_\theta$
 
-[`AutoregressiveMLP.forward`](../src/neuro/predictor/module.py) unrolls $f_\theta$ over the horizon
-with a plain Python `for` loop (eager, no `scan`, no compile). Given a batch of feature vectors it
+[`AutoregressiveModel.rollout_standardized`](../src/neuro/predictor/base.py) unrolls $f_\theta$
+over the horizon with `jax.lax.scan` and batches independent contexts with `jax.vmap`. Given a batch of feature vectors it
 splits each into the history windows $Y^{(0)} = y_{k-n_y+1:k} \in \mathbb{R}^{n_y \times C}$,
 $U^{(0)} = u_{k-n_u:k-1} \in \mathbb{R}^{n_u \times m}$, and the future-control sequence
 $u_{k:k+N-1}$. For each rollout step $j = 0,\dots,N-1$ with incoming control $u_{k+j}$:
@@ -339,8 +336,8 @@ prediction — while later steps consume the model's own predictions, so errors 
 distinction drives the curriculum loss below. Backpropagation runs through the whole unrolled loop,
 so the BPTT depth equals the horizon $N$.
 
-The batch dimension is native: `forward` takes `(B, n_y k + (n_u + N) m)` and returns `(B, N k)`.
-There is no `vmap`.
+`forward` takes standardized output history, control history, and future controls as separate
+arrays, and returns `(B, N, n_outputs)` for waveform models or `(B, N, C, F)` for Observables.
 
 ### 5.3 The same rollout, three times over
 
@@ -348,11 +345,11 @@ The identical recursion exists in three places, and they are pinned to each othe
 
 | where | used for | dtype/engine |
 | ----- | -------- | ------------ |
-| [`AutoregressiveMLP.forward`](../src/neuro/predictor/module.py) or `AutoregressiveCNN.forward` | training (differentiable) | torch, float32 |
+| `AutoregressiveModel.forward` | training (differentiable) | JAX, float32 |
 | `InferencePredictor.free_run` | evaluation, plotting, closed-loop simulation | JAX, float64 |
 | `InferencePredictor.discrete_dynamics` | the MPC's dynamics graph | JAX, float64 |
 
-The waveform and Observable CNN tests compare the torch and JAX multi-step Rollouts, checkpoint
+The waveform and Observable CNN tests compare standardized training and raw-unit JAX multi-step Rollouts, checkpoint
 dispatch, action alignment, and controller construction. The controller and free-run paths both
 standardize raw Control Currents at the runtime boundary. They carry the recursion in **two state
 conventions**, which differ only in where the control window sits:
@@ -360,15 +357,15 @@ conventions**, which differ only in where the control window sits:
 | state built by | y-window ends | u-window ends | shift relative to the prediction |
 | -------------- | ------------- | ------------- | -------------------------------- |
 | `absorb` (MPC, fed the *previous* control) and the training feature row | $t$ | $t - 1$ | control shifts in **before** |
-| `free_run` raw history | $t$ | $t$ | control shifts in **after** |
+| `free_run` raw history | $t$ | $t - 1$ | control shifts in **before** |
 
 Both predict $\hat{y}_{t+1}$ from a $u$-window ending at $t$ — the rule of §1 — and are
-interconvertible by lagging the u-window one step. `discrete_dynamics` shifts the current action
-into the control window before prediction; `free_run` shifts the next future action after prediction.
+aligned on the same previous-control history. Both `discrete_dynamics` and `free_run` shift
+the candidate action into the control window before predicting the next output.
 
 ### 5.4 Causal CNN $f_\theta$
 
-With `model.architecture: cnn`, [`AutoregressiveCNN`](../src/neuro/predictor/module.py) keeps the
+With `model.architecture: cnn`, [`WaveformCNNModel` and `ObservableCNNModel`](../src/neuro/predictor/cnn.py) keep the
 same autoregressive loop and replaces the flattened output history map with stride-one temporal
 convolutions. A waveform history has shape $(n_y,C)$; an Observable history has shape
 $(n_y,C,F)$. Convolution weights mix EEG channels through learned filters, while the temporal
@@ -415,10 +412,11 @@ $e$ ($\text{epoch} = \text{null}$ during validation to evaluate terminal schedul
 ### 6.1 Horizon-length curriculum MSE (`curriculum_mse`)
 
 The MSE is scored over the first $L(e)$ rollout steps, where $L \le \text{span\_steps}$.
-With per-step errors
+With standardized predictions and targets, recover original-unit per-step errors using each
+coordinate's fitted scale $s_c$:
 
 $$
-e_i = \frac{1}{BC}\sum_{b,c}\big(\hat{Y}_{b,i,c} - Y_{b,i,c}\big)^2,
+e_i = \frac{1}{BC}\sum_{b,c}\big[s_c\big(\hat{Y}_{b,i,c} - Y_{b,i,c}\big)\big]^2,
 $$
 
 the curriculum MSE is their mean over that prefix:
@@ -506,8 +504,8 @@ recorded per epoch into `TrainingResult.train_components` and `val_components`, 
 
 ### 7.1 Optimizer and schedule
 
-`torch.optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=weight_decay)` — Adam with
-**decoupled** weight decay. Per parameter $\theta$, with $g_t = \nabla_\theta \mathcal{L}$, torch's
+`optax.adamw(learning_rate=learning_rate, weight_decay=weight_decay)` — Adam with
+**decoupled** weight decay. Per parameter $\theta$, with $g_t = \nabla_\theta \mathcal{L}$, Optax's
 defaults $\beta_1 = 0.9$, $\beta_2 = 0.999$, $\hat\varepsilon = 10^{-8}$:
 
 $$
@@ -550,8 +548,8 @@ peak learning rate is what the ramp avoids. $T_\text{warm}$ is clamped below $T_
 because a warm-started linear model (§7.4) skips ahead to `curr_start` and can be left with fewer
 epochs than `warmup_epochs` asks for.
 
-One training step is `loss.backward()` + `optimizer.step()` + `scheduler.step()`, in eager mode.
-Nothing is JIT-compiled or `torch.compile`d.
+Each training step computes gradients with `eqx.filter_value_and_grad`, updates the Optax state,
+and applies updates with `eqx.apply_updates`. Training and validation steps use `eqx.filter_jit`.
 
 The same AdamW loop trains CNNs. A CNN configuration must use `fit: gradient_descent`; its
 convolutional layers and dense residual head do not have the linear readout required by the
@@ -559,7 +557,7 @@ closed-form Ridge or DMD trainers.
 
 ### 7.2 Batching
 
-`_shuffled_batches` in [`train.py`](../src/neuro/predictor/train.py) reshuffles the training sample
+`batch_iterator` in [`data.py`](../src/neuro/predictor/data.py) reshuffles the training sample
 indices **every epoch** from a single `np.random.default_rng(training.seed + seed_offset)` created
 once per run, then yields contiguous index slices of `batch_size`:
 
@@ -567,14 +565,12 @@ $$
 \text{\#batches} = \Big\lceil \tfrac{M_\text{train}}{\texttt{batch\_size}} \Big\rceil,
 $$
 
-the final batch being smaller when $M_\text{train}$ is not a multiple of the batch size. There is no
-`torch.utils.data.DataLoader`: the whole dataset is one resident float32 tensor on the target device,
-so a batch is a single fancy-index gather. Validation is evaluated on the **whole** validation set in
-a single `torch.no_grad()` call (not batched).
+the final batch being smaller when $M_\text{train}$ is not a multiple of the batch size.
+The dataset retains NumPy windows and transfers each float32 batch to the selected JAX device.
+Validation also uses batches and weights their means by sample count.
 
-Because the shuffle RNG and `torch.manual_seed` are both driven by `training.seed + seed_offset`, a
-run is reproducible from its config. `tests/test_predictor_train.py::test_same_seed_reproduces_and_offset_decorrelates`
-pins this behaviour.
+The shuffle generator and JAX initialization key both use `training.seed + seed_offset`.
+`tests/test_predictor_train.py::test_same_seed_reproduces_and_offset_decorrelates` pins reproducibility.
 
 ### 7.3 Curriculum schedule
 
@@ -619,14 +615,13 @@ nonlinear one's.
    comparable across epochs and rollout lengths.
 3. **NaN guard**: if either the train or val loss is NaN, raise `ValueError("Loss is NaN…")`
    (the Optuna sweep catches this and prunes the trial).
-4. **Best-model tracking**: `copy.deepcopy(model.state_dict())` whenever the validation loss
-   improves. The deep copy is not incidental — a torch module is mutable, so keeping a reference
-   would alias the live model and early stopping would silently return the *last* weights instead of
-   the best. Pinned by
+4. **Best-model tracking**: retain the eligible epoch's immutable Equinox model when its
+   validation loss improves. Applying later optimizer updates produces a new model, preserving
+   the selected weights. Pinned by
    `tests/test_predictor_train.py::test_returned_artifact_is_the_best_epoch_not_the_last`.
 5. **Early stopping**: stop once `patience` consecutive epochs pass with no validation improvement.
 
-On exit the best state dict is loaded back into the model, so `train` always returns the
+On exit the selected model is returned, so `train` always returns the
 lowest-validation-loss weights plus the per-epoch train/val loss and component histories.
 
 ---
@@ -641,7 +636,7 @@ it neither writes files nor imports `matplotlib`. It returns a
 
 | field | is |
 | ----- | -- |
-| `predictor` | the best-epoch PyTorch MLP/CNN module with fitted standardizers and native `dt` |
+| `predictor` | the best-epoch Equinox MLP/CNN model with fitted standardizers and native `dt` |
 | `train_losses`, `val_losses` | per-epoch total loss, one entry per epoch actually run |
 | `train_components`, `val_components` | per-epoch dict of unweighted loss components and diagnostics |
 | `rollout` | a [`RolloutNMSE`](../src/neuro/artifacts.py) — free-run NMSE `pooled` and `per_step` evaluated over `eval_horizon_s` |
@@ -678,9 +673,8 @@ Every reported NMSE — here among the predictors — divides a summed squared e
 the true signal over the same index set (the uncentred second moment, not the variance) through the
 single definition in [`nmse`](../src/neuro/artifacts.py), so $1.0$ is always the score of the zero
 predictor. [`evaluate_rollouts`](../src/neuro/artifacts.py) computes it over windows started on a
-stride-25 grid, through the saved artifact's `prime_many`/`rollout_many` interface — the NumPy
-rollout of §5.3, *not* the CasADi graph the MPC actually solves against, though the two are pinned to
-each other by test — resolved per horizon step $i$ and then pooled:
+stride-25 grid through the saved Predictor's JAX `free_run` interface. It scores the same causal
+Rollout as the MPC dynamics, resolved per horizon step $i$ and then pooled:
 
 $$
 \text{NMSE}_i = \frac{\sum_{b,c}\big(Y_{b,i,c} - \hat{Y}_{b,i,c}\big)^2}{\sum_{b,c} Y_{b,i,c}^2},
@@ -777,8 +771,7 @@ predictor = InferencePredictor.load("artifacts/example_waveform_cnn/model")
 
 The loader reads `meta["model_type"]` and the optional Observable geometry, returning the matching
 waveform or Observable MLP/CNN runtime. `WaveformCNNModel.load` and `ObservableCNNModel.load` remain
-available when a caller wants an explicit representation check. A typed non-neural loader such as
-`JansenRitModel.load` continues to use its own checkpoint format. The runtime checkpoint stores
+available when a caller wants an explicit representation check. The runtime checkpoint stores
 weights, standardizer arrays, architecture fields (`depth`, `hidden_size`, kernel sizes, activation,
 residual), native time step, and Observable geometry where applicable.
 
@@ -823,25 +816,18 @@ correspondingly more honest, since free-run is what the MPC does.
 `trial_<n>/` and **does not plot**: a sweep produces one artifact per trial and nobody opens the
 PNGs.
 
-### 8.6 The torch-free seam
+### 8.6 JAX training and inference
 
-This is a load-bearing architectural property, not an implementation detail:
+Training, evaluation, and MPC use JAX and share the Equinox Predictor classes.
+Portable NPZ checkpoints contain metadata, NumPy weights, and standardizers; they
+can be loaded without the legacy framework. The frozen reference tests in
+`tests/test_predictor_migration.py` pin outputs, losses, gradients, and an AdamW
+update against the original implementation.
 
-> `neuro.predictor.inference`, `neuro.predictor.data`, `neuro.control` and `neuro.artifacts`
-> **never import torch**.
-
-Training is the only thing in this repo that needs a deep-learning framework. Inference, the MPC and
-every closed-loop simulation run on JAX and NumPy, reading the framework-free checkpoint of §8.4.
-This keeps a `torch` import out of the closed loop.
-
-It is enforced, not merely intended:
-`tests/test_predictor_module.py::test_control_path_never_imports_torch` imports each of those four
-modules **in a subprocess** and asserts `'torch' not in sys.modules`. The subprocess is required —
-by the time that test runs, pytest has long since imported torch via other test modules.
-
-The split maps onto the package layout: `predictor/inference.py`, `predictor/data.py`, and
-`control/` are torch-free; `predictor/module.py`, `predictor/losses.py`, and `predictor/train.py`
-are the torch side.
+CPU installation is `uv sync`. NVIDIA CUDA 12 installation on Linux or WSL2 is
+`uv sync --extra cuda12`; use the same extra with `uv run` to retain CUDA packages.
+`training.device: auto` follows JAX's default backend, `cpu` selects CPU, and
+`cuda` requires a detected GPU. See [README.md](../README.md) for environment setup.
 
 ---
 
@@ -886,14 +872,12 @@ out-of-range values raise `ValidationError` rather than silently defaulting.
 | `train_split`                | `0.8`   | fraction used for training (tail held out for val)            |
 | `seed`                       | `69`    | seed for weight init **and** the epoch shuffle (`+ seed_offset` in sweeps) |
 | `patience`                   | `50`    | early-stopping patience (epochs)                              |
-| `scaler`                     | `standard` | `standard` / `robust`                                      |
-| `global_scaling`             | `false` | one shared scalar vs. per-channel scaling                     |
 | `device`                     | `auto`  | `auto` / `cpu` / `cuda` (`auto` selects CUDA if available)    |
 | `eval_horizon_s`             | *(required)* | evaluation rollout horizon in seconds                     |
 | `losses`                     | *(required)* | composable loss terms (at least one must be active)           |
 
-> **Device selection**: `device: "auto"` automatically picks CUDA when `torch.cuda.is_available()` is true,
-> falling back to CPU otherwise. Explicit `cpu` or `cuda` can also be specified.
+> **Device selection**: `device: "auto"` follows `jax.devices()[0]`, normally GPU when available.
+> Explicit `cpu` selects CPU even with CUDA installed; `cuda` requires an available GPU backend.
 
 #### Loss specifications (`training.losses`)
 
@@ -940,8 +924,8 @@ All schedule checkpoints and gates are specified in integer **epochs** (`curr_st
 
 All five target the 50 Hz / 8 s ROAST dataset described in Section 2.2 and share `n_y=15`, `n_u=10`,
 `hidden_size=64`, `depth=2`, `activation=softplus`, `batch_size=128`, `learning_rate=1e-5`,
-`weight_decay=5e-4`, `train_split=0.8`, `seed=69`, `scaler=robust`, `global_scaling=true` and
-`eval_horizon_s=1.0`.
+`weight_decay=5e-4`, `train_split=0.8`, `seed=69` and `eval_horizon_s=1.0`. These historical
+presets used global median/IQR scaling; new runs use fixed per-coordinate mean/std scaling.
 
 The last two are a matched pair: the MSE is trusted only out to **0.2 s** and everything from there
 to 1 s is shaped by the auxiliary term alone, so they isolate what each auxiliary loss contributes
@@ -1062,16 +1046,13 @@ the score.
   least-squares warm start, and therefore the only case whose loss curves are shorter than `epochs`
   (§7.4).
 - **Reproducibility.** A run is reproducible from `training.seed (+ seed_offset)`: it seeds both
-  `torch.manual_seed` and the epoch-shuffle RNG. No `torch.use_deterministic_algorithms` is set — it
-  buys nothing on the CPU path.
+  the JAX PRNG key and the epoch-shuffle RNG. Numerical results can differ across backends.
 - **`n_channels` is the EEG channel count $C$ everywhere.** Model space and raw EEG differ only by
   the standardizer, which is shape-preserving, so there is a single channel dimension end to end.
 - **The control window shifts before the MLP call — in training.** At rollout step $j$ the newest
   control $u_{k+j}$ is already inside $U^{(j+1)}$ when $\hat{y}_{k+j+1}$ is predicted (§5.2), because
   the feature row's u-window ends one step *behind* its y-window. The linear warm start has to
   reproduce that offset, and so does anything else that hand-builds a one-step input.
-- **`MLPArtifact.rollout` shifts after, because `prime` aligns the windows.** A `prime` state ends
-  both windows at the same step, so the first prediction is made before any future control enters
-  and `u_future`'s last entry is never consumed. Shifting first would score
-  the sweep's objective on a model given one step of control lookahead it never had in training
-  (§5.3).
+- **Raw inference uses the same action alignment.** Supply EEG history through $t$, applied
+  Control Current history through $t-1$, and future Control Currents beginning at $t$.
+  Each action enters the history before its predicted output in training, `free_run`, and MPC.

@@ -5,7 +5,6 @@ from typing import TYPE_CHECKING, cast
 
 import numpy as np
 import pytest
-import torch
 
 from neuro.config import (
     CurriculumMSESpec,
@@ -32,6 +31,8 @@ from neuro.predictor.train import TrainingResult, train
 
 if TYPE_CHECKING:
     from pathlib import Path
+
+    from neuro.predictor.base import AutoregressiveModel
 
 _SEED = 42
 _DT = 1e-3
@@ -158,31 +159,12 @@ def test_eligibility_start_epoch_uses_effective_schedules_and_disabled_terms() -
 def test_final_selection_restores_lowest_val_loss_among_eligible_epochs() -> None:
     """Final checkpoint selection restores lowest validation loss among eligible epochs, ignoring earlier minima."""
 
-    class DummyModel(torch.nn.Module):
-        param: torch.nn.Parameter
-        epoch_buf: torch.Tensor
-
+    class DummyModel:
         def __init__(self) -> None:
-            super().__init__()
-            self.param = torch.nn.Parameter(torch.tensor([1.0], requires_grad=True))
-            self.register_buffer("epoch_buf", torch.tensor([0.0]))
+            self.epoch_buf = 0.0
 
-        def forward(self, *_args: object) -> torch.Tensor:
-            return self.param
-
-    class _TupleDataset(torch.utils.data.Dataset[tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]]):
-        def __init__(self, x: torch.Tensor) -> None:
-            self.x = x
-
-        def __len__(self) -> int:
-            return len(self.x)
-
-        def __getitem__(self, index: int) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-            return (self.x[index], self.x[index], self.x[index], self.x[index])
-
-    model = DummyModel()
-    dummy_x = torch.zeros((10, 1))
-    loader = torch.utils.data.DataLoader(_TupleDataset(dummy_x), batch_size=10)
+    dummy_batch = (np.zeros((10, 1)), np.zeros((10, 1)), np.zeros((10, 1)), np.zeros((10, 1)))
+    batches = [dummy_batch]
 
     # Synthetic validation loss course:
     # Epoch 0: val_loss = 0.05 (misleading low minimum)
@@ -194,29 +176,28 @@ def test_final_selection_restores_lowest_val_loss_among_eligible_epochs() -> Non
     val_loss_curve = [0.05, 0.20, 0.30, 0.15, 0.10, 0.25]
 
     def mock_loss(
-        mod: torch.nn.Module,
-        _y: torch.Tensor,
-        _uh: torch.Tensor,
-        _uf: torch.Tensor,
-        _yt: torch.Tensor,
+        mod: DummyModel,
+        _y: np.ndarray,
+        _uh: np.ndarray,
+        _uf: np.ndarray,
+        _yt: np.ndarray,
         epoch: int | None,
-    ) -> tuple[torch.Tensor, dict[str, float | None]]:
+    ) -> tuple[float, dict[str, float | None]]:
         assert isinstance(mod, DummyModel)
         if epoch is None:
-            # Called from _evaluate_validation; track invocation via dummy param
-            idx = round(float(mod.epoch_buf.item()))
+            # Called from validation; track invocation via dummy param
+            idx = round(mod.epoch_buf)
             idx = min(max(idx, 0), len(val_loss_curve) - 1)
-            return torch.tensor(val_loss_curve[idx]), {"mse": val_loss_curve[idx]}
+            return val_loss_curve[idx], {"mse": val_loss_curve[idx]}
         # Training batch: record epoch into buffer
-        mod.epoch_buf.fill_(float(epoch))
-        loss_val = mod.param * 0.0 + 1.0
-        return loss_val, {"mse": 1.0}
+        mod.epoch_buf = float(epoch)
+        return 1.0, {"mse": 1.0}
 
     cfg = TrainingConfig(epochs=6, patience=3, eval_horizon_s=0.1)
     fit = fit_gradient_descent(
-        model,
-        loader,
-        loader,
+        cast("AutoregressiveModel", DummyModel()),
+        batches,
+        batches,
         cfg,
         seed=1,
         loss_fn=mock_loss,
@@ -224,10 +205,9 @@ def test_final_selection_restores_lowest_val_loss_among_eligible_epochs() -> Non
     )
 
     # Epoch 0 had val_loss=0.05, but eligibility started at epoch 3.
-    # Among eligible epochs (3, 4, 5), epoch 4 has the lowest val_loss (0.10).
     assert fit.selected_epoch == 4
     # The restored model buffer must correspond to epoch 4
-    assert float(model.epoch_buf.item()) == 4.0
+    assert cast("DummyModel", fit.best_model).epoch_buf == 4.0
 
 
 def test_incompatible_schedule_budget_rejected_before_training() -> None:

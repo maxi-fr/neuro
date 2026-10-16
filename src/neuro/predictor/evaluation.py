@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 from dataclasses import asdict, dataclass, field
 from enum import StrEnum
 from pathlib import Path
@@ -9,11 +10,11 @@ import jax.numpy as jnp
 import numpy as np
 
 from neuro.metrics import DEFAULT_HOP_S, METRICS
-from neuro.predictor.data import load_trajectory
+from neuro.predictor.data import frame_aligned_controls, load_trajectory, reduce_trajectory_to_frames
 from neuro.predictor.inference import InferencePredictor, ObservableCNNModel, ObservableMLPModel
 from neuro.predictor.replay import predict
 from neuro.run_view import Run
-from neuro.spectral import HealthyReference, compute_log_power_frames
+from neuro.spectral import HealthyReference, compute_forecast_log_power_frames, compute_log_power_frames
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -34,11 +35,24 @@ def rollout_batches(
     stride: int = 25,
     start: int | None = None,
 ) -> Iterator[tuple[FloatArray, FloatArray]]:
-    """Batch causal Rollouts from measurements through t0 and targets starting at t0 + 1.
+    """Yield predictions and targets using the shared causal Rollout boundary convention.
 
     Control history ends at t0 - 1; the candidate Current at t0 acts on the first prediction.
     Waveform samples and Observable Frames retain their output axes.
     """
+    for pred, true, _, _ in _rollout_windows(model, trajectories, steps, stride=stride, start=start):
+        yield pred, true
+
+
+def _rollout_windows(
+    model: InferencePredictor,
+    trajectories: list[tuple[FloatArray, FloatArray]],
+    steps: int,
+    *,
+    stride: int,
+    start: int | None,
+) -> Iterator[tuple[FloatArray, FloatArray, range, FloatArray]]:
+    """Batch causal Rollouts while retaining their anchors and recording for spectral history."""
     k = model.priming_steps
     grid_start = k if start is None else start
 
@@ -54,7 +68,7 @@ def rollout_batches(
                 np.stack([u[t0 : t0 + steps] for t0 in t0s]),
             )
         )
-        yield y_pred, np.stack([y[t0 + 1 : t0 + 1 + steps] for t0 in t0s])
+        yield y_pred, np.stack([y[t0 + 1 : t0 + 1 + steps] for t0 in t0s]), t0s, y
 
 
 def accumulate_rollout_errors(
@@ -245,15 +259,90 @@ def evaluate_observable_free_run(
     return ObservableFrameMSE(pooled=float(per_step.mean()), per_step=per_step)
 
 
+def evaluate_spectral_free_run(  # noqa: PLR0913 -- Predictor and physical evaluation grid
+    model: InferencePredictor,
+    val_trajs: list[tuple[FloatArray, FloatArray]],
+    eval_frames: int,
+    *,
+    geometry: StftGeometry | None = None,
+    fs: float | None = None,
+    step_stride: int = 1,
+    start_frame: int | None = None,
+) -> ObservableFrameMSE:
+    """Score raw EEG recordings on a common physical Frame grid in unstandardized log-power.
+
+    ``val_trajs`` contains raw controls and EEG, shaped ``(n_samples, n_controls)`` and
+    ``(n_samples, n_channels)``. ``step_stride`` and ``start_frame`` are in Frames for both
+    Predictor kinds. The default start is the earliest Frame anchor satisfying Priming;
+    when comparing models, pass the same ``start_frame``
+    large enough for both. Geometry and raw sampling rate must match across comparisons.
+    Inference adapters already undo output standardization.
+    """
+    observable = isinstance(model, (ObservableMLPModel, ObservableCNNModel))
+    geom = getattr(model, "geometry", None) if geometry is None else geometry
+    if geom is None:
+        msg = "Spectral evaluation requires an StftGeometry."
+        raise ValueError(msg)
+    rate = fs if fs is not None else (geom.n_hop if observable else 1) / model.dt
+    support = geom.sample_support_steps(rate)
+    minimum = (
+        model.priming_steps if observable else max(0, math.ceil((model.priming_steps - (support - 1)) / geom.n_hop))
+    )
+    first = minimum if start_frame is None else start_frame
+    start = support - 1 + first * geom.n_hop
+    if first < minimum:
+        msg = "Evaluation start precedes the Predictor's required Priming history."
+        raise ValueError(msg)
+    if observable:
+        if geom != model.geometry:
+            msg = "Evaluation geometry must match the Observable Predictor geometry."
+            raise ValueError(msg)
+        frames = [
+            (frame_aligned_controls(u, geom, fs=rate), reduce_trajectory_to_frames(y, geom, rate)) for u, y in val_trajs
+        ]
+        windows = _rollout_windows(model, frames, eval_frames, stride=step_stride, start=first)
+    else:
+        windows = _rollout_windows(
+            model,
+            val_trajs,
+            eval_frames * geom.n_hop,
+            stride=step_stride * geom.n_hop,
+            start=start,
+        )
+    sq_err = np.zeros(eval_frames, dtype=np.float64)
+    n_windows = 0
+    prefix_len = support - geom.n_hop
+    for predictions, targets, anchors, recording in windows:
+        for pred, true, t0 in zip(predictions, targets, anchors, strict=True):
+            pred_frames = np.asarray(pred)
+            true_frames = np.asarray(true)
+            if not observable:
+                history = recording[t0 - prefix_len + 1 : t0 + 1]
+                pred_frames = compute_forecast_log_power_frames(history, pred_frames, geom, fs=rate)
+                true_frames = compute_forecast_log_power_frames(history, true_frames, geom, fs=rate)
+            sq_err += ((pred_frames - true_frames) ** 2).sum(axis=(1, 2))
+            n_windows += 1
+    if n_windows == 0:
+        msg = "No validation trajectory is long enough to hold one free-run window."
+        raise ValueError(msg)
+    per_step = sq_err / (n_windows * val_trajs[0][1].shape[1] * geom.n_values(rate))
+    return ObservableFrameMSE(pooled=float(per_step.mean()), per_step=per_step)
+
+
 def free_run_stats(
-    free_run: RolloutNMSE | ObservableFrameMSE, log_energy: LogEnergyError | None
+    free_run: RolloutNMSE | ObservableFrameMSE,
+    log_energy: LogEnergyError | None,
+    spectral: ObservableFrameMSE | None = None,
 ) -> dict[str, float | list[float]]:
-    """Serialize the free-run scores under keys naming the metric the kind actually computed."""
+    """Serialize native scores and any additional common log-power Frame MSE."""
     prefix = "nmse_rollout" if isinstance(free_run, RolloutNMSE) else "frame_mse"
     stats: dict[str, float | list[float]] = {
         prefix: free_run.pooled,
         f"{prefix}_per_step": free_run.per_step.tolist(),
     }
+    if spectral is not None:
+        stats["frame_mse"] = spectral.pooled
+        stats["frame_mse_per_step"] = spectral.per_step.tolist()
     if log_energy is not None:
         stats["log_energy"] = log_energy.pooled
         stats["log_energy_per_position"] = log_energy.per_position.tolist()

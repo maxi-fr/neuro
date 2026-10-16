@@ -2,12 +2,11 @@ from __future__ import annotations
 
 import dataclasses
 import itertools
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 import jax.numpy as jnp
 import numpy as np
 import pytest
-import torch
 from trajopt.costs.output import OutputCost
 from trajopt.mpc import MPC
 from trajopt.solvers.altro import ALTRO
@@ -19,7 +18,6 @@ from trajopt.transcription.single_shooting import SingleShooting
 from neuro.config import StftGeometry
 from neuro.control.costs import ObservableHingeCost
 from neuro.control.mpc import (
-    IPOPT_DEFAULTS,
     AugmentedActivationModel,
     CandidateMPCController,
     CanonicalDuals,
@@ -33,8 +31,7 @@ from neuro.control.mpc import (
     canonicalize_duals,
 )
 from neuro.filtering import ObservableEstimator
-from neuro.predictor.inference import ObservableMLPModel, WaveformMLPModel
-from neuro.predictor.module import AutoregressiveMLP
+from neuro.predictor.mlp import ObservableMLPModel, WaveformMLPModel
 from neuro.predictor.replay import prepare_replay, replay_predictions
 from neuro.run_view import PredictionSeries, Run
 from neuro.spectral import HealthyReference, ObservableEnvelope
@@ -132,7 +129,7 @@ def _build_checkpoint(
         "y_mean": rng.uniform(-1.0, 1.0, n_channels),
         "y_scale": rng.uniform(0.5, 2.0, n_channels),
     }
-    model = AutoregressiveMLP(
+    model = WaveformMLPModel(
         n_y=n_y,
         n_u=n_u,
         horizon=horizon,
@@ -150,11 +147,9 @@ def _build_checkpoint(
         y_std=Standardizer(center=scalers["y_mean"], scale=scalers["y_scale"]),
         u_std=Standardizer(center=scalers["u_mean"], scale=scalers["u_scale"]),
     )
-    linears = [m for m in model.layers if isinstance(m, torch.nn.Linear)]
-    with torch.no_grad():
-        for lin, (w, b) in zip(linears, _random_layers(rng, [in_size, *([5] * depth), n_channels]), strict=True):
-            lin.weight.copy_(torch.as_tensor(w, dtype=torch.float32))
-            lin.bias.copy_(torch.as_tensor(b, dtype=torch.float32))
+    layers = _random_layers(rng, [in_size, *([5] * depth), n_channels])
+    model.weights = tuple(jnp.asarray(w, dtype=jnp.float32) for w, _ in layers)
+    model.biases = tuple(jnp.asarray(b, dtype=jnp.float32) for _, b in layers)
     path = tmp_path / "art"
     model.save(path)
     return path
@@ -407,7 +402,7 @@ def _build_observable_checkpoint(
         "y_mean": rng.uniform(-1.0, 1.0, n_outputs),
         "y_scale": rng.uniform(0.5, 2.0, n_outputs),
     }
-    model = AutoregressiveMLP(
+    model = ObservableMLPModel(
         n_y=n_y,
         n_u=n_u,
         horizon=horizon,
@@ -423,12 +418,10 @@ def _build_observable_checkpoint(
         y_std=Standardizer(center=scalers["y_mean"], scale=scalers["y_scale"]),
         u_std=Standardizer(center=scalers["u_mean"], scale=scalers["u_scale"]),
     )
-    linears = [m for m in model.layers if isinstance(m, torch.nn.Linear)]
     sizes = [in_size, *([5] * depth), n_outputs]
-    with torch.no_grad():
-        for lin, (w, b) in zip(linears, _random_layers(rng, sizes), strict=True):
-            lin.weight.copy_(torch.as_tensor(w, dtype=torch.float32))
-            lin.bias.copy_(torch.as_tensor(b, dtype=torch.float32))
+    layers = _random_layers(rng, sizes)
+    model.weights = tuple(jnp.asarray(w, dtype=jnp.float32) for w, _ in layers)
+    model.biases = tuple(jnp.asarray(b, dtype=jnp.float32) for _, b in layers)
     path = tmp_path / "obs_art"
     model.save(path)
     return path, geom
@@ -1289,3 +1282,20 @@ def test_trajopt_mpc_controller_epigraph_closed_loop(tmp_path: Path) -> None:
         np.abs(ctrl._u_guess[:, :2]),  # noqa: SLF001
         atol=1e-8,
     )
+
+
+def test_epigraph_weight_matches_horizon_normalized_surrogate(tmp_path: Path) -> None:
+    """Problem with l1_mode='epigraph' sets slack weight to w_u_l1 / horizon."""
+    artifact = _build_checkpoint(tmp_path, n_channels=2, n_controls=2)
+    horizon = 5
+    w_u_l1 = 0.5
+    prob = build_waveform_problem(
+        artifact,
+        horizon=horizon,
+        u_max=1.0,
+        w_y=0.0,
+        w_u=0.0,
+        w_u_l1=w_u_l1,
+        l1_mode="epigraph",
+    )
+    np.testing.assert_allclose(float(cast("Any", prob.obj.stage_cost).weight), w_u_l1 / horizon)

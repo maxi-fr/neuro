@@ -3,7 +3,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Protocol
 
-import torch
+import equinox as eqx
+import jax
+import jax.numpy as jnp
 
 from neuro.config import (
     CurriculumMSESpec,
@@ -15,24 +17,22 @@ from neuro.config import (
     StftSpec,
 )
 from neuro.schedules import curriculum_completion, curriculum_span
-from neuro.spectral import LOG_FLOOR
+from neuro.spectral import LOG_FLOOR, compute_segment_window
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
-    from torch import Tensor
 
+class LossContext(eqx.Module):
+    """Unit recovery, sample rate, schedule clock, and standardized boundary measurement history."""
 
-@dataclass(frozen=True)
-class LossContext:
-    """Unit recovery parameters, sample rate and schedule clock for loss computation."""
+    y_center: jax.Array
+    y_scale: jax.Array
+    fs: float = eqx.field(static=True)
+    epoch: int | None = eqx.field(static=True, default=None)
+    y_hist: jax.Array | None = None
 
-    y_center: Tensor
-    y_scale: Tensor
-    fs: float
-    epoch: int | None
-
-    def to_raw(self, x: Tensor) -> Tensor:
+    def to_raw(self, x: jax.Array) -> jax.Array:
         """Map standardized channel tensor back to raw units."""
         return x * self.y_scale + self.y_center
 
@@ -60,14 +60,20 @@ class Loss(Protocol):
         """First training epoch where this loss contributes to the gradient."""
         ...
 
-    def __call__(self, pred: Tensor, true: Tensor, ctx: LossContext) -> tuple[Tensor, dict[str, float]]:
+    def __call__(
+        self,
+        pred: jax.Array,
+        true: jax.Array,
+        ctx: LossContext,
+        step_mask: jax.Array | None = None,
+    ) -> tuple[jax.Array, dict[str, Any]]:
         """Compute unweighted loss tensor and diagnostic metrics."""
         ...
 
 
 @dataclass(frozen=True)
 class CurriculumMSE:
-    """Curriculum mean squared error loss on standardized channels."""
+    """Curriculum MSE in recovered original output units."""
 
     weight: float
     span_steps: int
@@ -78,7 +84,7 @@ class CurriculumMSE:
 
     @classmethod
     def from_spec(cls, spec: CurriculumMSESpec, fs: float, name: str = "curriculum_mse") -> CurriculumMSE:
-        """Instantiate from a CurriculumMSESpec at sampling rate ``fs``."""
+        """Build a curriculum Loss in original output units."""
         return cls(
             weight=spec.weight,
             span_steps=spec.span_steps(fs),
@@ -92,20 +98,32 @@ class CurriculumMSE:
         """Score the shared rounded curriculum Span, or the full Span for validation."""
         return curriculum_span(self.span_steps, self.curr_start, self.curr_end, epoch)
 
-    def __call__(self, pred: Tensor, true: Tensor, ctx: LossContext) -> tuple[Tensor, dict[str, float]]:
-        """Compute MSE across channels over the trusted rollout prefix."""
+    def __call__(
+        self,
+        pred: jax.Array,
+        true: jax.Array,
+        ctx: LossContext,
+        step_mask: jax.Array | None = None,
+    ) -> tuple[jax.Array, dict[str, Any]]:
+        """Score the trusted Rollout prefix in original output units, including dynamic masks."""
+        residual = (pred[:, : self.span_steps] - true[:, : self.span_steps]) * ctx.y_scale
+        if step_mask is not None:
+            mask = step_mask[: self.span_steps]
+            # Average SE over batch and channel/frequency dimensions, leaving step dimension
+            diff_sq = residual**2
+            reduce_axes = (0, *range(2, diff_sq.ndim))
+            step_se = jnp.mean(diff_sq, axis=reduce_axes)
+            mse = jnp.sum(mask * step_se) / jnp.maximum(jnp.sum(mask), 1.0)
+            return mse, {"L": jnp.sum(mask)}
+
         length = self.trusted_length(ctx.epoch)
-        mse = torch.mean((pred[:, :length] - true[:, :length]) ** 2)
+        mse = jnp.mean(residual[:, :length] ** 2)
         return mse, {"L": float(length)}
 
 
 @dataclass(frozen=True)
 class StftLoss:
-    """Log-spectrogram matching loss on hopped segments in raw units.
-
-    Pooling happens only before the log (frequency bins, then a frame kernel) and only over the
-    batch after the square, so a signed log residual is never averaged over anything.
-    """
+    """Log-spectrogram matching loss on hopped segments in raw units."""
 
     weight: float
     span_steps: int
@@ -124,34 +142,52 @@ class StftLoss:
             name=name,
         )
 
-    def log_spectrogram(self, x: Tensor, ctx: LossContext) -> Tensor:
-        """Pooled log power per batch, output axis, Frame, and frequency bin in raw units."""
+    def log_spectrogram(self, x: jax.Array, ctx: LossContext) -> jax.Array:
+        """Recover log-power Frames using boundary history and the configured taper."""
         geom = self.geometry
         bin_lo, bin_hi = geom.bin_range(ctx.fs)
-        raw = ctx.to_raw(x[:, : self.span_steps]).movedim(1, -1)
-        power = spectrogram(raw, geom.n_segment, geom.n_hop, fs=ctx.fs)[..., bin_lo:bin_hi]
+        raw_fut = ctx.to_raw(x[:, : self.span_steps])
+        prefix_len = geom.sample_support_steps(ctx.fs) - geom.n_hop
+        if ctx.y_hist is not None and prefix_len > 0:
+            if ctx.y_hist.shape[1] < prefix_len:
+                msg = f"Measurement history must contain at least {prefix_len} samples."
+                raise ValueError(msg)
+            raw_hist = ctx.to_raw(ctx.y_hist[:, -prefix_len:])
+            raw_fut = jnp.concatenate([raw_hist, raw_fut], axis=1)
+        elif ctx.y_hist is not None:
+            raw_fut = raw_fut[:, -prefix_len:]
+        raw = jnp.moveaxis(raw_fut, 1, -1)
+        window = jnp.asarray(
+            compute_segment_window(geom.n_segment, window=geom.window, asymmetric_window=geom.asymmetric_window),
+            dtype=raw.dtype,
+        )
+        power = spectrogram(raw, geom.n_segment, geom.n_hop, fs=ctx.fs, window=window)[..., bin_lo:bin_hi]
         power = pool_bins(power, geom.n_bin_pool)
-        power = smooth_frames(power, frame_kernel(geom.kernel, geom.kernel_width, power))
-        return torch.log(power + LOG_FLOOR)
+        weights = frame_kernel(geom.kernel, geom.kernel_width, power)
+        power = smooth_frames(power, weights)
+        return jnp.log(power + LOG_FLOOR)
 
-    def __call__(self, pred: Tensor, true: Tensor, ctx: LossContext) -> tuple[Tensor, dict[str, float]]:
-        """Compute mean squared log-power difference over frames, channels and bins."""
+    def __call__(
+        self,
+        pred: jax.Array,
+        true: jax.Array,
+        ctx: LossContext,
+        step_mask: jax.Array | None = None,
+    ) -> tuple[jax.Array, dict[str, Any]]:
+        """Score log-power Frame residuals and report the actual scored Frame count."""
+        del step_mask
         residual = self.log_spectrogram(pred, ctx) - self.log_spectrogram(true, ctx)
         weights = frame_kernel(self.geometry.kernel, self.geometry.kernel_width, residual)
         diag = {
-            "M_out": float(self.geometry.n_frames(self.span_steps, ctx.fs)),
-            "K_eff": float(weights.sum() ** 2 / (weights**2).sum()),
+            "M_out": float(residual.shape[2]),
+            "K_eff": jnp.sum(weights) ** 2 / jnp.sum(weights**2),
         }
-        return torch.mean(residual**2), diag
+        return jnp.mean(residual**2), diag
 
 
 @dataclass(frozen=True)
 class EegMsLoss:
-    """Log-space mean square power matching on hopped segments in raw units.
-
-    The geometry mirrors the trailing power window of the ``eeg_ms`` observable, so that what the
-    loss scores is what the controller later reads; the loss itself sees the whole rollout at once.
-    """
+    """Log-space mean square power matching on hopped segments in raw units."""
 
     weight: float
     span_steps: int
@@ -170,21 +206,30 @@ class EegMsLoss:
             name=name,
         )
 
-    def windowed_power(self, x: Tensor, ctx: LossContext) -> Tensor:
+    def windowed_power(self, x: jax.Array, ctx: LossContext) -> jax.Array:
         """Mean-square power per trailing window, preserving every output axis in raw units."""
-        raw = ctx.to_raw(x[:, : self.span_steps]).movedim(1, -1)
-        return (
-            raw.unfold(dimension=-1, size=self.geometry.window_steps(ctx.fs), step=self.geometry.hop_steps(ctx.fs))
-            .pow(2)
-            .mean(dim=-1)
-        )
+        raw = jnp.moveaxis(ctx.to_raw(x[:, : self.span_steps]), 1, -1)
+        w_size = self.geometry.window_steps(ctx.fs)
+        w_step = self.geometry.hop_steps(ctx.fs)
+        t_len = raw.shape[-1]
+        n_win = (t_len - w_size) // w_step + 1
+        idx = jnp.arange(w_size)[None, :] + jnp.arange(n_win)[:, None] * w_step
+        windows = raw[..., idx]
+        return jnp.mean(windows**2, axis=-1)
 
-    def __call__(self, pred: Tensor, true: Tensor, ctx: LossContext) -> tuple[Tensor, dict[str, float]]:
+    def __call__(
+        self,
+        pred: jax.Array,
+        true: jax.Array,
+        ctx: LossContext,
+        step_mask: jax.Array | None = None,
+    ) -> tuple[jax.Array, dict[str, Any]]:
         """Compute log-space MSE between windowed mean-square power courses."""
+        del step_mask
         m_pred = self.windowed_power(pred, ctx)
         m_true = self.windowed_power(true, ctx)
-        log_ratio = torch.log(m_pred + LOG_FLOOR) - torch.log(m_true + LOG_FLOOR)
-        loss = torch.mean(log_ratio**2)
+        log_ratio = jnp.log(m_pred + LOG_FLOOR) - jnp.log(m_true + LOG_FLOOR)
+        loss = jnp.mean(log_ratio**2)
         return loss, {}
 
 
@@ -209,7 +254,7 @@ def build_losses(specs: LossSpecs | dict[str, LossSpec], fs: float) -> list[Loss
 
 
 def loss_eligibility_start(loss: Loss) -> int:
-    """Combine Loss activation with the shared curriculum completion epoch."""
+    """Combine Loss activation with shared curriculum completion epoch."""
     if loss.weight <= 0.0:
         return 0
     start = loss.start_epoch
@@ -230,83 +275,104 @@ def specs_eligibility_start(specs: LossSpecs | dict[str, LossSpec] | None, fs: f
     return eligibility_start_epoch(build_losses(specs, fs))
 
 
-def total_loss(
-    losses: Sequence[Loss], pred: Tensor, true: Tensor, ctx: LossContext
-) -> tuple[Tensor, dict[str, float | None]]:
-    """Compute weighted sum of active loss terms and unweighted diagnostics, distinguishing unrun terms."""
-    total = torch.zeros((), dtype=pred.dtype, device=pred.device)
-    comps: dict[str, float | None] = {}
+def spectrogram(x: jax.Array, n_segment: int, n_hop: int, fs: float, *, window: jax.Array | None = None) -> jax.Array:
+    """Compute hopped periodograms using the supplied taper or periodic Hann."""
+    t_len = x.shape[-1]
+    n_frames = (t_len - n_segment) // n_hop + 1
+    idx = jnp.arange(n_segment)[None, :] + jnp.arange(n_frames)[:, None] * n_hop
+    segments = x[..., idx]
 
-    for loss in losses:
-        if loss.weight <= 0.0 or (ctx.epoch is not None and ctx.epoch < loss.start_epoch):
-            comps[loss.name] = None
-            continue
-        val, diag = loss(pred, true, ctx)
-        total = total + loss.weight * val
-        comps[loss.name] = float(val.detach())
-        comps.update(diag)
+    if window is None:
+        window = 0.5 - 0.5 * jnp.cos(2.0 * jnp.pi * jnp.arange(n_segment, dtype=x.dtype) / n_segment)
+    spectrum = jnp.fft.rfft(segments * window, n=n_segment, axis=-1)
+    psd = (spectrum.real**2 + spectrum.imag**2) / (fs * jnp.sum(window**2))
 
-    return total, comps
-
-
-def spectrogram(x: Tensor, n_segment: int, n_hop: int, fs: float) -> Tensor:
-    """Hopped periodograms of ``x`` ``(..., n)`` -> ``(..., n_frames, n_segment // 2 + 1)``.
-
-    Matches ``scipy.signal.spectrogram(x, fs, window=hann(n_segment, sym=False),
-    noverlap=n_segment - n_hop, detrend=False)``: one-sided, density-scaled, no per-segment
-    detrend -- the DC bin is dropped by the caller instead, so that a segment-length sweep is not
-    also a sweep over an implicit high-pass.
-    """
-    segments = x.unfold(dimension=-1, size=n_segment, step=n_hop)
-    window = torch.hann_window(n_segment, periodic=True, dtype=x.dtype, device=x.device)
-    spectrum = torch.fft.rfft(segments * window, n=n_segment, dim=-1)
-    psd = (spectrum.real**2 + spectrum.imag**2) / (fs * (window**2).sum())
-
-    # One-sided: every bin carries its negative-frequency twin, except DC and (even n) Nyquist.
-    fold = torch.full((psd.shape[-1],), 2.0, dtype=psd.dtype, device=psd.device)
-    fold[0] = 1.0
+    fold = jnp.full(psd.shape[-1], 2.0, dtype=psd.dtype)
+    fold = fold.at[0].set(1.0)
     if n_segment % 2 == 0:
-        fold[-1] = 1.0
+        fold = fold.at[-1].set(1.0)
     return psd * fold
 
 
-def pool_bins(power: Tensor, n_bin_pool: int) -> Tensor:
+def pool_bins(power: jax.Array, n_bin_pool: int) -> jax.Array:
     """Mean power over consecutive groups of ``n_bin_pool`` bins, dropping the trailing remainder."""
     if n_bin_pool == 1:
         return power
     n_groups = power.shape[-1] // n_bin_pool
     grouped = power[..., : n_groups * n_bin_pool].reshape(*power.shape[:-1], n_groups, n_bin_pool)
-    return grouped.mean(dim=-1)
+    return jnp.mean(grouped, axis=-1)
 
 
-def frame_kernel(kernel: str, width: int, like: Tensor) -> Tensor:
-    """Return normalized non-negative smoothing weights along the frame axis.
-
-    Endpoints are kept strictly positive, so a width-``n`` taper really pools ``n`` frames.
-    """
+def frame_kernel(kernel: str, width: int, like: jax.Array) -> jax.Array:
+    """Return normalized non-negative smoothing weights along the frame axis."""
+    dtype = like.dtype
     if width == 1:
-        return torch.ones(1, dtype=like.dtype, device=like.device)
+        return jnp.ones(1, dtype=dtype)
     if kernel == "boxcar":
-        weights = torch.ones(width, dtype=like.dtype, device=like.device)
+        weights = jnp.ones(width, dtype=dtype)
     elif kernel == "triangular":
-        weights = torch.bartlett_window(width + 2, periodic=False, dtype=like.dtype, device=like.device)[1:-1]
+        N = width + 2
+        n = jnp.arange(1, width + 1, dtype=dtype)
+        weights = 1.0 - jnp.abs(2.0 * n - (N - 1.0)) / (N - 1.0)
     elif kernel == "hann":
-        weights = torch.hann_window(width + 2, periodic=False, dtype=like.dtype, device=like.device)[1:-1]
+        N = width + 2
+        n = jnp.arange(1, width + 1, dtype=dtype)
+        weights = 0.5 - 0.5 * jnp.cos(2.0 * jnp.pi * n / (N - 1.0))
     elif kernel == "exponential":
-        weights = torch.exp(torch.linspace(-1.0, 0.0, width, dtype=like.dtype, device=like.device))
+        weights = jnp.exp(jnp.linspace(-1.0, 0.0, width, dtype=dtype))
     elif kernel == "linear":
-        weights = torch.arange(1, width + 1, dtype=like.dtype, device=like.device)
+        weights = jnp.arange(1, width + 1, dtype=dtype)
     else:
         msg = f"Unknown frame kernel: {kernel!r}"
         raise ValueError(msg)
-    return weights / weights.sum()
+    return weights / jnp.sum(weights)
 
 
-def smooth_frames(power: Tensor, weights: Tensor) -> Tensor:
+def smooth_frames(power: jax.Array, weights: jax.Array) -> jax.Array:
     """Convolve power ``(..., n_frames, n_bins)`` along the frame axis, valid support only."""
-    if weights.numel() == 1:
+    if weights.size == 1:
         return power
-    moved = power.movedim(-2, -1)
+    moved = jnp.moveaxis(power, -2, -1)
     flat = moved.reshape(-1, 1, moved.shape[-1])
-    smoothed = torch.nn.functional.conv1d(flat, weights.reshape(1, 1, -1))
-    return smoothed.reshape(*moved.shape[:-1], smoothed.shape[-1]).movedim(-1, -2)
+    w = weights.reshape(1, 1, -1)
+    res = jax.lax.conv_general_dilated(flat, w, (1,), "VALID", dimension_numbers=("NCH", "OIH", "NCH"))
+    reshaped = res.reshape(*moved.shape[:-1], res.shape[-1])
+    return jnp.moveaxis(reshaped, -1, -2)
+
+
+def total_loss(  # noqa: PLR0913 -- Loss evaluation requires data, unit context, and both schedule masks
+    losses: Sequence[Loss],
+    pred: jax.Array,
+    true: jax.Array,
+    ctx: LossContext,
+    *,
+    step_mask: jax.Array | None = None,
+    active_mask: jax.Array | None = None,
+) -> tuple[jax.Array, dict[str, Any]]:
+    """Sum active Loss terms; dynamically inactive diagnostics are NaN for host-side reporting."""
+    total = jnp.zeros((), dtype=pred.dtype)
+    comps: dict[str, Any] = {}
+
+    for index, loss in enumerate(losses):
+        if loss.weight <= 0.0 or (ctx.epoch is not None and ctx.epoch < loss.start_epoch):
+            comps[loss.name] = None
+            continue
+
+        def evaluate(term: Loss = loss) -> tuple[jax.Array, dict[str, Any]]:
+            """Evaluate one Loss with a fixed diagnostic structure."""
+            return term(pred, true, ctx, step_mask=step_mask)
+
+        if active_mask is None:
+            val, diag = evaluate()
+            comps[loss.name] = val
+        else:
+            shapes = jax.eval_shape(evaluate)
+            zeros = jax.tree.map(lambda shape: jnp.zeros(shape.shape, shape.dtype), shapes)
+            active = active_mask[index]
+            val, diag = jax.lax.cond(active, evaluate, lambda zeros=zeros: zeros)
+            comps[loss.name] = jnp.where(active, val, jnp.nan)
+            diag = {key: jnp.where(active, value, jnp.nan) for key, value in diag.items()}
+        total = total + loss.weight * val
+        comps.update(diag)
+
+    return total, comps

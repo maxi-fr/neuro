@@ -8,8 +8,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Self
 
 import numpy as np
-import torch
 import yaml
+from scipy.spatial.distance import cdist
 from simulate.simulation import Simulation
 
 from neuro.control.schedule import ScheduleController, build_input_schedule
@@ -104,8 +104,8 @@ class OODIndex:
         Sorted in-distribution calibration K-NN distances, shape ``(N_cal,)``.
     k : int
         Number of nearest neighbors averaged in distance metric.
-    ref_tensor : torch.Tensor
-        Standardized reference points tensor, shape ``(N_ref, D)``.
+    ref_tensor : FloatArray
+        Standardized reference points array, shape ``(N_ref, D)``.
     batch_size : int
         Query chunk size for vectorized distance evaluation.
     """
@@ -114,7 +114,7 @@ class OODIndex:
     sigma: FloatArray
     id_cal_distances: FloatArray
     k: int
-    ref_tensor: torch.Tensor
+    ref_tensor: FloatArray
     batch_size: int
 
     @property
@@ -165,7 +165,7 @@ class OODIndex:
         ref_std = (ref - mu) / sigma
         cal_std = (cal - mu) / sigma
 
-        ref_tensor = torch.as_tensor(ref_std, dtype=torch.float32)
+        ref_tensor = np.asarray(ref_std, dtype=np.float64)
 
         index = cls(
             mu=mu,
@@ -206,15 +206,18 @@ class OODIndex:
 
     def _compute_standardized_distances(self, standardized_queries: FloatArray) -> FloatArray:
         """Compute K-NN distances against reference points for standardized vectors."""
-        q_arr = np.asarray(standardized_queries, dtype=np.float32)
+        q_arr = np.asarray(standardized_queries, dtype=np.float64)
         n_queries = len(q_arr)
         distances = np.empty(n_queries, dtype=np.float64)
 
         for i in range(0, n_queries, self.batch_size):
-            chunk = torch.as_tensor(q_arr[i : i + self.batch_size])
-            dists = torch.cdist(chunk, self.ref_tensor)
-            vals, _ = torch.topk(dists, self.k, largest=False)
-            distances[i : i + self.batch_size] = vals.mean(dim=1).cpu().numpy().astype(np.float64)
+            chunk = q_arr[i : i + self.batch_size]
+            dists = cdist(chunk, self.ref_tensor)
+            if dists.shape[1] >= self.k:
+                k_smallest = np.partition(dists, self.k - 1, axis=1)[:, : self.k]
+                distances[i : i + self.batch_size] = np.mean(k_smallest, axis=1)
+            else:
+                distances[i : i + self.batch_size] = np.mean(dists, axis=1)
 
         return distances
 

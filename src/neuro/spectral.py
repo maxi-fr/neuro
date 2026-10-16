@@ -407,3 +407,37 @@ class HealthyReference:
                 observable=observable,
                 ms=ms,
             )
+
+
+def compute_forecast_log_power_frames(
+    history: FloatArray,
+    future: FloatArray,
+    geometry: StftGeometry,
+    *,
+    fs: float,
+) -> FloatArray:
+    """Compute causal log-power Frames for a forecast rollout using boundary measurement history.
+
+    Parameters
+    ----------
+    history
+        Trailing raw EEG measurement history ending at the forecast boundary, shape ``(n_history, n_channels)``.
+    future
+        Predicted or recorded raw EEG future starting at the first forecast sample, shape ``(n_steps, n_channels)``.
+    geometry
+        Observable STFT geometry defining Segment length, hop, band, pooling, and Frame Kernel.
+    fs
+        Sampling rate in Hz.
+
+    Returns
+    -------
+    FloatArray
+        Log-power Frames of shape ``(n_frames, n_channels, n_values)``.
+    """
+    support = geometry.sample_support_steps(fs)
+    prefix_len = support - geometry.n_hop
+    if len(history) < prefix_len:
+        msg = f"history length ({len(history)}) must be >= {prefix_len} to evaluate the first forecast Frame."
+        raise ValueError(msg)
+    y_stitched = np.concatenate([history[-prefix_len:], future], axis=0) if prefix_len > 0 else future[-prefix_len:]
+    return compute_log_power_frames(y_stitched, geometry, fs=fs)

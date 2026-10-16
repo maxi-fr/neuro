@@ -69,6 +69,7 @@ class CasADiWaveformProblem:
     kirchhoff: bool
     w_u_l1: float = 0.0
     w_hinge: float = 0.0
+    w_hinge_terminal: float | None = None
     envelope: ObservableEnvelope | None = None
     log_floor: float = LOG_FLOOR
     solver_options: dict[str, Any] = dataclasses.field(default_factory=dict)
@@ -180,7 +181,7 @@ def _cnn_convolution_ca(inputs: list[ca.SX], weight: FloatArray, bias: FloatArra
 
 
 def _observable_cnn_forward_ca(y_window: ca.SX, u_window: ca.SX, model: ObservableCNNModel) -> ca.SX:
-    """Evaluate causal time-frequency CNN convolutions and dense Control Current head."""
+    """Activate every causal time-frequency convolution before the dense Control Current head."""
     n_time = model.n_y
     n_values = model.n_values
     n_outputs = model.n_outputs
@@ -196,10 +197,9 @@ def _observable_cnn_forward_ca(y_window: ca.SX, u_window: ca.SX, model: Observab
         )
         for channel in range(model.n_channels)
     ]
-    for layer, (weight, bias) in enumerate(zip(model.conv_weights, model.conv_biases, strict=True)):
+    for weight, bias in zip(model.conv_weights, model.conv_biases, strict=True):
         inputs = _cnn_convolution_ca(inputs, np.asarray(weight, dtype=np.float64), np.asarray(bias, dtype=np.float64))
-        if layer < len(model.conv_weights) - 1:
-            inputs = [_activation_ca(matrix, model.activation) for matrix in inputs]
+        inputs = [_activation_ca(matrix, model.activation) for matrix in inputs]
     features = ca.vertcat(*[matrix[n_time - 1, frequency] for matrix in inputs for frequency in range(n_values)])
     return _mlp_forward_ca(
         ca.vertcat(features, u_window),
@@ -210,13 +210,13 @@ def _observable_cnn_forward_ca(y_window: ca.SX, u_window: ca.SX, model: Observab
 
 
 def _waveform_cnn_forward_ca(y_window: ca.SX, u_window: ca.SX, model: WaveformCNNModel) -> ca.SX:
-    """Evaluate causal waveform convolutions and the dense Control Current head."""
+    """Activate every causal waveform convolution before the dense Control Current head."""
     start = (model.n_history - model.n_y) * model.n_outputs
     inputs = [
         ca.vertcat(*[y_window[start + t * model.n_outputs + channel] for t in range(model.n_y)])
         for channel in range(model.n_channels)
     ]
-    for layer, (weight, bias) in enumerate(zip(model.conv_weights, model.conv_biases, strict=True)):
+    for weight, bias in zip(model.conv_weights, model.conv_biases, strict=True):
         outputs = []
         for output_channel in range(weight.shape[0]):
             values = []
@@ -229,11 +229,7 @@ def _waveform_cnn_forward_ca(y_window: ca.SX, u_window: ca.SX, model: WaveformCN
                             value += float(weight[output_channel, input_channel, lag]) * channel_values[source]
                 values.append(value)
             outputs.append(ca.vertcat(*values))
-        inputs = (
-            [_activation_ca(values, model.activation) for values in outputs]
-            if layer < len(model.conv_weights) - 1
-            else outputs
-        )
+        inputs = [_activation_ca(values, model.activation) for values in outputs]
     features = ca.vertcat(*[values[-1] for values in inputs])
     return _mlp_forward_ca(
         ca.vertcat(features, u_window),
@@ -426,6 +422,7 @@ def _spectral_observable_cost_casadi(  # noqa: PLR0913 -- model and envelope plu
     envelope: ObservableEnvelope,
     *,
     w_hinge: float,
+    w_hinge_terminal: float | None = None,
     horizon: int,  # noqa: ARG001 -- horizon parameter matching interface
     log_floor: float = LOG_FLOOR,
 ) -> ca.SX:
@@ -462,7 +459,8 @@ def _spectral_observable_cost_casadi(  # noqa: PLR0913 -- model and envelope plu
 
     term_cost = ca.sum1(ca.sum2(ca.fmax(0.0, term_frames[0] - env_power_sx) ** 2)) / norm
 
-    return (w_hinge / total_frames) * (stage_cost + term_cost)
+    w_term = w_hinge if w_hinge_terminal is None else w_hinge_terminal
+    return (w_hinge / total_frames) * stage_cost + (w_term / total_frames) * term_cost
 
 
 def build_casadi_waveform_problem(  # noqa: PLR0913 -- checkpoint plus the MPC cost/bound knobs
@@ -475,6 +473,7 @@ def build_casadi_waveform_problem(  # noqa: PLR0913 -- checkpoint plus the MPC c
     w_y_terminal: float | None = None,
     w_u_l1: float = 0.0,
     w_hinge: float = 0.0,
+    w_hinge_terminal: float | None = None,
     reference: HealthyReference | str | Path | None = None,
     kirchhoff: bool = True,
     log_floor: float = LOG_FLOOR,
@@ -498,7 +497,8 @@ def build_casadi_waveform_problem(  # noqa: PLR0913 -- checkpoint plus the MPC c
     else:
         ref = reference
 
-    envelope = _observable_envelope(ref, w_hinge)
+    w_hinge_eff = max(w_hinge, w_hinge if w_hinge_terminal is None else w_hinge_terminal)
+    envelope = _observable_envelope(ref, w_hinge_eff)
     if envelope is not None:
         _validate_waveform_envelope(envelope, base)
         support = envelope.geometry.sample_support_steps(envelope.fs)
@@ -510,7 +510,7 @@ def build_casadi_waveform_problem(  # noqa: PLR0913 -- checkpoint plus the MPC c
         ref,
         base,
         tracking_active=(w_y > 0 or w_y_final > 0),
-        w_hinge=w_hinge,
+        w_hinge=w_hinge_eff,
     )
 
     u_max_arr = np.broadcast_to(np.atleast_1d(np.asarray(u_max, dtype=np.float64)), (base.n_controls,)).copy()
@@ -530,6 +530,7 @@ def build_casadi_waveform_problem(  # noqa: PLR0913 -- checkpoint plus the MPC c
         kirchhoff=kirchhoff,
         w_u_l1=w_u_l1,
         w_hinge=w_hinge,
+        w_hinge_terminal=w_hinge_terminal,
         envelope=envelope,
         log_floor=log_floor,
         solver_options=dict(solver_options) if solver_options is not None else {},
@@ -723,7 +724,10 @@ class CasADiMPCController(Controller[CasADiMPCLog]):
 
         if (
             isinstance(self.problem, CasADiWaveformProblem)
-            and self.problem.w_hinge > 0
+            and (
+                self.problem.w_hinge > 0
+                or (self.problem.w_hinge_terminal is not None and self.problem.w_hinge_terminal > 0)
+            )
             and self.problem.envelope is not None
         ):
             cost_spectral = _spectral_observable_cost_casadi(
@@ -732,6 +736,7 @@ class CasADiMPCController(Controller[CasADiMPCLog]):
                 model=self.problem.model,
                 envelope=self.problem.envelope,
                 w_hinge=self.problem.w_hinge,
+                w_hinge_terminal=self.problem.w_hinge_terminal,
                 horizon=h,
                 log_floor=self.problem.log_floor,
             )

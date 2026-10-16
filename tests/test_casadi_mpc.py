@@ -7,13 +7,11 @@ import casadi as ca
 import jax.numpy as jnp
 import numpy as np
 import pytest
-import torch
 from trajopt.transcription.ipopt import Ipopt
 
 from neuro.config import StftGeometry
 from neuro.control.casadi import (
     CasADiMPCController,
-    CasADiMPCLog,
     CasADiWaveformProblem,
     _compute_casadi_observable_frames,
     _output_casadi,
@@ -24,8 +22,7 @@ from neuro.control.casadi import (
 )
 from neuro.control.costs import ObservableHingeCost, jax_compute_observable_frames
 from neuro.control.mpc import TrajOptMPCController, build_waveform_problem, decompose_cost
-from neuro.predictor.inference import ObservableMLPModel, WaveformMLPModel
-from neuro.predictor.module import AutoregressiveMLP
+from neuro.predictor.mlp import ObservableMLPModel, WaveformMLPModel
 from neuro.spectral import HealthyReference, ObservableEnvelope
 from neuro.transforms import Standardizer
 from neuro.validation import validate_simulation_config
@@ -93,7 +90,7 @@ def _build_checkpoint(
         "y_mean": rng.uniform(-1.0, 1.0, n_channels),
         "y_scale": rng.uniform(0.5, 2.0, n_channels),
     }
-    model = AutoregressiveMLP(
+    model = WaveformMLPModel(
         n_y=n_y,
         n_u=n_u,
         horizon=horizon,
@@ -108,12 +105,10 @@ def _build_checkpoint(
         y_std=Standardizer(center=scalers["y_mean"], scale=scalers["y_scale"]),
         u_std=Standardizer(center=scalers["u_mean"], scale=scalers["u_scale"]),
     )
-    linears = [m for m in model.layers if isinstance(m, torch.nn.Linear)]
     sizes = [in_size, *([5] * depth), n_channels]
-    with torch.no_grad():
-        for lin, (w, b) in zip(linears, _random_layers(rng, sizes), strict=True):
-            lin.weight.copy_(torch.as_tensor(w, dtype=torch.float32))
-            lin.bias.copy_(torch.as_tensor(b, dtype=torch.float32))
+    layers = _random_layers(rng, sizes)
+    model.weights = tuple(jnp.asarray(w, dtype=jnp.float32) for w, _ in layers)
+    model.biases = tuple(jnp.asarray(b, dtype=jnp.float32) for _, b in layers)
     path = tmp_path / f"art_{activation}_{depth}_{residual}"
     model.save(path)
     return path
@@ -496,6 +491,56 @@ def test_casadi_and_trajopt_agree_on_every_cost_contribution(
     np.testing.assert_allclose(decomp_casadi["cost_total"], decomp_trajopt["cost_total"], rtol=1e-10, atol=1e-10)
 
 
+def test_casadi_and_trajopt_agree_on_terminal_hinge_weight(tmp_path: Path) -> None:
+    """CasADi and trajopt agree on cost when terminal hinge weight differs from stage hinge weight."""
+    geom = StftGeometry(n_segment=15, n_hop=5, kernel="hann", kernel_width=2)
+    fs = 100.0
+    dt = 1.0 / fs
+    horizon = 6
+    artifact = _build_checkpoint(tmp_path, depth=1, horizon=horizon, dt=dt)
+    ref_path = _write_reference(tmp_path, geom, n_channels=2, fs=fs)
+    ref = HealthyReference.load(ref_path)
+
+    prob_trajopt = build_waveform_problem(
+        artifact,
+        horizon=horizon,
+        u_max=0.8,
+        w_y=1.0,
+        w_hinge=2.0,
+        w_hinge_terminal=10.0,
+        reference=ref,
+        kirchhoff=True,
+    )
+    prob_casadi = build_casadi_waveform_problem(
+        artifact,
+        horizon=horizon,
+        u_max=0.8,
+        w_y=1.0,
+        w_hinge=2.0,
+        w_hinge_terminal=10.0,
+        reference=ref,
+        kirchhoff=True,
+    )
+
+    model = prob_trajopt.model
+    rng = np.random.default_rng(_SEED + 15)
+    x0 = rng.standard_normal(model.n)
+    u_seq = rng.uniform(-0.5, 0.5, (horizon, model.m))
+
+    states = [x0]
+    curr_x = x0
+    for k in range(horizon):
+        curr_x = np.asarray(model.discrete_dynamics(jnp.asarray(curr_x), jnp.asarray(u_seq[k]), 0.0, dt))
+        states.append(curr_x)
+    states_jax = jnp.asarray(np.array(states))
+
+    decomp_trajopt = decompose_cost(prob_trajopt, states_jax, jnp.asarray(u_seq), dt=dt)
+    decomp_casadi = decompose_casadi_cost(prob_casadi, x0, u_seq)
+
+    np.testing.assert_allclose(decomp_casadi["cost_spectral"], decomp_trajopt["cost_spectral"], rtol=1e-10, atol=1e-10)
+    np.testing.assert_allclose(decomp_casadi["cost_total"], decomp_trajopt["cost_total"], rtol=1e-10, atol=1e-10)
+
+
 def test_spectral_cost_preserves_frame_geometry_and_history(tmp_path: Path) -> None:
     """Spectral Observable Frame computation in CasADi preserves Frame geometry, pooling, and history."""
     fs = 100.0
@@ -571,7 +616,7 @@ def _observable_fixture(tmp_path: Path) -> tuple[Path, HealthyReference]:
     geometry = StftGeometry(n_segment=20, n_hop=5, band_hz=(4.0, 16.0), n_bin_pool=2)
     n_values = geometry.n_values(50.0)
     n_outputs = 2 * n_values
-    model = AutoregressiveMLP(
+    model = ObservableMLPModel(
         n_y=2,
         n_u=2,
         horizon=3,
@@ -587,11 +632,9 @@ def _observable_fixture(tmp_path: Path) -> tuple[Path, HealthyReference]:
         y_std=Standardizer(center=rng.normal(size=n_outputs), scale=rng.uniform(0.5, 2.0, n_outputs)),
         u_std=Standardizer(center=rng.normal(size=2), scale=rng.uniform(0.5, 2.0, 2)),
     )
-    linears = [layer for layer in model.layers if isinstance(layer, torch.nn.Linear)]
-    for linear, (weight, bias) in zip(linears, _random_layers(rng, [2 * n_outputs + 4, 4, n_outputs]), strict=True):
-        with torch.no_grad():
-            linear.weight.copy_(torch.as_tensor(weight, dtype=torch.float32))
-            linear.bias.copy_(torch.as_tensor(bias, dtype=torch.float32))
+    layers = _random_layers(rng, [2 * n_outputs + 4, 4, n_outputs])
+    model.weights = tuple(jnp.asarray(w, dtype=jnp.float32) for w, _ in layers)
+    model.biases = tuple(jnp.asarray(b, dtype=jnp.float32) for _, b in layers)
     artifact = tmp_path / "observable"
     model.save(artifact)
     return artifact, HealthyReference(observable=ObservableEnvelope(np.full((2, n_values), -0.4), 50.0, geometry))

@@ -8,28 +8,15 @@ import numpy as np
 import pytest
 from trajopt.costs.output import OutputCost
 from trajopt.costs.quadratic import DiagonalCost
-from trajopt.mpc import MPC
-from trajopt.solvers.boxqp import BoxQP
-from trajopt.transcription.ipopt import Ipopt
-from trajopt.transcription.single_shooting import SingleShooting
 
 from neuro.config import StftGeometry
-from neuro.connectome import Connectome
 from neuro.control.costs import (
-    ExcludeInitialKnotState,
     ObservableFrameHingeCost,
-    ObservableHingeCost,
     jax_compute_observable_frames,
 )
-from neuro.control.mpc import (
-    NullspaceReducedModel,
-    build_observable_problem,
-    build_waveform_problem,
-)
-from neuro.jansen_rit import JansenRitParams
+from neuro.control.mpc import NullspaceReducedModel
 from neuro.predictor.inference import ObservableMLPModel, WaveformMLPModel
-from neuro.predictor.jansen_rit import JansenRitModel, build_jansen_rit_problem
-from neuro.spectral import HealthyReference, ObservableEnvelope
+from neuro.spectral import ObservableEnvelope
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -116,27 +103,6 @@ def _build_synthetic_checkpoint(
     return stem
 
 
-def _toy_jansen_rit_model(n_nodes: int = 3, n_channels: int = 2) -> JansenRitModel:
-    rng = np.random.default_rng(_SEED)
-    w = rng.uniform(0.0, 1.0, (n_nodes, n_nodes))
-    np.fill_diagonal(w, 0.0)
-    d = np.zeros((n_nodes, n_nodes), dtype=np.int64)
-    conn = Connectome(
-        K=0.6,
-        weights=w,
-        tract_lengths=d.astype(np.float64),
-        centres=rng.uniform(-50.0, 50.0, (n_nodes, 3)),
-        region_labels=np.array([f"reg_{i}" for i in range(n_nodes)], dtype=np.str_),
-        hemispheres=np.zeros(n_nodes, dtype=bool),
-        speed=50.0,
-        delays=d.astype(np.float64),
-        region_index={f"reg_{i}": i for i in range(n_nodes)},
-    )
-    leadfield = rng.standard_normal((n_channels, n_nodes))
-    params = JansenRitParams(sigma=0.0)
-    return JansenRitModel.from_plant_components(params=params, conn=conn, leadfield=leadfield, dt=_DT)
-
-
 def test_waveform_mlp_model_output(tmp_path: Path) -> None:
     stem = _build_synthetic_checkpoint(tmp_path, is_observable=False, n_channels=3, n_y=4)
     model = WaveformMLPModel.load(stem)
@@ -168,25 +134,6 @@ def test_observable_mlp_model_output(tmp_path: Path) -> None:
     np.testing.assert_allclose(np.asarray(y), expected_y, rtol=1e-10, atol=1e-12)
 
 
-def test_jansen_rit_model_output() -> None:
-    n_nodes = 3
-    n_channels = 2
-    model = _toy_jansen_rit_model(n_nodes=n_nodes, n_channels=n_channels)
-    assert model.p == n_channels
-
-    rng = np.random.default_rng(_SEED)
-    x_ode = rng.standard_normal((6, n_nodes))
-    hist = model.seed_history(jnp.asarray(x_ode))
-    x = model.pack_state(jnp.asarray(x_ode), hist, 0.0)
-
-    y = model.output(x)
-    assert y.shape == (n_channels,)
-
-    lfp = x_ode[1] - x_ode[2]
-    expected_y = np.asarray(model.eeg_gain) @ lfp
-    np.testing.assert_allclose(np.asarray(y), expected_y, rtol=1e-10, atol=1e-12)
-
-
 def test_nullspace_reduced_model_output(tmp_path: Path) -> None:
     stem = _build_synthetic_checkpoint(tmp_path, is_observable=False, n_channels=3, n_controls=3)
     base_model = WaveformMLPModel.load(stem)
@@ -203,7 +150,7 @@ def test_nullspace_reduced_model_output(tmp_path: Path) -> None:
 
 
 def _numerical_output_state_jacobian(
-    model: WaveformMLPModel | JansenRitModel,
+    model: WaveformMLPModel,
     x0: jax.Array,
     eps: float = 1e-6,
 ) -> np.ndarray:
@@ -223,18 +170,6 @@ def test_output_state_jacobian_finite_differences(tmp_path: Path) -> None:
     stem = _build_synthetic_checkpoint(tmp_path, is_observable=False, n_channels=2)
     model = WaveformMLPModel.load(stem)
 
-    rng = np.random.default_rng(_SEED)
-    x0 = jnp.asarray(rng.standard_normal(model.n))
-    assert model.p is not None
-    jac_ad = np.asarray(model.output_state_jacobian(x0))
-    assert jac_ad.shape == (model.p, model.n)
-
-    jac_fd = _numerical_output_state_jacobian(model, x0)
-    np.testing.assert_allclose(jac_ad, jac_fd, rtol=1e-6, atol=1e-7)
-
-
-def test_jansen_rit_output_state_jacobian_finite_differences() -> None:
-    model = _toy_jansen_rit_model(n_nodes=3, n_channels=2)
     rng = np.random.default_rng(_SEED)
     x0 = jnp.asarray(rng.standard_normal(model.n))
     assert model.p is not None
@@ -275,39 +210,6 @@ def test_output_cost_quadratic_tracking_equivalence(tmp_path: Path) -> None:
         np.testing.assert_allclose(val_new, val_old, rtol=1e-10, atol=1e-12)
 
 
-def test_jansen_rit_output_cost_tracking_equivalence() -> None:
-    n_nodes = 3
-    n_channels = 2
-    model = _toy_jansen_rit_model(n_nodes=n_nodes, n_channels=n_channels)
-    horizon = 5
-    w_y = 2.0
-    w_u = 0.1
-    y_target = np.array([0.7, -1.1])
-
-    # Manual incumbent evaluation
-    def manual_cost(x: jax.Array, u: jax.Array) -> float:
-        x_ode = x[: 6 * n_nodes].reshape(6, n_nodes)
-        lfp = x_ode[1] - x_ode[2]
-        y = np.asarray(model.eeg_gain) @ lfp
-        track = (w_y / horizon) * np.sum((y - y_target) ** 2)
-        effort = (w_u / horizon) * np.sum(np.asarray(u) ** 2)
-        return float(track + effort)
-
-    # New OutputCost formulation
-    Q = jnp.full(model.p, 2.0 * w_y / horizon)
-    R = jnp.full(model.m, 2.0 * w_u / horizon)
-    stage_tracking = DiagonalCost.tracking(Q, R, jnp.asarray(y_target), jnp.zeros(model.m))
-    cost_new = OutputCost(model, stage_tracking)
-
-    rng = np.random.default_rng(_SEED)
-    for _ in range(5):
-        x = jnp.asarray(rng.standard_normal(model.n))
-        u = jnp.asarray(rng.standard_normal(model.m))
-        val_manual = manual_cost(x, u)
-        val_new = float(cost_new.evaluate(x, u))
-        np.testing.assert_allclose(val_new, val_manual, rtol=1e-10, atol=1e-12)
-
-
 def test_observable_frame_hinge_cost_output_equivalence(tmp_path: Path) -> None:
     """Verify ObservableFrameHingeCost produces identical values when decoding through model.output."""
     n_channels = 2
@@ -339,18 +241,3 @@ def test_observable_frame_hinge_cost_output_equivalence(tmp_path: Path) -> None:
 
     np.testing.assert_allclose(float(val_cost[0]), expected_stage_cost, rtol=1e-10, atol=1e-12)
     np.testing.assert_array_equal(np.asarray(val_cost[1:]), np.zeros(horizon - 1))
-
-
-def test_build_jansen_rit_problem_assembles_and_solves() -> None:
-    """Verify build_jansen_rit_problem assembles and solves to optimality."""
-    model = _toy_jansen_rit_model(n_nodes=3, n_channels=2)
-    ref = HealthyReference(lfp_mean=np.zeros(3), eeg_mean=np.zeros(2))
-    problem = build_jansen_rit_problem(model, horizon=4, u_max=1.0, w_y=1.0, w_u=0.1, reference=ref)
-    assert problem.N == 5
-
-    x0 = jnp.zeros(model.n)
-    solver = SingleShooting(solver=Ipopt(options={"print_level": 0, "max_iter": 50}))
-    mpc = MPC(problem, solver, x0=x0)
-    res = mpc.solve()
-    assert res.success
-    assert np.all(np.isfinite(mpc.controls))

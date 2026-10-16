@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING, Any
 
 # One simulation spends its time in small BLAS calls that do not parallelise: measured at 12 sim s,
 # a run took 59.5 s/sim s while holding seven cores and 57.3 s/sim s pinned to one. The seven cores
-# bought nothing. Pinning here, before torch is imported anywhere below, turns each worker into one
+# bought nothing. Pinning here, before numerical libraries are imported below, turns each worker into one
 # core so the Pool actually scales.
 os.environ.setdefault("OMP_NUM_THREADS", "1")
 os.environ.setdefault("MKL_NUM_THREADS", "1")
@@ -23,7 +23,6 @@ os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
 
 import multiprocessing
 
-import torch
 import yaml
 
 from neuro import comparison
@@ -36,10 +35,7 @@ _PROGRESS_DIR: Path | None = None
 
 
 def _init_worker(threshold: float, progress_dir: Path) -> None:
-    """Pin each worker to one thread and hand it the Seizure Threshhold and progress directory."""
-    # The env vars set at import get torch most of the way, but a probe still measured 2.6 cores
-    # per run. Saying it directly leaves nothing for the workers to fight over.
-    torch.set_num_threads(1)
+    """Hand each worker the Seizure Threshhold and progress directory."""
     global _THRESHOLD_MV, _PROGRESS_DIR  # noqa: PLW0603 -- a Pool initializer has no other way to seed its workers
     _THRESHOLD_MV = threshold
     _PROGRESS_DIR = progress_dir

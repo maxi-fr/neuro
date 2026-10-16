@@ -1,23 +1,24 @@
 from __future__ import annotations
 
-import jax
+from typing import TYPE_CHECKING
+
 import jax.numpy as jnp
 import numpy as np
 import pytest
-import torch
 
 from neuro.config import StftGeometry
+from neuro.predictor.cnn import ObservableCNNModel, WaveformCNNModel
 from neuro.predictor.evaluation import evaluate_observable_free_run, rollout_batches
-from neuro.predictor.inference import (
-    InferencePredictor,
-    ObservableCNNModel,
-    ObservableMLPModel,
-    WaveformCNNModel,
-    WaveformMLPModel,
-)
-from neuro.predictor.module import AutoregressiveCNN, AutoregressiveMLP
+from neuro.predictor.mlp import ObservableMLPModel, WaveformMLPModel
 from neuro.predictor.replay import replay_predictions
 from neuro.transforms import Standardizer
+
+if TYPE_CHECKING:
+    from neuro.predictor.base import AutoregressiveModel
+    from neuro.predictor.inference import (
+        InferencePredictor,
+    )
+    from neuro.types import FloatArray
 
 
 def _create_deterministic_linear_mlp(
@@ -27,9 +28,9 @@ def _create_deterministic_linear_mlp(
     n_channels: int = 2,
     n_controls: int = 2,
     horizon: int = 3,
-) -> tuple[AutoregressiveMLP, WaveformMLPModel]:
+) -> tuple[WaveformMLPModel, WaveformMLPModel]:
     """Create a deterministic linear MLP where the immediate candidate control has known weights."""
-    module = AutoregressiveMLP(
+    module = WaveformMLPModel(
         n_y=n_y,
         n_u=n_u,
         horizon=horizon,
@@ -44,17 +45,14 @@ def _create_deterministic_linear_mlp(
         y_std=Standardizer(center=np.zeros(n_channels), scale=np.ones(n_channels)),
         u_std=Standardizer(center=np.zeros(n_controls), scale=np.ones(n_controls)),
     )
-    layer = module.layers[0]
-    assert isinstance(layer, torch.nn.Linear)
-    with torch.no_grad():
-        layer.weight.zero_()
-        layer.bias.zero_()
-        y_t_start = (n_y - 1) * n_channels
-        layer.weight[0, y_t_start] = 1.0
-        layer.weight[1, y_t_start + 1] = 1.0
-        u_t_start = n_y * n_channels + (n_u - 1) * n_controls
-        layer.weight[0, u_t_start] = 5.0
-        layer.weight[1, u_t_start + 1] = 10.0
+    weight = np.zeros(module.weights[0].shape, dtype=np.float64)
+    y_t_start = (n_y - 1) * n_channels
+    weight[0, y_t_start] = 1.0
+    weight[1, y_t_start + 1] = 1.0
+    u_t_start = n_y * n_channels + (n_u - 1) * n_controls
+    weight[0, u_t_start] = 5.0
+    weight[1, u_t_start + 1] = 10.0
+    module = module.with_readout(weight, np.zeros(n_channels))
 
     meta, arrays = module.to_checkpoint()
     jax_model = WaveformMLPModel.from_checkpoint(meta, arrays)
@@ -75,12 +73,11 @@ def test_immediate_control_response_parity() -> None:
     expected_first_step = np.array([51.0, 202.0], dtype=np.float64)
 
     # 1. Training forward pass
-    y_hist_t = torch.as_tensor(y_hist, dtype=torch.float32).unsqueeze(0)
-    u_hist_t = torch.as_tensor(u_hist, dtype=torch.float32).unsqueeze(0)
-    u_fut_t = torch.as_tensor(u_future, dtype=torch.float32).unsqueeze(0)
-    with torch.no_grad():
-        torch_preds = module(y_hist_t, u_hist_t, u_fut_t).numpy()[0]
-    np.testing.assert_allclose(torch_preds[0], expected_first_step, rtol=1e-5, atol=1e-5)
+    y_hist_t = jnp.expand_dims(jnp.asarray(y_hist, dtype=jnp.float32), 0)
+    u_hist_t = jnp.expand_dims(jnp.asarray(u_hist, dtype=jnp.float32), 0)
+    u_fut_t = jnp.expand_dims(jnp.asarray(u_future, dtype=jnp.float32), 0)
+    training_preds = np.asarray(module(y_hist_t, u_hist_t, u_fut_t))[0]
+    np.testing.assert_allclose(training_preds[0], expected_first_step, rtol=1e-5, atol=1e-5)
 
     # 2. MPC discrete_dynamics
     state = jax_model.initial_state()
@@ -101,7 +98,7 @@ def test_immediate_control_response_parity() -> None:
     free_run_preds = np.asarray(jax_model.free_run(y_hist[None], u_hist[None], u_future[None]))[0]
 
     np.testing.assert_allclose(free_run_preds[0], expected_first_step, rtol=1e-5, atol=1e-5)
-    np.testing.assert_allclose(free_run_preds, torch_preds, rtol=1e-5, atol=1e-5)
+    np.testing.assert_allclose(free_run_preds, training_preds, rtol=1e-5, atol=1e-5)
     np.testing.assert_allclose(free_run_preds, mpc_preds_arr, rtol=1e-5, atol=1e-5)
 
 
@@ -114,10 +111,10 @@ def _build_test_model(
     horizon: int,
     dt: float,
     rng: np.random.Generator,
-) -> tuple[AutoregressiveMLP | AutoregressiveCNN, InferencePredictor, np.ndarray, tuple[int, ...]]:
-    """Construct matched torch and JAX models and an initial history for parity testing."""
+) -> tuple[AutoregressiveModel, InferencePredictor, FloatArray, tuple[int, ...]]:
+    """Construct matched training and runtime models and an initial history for parity testing."""
     if model_kind == "waveform_mlp":
-        module = AutoregressiveMLP(
+        module = WaveformMLPModel(
             n_y=n_y,
             n_u=n_u,
             horizon=horizon,
@@ -141,7 +138,7 @@ def _build_test_model(
         geometry = StftGeometry(n_segment=16, n_hop=4, band_hz=[4.0, 20.0], n_bin_pool=2, kernel_width=3)
         n_values = geometry.n_values(1.0 / dt)
         n_outputs = n_channels * n_values
-        module = AutoregressiveMLP(
+        module = ObservableMLPModel(
             n_y=n_y,
             n_u=n_u,
             horizon=horizon,
@@ -166,7 +163,7 @@ def _build_test_model(
         return module, jax_model, y_hist, (n_channels, n_values)
 
     if model_kind == "waveform_cnn":
-        module = AutoregressiveCNN(
+        module = WaveformCNNModel(
             n_y=n_y,
             n_u=n_u,
             horizon=horizon,
@@ -189,7 +186,7 @@ def _build_test_model(
     # observable_cnn
     geometry = StftGeometry(n_segment=16, n_hop=4, band_hz=[4.0, 20.0], n_bin_pool=2, kernel_width=3)
     n_values = geometry.n_values(1.0 / dt)
-    module = AutoregressiveCNN(
+    module = ObservableCNNModel(
         n_y=n_y,
         n_u=n_u,
         horizon=horizon,
@@ -221,7 +218,6 @@ def _build_test_model(
 def test_multistep_parity_across_models_and_control_history_one(model_kind: str, n_u: int) -> None:
     """Training forward, free_run, and MPC agree over full multistep rollout with n_u=1 and n_u=2."""
     rng = np.random.default_rng(101)
-    torch.manual_seed(101)
 
     n_y, n_channels, n_controls, horizon, dt = 2, 2, 2, 4, 0.02
     module, jax_model, y_hist, output_shape = _build_test_model(
@@ -232,12 +228,11 @@ def test_multistep_parity_across_models_and_control_history_one(model_kind: str,
     u_future = rng.standard_normal((horizon, n_controls))
 
     # 1. Training forward pass
-    y_hist_std = torch.as_tensor(module.y_std.transform(y_hist), dtype=torch.float32).unsqueeze(0)
-    u_hist_std = torch.as_tensor(module.u_std.transform(u_hist), dtype=torch.float32).unsqueeze(0)
-    u_fut_std = torch.as_tensor(module.u_std.transform(u_future), dtype=torch.float32).unsqueeze(0)
-    with torch.no_grad():
-        torch_preds_std = module(y_hist_std, u_hist_std, u_fut_std).numpy()[0]
-    torch_preds = module.y_std.inverse_transform(torch_preds_std)
+    y_hist_std = jnp.expand_dims(jnp.asarray(module.y_std.transform(y_hist), dtype=jnp.float32), 0)
+    u_hist_std = jnp.expand_dims(jnp.asarray(module.u_std.transform(u_hist), dtype=jnp.float32), 0)
+    u_fut_std = jnp.expand_dims(jnp.asarray(module.u_std.transform(u_future), dtype=jnp.float32), 0)
+    training_preds_std = np.asarray(module(y_hist_std, u_hist_std, u_fut_std))[0]
+    training_preds = module.y_std.inverse_transform(training_preds_std)
 
     # 2. Offline free_run
     free_run_preds = np.asarray(jax_model.free_run(y_hist[None], u_hist[None], u_future[None]))[0]
@@ -256,7 +251,7 @@ def test_multistep_parity_across_models_and_control_history_one(model_kind: str,
     mpc_preds_arr = np.stack(mpc_preds, axis=0)
 
     # Assert agreement across all steps to numerical tolerance
-    np.testing.assert_allclose(free_run_preds, torch_preds, rtol=1e-4, atol=1e-5)
+    np.testing.assert_allclose(free_run_preds, training_preds, rtol=1e-4, atol=1e-5)
     np.testing.assert_allclose(mpc_preds_arr, free_run_preds, rtol=1e-4, atol=1e-5)
 
 
@@ -347,11 +342,10 @@ def test_evaluation_rollout_batches_timing_matches_training_and_mpc() -> None:
         for i, t0 in enumerate(t0s):
             # Physical verification:
             # y_hist ends at y[t0], u_hist ends at u[t0-1]
-            y_hist_t = torch.as_tensor(y_traj[t0 - n_y + 1 : t0 + 1], dtype=torch.float32).unsqueeze(0)
-            u_hist_t = torch.as_tensor(u_traj[t0 - n_u : t0], dtype=torch.float32).unsqueeze(0)
-            u_fut_t = torch.as_tensor(u_traj[t0 : t0 + steps], dtype=torch.float32).unsqueeze(0)
-            with torch.no_grad():
-                expected_pred = module(y_hist_t, u_hist_t, u_fut_t).numpy()[0]
+            y_hist_t = jnp.expand_dims(jnp.asarray(y_traj[t0 - n_y + 1 : t0 + 1], dtype=jnp.float32), 0)
+            u_hist_t = jnp.expand_dims(jnp.asarray(u_traj[t0 - n_u : t0], dtype=jnp.float32), 0)
+            u_fut_t = jnp.expand_dims(jnp.asarray(u_traj[t0 : t0 + steps], dtype=jnp.float32), 0)
+            expected_pred = np.asarray(module(y_hist_t, u_hist_t, u_fut_t))[0]
             np.testing.assert_allclose(y_pred[i], expected_pred, rtol=1e-5, atol=1e-5)
             # Target verification:
             np.testing.assert_allclose(y_true[i], y_traj[t0 + 1 : t0 + 1 + steps], rtol=1e-5, atol=1e-5)
@@ -390,7 +384,7 @@ def test_observable_evaluation_scores_an_exact_control_response() -> None:
     """Observable evaluation scores y[t+1] = u[t] with zero error for changing inputs."""
     geom = StftGeometry(n_segment=4, n_hop=1)
     n_values = geom.n_values(50.0)
-    module = AutoregressiveMLP(
+    module = ObservableMLPModel(
         n_y=2,
         n_u=1,
         horizon=3,
@@ -406,12 +400,9 @@ def test_observable_evaluation_scores_an_exact_control_response() -> None:
         u_std=Standardizer(center=np.zeros(1), scale=np.ones(1)),
         geometry=geom,
     )
-    layer = module.layers[0]
-    assert isinstance(layer, torch.nn.Linear)
-    with torch.no_grad():
-        layer.weight.zero_()
-        layer.bias.zero_()
-        layer.weight[:, -1] = 1.0
+    weight = np.zeros(module.weights[0].shape, dtype=np.float64)
+    weight[:, -1] = 1.0
+    module = module.with_readout(weight, np.zeros(n_values))
     meta, arrays = module.to_checkpoint()
     model = ObservableMLPModel.from_checkpoint(meta, arrays)
     u = np.arange(10, dtype=np.float64)[:, None]

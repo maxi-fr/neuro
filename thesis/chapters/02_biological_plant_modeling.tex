@@ -9,8 +9,8 @@ Figure~\ref{fig:plant_overview} summarizes this path from control currents to me
 
 \begin{figure}[t]
     \centering
-    \resizebox{\linewidth}{!}{\input{figures/02_biological_plant_modeling/plant_overview}}
-    \caption{Overview of the biological plant. Scalp currents $\mathbf{u}$ are mapped through the stimulation lead field to regional membrane-potential perturbations $\mathbf{s}$, which act on a delayed stochastic network of Jansen-Rit nodes. Regional activity is mapped through the \ac{eeg} lead field to the scalp measurements available to the controller.}
+    \input{figures/02_biological_plant_modeling/plant_overview}
+    \caption{Overview of the biological plant. Scalp currents $\mathbf{u}$ are mapped through the stimulation lead field to regional membrane-potential perturbations $\mathbf{s}$, which act on a delayed stochastic network of Jansen-Rit nodes. Regional activity is mapped through the \ac{eeg} lead field to the scalp measurements available to the controller. The callout shows an example output of node $i$. The network contains $N=76$ regions; only the 100 strongest connections are drawn. Brain outlines, stimulation shading and electrode positions are schematic.}
     \label{fig:plant_overview}
 \end{figure}
 
@@ -30,38 +30,40 @@ The four intra-columnar projections are parameterized by the effective connectiv
 \begin{figure}
     \centering
     \input{figures/02_biological_plant_modeling/jansen_rit_microcircuit}
-    \caption{Block diagram of one Jansen-Rit node. The \acp{py} excite the \acp{ein} through $c_1$ and the \acp{iin} through $c_3$ and receives excitatory feedback through $c_2$ and inhibitory feedback through $c_4$.
-    Each synaptic pathway filters its incoming firing rate with an excitatory or inhibitory postsynaptic-potential kernel and converts membrane potential to firing rate through the sigmoid $S$.
-    The constant background input $I$, delayed network input $I_{\mathrm{coup},i}$ and stochastic afferent drive enter the excitatory branch.
-    Electrical stimulation $s_i$ shifts the membrane-potential argument of the pyramidal sigmoid.
-    The regional output is the net postsynaptic membrane potential $y_{\mathrm{reg},i}=x_{i,2}-x_{i,3}$ of the pyramidal population.}
+    \caption{Block diagram of one Jansen--Rit node. Colored containers represent cell populations; the neuron symbols are schematic and do not specify cell counts or cortical layers.
+    Connectivity multipliers $c_1$ to $c_4$ lie between populations, synaptic filters lie at receiving boundaries, and potential summation and sigmoid conversion lie inside the receiving population.
+    Navy signals denote mean potentials, and brown signals denote mean firing rates.
+    The two interneuron input filters share the response $x_{i,1}$: linearity allows $c_1$ and $c_3$ to precede the filters, producing $c_1x_{i,1}$ and $c_3x_{i,1}$ without additional independent states.
+    The rates $r_{\mathrm p}=S(v_i)$, $r_{\mathrm e}=S(c_1x_{i,1})$ and $r_{\mathrm i}=S(c_3x_{i,1})$ denote pyramidal, excitatory-interneuron and inhibitory-interneuron mean firing rates, respectively, with $v_i=x_{i,2}-x_{i,3}+s_i$.
+    Background input $I$, network input $I_{\mathrm{coup},i}$ and stochastic afferent drive $\zeta_i$ enter the excitatory synaptic pathway to the pyramidal population.
+    Stimulation $s_i$ shifts the pyramidal potential before sigmoid conversion; the regional output is $y_{\mathrm{reg},i}=x_{i,2}-x_{i,3}$.}
     \label{fig:microcircuit}
 \end{figure}
 
 Each synaptic pathway consists of two transformations.
-First, incoming mean firing rate is converted into an average \ac{psp} by convolution with the impulse response
+First, incoming mean firing rate is converted into an average \ac{psp} by convolution with the impulse response,
 %
 \begin{equation}
     h_\mathrm{e}(t)=A\,a\,t\,\mathrm{e}^{-at},
     \qquad
     h_\mathrm{i}(t)=B\,b\,t\,\mathrm{e}^{-bt},
-    \qquad t\geq 0\,.
+    \qquad t\geq 0\,,
     \label{eq:psp_kernel}
 \end{equation}
 %
-where $A$ and $B$ are the excitatory and inhibitory synaptic gains and $a$ and $b$ are the corresponding rate constants.
+where $A, B \in \mathbb{R}_{>0}$ are the excitatory and inhibitory synaptic gains, and $a, b \in \mathbb{R}_{>0}$ are the corresponding rate constants.
 The reciprocal quantities $a^{-1}$ and $b^{-1}$ are the lumped synaptic time constants.
-Then the mean membrane potential $v$ of a population is converted to its mean firing rate through the sigmoid function
+Then the mean membrane potential $v \in \mathbb{R}$ of a population is converted to its mean firing rate through the sigmoid function
 %
 \begin{equation*}
-    S(v)=\frac{2e_0}{1+\exp\!\left[r(v_0-v)\right]}\,.
+    S(v)=\frac{2e_0}{1+\exp\!\left[r(v_0-v)\right]}\,,
 \end{equation*}
 %
-where $2e_0$ is the maximum population firing rate, $v_0$ is the potential at which half the population fires and $r$ determines the slope of the population response reflecting the spread of firing thresholds across the cells of the population.
+where $2e_0 \in \mathbb{R}_{>0}$ is the maximum population firing rate, $v_0 \in \mathbb{R}$ is the potential at which half the population fires, and $r \in \mathbb{R}_{>0}$ determines the slope of the population response reflecting the spread of firing thresholds across the cells of the population.
 
 Because the kernels in~\eqref{eq:psp_kernel} are Green's functions of second-order linear systems, the three filtered synaptic pathways can be written as six first-order states.
 The state $x_{i,1}$ is the excitatory \ac{psp} generated by pyramidal firing and delivered to the interneuron branches.
-$x_{i,2}$ and $x_{i,3}$ are the excitatory and inhibitory \acp{psp}, respectively.
+The states $x_{i,2}$ and $x_{i,3}$ are the excitatory and inhibitory \acp{psp}, respectively.
 The states $x_{i,4}$, $x_{i,5}$ and $x_{i,6}$ are their corresponding time derivatives.
 With node-dependent excitatory gain $A_i$, the dynamics of region $i$ are
 %
@@ -72,14 +74,13 @@ With node-dependent excitatory gain $A_i$, the dynamics of region $i$ are
     \dot{x}_{i,5} &= A_i a\left[I+c_2S\!\left(c_1x_{i,1}\right)+I_{\mathrm{coup},i}+\zeta_i(t)\right]
                      -2a\,x_{i,5}-a^2x_{i,2}, \label{eq:jr_node} \\
     \dot{x}_{i,3} &= x_{i,6}, \nonumber \\
-    \dot{x}_{i,6} &= Bb\,c_4S\!\left(c_3x_{i,1}\right)-2b\,x_{i,6}-b^2x_{i,3}\,. \nonumber
+    \dot{x}_{i,6} &= Bb\,c_4S\!\left(c_3x_{i,1}\right)-2b\,x_{i,6}-b^2x_{i,3}\,, \nonumber
 \end{align}
 %
 where $I$ is the constant excitatory background drive, $I_{\mathrm{coup},i}$ is the delayed input from other regions, $s_i$ is the membrane-potential perturbation caused by external stimulation and $\zeta_i(t)$ is a zero-mean Gaussian white-noise drive with power spectral density $\sigma^2$.
 The noise processes are independent across regions.
 
 Stimulation shifts the membrane-potential argument of the pyramidal sigmoid in~\eqref{eq:jr_node}~\cite{Kunze2016,Merlet2013,Yu2024}.
-Section~\ref{sec:stimulation_interface} explains why the scalp electric field enters as a membrane-potential perturbation rather than a presynaptic firing-rate input.
 Since $S$ increases with its argument, $s_i>0$ raises pyramidal firing and $s_i<0$ lowers it locally.
 
 The local output of a region is the difference between the excitatory and inhibitory \acp{psp} arriving at the pyramidal population,
@@ -98,7 +99,7 @@ The nodes interact through delayed firing-rate signals derived from this regiona
 Long-range white-matter pathways couple the regional neural masses and allow activity generated in one region to recruit other parts of the network.
 These pathways are represented by a structural connectivity matrix derived from diffusion-weighted tractography and atlas parcellation.
 Let $N=76$ and let $\mathbf{W}\in\mathbb{R}^{N\times N}$ denote the structural connectivity matrix.
-Its entry $w_{ij}$ is the relative reconstructed fibre-bundle strength from sending region $j$ to receiving region $i$; these tractography-derived weights are expressed in arbitrary units and are not interpreted as literal axon counts.
+Its entry $w_{ij}$ is the relative reconstructed fibre-bundle strength from sending region $j$ to receiving region $i$; these tractography-derived weights are normalized, dimensionless quantities and are not interpreted as literal axon counts.
 The model treats $\mathbf{W}$ as symmetric because the underlying tractography does not establish axonal direction~\cite{SanzLeon2015}.
 Self-connections are excluded by taking $w_{ii}=0$.
 The global factor $K$ scales the resulting network input relative to each region's local dynamics and therefore absorbs the overall scale of the structural weights.
@@ -137,7 +138,7 @@ Figure~\ref{fig:connectome_matrices} shows the weights and physical delays befor
 
 \begin{figure}[t]
     \centering
-    \includegraphics[width=\linewidth]{figures/02_biological_plant_modeling/connectome_matrices}
+    \includegraphics{figures/02_biological_plant_modeling/connectome_matrices}
     \caption{Structural connectivity weights and conduction delays for the 76-region \ac{tvb} connectome. Rows are receiving regions and columns are sending regions in atlas order. The line separates right- and left-hemisphere regions. White cells have zero connection weight; the delay panel shows only connected pairs. Delays use a uniform conduction speed of \SI{50}{\milli\metre\per\milli\second}.}
     \label{fig:connectome_matrices}
 \end{figure}
@@ -147,7 +148,7 @@ Let
 %
 \begin{equation}
     \mathbf{x}_{i,k}=\mathbf{x}_i(t_k),
-    \qquad t_k=k\Delta t_\mathrm{p}\,.
+    \qquad t_k=k\Delta t_\mathrm{p}\,,
 \end{equation}
 %
 and write $y_{\mathrm{reg},j,k-n_{ij}}$ for the output of region $j$ from $n_{ij}$ steps earlier.
@@ -167,7 +168,7 @@ Because the Gaussian white-noise drive enters only the excitatory velocity state
     =A_i a\int_{t_k}^{t_{k+1}}\zeta_i(t)\,\mathrm{d}t
     =A_i a\sigma\sqrt{\Delta t_\mathrm{p}}\,\eta_{i,k},
     \qquad
-    \eta_{i,k}\sim\mathcal{N}(0, 1)\,.
+    \eta_{i,k}\sim\mathcal{N}(0, 1)\,,
 \end{equation*}
 %
 since
@@ -175,7 +176,7 @@ since
 \begin{equation*}
     \int_{t_k}^{t_{k+1}}\zeta_i(t)\,\mathrm{d}t
     \sim
-    \mathcal{N}\!\left(0,\sigma^2\Delta t_\mathrm{p}\right)\,.
+    \mathcal{N}\!\left(0, \sigma^2\Delta t_\mathrm{p}\right)\,.
 \end{equation*}
 %
 The draws $\eta_{i,k}$ are independent across regions and integration steps.
@@ -186,7 +187,7 @@ Writing $\hat{\mathbf{e}}_5$ for the fifth canonical basis vector in $\mathbb{R}
     =\mathbf{x}_{i,k}
     +\Delta t_\mathrm{p}\,
       \mathbf{f}_i\!\left(\mathbf{x}_{i,k};I_{\mathrm{coup},i,k},s_{i,k}\right)
-      +\xi_{i,k}\hat{\mathbf{e}}_5\,.
+      +\xi_{i,k}\hat{\mathbf{e}}_5\,,
 \end{equation*}
 %
 and the corrected state is
@@ -221,12 +222,11 @@ Background nodes have a lower gain and are less susceptible to the same incoming
 Figure~\ref{fig:bifurcation} illustrates the behaviour of nodes for these different excitability values.
 
 Within this model seizure propagation therefore refers to network-driven recruitment of regions outside the \ac{ez}.
-The control objective is to prevent or reduce this outward recruitment, particularly beyond the \ac{pz}.
 
 \begin{figure}
     \centering
-    \includegraphics[width=0.9\linewidth]{figures/02_biological_plant_modeling/excitability_regimes}
-    \caption{Jansen-Rit dynamics at the three excitability levels. Left, the regional output $y_\mathrm{reg}$ over \SI{4}{\second} of simulation following a \SI{4}{\second} transient. Right, the corresponding Welch power spectral density, averaged over three segments of $16{,}000$ samples. Rows (a), (b) and (d) show uncoupled nodes: background tissue and the \ac{pz} fluctuate around a low-amplitude operating point, whereas the \ac{ez} exhibits a large-amplitude spike-wave limit cycle. Row (c) shows the same \ac{pz} node embedded in the 76-region network with three \ac{ez} nodes, where the coupling recruits it into an oscillation. All runs use the parameters in Table~\ref{tab:jr_params} and the same noise seed.}
+    \includegraphics{figures/02_biological_plant_modeling/excitability_regimes}
+    \caption{Jansen-Rit dynamics at the three excitability levels. Left: Regional output $y_\mathrm{reg}$ over \SI{4}{\second} of simulation following a \SI{4}{\second} transient. Right: Corresponding Welch power spectral density, averaged over three segments of $16{,}000$ samples. Rows (a), (b) and (d) show uncoupled nodes: background tissue and the \ac{pz} fluctuate around a low-amplitude operating point, whereas the \ac{ez} exhibits a large-amplitude spike-wave limit cycle. Row (c) shows the same \ac{pz} node embedded in the 76-region network with three \ac{ez} nodes, where the coupling recruits it into an oscillation. All runs use the parameters in Table~\ref{tab:jr_params} and the same noise seed.}
     \label{fig:bifurcation}
 \end{figure}
 
@@ -241,7 +241,7 @@ Figure~\ref{fig:ez_pz_assignment} shows the five selected region centroids withi
 
 \begin{figure}[t]
     \centering
-    \includegraphics[width=\linewidth]{figures/02_biological_plant_modeling/ez_pz_assignment}
+    \includegraphics{figures/02_biological_plant_modeling/ez_pz_assignment}
     \caption{Regional excitability assignment in two projections of the \ac{tvb} atlas centroids. The head sketches at lower left indicate the viewing angles. The left hippocampus, parahippocampal cortex and amygdala form the \ac{ez}; the left inferior and ventral temporal regions form the \ac{pz}. The other 71 regions retain background excitability. Points denote region centroids, not anatomical boundaries.}
     \label{fig:ez_pz_assignment}
 \end{figure}
@@ -260,15 +260,14 @@ The pair $(K,\sigma)$ was calibrated to reproduce the uncontrolled propagation p
 The target was recruitment through the \ac{pz} across the left hemisphere within approximately \SI{10}{\second} of \ac{ez} seizure onset, without right-hemisphere recruitment during that interval.
 The resulting values are $K=0.60$ and $\sigma=0.86\,\si{\second^{-1/2}}$.
 The calibration procedure, parameter search and seed-level variability are reported in the appendix.
+A region is classified as recruited if within the past \SI{1}{\second} the peak-to-peak amplitude of $y_{\mathrm{reg}}$ exceeds \SI{5}{\milli\volt}.
+This criterion is used consistently for the calibration and subsequent propagation analyses, with its detailed motivation and sensitivity reported in the appendix.
 The exact spread pattern remains stochastic across random seeds.
 Figure~\ref{fig:uncontrolled_propagation} shows a representative run with near-full left-hemisphere recruitment after approximately \SI{10}{\second}.
 
-A region is classified as recruited if within the past \SI{1}{\second} the peak-to-peak amplitude of $y_{\mathrm{reg}}$ exceeds \SI{5}{\milli\volt}.
-This criterion is used consistently for the calibration and subsequent propagation analyses, with its detailed motivation and sensitivity reported in the appendix.
-
 \begin{figure}[t]
     \centering
-    \includegraphics[width=\linewidth]{figures/02_biological_plant_modeling/uncontrolled_propagation}
+    \includegraphics{figures/02_biological_plant_modeling/uncontrolled_propagation}
     \caption{Cumulative regional recruitment in the saved uncontrolled seed-7000 run. The \ac{ez} onset is detected at $t=\SI{0.5}{\second}$; by $t=\SI{10.5}{\second}$, 34 of 38 left regions and no right regions have been recruited. The dotted line marks this time point.}
     \label{fig:uncontrolled_propagation}
 \end{figure}
@@ -349,7 +348,7 @@ Because the assumed proportionality between neural-mass output and physical dipo
 The actuation proceeds in the opposite physical direction.
 In \ac{tes}, currents applied at scalp electrodes generate a distributed electric field inside the head.
 The pyramidal populations are modeled as being polarized by the component of this field along their somato-dendritic axis.
-At the regional scale used here, that axis is approximated by the local cortical normal, so the normal electric-field component determines the effective membrane-potential perturbation~\cite{Buzsaki2012}. % cite-checked: SUPPORTED latex-lint: ignore = PROSE-03
+At the regional scale used here, this axis is approximated by the local cortical normal, so the normal electric-field component determines the effective membrane-potential perturbation~\cite{Buzsaki2012}. % cite-checked: SUPPORTED
 %At the regional scale used here, that axis is approximated by the regional orientation vector supplied with the \ac{tvb} connectivity and treated as a cortical-normal surrogate, so the field component along this orientation determines the effective membrane-potential perturbation~\cite{Buzsaki2012}. % note that for stimulation not TVB but ROAST is used
 %For mesial and non-neocortical regions such as the hippocampus and amygdala, this orientation is only a coarse modeling surrogate for the local somato-dendritic axis; the resulting stimulation sensitivity should therefore be interpreted at the regional-model level rather than as a detailed cellular polarization estimate.
 This motivates the additive perturbation $s_i$ in the argument of the pyramidal sigmoid in~\eqref{eq:jr_node}, rather than introducing stimulation as an additional synaptic firing-rate input~\cite{Kunze2016,Merlet2013,Yu2024}. % cite-checked: SUPPORTED
@@ -359,7 +358,7 @@ Let $\mathbf{u}(t)\in\mathbb{R}^{P}$ collect the electrode currents and $\mathbf
 Their relation is
 %
 \begin{equation*}
-    \mathbf{s}(t)=\mathbf{L}_\mathrm{stim}\mathbf{u}(t)\,.
+    \mathbf{s}(t)=\mathbf{L}_\mathrm{stim}\mathbf{u}(t)\,,
 \end{equation*}
 %
 with regional entries
@@ -379,18 +378,23 @@ The resulting matrix $\mathbf{L}_\mathrm{stim}\in\mathbb{R}^{N\times P}$ maps th
 A previous left temporal epilepsy model used a CP5 cathode with an Ex8 return~\cite{Yu2024}. % cite-checked: SUPPORTED
 For the present plant, a three-electrode search over the available scalp locations selected TP9, CP5 and Ex8 for targeted suppressive drive in the \ac{pz}.
 The search procedure and montage comparison are reported in the appendix.
-The currents satisfy
+By design, the individual electrode currents are constrained to respect safety and hardware limits,
 %
 \begin{equation*}
     |u_p(t)|\leq\SI{2}{\milli\ampere},
-    \qquad
-    \sum_{p=1}^{P}u_p(t)=0\,.
+    \qquad p=1,\ldots,P\,,
+\end{equation*}
+%
+while charge conservation across the montage requires
+%
+\begin{equation*}
+    \sum_{p=1}^{P}u_p(t)=0\,,
 \end{equation*}
 %
 so that the applied montage injects no net current into the head.
 Although sensing and stimulation are both governed by volume conduction, the two lead fields used here are not transposes of one another.
-This asymmetry does not violate Helmholtz reciprocity.
-Helmholtz reciprocity relates measurement and stimulation configurations only when source geometry, electrode pairs and referencing are matched~\cite[ch.~11]{Malmivuo1995}. % cite-checked: SUPPORTED
+This difference does not violate Helmholtz reciprocity.
+Helmholtz reciprocity relates measurement and stimulation configurations only when source geometry, electrode pairs and referencing are matched~\cite{Malmivuo1995}. % cite-checked: SUPPORTED
 Here, the main difference is that Ex8 is used in the stimulation montage but is absent from the 62-channel \ac{tvb} \ac{eeg} layout.
 
 This completes the specification of the biophysical plant. Chapter~\ref{ch:data_driven_predictor_design} next considers how its scalp measurements can be used to construct predictive models for closed-loop control.

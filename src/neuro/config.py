@@ -59,13 +59,26 @@ class ModelConfig(StrictConfig):
     residual: bool = True
     kernel_size: int = Field(default=3, ge=1)
     frequency_kernel_size: int = Field(default=3, ge=1)
+    tapering_ratio: float = Field(default=1.0, gt=0.0, le=1.0)
+    head_depth: int = Field(default=1, ge=0)
+    head_width: Literal["trunk", "geometric_mean"] = "trunk"
 
     @model_validator(mode="after")
     def _validate_architecture_depth(self) -> Self:
-        """Require at least one convolutional layer for the CNN architecture."""
-        if self.architecture == "cnn" and self.depth < 1:
-            msg = "CNN predictors require model.depth >= 1."
-            raise ValueError(msg)
+        """Require at least one convolutional layer and non-zero channels for the CNN architecture."""
+        if self.architecture == "cnn":
+            if self.depth < 1:
+                msg = "CNN predictors require model.depth >= 1."
+                raise ValueError(msg)
+            c = self.hidden_size
+            for _ in range(1, self.depth):
+                c = math.floor(c * self.tapering_ratio)
+            if c < 1:
+                msg = (
+                    f"CNN tapering produces 0 channels at depth {self.depth} "
+                    f"with hidden_size={self.hidden_size} and tapering_ratio={self.tapering_ratio}."
+                )
+                raise ValueError(msg)
         return self
 
 
@@ -119,7 +132,7 @@ class SecondsSpanSpec(LossSpec):
 
 
 class CurriculumMSESpec(SecondsSpanSpec):
-    """Curriculum MSE loss spec: ramps trusted rollout length over curr_start -> curr_end."""
+    """Original-output-unit MSE with trusted Rollout length ramped over curr_start -> curr_end."""
 
     curr_start: int = Field(ge=0)
     curr_end: int = Field(ge=0)
@@ -393,7 +406,7 @@ class TrainingConfig(StrictConfig):
     """Optimisation and scaling settings for the NN predictor.
 
     ``fit`` names the algorithm the unified entry point routes to: ``gradient_descent`` serves any
-    torch module over the base protocol, ``ridge`` serves only the Ridge-Fittable depth-0 waveform
+    JAX Predictor over the base protocol, ``ridge`` serves only the Ridge-Fittable depth-0 waveform
     MLP and depth-0 observable MLP. A fit the configured model does not support fails at build time
     in :func:`neuro.predictor.train.train`, not mid-fit.
     """
@@ -411,8 +424,6 @@ class TrainingConfig(StrictConfig):
     train_split: float = Field(default=0.8, gt=0, lt=1)
     seed: int = Field(default=69, ge=0)
     patience: int = Field(default=50, ge=1)
-    scaler: Literal["standard", "robust"] = "standard"
-    global_scaling: bool = False
     device: Literal["auto", "cpu", "cuda"] = "auto"
     eval_horizon_s: float = Field(gt=0)
     # ``None`` only on the observable path, whose loss is a fixed MSE on the frame grid rather
@@ -569,7 +580,7 @@ class NNSweepConfig(StrictConfig):
     mismatched name fails at build time.
     """
 
-    n_trials: int = Field(default=20, ge=1)
+    n_trials: int = Field(default=25, ge=1)
     artifact: str | None = None
     objective: str = "log_energy"
     model: dict[str, ParamSpec] = Field(default_factory=dict)
@@ -841,10 +852,6 @@ def resolve_artifact_dir(artifact: str | None, default_prefix: str) -> Path:
     return artifact_dir
 
 
-_ORACLE_ESTIMATOR = "neuro.predictor.oracle.JansenRitOracleEstimator"
-_JANSEN_RIT_PROBLEM = "neuro.predictor.jansen_rit.build_jansen_rit_problem"
-
-
 def _resolve_dynamics_config(dyn: dict[str, Any]) -> None:
     """Expand regime into canonical connectome, parameters and plant defaults."""
     regime = dyn.get("regime")
@@ -861,7 +868,7 @@ def _resolve_dynamics_config(dyn: dict[str, Any]) -> None:
 
         dyn.setdefault("class_path", "neuro.jansen_rit.JansenRitDynamics")
         dyn.setdefault("dt", 1e-4)
-        dyn.setdefault("initial_state", "rest")  # What is this?
+        dyn.setdefault("initial_state", "rest")
         dyn.setdefault("connectome", {"speed": 50.0, "K": 0.60})
         params.setdefault("sigma", 280.0)
         conn = Connectome.from_config(dyn["connectome"])
@@ -878,43 +885,8 @@ def _resolve_dynamics_config(dyn: dict[str, Any]) -> None:
         raise ValueError(msg)
 
 
-def _resolve_oracle_estimator(estimator: dict[str, Any], dyn: dict[str, Any]) -> None:
-    """Propagate plant components to oracle estimator when omitted."""
-    if estimator.get("class_path") != _ORACLE_ESTIMATOR:
-        return
-    if "connectome" not in estimator and "connectome" in dyn:
-        estimator["connectome"] = dyn["connectome"]
-    if "params" not in estimator and "params" in dyn:
-        estimator["params"] = dyn["params"]
-    elif isinstance(estimator.get("params"), dict) and estimator["params"].get("A") == "seizure":
-        from neuro.connectome import Connectome  # noqa: PLC0415
-        from neuro.seizure import build_seizure_a_gains  # noqa: PLC0415
-
-        conn = Connectome.from_config(estimator.get("connectome", dyn.get("connectome", {})))
-        estimator["params"]["A"] = build_seizure_a_gains(conn).tolist()
-
-
-def _resolve_oracle_problem(ctrl: dict[str, Any], dyn: dict[str, Any]) -> None:
-    """Propagate plant components to oracle problem when omitted."""
-    problem = ctrl.get("problem")
-    if not isinstance(problem, dict) or problem.get("class_path") != _JANSEN_RIT_PROBLEM:
-        return
-    if "connectome" not in problem and "connectome" in dyn:
-        problem["connectome"] = dyn["connectome"]
-    if "params" not in problem and "params" in dyn:
-        problem["params"] = dyn["params"]
-    elif isinstance(problem.get("params"), dict) and problem["params"].get("A") == "seizure":
-        from neuro.connectome import Connectome  # noqa: PLC0415
-        from neuro.seizure import build_seizure_a_gains  # noqa: PLC0415
-
-        conn = Connectome.from_config(problem.get("connectome", dyn.get("connectome", {})))
-        problem["params"]["A"] = build_seizure_a_gains(conn).tolist()
-    if "stimulation" not in problem and "stimulation" in dyn:
-        problem["stimulation"] = dyn["stimulation"]
-
-
 def _resolve_sensors_config(config: dict[str, Any], plant_dt: float) -> None:
-    """Expand sensors shorthands ('eeg', 'oracle') into full sensor definitions."""
+    """Expand sensors shorthand ('eeg') into full sensor definitions."""
     sensors = config.get("sensors")
     if sensors is None or sensors == "eeg":
         config["sensors"] = {
@@ -923,13 +895,8 @@ def _resolve_sensors_config(config: dict[str, Any], plant_dt: float) -> None:
             "std_dev": 0.0,
             "measurement": {"class_path": "neuro.eeg.EEGMeasurement"},
         }
-    elif sensors == "oracle":
-        config["sensors"] = {
-            "class_path": "neuro.predictor.oracle.FullStateSensor",
-            "dt": plant_dt,
-        }
     elif isinstance(sensors, str):
-        msg = f"Unknown sensors shorthand {sensors!r}. Expected 'eeg', 'oracle', or a sensor dict."
+        msg = f"Unknown sensors shorthand {sensors!r}. Expected 'eeg' or a sensor dict."
         raise ValueError(msg)
 
 
@@ -953,12 +920,5 @@ def resolve_simulation_config(config: dict[str, Any]) -> dict[str, Any]:
     )
 
     _resolve_sensors_config(resolved, plant_dt)
-
-    estimator = resolved.get("estimator")
-    if isinstance(estimator, dict):
-        _resolve_oracle_estimator(estimator, dyn)
-    ctrl = resolved.get("controller")
-    if isinstance(ctrl, dict):
-        _resolve_oracle_problem(ctrl, dyn)
 
     return resolved

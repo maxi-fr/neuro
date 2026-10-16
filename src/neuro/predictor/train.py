@@ -1,36 +1,45 @@
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+import jax
+import jax.numpy as jnp
 import numpy as np
-import torch
-from torch.utils.data import DataLoader
 
-from neuro.predictor.data import Datasets, prepare_datasets, prepare_observable_datasets
+from neuro.predictor.cnn import ObservableCNNModel, WaveformCNNModel
+from neuro.predictor.data import (
+    Datasets,
+    TrajectoryWindowDataset,
+    batch_iterator,
+    load_trajectory,
+    prepare_datasets,
+    prepare_observable_datasets,
+    split_data_files,
+)
 from neuro.predictor.dmd import DmdTrainer
 from neuro.predictor.evaluation import (
     LogEnergyError,
     ObservableFrameMSE,
     RolloutNMSE,
     evaluate_free_run,
-    evaluate_observable_free_run,
+    evaluate_spectral_free_run,
     free_run_stats,
 )
-from neuro.predictor.gradient import fit_gradient_descent, float32_tensor
+from neuro.predictor.gradient import fit_gradient_descent
 from neuro.predictor.inference import inference_from_checkpoint
-from neuro.predictor.losses import LossContext, build_losses, eligibility_start_epoch, total_loss
-from neuro.predictor.module import AutoregressiveCNN, AutoregressiveMLP
+from neuro.predictor.losses import LossContext, StftLoss, build_losses, eligibility_start_epoch
+from neuro.predictor.mlp import ObservableMLPModel, WaveformMLPModel
 from neuro.predictor.ridge import RidgeTrainer, RidgeTrainingResult
 from neuro.provenance import training_provenance
 
 if TYPE_CHECKING:
     from pathlib import Path
 
-    from torch import Tensor, nn
-
-    from neuro.config import NNPredictorConfig, StftGeometry
+    from neuro.config import NNPredictorConfig, StftGeometry, TrainingConfig
+    from neuro.predictor.base import AutoregressiveModel, InferencePredictor
     from neuro.predictor.losses import Loss
     from neuro.types import FloatArray
 
@@ -44,7 +53,7 @@ class TrainingResult:
 
     Attributes
     ----------
-    predictor : AutoregressiveMLP | AutoregressiveCNN
+    predictor : AutoregressiveModel
         The trained module holding the best-validation-loss weights, with the standardizers as
         buffers and the recorded metadata (provenance, downsample) attached.
     candidates : dict[str, float]
@@ -74,7 +83,7 @@ class TrainingResult:
         Reason training ended: 'early_stopping' or 'max_epochs'.
     """
 
-    predictor: AutoregressiveMLP | AutoregressiveCNN
+    predictor: AutoregressiveModel
     candidates: dict[str, float]
     train_losses: list[float]
     val_losses: list[float]
@@ -87,9 +96,10 @@ class TrainingResult:
     eligibility_start: int
     selected_epoch: int
     stopping_reason: str
+    spectral_free_run: ObservableFrameMSE | None = None
 
     def save(self, artifact_dir: Path) -> None:
-        """Save the selected checkpoint, Loss curves, eligibility epoch, and stopping reason."""
+        """Save the checkpoint, Loss curves, selection details, and native and spectral scores."""
         self.predictor.save(artifact_dir / "model")
         stats = {
             "train_loss": self.train_losses,
@@ -100,82 +110,78 @@ class TrainingResult:
             "eligibility_start": self.eligibility_start,
             "selected_epoch": self.selected_epoch,
             "stopping_reason": self.stopping_reason,
-            **free_run_stats(self.free_run, self.log_energy),
+            **free_run_stats(self.free_run, self.log_energy, self.spectral_free_run),
         }
         (artifact_dir / "training_stats.json").write_text(json.dumps(stats, indent=2))
 
 
 def _du_sensitivity(
-    model: AutoregressiveMLP | AutoregressiveCNN,
-    val_loader: DataLoader[tuple[Tensor, Tensor, Tensor, Tensor]],
+    model: AutoregressiveModel,
+    val_dataset: TrajectoryWindowDataset,
     *,
     n_probes: int = _DU_PROBES,
+    key: jax.Array | None = None,
 ) -> float:
-    """Mean Frobenius norm of d(Rollout)/d(future Control Currents) estimated via reverse-mode VJPs.
+    """Estimate Control Current sensitivity using only the Predictor input history.
 
     Uses the Hutchinson trace estimator: for random Gaussian projections ``v ~ N(0, I)``,
     ``E[||J^T v||^2] = ||J||_F^2``. Reverse-mode vector-Jacobian products on batched representative
     validation windows estimate the full-horizon sensitivity in milliseconds without materializing
     the multi-gigabyte Jacobian tensor.
     """
-    if len(val_loader) == 0:
+    n_total = len(val_dataset)
+    if n_total == 0:
         return 0.0
 
-    dataset = getattr(val_loader, "dataset", None)
-    if dataset is not None and hasattr(dataset, "__len__") and hasattr(dataset, "__getitem__") and len(dataset) > 0:
-        n_total = len(dataset)
-        indices = (
-            list(range(n_total))
-            if n_total <= _DU_WINDOWS
-            else np.linspace(0, n_total - 1, _DU_WINDOWS, dtype=int).tolist()
-        )
-        samples = [dataset[i] for i in indices]
-        y_hist = torch.stack([s[0] for s in samples])
-        u_hist = torch.stack([s[1] for s in samples])
-        u_future = torch.stack([s[2] for s in samples])
-    else:
-        y_hist_list: list[Tensor] = []
-        u_hist_list: list[Tensor] = []
-        u_future_list: list[Tensor] = []
-        for y_hist_b, u_hist_b, u_future_b, _ in val_loader:
-            stride = max(1, y_hist_b.shape[0] // max(1, _DU_WINDOWS - len(y_hist_list)))
-            for i in range(0, y_hist_b.shape[0], stride):
-                y_hist_list.append(y_hist_b[i])
-                u_hist_list.append(u_hist_b[i])
-                u_future_list.append(u_future_b[i])
-                if len(y_hist_list) >= _DU_WINDOWS:
-                    break
-            if len(y_hist_list) >= _DU_WINDOWS:
-                break
-        if not y_hist_list:
-            return 0.0
-        y_hist = torch.stack(y_hist_list)
-        u_hist = torch.stack(u_hist_list)
-        u_future = torch.stack(u_future_list)
+    indices = np.arange(n_total) if n_total <= _DU_WINDOWS else np.linspace(0, n_total - 1, _DU_WINDOWS, dtype=int)
+    y_hist, u_hist, u_future, _ = val_dataset.get_batch(indices)
+    y_hist = y_hist[:, -model.n_y :]
+    batch_size = y_hist.shape[0]
 
-    device = next(model.parameters()).device
-    y_hist = y_hist.to(device)
-    u_hist = u_hist.to(device)
-    u_future = u_future.to(device).clone().detach().requires_grad_()
+    out, vjp_fn = jax.vjp(lambda u: model.rollout(y_hist, u_hist, u), u_future)
+    if key is None:
+        key = jax.random.PRNGKey(0)
 
-    out = model(y_hist, u_hist, u_future)
-    batch_size = out.shape[0]
+    probe_sq_list: list[jax.Array] = []
+    for _ in range(n_probes):
+        key, subkey = jax.random.split(key)
+        v = jax.random.normal(subkey, out.shape, dtype=out.dtype)
+        (grad,) = vjp_fn(v)
+        probe_sq = jnp.sum(grad.reshape(batch_size, -1) ** 2, axis=1)
+        probe_sq_list.append(probe_sq)
 
-    probe_sq_list: list[Tensor] = []
-    for p in range(n_probes):
-        v = torch.randn_like(out)
-        grad = torch.autograd.grad(out, u_future, grad_outputs=v, retain_graph=(p < n_probes - 1))[0]
-        probe_sq_list.append(torch.sum(grad.reshape(batch_size, -1) ** 2, dim=1))
+    mean_probe_sq = jnp.mean(jnp.stack(probe_sq_list, axis=0), axis=0)
+    frob_norms = jnp.sqrt(mean_probe_sq)
+    return float(jnp.mean(frob_norms))
 
-    mean_probe_sq = torch.mean(torch.stack(probe_sq_list, dim=0), dim=0)
-    frob_norms = torch.sqrt(mean_probe_sq)
-    return float(torch.mean(frob_norms).detach().cpu())
+
+def _training_device(config: TrainingConfig) -> jax.Device:
+    """Select the requested JAX backend and explain how to install CUDA when unavailable."""
+    if config.device == "auto":
+        return jax.devices()[0]
+    if config.device == "cpu":
+        return jax.devices("cpu")[0]
+    try:
+        return jax.devices("gpu")[0]
+    except RuntimeError as exc:
+        msg = "CUDA training requires a supported NVIDIA GPU and 'uv sync --extra cuda12' on Linux or WSL2."
+        raise RuntimeError(msg) from exc
 
 
 def train(
     cfg: NNPredictorConfig, data_files: list[str], *, seed_offset: int = 0
 ) -> TrainingResult | RidgeTrainingResult:
-    """Train the Predictor named by ``cfg`` for one config and return everything the run produced.
+    """Train on the requested JAX device, avoiding eager GPU memory reservation by default."""
+    if cfg.training.device != "cpu":
+        os.environ.setdefault("XLA_PYTHON_CLIENT_PREALLOCATE", "false")
+    with jax.default_device(_training_device(cfg.training)):
+        return _train(cfg, data_files, seed_offset=seed_offset)
+
+
+def _train(
+    cfg: NNPredictorConfig, data_files: list[str], *, seed_offset: int = 0
+) -> TrainingResult | RidgeTrainingResult:
+    """Dispatch the configured Predictor fit and return everything the run produced.
 
     Dispatches on ``training.fit``: an NN config with ``training.fit: ridge`` routes to the Ridge
     Trainer for the depth-0 waveform MLP; any other NN config runs the generic gradient-descent
@@ -221,9 +227,9 @@ def train(
 
 
 def _prepare_observable(
-    cfg: NNPredictorConfig, data_files: list[str], geom: StftGeometry, *, depth: int
-) -> tuple[Datasets, AutoregressiveMLP | AutoregressiveCNN, list[Loss]]:
-    """Build prepared Observable datasets and the configured autoregressive Predictor."""
+    cfg: NNPredictorConfig, data_files: list[str], geom: StftGeometry, *, depth: int, seed: int = 0
+) -> tuple[Datasets, AutoregressiveModel, list[Loss]]:
+    """Build per-coordinate mean/std-scaled Observable datasets and the configured Predictor."""
     sim, mdl, trn = cfg.simulation, cfg.model, cfg.training
     if trn.losses is None:
         msg = "the observable arm requires 'training.losses' (for the curriculum MSE)."
@@ -242,14 +248,14 @@ def _prepare_observable(
         sim.dt,
         trn.train_split,
         geom,
-        scaler=trn.scaler,
-        global_scaling=trn.global_scaling,
         cutoff_hz=sim.cutoff_hz,
     )
     n_values = geom.n_values(fs)
     n_outputs = data.n_channels * n_values
+    key = jax.random.PRNGKey(seed)
     if mdl.architecture == "cnn":
-        model = AutoregressiveCNN(
+        model: AutoregressiveModel = ObservableCNNModel(
+            geometry=geom,
             n_y=mdl.n_y,
             n_u=mdl.n_u,
             horizon=horizon,
@@ -263,12 +269,17 @@ def _prepare_observable(
             activation=mdl.activation,
             residual=mdl.residual,
             dt=sim.dt * sim.downsample * geom.n_hop,
+            downsample=sim.downsample,
             y_std=data.y_std,
             u_std=data.u_std,
-            geometry=geom,
+            tapering_ratio=mdl.tapering_ratio,
+            head_depth=mdl.head_depth,
+            head_width=mdl.head_width,
+            key=key,
         )
     else:
-        model = AutoregressiveMLP(
+        model = ObservableMLPModel(
+            geometry=geom,
             n_y=mdl.n_y,
             n_u=mdl.n_u,
             horizon=horizon,
@@ -280,48 +291,45 @@ def _prepare_observable(
             activation=mdl.activation,
             residual=mdl.residual,
             dt=sim.dt * sim.downsample * geom.n_hop,
+            downsample=sim.downsample,
             y_std=data.y_std,
             u_std=data.u_std,
-            geometry=geom,
+            key=key,
         )
     return data, model, losses
 
 
 def _evaluate_val_mse(
-    model: nn.Module,
-    val_loader: DataLoader[tuple[Tensor, Tensor, Tensor, Tensor]],
+    model: AutoregressiveModel,
+    val_dataset: TrajectoryWindowDataset,
+    batch_size: int = 256,
 ) -> float:
-    """Score ``model`` over mini-batches of ``val_loader`` with sample-weighted mean squared error."""
-    if len(val_loader) == 0:
+    """Score validation mini-batches with sample-weighted MSE in original output units."""
+    if len(val_dataset) == 0:
         return 0.0
-    device = next(model.parameters()).device
     val_loss_sum = 0.0
     total_samples = 0
-    with torch.no_grad():
-        for y_hist, u_hist, u_future, y_target in val_loader:
-            b_size = y_hist.shape[0]
-            total_samples += b_size
-            pred = model(
-                y_hist.to(device, non_blocking=True),
-                u_hist.to(device, non_blocking=True),
-                u_future.to(device, non_blocking=True),
-            )
-            loss = torch.mean((pred - y_target.to(device, non_blocking=True)) ** 2)
-            val_loss_sum += float(loss.detach()) * b_size
+    for y_hist, u_hist, u_future, y_target in batch_iterator(val_dataset, batch_size=batch_size, shuffle=False):
+        b_size = y_hist.shape[0]
+        total_samples += b_size
+        pred = model.rollout(y_hist, u_hist, u_future)
+        scale = model.y_scale.reshape(pred.shape[2:])
+        loss = jnp.mean(((pred - y_target) * scale) ** 2)
+        val_loss_sum += float(loss) * b_size
     if total_samples == 0:
         return 0.0
     return val_loss_sum / total_samples
 
 
 def _train_observable_ridge(cfg: NNPredictorConfig, data_files: list[str], geom: StftGeometry) -> RidgeTrainingResult:
-    """Fit the single layer of a depth-0 Observable MLP by closed-form ridge."""
+    """Fit Observable ridge and score held-out raw recordings on the common Frame grid."""
     if cfg.model.depth > 0:
         msg = f"'training.fit: ridge' requires a depth-0 MLP, got model.depth = {cfg.model.depth}."
         raise ValueError(msg)
     sim, trn = cfg.simulation, cfg.training
     fs_frame = geom.frame_rate(cfg.fs)
     data, model, _ = _prepare_observable(cfg, data_files, geom, depth=0)
-    if not isinstance(model, AutoregressiveMLP):
+    if not isinstance(model, ObservableMLPModel):
         msg = "Observable ridge fitting requires an MLP model"
         raise TypeError(msg)
     RidgeTrainer(ridge_lambda=trn.ridge_lambda).fit(model, data.train_trajs)
@@ -330,12 +338,11 @@ def _train_observable_ridge(cfg: NNPredictorConfig, data_files: list[str], geom:
     model.downsample = sim.downsample
     eval_steps = max(1, round(trn.eval_horizon_s * fs_frame))
     inference = inference_from_checkpoint(*model.to_checkpoint())
-    frame_mse = evaluate_observable_free_run(inference, data.val_trajs, eval_steps)
-
-    val_loader: DataLoader[tuple[Tensor, Tensor, Tensor, Tensor]] = DataLoader(
-        data.val_dataset, batch_size=trn.batch_size, shuffle=False, num_workers=0
+    frame_mse = evaluate_spectral_free_run(
+        inference, _raw_validation_trajectories(cfg, data_files), eval_steps, geometry=geom, fs=cfg.fs
     )
-    val_frame_loss = _evaluate_val_mse(model, val_loader)
+
+    val_frame_loss = _evaluate_val_mse(model, data.val_dataset, batch_size=trn.batch_size)
 
     return RidgeTrainingResult(
         predictor=model,
@@ -350,14 +357,14 @@ def _train_observable_ridge(cfg: NNPredictorConfig, data_files: list[str], geom:
 
 
 def _train_observable_dmd(cfg: NNPredictorConfig, data_files: list[str], geom: StftGeometry) -> RidgeTrainingResult:
-    """Fit the single layer of a depth-0 Observable MLP by closed-form Hankel-DMDc."""
+    """Fit Observable DMD and score held-out raw recordings on the common Frame grid."""
     if cfg.model.depth > 0:
         msg = f"'training.fit: dmd' requires a depth-0 MLP, got model.depth = {cfg.model.depth}."
         raise ValueError(msg)
     sim, trn = cfg.simulation, cfg.training
     fs_frame = geom.frame_rate(cfg.fs)
     data, model, _ = _prepare_observable(cfg, data_files, geom, depth=0)
-    if not isinstance(model, AutoregressiveMLP):
+    if not isinstance(model, ObservableMLPModel):
         msg = "Observable DMD fitting requires an MLP model"
         raise TypeError(msg)
     DmdTrainer(rank=trn.dmd_rank, energy=trn.dmd_energy, dmd_lambda=trn.dmd_lambda).fit(model, data.train_trajs)
@@ -366,12 +373,11 @@ def _train_observable_dmd(cfg: NNPredictorConfig, data_files: list[str], geom: S
     model.downsample = sim.downsample
     eval_steps = max(1, round(trn.eval_horizon_s * fs_frame))
     inference = inference_from_checkpoint(*model.to_checkpoint())
-    frame_mse = evaluate_observable_free_run(inference, data.val_trajs, eval_steps)
-
-    val_loader: DataLoader[tuple[Tensor, Tensor, Tensor, Tensor]] = DataLoader(
-        data.val_dataset, batch_size=trn.batch_size, shuffle=False, num_workers=0
+    frame_mse = evaluate_spectral_free_run(
+        inference, _raw_validation_trajectories(cfg, data_files), eval_steps, geometry=geom, fs=cfg.fs
     )
-    val_frame_loss = _evaluate_val_mse(model, val_loader)
+
+    val_frame_loss = _evaluate_val_mse(model, data.val_dataset, batch_size=trn.batch_size)
 
     return RidgeTrainingResult(
         predictor=model,
@@ -388,74 +394,41 @@ def _train_observable_dmd(cfg: NNPredictorConfig, data_files: list[str], geom: S
 def _train_observable(
     cfg: NNPredictorConfig, data_files: list[str], geom: StftGeometry, *, seed_offset: int = 0
 ) -> TrainingResult:
-    """Train an Observable Predictor and restore its best checkpoint from the eligible phase."""
+    """Train an Observable Predictor and evaluate its checkpoint on the common Frame grid."""
     sim, trn = cfg.simulation, cfg.training
     seed = trn.seed + seed_offset
-    torch.manual_seed(seed)
-    device = (
-        torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        if trn.device == "auto"
-        else torch.device(trn.device)
-    )
     fs_frame = geom.frame_rate(cfg.fs)
 
-    data, model, losses = _prepare_observable(cfg, data_files, geom, depth=cfg.model.depth)
-    model = model.to(device)
+    data, model, losses = _prepare_observable(cfg, data_files, geom, depth=cfg.model.depth, seed=seed)
 
-    pin = device.type == "cuda"
-    y_center = float32_tensor(data.y_std.center, device)
-    y_scale = float32_tensor(data.y_std.scale, device)
-
-    train_loader: DataLoader[tuple[Tensor, Tensor, Tensor, Tensor]] = DataLoader(
-        data.train_dataset,
-        batch_size=trn.batch_size,
-        shuffle=True,
-        pin_memory=pin,
-        num_workers=0,
-        generator=torch.Generator().manual_seed(seed),
+    ctx = LossContext(
+        y_center=jnp.asarray(data.y_std.center, dtype=jnp.float32),
+        y_scale=jnp.asarray(data.y_std.scale, dtype=jnp.float32),
+        fs=fs_frame,
     )
-    val_loader: DataLoader[tuple[Tensor, Tensor, Tensor, Tensor]] = DataLoader(
-        data.val_dataset,
-        batch_size=trn.batch_size,
-        shuffle=False,
-        pin_memory=pin,
-        num_workers=0,
-    )
-
-    def batch_loss(  # noqa: PLR0913, PLR0917 -- closure signature matches fit_gradient_descent loss_fn
-        model: nn.Module,
-        y_hist: Tensor,
-        u_hist: Tensor,
-        u_future: Tensor,
-        y_target: Tensor,
-        epoch: int | None,
-    ) -> tuple[Tensor, dict[str, float | None]]:
-        """Score Frame targets with the epoch schedule and report unexecuted Losses as None."""
-        ctx = LossContext(y_center=y_center, y_scale=y_scale, fs=fs_frame, epoch=epoch)
-        pred_traj = model(y_hist, u_hist, u_future)
-        return total_loss(losses, pred_traj, y_target, ctx)
 
     eligibility_start = eligibility_start_epoch(losses)
     fit = fit_gradient_descent(
         model,
-        train_loader,
-        val_loader,
+        data.train_dataset,
+        data.val_dataset,
         trn,
         seed=seed,
-        loss_fn=batch_loss,
+        losses=losses,
+        ctx=ctx,
         desc="Training Observable Predictor",
         eligibility_start=eligibility_start,
     )
 
     eval_steps = max(1, round(trn.eval_horizon_s * fs_frame))
-    model = model.cpu()
-    du_sensitivity = _du_sensitivity(model, val_loader)
+    model = fit.best_model
+    du_sensitivity = _du_sensitivity(model, data.val_dataset)
     model.provenance = training_provenance(data_files, sim.cutoff_hz)
     model.downsample = sim.downsample
     inference = inference_from_checkpoint(*model.to_checkpoint())
-    frame_mse = evaluate_observable_free_run(inference, data.val_trajs, eval_steps)
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
+    frame_mse = evaluate_spectral_free_run(
+        inference, _raw_validation_trajectories(cfg, data_files), eval_steps, geometry=geom, fs=cfg.fs
+    )
     return TrainingResult(
         predictor=model,
         candidates={
@@ -489,10 +462,29 @@ def _train_ridge(cfg: NNPredictorConfig, data_files: list[str]) -> RidgeTraining
     return _train_waveform_ridge(cfg, data_files)
 
 
+def _raw_validation_trajectories(cfg: NNPredictorConfig, data_files: list[str]) -> list[tuple[FloatArray, FloatArray]]:
+    """Load held-out raw EEG using the same partition and preprocessing as training."""
+    _, val_files = split_data_files(data_files, cfg.training.train_split)
+    sim = cfg.simulation
+    return [load_trajectory(path, sim.n_steps, sim.downsample, sim.dt, cutoff_hz=sim.cutoff_hz) for path in val_files]
+
+
+def _waveform_spectral_score(
+    cfg: NNPredictorConfig, model: InferencePredictor, trajectories: list[tuple[FloatArray, FloatArray]]
+) -> ObservableFrameMSE | None:
+    """Score waveform forecasts in log-power when an STFT Loss geometry is configured."""
+    spec = None if cfg.training.losses is None else cfg.training.losses.stft
+    if spec is None:
+        return None
+    geom = spec.geometry()
+    frames = max(1, round(cfg.training.eval_horizon_s * geom.frame_rate(cfg.fs)))
+    return evaluate_spectral_free_run(model, trajectories, frames, geometry=geom, fs=cfg.fs)
+
+
 def _prepare_waveform(
-    cfg: NNPredictorConfig, data_files: list[str], *, depth: int
-) -> tuple[Datasets, AutoregressiveMLP | AutoregressiveCNN, list[Loss]]:
-    """Build prepared datasets and the configured autoregressive waveform Predictor.
+    cfg: NNPredictorConfig, data_files: list[str], *, depth: int, seed: int = 0
+) -> tuple[Datasets, AutoregressiveModel, list[Loss]]:
+    """Build per-channel mean/std-scaled waveform datasets with boundary history for every enabled STFT Loss.
 
     Shared by the two waveform arms, which differ only in ``depth`` (0 on the ridge arm,
     ``cfg.model.depth`` on the gradient-descent arm); the built losses ride along for the
@@ -505,37 +497,52 @@ def _prepare_waveform(
     fs = cfg.fs
     losses = build_losses(trn.losses, fs)
     horizon = max(loss.span_steps for loss in losses)
+    history_steps = max(
+        [
+            mdl.n_y,
+            *(
+                loss.geometry.sample_support_steps(fs) - loss.geometry.n_hop
+                for loss in losses
+                if isinstance(loss, StftLoss) and loss.weight > 0
+            ),
+        ]
+    )
     data = prepare_datasets(
         data_files,
         sim.n_steps,
         sim.downsample,
-        mdl.n_y,
+        history_steps,
         mdl.n_u,
         horizon,
         sim.dt,
         trn.train_split,
-        scaler=trn.scaler,
-        global_scaling=trn.global_scaling,
         cutoff_hz=sim.cutoff_hz,
     )
+    key = jax.random.PRNGKey(seed)
     if mdl.architecture == "cnn":
-        model = AutoregressiveCNN(
+        model: AutoregressiveModel = WaveformCNNModel(
             n_y=mdl.n_y,
             n_u=mdl.n_u,
             horizon=horizon,
             n_channels=data.n_channels,
             n_controls=data.n_controls,
+            n_outputs=data.n_channels,
             hidden_size=mdl.hidden_size,
             depth=depth,
             kernel_size=mdl.kernel_size,
             activation=mdl.activation,
             residual=mdl.residual,
             dt=sim.dt * sim.downsample,
+            downsample=sim.downsample,
             y_std=data.y_std,
             u_std=data.u_std,
+            tapering_ratio=mdl.tapering_ratio,
+            head_depth=mdl.head_depth,
+            head_width=mdl.head_width,
+            key=key,
         )
     else:
-        model = AutoregressiveMLP(
+        model = WaveformMLPModel(
             n_y=mdl.n_y,
             n_u=mdl.n_u,
             horizon=horizon,
@@ -547,14 +554,16 @@ def _prepare_waveform(
             activation=mdl.activation,
             residual=mdl.residual,
             dt=sim.dt * sim.downsample,
+            downsample=sim.downsample,
             y_std=data.y_std,
             u_std=data.u_std,
+            key=key,
         )
     return data, model, losses
 
 
 def _train_waveform_ridge(cfg: NNPredictorConfig, data_files: list[str]) -> RidgeTrainingResult:
-    """Fit the single layer of a depth-0 waveform MLP by closed-form ridge.
+    """Fit waveform ridge and report native and configured spectral forecast scores.
 
     The exact 1-step least-squares fit the gradient-descent arm no longer runs: the Ridge
     Trainer folds the same features and targets into normal equations from the raw training
@@ -564,7 +573,7 @@ def _train_waveform_ridge(cfg: NNPredictorConfig, data_files: list[str]) -> Ridg
     sim, trn = cfg.simulation, cfg.training
     fs = cfg.fs
     data, model, _ = _prepare_waveform(cfg, data_files, depth=0)
-    if not isinstance(model, AutoregressiveMLP):
+    if not isinstance(model, WaveformMLPModel):
         msg = "waveform ridge fitting requires an MLP model"
         raise TypeError(msg)
     RidgeTrainer(ridge_lambda=trn.ridge_lambda).fit(model, data.train_trajs)
@@ -574,6 +583,7 @@ def _train_waveform_ridge(cfg: NNPredictorConfig, data_files: list[str]) -> Ridg
     eval_steps = max(1, round(trn.eval_horizon_s * fs))
     inference = inference_from_checkpoint(*model.to_checkpoint())
     rollout, log_energy = evaluate_free_run(inference, data.val_trajs, eval_steps, fs)
+    spectral = _waveform_spectral_score(cfg, inference, data.val_trajs)
     return RidgeTrainingResult(
         predictor=model,
         candidates={
@@ -581,13 +591,14 @@ def _train_waveform_ridge(cfg: NNPredictorConfig, data_files: list[str]) -> Ridg
             "log_energy": log_energy.pooled,
         },
         free_run=rollout,
+        spectral_free_run=spectral,
         log_energy=log_energy,
         val_trajs=data.val_trajs,
     )
 
 
 def _train_waveform_dmd(cfg: NNPredictorConfig, data_files: list[str]) -> RidgeTrainingResult:
-    """Fit the single layer of a depth-0 waveform MLP by closed-form Hankel-DMDc."""
+    """Fit waveform DMD and report native and configured spectral forecast scores."""
     if cfg.model.architecture != "mlp":
         msg = "'training.fit: dmd' supports waveform MLP predictors only."
         raise ValueError(msg)
@@ -597,7 +608,7 @@ def _train_waveform_dmd(cfg: NNPredictorConfig, data_files: list[str]) -> RidgeT
     sim, trn = cfg.simulation, cfg.training
     fs = cfg.fs
     data, model, _ = _prepare_waveform(cfg, data_files, depth=0)
-    if not isinstance(model, AutoregressiveMLP):
+    if not isinstance(model, WaveformMLPModel):
         msg = "waveform DMD fitting requires an MLP model"
         raise TypeError(msg)
     DmdTrainer(rank=trn.dmd_rank, energy=trn.dmd_energy, dmd_lambda=trn.dmd_lambda).fit(model, data.train_trajs)
@@ -607,6 +618,7 @@ def _train_waveform_dmd(cfg: NNPredictorConfig, data_files: list[str]) -> RidgeT
     eval_steps = max(1, round(trn.eval_horizon_s * fs))
     inference = inference_from_checkpoint(*model.to_checkpoint())
     rollout, log_energy = evaluate_free_run(inference, data.val_trajs, eval_steps, fs)
+    spectral = _waveform_spectral_score(cfg, inference, data.val_trajs)
     return RidgeTrainingResult(
         predictor=model,
         candidates={
@@ -614,79 +626,47 @@ def _train_waveform_dmd(cfg: NNPredictorConfig, data_files: list[str]) -> RidgeT
             "log_energy": log_energy.pooled,
         },
         free_run=rollout,
+        spectral_free_run=spectral,
         log_energy=log_energy,
         val_trajs=data.val_trajs,
     )
 
 
 def _train_waveform(cfg: NNPredictorConfig, data_files: list[str], *, seed_offset: int = 0) -> TrainingResult:
-    """Train a waveform Predictor and restore its best checkpoint from the eligible phase."""
+    """Train with boundary-aware Losses and report native and configured spectral forecast scores."""
     sim, trn = cfg.simulation, cfg.training
     seed = trn.seed + seed_offset
-    torch.manual_seed(seed)
-    device = (
-        torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        if trn.device == "auto"
-        else torch.device(trn.device)
-    )
     fs = cfg.fs
 
-    data, model, losses = _prepare_waveform(cfg, data_files, depth=cfg.model.depth)
-    model = model.to(device)
+    data, model, losses = _prepare_waveform(cfg, data_files, depth=cfg.model.depth, seed=seed)
 
-    pin = device.type == "cuda"
-    y_center = float32_tensor(data.y_std.center, device)
-    y_scale = float32_tensor(data.y_std.scale, device)
-
-    train_loader: DataLoader[tuple[Tensor, Tensor, Tensor, Tensor]] = DataLoader(
-        data.train_dataset,
-        batch_size=trn.batch_size,
-        shuffle=True,
-        pin_memory=pin,
-        num_workers=0,
-        generator=torch.Generator().manual_seed(seed),
+    ctx = LossContext(
+        y_center=jnp.asarray(data.y_std.center, dtype=jnp.float32),
+        y_scale=jnp.asarray(data.y_std.scale, dtype=jnp.float32),
+        fs=fs,
     )
-    val_loader: DataLoader[tuple[Tensor, Tensor, Tensor, Tensor]] = DataLoader(
-        data.val_dataset,
-        batch_size=trn.batch_size,
-        shuffle=False,
-        pin_memory=pin,
-        num_workers=0,
-    )
-
-    def batch_loss(  # noqa: PLR0913, PLR0917 -- closure signature matches fit_gradient_descent loss_fn
-        model: nn.Module,
-        y_hist: Tensor,
-        u_hist: Tensor,
-        u_future: Tensor,
-        y_target: Tensor,
-        epoch: int | None,
-    ) -> tuple[Tensor, dict[str, float | None]]:
-        """Score waveform targets with the epoch schedule and report unexecuted Losses as None."""
-        ctx = LossContext(y_center=y_center, y_scale=y_scale, fs=fs, epoch=epoch)
-        pred_traj = model(y_hist, u_hist, u_future)
-        return total_loss(losses, pred_traj, y_target, ctx)
 
     eligibility_start = eligibility_start_epoch(losses)
     fit = fit_gradient_descent(
         model,
-        train_loader,
-        val_loader,
+        data.train_dataset,
+        data.val_dataset,
         trn,
         seed=seed,
-        loss_fn=batch_loss,
-        desc="Training MLP",
+        losses=losses,
+        ctx=ctx,
+        desc="Training MLP" if cfg.model.architecture == "mlp" else "Training CNN",
         eligibility_start=eligibility_start,
     )
 
     eval_steps = max(1, round(trn.eval_horizon_s * fs))
-    model = model.cpu()
-    du_sensitivity = _du_sensitivity(model, val_loader)
-    # Free-run scoring runs on the deployed jax side, built in memory from the fitted torch model.
+    model = fit.best_model
+    du_sensitivity = _du_sensitivity(model, data.val_dataset)
     model.provenance = training_provenance(data_files, sim.cutoff_hz)
     model.downsample = sim.downsample
     inference = inference_from_checkpoint(*model.to_checkpoint())
     rollout, log_energy = evaluate_free_run(inference, data.val_trajs, eval_steps, fs)
+    spectral = _waveform_spectral_score(cfg, inference, data.val_trajs)
     return TrainingResult(
         predictor=model,
         candidates={
@@ -699,6 +679,7 @@ def _train_waveform(cfg: NNPredictorConfig, data_files: list[str], *, seed_offse
         train_components=fit.train_components,
         val_components=fit.val_components,
         free_run=rollout,
+        spectral_free_run=spectral,
         log_energy=log_energy,
         val_trajs=data.val_trajs,
         du_sensitivity=du_sensitivity,

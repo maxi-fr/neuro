@@ -28,6 +28,9 @@ dependencies = [
     "tabulate>=0.10.0",
     "latex-linting",
     "casadi>=3.8.1",
+    "optax>=0.2.8",
+    "equinox>=0.13.8",
+    "jax>=0.11.2",
 ]
 
 
@@ -50,32 +53,21 @@ minlp = [
 ]
 
 [project.optional-dependencies]
-cpu = ["torch>=2.14.0"]
-cu130 = ["torch>=2.14.0"]
+cuda12 = [
+    "jax[cuda12]>=0.11.2 ; sys_platform == 'linux'",
+]
 
-
-[[tool.uv.index]]
-name = "pytorch-cpu"
-url = "https://download.pytorch.org/whl/cpu"
-explicit = true
-
-[[tool.uv.index]]
-name = "pytorch-cu130"
-url = "https://download.pytorch.org/whl/cu130"
-explicit = true
 
 [tool.uv]
 default-groups = ["dev"]
-conflicts = [[{ extra = "cpu" }, { extra = "cu130" }]]
 
 [tool.uv.sources]
 simulate = { git = "https://github.com/maxi-fr/simulate.git" }
-torch = [
-  { index = "pytorch-cpu", extra = "cpu" },
-  { index = "pytorch-cu130", extra = "cu130" },
-]
 trajopt = { git = "https://github.com/maxi-fr/trajopt.git" }
 latex-linting = { git = "https://github.com/maxi-fr/latex_linting" }
+
+[tool.uv.workspace]
+members = ["thesis"]
 
 [build-system]
 requires = ["uv_build>=0.10.8,<0.12"]
@@ -163,19 +155,12 @@ line-ending = "auto"
 minversion = "6.0"
 addopts = "-ra -q -v"
 testpaths = ["tests"]
-filterwarnings = [
-    # PyTorch's internal forward-mode AD (torch._decomp.decompositions_for_jvp) still uses torch.jit.script
-    "ignore:`torch.jit.script` is deprecated:DeprecationWarning:torch.jit._script",
-]
 markers = [
     "slow: marks tests as slow (deselected by default, opt-in with --runslow or -m slow)",
 ]
 
 
 [tool.ty]
-
-[tool.ty.environment]
-python = ".venv"
 
 [tool.ty.src]
 exclude = ["notebooks/"]

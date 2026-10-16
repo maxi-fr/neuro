@@ -331,12 +331,13 @@ class ObservableFrameHingeCost(CostFunction):
         cost_val = (self.w / self.total_frames) * jnp.sum(frame_means)
         return jnp.zeros(X.shape[0]).at[0].set(cost_val)
 
-    def as_terminal(self) -> ObservableFrameHingeCost:
+    def as_terminal(self, w_hinge: float | None = None) -> ObservableFrameHingeCost:
         """Derive a terminal cost scoring the final Frame."""
+        w = float(self.w) if w_hinge is None else float(w_hinge)
         return ObservableFrameHingeCost(
             self.model,
             ObservableEnvelope(power=np.asarray(self.power), fs=self.fs, geometry=self.geometry),
-            w_hinge=float(self.w),
+            w_hinge=w,
             horizon=self.horizon,
             terminal=True,
             total_frames=self.total_frames,
