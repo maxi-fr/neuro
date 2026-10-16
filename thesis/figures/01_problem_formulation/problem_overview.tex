@@ -1,0 +1,76 @@
+\begin{tikzpicture}[
+    thesis figure,
+    zoom/.style={draw=accentcolor!65!black, dashed, line width=0.7pt},
+    region/.style={circle, draw=black!65, fill=black!25,
+        minimum size=4mm, inner sep=0pt},
+    pics/neuron/.style={code={
+        \draw[accentcolor!85!black, line width=0.6pt]
+            (0,0) circle (0.065)
+            (0.065,0) -- (0.42,0) -- (0.52,0.10)
+            (0.42,0) -- (0.52,-0.10)
+            (-0.05,0.04) -- (-0.18,0.16) -- (-0.28,0.15)
+            (-0.18,0.16) -- (-0.17,0.25)
+            (-0.06,-0.02) -- (-0.20,-0.10) -- (-0.29,-0.06)
+            (-0.20,-0.10) -- (-0.22,-0.20);
+    }}
+]
+    \node at (1.65,1.75) {Whole-brain network};
+    \node at (6.05,1.75) {Regional populations};
+    \node at (10.85,1.75) {Constituent neurons};
+
+    \foreach \side in {-1,1} {
+        \begin{scope}[shift={(1.65,0)}, xscale=\side]
+            \path[draw=black!40, fill=black!3]
+                (0.05,1.25)
+                .. controls (0.45,1.57) and (1.10,1.20) .. (1.30,0.65)
+                .. controls (1.65,0.05) and (1.20,-1.20) .. (0.50,-1.33)
+                .. controls (0.13,-1.40) and (0.03,-0.95) .. (0.05,-0.65)
+                -- cycle;
+        \end{scope}
+    }
+    \foreach \name/\x/\y in {a/0.70/0.65,b/1.32/0.90,c/2.30/0.80,d/2.48/0.30,e/0.65/-0.25,f/1.35/-0.65,g/2.40/-0.65} {
+        \coordinate (\name) at (\x,\y);
+    }
+    \foreach \a/\b in {a/b,a/e,a/f,b/c,b/f,c/d,c/g,d/f,d/g,e/f,f/g} {
+        \draw[black!40] (\a) -- (\b);
+    }
+    \foreach \name in {a,b,c,e,f,g} {
+        \node[region] at (\name) {};
+    }
+    \node[region, fill=accentcolor!75, draw=accentcolor!85!black,
+        minimum size=4.5mm] at (d) {};
+    \draw[zoom] (d) circle (0.27);
+
+    \draw[black!40, fill=black!3] (6.05,0) circle (1.45);
+    \draw[->, accentcolor!70!black, line width=0.8pt]
+        (5.75,0.05) to[bend right=20] (6.65,-0.48);
+    \draw[-{Bar}, orange!80!black, line width=0.8pt]
+        (6.72,-0.35) to[bend right=25] (5.95,0.43);
+    \draw[->, accentcolor!70!black, line width=0.8pt]
+        (5.30,-0.65) -- (5.52,0.03);
+    \foreach \dx/\dy in {-0.14/0.10,0.12/0.10,-0.14/-0.12,0.12/-0.12} {
+        \fill[accentcolor!75] (5.68+\dx,0.35+\dy) circle (0.065);
+        \fill[orange!80!black] (6.80+\dx,-0.55+\dy) circle (0.065);
+        \fill[accentcolor!75] (5.25+\dx,-0.85+\dy) circle (0.065);
+    }
+    \draw[zoom] (5.68,0.35) circle (0.43);
+
+    \draw[black!40, rounded corners=5pt, fill=black!3]
+        (9.15,-1.30) rectangle (12.55,1.30);
+    % Zoom connectors link the selected node and population to their expansions.
+    \draw[zoom] (2.66,0.47) -- (4.82,0.90);
+    \draw[zoom] (2.66,0.13) -- (4.82,-0.90);
+    \draw[zoom] (6.08,0.51) -- (9.15,1.30);
+    \draw[zoom] (6.08,0.19) -- (9.15,-1.30);
+    \foreach \x in {9.65,10.65,11.65} {
+        \foreach \y in {-0.78,0,0.78} {
+            \pic at (\x,\y) {neuron};
+        }
+    }
+    \node[thesis secondary, align=center] at (1.65,-1.95)
+        {Connected regions};
+    \node[thesis secondary, align=center] at (6.05,-1.95)
+        {Interacting excitation\\and inhibition};
+    \node[thesis secondary, align=center] at (10.85,-1.95)
+        {Many cells within\\one population};
+\end{tikzpicture}

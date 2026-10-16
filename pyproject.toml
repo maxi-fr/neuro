@@ -66,6 +66,9 @@ simulate = { git = "https://github.com/maxi-fr/simulate.git" }
 trajopt = { git = "https://github.com/maxi-fr/trajopt.git" }
 latex-linting = { git = "https://github.com/maxi-fr/latex_linting" }
 
+[tool.uv.workspace]
+members = ["thesis"]
+
 [build-system]
 requires = ["uv_build>=0.10.8,<0.12"]
 build-backend = "uv_build"

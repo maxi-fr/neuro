@@ -1,46 +1,33 @@
 from __future__ import annotations
 
-from pathlib import Path
-
-import matplotlib.font_manager as fm
+import matplotlib as mpl
 import matplotlib.pyplot as plt
 
-TEXTWIDTH_PT = 483.69687
+# Measured after \maketitle with the document options in thesis.tex (170 mm).
+TEXTWIDTH_PT = 483.69688
 INCHES_PER_PT = 1.0 / 72.27
 TEXTWIDTH_IN = TEXTWIDTH_PT * INCHES_PER_PT  # ~6.693 inches
-FONT_DIR = Path(__file__).parent / "fonts"
-
-# Standard font size hierarchy (in points) matching thesis typography (11pt base)
-FONT_LARGE = 10.0  # Suptitle / main figure header
+# PGF passes these values to \fontsize in TeX points, matching the TikZ styles.
+FONT_LARGE = 9.0  # Main figure header
 FONT_TITLE = 9.0  # Subplot title (e.g. "(a) Excitability...")
 FONT_LABEL = 9.0  # Axis labels (e.g. "Time / s", "$y_\\mathrm{LFP}$ / mV")
 FONT_TICK = 8.0  # Tick labels (numbers on axes)
-FONT_LEGEND = 7.5  # Legend entries
-FONT_ANNOTATION = 7.5  # In-plot descriptions, arrows, and labels
-FONT_SMALL = 6.5  # Fine details, tight index tags (e.g. "$q = 0$")
-
-
-def _register_fonts() -> None:
-    """Register font files located in thesis/figures/fonts/."""
-    if FONT_DIR.is_dir():
-        for font_file in FONT_DIR.glob("*.otf"):
-            fm.fontManager.addfont(str(font_file))
+FONT_LEGEND = 8.0  # Legend entries
+FONT_ANNOTATION = 8.0  # In-plot descriptions, arrows, and labels
+FONT_SMALL = 8.0  # Fine details, tight index tags (e.g. "$q = 0$")
 
 
 def setup_style() -> None:
-    """Apply thesis styling defaults to matplotlib.
-
-    Uses XCharter serif font extracted from the thesis, standard font size hierarchy,
-    refined line/grid weights, and tight bounding box export.
-    """
-    _register_fonts()
+    """Render fixed-size figures with the thesis's pdfLaTeX fonts and 9/8 pt text."""
+    mpl.use("pgf")
 
     plt.rcParams.update(
         {
-            # Typography matching tudapub (XCharter / serif)
+            # Use the same font setup as tudapub, including Computer Modern math.
             "font.family": "serif",
-            "font.serif": ["XCharter", "Charter", "DejaVu Serif", "serif"],
-            "mathtext.fontset": "cm",
+            "pgf.texsystem": "pdflatex",
+            "pgf.rcfonts": False,
+            "pgf.preamble": r"\usepackage{tudafonts}\usepackage{amsmath,amssymb}",
             # Sizing hierarchy
             "font.size": FONT_LABEL,
             "figure.titlesize": FONT_LARGE,
@@ -55,8 +42,7 @@ def setup_style() -> None:
             "grid.alpha": 0.35,
             "lines.linewidth": 0.8,
             # Output export
-            "savefig.bbox": "tight",
-            "savefig.pad_inches": 0.02,
+            "savefig.bbox": None,
         }
     )
 
@@ -66,7 +52,7 @@ def figsize(
     height_in: float | None = None,
     aspect_ratio: float = 0.6,
 ) -> tuple[float, float]:
-    """Calculate figure dimensions in inches matching thesis column width.
+    """Size the complete PDF canvas, including labels and margins, for native inclusion.
 
     Parameters
     ----------

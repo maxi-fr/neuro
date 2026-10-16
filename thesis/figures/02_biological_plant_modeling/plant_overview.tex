@@ -1,17 +1,112 @@
 \begin{tikzpicture}[
     >=Stealth,
-    font=\small,
-    block/.style={draw=black!75, rounded corners=2pt, align=center,
-        minimum height=1.25cm, inner xsep=7pt, line width=0.7pt},
-    map/.style={block, fill=black!4, minimum width=2.5cm},
-    network/.style={block, fill=accentcolor!10, minimum width=3.1cm},
-    flow/.style={->, line width=0.8pt, draw=black!85}
+    thesis figure,
+    panel/.style={draw=black!35, rounded corners=3pt, line width=0.6pt},
+    flow/.style={->, line width=0.8pt, draw=black!85},
+    mapping/.style={->, draw=accentcolor!75, line width=0.65pt},
+    region/.style={circle, draw=accentcolor!85!black, fill=accentcolor!65,
+        minimum size=4pt, inner sep=0pt},
+    electrode/.style={circle, draw=black!75, fill=white,
+        minimum size=5pt, inner sep=0pt, line width=0.7pt},
+    pics/brain/.style={code={
+        % Stylized superior view; the central gap separates the hemispheres.
+        \foreach \side in {-1,1} {
+            \begin{scope}[xscale=\side]
+                \path[draw=black!45, fill=black!5, line width=0.6pt]
+                    (0.06,1.33)
+                    .. controls (0.34,1.64) and (0.85,1.43) .. (0.95,1.12)
+                    .. controls (1.27,1.02) and (1.35,0.64) .. (1.25,0.38)
+                    .. controls (1.48,0.05) and (1.31,-0.40) .. (1.15,-0.53)
+                    .. controls (1.18,-0.96) and (0.86,-1.37) .. (0.58,-1.36)
+                    .. controls (0.30,-1.55) and (0.04,-1.24) .. (0.06,-1.02)
+                    -- cycle;
+                \draw[black!22, line width=0.5pt]
+                    (0.30,1.18) .. controls (0.73,1.20) and (0.46,0.67) .. (0.99,0.78)
+                    (0.23,0.51) .. controls (0.74,0.84) and (0.49,0.04) .. (1.10,0.23)
+                    (0.25,-0.17) .. controls (0.62,0.08) and (0.92,-0.11) .. (0.80,-0.50)
+                    (0.29,-0.74) .. controls (0.76,-0.56) and (0.47,-1.11) .. (0.86,-1.06);
+            \end{scope}
+        }
+    }},
+    pics/scalp/.style={code={
+        \draw[black!60, fill=white, line width=0.7pt] (0,0) ellipse (1.38 and 1.66);
+        \draw[black!60, line width=0.7pt] (-0.17,1.65) -- (0,1.87) -- (0.17,1.65);
+        \draw[black!60, line width=0.7pt]
+            (-1.38,0.25) .. controls (-1.61,0.36) and (-1.61,-0.25) .. (-1.38,-0.20)
+            (1.38,0.25) .. controls (1.61,0.36) and (1.61,-0.25) .. (1.38,-0.20);
+        \pic[scale=0.76] {brain};
+    }}
 ]
-    \node[map] (stim) at (-4.9,0) {Stimulation map\\$\mathbf{L}_{\mathrm{stim}}$};
-    \node[network] (plant) at (0,0) {Delayed stochastic\\Jansen--Rit network\\$\mathbf{x}(t)\in\mathbb{R}^{6N}$};
-    \node[map] (eeg) at (4.9,0) {Measurement map\\$\mathbf{L}_{\mathrm{EEG}}$};
-    \draw[flow] (-7.3,0) node[left] {$\mathbf{u}(t)$} -- (stim.west);
-    \draw[flow] (stim.east) -- node[above] {$\mathbf{s}(t)$} (plant.west);
-    \draw[flow] (plant.east) -- node[above] {$\mathbf{y}_{\mathrm{reg}}(t)$} (eeg.west);
-    \draw[flow] (eeg.east) -- (7.3,0) node[right] {$\mathbf{y}_{\mathrm{EEG}}(t)$};
+
+    \path[panel, fill=black!2] (-7.05,-3.50) rectangle (-3.35,3.10);
+    \path[panel, fill=accentcolor!5] (-2.10,-3.50) rectangle (2.10,3.10);
+    \path[panel, fill=black!2] (3.35,-3.50) rectangle (7.05,3.10);
+
+    \node at (-5.2,2.77) {Scalp currents};
+    \begin{scope}[shift={(-5.2,0.65)}]
+        \pic {scalp};
+        % Signed regional response, rather than electrode-to-node wiring.
+        \begin{scope}[transparency group, opacity=0.28]
+            \fill[accentcolor] (-0.50,0.45) ellipse (0.40 and 0.57);
+            \fill[orange!85!red] (0.50,0.45) ellipse (0.40 and 0.57);
+            \fill[accentcolor] (-0.42,-0.50) ellipse (0.27 and 0.35);
+            \fill[orange!85!red] (0.42,-0.50) ellipse (0.27 and 0.35);
+        \end{scope}
+        \node[text=accentcolor!85!black] at (-0.50,0.45) {$+$};
+        \node[text=orange!80!black] at (0.50,0.45) {$-$};
+        \node[text=accentcolor!85!black] at (-0.42,-0.50) {$+$};
+        \node[text=orange!80!black] at (0.42,-0.50) {$-$};
+        \node[electrode, fill=accentcolor!25] at (-1.12,0.97) {};
+        \node[electrode, fill=orange!30] at (1.12,0.97) {};
+        \node[above left, inner sep=2pt] at (-1.12,1.03) {$+I$};
+        \node[above right, inner sep=2pt] at (1.12,1.03) {$-I$};
+    \end{scope}
+    \node[align=center, thesis secondary] at (-5.2,-1.43)
+        {Regional perturbations\\(signed response)};
+    \node at (-5.2,-2.45) {Stimulation map};
+    \node at (-5.2,-3.06) {$\mathbf{s}=\mathbf{L}_{\mathrm{stim}}\mathbf{u}$};
+
+    \begin{scope}[shift={(0,0.40)}]
+        \pic {brain};
+        \input{figures/02_biological_plant_modeling/plant_overview_network}
+        % Node 69 is the source of the simulated trace used in the callout.
+        \node[region, fill=white, minimum size=8pt, line width=1pt,
+            thesis secondary, text=accentcolor!85!black] at (r69) {$i$};
+    \end{scope}
+    \draw[accentcolor!85!black, line width=0.65pt]
+        (r69) -- (-0.85,1.94) -- (-0.85,2.30);
+    \path[draw=accentcolor!45, fill=white, rounded corners=2pt,
+        line width=0.5pt] (-1.48,2.30) rectangle (1.48,3.00);
+    \node[thesis secondary] at (0,2.84) {$y_{\mathrm{reg},i}(t)$};
+    \begin{scope}[shift={(0,3.10)}, xscale=0.95, yscale=0.65]
+        \input{figures/02_biological_plant_modeling/plant_overview_activity}
+    \end{scope}
+    \node[align=center] at (0,-2.35) {Delayed stochastic\\Jansen--Rit network};
+    \node at (0,-3.06) {$\mathbf{x}(t)\in\mathbb{R}^{6N}$};
+
+    \node at (5.2,2.77) {Regional activity};
+    \begin{scope}[shift={(5.2,0.65)}]
+        \pic {scalp};
+        \coordinate (recording) at (1.12,0.97);
+        \foreach \x/\y in {-0.50/0.50,-0.42/-0.50,0.50/-0.20} {
+            \draw[mapping, draw=black!45] (\x,\y) -- (recording);
+            \node[region] at (\x,\y) {};
+            \begin{scope}[shift={(\x,\y)}, xscale=0.20, yscale=0.30]
+                \input{figures/02_biological_plant_modeling/plant_overview_activity}
+            \end{scope}
+        }
+        \foreach \x/\y in {-1.12/0.97,-1.37/-0.15,1.37/-0.15,-0.89/-1.27,0.89/-1.27} {
+            \node[electrode] at (\x,\y) {};
+        }
+        \node[electrode, fill=accentcolor!70, minimum size=6pt] at (recording) {};
+    \end{scope}
+    \node[align=center, thesis secondary] at (5.2,-1.43)
+        {Weighted contributions to\\one recording electrode};
+    \node at (5.2,-2.45) {Measurement map};
+    \node at (5.2,-3.06) {$\mathbf{y}_{\mathrm{EEG}}=\mathbf{L}_{\mathrm{EEG}}\mathbf{y}_{\mathrm{reg}}$};
+
+    \draw[flow] (-8.10,0) node[above right] {$\mathbf{u}(t)$} -- (-7.05,0);
+    \draw[flow] (-3.35,0) -- node[above] {$\mathbf{s}(t)$} (-2.10,0);
+    \draw[flow] (2.10,0) -- node[above] {$\mathbf{y}_{\mathrm{reg}}(t)$} (3.35,0);
+    \draw[flow] (7.05,0) -- node[above] {$\mathbf{y}_{\mathrm{EEG}}(t)$} (8.60,0);
 \end{tikzpicture}

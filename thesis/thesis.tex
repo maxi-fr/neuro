@@ -46,6 +46,11 @@
 \usepackage{siunitx}
 \usepackage{tikz}
 \usetikzlibrary{arrows.meta, positioning, shapes.geometric, fit, backgrounds, calc}
+\tikzset{
+    thesis figure/.style={font=\rmfamily\footnotesize},
+    thesis heading/.style={font=\rmfamily\footnotesize\bfseries},
+    thesis secondary/.style={font=\rmfamily\scriptsize}
+}
 \usepackage{graphicx} % for pdf, bitmapped graphics files
 %\usepackage{cleveref} % Smart cross-referencing (load late)
 
@@ -218,6 +223,7 @@
 \mainmatter
 
 \input{chapters/01_introduction.tex}
+\input{chapters/01_problem_formulation.tex}
 \input{chapters/02_biological_plant_modeling.tex}
 \input{chapters/03_data_driven_predictor_design.tex}
 \input{chapters/04_mpc_framework.tex}

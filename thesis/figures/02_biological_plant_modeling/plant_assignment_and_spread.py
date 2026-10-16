@@ -20,7 +20,7 @@ from neuro.seizure import EZ_REGIONS, PZ_REGIONS, spread_profile_from_lfp
 
 ROOT = Path(__file__).resolve().parents[3]
 OUT = Path(__file__).resolve().parent
-LOG = ROOT / "artifacts/baseline_comparison/runs/uncontrolled_s7000/log.npz"
+LOG = ROOT / "results/comparison/obs_cnn_trial5_comparison/2026-09-19_00-19-14/runs/uncontrolled_s7000/log.npz"
 
 
 def _groups(connectome: Connectome) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
@@ -118,7 +118,7 @@ def plot_assignment(connectome: Connectome) -> None:
 
 
 def plot_spread(connectome: Connectome) -> None:
-    """Plot cumulative regional recruitment from the saved uncontrolled run."""
+    """Plot cumulative regional recruitment from the saved seed-7000 uncontrolled run."""
     with np.load(LOG) as log:
         times = log["dynamics.t"]
         lfp = log["dynamics.lfp"]
