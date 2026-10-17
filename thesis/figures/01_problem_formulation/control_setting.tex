@@ -52,10 +52,9 @@
     \draw[black!25] (0,-6.65) -- (16.2,-6.65);
     \node[anchor=west, thesis heading] at (0,-7.1)
         {Offline identification};
-    \node[block, minimum width=4.5cm] (identify) at (4.25,-8.15)
-        {System identification};
+    \node[block, minimum width=4.5cm] (identify) at (4.25,-8.15){System identification};
     \node[block, minimum width=4.5cm] (data) at (9.4,-8.15)
-        {Plant-generated data\\Applied currents and \acs{eeg}};
+        {Dataset};
     \draw[offline, preaction={draw=white, line width=2.5pt}]
         (9.4,-3.75) -- (data.north);
     \draw[offline] (data) -- (identify);
