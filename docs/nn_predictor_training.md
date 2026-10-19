@@ -367,14 +367,14 @@ the candidate action into the control window before predicting the next output.
 ### 5.4 Causal CNN $f_\theta$
 
 With `model.architecture: cnn`, [`WaveformCNNModel` and `ObservableCNNModel`](../src/neuro/predictor/cnn.py) keep the
-same autoregressive loop and replaces the flattened output history map with stride-one temporal
+same autoregressive loop and replace the flattened output history map with stride-one temporal
 convolutions. A waveform history has shape $(n_y,C)$; an Observable history has shape
 $(n_y,C,F)$. Convolution weights mix EEG channels through learned filters, while the temporal
 kernel slides along the history axis. There is no pooling or temporal stride.
 
-Temporal padding is causal left padding of `kernel_size - 1` samples at every layer, so a prediction
-cannot read a future sample. The temporal receptive field of a stack of `depth` convolutional
-layers is
+Temporal convolutions use valid padding and consume only the supplied measurement history, so
+the next-step prediction cannot read a future sample. Each local feature in a stack of `depth`
+convolutional layers has receptive field
 
 $$
 1 + \texttt{depth}\,(\texttt{kernel\_size}-1).
@@ -382,15 +382,33 @@ $$
 
 Observable CNNs also convolve along frequency with same padding. The implementation preserves all
 $F$ frequency positions, including for even `frequency_kernel_size`; frequency padding is split so
-the output retains width $F$. The latest temporal features are flattened by frequency and
-concatenated with the standardized Control Current history. Two dense layers then map these
-features through an intermediate `hidden_size` and the selected activation to one output position.
-The final dense layer is linear. With `residual: true`, that output is a delta added to the newest
-history position, matching the MLP residual convention.
+the output retains width $F$. The final temporal length is
+$T=n_y-\texttt{depth}(\texttt{kernel\_size}-1)$ and must be at least one. All $T$ positions
+are flattened into the dense head: time then filter for Waveform models, and time then filter
+then frequency for Observable models. The prediction can therefore depend on every supplied
+history sample or Frame, even when the local receptive field is shorter than `n_y`.
+
+Concatenate these features with the standardized Control Current history, apply `head_depth`
+hidden dense layers with the chosen activation, and finish with a linear output layer. Hidden
+head width can be an explicit positive integer, `trunk` (the final filter count), or
+`geometric_mean` (the integer square root of the head input and output dimensions' product).
+With `residual: true`, the output is a delta added to the newest history position, matching the
+MLP residual convention. Flattening increases head size with history length, so resource pilots
+must account for the entire feature map.
+
+New checkpoints record `temporal_readout: valid_flatten`. Historical newest-position CNN
+checkpoints are incompatible and are explicitly rejected; retrain them for this architecture.
 
 CNNs are trained through the gradient-descent path (`fit: gradient_descent`) because their learned
 convolutions and dense head are nonlinear in the input. Ridge and DMD closed-form fits remain
 available only for the linear MLP configurations that support them.
+
+For sweeps with a runtime budget, set `training.max_training_hours` (7.0 for `re_rerun`).
+After three completed epochs, the Trainer projects elapsed fit time plus remaining epochs at
+the mean duration of the latest two epochs, excluding the compilation-heavy first epoch from
+the rate. It rechecks at each later epoch and stops when projected time exceeds the budget.
+Optuna records such runs as PRUNED with timing evidence. The estimate includes epoch training
+and validation, assumes the full epoch budget, and is not a hard timeout for individual epochs.
 
 ---
 
