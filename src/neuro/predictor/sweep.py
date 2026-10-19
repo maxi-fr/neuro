@@ -16,6 +16,7 @@ from neuro.config import (
     TrainingConfig,
     expand_dotted_dict,
 )
+from neuro.predictor.gradient import TrainingTimeLimitError
 from neuro.predictor.plotting import plot_rollout_comparison, plot_training_curves
 from neuro.predictor.train import train
 
@@ -69,13 +70,20 @@ def _run_trial(
 ) -> float:
     """Train one trial at ``config``, persist it under ``trial_dir`` and return the named objective.
 
-    Shared body of the two sweep objectives; a NaN loss or memory error prunes the trial.
+    Shared body of the two sweep objectives; projected runtime, NaN Losses, and memory errors prune trials.
     """
     trial_dir.mkdir(parents=True, exist_ok=True)
     with (trial_dir / "trial_config.yaml").open("w") as f:
         yaml.dump(config.model_dump(exclude={"sweep"}), f)
     try:
         result = train(config, data_files, seed_offset=trial.number)
+    except TrainingTimeLimitError as exc:
+        trial.set_user_attr("pruning_reason", "training_time")
+        trial.set_user_attr("completed_epochs", exc.completed_epochs)
+        trial.set_user_attr("elapsed_training_s", exc.elapsed_s)
+        trial.set_user_attr("projected_training_s", exc.projected_s)
+        trial.set_user_attr("training_time_limit_s", exc.limit_s)
+        raise optuna.TrialPruned(str(exc)) from exc
     except (ValueError, RuntimeError) as exc:
         err_msg = str(exc).lower()
         if "nan" in err_msg or "out of memory" in err_msg or "cuda" in err_msg:
@@ -117,8 +125,21 @@ class OptunaSweep:
         self.artifact_dir = artifact_dir
 
     def objective(self, trial: BaseTrial) -> float:
-        """Train one trial's hyperparameters and return the named objective, recording every candidate."""
-        model_overrides = {name: spec.suggest(trial, name) for name, spec in self.sweep.model.items()}
+        """Sample active CNN dimensions, train the resolved config, and record every objective candidate."""
+        model_overrides = {
+            name: spec.suggest(trial, name)
+            for name, spec in self.sweep.model.items()
+            if name not in {"tapering_ratio", "head_width"}
+        }
+        is_cnn = model_overrides.get("architecture", self.cfg.model.architecture) == "cnn"
+        for name, inactive, canonical in (
+            ("tapering_ratio", model_overrides.get("depth", self.cfg.model.depth) == 1, 1.0),
+            ("head_width", model_overrides.get("head_depth", self.cfg.model.head_depth) == 0, "trunk"),
+        ):
+            if name in self.sweep.model:
+                model_overrides[name] = (
+                    canonical if is_cnn and inactive else self.sweep.model[name].suggest(trial, name)
+                )
         training_overrides = {name: spec.suggest(trial, name) for name, spec in self.sweep.training.items()}
         update_dict: dict[str, Any] = {
             "model": ModelConfig.model_validate(
@@ -138,10 +159,13 @@ class OptunaSweep:
         return _run_trial(config, self.data_files, trial, trial_dir, self.sweep)
 
     def run(self) -> optuna.Study:
-        """Run the configured trial budget with seeded multivariate TPE after fifteen random startup trials."""
+        """Run the configured trial budget with seeded multivariate TPE and timeout-resilient SQLite storage."""
         study_name = "nn_predictor_sweep"
         db_path = self.artifact_dir / f"{study_name}.db"
-        storage = f"sqlite:///{db_path.resolve()}"
+        storage = optuna.storages.RDBStorage(
+            f"sqlite:///{db_path.resolve()}",
+            engine_kwargs={"connect_args": {"timeout": 60}},
+        )
         sampler = optuna.samplers.TPESampler(n_startup_trials=15, multivariate=True, seed=self.cfg.training.seed)
         study = optuna.create_study(
             study_name=study_name, storage=storage, direction="minimize", load_if_exists=True, sampler=sampler

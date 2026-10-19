@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 import optuna
 import pytest
 
 from neuro.config import (
+    CategoricalParam,
     ClosedLoopEvalConfig,
     CurriculumMSESpec,
     FloatParam,
@@ -21,6 +22,7 @@ from neuro.config import (
     TrainingConfig,
 )
 from neuro.predictor import sweep as sweep_module
+from neuro.predictor.gradient import TrainingTimeLimitError
 from neuro.predictor.sweep import OptunaSweep
 
 if TYPE_CHECKING:
@@ -224,3 +226,64 @@ def test_observable_optuna_sweep_ranks_on_val_log_mse(tmp_path: Path, monkeypatc
     value = OptunaSweep(cfg, ["sim_0.npz"], tmp_path).objective(trial)
     assert value == pytest.approx(0.015)
     assert trial.user_attrs == candidates
+
+
+@pytest.mark.parametrize("architecture", ["cnn", "mlp"])
+@pytest.mark.parametrize(("depth", "head_depth"), [(1, 0), (1, 1), (2, 0), (2, 1)])
+def test_cnn_sweep_only_samples_active_tapering_and_head_width(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, architecture: Literal["cnn", "mlp"], depth: int, head_depth: int
+) -> None:
+    """CNN trials omit inactive dimensions regardless of config order and save canonical settings."""
+    captured = _stub_train(monkeypatch, {"log_energy": 0.1})
+    cfg = _wave_config(
+        sweep_model={
+            "head_width": CategoricalParam(type="categorical", choices=["trunk", "geometric_mean"]),
+            "tapering_ratio": FloatParam(type="float", low=0.5, high=1.0),
+            "depth": IntParam(type="int", low=1, high=2),
+            "head_depth": IntParam(type="int", low=0, high=1),
+        }
+    )
+    cfg = cfg.model_copy(update={"model": ModelConfig(architecture=architecture, n_y=5)})
+    params: dict[str, Any] = {"depth": depth, "head_depth": head_depth}
+    if architecture != "cnn" or depth > 1:
+        params["tapering_ratio"] = 0.5
+    if architecture != "cnn" or head_depth > 0:
+        params["head_width"] = "geometric_mean"
+    trial = optuna.trial.FixedTrial(params)
+
+    OptunaSweep(cfg, ["sim_0.npz"], tmp_path).objective(trial)
+
+    assert trial.params == params
+    assert captured[0].model.tapering_ratio == params.get("tapering_ratio", 1.0)
+    assert captured[0].model.head_width == params.get("head_width", "trunk")
+
+
+def test_training_time_limit_prunes_trial_and_study_continues(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Runtime projection records an Optuna prune with its evidence and permits the next trial."""
+    calls = []
+
+    def fake_train(cfg: object, data_files: list[str], *, seed_offset: int = 0) -> _StubResult:
+        """Simulate a slow first training run followed by an affordable candidate."""
+        calls.append(seed_offset)
+        if len(calls) == 1:
+            raise TrainingTimeLimitError(3, 410.0, 29810.0, 25200.0)
+        return _StubResult({"log_energy": 0.1})
+
+    monkeypatch.setattr(sweep_module, "train", fake_train)
+    sweep = OptunaSweep(_wave_config(), ["sim_0.npz"], tmp_path)
+    study = optuna.create_study()
+    study.optimize(sweep.objective, n_trials=2)
+
+    assert [trial.state for trial in study.trials] == [
+        optuna.trial.TrialState.PRUNED,
+        optuna.trial.TrialState.COMPLETE,
+    ]
+    assert study.trials[0].user_attrs == {
+        "pruning_reason": "training_time",
+        "completed_epochs": 3,
+        "elapsed_training_s": 410.0,
+        "projected_training_s": 29810.0,
+        "training_time_limit_s": 25200.0,
+    }
+    assert not (tmp_path / "trial_0" / "model.npz").exists()
+    assert calls == [0, 1]

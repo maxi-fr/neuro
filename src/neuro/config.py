@@ -418,6 +418,7 @@ class TrainingConfig(StrictConfig):
     dmd_energy: float | None = Field(default=None, gt=0, le=1.0)
     dmd_lambda: float = Field(default=0.0, ge=0)
     epochs: int = Field(default=100, ge=1)
+    max_training_hours: float | None = Field(default=None, gt=0)
     warmup_epochs: int = Field(default=0, ge=0)
     batch_size: int = Field(default=128, ge=1)
     learning_rate: float = Field(default=1e-3, gt=0)
