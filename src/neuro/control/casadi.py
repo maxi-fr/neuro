@@ -151,22 +151,20 @@ def _activation_ca(z: ca.SX, activation: Activation) -> ca.SX:
 
 
 def _cnn_convolution_ca(inputs: list[ca.SX], weight: FloatArray, bias: FloatArray) -> list[ca.SX]:
-    """Apply one causal time-frequency correlation with zero padding and unit stride."""
+    """Apply valid temporal correlation with same-size frequency padding and unit stride."""
     n_time, n_values = inputs[0].shape
     outputs: list[ca.SX] = []
     for output_channel in range(weight.shape[0]):
         kernel_time, kernel_frequency = weight.shape[2:]
         frequency_left = (kernel_frequency - 1) // 2
         rows: list[ca.SX] = []
-        for t in range(n_time):
+        for t in range(n_time - kernel_time + 1):
             cells: list[ca.SX] = []
             for frequency in range(n_values):
                 value = ca.SX(float(bias[output_channel]))
                 for input_channel, input_matrix in enumerate(inputs):
                     for kt in range(kernel_time):
-                        source_time = t + kt - kernel_time + 1
-                        if source_time < 0:
-                            continue
+                        source_time = t + kt
                         for kf in range(kernel_frequency):
                             source_frequency = frequency + kf - frequency_left
                             if 0 <= source_frequency < n_values:
@@ -181,7 +179,7 @@ def _cnn_convolution_ca(inputs: list[ca.SX], weight: FloatArray, bias: FloatArra
 
 
 def _observable_cnn_forward_ca(y_window: ca.SX, u_window: ca.SX, model: ObservableCNNModel) -> ca.SX:
-    """Activate every causal time-frequency convolution before the dense Control Current head."""
+    """Flatten every valid time, filter, and frequency position into the Control Current head."""
     n_time = model.n_y
     n_values = model.n_values
     n_outputs = model.n_outputs
@@ -200,7 +198,9 @@ def _observable_cnn_forward_ca(y_window: ca.SX, u_window: ca.SX, model: Observab
     for weight, bias in zip(model.conv_weights, model.conv_biases, strict=True):
         inputs = _cnn_convolution_ca(inputs, np.asarray(weight, dtype=np.float64), np.asarray(bias, dtype=np.float64))
         inputs = [_activation_ca(matrix, model.activation) for matrix in inputs]
-    features = ca.vertcat(*[matrix[n_time - 1, frequency] for matrix in inputs for frequency in range(n_values)])
+    features = ca.vertcat(
+        *[matrix[t, frequency] for t in range(inputs[0].shape[0]) for matrix in inputs for frequency in range(n_values)]
+    )
     return _mlp_forward_ca(
         ca.vertcat(features, u_window),
         tuple(np.asarray(weight, dtype=np.float64) for weight in model.head_weights),
@@ -210,27 +210,28 @@ def _observable_cnn_forward_ca(y_window: ca.SX, u_window: ca.SX, model: Observab
 
 
 def _waveform_cnn_forward_ca(y_window: ca.SX, u_window: ca.SX, model: WaveformCNNModel) -> ca.SX:
-    """Activate every causal waveform convolution before the dense Control Current head."""
+    """Flatten all valid waveform convolution positions before the dense Control Current head."""
     start = (model.n_history - model.n_y) * model.n_outputs
     inputs = [
         ca.vertcat(*[y_window[start + t * model.n_outputs + channel] for t in range(model.n_y)])
         for channel in range(model.n_channels)
     ]
+    n_time = model.n_y
     for weight, bias in zip(model.conv_weights, model.conv_biases, strict=True):
+        n_time -= weight.shape[2] - 1
         outputs = []
         for output_channel in range(weight.shape[0]):
             values = []
-            for t in range(model.n_y):
+            for t in range(n_time):
                 value = ca.SX(float(bias[output_channel]))
                 for input_channel, channel_values in enumerate(inputs):
                     for lag in range(weight.shape[2]):
-                        source = t + lag - weight.shape[2] + 1
-                        if source >= 0:
-                            value += float(weight[output_channel, input_channel, lag]) * channel_values[source]
+                        source = t + lag
+                        value += float(weight[output_channel, input_channel, lag]) * channel_values[source]
                 values.append(value)
             outputs.append(ca.vertcat(*values))
         inputs = [_activation_ca(values, model.activation) for values in outputs]
-    features = ca.vertcat(*[values[-1] for values in inputs])
+    features = ca.vertcat(*[values[t] for t in range(n_time) for values in inputs])
     return _mlp_forward_ca(
         ca.vertcat(features, u_window),
         tuple(np.asarray(weight, dtype=np.float64) for weight in model.head_weights),

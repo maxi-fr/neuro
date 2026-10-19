@@ -61,7 +61,7 @@ class ModelConfig(StrictConfig):
     frequency_kernel_size: int = Field(default=3, ge=1)
     tapering_ratio: float = Field(default=1.0, gt=0.0, le=1.0)
     head_depth: int = Field(default=1, ge=0)
-    head_width: Literal["trunk", "geometric_mean"] = "trunk"
+    head_width: Annotated[int, Field(ge=1)] | Literal["trunk", "geometric_mean"] = "trunk"
 
     @model_validator(mode="after")
     def _validate_architecture_depth(self) -> Self:
@@ -668,7 +668,12 @@ class NNPredictorConfig(StrictConfig):
 
     @model_validator(mode="after")
     def _validate_losses_and_horizon(self) -> Self:
-        """Validate Loss geometry, target Span, and an epoch budget that reaches eligibility."""
+        """Validate CNN temporal support, Loss geometry, target Span, and schedule eligibility."""
+        if self.model.architecture == "cnn":
+            remaining = self.model.n_y - self.model.depth * (self.model.kernel_size - 1)
+            if remaining < 1:
+                msg = "CNN requires n_y - depth * (kernel_size - 1) >= 1."
+                raise ValueError(msg)
         if self.observable is not None:
             _validate_observable_losses(self.training.losses, self.observable, self.fs)
             min_n_u = self.observable.min_past_controls()
