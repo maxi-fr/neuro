@@ -259,24 +259,23 @@ training trajectories only** (so no validation statistics leak in) and reused fo
 - **`y_std`**: [`Standardizer`](../src/neuro/transforms.py), fit on the full continuous training EEG channels.
 - **`u_std`**: [`Standardizer`](../src/neuro/transforms.py), fit on the continuous training control signals.
 
-The `Standardizer` supports:
+The `Standardizer` always subtracts the training mean and divides by the training population
+standard deviation, separately for each channel or channel-frequency Observable coordinate.
+Constant coordinates use scale one. There are no `scaler` or `global_scaling` options.
 
-- `scaler = "standard"` → subtract mean, divide by std.
-- `scaler = "robust"` → subtract median, divide by IQR (robust to the large EEG bursts / bistable
-  jumps). Used by all shipped configs.
-- `global_scaling = true` → statistics pooled to **one** scalar shared across channels; `false` →
-  **per-channel**. All shipped configs use global scaling.
-
-Standardisation (per feature $j$): $\tilde{x} = (x - c_j)/s_j$, with $(c_j, s_j) = (\text{mean},
-\text{std})$ for standard, $(\text{median}, \text{IQR})$ for robust.
+Standardisation (per feature $j$): $\tilde{x} = (x - \mu_j)/\sigma_j$.
 In [`prepare_datasets`](../src/neuro/predictor/data.py), each continuous trajectory is transformed with
 `y_std` and `u_std` before sliding windows are built. The model operates directly in standardized channel
-space, and evaluation is done in raw EEG units via `y_std.inverse_transform` (Section 8).
+space. Losses recover original output units: raw EEG for Waveform MSE, log-power for Observable
+MSE, and raw EEG before waveform spectral/power calculations. Inference recovers output units
+via `y_std.inverse_transform` (Section 8).
 
-The statistics are fitted on the **concatenated raw training trajectories**, so every sample counts
-once. (Before the projection was removed they were fitted on the sliding windows instead, which
-weighted each sample by roughly $n_y$ and dropped the trailing `horizon` samples; under
-`scaler = "robust"` the median/IQR — and therefore every trained model — differ between the two.)
+The statistics are fitted on the **concatenated preprocessed training trajectories**, before
+sliding windows are built. Observable fitting uses the reduced Frames, including configured
+training sub-hop expansion. Validation statistics never enter either fit. The
+[dataset audit](../artifacts/output_scaling_audit/report.md) supports retaining mean/std scaling:
+some Observable coordinates have narrow IQRs that would substantially expand scaled extremes
+under median/IQR scaling. This does not establish an empirical training-performance advantage.
 
 ---
 
@@ -431,10 +430,11 @@ $e$ ($\text{epoch} = \text{null}$ during validation to evaluate terminal schedul
 ### 6.1 Horizon-length curriculum MSE (`curriculum_mse`)
 
 The MSE is scored over the first $L(e)$ rollout steps, where $L \le \text{span\_steps}$.
-With per-step errors
+With standardized predictions and targets, recover original-unit per-step errors using each
+coordinate's fitted scale $s_c$:
 
 $$
-e_i = \frac{1}{BC}\sum_{b,c}\big(\hat{Y}_{b,i,c} - Y_{b,i,c}\big)^2,
+e_i = \frac{1}{BC}\sum_{b,c}\big[s_c\big(\hat{Y}_{b,i,c} - Y_{b,i,c}\big)\big]^2,
 $$
 
 the curriculum MSE is their mean over that prefix:
@@ -890,8 +890,6 @@ out-of-range values raise `ValidationError` rather than silently defaulting.
 | `train_split`                | `0.8`   | fraction used for training (tail held out for val)            |
 | `seed`                       | `69`    | seed for weight init **and** the epoch shuffle (`+ seed_offset` in sweeps) |
 | `patience`                   | `50`    | early-stopping patience (epochs)                              |
-| `scaler`                     | `standard` | `standard` / `robust`                                      |
-| `global_scaling`             | `false` | one shared scalar vs. per-channel scaling                     |
 | `device`                     | `auto`  | `auto` / `cpu` / `cuda` (`auto` selects CUDA if available)    |
 | `eval_horizon_s`             | *(required)* | evaluation rollout horizon in seconds                     |
 | `losses`                     | *(required)* | composable loss terms (at least one must be active)           |
@@ -944,8 +942,8 @@ All schedule checkpoints and gates are specified in integer **epochs** (`curr_st
 
 All five target the 50 Hz / 8 s ROAST dataset described in Section 2.2 and share `n_y=15`, `n_u=10`,
 `hidden_size=64`, `depth=2`, `activation=softplus`, `batch_size=128`, `learning_rate=1e-5`,
-`weight_decay=5e-4`, `train_split=0.8`, `seed=69`, `scaler=robust`, `global_scaling=true` and
-`eval_horizon_s=1.0`.
+`weight_decay=5e-4`, `train_split=0.8`, `seed=69` and `eval_horizon_s=1.0`. These historical
+presets used global median/IQR scaling; new runs use fixed per-coordinate mean/std scaling.
 
 The last two are a matched pair: the MSE is trusted only out to **0.2 s** and everything from there
 to 1 s is shaped by the auxiliary term alone, so they isolate what each auxiliary loss contributes

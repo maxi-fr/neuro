@@ -1,20 +1,55 @@
-\chapter{Introduction}
-\label{ch:introduction}
+\chapter{Introduction}\label{ch:introduction}
 
-% Core Questions:
-% Why is closed-loop transcranial neurostimulation for epilepsy necessary, why is
-% it fundamentally difficult from a control perspective, and what does this thesis
-% propose to solve it?
 
-% Contents:
-% - Clinical Context: Drug-resistant focal epilepsy and the limitations of resective surgery and pharmacotherapy.
-% - Existing Stimulation Paradigms: Open-loop tES and reactive threshold-based triggers (habituation, excessive charge, late intervention).
-% - Vision: Receding-horizon optimal control (MPC) to anticipate recruitment and steer neural dynamics under safety budgets.
-% - Control Challenges: High-dimensional, stochastic, delayed brain dynamics; severe partial observability (scalp EEG only); inability to evaluate biophysical models online.
-% - Proposed Architecture: End-to-end data-driven MPC pipeline using spectral surrogate Predictors and receding-horizon optimization.
-% - Key Contributions:
-%   * MPC on realistic stimulation model
-%       * most other paper use very simplified stimulation model (and measurement model)
-%   * STFT MPC
-%   * Mixed-integer/sparse MPC investigation
-% - Thesis Roadmap: Overview of the structure of Chapters 2 through 6.
+Medication does not achieve seizure freedom for all patients with epilepsy, leaving a need for additional treatment options~\cite{Kwan2000,Chen2018}. % cite-checked: Kwan2000=SUPPORTED, Chen2018=SUPPORTED
+Epileptic activity can appear in \ac{eeg} recordings as epileptiform spikes and high-frequency oscillations~\cite{Chang2020}. % cite-checked: SUPPORTED
+Electrical stimulation aims to suppress seizures by modulating neural activity, using implanted electrodes or non-invasive \ac{tes}~\cite{Morrell2011,Fregni2006,Auvichayapat2013}. % cite-checked: Morrell2011=SUPPORTED, Fregni2006=SUPPORTED, Auvichayapat2013=SUPPORTED
+Clinical studies of cathodal transcranial direct current stimulation have used prescribed protocols with fixed electrode arrangements, current amplitudes, and durations~\cite{Fregni2006,Auvichayapat2013}. % cite-checked: SUPPORTED
+These open-loop protocols do not adjust stimulation in response to ongoing neural activity during treatment~\cite{Fregni2006,Auvichayapat2013}. % cite-checked: Fregni2006=SUPPORTED, Auvichayapat2013=SUPPORTED
+Closed-loop approaches instead use electrical recordings to detect seizure-related activity and modulate stimulation, as studied with implanted cortical electrodes in patients and with \ac{tes} in a rodent model~\cite{Morrell2011,Berenyi2012}. % cite-checked: Morrell2011=SUPPORTED, Berenyi2012=SUPPORTED
+\Ac{mpc} uses a dynamical model to predict the effects of candidate stimulation sequences and optimizes future inputs according to a control objective and stimulation constraints~\cite{Rawlings2017,Chang2020}. % cite-checked: Rawlings2017=SUPPORTED, Chang2020=SUPPORTED
+
+The prediction model must capture how the measured activity responds to stimulation~\cite{Chang2020}. % cite-checked: SUPPORTED
+Earlier applications include feedback control of single-neuron dynamics by Fr\"ohlich and Jezernik~\cite{Frohlich2005}. % cite-checked: SUPPORTED
+For seizure suppression, Chang et al.~\cite{Chang2020} identify a second-order nonlinear autoregressive moving-average Volterra model from stimulation inputs and neural-mass outputs for use within \ac{mpc}. % cite-checked: SUPPORTED
+Liang et al.~\cite{Liang2024} combine dynamic mode decomposition with \ac{mpc} to investigate stimulation of selected nodes in an epileptic network. % cite-checked: SUPPORTED
+These studies demonstrate different routes to constructing prediction models for neural control.
+
+Scalp stimulation produces spatially distributed electric fields, while scalp measurements reflect neural currents conducted through the head tissues~\cite{Huang2019,Buzsaki2012}. % cite-checked: Huang2019=SUPPORTED, Buzsaki2012=SUPPORTED
+This thesis models how scalp-electrode currents produce regional stimulation and how regional activity appears in scalp measurements.
+Several \ac{mpc} studies use direct inputs to neural populations or network nodes and regional activity as the output~\cite{Chang2020,Fang2023,Liang2024}. % cite-checked: Chang2020=SUPPORTED, Fang2023=SUPPORTED, Liang2024=SUPPORTED
+The present work additionally models the mapping from scalp-electrode currents to regional stimulation and from regional activity to scalp measurements~\cite{Chang2020,Fang2023,Liang2024}. % cite-checked: Chang2020=SUPPORTED, Fang2023=SUPPORTED, Liang2024=SUPPORTED
+Yu et al.~\cite{Yu2024} include electric-field modeling and \ac{eeg} feedback in a whole-brain study of closed-loop \ac{tes}, using a threshold-based feedback law. % cite-checked: SUPPORTED
+Their stimulation model combines electric-field magnitude with a voltage-based polarity assignment.
+The present work instead uses the field component along regional neural orientations and an explicit conversion from electrode currents to membrane-potential perturbations.
+This mapping provides a more detailed stimulation interface for investigating \ac{mpc}.
+
+Alongside these interfaces, the choice of prediction target determines the information available to the control objective.
+Spectral representations have been used to distinguish preictal and interictal activity from \ac{eeg}, including the \ac{stft} inputs used by Truong et al.~\cite{Truong2018}. % cite-checked: SUPPORTED
+Fang and Yang~\cite{Fang2023} identify a dynamical model of regional spectral powers and use it within \ac{mpc} to regulate neural activity in a simulation study of major depressive disorder. % cite-checked: SUPPORTED
+Steffen and Cannon~\cite{Steffen2025} predict the amplitude envelope of beta-band-filtered \acp{lfp} using a multi-step neural-network model within \ac{mpc} for deep brain stimulation in Parkinson's disease. % cite-checked: SUPPORTED
+Each prediction step uses a difference of two input-convex neural networks, taking past measurements and stimulation inputs together with candidate future inputs~\cite{Steffen2025}. % cite-checked: SUPPORTED
+Fang and Yang and Steffen and Cannon use derived measures of oscillatory activity as prediction targets within \ac{mpc}~\cite{Fang2023,Steffen2025}. % cite-checked: SUPPORTED
+This thesis investigates direct prediction of \ac{stft}-derived \ac{eeg} spectra for seizure control and compares it with waveform-based prediction.
+Predicting \ac{stft}-derived quantities can align the prediction target with a spectral control objective, rather than requiring the objective to be evaluated from predicted waveforms.
+
+The control formulation must also determine when stimulation is applied.
+Previous optimal-control studies have investigated energy and sparsity penalties for neural populations and whole-brain networks~\cite{Chouzouris2021,Salfenmoser2022,Salfenmoser2023}. % cite-checked: Chouzouris2021=SUPPORTED, Salfenmoser2022=SUPPORTED, Salfenmoser2023=SUPPORTED
+This thesis compares continuous formulations that promote sparse currents with mixed-integer formulations that explicitly select stimulation intervals.
+The resulting trade-off between control performance, stimulation expenditure, and computational cost is a further focus of this thesis.
+
+This thesis brings together the stimulation and measurement interfaces, spectral prediction, and sparse stimulation within a simulation study of \ac{mpc} for epilepsy treatment.
+A biophysical whole-brain model supplies the stimulation responses and scalp \ac{eeg} used to identify prediction models and evaluate feedback control.
+The controller uses these identified models to optimize electrode currents, with waveform and spectral prediction providing alternative representations of future activity.
+The three contributions are:
+
+\begin{enumerate}
+    \item Application of \ac{mpc} with realistic stimulation and \ac{eeg} measurement models, including spatial electric-field distributions, orientation-dependent neural polarization, and constrained electrode currents.
+    \item Direct prediction of \ac{stft}-derived spectral quantities for use within \ac{mpc}, and comparison with waveform-based prediction to investigate the effect of aligning the prediction target with the control objective.
+    \item Formulation and comparison of sparsity-promoting \ac{mpc} approaches using mixed-integer stimulation scheduling and continuous relaxations.
+\end{enumerate}
+
+The following chapters develop and evaluate these contributions.
+Chapter~\ref{ch:problem_formulation} establishes the biological and control setting, and Chapter~\ref{ch:biological_plant_modeling} specifies the biophysical plant.
+Chapters~\ref{ch:data_driven_predictor_design} and~\ref{ch:mpc_framework} develop the prediction models and control formulations.
+Chapter~\ref{ch:experiments_discussion} presents the experimental comparisons and discussion, followed by the conclusions in Chapter~\ref{ch:conclusion_and_future_outlook}.

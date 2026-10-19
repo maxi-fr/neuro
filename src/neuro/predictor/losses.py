@@ -73,26 +73,24 @@ class Loss(Protocol):
 
 @dataclass(frozen=True)
 class CurriculumMSE:
-    """Curriculum MSE in standardized or recovered raw units."""
+    """Curriculum MSE in recovered original output units."""
 
     weight: float
     span_steps: int
     start_epoch: int
     curr_start: int
     curr_end: int
-    unstandardized: bool = False
     name: str = "curriculum_mse"
 
     @classmethod
     def from_spec(cls, spec: CurriculumMSESpec, fs: float, name: str = "curriculum_mse") -> CurriculumMSE:
-        """Build a curriculum Loss in configured units."""
+        """Build a curriculum Loss in original output units."""
         return cls(
             weight=spec.weight,
             span_steps=spec.span_steps(fs),
             start_epoch=spec.start_epoch,
             curr_start=spec.curr_start,
             curr_end=spec.curr_end,
-            unstandardized=spec.unstandardized,
             name=name,
         )
 
@@ -107,10 +105,8 @@ class CurriculumMSE:
         ctx: LossContext,
         step_mask: jax.Array | None = None,
     ) -> tuple[jax.Array, dict[str, Any]]:
-        """Score the trusted Rollout prefix in configured units, including dynamic masks."""
-        residual = pred[:, : self.span_steps] - true[:, : self.span_steps]
-        if self.unstandardized:
-            residual = residual * ctx.y_scale
+        """Score the trusted Rollout prefix in original output units, including dynamic masks."""
+        residual = (pred[:, : self.span_steps] - true[:, : self.span_steps]) * ctx.y_scale
         if step_mask is not None:
             mask = step_mask[: self.span_steps]
             # Average SE over batch and channel/frequency dimensions, leaving step dimension

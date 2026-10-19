@@ -126,7 +126,7 @@ def load_trial_data(
     trial_dropdown,
     yaml,
 ):
-    """Load the trial's JAX Predictor, configuration, and validation trajectories."""
+    """Load a trial's JAX Predictor and validation trajectories with fixed mean/std scaling."""
     mo.stop(trial_dropdown.value is None, "Please select a trial.")
     trial_num = trial_dropdown.value
     trial_dir = sweep_path / f"trial_{trial_num}"
@@ -170,8 +170,6 @@ def load_trial_data(
         horizon,
         dt_base,
         train_split,
-        scaler=_train_cfg.get("scaler", "standard"),
-        global_scaling=bool(_train_cfg.get("global_scaling", False)),
     )
     n_channels = data.n_channels
     X_val, Y_val = data.X_val, data.Y_val

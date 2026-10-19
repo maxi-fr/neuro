@@ -44,3 +44,5 @@ configs/comparison/
 .worktrees/
 thesis/out/
 /artifacts_gdrive
+thesis/tmp/
+thesis/references/

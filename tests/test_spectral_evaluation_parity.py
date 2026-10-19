@@ -142,7 +142,6 @@ def test_jax_unstandardized_spectral_loss_matches_stft_loss(window: str, *, asym
         start_epoch=0,
         curr_start=0,
         curr_end=0,
-        unstandardized=True,
     )
 
     # Standardize frames as fed to spectral predictor
@@ -273,18 +272,16 @@ def test_stft_rejects_insufficient_boundary_history() -> None:
         loss.log_spectrogram(jnp.ones((1, 40, 2)), ctx)
 
 
-def test_curriculum_mse_unstandardized_matches_raw_mse_and_backpropagates() -> None:
-    """CurriculumMSE with unstandardized=True matches unstandardized MSE and backpropagates."""
+@pytest.mark.parametrize("output_shape", [(6,), (2, 3)])
+def test_curriculum_mse_unstandardized_matches_raw_mse_and_backpropagates(output_shape: tuple[int, ...]) -> None:
+    """CurriculumMSE recovers original units and gradients for waveform and structured Observable outputs."""
     n_frames = 4
-    n_channels = 2
-    n_values = 3
-    n_features = n_channels * n_values
 
     rng = np.random.default_rng(505)
-    pred_data = rng.standard_normal((2, n_frames, n_features))
-    true_data = rng.standard_normal((2, n_frames, n_features))
-    y_center = rng.uniform(-3.0, 3.0, size=(n_features,))
-    y_scale = rng.uniform(0.5, 2.5, size=(n_features,))
+    pred_data = rng.standard_normal((2, n_frames, *output_shape))
+    true_data = rng.standard_normal((2, n_frames, *output_shape))
+    y_center = rng.uniform(-3.0, 3.0, size=output_shape)
+    y_scale = rng.uniform(0.5, 2.5, size=output_shape)
 
     pred_tensor = jnp.asarray(pred_data, dtype=jnp.float32)
     true_tensor = jnp.asarray(true_data, dtype=jnp.float32)
@@ -302,7 +299,6 @@ def test_curriculum_mse_unstandardized_matches_raw_mse_and_backpropagates() -> N
         start_epoch=0,
         curr_start=0,
         curr_end=0,
-        unstandardized=True,
     )
 
     loss_curr, _ = curr_loss_fn(pred_tensor, true_tensor, ctx)
@@ -345,7 +341,7 @@ def test_unstandardized_curriculum_mask_matches_prefix_under_jit() -> None:
     pred = jnp.arange(12, dtype=jnp.float32).reshape(1, 4, 3)
     true = jnp.ones_like(pred)
     ctx = LossContext(y_center=jnp.zeros(3), y_scale=jnp.array([0.5, 2.0, 3.0]), fs=10.0)
-    loss = CurriculumMSE(weight=1.0, span_steps=4, start_epoch=0, curr_start=0, curr_end=0, unstandardized=True)
+    loss = CurriculumMSE(weight=1.0, span_steps=4, start_epoch=0, curr_start=0, curr_end=0)
     mask = jnp.array([1.0, 1.0, 0.0, 0.0])
     actual, gradient = jax.jit(jax.value_and_grad(lambda p: loss(p, true, ctx, step_mask=mask)[0]))(pred)
     expected, expected_gradient = jax.value_and_grad(lambda p: jnp.mean(((p[:, :2] - true[:, :2]) * ctx.y_scale) ** 2))(

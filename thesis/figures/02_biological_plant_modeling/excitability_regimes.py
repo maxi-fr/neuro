@@ -69,15 +69,17 @@ def _in_network(node: int) -> tuple[FloatArray, FloatArray]:
 
 
 def main() -> None:
-    """Write the four-row time-series and power-spectrum figure."""
+    """Write the four-row time-series and power-spectrum figure at 0.9 textwidth."""
     panels = [
-        (_isolated(A_BACKGROUND), "(a) Background, $A_i = 3.25$ mV, uncoupled"),
-        (_isolated(A_PZ), "(b) Propagation zone, $A_i = 3.4$ mV, uncoupled"),
-        (_in_network(PROBE_NODE), "(c) Propagation zone, $A_i = 3.4$ mV, in the network"),
-        (_isolated(A_EZ), "(d) Epileptogenic zone, $A_i = 3.6$ mV, uncoupled"),
+        (_isolated(A_BACKGROUND), "(a) Background, uncoupled\n$A_i = 3.25$ mV"),
+        (_isolated(A_PZ), "(b) Propagation zone, uncoupled\n$A_i = 3.4$ mV"),
+        (_in_network(PROBE_NODE), "(c) Propagation zone, in network\n$A_i = 3.4$ mV"),
+        (_isolated(A_EZ), "(d) Epileptogenic zone, uncoupled\n$A_i = 3.6$ mV"),
     ]
 
-    fig, axes = plt.subplots(len(panels), 2, figsize=style.figsize(height_in=4.4), constrained_layout=True)
+    fig, axes = plt.subplots(
+        len(panels), 2, figsize=style.figsize(width_ratio=0.9, height_in=4.4), constrained_layout=True
+    )
     for row, ((t, y), label) in enumerate(panels):
         axes[row, 0].plot(t, y, lw=0.7, color="C0")
         axes[row, 0].set_ylabel("$y_\\mathrm{LFP}$ / mV")
