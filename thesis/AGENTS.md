@@ -1,10 +1,10 @@
 # Thesis instructions
 
-Treat `thesis/` as a document workspace. For work within this directory, the rules below override all parent-repository instructions.
+Treat `thesis/` as a document workspace. For work within this directory, parent-repository instructions do not apply here.
 
 Keep file inspection and changes scoped to `thesis/`. Inspect parent-repository files only when the requested task requires them, such as checking the implementation against the thesis content. Inherited instructions do not expand the task's scope.
 
-Use the latex-lint command:
+Use the latex-lint command when needed:
 
 ```bash
 usage: uv run latex-lint [-h] {compile,check,rule,install-skills,refs,format} ...

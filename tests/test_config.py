@@ -704,11 +704,14 @@ def test_resolve_simulation_config_dynamics_regimes() -> None:
 
 
 def test_model_config_tapering_and_head_settings() -> None:
-    """ModelConfig validates tapering ratio, head depth, head width, and channel underflow."""
+    """Validate CNN tapering, numeric and derived head widths, depth, and channel underflow."""
     cfg = ModelConfig(architecture="cnn", depth=3, hidden_size=64, tapering_ratio=0.5, head_depth=0)
     assert cfg.tapering_ratio == 0.5
     assert cfg.head_depth == 0
     assert cfg.head_width == "trunk"
+    assert ModelConfig(architecture="cnn", head_width=64).head_width == 64
+    with pytest.raises(ValidationError):
+        ModelConfig(architecture="cnn", head_width=0)
 
     with pytest.raises(ValidationError):
         ModelConfig(architecture="cnn", depth=2, tapering_ratio=0.0)
@@ -720,7 +723,7 @@ def test_model_config_tapering_and_head_settings() -> None:
         ModelConfig(architecture="cnn", depth=2, head_depth=-1)
 
     with pytest.raises(ValidationError):
-        ModelConfig(architecture="cnn", depth=2, head_width="invalid")  # ty: ignore[invalid-argument-type]
+        ModelConfig(architecture="cnn", depth=2, head_width="invalid")
 
     with pytest.raises(ValidationError, match="CNN tapering produces 0 channels"):
         ModelConfig(architecture="cnn", depth=4, hidden_size=2, tapering_ratio=0.5)

@@ -32,7 +32,7 @@ if TYPE_CHECKING:
 
 
 def _cnn(*, depth: int = 2, activation: Activation = "tanh", residual: bool = True) -> WaveformCNNModel:
-    """Build a small causal CNN with nontrivial output and control scaling."""
+    """Build a small valid-convolution CNN with nontrivial output and control scaling."""
     rng = np.random.default_rng(91)
     model = WaveformCNNModel(
         n_y=4,
@@ -42,7 +42,7 @@ def _cnn(*, depth: int = 2, activation: Activation = "tanh", residual: bool = Tr
         n_controls=2,
         hidden_size=5,
         depth=depth,
-        kernel_size=3,
+        kernel_size=2,
         activation=activation,
         residual=residual,
         dt=0.01,
@@ -278,10 +278,10 @@ def test_cnn_depth_zero_is_rejected_at_config_build() -> None:
 
 @pytest.mark.parametrize("fit", ["ridge", "dmd"])
 def test_cnn_closed_form_fits_reject_before_loading_data(fit: Literal["ridge", "dmd"]) -> None:
-    """CNN ridge and DMD requests fail before touching a nonexistent trajectory path."""
+    """Valid-geometry CNNs reject ridge and DMD before loading a trajectory."""
     config = NNPredictorConfig(
         simulation=SimulationConfig(dt=0.01, downsample=1),
-        model=ModelConfig(architecture="cnn", n_y=2, n_u=2, hidden_size=4, depth=1),
+        model=ModelConfig(architecture="cnn", n_y=3, n_u=2, hidden_size=4, depth=1),
         training=TrainingConfig(
             fit=fit,
             eval_horizon_s=0.02,
@@ -293,7 +293,7 @@ def test_cnn_closed_form_fits_reject_before_loading_data(fit: Literal["ridge", "
 
 
 def test_cnn_train_save_load_and_controller_smoke(tmp_path: Path) -> None:
-    """A short CNN fit can save, reload through the generic factory, and build an MPC problem."""
+    """A short valid-convolution CNN fit reloads and builds an MPC problem."""
     rng = np.random.default_rng(404)
     files: list[str] = []
     for index in range(2):
@@ -304,7 +304,7 @@ def test_cnn_train_save_load_and_controller_smoke(tmp_path: Path) -> None:
         files.append(str(path))
     config = NNPredictorConfig(
         simulation=SimulationConfig(dt=0.01, downsample=1),
-        model=ModelConfig(architecture="cnn", n_y=2, n_u=2, hidden_size=4, depth=1, kernel_size=3),
+        model=ModelConfig(architecture="cnn", n_y=3, n_u=2, hidden_size=4, depth=1, kernel_size=3),
         training=TrainingConfig(
             epochs=2,
             batch_size=16,
@@ -333,14 +333,15 @@ def test_cnn_train_save_load_and_controller_smoke(tmp_path: Path) -> None:
         (0.5, 0, "trunk"),
         (0.5, 1, "geometric_mean"),
         (0.75, 2, "trunk"),
+        (1.0, 1, 64),
     ],
 )
 def test_waveform_cnn_tapering_and_head_depth_parity(
     tapering_ratio: float,
     head_depth: int,
-    head_width: Literal["trunk", "geometric_mean"],
+    head_width: int | Literal["trunk", "geometric_mean"],
 ) -> None:
-    """Waveform CNN supports tapering ratio and configurable head depth with JAX checkpoint parity."""
+    """Valid waveform CNNs preserve tapering and configurable heads across checkpoint reloads."""
     rng = np.random.default_rng(701)
     hidden_size = 16
     depth = 3
@@ -352,7 +353,7 @@ def test_waveform_cnn_tapering_and_head_depth_parity(
         n_controls=2,
         hidden_size=hidden_size,
         depth=depth,
-        kernel_size=3,
+        kernel_size=2,
         activation="tanh",
         residual=True,
         dt=0.01,
@@ -406,3 +407,58 @@ def test_waveform_cnn_tapering_and_head_depth_parity(
     expected = module.y_std.inverse_transform(np.asarray(module(y_hist, u_hist, u_future))[0])
     actual = np.asarray(runtime.free_run(y_raw[: k + 1][None], u_raw[:k][None], u_raw[k : k + module.horizon][None]))[0]
     np.testing.assert_allclose(actual, expected, rtol=1e-5, atol=1e-6)
+
+
+@pytest.mark.parametrize("n_y", [25, 50])
+def test_waveform_cnn_head_uses_entire_history(n_y: int) -> None:
+    """Valid convolutions expose every EEG lag to the head, including the oldest sample."""
+    model = WaveformCNNModel(
+        n_y=n_y,
+        n_u=1,
+        horizon=1,
+        n_channels=1,
+        n_controls=1,
+        hidden_size=1,
+        depth=2,
+        kernel_size=5,
+        activation="tanh",
+        residual=False,
+        head_depth=0,
+    )
+    model = eqx.tree_at(
+        lambda m: (m.conv_weights, m.head_weights),
+        model,
+        replace_fn=lambda tree: jax.tree.map(jnp.ones_like, tree),
+    )
+    model = eqx.tree_at(
+        lambda m: (m.conv_biases, m.head_biases),
+        model,
+        replace_fn=lambda tree: jax.tree.map(jnp.zeros_like, tree),
+    )
+    gradient = jax.grad(lambda y: model(y[None], jnp.zeros((1, 1, 1)), jnp.zeros((1, 1, 1))).sum())(jnp.zeros((n_y, 1)))
+    assert np.all(np.asarray(gradient) > 0)
+    assert model.head_weights[0].shape[1] == n_y - 8 + 1
+
+
+@pytest.mark.parametrize(("n_y", "depth", "kernel_size"), [(4, 2, 3), (25, 3, 10)])
+def test_waveform_cnn_rejects_empty_temporal_support(n_y: int, depth: int, kernel_size: int) -> None:
+    """Reject stacks that consume the entire EEG history before constructing weights."""
+    with pytest.raises(ValueError, match="n_y - depth"):
+        WaveformCNNModel(
+            n_y=n_y,
+            n_u=1,
+            horizon=1,
+            n_channels=1,
+            n_controls=1,
+            hidden_size=2,
+            depth=depth,
+            kernel_size=kernel_size,
+        )
+    with pytest.raises(ValueError, match="n_y - depth"):
+        NNPredictorConfig(
+            model=ModelConfig(architecture="cnn", n_y=n_y, depth=depth, kernel_size=kernel_size),
+            training=TrainingConfig(
+                eval_horizon_s=0.02,
+                losses=LossSpecs(curriculum_mse=CurriculumMSESpec(weight=1.0, span_s=0.02, curr_start=0, curr_end=1)),
+            ),
+        )

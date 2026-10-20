@@ -11,8 +11,10 @@
 
     \path[group, fill=accentcolor!4] (1.6,0) rectangle (6.9,-5.25);
     \node[anchor=west] at (1.8,-0.3) {\acs{mpc}};
-    \node[block, minimum width=4.5cm] (objective) at (4.25,-1.15)
-        {Control objective and constraints};
+    \node[block, minimum width=2.0cm] (objective) at (3.1,-1.15)
+        {Objective};
+    \node[block, minimum width=2.0cm] (constraints) at (5.4,-1.15)
+        {Constraints};
     \node[block, minimum width=4.5cm] (optimize) at (4.25,-2.7)
         {Optimization};
     \node[block, minimum width=4.5cm] (prediction) at (4.25,-4.55)
@@ -21,7 +23,8 @@
     \node[align=center, thesis secondary] at (0.75,-0.65)
         {Healthy\\reference};
     \draw[signal] (0,-1.15) -- (objective.west);
-    \draw[signal] (objective) -- (optimize);
+    \draw[signal] (objective.south) -- (3.1,-2.25);
+    \draw[signal] (constraints.south) -- (5.4,-2.25);
     \draw[signal] (2.4,-3.15) -- (2.4,-4.10);
     \node[thesis secondary, align=center] at (3.2,-3.63)
         {Candidate\\currents};
@@ -52,10 +55,9 @@
     \draw[black!25] (0,-6.65) -- (16.2,-6.65);
     \node[anchor=west, thesis heading] at (0,-7.1)
         {Offline identification};
-    \node[block, minimum width=4.5cm] (identify) at (4.25,-8.15)
-        {System identification};
+    \node[block, minimum width=4.5cm] (identify) at (4.25,-8.15){Training};
     \node[block, minimum width=4.5cm] (data) at (9.4,-8.15)
-        {Plant-generated data\\Applied currents and \acs{eeg}};
+        {Dataset generation};
     \draw[offline, preaction={draw=white, line width=2.5pt}]
         (9.4,-3.75) -- (data.north);
     \draw[offline] (data) -- (identify);

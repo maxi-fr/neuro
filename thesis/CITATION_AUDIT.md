@@ -50,3 +50,44 @@
 | chapters/04_mpc_framework.tex:175 | Belotti2013 | SUPPORTED | p. 4, Sec. 1.2; pp. 19--21, Sec. 3.1 | "A relaxation is used to compute a lower bound... divided into two or more separate problems" by branching; Algorithm 1. |
 | chapters/04_mpc_framework.tex:176 | Cagienard2007 | SUPPORTED | pp. 563--567, Sec. 1, 2 | Move blocking fixes control inputs across multiple steps, reducing the optimization degrees of freedom / binary variables, but restricting the admissible input sequences. |
 | chapters/04_mpc_framework.tex:178 | Sager2012 | SUPPORTED | pp. 1, 4, Sec. 1; Sec. 3; Sec. 5 | "constructive way to obtain an integer solution with a guaranteed bound on the performance loss in polynomial time... Sum Up Rounding strategy". |
+
+## Introduction (newly added citations)
+
+| File:Line | Citation Key | Status | Paper Location | Notes / Verbatim Evidence |
+|---|---|---|---|---|
+| chapters/01_introduction.tex:4 | Kwan2000 | SUPPORTED | pp. 314–319, Abstract, Results, Conclusion | “up to 30 percent do not have remission despite appropriate therapy”; supports incomplete seizure control under medication. |
+| chapters/01_introduction.tex:4 | Chen2018 | SUPPORTED | Key Points; Abstract, “Conclusions and Relevance” | PMC full-text HTML (PMC5885858), extracted to `.latex_lint/references_text/Chen2018.txt`: “More than one-third of patients experience epilepsy that remains uncontrolled.” |
+| chapters/01_introduction.tex:5 | Chang2020 | SUPPORTED | p. 1, Introduction | “Two main characteristics of epilepsy, epileptiform spikes and high-frequency oscillations, can be reflected in the EEG signals.” |
+| chapters/01_introduction.tex:6 | Morrell2011 | SUPPORTED | Abstract, Methods | The randomized trial used a responsive neurostimulator to detect abnormal electrocorticographic activity and deliver stimulation at seizure foci. |
+| chapters/01_introduction.tex:6 | Fregni2006 | SUPPORTED | Abstract, Methods | Clinical trial studied cathodal DC polarization for refractory epilepsy, with EEG and seizure-frequency outcomes. |
+| chapters/01_introduction.tex:6 | Auvichayapat2013 | SUPPORTED | Abstract, Methods | Trial assessed cathodal tDCS for refractory focal epilepsy in children. |
+| chapters/01_introduction.tex:7 | Fregni2006 | SUPPORTED | Methods | Prespecified cathodal stimulation protocol describes electrode placement, current intensity, and treatment duration. |
+| chapters/01_introduction.tex:7 | Auvichayapat2013 | SUPPORTED | Methods | Single-session protocol specifies 1 mA, 20 minutes, and cathode/anode placement. |
+| chapters/01_introduction.tex:8 | Fregni2006 | SUPPORTED | Methods | Describes a prescribed cathodal stimulation protocol; it did not adjust stimulation in response to neural measurements during treatment. |
+| chapters/01_introduction.tex:8 | Auvichayapat2013 | SUPPORTED | Methods | Describes a fixed single-session cathodal tDCS protocol, without online adjustment in response to neural measurements. |
+| chapters/01_introduction.tex:9 | Morrell2011 | SUPPORTED | Abstract, Methods | Stimulation was triggered by detections of abnormal electrocorticographic activity at implanted cortical seizure foci. |
+| chapters/01_introduction.tex:9 | Berenyi2012 | SUPPORTED | Abstract, Results | Rodent epilepsy model used EEG-triggered closed-loop transcranial electrical stimulation to abort epileptiform activity. |
+| chapters/01_introduction.tex:10 | Rawlings2017 | SUPPORTED | Ch. 1, MPC formulation | MPC predicts future behavior over a finite horizon, minimizes an objective, and respects constraints. |
+| chapters/01_introduction.tex:10 | Chang2020 | SUPPORTED | Abstract; Sec. II–III | Identified input-output Volterra model is used in MPC to optimize stimulation waveforms for seizure suppression. |
+| chapters/01_introduction.tex:12 | Chang2020 | SUPPORTED | Sec. II–III | The NARMA Volterra predictor models the relationship between stimulation inputs and neural-mass output. |
+| chapters/01_introduction.tex:13 | Frohlich2005 | SUPPORTED | Abstract; control formulation | The paper studies feedback control of Hodgkin–Huxley nerve-cell dynamics. |
+| chapters/01_introduction.tex:14 | Chang2020 | SUPPORTED | Sec. II-B; model equation | Identifies a second-order NARMA Volterra input-output model from neural-mass responses to stimulation. |
+| chapters/01_introduction.tex:15 | Liang2024 | SUPPORTED | Abstract; Sec. 3 | Uses system identification and a linear dynamic model with MPC to select stimulation of epileptic-network nodes. |
+| chapters/01_introduction.tex:18 | Huang2019 | SUPPORTED | Abstract; Sec. 2 | Supports the statement that scalp stimulation produces spatially distributed intracranial electric fields. |
+| chapters/01_introduction.tex:18 | Buzsaki2012 | SUPPORTED | Sec. “Volume conduction”; Boxes 1–2 | Supports the statement that scalp measurements reflect neural currents conducted through head tissues. |
+| chapters/01_introduction.tex:19 | Chang2020 | SUPPORTED | Sec. II | Stimulation is an input to a neural-mass model and the modeled neural signal is the output. |
+| chapters/01_introduction.tex:19 | Fang2023 | SUPPORTED | Sec. 3–4 | DBS input drives a two-region neural-mass model; regional band powers are the modeled output and MPC feedback. |
+| chapters/01_introduction.tex:19 | Liang2024 | SUPPORTED | Sec. 3 | Stimulation inputs selected network nodes and the model reconstructs regional neural dynamics. |
+| chapters/01_introduction.tex:21 | Chang2020 | SUPPORTED | Sec. II | The study models stimulation input and neural-mass output; the present work adds scalp-current-to-regional-stimulation and regional-activity-to-scalp-measurement mappings. |
+| chapters/01_introduction.tex:21 | Fang2023 | SUPPORTED | Sec. 3–4 | The study models DBS input and regional spectral-power output; the present work adds the scalp stimulation and measurement mappings. |
+| chapters/01_introduction.tex:21 | Liang2024 | SUPPORTED | Sec. 3 | The study models stimulation at network nodes and regional activity; the present work adds the scalp stimulation and measurement mappings. |
+| chapters/01_introduction.tex:21 | Yu2024 | SUPPORTED | Sec. 2–3.2 | Whole-brain study models electric fields, EEG feedback, and amplitude-based closed-loop tES; feedback triggers stimulation according to an amplitude criterion. |
+| chapters/01_introduction.tex:27 | Truong2018 | SUPPORTED | Methods | Uses short-time Fourier transform spectrogram inputs to classify preictal and interictal EEG segments. |
+| chapters/01_introduction.tex:28 | Fang2023 | SUPPORTED | Sec. 3–4 | Identifies input-output dynamics for regional spectral powers and applies predictive DBS/MPC in a simulated MDD model. |
+| chapters/01_introduction.tex:29 | Steffen2025 | SUPPORTED | Abstract; Sec. II–IV | Uses a multi-step predictor for beta-band oscillation amplitude in a DBS/MPC study for Parkinson’s disease. |
+| chapters/01_introduction.tex:30 | Steffen2025 | SUPPORTED | Abstract; Sec. III | Each prediction step is defined by a difference of two input-convex neural networks using past data and candidate inputs. |
+| chapters/01_introduction.tex:31 | Fang2023 | SUPPORTED | Sec. 3–4 | Regional spectral powers are the predicted and controlled quantities. |
+| chapters/01_introduction.tex:31 | Steffen2025 | SUPPORTED | Abstract; Sec. II–IV | Beta-band oscillation amplitude is the predicted and controlled quantity. |
+| chapters/01_introduction.tex:36 | Chouzouris2021 | SUPPORTED | Sec. II; cost function | Optimal-control costs include control-energy and spatial/temporal sparsity penalties. |
+| chapters/01_introduction.tex:36 | Salfenmoser2022 | SUPPORTED | Abstract; Sec. 2 | Mean-field neural-population optimal control penalizes control strength with integrated 1- and 2-norms. |
+| chapters/01_introduction.tex:36 | Salfenmoser2023 | SUPPORTED | Abstract; control formulation | Wilson–Cowan optimal-control study uses cost terms to penalize control effort and promote sparse intervention. |

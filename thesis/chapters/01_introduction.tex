@@ -1,25 +1,57 @@
-\chapter{Introduction}
-\label{ch:introduction}
+\chapter{Introduction}\label{ch:introduction}
 
-% Core Questions:
-% Why is closed-loop transcranial neurostimulation for epilepsy necessary, why is
-% it fundamentally difficult from a control perspective, and what does this thesis
-% propose to solve it?
+Some patients with epilepsy continue to experience seizures despite medication~\cite{Kwan2000,Chen2018}.
+Electrical stimulation offers an additional approach to treatment by modulating neural activity through implanted electrodes or non-invasive \ac{tes}~\cite{Morrell2011,Fregni2006,Auvichayapat2013}.
+Controlled studies of cathodal transcranial direct current stimulation have reported reductions in epileptiform discharges, although these changes did not establish substantial reductions in seizure frequency~\cite{Fregni2006,Auvichayapat2013}.
+These studies used prescribed electrode arrangements, current amplitudes and durations, without adjusting stimulation to ongoing neural activity during treatment~\cite{Fregni2006,Auvichayapat2013}.
+Closed-loop approaches instead use recorded neural activity to determine when or how to stimulate.
+Responsive stimulation triggered by intracranial recordings reduced seizure frequency relative to sham stimulation in a clinical trial~\cite{Morrell2011}.
+Closed-loop \ac{tes} has also been investigated using cortical recordings in a rodent model of epilepsy~\cite{Berenyi2012}.
 
-% Contents:
-% - Clinical Context: Drug-resistant focal epilepsy and the limitations of resective surgery and pharmacotherapy.
-% - Existing Stimulation Paradigms: Open-loop tES and reactive threshold-based triggers (habituation, excessive charge, late intervention).
-% - Vision: Receding-horizon optimal control (MPC) to anticipate recruitment and steer neural dynamics under safety budgets.
-% - Control Challenges: High-dimensional, stochastic, delayed brain dynamics; severe partial observability (scalp EEG only); inability to evaluate biophysical models online.
-% - Proposed Architecture: End-to-end data-driven MPC pipeline using spectral surrogate Predictors and receding-horizon optimization.
-% - Key Contributions:
-%   * MPC on realistic stimulation model
-%       * most other paper use very simplified stimulation model (and measurement model)
-%   * STFT MPC
-%   * Mixed-integer/sparse MPC investigation
-% - Thesis Roadmap: Overview of the structure of Chapters 2 through 6.
+Feedback can support decisions beyond triggering stimulation when abnormal activity is detected.
+\Ac{mpc} uses a dynamical model to predict the response to candidate stimulation sequences and selects inputs by optimizing a control objective subject to constraints~\cite{Rawlings2017,Chang2020}.
+The prediction model therefore connects the available measurements and stimulation inputs to the controller's estimate of future activity.
+Model-based neural control has been investigated at different scales, from feedback control of single-neuron dynamics by Fr\"ohlich and Jezernik~\cite{Frohlich2005} to seizure suppression in neural populations and networks~\cite{Chang2020,Liang2024}.
+For seizure-control \ac{mpc}, Chang et al.~\cite{Chang2020} identify a nonlinear Volterra prediction model from stimulation inputs and neural-mass outputs.
+Liang et al.~\cite{Liang2024} use dynamic mode decomposition to construct a model for \ac{mpc} in an epileptic network.
 
+Besides the construction of the prediction model, a controller designer must choose which quantities it predicts.
+Spectral representations provide one way to describe seizure-related activity: Truong et al.~\cite{Truong2018} use \ac{stft} representations of \ac{eeg} to distinguish preictal from interictal activity.
+For control, related work has predicted measures of oscillatory activity directly.
+Fang and Yang~\cite{Fang2023} identify a dynamical model of regional spectral powers for \ac{mpc} in a simulation study of major depressive disorder.
+Steffen and Cannon~\cite{Steffen2025} use a multi-step neural-network model to predict the amplitude envelope of beta-band-filtered \acp{lfp} for deep brain stimulation in Parkinson's disease.
+These approaches provide precedents for predicting derived quantities within \ac{mpc}, while addressing different disorders and measurement settings.
+With a spectral control objective, direct spectral prediction allows the controller to evaluate the objective from the predicted quantities themselves.
+Waveform prediction provides an alternative in which spectral quantities are computed from the predicted signal.
 
-% ---
-% For lit review
-% Spectral power prediction under stimulation has previously been investigated in a deep brain stimulation study targeting major depressive disorder~\cite{fang2023predictive}.
+The control objective also determines how seizure suppression is balanced against stimulation expenditure.
+Previous optimal-control studies have considered energy and sparsity penalties in neural populations and whole-brain networks~\cite{Chouzouris2021,Salfenmoser2022,Salfenmoser2023}.
+Penalizing stimulation magnitude and explicitly choosing stimulation intervals offer different ways to limit its use.
+Their comparison requires assessing control performance together with stimulation expenditure and the computational cost of selecting the inputs.
+
+Applying these control approaches through scalp electrodes introduces a further question about the setting in which they are evaluated.
+Several \ac{mpc} studies apply inputs directly to neural populations or network nodes and use regional activity as the output~\cite{Chang2020,Fang2023,Liang2024}.
+Scalp stimulation instead produces a spatially distributed electric field, while scalp \ac{eeg} reflects neural currents conducted through the head tissues~\cite{Huang2019,Buzsaki2012}.
+Yu et al.~\cite{Yu2024} include electric-field modeling and scalp \ac{eeg} feedback in a whole-brain simulation of closed-loop \ac{tes}, using a threshold-based feedback law.
+Their study provides a scalp-based feedback setting, whereas the cited seizure-control \ac{mpc} studies investigate predictive control through regional inputs and outputs.
+
+Together, these studies leave three questions for the present investigation.
+How does \ac{mpc} perform when stimulation and measurement are mediated by scalp-electrode mappings rather than direct access to regional activity?
+Does direct prediction of scalp \ac{eeg} spectral quantities improve control with a spectral objective compared with waveform-based prediction?
+How do continuous sparsity-promoting formulations and explicit stimulation scheduling compare in control performance, stimulation expenditure and computational cost?
+
+This thesis investigates these questions in a simulation study of \ac{mpc} for seizure control.
+A biophysical whole-brain model generates the stimulation responses and scalp \ac{eeg} used to identify prediction models and evaluate feedback control.
+The controller uses the identified models to select electrode currents.
+The three contributions are:
+
+\begin{enumerate}
+    \item Evaluation of \ac{mpc} with constrained electrode currents in a biophysical simulation plant that maps scalp currents to regional stimulation and regional activity to scalp \ac{eeg}, including orientation-dependent neural polarization.
+    \item Development of data-driven models that directly predict sequences of \ac{stft}-derived scalp \ac{eeg} spectral quantities and comparison with waveform-based prediction under a common spectral control objective.
+    \item Formulation and comparison of sparsity-promoting \ac{mpc} approaches using mixed-integer stimulation scheduling and continuous relaxations.
+\end{enumerate}
+
+The following chapters develop and evaluate these contributions.
+Chapter~\ref{ch:problem_formulation} establishes the biological and control setting and Chapter~\ref{ch:biological_plant_modeling} specifies the biophysical plant.
+Chapters~\ref{ch:data_driven_predictor_design} and~\ref{ch:mpc_framework} develop the prediction models and control formulations.
+Chapter~\ref{ch:experiments_discussion} presents the experimental comparisons and discussion, followed by the conclusions in Chapter~\ref{ch:conclusion_and_future_outlook}.

@@ -14,3 +14,7 @@ and bias gradients, then the first layer's weights after one AdamW step.
 The original implementation and live framework comparison tests remain on
 `legacy_pytorch_training`. Main tests these frozen references without installing
 the legacy framework.
+
+The CNN fixtures retain the historical newest-position readout. The current
+full-history CNN loaders reject these checkpoints; their migration tests check
+that rejection. Other fixtures continue to check numerical parity.

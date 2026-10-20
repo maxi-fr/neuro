@@ -31,9 +31,15 @@ if TYPE_CHECKING:
 
 
 def _model(
-    *, n_values: int = 4, residual: bool = True, n_y: int = 3, n_controls: int = 1, activation: Activation = "relu"
+    *,
+    n_values: int = 4,
+    residual: bool = True,
+    n_y: int = 5,
+    n_controls: int = 1,
+    activation: Activation = "relu",
+    kernel_size: int = 2,
 ) -> ObservableCNNModel:
-    """Build a small structured CNN with nontrivial channel-frequency standardizers."""
+    """Build a valid temporal CNN with nontrivial channel-frequency standardizers."""
     rng = np.random.default_rng(27 + n_values)
     geometry = StftGeometry(n_segment=6, n_hop=2) if n_values == 4 else StftGeometry(n_segment=2, n_hop=1, n_bin_pool=2)
     model = ObservableCNNModel(
@@ -45,7 +51,7 @@ def _model(
         n_outputs=2 * n_values,
         hidden_size=4,
         depth=2,
-        kernel_size=3,
+        kernel_size=kernel_size,
         frequency_kernel_size=4,
         activation=activation,
         residual=residual,
@@ -80,8 +86,8 @@ def test_observable_cnn_training_jax_parity_and_frequency_order() -> None:
 
 
 def test_observable_cnn_singleton_frequency_and_short_history() -> None:
-    """A singleton frequency axis and history shorter than the frequency kernel remain valid."""
-    model = _model(n_values=1, residual=False, n_y=1)
+    """Same-size frequency padding supports a singleton bin with a singleton temporal kernel."""
+    model = _model(n_values=1, residual=False, n_y=1, kernel_size=1)
     runtime = ObservableCNNModel.from_checkpoint(*model.to_checkpoint())
     rng = np.random.default_rng(44)
     y = rng.normal(size=(1, model.n_y, model.n_channels, 1))
@@ -177,7 +183,7 @@ def test_observable_cnn_discrete_dynamics_jacobians_match_finite_differences() -
 
 
 def test_observable_cnn_train_save_load_and_controller_smoke(tmp_path: Path) -> None:
-    """A short Observable CNN fit reloads through the factory and builds an MPC problem."""
+    """A short valid-convolution Observable CNN fit reloads and builds an MPC problem."""
     rng = np.random.default_rng(903)
     files: list[str] = []
     for index in range(2):
@@ -191,7 +197,7 @@ def test_observable_cnn_train_save_load_and_controller_smoke(tmp_path: Path) -> 
         simulation=SimulationConfig(dt=0.01, downsample=1),
         model=ModelConfig(
             architecture="cnn",
-            n_y=2,
+            n_y=3,
             n_u=geometry.min_past_controls(),
             hidden_size=4,
             depth=1,
@@ -234,21 +240,22 @@ def test_observable_cnn_train_save_load_and_controller_smoke(tmp_path: Path) -> 
         (0.5, 1, "trunk"),
         (0.5, 0, "trunk"),
         (0.5, 1, "geometric_mean"),
+        (1.0, 1, 32),
     ],
 )
 def test_observable_cnn_tapering_and_head_depth_parity(
     tapering_ratio: float,
     head_depth: int,
-    head_width: Literal["trunk", "geometric_mean"],
+    head_width: int | Literal["trunk", "geometric_mean"],
 ) -> None:
-    """Observable CNN supports tapering ratio and configurable head depth with JAX checkpoint parity."""
+    """Full-history Observable CNNs preserve tapering and head settings across checkpoint reloads."""
     rng = np.random.default_rng(808)
     geometry = StftGeometry(n_segment=6, n_hop=2)
     n_values = 4
     hidden_size = 16
     depth = 3
     module = ObservableCNNModel(
-        n_y=3,
+        n_y=5,
         n_u=2,
         horizon=3,
         n_channels=2,
@@ -256,7 +263,7 @@ def test_observable_cnn_tapering_and_head_depth_parity(
         n_outputs=2 * n_values,
         hidden_size=hidden_size,
         depth=depth,
-        kernel_size=3,
+        kernel_size=2,
         frequency_kernel_size=3,
         activation="tanh",
         residual=True,
@@ -307,3 +314,65 @@ def test_observable_cnn_tapering_and_head_depth_parity(
     expected = module.y_std.inverse_transform(np.asarray(module(y_hist, u_hist, u_future))[0])
     actual = np.asarray(runtime.free_run(y_raw[: k + 1][None], u_raw[:k][None], u_raw[k : k + module.horizon][None]))[0]
     np.testing.assert_allclose(actual, expected, rtol=1e-5, atol=1e-6)
+
+
+@pytest.mark.parametrize("frequency_kernel_size", [2, 3])
+def test_observable_cnn_head_uses_entire_history(frequency_kernel_size: int) -> None:
+    """Every Frame, EEG channel, and frequency bin has a path through the temporal readout."""
+    n_y, n_values, n_channels = 8, 3, 2
+    model = ObservableCNNModel(
+        geometry=StftGeometry(n_segment=4, n_hop=1),
+        n_y=n_y,
+        n_u=1,
+        horizon=1,
+        n_channels=n_channels,
+        n_outputs=n_channels * n_values,
+        n_controls=1,
+        hidden_size=2,
+        depth=2,
+        kernel_size=3,
+        frequency_kernel_size=frequency_kernel_size,
+        activation="tanh",
+        residual=False,
+        head_depth=0,
+    )
+    model = eqx.tree_at(
+        lambda m: (m.conv_weights, m.head_weights),
+        model,
+        replace_fn=lambda tree: jax.tree.map(jnp.ones_like, tree),
+    )
+    model = eqx.tree_at(
+        lambda m: (m.conv_biases, m.head_biases),
+        model,
+        replace_fn=lambda tree: jax.tree.map(jnp.zeros_like, tree),
+    )
+    gradient = jax.grad(lambda y: model(y[None], jnp.zeros((1, 1, 1)), jnp.zeros((1, 1, 1))).sum())(
+        jnp.zeros((n_y, n_channels, n_values))
+    )
+    assert np.all(np.asarray(gradient) > 0)
+    assert model.head_weights[0].shape[1] == (n_y - 4) * 2 * n_values + 1
+
+
+@pytest.mark.parametrize(("n_y", "depth", "kernel_size"), [(4, 2, 3), (8, 2, 5)])
+def test_observable_cnn_rejects_empty_temporal_support(n_y: int, depth: int, kernel_size: int) -> None:
+    """Reject Observable convolution stacks that leave no temporal positions, in config and runtime."""
+    geometry = StftGeometry(n_segment=2, n_hop=1)
+    with pytest.raises(ValueError, match="n_y - depth"):
+        ObservableCNNModel(
+            geometry=geometry,
+            n_y=n_y,
+            n_u=1,
+            horizon=1,
+            n_channels=1,
+            n_controls=1,
+            n_outputs=2,
+            hidden_size=2,
+            depth=depth,
+            kernel_size=kernel_size,
+        )
+    with pytest.raises(ValueError, match="n_y - depth"):
+        NNPredictorConfig(
+            observable=geometry,
+            model=ModelConfig(architecture="cnn", n_y=n_y, depth=depth, kernel_size=kernel_size),
+            training=TrainingConfig(eval_horizon_s=0.1),
+        )

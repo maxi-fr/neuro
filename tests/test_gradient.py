@@ -24,10 +24,10 @@ if TYPE_CHECKING:
 
 
 def _model(architecture: str = "mlp") -> AutoregressiveModel:
-    """Build a tiny Predictor with nontrivial Standardizers."""
+    """Build a tiny Predictor with valid temporal support and nontrivial Standardizers."""
     cls = WaveformMLPModel if architecture == "mlp" else WaveformCNNModel
     return cls(
-        n_y=2,
+        n_y=3,
         n_u=2,
         horizon=3,
         n_channels=1,
@@ -43,8 +43,64 @@ def _model(architecture: str = "mlp") -> AutoregressiveModel:
 
 
 def _batch() -> tuple[jax.Array, jax.Array, jax.Array, jax.Array]:
-    """Return one batch with a three-step target."""
-    return (jnp.ones((2, 2, 1)), jnp.ones((2, 2, 1)), jnp.ones((2, 3, 1)), jnp.zeros((2, 3, 1)))
+    """Return a batch with three EEG history samples and a three-step target."""
+    return (jnp.ones((2, 3, 1)), jnp.ones((2, 2, 1)), jnp.ones((2, 3, 1)), jnp.zeros((2, 3, 1)))
+
+
+def test_training_time_projection_stops_after_three_epochs(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Abort a projected over-budget fit after three epochs without actually waiting seven hours."""
+    clock = iter([0.0, 0.0, 10.0, 10.0, 210.0, 210.0, 410.0])
+    monkeypatch.setattr(gradient, "perf_counter", lambda: next(clock))
+    cfg = TrainingConfig(epochs=150, max_training_hours=7.0, eval_horizon_s=0.1)
+
+    with pytest.raises(gradient.TrainingTimeLimitError) as caught:
+        gradient.fit_gradient_descent(
+            _model(),
+            [_batch()],
+            [_batch()],
+            cfg,
+            seed=1,
+            losses=[CurriculumMSE(1.0, 3, 0, 0, 0)],
+            eligibility_start=80,
+        )
+
+    assert caught.value.completed_epochs == 3
+    assert caught.value.elapsed_s == 410.0
+    assert caught.value.projected_s == 29810.0
+    assert caught.value.limit_s == 25200.0
+
+
+def test_training_time_projection_excludes_first_epoch_rate(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A slow compilation epoch does not inflate the projected steady training rate."""
+    clock = iter([0.0, 0.0, 20000.0, 20000.0, 20010.0, 20010.0, 20020.0, 20020.0, 20030.0])
+    monkeypatch.setattr(gradient, "perf_counter", lambda: next(clock))
+    fit = gradient.fit_gradient_descent(
+        _model(),
+        [_batch()],
+        [_batch()],
+        TrainingConfig(epochs=4, max_training_hours=7.0, eval_horizon_s=0.1),
+        seed=1,
+        losses=[CurriculumMSE(1.0, 3, 0, 0, 0)],
+    )
+    assert len(fit.train_losses) == 4
+
+
+def test_training_time_projection_rechecks_after_initial_probe(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A fit that slows after its first three epochs is pruned on the next timing check."""
+    clock = iter([0.0, 0.0, 10.0, 10.0, 20.0, 20.0, 30.0, 30.0, 430.0])
+    monkeypatch.setattr(gradient, "perf_counter", lambda: next(clock))
+    with pytest.raises(gradient.TrainingTimeLimitError) as caught:
+        gradient.fit_gradient_descent(
+            _model(),
+            [_batch()],
+            [_batch()],
+            TrainingConfig(epochs=150, max_training_hours=7.0, eval_horizon_s=0.1),
+            seed=1,
+            losses=[CurriculumMSE(1.0, 3, 0, 0, 0)],
+            eligibility_start=80,
+        )
+    assert caught.value.completed_epochs == 4
+    assert caught.value.projected_s == 30360.0
 
 
 @pytest.mark.parametrize("architecture", ["mlp", "cnn"])

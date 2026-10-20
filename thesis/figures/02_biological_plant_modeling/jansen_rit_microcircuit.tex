@@ -1,6 +1,6 @@
 % Population-level Jansen--Rit diagram; synaptic filters sit at receiving boundaries.
 \begingroup%
-\definecolor{jrPyramidal}{HTML}{52758C}\definecolor{jrExcitatory}{HTML}{738573}\definecolor{jrInhibitory}{HTML}{91788D}%
+\definecolor{jrPyramidal}{HTML}{4477AA}\definecolor{jrExcitatory}{HTML}{009E73}\definecolor{jrInhibitory}{HTML}{D55E00}%
 \tikzset{>=Stealth,
  flow/.style={->,line width=1.1pt,rounded corners=4pt},
  card/.style={rounded corners=7pt,draw=black!25,fill=white,align=center},
@@ -34,8 +34,8 @@
  \pic[scale=.43] at (\x,\y) {#3};}
  \end{scope}}%
 
-\definecolor{potential}{HTML}{263E58}%
-\definecolor{rate}{HTML}{865A40}%
+\definecolor{potential}{HTML}{0a0a0a}%
+\definecolor{rate}{HTML}{AA3377}%
 \tikzset{
  potential/.style={flow,draw=potential},
  rate/.style={flow,draw=rate},
@@ -50,7 +50,7 @@
 
 \begin{tikzpicture}[thesis figure,y=1.15cm]
 
-\node[card,fill=black!1,minimum width=16.8cm,minimum height=11.5cm] at (7.8,0) {};
+\node[card,fill=white,minimum width=16.8cm,minimum height=11.5cm] at (7.8,0) {};
 \node[thesis heading] at (7.8,5.45) {One Jansen--Rit node};
 \node[card,draw=jrExcitatory!55,fill=jrExcitatory!8,minimum width=5cm,minimum height=2.9cm] at (5.5,3.3) {};
 \node[card,draw=jrInhibitory!55,fill=jrInhibitory!8,minimum width=5cm,minimum height=2.9cm] at (5.5,-3.3) {};
@@ -65,37 +65,40 @@
 \node[op] (if) at (3,-3) {$h_{\mathrm e}$};
 \node[op] (es) at (6.8,3) {$S$};
 \node[op] (is) at (6.8,-3) {$S$};
-\node[mul] (c1) at (1.2,3) {$c_1$};
-\node[mul] (c3) at (1.2,-3) {$c_3$};
-\node[mul] (c2) at (9,3) {$c_2$};
-\node[mul] (c4) at (9,-3) {$c_4$};
-\node[sum] (drive) at (10.7,3) {$\Sigma$};
+\node[mul] (c1) at (.6,1.5) {$c_1$};
+\node[mul] (c3) at (.6,-1.5) {$c_3$};
+\node[mul] (c2) at (10,3) {$c_2$};
+\node[mul] (c4) at (10,-3) {$c_4$};
+\node[sum] (drive) at (11.75,3) {$\Sigma$};
 \node[op] (he) at (13,.7) {$h_{\mathrm e}$};
 \node[op] (hi) at (13,-.7) {$h_{\mathrm i}$};
 \node[sum] (bal) at (10.8,0) {$\Sigma$};
 \node[sum] (stim) at (8.8,0) {$\Sigma$};
-\node[op] (ps) at (6.8,0) {$S$};
-\draw[rate] (ps.west)--(0,0) node[pos=.6,below,smalllabel,text=rate] {$r_{\mathrm p}$};
-\fill[rate] (0,0) circle(2pt);
-\draw[rate] (0,0)|-(c1.west);
-\draw[rate] (0,0)|-(c3.west);
-\draw[rate] (c1.east)--(ef.west);
-\draw[rate] (c3.east)--(if.west);
+\node[op] (ps) at (5.3,0) {$S$};
+\draw[rate,-] (ps.west)--(.6,0) node[pos=.6,below,smalllabel,text=rate] {$r_{\mathrm p}$};
+\draw[rate] (.6,0)--(c1.south);
+\draw[rate] (c1.north)--(.6,3)--(ef.west);
+\draw[rate] (.6,0)--(c3.north);
+\draw[rate] (c3.south)--(.6,-3)--(if.west);
+\fill[fill=rate] (.6,0) circle(2pt);
+
 \draw[potential] (ef.east)--(es.west) node[midway,below,smalllabel,fill=jrExcitatory!8,text=potential] {$c_1x_{i,1}$};
 \draw[potential] (if.east)--(is.west) node[midway,above,smalllabel,fill=jrInhibitory!8,text=potential] {$c_3x_{i,1}$};
 \draw[rate] (es.east)--(c2.west) node[pos=.75,above,smalllabel,text=rate] {$r_{\mathrm e}$};
 \draw[rate] (is.east)--(c4.west) node[pos=.75,below,smalllabel,text=rate] {$r_{\mathrm i}$};
 \draw[rate] (c2.east)--(drive.west);
-\draw[rate] (10.7,4.15) node[above,black] {$I+I_{\mathrm{coup},i}+\zeta_i$} --(drive.north);
+\draw[rate] (11.75,4) node[above,black] {$I+I_{\mathrm{coup},i}+\zeta_i$} --(drive.north);
 \draw[rate] (drive.east)--(15,3)|-(he.east);
 \draw[rate] (c4.east)--(15,-3)|-(hi.east);
 \draw[potential] (he.west)--(10.8,.7) node[pos=.25,above,smalllabel,fill=jrPyramidal!8,text=potential] {$x_{i,2}$}
     --(bal.north) node[pos=.99,right,black] {$+$};
 \draw[potential] (hi.west)--(10.8,-.7) node[pos=.25,below,smalllabel,fill=jrPyramidal!8,text=potential] {$x_{i,3}$}
     --(bal.south) node[pos=.99,right,black] {$-$};
-\draw[potential] (bal.west)--(stim.east) node[midway,below,smalllabel,fill=jrPyramidal!8,text=potential] {$y_{\mathrm{reg},i}$};
-\draw[potential] (8.8,-1.9) node[below,black] {$s_i$} --(stim.south) node[pos=.95,right,black] {$+$};
-\draw[potential] (stim.west)--(ps.east) node[midway,below,smalllabel,fill=jrPyramidal!8,text=potential] {$v_i$};
+\draw[potential] (bal.west)--(stim.east);
+\draw[potential] (9.8,0)--(9.8,-1.8) node[below,black] {$y_{\mathrm{reg},i}$};
+\draw[potential] (8.8,-1.8) node[below,black] {$s_i$} --(stim.south) node[pos=.95,right,black] {$+$};
+\draw[potential] (stim.west)--(ps.east) node[midway,below,smalllabel,fill=jrPyramidal!8,text=potential] {$x_{i,2}-x_{i,3}+s_i$};
+\fill[fill=potential!100] (9.8,0) circle(2pt);
 \signallegend{7.2,-5.9}
 \end{tikzpicture}%
 \endgroup%

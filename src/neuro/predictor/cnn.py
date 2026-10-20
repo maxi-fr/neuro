@@ -29,12 +29,14 @@ def _cnn_channel_capacities(hidden_size: int, depth: int, tapering_ratio: float)
 
 
 def _resolve_head_features(
-    head_width: Literal["trunk", "geometric_mean"],
+    head_width: int | Literal["trunk", "geometric_mean"],
     in_features: int,
     trunk_features: int,
     n_outputs: int,
 ) -> int:
-    """Resolve hidden layer width of the prediction head."""
+    """Resolve an explicit or architecture-derived hidden prediction head width."""
+    if isinstance(head_width, int):
+        return head_width
     if head_width == "geometric_mean":
         return max(1, math.floor(math.isqrt(in_features * n_outputs)))
     return trunk_features
@@ -91,6 +93,7 @@ def _init_cnn_waveform_layers(  # noqa: PLR0913 -- architecture initializer need
     key: jax.Array,
     *,
     n_channels: int,
+    n_y: int,
     hidden_size: int,
     depth: int,
     kernel_size: int,
@@ -99,9 +102,9 @@ def _init_cnn_waveform_layers(  # noqa: PLR0913 -- architecture initializer need
     n_outputs: int,
     tapering_ratio: float = 1.0,
     head_depth: int = 1,
-    head_width: Literal["trunk", "geometric_mean"] = "trunk",
+    head_width: int | Literal["trunk", "geometric_mean"] = "trunk",
 ) -> tuple[tuple[jax.Array, ...], tuple[jax.Array, ...], tuple[jax.Array, ...], tuple[jax.Array, ...]]:
-    """Initialize causal 1D temporal convolution weights and dense head weights."""
+    """Initialize valid temporal convolutions and a head over all remaining time positions."""
     channels = _cnn_channel_capacities(hidden_size, depth, tapering_ratio)
     trunk_features = channels[-1] if depth > 0 else hidden_size
     n_head_layers = 1 if head_depth == 0 else head_depth + 1
@@ -119,7 +122,7 @@ def _init_cnn_waveform_layers(  # noqa: PLR0913 -- architecture initializer need
         conv_w.append(w)
         conv_b.append(b)
 
-    in_features = trunk_features + n_u * n_controls
+    in_features = (n_y - depth * (kernel_size - 1)) * trunk_features + n_u * n_controls
     head_features = _resolve_head_features(head_width, in_features, trunk_features, n_outputs)
     head_w, head_b = _init_cnn_head_layers(
         keys[depth:],
@@ -135,6 +138,7 @@ def _init_cnn_observable_layers(  # noqa: PLR0913 -- architecture initializer ne
     key: jax.Array,
     *,
     n_channels: int,
+    n_y: int,
     hidden_size: int,
     depth: int,
     kernel_size: int,
@@ -145,9 +149,9 @@ def _init_cnn_observable_layers(  # noqa: PLR0913 -- architecture initializer ne
     n_outputs: int,
     tapering_ratio: float = 1.0,
     head_depth: int = 1,
-    head_width: Literal["trunk", "geometric_mean"] = "trunk",
+    head_width: int | Literal["trunk", "geometric_mean"] = "trunk",
 ) -> tuple[tuple[jax.Array, ...], tuple[jax.Array, ...], tuple[jax.Array, ...], tuple[jax.Array, ...]]:
-    """Initialize causal 2D time-frequency convolution weights and dense head weights."""
+    """Initialize valid temporal convolutions and a head over all time-frequency positions."""
     channels = _cnn_channel_capacities(hidden_size, depth, tapering_ratio)
     trunk_features = channels[-1] if depth > 0 else hidden_size
     n_head_layers = 1 if head_depth == 0 else head_depth + 1
@@ -167,7 +171,7 @@ def _init_cnn_observable_layers(  # noqa: PLR0913 -- architecture initializer ne
         conv_w.append(w)
         conv_b.append(b)
 
-    in_features = trunk_features * n_values + n_u * n_controls
+    in_features = (n_y - depth * (kernel_size - 1)) * trunk_features * n_values + n_u * n_controls
     head_features = _resolve_head_features(head_width, in_features, trunk_features, n_outputs)
     head_w, head_b = _init_cnn_head_layers(
         keys[depth:],
@@ -192,7 +196,7 @@ class _CNNBase(AutoregressiveModel):
     geometry: StftGeometry | None = eqx.field(static=True)
     tapering_ratio: float = eqx.field(static=True, default=1.0)
     head_depth: int = eqx.field(static=True, default=1)
-    head_width: Literal["trunk", "geometric_mean"] = eqx.field(static=True, default="trunk")
+    head_width: int | Literal["trunk", "geometric_mean"] = eqx.field(static=True, default="trunk")
 
     def __init__(  # noqa: PLR0913 -- explicit portable CNN architecture record
         self,
@@ -206,10 +210,10 @@ class _CNNBase(AutoregressiveModel):
         geometry: StftGeometry | None,
         tapering_ratio: float = 1.0,
         head_depth: int = 1,
-        head_width: Literal["trunk", "geometric_mean"] = "trunk",
+        head_width: int | Literal["trunk", "geometric_mean"] = "trunk",
         **core: Any,  # noqa: ANN401 -- forwarded to AutoregressiveModel
     ) -> None:
-        """Initialize CNN checkpoint arrays and shared runtime state."""
+        """Initialize CNN arrays, explicit or derived head width, and shared runtime state."""
         super().__init__(**core)
         if geometry is None:
             if self.n_outputs != self.n_channels:
@@ -234,7 +238,7 @@ class _CNNBase(AutoregressiveModel):
 
     @classmethod
     def _checkpoint_kwargs(cls, meta: dict[str, Any], arrays: dict[str, FloatArray]) -> dict[str, Any]:
-        """Unpack shared CNN metadata, layers, standardizers, and Observable geometry."""
+        """Unpack CNN arrays, numeric or derived head width, standardizers, and Observable geometry."""
         require_model_type(meta, "cnn")
         require_activation(meta)
         geometry = StftGeometry.model_validate(meta["geometry"]) if "geometry" in meta else None
@@ -268,7 +272,7 @@ class _CNNBase(AutoregressiveModel):
             "geometry": geometry,
             "tapering_ratio": float(meta.get("tapering_ratio", 1.0)),
             "head_depth": int(meta.get("head_depth", 0 if int(meta.get("n_head_layers", 2)) == 1 else 1)),
-            "head_width": str(meta.get("head_width", "trunk")),
+            "head_width": meta.get("head_width", "trunk"),
             "provenance": TrainingProvenance.from_meta(meta),
         }
 
@@ -286,9 +290,10 @@ class _CNNBase(AutoregressiveModel):
         return cls(**kwargs)
 
     def to_checkpoint(self) -> tuple[dict[str, Any], dict[str, FloatArray]]:
-        """Build the portable CNN checkpoint from runtime arrays."""
+        """Build a portable CNN checkpoint identifying the full-history temporal readout."""
         meta = {
             "model_type": "cnn",
+            "temporal_readout": "valid_flatten",
             "activation": self.activation,
             "n_y": self.n_y,
             "n_u": self.n_u,
@@ -362,9 +367,12 @@ class WaveformCNNModel(_CNNBase):
         geometry: StftGeometry | None = None,
         tapering_ratio: float = 1.0,
         head_depth: int = 1,
-        head_width: Literal["trunk", "geometric_mean"] = "trunk",
+        head_width: int | Literal["trunk", "geometric_mean"] = "trunk",
     ) -> None:
-        """Initialize waveform CNN weights and buffers."""
+        """Initialize valid waveform convolutions and a head spanning the entire EEG history."""
+        if depth < 1 or n_y - depth * (kernel_size - 1) < 1:
+            msg = "Waveform CNN requires depth >= 1 and n_y - depth * (kernel_size - 1) >= 1."
+            raise ValueError(msg)
         n_out = n_channels if n_outputs is None else int(n_outputs)
         if y_std is not None:
             y_center, y_scale = y_std.center, y_std.scale
@@ -376,6 +384,7 @@ class WaveformCNNModel(_CNNBase):
             conv_w, conv_b, head_w, head_b = _init_cnn_waveform_layers(
                 prng,
                 n_channels=n_channels,
+                n_y=n_y,
                 hidden_size=hidden_size,
                 depth=depth,
                 kernel_size=kernel_size,
@@ -424,14 +433,17 @@ class WaveformCNNModel(_CNNBase):
     def from_checkpoint(
         cls, meta: dict[str, Any], arrays: dict[str, FloatArray], *, n_history: int | None = None
     ) -> Self:
-        """Rebuild a waveform CNN from a checkpoint."""
+        """Rebuild a valid-convolution waveform CNN, rejecting incompatible historical readouts."""
+        if meta.get("temporal_readout") != "valid_flatten":
+            msg = "Waveform CNN checkpoint predates the valid_flatten architecture; retrain the Predictor."
+            raise ValueError(msg)
         if "geometry" in meta:
             msg = "waveform CNN cannot load a structured Observable checkpoint."
             raise ValueError(msg)
         return super().from_checkpoint(meta, arrays, n_history=n_history)
 
     def _predict(self, y_window: jax.Array, u_window: jax.Array) -> jax.Array:
-        """Apply causal temporal convolutions and dense head."""
+        """Apply valid temporal convolutions and flatten every time position into the prediction head."""
         z = y_window
         for weight, bias in zip(self.conv_weights, self.conv_biases, strict=True):
             z = jnp.asarray(z, dtype=weight.dtype)
@@ -440,13 +452,13 @@ class WaveformCNNModel(_CNNBase):
                     z.T[None, ...],
                     weight,
                     window_strides=(1,),
-                    padding=((weight.shape[2] - 1, 0),),
+                    padding="VALID",
                     dimension_numbers=("NCH", "OIH", "NCH"),
                 )[0].T
                 + bias[None, :]
             )
             z = _apply_activation(self.activation, z)
-        features = jnp.concatenate([z[-1], u_window.reshape(-1)])
+        features = jnp.concatenate([z.reshape(-1), u_window.reshape(-1)])
         for i, (weight, bias) in enumerate(zip(self.head_weights, self.head_biases, strict=True)):
             features = features @ weight.T + bias
             if i < len(self.head_weights) - 1:
@@ -492,9 +504,12 @@ class ObservableCNNModel(_CNNBase):
         n_outputs: int | None = None,
         tapering_ratio: float = 1.0,
         head_depth: int = 1,
-        head_width: Literal["trunk", "geometric_mean"] = "trunk",
+        head_width: int | Literal["trunk", "geometric_mean"] = "trunk",
     ) -> None:
-        """Initialize Observable CNN weights and buffers."""
+        """Initialize valid Observable convolutions and a head spanning every time-frequency position."""
+        if depth < 1 or n_y - depth * (kernel_size - 1) < 1:
+            msg = "Observable CNN requires depth >= 1 and n_y - depth * (kernel_size - 1) >= 1."
+            raise ValueError(msg)
         if n_outputs is not None:
             n_out = int(n_outputs)
             n_vals = n_out // n_channels
@@ -512,6 +527,7 @@ class ObservableCNNModel(_CNNBase):
             conv_w, conv_b, head_w, head_b = _init_cnn_observable_layers(
                 prng,
                 n_channels=n_channels,
+                n_y=n_y,
                 hidden_size=hidden_size,
                 depth=depth,
                 kernel_size=kernel_size,
@@ -562,14 +578,17 @@ class ObservableCNNModel(_CNNBase):
     def from_checkpoint(
         cls, meta: dict[str, Any], arrays: dict[str, FloatArray], *, n_history: int | None = None
     ) -> Self:
-        """Rebuild an Observable CNN runtime from a structured checkpoint."""
+        """Rebuild a full-history Observable CNN, rejecting historical newest-position readouts."""
         if "geometry" not in meta:
             msg = "Observable CNN checkpoint requires recorded 'geometry'."
+            raise ValueError(msg)
+        if meta.get("temporal_readout") != "valid_flatten":
+            msg = "Observable CNN checkpoint predates the valid_flatten architecture; retrain the Predictor."
             raise ValueError(msg)
         return super().from_checkpoint(meta, arrays, n_history=n_history)
 
     def _predict(self, y_window: jax.Array, u_window: jax.Array) -> jax.Array:
-        """Apply causal time-frequency convolutions and preserve frequency positions."""
+        """Apply valid temporal convolutions and flatten time, filter, and frequency positions into the head."""
         z = y_window.reshape(self.n_y, self.n_channels, self.n_values).transpose(1, 0, 2)[None, ...]
         for weight, bias in zip(self.conv_weights, self.conv_biases, strict=True):
             z = (
@@ -577,13 +596,13 @@ class ObservableCNNModel(_CNNBase):
                     jnp.asarray(z, dtype=weight.dtype),
                     weight,
                     window_strides=(1, 1),
-                    padding=((weight.shape[2] - 1, 0), ((weight.shape[3] - 1) // 2, weight.shape[3] // 2)),
+                    padding=((0, 0), ((weight.shape[3] - 1) // 2, weight.shape[3] // 2)),
                     dimension_numbers=("NCHW", "OIHW", "NCHW"),
                 )
                 + bias[None, :, None, None]
             )
             z = _apply_activation(self.activation, z)
-        features = jnp.concatenate([z[0, :, -1, :].reshape(-1), u_window.reshape(-1)])
+        features = jnp.concatenate([z[0].transpose(1, 0, 2).reshape(-1), u_window.reshape(-1)])
         for i, (weight, bias) in enumerate(zip(self.head_weights, self.head_biases, strict=True)):
             features = features @ weight.T + bias
             if i < len(self.head_weights) - 1:

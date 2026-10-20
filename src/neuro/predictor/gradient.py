@@ -3,6 +3,7 @@ from __future__ import annotations
 import collections
 import copy
 from dataclasses import dataclass
+from time import perf_counter
 from typing import TYPE_CHECKING, Any
 
 import equinox as eqx
@@ -21,6 +22,24 @@ if TYPE_CHECKING:
 
     from neuro.config import TrainingConfig
     from neuro.predictor.losses import Loss
+
+_TIME_PROBE_EPOCHS = 3
+_SECONDS_PER_HOUR = 3600.0
+
+
+class TrainingTimeLimitError(RuntimeError):
+    """A completed-epoch timing probe projects training beyond its configured wall-time budget."""
+
+    def __init__(self, completed_epochs: int, elapsed_s: float, projected_s: float, limit_s: float) -> None:
+        """Record the measured and projected duration so a sweep can persist its pruning reason."""
+        self.completed_epochs = completed_epochs
+        self.elapsed_s = elapsed_s
+        self.projected_s = projected_s
+        self.limit_s = limit_s
+        super().__init__(
+            f"Projected training time {projected_s / _SECONDS_PER_HOUR:.2f} h exceeds "
+            f"{limit_s / _SECONDS_PER_HOUR:.2f} h after {completed_epochs} epochs."
+        )
 
 
 @dataclass(frozen=True)
@@ -65,7 +84,9 @@ def fit_gradient_descent[ModelT: eqx.Module](  # noqa: PLR0913, PLR0912, PLR0915
     eligibility_start: int = 0,
     loss_fn: Callable[..., Any] | None = None,
 ) -> GradientFitResult[ModelT]:
-    """Fit masked Losses with boundary history separate from Predictor input history."""
+    """Fit masked Losses and stop when completed epochs project an over-budget training duration."""
+    training_started = perf_counter() if cfg.max_training_hours is not None else 0.0
+    epoch_durations: list[float] = []
     if cfg.epochs <= eligibility_start:
         msg = (
             f"Training epochs ({cfg.epochs}) cannot reach schedule eligibility start ({eligibility_start}); "
@@ -193,6 +214,7 @@ def fit_gradient_descent[ModelT: eqx.Module](  # noqa: PLR0913, PLR0912, PLR0915
 
     ctx = LossContext(y_center=ctx.y_center, y_scale=ctx.y_scale, fs=ctx.fs, epoch=None)
     for epoch in pbar:
+        epoch_started = perf_counter() if cfg.max_training_hours is not None else 0.0
         active_mask = jnp.asarray([epoch >= loss.start_epoch for loss in losses])
 
         L = curr_mse.trusted_length(epoch) if curr_mse is not None else horizon
@@ -293,6 +315,16 @@ def fit_gradient_descent[ModelT: eqx.Module](  # noqa: PLR0913, PLR0912, PLR0915
                 if epochs_without_improvement >= cfg.patience:
                     stopping_reason = "early_stopping"
                     break
+
+        if cfg.max_training_hours is not None:
+            epoch_finished = perf_counter()
+            epoch_durations.append(epoch_finished - epoch_started)
+            if len(epoch_durations) >= _TIME_PROBE_EPOCHS:
+                elapsed_s = epoch_finished - training_started
+                projected_s = elapsed_s + (cfg.epochs - epoch - 1) * float(np.mean(epoch_durations[-2:]))
+                limit_s = cfg.max_training_hours * _SECONDS_PER_HOUR
+                if projected_s > limit_s:
+                    raise TrainingTimeLimitError(epoch + 1, elapsed_s, projected_s, limit_s)
 
         pbar.set_postfix(
             train_loss=f"{train_loss:.4f}",
