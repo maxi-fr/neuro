@@ -2,33 +2,19 @@
 \chapter{Data-Driven Predictor Design}
 \label{ch:data_driven_predictor_design}
 
+% accidentally wrote this. Maybe it's nice
+Chapter~\ref{ch:biological_plant_modeling} defined the biophysical plant and its interfaces for scalp measurement and stimulation.
+To select stimulation currents, the controller needs a prediction of how the measured activity will evolve under each candidate current sequence.
+Here, the plant equations, parameters and neural states are assumed unavailable to the controller; only past scalp \ac{eeg} measurements and applied stimulation currents are available.
+This chapter therefore develops data-driven input-output predictors trained on simulated plant trajectories.
+The aim is to predict future multichannel \ac{eeg} waveforms or sequences of spectral observables, conditioned on the measurement and current histories and candidate future stimulation currents.
 
-% Introduction (no section heading)
-% - MPC requires predictions under candidate stimulation currents
-% - Information available to the controller
-%   - Ground-truth Plant specified for simulation and evaluation
-%   - Assume its equations, parameters, and neural states
-%     are unavailable to the controller
-%   - Controller uses measured EEG and applied currents
-% - Motivation for data-driven input-output prediction
-%   - No explicit neural-state estimation required
-%   - Challenges of mechanistic modeling
-%     - Brain dynamics difficult to identify
-%     - Potential computational burden of delayed JR dynamics
-%     - Early JR identification attempts
-%       - Difficulties due to nonlinearities and bifurcations
-%       - Reference: JAX tvb-optim paper
-% - Specific prediction problem
-%   - Prediction of future multichannel seizure activity
-%     under candidate stimulation currents
-%   - Two target representations: EEG waveforms and
-%     time sequences of spectral observables
-%   - Relation to prior spectral prediction and control work
-%   - Distinction from static spectral characterization
-%   - Position relative to prior work without unsupported novelty claims
-% - Limitations
-%   - Stochastic dynamics and unknowable future noise
-% - Chapter roadmap
+The chapter follows the steps needed to construct these predictors.
+Section~\ref{sec:prediction_problem} formulates the prediction problem, explains recursive multi-step prediction and establishes the requirements for use in closed-loop control.
+Section~\ref{sec:prediction_targets} then defines the waveform and spectral prediction targets and discusses the information retained by each representation.
+With these targets specified, Section~\ref{sec:predictor_training} describes supervised learning, training data generation, preprocessing and the loss functions used to fit the predictors.
+Section~\ref{sec:predictor_architectures} introduces multilayer perceptrons, convolutional neural networks and a linear predictor based on dynamic mode decomposition with control as candidate architectures.
+Finally, Section~\ref{sec:predictor_mpc_connection} explains how the resulting predictions enter \ac{mpc} and identifies limitations relevant to the control formulation in the next chapter.
 
 
 \section{Prediction Problem}

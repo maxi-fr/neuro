@@ -1,6 +1,6 @@
 # Thesis instructions
 
-Treat `thesis/` as a document workspace. For work within this directory, parent-repository instructions do not count.
+Treat `thesis/` as a document workspace. For work within this directory, parent-repository instructions do not apply here.
 
 Keep file inspection and changes scoped to `thesis/`. Inspect parent-repository files only when the requested task requires them, such as checking the implementation against the thesis content. Inherited instructions do not expand the task's scope.
 

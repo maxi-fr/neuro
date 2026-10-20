@@ -2,7 +2,7 @@
 \label{ch:problem_formulation}
 
 This chapter establishes the biological foundations and control engineering setting of the thesis.
-It introduces neural activity and its representation across scales, explains the recruitment of brain regions during focal seizures, and describes the available measurement and stimulation interfaces.
+It introduces neural activity and its representation across scales, explains the recruitment of brain regions during focal seizures and describes the available measurement and stimulation interfaces.
 The final section places these elements in the simulation and feedback control setting used in this work.
 
 \section{Neural Activity and Modeling Across Scales}
@@ -13,24 +13,24 @@ A neuron maintains an electrical potential difference across its cell membrane.
 Changes in ionic currents across that membrane alter the membrane potential and can generate an action potential, a brief electrical pulse that travels along the axon~\cite{Hodgkin1952}.
 At a chemical synapse, activity in the sending neuron changes the input received by another neuron.
 Excitatory inputs tend to promote firing, whereas inhibitory inputs tend to restrain it~\cite{Wilson1972}.
-At this cellular scale, conductance-based descriptions such as the Hodgkin--Huxley model describe how ionic currents generate these signals~\cite{Hodgkin1952}.
+At this cellular scale, conductance-based descriptions such as the Hodgkin-Huxley model describe how ionic currents generate these signals~\cite{Hodgkin1952}.
 
 Neurons participate in circuits with recurrent excitation and inhibition.
 Their collective activity can exhibit oscillations even though individual neurons need not fire on every oscillation cycle~\cite{Buzsaki2012}.
 Neural mass models describe these collective dynamics through population quantities such as mean firing rate and mean postsynaptic potential~\cite{SanzLeon2013}.
 A postsynaptic potential is the membrane-potential response to synaptic input.
 Population descriptions retain the interactions between groups of neurons while leaving individual spike timings unresolved.
-Wilson--Cowan models describe interacting excitatory and inhibitory population activity, while Jansen--Rit models include synaptic filtering and population membrane potentials~\cite{Wilson1972,Jansen1995}.
+Wilson-Cowan models describe interacting excitatory and inhibitory population activity, while Jansen-Rit models include synaptic filtering and population membrane potentials~\cite{Wilson1972,Jansen1995}.
 
 In cortical neural mass models, pyramidal cells form an important excitatory population that interacts with local interneurons~\cite{Jansen1995}.
 A cortical macro-column is represented as a local circuit of such populations extending through the layers of the cortex, the folded outer layer of the cerebrum.
 Using a neural mass to describe an entire brain region is a further coarse-graining: its variables represent regional activity aggregated over many local circuits~\cite{SanzLeon2013,SanzLeon2015}.
-Figure~\ref{fig:neural_scales} illustrates this relationship between regional network nodes, interacting populations, and their constituent neurons.
+Figure~\ref{fig:neural_scales} illustrates this relationship between regional network nodes, interacting populations and their constituent neurons.
 
 \begin{figure}
     \centering
     \input{figures/01_problem_formulation/problem_overview}
-    \caption{Neural activity across scales: Zoom connectors expand a selected node of a whole-brain network into interacting regional populations, then expand one population into its constituent neurons. Neural mass models summarize population activity, and regional nodes aggregate the dynamics of local circuits. The drawings illustrate the levels of description schematically; the numbers and positions of cells and regions do not specify an anatomical configuration.}
+    \caption{Neural activity across scales: Zoom connectors expand a selected node of a whole-brain network into interacting regional populations, then expand one population into its constituent neurons. Neural mass models summarize population activity and regional nodes aggregate the dynamics of local circuits.}
     \label{fig:neural_scales}
 \end{figure}
 
@@ -83,7 +83,7 @@ Admissible electrode currents must additionally satisfy the imposed stimulation 
 \label{sec:control_engineering_setting}
 
 The measurement and stimulation interfaces define the information and intervention available for feedback control.
-This thesis studies that setting in simulation on a biophysical plant model comprising a network of regional neural masses, a stimulation mapping, and an \ac{eeg} measurement mapping.
+This thesis studies that setting in simulation on a biophysical plant model comprising a network of regional neural masses, a stimulation mapping and an \ac{eeg} measurement mapping.
 The plant represents the system on which stimulation acts and against which control performance is evaluated.
 Its regional activity is available for assessing recruitment, while the controller receives electrical measurements.
 
@@ -91,10 +91,10 @@ The feedback controller uses \ac{mpc} to select electrode currents by predicting
 At each update, \ac{mpc} evaluates these sequences over a finite horizon according to a control objective and constraints~\cite{Rawlings2017}.
 A healthy reference specifies the desired non-seizure activity against which predicted measurements are assessed.
 The control objective also accounts for stimulation expenditure, while constraints restrict the admissible electrode currents.
-Only the first input of the selected sequence is applied, and the optimization is repeated after new measurements become available~\cite{Rawlings2017}.
+Only the first input of the selected sequence is applied and the optimization is repeated after new measurements become available~\cite{Rawlings2017}.
 
 To obtain a prediction model for the \ac{mpc}, simulations of the plant generate data consisting of applied currents and the resulting \ac{eeg} measurements.
-System identification uses input--output data to determine a dynamical model~\cite{Ljung1999}.
+System identification uses input-output data to determine a dynamical model~\cite{Ljung1999}.
 The identified prediction model forecasts future measurements under candidate stimulation currents.
 It is distinct from the biophysical plant; the plant's neural states and mechanistic equations are not supplied to the controller.
 Identification takes place offline, before closed-loop evaluation.
@@ -102,11 +102,11 @@ During feedback control, measurement processing prepares the incoming \ac{eeg} f
 
 Recruitment is assessed from regional activity in the plant, whereas control decisions rely on the available measurements and the identified prediction model.
 Figure~\ref{fig:control_setting} shows the resulting feedback loop and the offline identification procedure.
-The subsequent chapters specify the biophysical plant, prediction model identification, and the predictive control formulation.
+The subsequent chapters specify the biophysical plant, prediction model identification and the predictive control formulation.
 
 \begin{figure}
     \centering
     \input{figures/01_problem_formulation/control_setting}
-    \caption{Control engineering setting: Solid arrows show online signal flow. Within \acs{mpc}, the control objective and constraints guide optimization using the prediction model; the healthy reference enters the control objective from outside the controller. The first input of the selected sequence is applied to the biophysical plant, and processed \acs{eeg} measurements return to the prediction model. Below the feedback loop, dashed arrows show offline data generation and system identification.}
+    \caption{Control engineering setting: Solid arrows show online signal flow. Within \acs{mpc}, the control objective and constraints guide optimization using the prediction model; the healthy reference enters the control objective from outside the controller. The first input of the selected sequence is applied to the biophysical plant and processed \acs{eeg} measurements return to the prediction model. Below the feedback loop, dashed arrows show offline data generation and system identification.}
     \label{fig:control_setting}
 \end{figure}
