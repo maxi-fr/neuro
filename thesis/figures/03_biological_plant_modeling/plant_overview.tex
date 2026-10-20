@@ -68,7 +68,7 @@
 
     \begin{scope}[shift={(0,0.40)}]
         \pic {brain};
-        \input{figures/02_biological_plant_modeling/plant_overview_network}
+        \input{figures/03_biological_plant_modeling/plant_overview_network}
         % Node 69 is the source of the simulated trace used in the callout.
         \node[region, fill=white, minimum size=8pt, line width=1pt,
             thesis secondary, text=accentcolor!85!black] at (r69) {$i$};
@@ -79,7 +79,7 @@
         line width=0.5pt] (-1.48,2.30) rectangle (1.48,3.00);
     \node[thesis secondary] at (0,2.84) {$y_{\mathrm{reg},i}(t)$};
     \begin{scope}[shift={(0,3.10)}, xscale=0.95, yscale=0.65]
-        \input{figures/02_biological_plant_modeling/plant_overview_activity}
+        \input{figures/03_biological_plant_modeling/plant_overview_activity}
     \end{scope}
     \node[align=center] at (0,-2.35) {Delayed stochastic\\Jansen--Rit network};
     \node at (0,-3.06) {$\mathbf{x}(t)\in\mathbb{R}^{6N}$};
@@ -92,7 +92,7 @@
             \draw[mapping, draw=black!45] (\x,\y) -- (recording);
             \node[region] at (\x,\y) {};
             \begin{scope}[shift={(\x,\y)}, xscale=0.20, yscale=0.30]
-                \input{figures/02_biological_plant_modeling/plant_overview_activity}
+                \input{figures/03_biological_plant_modeling/plant_overview_activity}
             \end{scope}
         }
         \foreach \x/\y in {-1.12/0.97,-1.37/-0.15,1.37/-0.15,-0.89/-1.27,0.89/-1.27} {

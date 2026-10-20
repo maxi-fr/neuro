@@ -2,17 +2,16 @@
 \chapter{Data-Driven Predictor Design}
 \label{ch:data_driven_predictor_design}
 
-
 \ac{mpc} requires a model capable of predicting how seizure-related neural activity evolves in response to stimulation currents.
 Chapter~\ref{ch:biological_plant_modeling} introduced the biophysical plant used for simulation and evaluation in this thesis.
 However, its governing equations, parameters, and internal neural states are assumed to be unavailable to the controller, which instead has access only to measured scalp \ac{eeg} signals and applied stimulation currents.
 One possible approach is to identify the underlying mechanistic dynamics from these measurements.
-However, parameter identification in brain network models is challenging near bifurcations, where the best agreement with empirical observations is often found.
+However, parameter identification in brain network models is challenging near bifurcations, where the best agreement with empirical observations is often found. % used however already 2 sentences before, feels a bit weird
 As discussed in~\cite{pille2025tvboptim}, \ac{bptt} can produce exploding gradients in these regimes, making gradient-based identification unstable. % cite-checked: SUPPORTED
-This motivates the use of data-driven input-output models that learn the relationship between stimulation currents and \ac{eeg} observations without requiring explicit identification of the underlying biophysical dynamics.
+This motivates the use of data-driven input-output models that learn the relationship between stimulation currents and \ac{eeg} observations without requiring explicit identification of the underlying biophysical dynamics. % lets rephrase this to not use "motivates"
 This also avoids the need for state estimation.
 
-This chapter investigates two prediction targets: multichannel \ac{eeg} waveforms and spectral power features derived from the \ac{stft}.
+This chapter investigates two prediction targets: multichannel \ac{eeg} waveforms and spectral power features derived from the \ac{stft}. % there might be confusion regarding "prediction target" because it could mean 1. the predictor predicts the target 2. predictor input and output are in this target space and 3. waveform predictor with target loss function. make some suggestions on how we can deal with it.
 Waveform prediction retains the phase and temporal structure of the measured signals, whereas spectral power prediction describes their evolving frequency content without requiring the precise phase evolution of individual oscillations to be reproduced.
 The latter is particularly relevant for representing seizure-related oscillatory activity and allows predictions to be evaluated directly using spectral control objectives.
 
@@ -167,7 +166,7 @@ Thus, a smaller hop improves the temporal sampling of spectral activity without 
 \begin{figure}[tbp]
     \centering
     \includegraphics[width=\linewidth]
-    {figures/03_data_driven_predictor_design/stft_geometry.pdf}
+    {figures/04_data_driven_predictor_design/stft_geometry.pdf}
     \caption{Time-frequency geometry of the \ac{stft} for a
     synthetic chirp sampled at \SI{200}{\hertz}.
     Panel (a) illustrates overlapping Hann-tapered segments,
@@ -264,7 +263,7 @@ Figure~\ref{fig:stft_resolution} illustrates the distinction between these two f
 \begin{figure}[tbp]
     \centering
     \includegraphics[width=\linewidth]
-    {figures/03_data_driven_predictor_design/stft_resolution.pdf}
+    {figures/04_data_driven_predictor_design/stft_resolution.pdf}
     \caption{Effects of segment length and temporal averaging
     on spectra of a simulated, uncoupled \ac{ez} node's
     \ac{lfp}, sampled at \SI{50}{\hertz}.
@@ -320,7 +319,7 @@ Figure~\ref{fig:stft_spectrogram} illustrates how recruitment of a simulated neu
 \begin{figure}[tbp]
     \centering
     \includegraphics[width=\linewidth]
-    {figures/03_data_driven_predictor_design/stft_spectrogram.pdf}
+    {figures/04_data_driven_predictor_design/stft_spectrogram.pdf}
     \caption{Waveform and spectrogram of a simulated
     \ac{pz} node recruited by the \ac{ez}.
     The regional \ac{lfp} is sampled at \SI{50}{\hertz};
@@ -367,6 +366,7 @@ The preceding section defined the prediction model $\mathbf{f}_{\boldsymbol{\the
 This section addresses how to determine its parameters $\boldsymbol{\theta}$ from recorded neural responses to stimulation.
 
 \subsection{Supervised Learning Foundations}
+% I think the beggining of this subsection should be general. That is not necessarily reference h, u and y. Rather general one predictions (make)
 
 The unknown parameters are fitted by comparing predictions with recorded observations.
 Supervised learning expresses this task through input--target pairs: each training sample pairs the information available to the predictor with the output it should predict~\cite[ch.~5]{Goodfellow2016}.
@@ -417,6 +417,13 @@ Instead, validation loss determines which parameters are retained and when train
 The next subsections describe how these training and validation recordings are generated and kept separate.
 
 \subsection{Training Data Generation}
+% somehow it does not become clear what we actually did.
+% this sections could have a clear structure:
+% - Foundations. what is needed?
+%   - persistent excitation
+%   - training data spanning the whole state-input space which could be reached during control
+%   - (training validation split) - maybe mention here, maybe its better in another section
+% - Methodology, what did we do? generate 200 trajectories with RAS
 
 The input--target pairs required by~\eqref{eq:empirical_predictor_loss} are obtained from the biophysical plant introduced in Chapter~\ref{ch:biological_plant_modeling}.
 Each simulated plant rollout records scalp \ac{eeg} and the applied electrode currents under a prescribed stimulation sequence.
@@ -478,6 +485,8 @@ Keeping this transformation fixed prevents validation or test recordings from in
 
 
 \subsection{Loss Functions and Training Strategies}
+% I think we should not use the general y_j|k here. Instead we just present the three different types of cost functions separately: waveform predictor: MSE in waveform and spectral space; spectral predictor: MSE
+% also should we mention the the DMD prediction here?
 
 Once the samples and scaling are fixed, the loss determines which discrepancies the predictor is trained to reduce.
 For waveform prediction, let $J$ denote the number of prediction steps scored by the loss, with $1\leq J\leq H$.
