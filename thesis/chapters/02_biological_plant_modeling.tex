@@ -138,7 +138,7 @@ Thus, longer tracts transmit activity later even when their connection weights a
 The chosen speed $c=\SI{50}{\milli\metre\per\milli\second}$ gives a delay of \SI{2}{\milli\second} for a \SI{100}{\milli\metre} tract.
 Figure~\ref{fig:connectome_matrices} shows the connection weights and the corresponding physical delays.
 
-\begin{figure}
+\begin{figure}[t] % latex-lint:ignore=FLOAT-01
     \centering
     \includegraphics{figures/02_biological_plant_modeling/connectome_matrices}
     \caption{Structural connectivity weights and conduction delays for the 76-region \ac{tvb} connectome. Rows are receiving regions and columns are sending regions in atlas order. The line separates right- and left-hemisphere regions. White cells have zero connection weight; the delay panel shows only connected pairs. Delays use a uniform conduction speed of \SI{50}{\milli\metre\per\milli\second}.}
@@ -395,7 +395,7 @@ This motivates the additive perturbation $s_i$ in the argument of the pyramidal 
 
 Electric-field basis solutions were computed with ROAST, an automated finite-element modeling pipeline for \ac{tes}, using its standard MNI152 head model~\cite{Huang2019}. % cite-checked: SUPPORTED
 The selected montage comprises $P=3$ electrodes, ordered as TP9, CP5 and Ex8 in the current vector.
-Ex8 lies on the right posterior side of the lower head and belongs to ROAST's extension of the standard 10/05 electrode layout.~\cite{ROASTElectrodeLayout}. % cite-checked: SUPPORTED
+Ex8 lies on the right posterior side of the lower head and belongs to ROAST's extension of the standard 10/05 electrode layout~\cite{ROASTElectrodeLayout}. % cite-checked: SUPPORTED
 It serves here as the reference/return electrode, following its use to limit the influence of the return electrode on the modeled brain regions in~\cite{Yu2024}. % cite-checked: SUPPORTED
 For each non-reference electrode $p$, let $\mathbf{E}_{p,i}\in\mathbb{R}^{3}$ denote the electric-field basis response per milliampere at the centroid of region $i$.
 It is computed by injecting \SI{1}{\milli\ampere} at electrode $p$ with the return current flowing through Ex8.
