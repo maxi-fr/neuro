@@ -106,22 +106,10 @@ def test_waveform_cnn_forward_parity(
     head_depth: int,
     head_width: Literal["trunk", "geometric_mean"],
 ) -> None:
-    """Match the frozen legacy reference without importing its framework."""
-    rng = np.random.default_rng(44)
-    n_y, n_u, horizon, n_c, n_m, _hidden = 4, 3, 4, 3, 2, 8
-
+    """Historical newest-position checkpoints cannot load as valid-flatten waveform CNNs."""
     meta, reference = _reference("waveform_cnn_forward_parity" + f"_{tapering_ratio}_{head_depth}_{head_width}")
-    arrays = reference
-    j_model = JaxWaveformCNN.from_checkpoint(meta, arrays)
-
-    B = 2
-    y_hist = rng.standard_normal((B, n_y, n_c)).astype(np.float32)
-    u_hist = rng.standard_normal((B, n_u, n_m)).astype(np.float32)
-    u_future = rng.standard_normal((B, horizon, n_m)).astype(np.float32)
-
-    j_out = np.asarray(j_model.rollout(jnp.asarray(y_hist), jnp.asarray(u_hist), jnp.asarray(u_future)))
-
-    np.testing.assert_allclose(j_out, reference["expected_0"], rtol=1e-5, atol=1e-6)
+    with pytest.raises(ValueError, match="valid_flatten"):
+        JaxWaveformCNN.from_checkpoint(meta, reference)
 
 
 @pytest.mark.parametrize(
@@ -138,24 +126,10 @@ def test_observable_cnn_forward_parity(
     head_depth: int,
     head_width: Literal["trunk", "geometric_mean"],
 ) -> None:
-    """Match the frozen legacy reference without importing its framework."""
-    rng = np.random.default_rng(45)
-    geometry = StftGeometry(n_segment=16, n_hop=4, band_hz=(4.0, 20.0), n_bin_pool=2)
-    n_vals = geometry.n_values(50.0)
-    n_y, n_u, horizon, n_c, n_m, _hidden = 3, 2, 4, 2, 2, 8
-
+    """Historical newest-position checkpoints cannot load as valid-flatten Observable CNNs."""
     meta, reference = _reference("observable_cnn_forward_parity" + f"_{tapering_ratio}_{head_depth}_{head_width}")
-    arrays = reference
-    j_model = JaxObservableCNN.from_checkpoint(meta, arrays)
-
-    B = 2
-    y_hist = rng.standard_normal((B, n_y, n_c, n_vals)).astype(np.float32)
-    u_hist = rng.standard_normal((B, n_u, n_m)).astype(np.float32)
-    u_future = rng.standard_normal((B, horizon, n_m)).astype(np.float32)
-
-    j_out = np.asarray(j_model.rollout(jnp.asarray(y_hist), jnp.asarray(u_hist), jnp.asarray(u_future)))
-
-    np.testing.assert_allclose(j_out, reference["expected_0"], rtol=1e-5, atol=1e-6)
+    with pytest.raises(ValueError, match="valid_flatten"):
+        JaxObservableCNN.from_checkpoint(meta, reference)
 
 
 def test_curriculum_mse_loss_parity() -> None:

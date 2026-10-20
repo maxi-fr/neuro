@@ -34,8 +34,8 @@ if TYPE_CHECKING:
     from neuro.types import FloatArray
 
 _ROOT = Path(__file__).resolve().parent.parent
-_UNCONTROLLED = "configs/comparison/champions/uncontrolled.yaml"
-_THRESHOLD = "configs/comparison/champions/threshold.yaml"
+_UNCONTROLLED = "configs/simulation/uncontrolled.yaml"
+_THRESHOLD = "configs/simulation/threshold_control.yaml"
 _BASE = _THRESHOLD
 
 
