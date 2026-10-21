@@ -1,17 +1,18 @@
 
-\chapter{Data-Driven Predictor Design}
-\label{ch:data_driven_predictor_design}
+\chapter{Data-Driven Predictor Design}\label{ch:data_driven_predictor_design}
+% all in all i like the introduction but maybe
 
-\ac{mpc} requires a model capable of predicting how seizure-related neural activity evolves in response to stimulation currents.
+\ac{mpc} requires a model capable of predicting how seizure-related neural activity evolves in response to stimulation currents. % i wonder if this is not redundant because its repetetive across the chapters
 Chapter~\ref{ch:biological_plant_modeling} introduced the biophysical plant used for simulation and evaluation in this thesis.
 However, its governing equations, parameters, and internal neural states are assumed to be unavailable to the controller, which instead has access only to measured scalp \ac{eeg} signals and applied stimulation currents.
 One possible approach is to identify the underlying mechanistic dynamics from these measurements.
-However, parameter identification in brain network models is challenging near bifurcations, where the best agreement with empirical observations is often found. % used however already 2 sentences before, feels a bit weird
+This identification is challenging near bifurcations, where brain network models often agree best with empirical observations. % idk i think there is a better way to say this. Especially since we in this thesis know the plant and we know that we are close to bifurcations. Maybe for that reason we can just remove that half of the sentence
 As discussed in~\cite{pille2025tvboptim}, \ac{bptt} can produce exploding gradients in these regimes, making gradient-based identification unstable. % cite-checked: SUPPORTED
-This motivates the use of data-driven input-output models that learn the relationship between stimulation currents and \ac{eeg} observations without requiring explicit identification of the underlying biophysical dynamics. % lets rephrase this to not use "motivates"
+This motivates the use of data-driven input-output models that learn the relationship between stimulation currents and \ac{eeg} observations without requiring explicit identification of the underlying biophysical dynamics.
 This also avoids the need for state estimation.
 
-This chapter investigates two prediction targets: multichannel \ac{eeg} waveforms and spectral power features derived from the \ac{stft}. % there might be confusion regarding "prediction target" because it could mean 1. the predictor predicts the target 2. predictor input and output are in this target space and 3. waveform predictor with target loss function. make some suggestions on how we can deal with it.
+This chapter investigates two observable representations: multichannel \ac{eeg} waveforms and spectral power features derived from the \ac{stft}. % i think i prefer the "prediction targets" terminology from earlier
+The chosen representation defines both the predictor's observation history and its output; the training loss separately determines which discrepancies are penalized.
 Waveform prediction retains the phase and temporal structure of the measured signals, whereas spectral power prediction describes their evolving frequency content without requiring the precise phase evolution of individual oscillations to be reproduced.
 The latter is particularly relevant for representing seizure-related oscillatory activity and allows predictions to be evaluated directly using spectral control objectives.
 
@@ -22,79 +23,88 @@ Finally, Hankel \ac{dmdc} provides a linear approach based on delay-embedded obs
 These architectures differ in their assumptions about the underlying input-output dynamics and provide alternative ways of representing the response to stimulation.
 
 The chapter first formulates the input-output prediction problem and identifies the requirements relevant to seizure control.
-It then introduces the waveform and spectral prediction targets, followed by the supervised learning framework, training data, training objectives, and predictor architectures.
+It then introduces the waveform and spectral representations, followed by the supervised learning framework, training data, training objectives, and predictor architectures.
 The resulting prediction models are subsequently used in the \ac{mpc} framework developed in Chapter~\ref{ch:mpc_framework}.
 
 
 
-\section{Prediction Problem and Targets}
-\label{sec:prediction_problem}
+\section{Prediction Problem and Targets}\label{sec:prediction_problem}
 
-This section establishes a common input-output prediction formulation for waveform and spectral observables.
-It then introduces the construction of spectral prediction targets and discusses the trade-offs between the two representations.
+This section establishes a common input-output prediction formulation for waveform and spectral observables. 
+It then introduces the construction of spectral observables and discusses the trade-offs between the two representations.
+% i want to avoid the section transition feedback i got last time
 
 \subsection{Input-Output Prediction Formulation}
 
-Let $\mathbf{y}_k \in \mathbb{R}^{n_y}$ denote the observable neural activity at discrete time step $k$, and let $\mathbf{u}_k \in \mathbb{R}^{P}$ denote the vector of stimulation currents applied during the transition from $k$ to $k+1$, where $P$ is the number of stimulation electrodes.
-Depending on the prediction target, $\mathbf{y}_k$ represents either multichannel \ac{eeg} samples or spectral power features derived from the \ac{eeg}.
+Let $\mathbf{o}_k \in \mathbb{R}^{n_o}$ denote the observable neural activity at discrete time step $k$, where $n_o$ is its dimension.
+Let $\mathbf{u}_k \in \mathbb{R}^{P}$ denote the stimulation currents applied during the transition from $k$ to $k+1$, where $P$ is the number of stimulation electrodes.
+Let $\mathbf{y}_n\in\mathbb{R}^{n_y}$ denote a multichannel \ac{eeg} waveform sample at sample index $n$, where $n_y$ is the number of channels, and let $\mathbf{z}_q$ denote a spectral log-power feature vector at frame index $q$. % is this the first time we talk about what the spectral observable actually is? Because it seems like that comes pretty out of nowhere. Maybe we should keep it more vague at this point: spectral power density features
+The chosen representation defines the observable as
+\begin{equation*}
+    \mathbf{o}_k =
+    \begin{cases}
+        \mathbf{y}_n, & \text{for waveform prediction, with } k=n,\\
+        \mathbf{z}_q, & \text{for spectral prediction, with } k=q.
+    \end{cases}\,.
+\end{equation*}
 Accordingly, one prediction step corresponds to either one sample of the downsampled waveform or one hop of the \ac{stft}.
 In both cases, the stimulation current $\mathbf{u}_k$ is held constant over the corresponding interval.
 Each spectral frame is timestamped by the latest \ac{eeg} sample needed to compute it and uses only measurements available at that time.
 
-Since the internal neural states of the biophysical plant are not directly observable, predictions are conditioned on finite histories of measured outputs and previously applied stimulation currents, following the input-output identification approach described in~\cite[ch.~5]{Ljung1999}. % cite-checked: SUPPORTED
+Since the internal neural states of the biophysical plant are not directly observable, predictions are conditioned on finite histories of measured outputs and previously applied stimulation currents, following the input-output identification approach described in~\cite{Ljung1999}. % cite-checked: SUPPORTED
 We define the history vector
 \begin{equation}
     \mathbf{h}_k =
     \begin{bmatrix}
-        \mathbf{y}_{k-d_\mathrm{y}+1}\\
+        \mathbf{o}_{k-d_\mathrm{o}+1}\\
         \vdots\\
-        \mathbf{y}_k\\
+        \mathbf{o}_k\\
         \mathbf{u}_{k-d_\mathrm{u}}\\
         \vdots\\
         \mathbf{u}_{k-1}
     \end{bmatrix}
-    \in \mathbb{R}^{d_\mathrm{y} n_y + d_\mathrm{u} P}\,,
+    \in \mathbb{R}^{d_\mathrm{o} n_o + d_\mathrm{u} P}\,,
     \label{eq:predictor_history}
 \end{equation}
-where $d_\mathrm{y}$ and $d_\mathrm{u}$ denote the observation and input history lengths, respectively.
+where $d_\mathrm{o}$ and $d_\mathrm{u}$ denote the observation and input history lengths, respectively.
 The histories in~\eqref{eq:predictor_history} provide information about the influence of past neural activity and stimulation on the current dynamics, without requiring explicit estimation of the underlying physiological state.
 
 The one-step input-output prediction problem is formulated as
 \begin{equation}
-    \hat{\mathbf{y}}_{k+1}
+    \hat{\mathbf{o}}_{k+1}
     =
     \mathbf{f}_{\boldsymbol{\theta}}
     \left(\mathbf{h}_k,\mathbf{u}_k\right)\,,
     \label{eq:one_step_predictor}
 \end{equation}
-where $\mathbf{f}_{\boldsymbol{\theta}}$ denotes a prediction model parameterized by $\boldsymbol{\theta}$, and $\hat{\mathbf{y}}_{k+1}$ is the predicted observable one step ahead of step $k$, given the information available at that step.
-The hat distinguishes this prediction from the measured observable $\mathbf{y}_{k+1}$.
-The current observation $\mathbf{y}_k$ and previously applied currents are known when the prediction is made, while $\mathbf{u}_k$ specifies the stimulation applied over the upcoming interval.
+where $\mathbf{f}_{\boldsymbol{\theta}}$ denotes a prediction model parameterized by $\boldsymbol{\theta}$, and $\hat{\mathbf{o}}_{k+1}$ is the predicted observable one step ahead of step $k$, given the information available at that step.
+The hat distinguishes this prediction from the measured observable $\mathbf{o}_{k+1}$.
+The current observation $\mathbf{o}_k$ and previously applied currents are known when the prediction is made, while $\mathbf{u}_k$ specifies the stimulation applied over the upcoming interval.
 
 Two alternative parameterizations of~\eqref{eq:one_step_predictor} are considered.
-In \emph{direct prediction}, the model estimates the next observable $\mathbf{y}_{k+1}$.
+In \emph{direct prediction}, the model estimates the next observable $\mathbf{o}_{k+1}$.
 In \emph{residual prediction}, the model instead estimates the increment relative to the latest observation, such that
 \begin{equation}
     \mathbf{f}_{\boldsymbol{\theta}}
     \left(\mathbf{h}_k,\mathbf{u}_k\right)
     =
-    \mathbf{y}_k
+    \mathbf{o}_k
     +
     \mathbf{g}_{\boldsymbol{\theta}}
     \left(\mathbf{h}_k,\mathbf{u}_k\right)\,,
     \label{eq:residual_predictor}
 \end{equation}
-where $\mathbf{g}_{\boldsymbol{\theta}}$ predicts the change $\mathbf{y}_{k+1}-\mathbf{y}_k$.
+where $\mathbf{g}_{\boldsymbol{\theta}}$ predicts the change $\mathbf{o}_{k+1}-\mathbf{o}_k$. % this seems like a repetition of before the equation
 Thus, the direct formulation and the residual formulation in~\eqref{eq:residual_predictor} differ in their supervised learning targets, but both produce predictions in the original observable space.
 Their relative performance is evaluated experimentally.
 
-Although the models are formulated as one-step predictors, multi-step forecasts are obtained by recursively applying the learned mapping under a sequence of candidate stimulation currents.
-Let $H$ denote the prediction horizon length and $j$ the step offset within the horizon.
-For recursive prediction, $\mathbf{y}_{j|k}$ denotes the observable predicted $j$ steps ahead using the information available at step $k$.
-Such that $\mathbf{y}_{1|k}=\hat{\mathbf{y}}_{k+1}$.
+Although the models are formulated as one-step predictors, multi-step forecasts are obtained by recursively applying the learned mapping under a sequence of candidate stimulation inputs.
+Let $H\in\mathbb{N}_{>0}$ denote the prediction horizon length and $j\in\{0,\ldots,H-1\}$ the step offset within it.
+For recursive prediction, $\mathbf{o}_{j|k}$ denotes the observable $j$ steps ahead using the information available at step $k$.
+Therefore, $\mathbf{o}_{0|k}=\mathbf{o}_k$ and $\mathbf{o}_{1|k}=\hat{\mathbf{o}}_{k+1}$.
 Starting from the measured history $\mathbf{h}_{0|k}=\mathbf{h}_k$, the prediction $j+1$ steps ahead is given by
 \begin{equation}
-    \mathbf{y}_{j+1|k}
+    \mathbf{o}_{j+1|k}
     =
     \mathbf{f}_{\boldsymbol{\theta}}
     \left(
@@ -104,55 +114,52 @@ Starting from the measured history $\mathbf{h}_{0|k}=\mathbf{h}_k$, the predicti
     \qquad j=0,\ldots,H-1\,,
     \label{eq:recursive_predictor}
 \end{equation}
-where $\mathbf{u}_{j|k}$ is the candidate stimulation current for the interval from $k+j$ to $k+j+1$, and $\mathbf{h}_{j|k}$ is the corresponding history vector.
-Equation~\eqref{eq:recursive_predictor} applies the same learned one-step function at every step.
+where $\mathbf{u}_{j|k}$ denotes the candidate stimulation currents for the interval from $k+j$ to $k+j+1$.
+Equation~\eqref{eq:recursive_predictor} applies the same learned one-step function at every step. % this is just a repetition. id say delete
 After each prediction, the history is updated by appending the newly predicted observable and the applied candidate current, while discarding the oldest entries.
-In the residual formulation, each predicted increment is added to the latest predicted observable.
 
 Since future measurements are unavailable during this recursive rollout, prediction errors can propagate and accumulate over the horizon.
 Consequently, accurate one-step predictions do not necessarily guarantee accurate multi-step trajectories~\cite{Farina2011}. % cite-checked: SUPPORTED
 The resulting forecasts provide the predicted system response to candidate stimulation sequences, which is subsequently used in the \ac{mpc} framework developed in Chapter~\ref{ch:mpc_framework}.
 
 
-\subsection{Spectral Representation and \ac{stft}}
-\label{sec:spectral_representation}
+\subsection{Spectral Representation and \ac{stft}}\label{sec:spectral_representation}
+% maybe this subsection has to come before the first one.
 
 Seizure-related neural activity often manifests as changes in the amplitude and frequency content of ongoing oscillations.
 Such changes can be characterized through spectral power without requiring the precise phase evolution of the underlying waveform to be reproduced.
-Energy-based features have also shown discriminative value in \ac{eeg} classification, including epilepsy-related tasks, although their usefulness for prediction under stimulation remains to be established~\cite{Chourdaki2026}. % cite-checked: SUPPORTED
+Energy-based features have also shown discriminative value in \ac{eeg} classification, including epilepsy-related tasks, although their usefulness for prediction under stimulation remains to be established~\cite{Chourdaki2026}. % cite-checked: SUPPORTED % in the introduction chapter we cited some more. Check if they are applicable here.
 Spectral prediction therefore offers an alternative to modeling individual \ac{eeg} samples.
 However, unlike waveform observations, spectral power must be estimated over finite measurement intervals.
 The construction of these estimates determines which oscillatory features are retained, how variable they are, and how quickly changes in neural activity are reflected in the observable.
 
 The \ac{stft} provides a time-frequency representation by applying the discrete Fourier transform to successive, potentially overlapping signal segments~\cite{Oppenheim2010}. % cite-checked: SUPPORTED
-Let $x_{c,n}$ denote the preprocessed \ac{eeg} sample in channel $c$ at sample index $n$, acquired at frequency $f_\mathrm{s}$, with $M$ channels in total.
+Let $y_{c,n}$ denote the preprocessed \ac{eeg} sample in channel $c$ at sample index $n$, acquired at frequency $f_\mathrm{s}$, with $M$ channels in total.
 The sample index $n$ is distinct from the prediction-step index $k$ introduced in the preceding subsection.
 For a segment length $L_\mathrm{s}$ and hop length $H_\mathrm{s}$, both expressed in samples, define the segment vector
 \begin{equation}
-    \mathbf{x}_{q,c} =
+    \mathbf{y}_{q,c} =
     \begin{bmatrix}
-        x_{c,qH_\mathrm{s}} &
+        y_{c,qH_\mathrm{s}} &
         \cdots &
-        x_{c,qH_\mathrm{s}+L_\mathrm{s}-1}
+        y_{c,qH_\mathrm{s}+L_\mathrm{s}-1}
     \end{bmatrix}^{\mathsf{T}}\,,
 \end{equation}
 where $q$ indexes consecutive spectral frames.
-Given a taper $\mathbf{w}\in\mathbb{R}^{L_\mathrm{s}}$, the corresponding Fourier coefficients are
-\begin{equation}
-    \mathbf{X}_{q,c}
+Given a taper $\mathbf{w}\in\mathbb{R}^{L_\mathrm{s}}$, the corresponding Fourier coefficients are % i am not convinced with the word taper. I prefer window/windowing function 
+\begin{equation*}
+    \mathbf{Y}_{q,c}
     = \mathcal{F}_{+}
-    \left(\mathbf{w}\odot\mathbf{x}_{q,c}\right)\,,
-    \label{eq:causal_stft}
-\end{equation}
-where $\odot$ denotes element-wise multiplication and $\mathcal{F}_{+}$ retains the nonnegative-frequency coefficients of the $L_\mathrm{s}$-point discrete Fourier transform.
-The coefficient at frequency-bin index $m$ is denoted by $X_{q,c,m}$.
+    \left(\mathbf{w}\odot\mathbf{y}_{q,c}\right)\,,
+\end{equation*}
+where $\odot$ denotes element-wise multiplication and $\mathcal{F}_{+}$ retains the nonnegative-frequency coefficients of the $L_\mathrm{s}$-point discrete Fourier transform. % maybe there is a better way to describe the windowing function than with \odot.
+The coefficient at frequency-bin index $m$ is denoted by $Y_{q,c,m}$.
 For real-valued signals, these coefficients correspond to $m=0,\ldots,\lfloor L_\mathrm{s}/2\rfloor$, with frequencies
-\begin{equation}
+\begin{equation*}
     f_m=\frac{mf_\mathrm{s}}{L_\mathrm{s}},
     \qquad
     \Delta f=\frac{f_\mathrm{s}}{L_\mathrm{s}}\,.
-    \label{eq:stft_frequency_grid}
-\end{equation}
+\end{equation*}
 Each complex coefficient contains a magnitude and phase; its squared magnitude describes the contribution of the corresponding frequency component to the segment's power.
 
 The segment length, hop, and taper play different roles in the resulting representation.
@@ -163,7 +170,7 @@ Overlapping segments, obtained when $H_\mathrm{s}<L_\mathrm{s}$, provide more fr
 However, consecutive estimates then share measurements and become more strongly correlated.
 Thus, a smaller hop improves the temporal sampling of spectral activity without necessarily providing more independent information.
 
-\begin{figure}[tbp]
+\begin{figure}
     \centering
     \includegraphics[width=\linewidth]
     {figures/04_data_driven_predictor_design/stft_geometry.pdf}
@@ -171,96 +178,71 @@ Thus, a smaller hop improves the temporal sampling of spectral activity without 
     synthetic chirp sampled at \SI{200}{\hertz}.
     Panel (a) illustrates overlapping Hann-tapered segments,
     while panel (b) shows the resulting squared Fourier
-    magnitudes in decibels.
+    magnitudes.
     The segment length is $L_\mathrm{s}=64$ samples and the
     hop is $H_\mathrm{s}=32$ samples, corresponding to a
     frequency-bin spacing of \SI{3.125}{\hertz} and an
     update interval of \SI{0.16}{\second}.
     Spectra are displayed at the end of their measurement
-    intervals.}
-    \label{fig:stft_geometry}
+    intervals.}\label{fig:stft_geometry}
 \end{figure}
 
 Tapering addresses a different limitation of finite segments: abrupt truncation introduces spectral leakage, spreading the contribution of an oscillation across neighboring frequencies.
 The choice of taper determines both this spectral spreading and the relative importance assigned to measurements within the segment~\cite{Oppenheim2010}. % cite-checked: SUPPORTED
-A symmetric Hann taper suppresses both segment boundaries and concentrates weight near the center, providing effective leakage reduction.
+A symmetric Hann taper downweights both segment boundaries and concentrates weight near the center, reducing leakage from abrupt truncation~\cite{Oppenheim2010}.
 For a causally updated observable, however, this also means that the most recently acquired samples receive relatively little weight.
 An alternative is a rising half-Hann taper, which gradually increases its weight from the oldest to the newest sample.
-This makes the spectrum more sensitive to recent changes, potentially allowing emerging oscillatory activity to influence the observable sooner.
-The trade-off is weaker suppression of the most recent segment boundary, which generally increases spectral leakage and sensitivity to short-lived fluctuations.
+Because recent samples receive more weight, emerging oscillatory activity can have a greater influence on the next estimate.
+The newest boundary is then suppressed less strongly, so a segment can show more leakage from that boundary and greater sensitivity to short-lived fluctuations~\cite{Oppenheim2010}.
 Neither choice is universally preferable: a symmetric taper favors spectral localization, whereas a recency-weighted taper favors responsiveness to evolving activity.
 The relevant compromise depends on how quickly seizure-related changes must become observable and how reliably their frequency content can be distinguished from background fluctuations.
 
 For causal processing, each spectral frame is associated with the latest sample required for its computation, defined by
-\begin{equation}
+\begin{equation*}
     n_q=qH_\mathrm{s}+L_\mathrm{s}-1,
     \qquad
     t_q=\frac{n_q}{f_\mathrm{s}}\,.
-    \label{eq:stft_frame_time}
-\end{equation}
+\end{equation*}
 With this convention, frame $q$ contains no measurements acquired after $t_q$.
 Its timestamp therefore reflects when the estimate can first be formed, rather than the center of the measurement interval.
 As illustrated in Figure~\ref{fig:stft_geometry}, successive frames represent overlapping portions of the waveform while remaining aligned with their causal availability.
 
-For the prediction target, the Fourier coefficients are converted to one-sided, density-scaled power estimates given by
-\begin{equation}
+For the spectral observable, the Fourier coefficients are converted to one-sided, density-scaled power estimates given by
+\begin{equation*}
     S_{q,c,m}
     =
-    \frac{a_m|X_{q,c,m}|^2}
-    {f_\mathrm{s}\sum_{r=0}^{L_\mathrm{s}-1}w_r^2}\,,
-    \label{eq:stft_power_density}
-\end{equation}
+    \frac{a_m|Y_{q,c,m}|^2}
+    {f_\mathrm{s}\sum_{r=0}^{L_\mathrm{s}-1}w_r^2}\,, % wouldn't it be simpler if we just put the squared L2 norm of w there. We wouldn't have to introduce w_r and r
+\end{equation*}
 where $w_r$ is the taper weight at sample offset $r$, $a_m=2$ for bins with a distinct negative-frequency counterpart, and $a_m=1$ at zero frequency and, for even $L_\mathrm{s}$, at the Nyquist frequency.
 The denominator accounts for the sampling frequency and taper energy.
-When the input is expressed in volts, the resulting density has units of volts squared per hertz.
 
-%%% bin pooling is implemented but not used in any experiments. So doesn't need to be explained
-% Individual frequency bins may provide more detail than is necessary to characterize seizure-related oscillatory activity.
-% Moreover, small variations in oscillation frequency can redistribute power among neighboring bins even when the overall activity within a frequency range remains similar.
-% To obtain a more compact representation, neighboring bins within a selected band are grouped.
-% Let $\mathcal{B}_b$ denote the bin indices belonging to frequency group $b$, with $B$ groups in total.
-% Their mean spectral density is
-% \begin{equation}
-%     P_{q,c,b}
-%     =
-%     \frac{1}{|\mathcal{B}_b|}
-%     \sum_{m\in\mathcal{B}_b}S_{q,c,m},
-%     \label{eq:stft_bin_pooling}
-% \end{equation}
-% where $|\mathcal{B}_b|$ is the number of bins in the group.
-% This averaging reduces the output dimension and can attenuate variability caused by power moving between neighboring bins, at the expense of losing information about its distribution within the group.
-% The result is a mean density, rather than integrated band power, which would require summation weighted by $\Delta f$.
-
-% The segment length and frequency grouping jointly influence the variability of the spectral estimate.
-% A longer segment provides a finer frequency grid and, for a fixed frequency group, potentially more bins over which power can be combined.
-% This can yield a more stable estimate of power distributed across that group.
-The segment length determines the frequency resolution of the spectral estimate, with longer segments providing a finer frequency grid.
-Nevertheless, increasing segment length does not, by itself, guarantee a lower-variance estimate at an individual frequency bin: periodograms remain inherently variable even for stationary signals~\cite{Astfalck2024}.
+Increasing segment length does not, by itself, guarantee a lower-variance estimate at an individual frequency bin: periodograms remain inherently variable even for stationary signals~\cite{Astfalck2024}. % preiodograms haven't been introduced. use terminology we already know
 More importantly, longer segments combine activity over a longer interval.
-In the present application, this creates a tension between obtaining reliable estimates of oscillatory power and retaining the temporal changes that may signal seizure onset or recruitment.
+In the present application, this creates a tension between obtaining reliable estimates of spectral power and retaining the temporal changes that may signal seizure onset or recruitment. % this has already been discussed earlier. I would delete. Also it doesn't fit into this argument since averaging across frames also combines activity over longer intervals
 
 Additional variance reduction can be obtained by averaging power across consecutive spectral frames.
 For a causal temporal kernel of length $L_\mathrm{k}$, with nonnegative weights $\alpha_\ell$ satisfying $\sum_{\ell=0}^{L_\mathrm{k}-1}\alpha_\ell=1$, define
-\begin{equation}
+\begin{equation*}
     \overline{S}_{q,c,m}
     =
     \sum_{\ell=0}^{L_\mathrm{k}-1}
     \alpha_\ell S_{q-\ell,c,m}\,.
-    \label{eq:stft_frame_smoothing}
-\end{equation}
+\end{equation*}
 Here, $\ell=0$ refers to the latest frame, and $L_\mathrm{k}=1$ corresponds to no temporal smoothing.
-For stationary activity, averaging several noisy power estimates generally reduces fluctuations.
-If the estimates were independent and had equal variance, the variance of their weighted average would scale with $\sum_\ell\alpha_\ell^2$.
+For stationary activity, averaging several noisy power estimates generally reduces fluctuations. % this was already said earlier (sentence one of the paragraph)
+% here maybe we can say: "one famous application is the welch method which ..."
+If the estimates were independent and had equal variance, the variance of their weighted average would scale with $\sum_\ell\alpha_\ell^2$. % i dont know if this information is necessary at all. the intuition is good enough
 Overlapping \ac{stft} frames are correlated, however, so the reduction is generally smaller.
 
-The temporal kernel also determines how strongly older activity influences the current observable.
+The temporal kernel also determines how strongly older activity influences the current observable. % again, repetition
 Uniform weights provide stronger averaging for a given number of independent, equally variable estimates, but retain the contribution of older frames equally.
 Recency-weighted kernels emphasize newer activity and can respond more quickly to changes, at the cost of reduced smoothing.
 Increasing the kernel length further suppresses fluctuations, but may also dilute the early stages of a seizure-related change with preceding background activity.
 Unlike increasing $L_\mathrm{s}$, temporal smoothing does not alter the frequency grid.
 Figure~\ref{fig:stft_resolution} illustrates the distinction between these two forms of temporal aggregation.
 
-\begin{figure}[tbp]
+\begin{figure}
     \centering
     \includegraphics[width=\linewidth]
     {figures/04_data_driven_predictor_design/stft_resolution.pdf}
@@ -276,27 +258,24 @@ Figure~\ref{fig:stft_resolution} illustrates the distinction between these two f
     over the latest 1, 4, and 16 frames at a common endpoint.
     Longer segments refine the frequency grid, whereas
     temporal averaging suppresses fluctuations without
-    changing that grid.}
-    \label{fig:stft_resolution}
+    changing that grid.}\label{fig:stft_resolution}
 \end{figure}
 
 The spectral observable is finally expressed on a logarithmic scale.
-This logarithmic representation is useful because changes in oscillatory power are often more naturally compared through relative rather than absolute differences.
+This logarithmic representation is useful because changes in oscillatory power are often more naturally compared through relative rather than absolute differences. % cite?
 The logarithm maps multiplicative changes in power to additive differences, while compressing the range of the resulting features.
-To preserve the interpretation of $\overline{S}_{q,c,m}$ as power density, the transformation is applied after temporal smoothing, yielding
-\begin{equation}
+To average power density rather than logarithmic values, the transformation is applied after temporal smoothing, yielding
+\begin{equation*}
     z_{q,c,m}
     =
     \ln\left(
         \overline{S}_{q,c,m}+\varepsilon
-    \right)\,,
-    \label{eq:stft_log_power}
-\end{equation}
-where $\varepsilon>0$ is a small floor preventing undefined values at zero power.
-Averaging precedes the logarithm because mean power and mean log-power are different quantities.
-The decibel scale used in the figures is equivalent to a constant rescaling of the natural logarithm.
+    \right)\,.
+\end{equation*}
+Here, $\varepsilon>0$ is a small floor preventing undefined values at zero power.
+Averaging precedes the logarithm because mean power and mean log-power are different quantities. % so? why is that a reason? this sentence does nothing.
 
-Stacking $z_{q,c,m}$ across the $M$ EEG channels and $N_\mathrm{b}$ retained frequency bins within the selected band defines the spectral observable $\mathbf{y}_k\in\mathbb{R}^{M N_\mathrm{b}}$, with prediction step $k$ corresponding to spectral frame $q$.
+Stacking $z_{q,c,m}$ across the $M$ \ac{eeg} channels and $N_\mathrm{b}$ retained frequency bins within the selected band defines the spectral observable $\mathbf{z}_q\in\mathbb{R}^{M N_\mathrm{b}}$, with prediction step $k$ corresponding to spectral frame $q$.
 Each step therefore advances by $H_\mathrm{s}$ waveform samples.
 Although the observable is updated at this rate, it summarizes a longer history of measurements.
 A fully supported smoothed frame depends on
@@ -307,16 +286,16 @@ A fully supported smoothed frame depends on
     \label{eq:stft_sample_support}
 \end{equation}
 waveform samples, excluding any additional preprocessing history.
-Constructing $d_\mathrm{y}$ consecutive spectral observations requires $L_\mathrm{support}+(d_\mathrm{y}-1)H_\mathrm{s}$ samples.
+By~\eqref{eq:stft_sample_support}, constructing $d_\mathrm{o}$ consecutive spectral observations requires $L_\mathrm{support}+(d_\mathrm{o}-1)H_\mathrm{s}$ samples.
 This history must be available to initialize the predictor, but thereafter each new frame requires only the next $H_\mathrm{s}$ samples.
-Because the segment and smoothing kernel contain no future measurements, the resulting representation remains causal.
+Because the segment and smoothing kernel contain no future measurements, the resulting representation remains causal. % this is already know, delete it
 
 The length of this measurement history should not be interpreted as a fixed detection delay.
 Once initialized, the next spectral frame can already reflect newly acquired samples, with their contribution determined by the taper and temporal kernel.
 The time required for a seizure-related change to become distinguishable from background fluctuations consequently depends on its frequency content, magnitude, and the chosen processing parameters.
 Figure~\ref{fig:stft_spectrogram} illustrates how recruitment of a simulated neural population produces changes in both the waveform and its time-varying spectrum.
 
-\begin{figure}[tbp]
+\begin{figure}
     \centering
     \includegraphics[width=\linewidth]
     {figures/04_data_driven_predictor_design/stft_spectrogram.pdf}
@@ -325,22 +304,19 @@ Figure~\ref{fig:stft_spectrogram} illustrates how recruitment of a simulated neu
     The regional \ac{lfp} is sampled at \SI{50}{\hertz};
     Hann segments contain 50 samples and advance by
     25 samples, without additional temporal smoothing.
-    The spectrogram displays density-scaled power in
-    decibels relative to
-    \SI{1}{\milli\volt\squared\per\hertz}.
+    The spectrogram displays density-scaled power.
     Recruitment is accompanied by changes in waveform
-    amplitude and frequency-specific power.}
-    \label{fig:stft_spectrogram}
+    amplitude and frequency-specific power.}\label{fig:stft_spectrogram}
 \end{figure}
 
 The resulting representation retains the evolution of frequency-specific power while discarding the Fourier phases.
 It is therefore not an invertible representation of the waveform: for example, a signal and its sign-reversed counterpart produce identical power features, and channel-wise spectra do not preserve relative phase relationships between channels.
 Spectral processing thus reduces the information available to the predictor while potentially emphasizing aspects of neural activity that are more stable or relevant to seizure suppression.
 Whether this trade-off improves prediction or control depends on the dynamics that must be represented.
+% maybe this paragraph would work better inside the next subsections first paragraph. There is some danger of repetition
+% similarly for the paragraph before and next subsections second paragraph
 
-
-\subsection{Waveform Versus Spectral Prediction}
-\label{sec:waveform_versus_spectral}
+\subsection{Waveform Versus Spectral Prediction}\label{sec:waveform_versus_spectral}
 
 The stochastic drive of the biophysical plant makes exact waveform evolution uncertain over a prediction horizon.
 Even if a predictor captures an oscillation's amplitude and frequency, small phase errors can produce large sample-wise errors.
@@ -349,28 +325,26 @@ Yet the discarded phase information may help distinguish states that evolve diff
 
 Spectral prediction has its own difficulties.
 Individual power estimates fluctuate even during stationary activity, which may make spectral targets harder to learn.
-Averaging neighboring frames can reduce this variation, but spectral estimation over a longer measurement history, as in~\eqref{eq:stft_sample_support}, may increase detection delay.
+Averaging neighboring frames can reduce this variation, but older activity may then persist longer in the estimate and delay when a change becomes distinguishable from background fluctuations.
 The hop length also limits how often a new estimate is available.
 These effects motivate tuning the \ac{stft} parameters for both target stability and temporal responsiveness.
 
 For predictive control, the model must distinguish the effects of candidate stimulation currents.
 Spectral power may conceal phase or amplitude responses that leave the retained power features nearly unchanged.
 Whether the spectral representation still captures the responses needed for control must be tested.
-The waveform--spectral comparison and the choice of \ac{stft} parameters are evaluated in Chapter~\ref{ch:experiments_discussion}.
+The comparison between waveform and spectral prediction and the choice of \ac{stft} parameters are evaluated in Chapter~\ref{ch:experiments_discussion}.
 
 
-\section{Supervised Learning and Training Data}
-\label{sec:predictor_training}
+\section{Supervised Learning and Training Data}\label{sec:predictor_training}
 
 The preceding section defined the prediction model $\mathbf{f}_{\boldsymbol{\theta}}$ and its inputs and outputs.
 This section addresses how to determine its parameters $\boldsymbol{\theta}$ from recorded neural responses to stimulation.
 
 \subsection{Supervised Learning Foundations}
-% I think the beggining of this subsection should be general. That is not necessarily reference h, u and y. Rather general one predictions (make)
 
 The unknown parameters are fitted by comparing predictions with recorded observations.
-Supervised learning expresses this task through input--target pairs: each training sample pairs the information available to the predictor with the output it should predict~\cite[ch.~5]{Goodfellow2016}.
-For one-step prediction, sample $i$ contains the history $\mathbf{h}_k^{(i)}$, the applied current $\mathbf{u}_k^{(i)}$, and the next observation $\mathbf{y}_{k+1}^{(i)}$.
+Supervised learning expresses this task through input and target pairs: each training sample pairs the information available to the predictor with the output it should predict~\cite{Goodfellow2016}.
+For one-step prediction, sample $i$ contains the history $\mathbf{h}_k^{(i)}$, the applied current $\mathbf{u}_k^{(i)}$, and the next observation $\mathbf{o}_{k+1}^{(i)}$. % I#d like to call h the "history state"
 The superscript identifies the sample, while $k$ denotes its reference step within the recording.
 With $N_\mathrm{tr}$ samples, the training dataset is
 \begin{equation}
@@ -378,12 +352,11 @@ With $N_\mathrm{tr}$ samples, the training dataset is
     = \left\{
         \left(
             \left(\mathbf{h}_k^{(i)},\mathbf{u}_k^{(i)}\right),
-            \mathbf{y}_{k+1}^{(i)}
+            \mathbf{o}_{k+1}^{(i)}
         \right)
-    \right\}_{i=1}^{N_\mathrm{tr}}\,.
+    \right\}{}_{i=1}^{N_\mathrm{tr}}\,.
     \label{eq:predictor_training_dataset}
 \end{equation}
-This dataset has the same structure for waveform and spectral observables.
 
 A loss function $\ell$ measures the disagreement between a prediction and its target.
 Applying~\eqref{eq:one_step_predictor} to the samples in~\eqref{eq:predictor_training_dataset} gives the empirical training objective
@@ -394,7 +367,7 @@ Applying~\eqref{eq:one_step_predictor} to the samples in~\eqref{eq:predictor_tra
     \ell\left(
         \mathbf{f}_{\boldsymbol{\theta}}
         \left(\mathbf{h}_k^{(i)},\mathbf{u}_k^{(i)}\right),
-        \mathbf{y}_{k+1}^{(i)}
+        \mathbf{o}_{k+1}^{(i)}
     \right)\,.
     \label{eq:empirical_predictor_loss}
 \end{equation}
@@ -402,146 +375,152 @@ Parameter fitting seeks to reduce this average prediction error.
 For predictive control, however, the fitted mapping must also produce useful recursive forecasts.
 The loss discussion below therefore extends the one-step objective to sequences of future observations.
 
-For neural predictors, the parameters are adjusted iteratively using gradients of the training loss.
-Rather than evaluating every sample for each update, training uses shuffled mini-batches to estimate the average loss and its gradient~\cite[ch.~8]{Goodfellow2016}.
-Backpropagation obtains the gradient by applying the chain rule through the network operations~\cite[ch.~6]{Goodfellow2016}.
-AdamW uses this gradient to update the parameters, with decoupled weight decay providing regularization~\cite{Loshchilov2019}.
-The learning rate controls the update size and follows a warm-up phase followed by cosine decay.
-The fitting procedure for the linear, delay-embedded \ac{dmd} model with control is described in Section~\ref{sec:predictor_architectures}.
+Neural predictors are trained by iteratively updating their parameters to minimize the training loss. Rather than evaluating the entire training set at each step, the loss and its gradient are estimated using shuffled mini-batches~\cite{Goodfellow2016}. % "neural predictors" could be either neural networks or biological neural models. need clearer terminology in this thesis
+The gradients are computed through backpropagation, which applies the chain rule across the network operations~\cite{Goodfellow2016}, and are subsequently used by AdamW to update the parameters with decoupled weight decay for regularization~\cite{Loshchilov2019}.
+The magnitude of these updates is governed by a learning-rate schedule consisting of an initial warm-up phase followed by cosine decay.
+For the linear, delay-embedded \ac{dmd} model with control, the fitting procedure is described separately in Section~\ref{sec:predictor_architectures}.
 
-Fitting the recordings is only useful if the resulting model also predicts responses it has not seen during training.
-This ability is called generalization; fitting details of the training data at its expense is called overfitting~\cite[ch.~5]{Goodfellow2016}.
+Fitting the recordings is only useful if the resulting model also predicts responses it has not seen during training. % don't use the term "recordings". Use: data
+This ability is called generalization; fitting details of the training data at its expense is called overfitting~\cite{Goodfellow2016}. % this sentence is a bit strange. feels too choppy
 Separate validation recordings are therefore used to judge the model after each epoch, meaning one pass through the training samples.
 Their prediction errors do not contribute to the gradient updates.
 Instead, validation loss determines which parameters are retained and when training stops because further updates no longer improve prediction.
-The next subsections describe how these training and validation recordings are generated and kept separate.
+The next subsections describe how these training and validation recordings are generated.
 
 \subsection{Training Data Generation}
-% somehow it does not become clear what we actually did.
-% this sections could have a clear structure:
-% - Foundations. what is needed?
-%   - persistent excitation
-%   - training data spanning the whole state-input space which could be reached during control
-%   - (training validation split) - maybe mention here, maybe its better in another section
-% - Methodology, what did we do? generate 200 trajectories with RAS
 
-The input--target pairs required by~\eqref{eq:empirical_predictor_loss} are obtained from the biophysical plant introduced in Chapter~\ref{ch:biological_plant_modeling}.
-Each simulated plant rollout records scalp \ac{eeg} and the applied electrode currents under a prescribed stimulation sequence.
-Different random seeds produce distinct realizations of the stochastic neural drive and excitation signals.
-Although the simulator provides internal neural states, these states are excluded from the predictor inputs.
+% i dont like this first paragraph
+The input and target pairs required by~\eqref{eq:empirical_predictor_loss} are obtained from the biophysical plant introduced in Chapter~\ref{ch:biological_plant_modeling}.
+Each simulated plant rollout records scalp \ac{eeg} and the applied electrode currents under a prescribed stimulation sequence. % what stimulation sequence?
+Different random seeds produce distinct realizations of the stochastic neural drive and excitation signals. % don't use neural drive, what does that mean?
+Although the simulator provides internal neural states, these states are excluded from the predictor inputs. % this is codebase documentation. unnecessary information
 The training problem therefore retains the measurement restrictions assumed for the controller.
 
-Stimulation must vary during data collection to reveal the input--output response rather than only the unstimulated evolution.
-The choice of excitation is a central part of system identification because the recorded inputs determine which aspects of the dynamics can be identified~\cite[ch.~13]{Ljung1999}.
-Random piecewise-constant currents provide variation in both amplitude and duration by drawing current vectors and holding them over prescribed intervals.
-An initial interval without stimulation records the evolution before excitation begins.
-The electrode currents satisfy instantaneous current conservation and the per-electrode amplitude bound.
+Stimulation must vary during data collection to reveal the response to different inputs rather than only the unstimulated evolution. % need to mention the concept of persistent excitation
+The choice of excitation is a central part of system identification because the recorded inputs determine which aspects of the dynamics can be identified~\cite{Ljung1999}.
+Two excitation datasets each contain 200 simulated \SI{12}{\second} trajectories in the seizure regime. % what do you mean by seizure regime? unclear. 
+Both use random-amplitude schedules with independently seeded current draws for the three electrodes; one holds each draw for \SI{60}{\milli\second}, and the other for \SI{100}{\milli\second}. % need to explain why: because we test predictors with these 2 different sample periods and they must match
+The holding duration is fixed within each dataset, and neither schedule specifies an initial unstimulated interval.
+The excitation amplitude parameter is \SI{3}{\milli\ampere}, whereas the controller bound is \SI{2}{\milli\ampere}; the training schedules therefore allow a wider current range than closed-loop control.
+The generated currents satisfy instantaneous current conservation and the excitation amplitude cap.
 Subtracting the electrode mean enforces a zero sum, and uniformly rescaling the resulting vector enforces the amplitude bound while retaining current conservation.
 These spatial constraints do not imply zero net charge over time.
 Within the feasible current subspace, the recordings must contain variation in the input directions whose effects the predictor is expected to distinguish.
 An input direction that is never excited supplies no direct evidence of the response along that direction.
 
-The resulting recordings supply the applied input sequences used for supervised training; they are not generated by optimizing the predictor's own forecasts.
+These simulated \ac{eeg} and current recordings are aligned and converted into the input and target sequences described in the next subsection.
+They are not generated by optimizing the predictor's own forecasts.
 Consequently, subsequent \ac{mpc} operation can produce current sequences and neural responses that differ from those represented in the training data.
 Prediction performance under these conditions is assessed through separate evaluations in Chapter~\ref{ch:experiments_discussion}.
-That chapter also specifies the recording durations, seeds, excitation parameters, and coverage of seizure-related dynamical regimes.
-
 
 \subsection{Preprocessing and Dataset Construction}
+% this whole subsection is bad. It suffers from being too much like code documentation: adding irrelevant information and being too general - not referencing the actual methology we use but sort of generally describing the functions we implemented  
+% how is it possible that we do not even mention $i$ the thing identifying a sample in our dataset 
 
 The recorded signals must be converted into the same observables that will be available during control.
-The \ac{eeg} is causally low-pass filtered before downsampling, using the same processing convention as online measurement preparation.
-This processing uses no future measurements and retains the filter's temporal response rather than compensating it with noncausal filtering.
-The simulated signal scale is retained; as discussed in Chapter~\ref{ch:biological_plant_modeling}, it is not calibrated to clinical \ac{eeg} amplitudes.
+The \ac{eeg} is causally low-pass filtered before downsampling, using the same processing convention as online measurement preparation. % why? Introduce the different update frequencies. The predictors/controller don't run at plant speed. Also low-pass filtered for anti-aliasing. Mention that its a 4th-order butterworth
 Waveform predictors use the resulting samples, whereas spectral predictors use the log-power spectral frames constructed in Section~\ref{sec:spectral_representation}.
-Applied currents are aligned with the measurement timestamps using their held values.
+Applied currents are aligned with the measurement timestamps using their held values. % this and the next sentence is obvious, no?
 For spectral prediction, the current associated with a spectral frame is the one applied from its causal timestamp to the next prediction step.
 
 Each supervised sample is extracted from a single recording at a reference step $k$.
 Its initial history is $\mathbf{h}_k$ from~\eqref{eq:predictor_history}; its future inputs are the recorded currents $\mathbf{u}_k,\ldots,\mathbf{u}_{k+H-1}$.
-The target sequence contains $\mathbf{y}_{k+1},\ldots,\mathbf{y}_{k+H}$.
+The target sequence contains $\mathbf{o}_{k+1},\ldots,\mathbf{o}_{k+H}$.
 Thus, future currents are known prescribed inputs during training, while future observables supply the supervision and are unavailable to the recursive predictor.
-No sample crosses a recording boundary.
+% is this not a repetition? In my opinion this whole paragraph can be cut
 
 Sliding the reference step through a recording produces overlapping samples that share observations and currents.
 Spectral samples additionally inherit the shared waveform support of overlapping \ac{stft} segments and temporal smoothing.
 These samples cannot be treated as independent realizations merely because they have different reference steps.
 The dataset is therefore partitioned by complete simulated plant rollouts before constructing training and validation samples.
 The partition remains fixed across comparisons using the same dataset.
-Testing uses separately generated plant rollouts with seeds excluded from the training and validation recordings.
+Testing uses separately generated plant rollouts with seeds excluded from the training and validation recordings. % we already know that from last subsection
 
-Observation and current scaling parameters are fitted on the training recordings only and then held fixed for validation, testing, and control.
-For observable coordinate $r$, let $\mu_r$ denote the fitted center and $s_r>0$ the fitted scale.
+Observation and current scaling parameters are fitted on the training recordings only and then held fixed for validation, testing, and control. % obviously. Why does that need to be said here?
+For observable coordinate $r$, let $\mu_r$ denote the fitted center and $s_r>0$ the fitted scale. % don't the inputs also get standardized? 
 The standardized value is
 \begin{equation}
-    \widetilde{y}_{k,r}
-    = \frac{y_{k,r}-\mu_r}{s_r}\,.
+    \widetilde{o}_{k,r}
+    = \frac{o_{k,r}-\mu_r}{s_r}\,.
     \label{eq:predictor_standardization}
 \end{equation}
-The affine transformation in~\eqref{eq:predictor_standardization} is applied to predictions and targets, with a separately fitted transformation for the currents.
-Standard scaling uses the mean and standard deviation; robust scaling uses the median and interquartile range.
-The selected scaling convention is specified with the experimental settings.
-Keeping this transformation fixed prevents validation or test recordings from influencing the fitted preprocessing.
-
+The predictor uses standardized histories, currents, and outputs; inverse transformation restores predictions and targets to their original units before loss evaluation.
+For each observable coordinate, the center and scale in~\eqref{eq:predictor_standardization} are the training-set mean and standard deviation, with a separately fitted transformation for the currents.
+Keeping this transformation fixed prevents validation or test recordings from influencing the fitted preprocessing. % also unnecessary
+% this paragraph does a bad job of explaining the standardization we use. the rough idea is that we standardize the input and outputs of the NN's such that the NN's themselves do not have to take in and produce values on these bigger scales which makes training more stable. Confirm that. Also add references to any claims   
 
 \subsection{Loss Functions and Training Strategies}
-% I think we should not use the general y_j|k here. Instead we just present the three different types of cost functions separately: waveform predictor: MSE in waveform and spectral space; spectral predictor: MSE
-% also should we mention the the DMD prediction here?
+% im am concerned that this subsection could be confiusing
+% maybe the simple MSE can be introduced for o, and then later we say that the waveform predictor can also be scored on the spectral loss and we introduce l_spec and say how z_{l|q} is calculated and that it is mathematically equivalent/comparable to the MSE for the spectral predictor
+% or another option would be: like it is now but we have to say that z_{l|q} for the waveform predictor is calculated by taking the predicted waveform samples and calculating the spectral log frames before taking the loss 
 
-Once the samples and scaling are fixed, the loss determines which discrepancies the predictor is trained to reduce.
-For waveform prediction, let $J$ denote the number of prediction steps scored by the loss, with $1\leq J\leq H$.
-For sample $i$, let $\widetilde{\mathbf{y}}^{(i)}_{j|k}$ denote the standardized recursive prediction and $\widetilde{\mathbf{y}}^{(i)}_{k+j}$ its recorded target.
-The waveform mean squared error is  % we have to be very careful to differentiate between waveform, spectral and observable. The notation has to be tight. I thought y has the observable, which could either be waveform or spectral
+Once the samples and scaling are fixed, the loss determines which discrepancies the predictor is trained to reduce. % not a great transition
+For waveform predictors, the observable in~\eqref{eq:one_step_predictor} is $\mathbf{o}_k=\mathbf{y}_n$, with $k=n$.
+Let $n$ denote the waveform sample at the forecast boundary and $r$ the number of samples ahead of it, corresponding to $k$ and $j$ in~\eqref{eq:recursive_predictor}, respectively.
+Let $R$ denote the number of waveform prediction steps scored by the loss, with $1\leq R\leq H$, where $H$ counts waveform samples for this predictor.
+For sample $i$, let $\mathbf{y}^{(i)}_{r|n}$ denote the recursive waveform prediction restored to the original signal scale and $\mathbf{y}^{(i)}_{n+r}$ its recorded target.
+The one-step prediction satisfies $\mathbf{y}^{(i)}_{1|n}=\hat{\mathbf{y}}^{(i)}_{n+1}$.
+The waveform mean squared error is
 \begin{equation}
-    \ell_\mathrm{obs}^{(i)}
-    = \frac{1}{J n_y}
-    \sum_{j=1}^{J}
+    \ell_\mathrm{wave}^{(i)}
+    = \frac{1}{R n_y}
+    \sum_{r=1}^{R}
     \left\|
-        \widetilde{\mathbf{y}}^{(i)}_{j|k}
-        -\widetilde{\mathbf{y}}^{(i)}_{k+j}
+        \mathbf{y}^{(i)}_{r|n}
+        -\mathbf{y}^{(i)}_{n+r}
     \right\|_2^2\,.
-    \label{eq:observable_training_loss}
+    \label{eq:waveform_training_loss}
 \end{equation}
-This loss penalizes sample-wise disagreement across \ac{eeg} channels over the loss evaluation span $J$.
+This loss penalizes sample-wise disagreement across \ac{eeg} channels in original signal units over the loss evaluation span $R$.
 
-A spectral loss instead measures how closely the predicted waveform reproduces the recorded signal's frequency-specific power.
-The predicted and target waveforms are first restored to their original signal scale, then transformed using the \ac{stft}, power normalization, temporal smoothing, and logarithm defined above.
-Let $\widehat{z}^{(i)}_{q,c,m}$ and $z^{(i)}_{q,c,m}$ denote the resulting predicted and target log-power values.
+A spectral loss compares predicted and recorded log-power values.
+For waveform predictors, predicted log-power is computed from the predicted waveform after restoring its original signal scale, using the \ac{stft}, power normalization, temporal smoothing, and logarithm defined above.
+For spectral predictors, predicted log-power is obtained directly from the predicted spectral features after reversing their standardization.
+The recorded targets are computed from the measured waveform using the same spectral transformation.
+
+Let $q$ denote the spectral frame at the forecast boundary and $\ell$ the number of frames ahead of it.
+For sample $i$, let $z^{(i)}_{\ell|q,c,m}$ denote the predicted log-power $\ell$ frames ahead, conditioned on the information available at frame $q$, and let $z^{(i)}_{q+\ell,c,m}$ denote its recorded target.
+As for waveform forecasts, the conditional indexing denotes recursive predictions, while the hat is reserved for one-step predictions, so that $z^{(i)}_{1|q,c,m}=\widehat{z}^{(i)}_{q+1,c,m}$.
+Both quantities are expressed on the unstandardized log-power scale.
+For spectral predictors, $q$ corresponds to the reference prediction step $k$ in~\eqref{eq:recursive_predictor}, and $\ell$ corresponds to its step offset $j$.
+Each application of the spectral predictor advances the forecast by one frame; recursive application produces predictions for successive future frames.
+For waveform predictors, the forecast starts at waveform sample $n=n_q$, and the predicted waveform is transformed into spectral frames at the same future timestamps.
+An offset of $\ell$ spectral frames therefore corresponds to $r=\ell H_\mathrm{s}$ waveform samples.
 For $Q$ scored spectral frames, $M$ channels, and $N_\mathrm{b}$ retained frequency bins, define
 \begin{equation}
     \ell_\mathrm{spec}^{(i)}
     = \frac{1}{Q M N_\mathrm{b}}
-    \sum_{q=1}^{Q}\sum_{c=1}^{M}\sum_{m=1}^{N_\mathrm{b}}
+    \sum_{\ell=1}^{Q}\sum_{c=1}^{M}\sum_{m=1}^{N_\mathrm{b}}
     \left(
-        \widehat{z}^{(i)}_{q,c,m}-z^{(i)}_{q,c,m}
-    \right)^2\,.
+        z^{(i)}_{\ell|q,c,m}-z^{(i)}_{q+\ell,c,m} % i have a feeling that this all with the different types and loss functions is a bit confusing. the diffeent indeces etc.
+    \right){}^2\,.
     \label{eq:spectral_training_loss}
 \end{equation}
-Here, $m$ enumerates the retained bins, and $q$ enumerates the scored spectral frames within the sample.
+Here, $m$ enumerates the retained bins, and $\ell=1,\ldots,Q$ enumerates the scored future frames.
 Unlike waveform MSE, this loss compares log-power rather than individual samples and does not directly penalize Fourier phase differences.
 The target representation therefore determines what agreement means, even when both losses use squared error.
 
-Equation~\eqref{eq:spectral_training_loss} also defines a common spectral error for direct spectral predictions after undoing their output standardization.
+The loss in~\eqref{eq:spectral_training_loss} therefore defines the same spectral error for both predictor families.
 Numerical comparison requires identical \ac{stft} geometry, including the taper, segment length, hop, retained band, smoothing, and power floor.
 The scored spectral frames must also cover the same physical interval and use the same measurement history at the forecast boundary.
 Both predictor families are scored in unstandardized log-power, so the spectral error retains the same meaning regardless of the output scaling used within the model.
 
-One-step training evaluates only the next observation, using~\eqref{eq:observable_training_loss} with $J=1$ for waveform prediction or a single frame in~\eqref{eq:spectral_training_loss} for direct spectral prediction.
+One-step training evaluates only the next observation, using~\eqref{eq:waveform_training_loss} with $R=1$ for waveform prediction or~\eqref{eq:spectral_training_loss} with $Q=1$ for direct spectral prediction.
 This corresponds to teacher forcing: preceding observables are supplied from the recording rather than from earlier predictions.
-Multi-step training applies the same one-step mapping recursively, feeding each prediction into the next history without intermediate measurement correction.
+Multi-step training applies the same one-step mapping recursively, feeding each prediction into the next history without intermediate measurement correction. % is multi-step training properly/adequately introduced in subsection "Supervised Learning Foundations"?
 The loss then scores the resulting free-running rollout, and backpropagation includes the dependence of later errors on earlier predictions.
 This trains the mapping under the recursive use required by predictive control, rather than assessing each transition only from a measured history~\cite{Farina2011}.
 
 A curriculum gradually increases the loss evaluation span from one prediction step to a prescribed final length.
-For waveform MSE, this means increasing $J$ in~\eqref{eq:observable_training_loss}; for direct spectral prediction, it means scoring more predicted frames in~\eqref{eq:spectral_training_loss}.
+For waveform MSE, this means increasing $R$ in~\eqref{eq:waveform_training_loss}; for direct spectral prediction, it means increasing $Q$ in~\eqref{eq:spectral_training_loss}.
 Optimization therefore first emphasizes local transitions before longer recursive predictions enter the objective.
 When waveform training includes a spectral loss, the waveform and spectral terms can score different physical durations within the same rollout.
 The spectral term requires enough predicted samples to form its scored spectral frames, even when the waveform term still scores only a short prefix.
-For nonnegative weights $\lambda_\mathrm{obs}$ and $\lambda_\mathrm{spec}$, the combined per-sample loss is
+For nonnegative weights $\lambda_\mathrm{wave}$ and $\lambda_\mathrm{spec}$, the combined per-sample loss for a waveform predictor is
 \begin{equation}
     \ell^{(i)}
-    = \lambda_\mathrm{obs}\,
-        \ell_\mathrm{obs}^{(i)}
+    = \lambda_\mathrm{wave}\,
+        \ell_\mathrm{wave}^{(i)}
     + \lambda_\mathrm{spec}\,
         \ell_\mathrm{spec}^{(i)}\,.
     \label{eq:combined_predictor_loss}
@@ -555,10 +534,9 @@ These objectives assess agreement with recorded neural responses; the \ac{mpc} c
 A low average prediction loss does not establish accurate responses to every candidate current, nor does it guarantee successful seizure suppression.
 Chapter~\ref{ch:experiments_discussion} therefore evaluates prediction and closed-loop performance separately.
 The following section introduces the architectures used to represent the learned mapping.
+% i dont think this last paragraph is good. I does not provide a good transition to the next section and teases the experiments chapter but there is no need i would say
 
-
-\section{Predictor Architectures}
-\label{sec:predictor_architectures}
+\section{Predictor Architectures}\label{sec:predictor_architectures}
 
 \subsection{\ac{mlp}}
 
@@ -615,8 +593,7 @@ The following section introduces the architectures used to represent the learned
 % - Compare candidate architectures in Chapter 5
 
 
-\section{Connection to \ac{mpc}}
-\label{sec:predictor_mpc_connection}
+\section{Connection to \ac{mpc}}\label{sec:predictor_mpc_connection}
 
 % - Predictor interface with MPC
 %   - Candidate future stimulation currents as inputs
