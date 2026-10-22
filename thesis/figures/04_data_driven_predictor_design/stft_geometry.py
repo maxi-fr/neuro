@@ -78,7 +78,7 @@ def main() -> None:
     ax.legend(loc="lower right")
 
     ax = axes[1]
-    edges_t = np.concatenate([[frame_times[0] - N_HOP / FS], frame_times])
+    edges_t = np.concatenate([frame_times, [frame_times[-1] + N_HOP / FS]])
     d_f = freqs[1] - freqs[0]
     edges_f = np.concatenate([freqs - 0.5 * d_f, [freqs[-1] + 0.5 * d_f]])
     mesh = ax.pcolormesh(edges_t, edges_f, 10.0 * np.log10(power.T + 1e-12), cmap="viridis", shading="flat")
