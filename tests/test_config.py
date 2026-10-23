@@ -128,11 +128,16 @@ def test_sweep_section_typed() -> None:
     assert isinstance(cfg.sweep.training["weight_decay"], FloatParam)
 
 
-def test_sweep_objective_defaults_to_log_energy() -> None:
-    """Test the sweep objective defaults to the log-energy metric rather than waveform NMSE."""
-    cfg = NNPredictorConfig.from_dict({"training": _VALID_TRAINING, "sweep": {"n_trials": 3}})
+@pytest.mark.parametrize("observable", [False, True])
+def test_sweep_objective_defaults_to_val_loss(*, observable: bool) -> None:
+    """Waveform and Observable Sweeps default to validation Loss without an explicit objective."""
+    raw = {"training": _VALID_TRAINING, "sweep": {"n_trials": 3}}
+    if observable:
+        raw["model"] = {"n_u": 9}
+        raw["observable"] = {"n_segment": 25, "n_hop": 3, "band_hz": [1.0, 25.0]}
+    cfg = NNPredictorConfig.from_dict(raw)
     assert cfg.sweep is not None
-    assert cfg.sweep.objective == "log_energy"
+    assert cfg.sweep.objective == "val_loss"
 
 
 def test_closed_loop_objective_without_its_section_rejected() -> None:

@@ -971,7 +971,7 @@ directory). A `sweep` config section declares per-field search spaces (`categori
 sweep:
   artifact: "artifacts/sweep_losses"
   n_trials: 30
-  objective: log_energy   # log_energy | val_loss | rollout_nmse | closed_loop
+  objective: val_loss     # default; other objectives require an explicit choice
   training:
     learning_rate:
       type: loguniform
@@ -991,31 +991,34 @@ artifact under `trial_<n>/`. A `ValueError` mentioning NaN is converted into `op
 
 ### 10.1 Choosing the objective
 
-`sweep.objective` selects what the study minimises. All four are **recorded as user attributes on
-every trial regardless of which one is chosen**, so a finished study can be re-ranked on any of them
-without re-running it.
+`sweep.objective` selects what the study minimises and defaults to `val_loss`. Every candidate the
+Trainer reports is recorded as a trial user attribute, so saved candidates can be re-ranked without
+retraining when the required metric and evaluation protocol are available. Candidate sets depend
+on the Predictor and fit; `closed_loop` is additionally recorded only when configured.
 
 | `objective` | is | cost |
 | ----------- | -- | ---- |
-| `log_energy` *(default)* | `result.log_energy.pooled` — the log-energy error of §8.2.1 | free; same rollouts as the NMSE |
-| `val_loss` | `min(result.val_losses)` — the best-epoch validation loss of §7 | free; already computed |
+| `val_loss` *(default)* | Validation Loss at the selected eligible checkpoint; Observable DMDc reports recursive validation MSE | free; already computed |
+| `log_energy` | `result.log_energy.pooled` — the Waveform log-energy error of §8.2.1 | free; same rollouts as the NMSE |
 | `rollout_nmse` | `result.rollout.pooled` — the incumbent waveform NMSE of §8.2 | free |
+| `val_log_mse` | Separate Observable recursive log-power Frame MSE through the inference implementation | recorded for Observable fits |
 | `closed_loop` | the seizure-burden score from [`evaluate_closed_loop_suppression`](../src/neuro/closed_loop_eval.py) | one full simulation per seed per trial |
 
-`log_energy` is the default because it is the only cheap option that scores the functional the
-controller consumes (§8.2.1).
-
 **`val_loss` is only comparable across trials while the loss composition is fixed.** It is the
-honest choice when the sweep varies architecture and optimiser alone — which is what
-[`sweep_nn_predictor.yaml`](../configs/nn_predictor/sweep_nn_predictor.yaml) does. The moment
-`losses.*.weight` or `losses.*.span_s` enters the search space the number stops being comparable and
-the objective actively selects small weights; use `log_energy` for those sweeps.
+default for Tier 1 architecture, history and optimizer Sweeps under the
+[Sweep strategy](hyperparameter_sweep_strategy.md), with common validation windows across history
+lengths. It aligns neural checkpoint selection, early stopping and trial ranking after every
+scheduled Loss is eligible. Waveform joint Loss is MSE + 15 × STFT; Observable Loss is recursive MSE
+in original log-power units. Their numerical values are not comparable across representations.
+Changing Loss weights, Spans or representation requires common diagnostics and closed-loop
+comparison, rather than ranking the changed aggregate Losses. Fits that do not report `val_loss`,
+such as Waveform ridge fits, require an explicit supported objective.
 
 **`closed_loop` requires a `sweep.closed_loop` section** (enforced at config load) and is best used
 as a *gate on finalists* rather than as the objective, for three reasons: seed variance with a
 handful of seeds means ranking on seed luck; it confounds predictor quality with the MPC's own
 `w_y`/`w_u` tuning, so a predictor that would win under different weights loses; and it costs
-`len(seeds)` full simulations per trial. The recommended flow is to sweep on `log_energy`, then
+`len(seeds)` full simulations per trial. The recommended flow is to sweep on fixed `val_loss`, then
 re-run the top-$k$ trials with `objective: closed_loop`. Note that the closed-loop evaluation runs
 whenever the section is present, whichever objective is selected, so its stats are recorded
 alongside the others.

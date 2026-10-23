@@ -573,7 +573,7 @@ class ClosedLoopEvalConfig(StrictConfig):
 
 
 class NNSweepConfig(StrictConfig):
-    """Optuna sweep settings for the two NN predictors: trial count, output dir and search spaces.
+    """Optuna Sweep settings with validation Loss as the default objective.
 
     ``objective`` names the Trainer candidate the study minimizes. It is a plain string here
     because the sweep alone does not know the model kind; :class:`NNPredictorConfig` validates it
@@ -583,7 +583,7 @@ class NNSweepConfig(StrictConfig):
 
     n_trials: int = Field(default=25, ge=1)
     artifact: str | None = None
-    objective: str = "log_energy"
+    objective: str = "val_loss"
     model: dict[str, ParamSpec] = Field(default_factory=dict)
     training: dict[str, ParamSpec] = Field(default_factory=dict)
     observable: dict[str, ParamSpec] = Field(default_factory=dict)
