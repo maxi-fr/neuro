@@ -7,6 +7,7 @@ from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
+from matplotlib.colors import LogNorm
 from scipy.signal import decimate
 from scipy.signal.windows import hann
 
@@ -54,7 +55,7 @@ def _pz_trace() -> tuple[FloatArray, FloatArray]:
 
 
 def _periodograms(y: FloatArray) -> tuple[FloatArray, FloatArray, FloatArray]:
-    """Return frequency bins, latest-sample times, and periodograms in decibels."""
+    """Return frequency bins, latest-sample times, and power-density periodograms."""
     n_frames = (y.size - N_SEGMENT) // N_HOP + 1
     taper = hann(N_SEGMENT, sym=False)
     segments = np.stack([y[q * N_HOP : q * N_HOP + N_SEGMENT] for q in range(n_frames)])
@@ -66,13 +67,13 @@ def _periodograms(y: FloatArray) -> tuple[FloatArray, FloatArray, FloatArray]:
     power = power * fold[None, :] / (FS * np.sum(taper**2))
     freqs = np.fft.rfftfreq(N_SEGMENT, d=1.0 / FS)
     frame_times = (np.arange(n_frames) * N_HOP + N_SEGMENT - 1) / FS
-    return freqs, frame_times, 10.0 * np.log10(power + LOG_FLOOR)
+    return freqs, frame_times, power
 
 
 def main() -> None:
-    """Write the trace-and-spectra figure with a power-density colorbar."""
+    """Write causally aligned spectra with a logarithmic power-density colorbar."""
     t, y = _pz_trace()
-    freqs, frame_times, power_db = _periodograms(y)
+    freqs, frame_times, power = _periodograms(y)
 
     fig, axes = plt.subplots(
         2, 1, figsize=style.figsize(height_in=4.0), height_ratios=[1.0, 1.3], constrained_layout=True
@@ -85,10 +86,12 @@ def main() -> None:
 
     ax = axes[1]
     d_f = freqs[1] - freqs[0]
-    edges_t = np.concatenate([[frame_times[0] - N_HOP / FS], frame_times])
+    edges_t = np.concatenate([frame_times, [frame_times[-1] + N_HOP / FS]])
     edges_f = np.concatenate([freqs - 0.5 * d_f, [freqs[-1] + 0.5 * d_f]])
-    mesh = ax.pcolormesh(edges_t, edges_f, power_db.T, cmap="viridis", shading="flat")
-    fig.colorbar(mesh, ax=ax, label="Power density / dB", pad=0.02)
+    mesh = ax.pcolormesh(
+        edges_t, edges_f, np.maximum(power.T, LOG_FLOOR), norm=LogNorm(), cmap="viridis", shading="flat"
+    )
+    fig.colorbar(mesh, ax=ax, label=r"PSD / (mV$^2$ Hz$^{-1}$)", pad=0.02)
     ax.set_ylabel("Frequency / Hz")
     ax.set_xlabel("Time / s")
     ax.set_title("(b) Spectrogram", loc="left")

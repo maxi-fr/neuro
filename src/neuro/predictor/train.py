@@ -361,13 +361,20 @@ def _train_observable_dmd(cfg: NNPredictorConfig, data_files: list[str], geom: S
     if cfg.model.depth > 0:
         msg = f"'training.fit: dmd' requires a depth-0 MLP, got model.depth = {cfg.model.depth}."
         raise ValueError(msg)
+    if cfg.model.residual:
+        msg = "'training.fit: dmd' requires direct prediction; set model.residual=False."
+        raise ValueError(msg)
     sim, trn = cfg.simulation, cfg.training
     fs_frame = geom.frame_rate(cfg.fs)
     data, model, _ = _prepare_observable(cfg, data_files, geom, depth=0)
     if not isinstance(model, ObservableMLPModel):
         msg = "Observable DMD fitting requires an MLP model"
         raise TypeError(msg)
-    DmdTrainer(rank=trn.dmd_rank, energy=trn.dmd_energy, dmd_lambda=trn.dmd_lambda).fit(model, data.train_trajs)
+    DmdTrainer(
+        rank=trn.dmd_rank,
+        energy=trn.dmd_energy,
+        dmd_lambda=trn.dmd_lambda,
+    ).fit(model, data.train_trajs)
 
     model.provenance = training_provenance(data_files, sim.cutoff_hz)
     model.downsample = sim.downsample
@@ -605,13 +612,20 @@ def _train_waveform_dmd(cfg: NNPredictorConfig, data_files: list[str]) -> RidgeT
     if cfg.model.depth > 0:
         msg = f"'training.fit: dmd' requires a depth-0 MLP, got model.depth = {cfg.model.depth}."
         raise ValueError(msg)
+    if cfg.model.residual:
+        msg = "'training.fit: dmd' requires direct prediction; set model.residual=False."
+        raise ValueError(msg)
     sim, trn = cfg.simulation, cfg.training
     fs = cfg.fs
     data, model, _ = _prepare_waveform(cfg, data_files, depth=0)
     if not isinstance(model, WaveformMLPModel):
         msg = "waveform DMD fitting requires an MLP model"
         raise TypeError(msg)
-    DmdTrainer(rank=trn.dmd_rank, energy=trn.dmd_energy, dmd_lambda=trn.dmd_lambda).fit(model, data.train_trajs)
+    DmdTrainer(
+        rank=trn.dmd_rank,
+        energy=trn.dmd_energy,
+        dmd_lambda=trn.dmd_lambda,
+    ).fit(model, data.train_trajs)
 
     model.provenance = training_provenance(data_files, sim.cutoff_hz)
     model.downsample = sim.downsample

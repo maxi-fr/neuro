@@ -110,6 +110,9 @@ class DmdTrainer:
         if getattr(model, "depth", 0) > 0 or not isinstance(model, RidgeFittable):
             msg = f"DmdTrainer requires a depth-0 RidgeFittable model, got {type(model).__name__}."
             raise TypeError(msg)
+        if getattr(model, "residual", False):
+            msg = "DmdTrainer requires direct prediction (model.residual=False)."
+            raise ValueError(msg)
 
         c = model.n_outputs
         m = model.n_controls
@@ -130,8 +133,6 @@ class DmdTrainer:
             )
             x_1step = np.hstack([x_traj[:, :y_len], x_traj[:, y_len + m : y_len + (model.n_u + 1) * m]])
             targets = y_traj[:, :c]
-            if model.residual:
-                targets = targets - x_traj[:, y_len - c : y_len]
             x_list.append(np.asarray(x_1step, dtype=np.float64))
             y_list.append(np.asarray(targets, dtype=np.float64))
 

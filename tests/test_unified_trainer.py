@@ -338,7 +338,7 @@ def test_waveform_spectral_score_and_boundary_history(tmp_path: Path, fit: str) 
         eval_horizon_s=0.032,
     )
     if fit != "gradient_descent":
-        cfg = cfg.model_copy(update={"model": cfg.model.model_copy(update={"depth": 0})})
+        cfg = cfg.model_copy(update={"model": cfg.model.model_copy(update={"depth": 0, "residual": False})})
     result = train(cfg, _write_trajectories(tmp_path, dt=_WAVE_DT, t=_T))
     assert result.spectral_free_run is not None
     assert result.spectral_free_run.per_step.shape == (8,)

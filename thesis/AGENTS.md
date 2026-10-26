@@ -23,5 +23,6 @@ options:
 ```
 
 Add all temporary files to tmp/
+Compile the thesis into out/
 
 When creating or editing figures follow [FIGURE_INSTRUCTIONS.md]

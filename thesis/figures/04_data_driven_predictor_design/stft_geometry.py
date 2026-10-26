@@ -7,6 +7,7 @@ from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
+from matplotlib.colors import LogNorm
 from scipy.signal import chirp
 from scipy.signal.windows import hann
 
@@ -35,17 +36,17 @@ def _periodograms(y: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
 
 
 def main() -> None:
-    """Write the two-panel STFT geometry figure with a discrete-index taper."""
+    """Write STFT geometry with a compact spectral panel below the labeled waveform segments."""
     t = np.arange(int(DURATION * FS)) / FS
     y = chirp(t, f0=F_START, t1=DURATION, f1=F_END, method="linear")
     freqs, frame_times, power = _periodograms(y)
 
     fig, axes = plt.subplots(
-        2, 1, figsize=style.figsize(height_in=4.4), height_ratios=[1.0, 1.25], constrained_layout=True
+        2, 1, figsize=style.figsize(height_in=3.3), height_ratios=[1.0, 0.6], constrained_layout=True
     )
 
     ax = axes[0]
-    ax.plot(t, y, lw=0.7, color="C0", zorder=3)
+    ax.plot(t, y, lw=0.7, color="C0", zorder=3, label="Chirp signal")
     taper = hann(N_SEGMENT, sym=False)
     seg_t = np.arange(N_SEGMENT) / FS
     for q in range(N_DRAWN):
@@ -73,7 +74,7 @@ def main() -> None:
     ax.text(0.5 * N_HOP / FS, -4.42, r"$H_\mathrm{s}$", ha="center", va="top", fontsize=style.FONT_ANNOTATION)
     ax.set_ylim(-5.3, 2.4)
     ax.set_yticks([-1.0, 0.0, 1.0])
-    ax.set_ylabel("Amplitude / 1")
+    ax.set_ylabel("Amplitude")
     ax.set_title("(a) Segments on the hop grid", loc="left")
     ax.legend(loc="lower right")
 
@@ -81,28 +82,16 @@ def main() -> None:
     edges_t = np.concatenate([frame_times, [frame_times[-1] + N_HOP / FS]])
     d_f = freqs[1] - freqs[0]
     edges_f = np.concatenate([freqs - 0.5 * d_f, [freqs[-1] + 0.5 * d_f]])
-    mesh = ax.pcolormesh(edges_t, edges_f, 10.0 * np.log10(power.T + 1e-12), cmap="viridis", shading="flat")
-    fig.colorbar(mesh, ax=ax, label="Power / dB", pad=0.02)
+    mesh = ax.pcolormesh(
+        edges_t, edges_f, np.maximum(power.T, 1e-12), norm=LogNorm(), cmap="viridis", shading="flat"
+    )
+    fig.colorbar(mesh, ax=ax, label=r"$|Y_{q,m}|^2$", pad=0.02)
     ax.vlines(frame_times, 0.0, FS / 2, colors="w", lw=0.35, alpha=0.5)
-    ax.annotate(
-        "",
-        xy=(0.0, 112.0),
-        xytext=((N_SEGMENT - 1) / FS, 112.0),
-        arrowprops={"arrowstyle": "<->", "lw": 0.9, "color": "0.25"},
-    )
-    ax.text(
-        (N_SEGMENT - 1) / FS + 0.03,
-        112.0,
-        "samples spectrum $q = 0$ waits for",
-        ha="left",
-        va="center",
-        fontsize=style.FONT_ANNOTATION,
-    )
-    ax.set_ylim(0.0, 128.0)
+    ax.set_ylim(0.0, FS / 2)
     ax.set_yticks([0.0, 25.0, 50.0, 75.0, 100.0])
     ax.set_ylabel("Frequency / Hz")
     ax.set_xlabel("Time / s")
-    ax.set_title("(b) The spectra the grid produces", loc="left")
+    ax.set_title("(b) Corresponding STFT spectra", loc="left")
 
     for ax in axes:
         ax.grid(visible=True, lw=0.4, alpha=0.4)
