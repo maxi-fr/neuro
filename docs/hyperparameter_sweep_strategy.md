@@ -107,11 +107,11 @@ Keep `n_u=9` at baseline geometry. Cap the architecture search at one second of 
 
 The MLP flattens history into its first dense layer. At 62 channels × 12 frequency bins, maximum history requires about 1.72 million first-layer weights at width 256 and 6.88 million at width 1024. These counts motivate pilots, not automatic exclusion. Retain the range unless pilots establish a limitation, then document it before the search.
 
-After architecture confirmation, optimize learning rate log-uniform `[1e-4, 3e-3]`, weight decay log-uniform `[1e-6, 1e-3]`, and batch size `[128, 256, 512]` on the frozen architecture. Confirm optimizer finalists under Section 3.2.
+After architecture confirmation, optimize learning rate log-uniform `[1e-4, 3e-3]`, weight decay log-uniform `[1e-6, 1e-3]`, and batch size `[128, 256, 512]` on the frozen architecture. Confirm optimizer finalists under Section 3.2. Note: Investigate the residual connection (`model.residual`: `[true, false]`) for Observable MLP in subsequent ablations to evaluate direct vs. residual prediction on recursive rollout stability.
 
 ### 4.2 Waveform MLP: joint capacity and history
 
-Use residual prediction, 100 Hz, `n_u=10`, and the frozen 1:15 joint Loss. Search jointly:
+Use 100 Hz, `n_u=10`, and the frozen 1:15 joint Loss. Search jointly:
 
 | Parameter | Candidates |
 | --- | --- |
@@ -119,6 +119,7 @@ Use residual prediction, 100 Hz, `n_u=10`, and the frozen 1:15 joint Loss. Searc
 | `model.hidden_size` | `[64, 128, 256]` |
 | `model.depth` | `[1, 2, 3]` |
 | `model.activation` | `[tanh, softplus]` |
+| `model.residual` | `[true, false]` |
 
 This caps the architecture search at one second of history, replacing fixed 150 ms history and the optional 250 ms extension. The maximum is about 6.7 times the old 15-sample history. At maximum history and width 256, the first layer has about 1.59 million weights for 62 EEG channels and three Control Current channels. Recursive training and controller derivatives still require pilots.
 
