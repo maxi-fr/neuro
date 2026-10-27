@@ -42,6 +42,20 @@
 % Additional Packages
 \usepackage{acro} % Acronym management
 \usepackage{amsmath, amssymb}
+% Shared notation for recurring counts and spectral observations.
+\newcommand{\nreg}{n_{\mathrm{reg}}}
+\newcommand{\nchan}{n_{\mathrm{chan}}}
+\newcommand{\nelec}{n_{\mathrm{elec}}}
+\newcommand{\nbin}{n_{\mathrm{bin}}}
+\newcommand{\nseg}{n_{\mathrm{seg}}}
+\newcommand{\nhop}{n_{\mathrm{hop}}}
+\newcommand{\nsmooth}{n_{\mathrm{smooth}}}
+\newcommand{\npred}{n_{\mathrm{pred}}}
+\newcommand{\ntrain}{n_{\mathrm{train}}}
+\newcommand{\ndim}[1]{n_{#1}}
+\newcommand{\nhist}[1]{n_{\mathrm{past},#1}}
+\newcommand{\nscore}[1]{n_{\mathrm{#1}}}
+\newcommand{\spectral}{\boldsymbol{\mathcal{Y}}}
 \usepackage{booktabs} % Professional table formatting
 \usepackage{siunitx}
 \usepackage{tikz}

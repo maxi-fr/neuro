@@ -76,7 +76,7 @@ def main() -> None:
     freqs, frame_times, power = _periodograms(y)
 
     fig, axes = plt.subplots(
-        2, 1, figsize=style.figsize(height_in=4.0), height_ratios=[1.0, 1.3], constrained_layout=True
+        2, 1, figsize=style.figsize(height_in=3.0), height_ratios=[1.0, 1.3], constrained_layout=True
     )
 
     ax = axes[0]

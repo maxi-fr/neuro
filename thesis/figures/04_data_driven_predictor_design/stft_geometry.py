@@ -36,7 +36,7 @@ def _periodograms(y: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
 
 
 def main() -> None:
-    """Write STFT geometry with a compact spectral panel below the labeled waveform segments."""
+    """Write the STFT grid with waveform segments and subscripted sample counts."""
     t = np.arange(int(DURATION * FS)) / FS
     y = chirp(t, f0=F_START, t1=DURATION, f1=F_END, method="linear")
     freqs, frame_times, power = _periodograms(y)
@@ -52,7 +52,7 @@ def main() -> None:
     for q in range(N_DRAWN):
         base = -1.7 - 0.62 * q
         offset = q * N_HOP / FS
-        label = r"Hann taper $w_r$" if q == 0 else None
+        label = r"Hann taper $w_\beta$" if q == 0 else None
         ax.fill_between(seg_t + offset, base, base + 0.5 * taper, color=f"C{q + 1}", alpha=0.35, lw=0)
         ax.plot(seg_t + offset, base + 0.5 * taper, lw=0.9, color=f"C{q + 1}", label=label)
         ax.text(
@@ -64,14 +64,14 @@ def main() -> None:
         xytext=(N_SEGMENT / FS, 1.55),
         arrowprops={"arrowstyle": "<->", "lw": 0.8, "color": "0.25"},
     )
-    ax.text(0.5 * N_SEGMENT / FS, 1.68, r"$L_\mathrm{s}$", ha="center", va="bottom", fontsize=style.FONT_ANNOTATION)
+    ax.text(0.5 * N_SEGMENT / FS, 1.68, r"$n_{\mathrm{seg}}$", ha="center", va="bottom", fontsize=style.FONT_ANNOTATION)
     ax.annotate(
         "",
         xy=(0.0, -4.15),
         xytext=(N_HOP / FS, -4.15),
         arrowprops={"arrowstyle": "<->", "lw": 0.8, "color": "0.25"},
     )
-    ax.text(0.5 * N_HOP / FS, -4.42, r"$H_\mathrm{s}$", ha="center", va="top", fontsize=style.FONT_ANNOTATION)
+    ax.text(0.5 * N_HOP / FS, -4.42, r"$n_{\mathrm{hop}}$", ha="center", va="top", fontsize=style.FONT_ANNOTATION)
     ax.set_ylim(-5.3, 2.4)
     ax.set_yticks([-1.0, 0.0, 1.0])
     ax.set_ylabel("Amplitude")

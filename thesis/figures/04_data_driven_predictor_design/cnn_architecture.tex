@@ -59,78 +59,77 @@
             \ifnum\panel=0
                 \def\bottom{-1.35}
                 \node at (2.3,0.65)
-                    {$\mathbf{X}^{(0)}_k\in\mathbb{R}^{n_y\times d_\mathrm{o}}$};
+                    {$\mathbf{X}^{(0)}_k$};
                 \node at (13.25,0.65)
-                    {$\mathbf{X}^{(L_\mathrm{c})}_k\in
-                    \mathbb{R}^{C_{L_\mathrm{c}}\times T_{L_\mathrm{c}}}$};
+                    {$\mathbf{X}^{(n_{\mathrm{CNN}})}_k$};
             \else
                 \def\bottom{-1.7}
                 \node at (2.3,0.65)
-                    {$\mathbf{X}^{(0)}_k\in\mathbb{R}^{n_y\times d_\mathrm{o}\times N_\mathrm{b}}$};
+                    {$\mathbf{X}^{(0)}_k$};
                 \node at (13.25,0.65)
-                    {$\mathbf{X}^{(L_\mathrm{c})}_k\in
-                    \mathbb{R}^{C_{L_\mathrm{c}}\times T_{L_\mathrm{c}}\times N_\mathrm{b}}$};
+                    {$\mathbf{X}^{(n_{\mathrm{CNN}})}_k$};
                 \draw[flow, black!65] (0.15,-1.7) -- (0.15,-0.4)
-                    node[midway, above, thesis secondary, rotate=90]{Frequency ($N_\mathrm{b}$)};
+                    node[midway, above, thesis secondary, rotate=90]{Frequency};
                 \draw[flow, black!65] (11.65,-1.7) -- (11.65,-0.4)
-                    node[midway, above, thesis secondary, rotate=90]{Frequency ($N_\mathrm{b}$)};
+                    node[midway, above, thesis secondary, rotate=90]{Frequency};
             \fi
             \draw[flow, black!65] (0.5,\bottom-0.3) -- (3.5,\bottom-0.3)
-                node[midway, below, thesis secondary] {Time ($d_\mathrm{o}$)};
+                node[midway, below, thesis secondary] {Time};
             \draw[flow, black!65] (12,\bottom-0.3) -- (14.5,\bottom-0.3)
-                node[midway, below, thesis secondary] {Time ($T_{L_\mathrm{c}}$)};
-            \draw[flow, black!65] (3.8,\bottom) -- (4.4,\bottom+0.6)
-                node[midway, below right, thesis secondary] {$n_y$};
+                node[midway, below, thesis secondary] {Time};
+            \draw[flow, black!65] (3.8,\bottom) -- (4.4,\bottom+0.6);
+            \node[thesis secondary, text=black!65] at (4.25,\bottom+0.08) {$c'$};
             \draw[-{Stealth[length=1mm]}, black!65, line width=0.6pt]
-                (14.7,\bottom) -- (14.94,\bottom+0.24)
-                node[midway, below right, thesis secondary] {$C_{L_\mathrm{c}}$};
+                (14.7,\bottom) -- (14.94,\bottom+0.24);
+            \node[thesis secondary, text=black!65] at (14.98,\bottom+0.02) {$c$};
 
-            % One layer contains a bank of filters, each followed by activation.
-            % The multiplier repeats this construction with new weights per layer.
-            \draw[box] (5.1,0.05) rectangle (10.2,-2.15);
-            \node[thesis heading] at (7.4,0.55) {Convolutional layer};
-            \node at (10.2,0.55) {$\times L_\mathrm{c}$};
-            \coordinate (layerin) at (5.1,-1.05);
-            \draw[flow] (4.55,-1.05) -- (layerin);
-            \foreach \filter/\y in {1/-0.5,C_\ell/-1.6} {
-                \node[conv, minimum width=18mm, minimum height=6mm]
-                    (filter) at (6.6,\y) {$\mathrm{Conv}_{\filter}$};
-                \node[conv, minimum width=9mm, minimum height=6mm]
-                    (activation) at (8.8,\y) {$\sigma$};
-                \draw[flow] (5.4,-1.05) |- (filter.west);
+            % Each row combines all input channels to produce a different output channel.
+            \draw[box] (5.0,0.05) rectangle (10.6,-2.4);
+            \node[thesis heading] at (7.7,0.55) {Convolutional layer};
+            \node at (10.6,0.55) {$\times n_{\mathrm{CNN}}$};
+            \draw[line width=0.6pt] (4.55,-1.05) -- (5.35,-1.05);
+            \foreach \channel/\y in {1/-0.45,2/-1.35} {
+                \node[conv, minimum width=35mm, minimum height=7mm]
+                    (filter) at (7.55,\y)
+                    {$\sum_{c'}\mathbf W_{\channel c'}^{(\ell)}\star
+                    \mathbf X_{c'}^{(\ell-1)}+b_{\channel}^{(\ell)}$};
+                \node[conv, minimum width=7mm, minimum height=7mm]
+                    (activation) at (9.95,\y) {$\sigma$};
+                \draw[flow] (5.35,-1.05) |- (filter.west);
                 \draw[flow] (filter.east) -- (activation.west);
-                \draw (activation.east) -- (9.75,\y) -- (9.75,-1.05);
+                \draw (activation.east) -- (10.45,\y) -- (10.45,-1.05);
             }
-            \draw (layerin) -- (5.4,-1.05);
-            \node at (6.6,-1.05) {$\vdots$};
-            \node at (8.8,-1.05) {$\vdots$};
+            \node at (7.55,-1.95) {$\vdots$};
+            \node at (9.95,-1.95) {$\vdots$};
             \ifnum\panel=0
-                \draw[flow] (9.75,-1.05) -- (11.8,-1.05);
+                \draw[flow] (10.45,-1.05) -- (11.8,-1.05);
             \else
-                \draw[flow] (9.75,-1.05) -- (11.05,-1.05);
+                \draw[flow] (10.45,-1.05) -- (11.05,-1.05);
             \fi
 
             \draw[flow] (14.9,-1.05) -- (16.1,-1.05);
         \end{scope}
     }
 
-    \draw[black!35, line width=0.5pt] (0,-7.05) -- (16.1,-7.05);
+    \node[thesis secondary] at (8.05,-7.0)
+        {$\ell$: layer; $c'$: input-channel index; $c$: output-channel index; rows $c=1,2,\ldots$};
+    \draw[black!35, line width=0.5pt] (0,-7.35) -- (16.1,-7.35);
 
     % A detached continuation enters the shared head from either alternative.
     \begin{scope}[shift={(0,-5.3)}]
         \node[thesis heading, anchor=west] at (0,-2.45)
             {(c) Fully connected head};
         \draw[box] (2,-2.9) rectangle (6.2,-5.7);
-        \node[thesis heading] at (4.1,-3.15) {$\boldsymbol{\eta}_k$};
-        \node[conv, text width=31mm, minimum height=6mm] (features) at (4.1,-3.7)
-            {$\mathbf{v}_k=\operatorname{vec}\!\left(\mathbf{X}^{(L_\mathrm{c})}_k\right)$};
+        \node[thesis heading] at (4.1,-3.15) {$\mathbf{z}_k^{\mathrm{CNN}}$};
+        \node[conv, text width=31mm, minimum height=6mm] (features) at (4.1,-3.8)
+            {$\mathbf{X}^{(n_{\mathrm{CNN}})}_k$};
         \node[box, draw=orange!75!black, fill=orange!7,
             text width=31mm, minimum height=6mm] at (4.1,-4.55)
-            {$\widetilde{\mathbf{u}}_{k-d_\mathrm{u}},\ldots,\widetilde{\mathbf{u}}_{k-1}$};
+            {$\widetilde{\mathbf{u}}_{k-\nhist{u}},\ldots,\widetilde{\mathbf{u}}_{k-1}$};
         \node[box, draw=orange!75!black, fill=orange!7,
             text width=31mm, minimum height=6mm] at (4.1,-5.25)
             {$\widetilde{\mathbf{u}}_k$};
-        \draw[flow] (0.5,-3.7) -- (features.west);
+        \draw[flow] (0.5,-3.8) -- (features.west);
 
         \foreach \i/\y in {1/-3.7,2/-4.2,3/-4.7,4/-5.2} {
             \coordinate (a\i) at (7.3,\y);
@@ -156,7 +155,7 @@
         \node[thesis secondary] at (9.55,-3.15) {Hidden layers};
         \node[thesis secondary] at (11.8,-3.15) {Affine output};
         \node[box, text width=23mm] (prediction) at (14.4,-4.45)
-            {Direct or residual\\$\widehat{\widetilde{\mathbf{o}}}_{k+1}$};
+            {Direct or residual\\$\widetilde{\mathbf{o}}_{1\mid k}$};
         \draw[flow] (12.1,-4.45) -- (prediction.west);
     \end{scope}
 \end{tikzpicture}

@@ -2,7 +2,8 @@
 
 \section*{Symbols}
 
-Matrices are set bold and uppercase, vectors bold and lowercase and scalars italic and lowercase.
+Vectors and arrays are bold; scalar entries retain the base symbol of their array.
+The waveform, Fourier and spectral-feature family uses $y$, $Y$ and $\mathcal Y$, respectively.
 A running index is italic, a naming index upright.
 
 \begin{tabular}{lp{0.62\linewidth}l}
@@ -10,17 +11,17 @@ A running index is italic, a naming index upright.
     Symbol & Description & Unit \\
     \midrule
     \multicolumn{3}{l}{\itshape Indices and dimensions} \\
-    $i, j$ & Brain region index & -- \\
-    $N$ & Number of brain regions & -- \\
-    $m$ & \acs*{eeg} channel index & -- \\
-    $M$ & Number of \acs*{eeg} channels & -- \\
+    $i, i'$ & Brain region indices & -- \\
+    $\nreg$ & Number of brain regions & -- \\
+    $c$ & \acs*{eeg} channel index & -- \\
+    $\nchan$ & Number of \acs*{eeg} waveform channels & -- \\
     $p$ & Stimulation electrode index & -- \\
-    $P$ & Number of stimulation electrodes & -- \\
+    $\nelec$ & Number of stimulation electrodes & -- \\
     \midrule
     \multicolumn{3}{l}{\itshape Plant state and dynamics} \\
     $x_{i,1}, x_{i,2}, x_{i,3}$ & Pyramidal, excitatory and inhibitory \acs*{psp} of region $i$ & \si{\milli\volt} \\
     $x_{i,4}, x_{i,5}, x_{i,6}$ & Time derivatives of the three \acs*{psp} & \si{\milli\volt\per\second} \\
-    $\mathbf{x}$ & Current regional state vector, $6N$ entries & -- \\
+    $\mathbf{x}$ & Stacked regional state vector, $6\nreg$ entries & -- \\
     $h_\mathrm{e}, h_\mathrm{i}$ & Excitatory and inhibitory \acs*{psp} impulse response & \si{\milli\volt\per\second} \\
     $S(v)$ & Wave-to-pulse sigmoid & \si{\per\second} \\
     $A_i$ & Regional excitatory synaptic gain & \si{\milli\volt} \\
@@ -34,25 +35,25 @@ A running index is italic, a naming index upright.
     $I$ & Constant excitatory background input & \si{\per\second} \\
     $\zeta_i(t)$ & Gaussian white-noise input to the excitatory branch & \si{\per\second} \\
     $\sigma$ & White-noise amplitude & \si{\second^{-1/2}} \\ % latex-lint:ignore=TYPO-05
-    $\xi_{i,k}$ & Noise increment in the excitatory derivative state at plant step $k$ & \si{\milli\volt\per\second} \\
-    $\eta_{i,k}$ & Independent standard normal draw & -- \\
-    $\hat{\mathbf{e}}_5$ & Fifth unit vector, selecting the excitatory derivative state & -- \\
+    $\xi_{\kappa,i}$ & Noise increment in the excitatory derivative state at plant step $\kappa$ & \si{\milli\volt\per\second} \\
+    $\eta_{\kappa,i}$ & Independent standard normal draw & -- \\
+    $\mathbf{e}_5$ & Fifth unit vector, selecting the excitatory derivative state & -- \\
     $\Delta t_\mathrm{p}$ & Plant integration step & \si{\second} \\
     \midrule
     \multicolumn{3}{l}{\itshape Network} \\
-    $\mathbf{W}$, $w_{ij}$ & Structural connectivity matrix and its entries & -- \\
+    $\mathbf{W}$, $w_{ii'}$ & Structural connectivity matrix and its entries & -- \\
     $K$ & Global coupling factor & -- \\
-    $\ell_{ij}$ & Fibre tract length between regions $i$ and $j$ & \si{\milli\metre} \\
+    $\ell_{ii'}$ & Fibre tract length between regions $i$ and $i'$ & \si{\milli\metre} \\
     $c$ & Axonal conduction speed & \si{\milli\metre\per\milli\second} \\
-    $\mathbf{D}$, $d_{ij}$, $d_{ij}^{\ast}$ & Applied delay matrix, applied and physical delays & \si{\milli\second} \\
-    $n_{ij}$ & Integer conduction delay in plant steps & -- \\
+    $d_{ii'}$, $d_{ii'}^{[\Delta t_\mathrm p]}$ & Physical and quantized delays & \si{\milli\second} \\
+    $n_{\mathrm{delay},ii'}$ & Integer conduction delay in plant steps & -- \\
     $I_{\mathrm{coup},i}$ & Network coupling input to region $i$ & \si{\per\second} \\
     \midrule
     \multicolumn{3}{l}{\itshape Electrical interfaces} \\
     $y_{\mathrm{reg},i}$, $\mathbf{y}_\mathrm{reg}$ & Regional output and its stacked vector & \si{\milli\volt} \\
     $\mathbf{y}_\mathrm{EEG}$ & Scalp \acs*{eeg} channel amplitudes & -- \\
-    $\mathbf{L}_\mathrm{EEG}$ & \acs*{eeg} lead field, $M \times N$ & -- \\
-    $\mathbf{L}_\mathrm{stim}$ & Stimulation lead field, $N \times P$ & -- \\
+    $\mathbf{L}_\mathrm{EEG}$ & \acs*{eeg} lead field, $\nchan \times \nreg$ & -- \\
+    $\mathbf{L}_\mathrm{stim}$ & Stimulation lead field, $\nreg \times \nelec$ & -- \\
     $\mathbf{u}$, $u_p$ & Electrode current vector and current at electrode $p$ & \si{\milli\ampere} \\
     $\mathbf{s}$, $s_i$ & Stimulation drive and its regional entries & \si{\milli\volt} \\
     \bottomrule
@@ -63,40 +64,62 @@ A running index is italic, a naming index upright.
     Symbol & Description & Unit \\
     \midrule
     \multicolumn{3}{l}{\itshape Model predictive control} \\
-    $k$ & Sample index and the control step index & -- \\
+    $\kappa, r, q, k$ & Plant step, waveform sample, spectral frame and predictor step & -- \\
     $j$ & Step offset within the prediction horizon & -- \\
-    $H$ & Prediction horizon length & -- \\
-    $\mathbf{x}$, $n_x$ & Prediction-model state and its dimension & -- \\
+    $\npred$ & Prediction horizon length & -- \\
+    $\mathbf{x}$, $\ndim{x}$ & Prediction-model state and its dimension & -- \\
     $\hat{\mathbf{x}}_k$ & State estimate at control step $k$ & -- \\
-    $n_y$ & Observable output dimension & -- \\
+    $\mathbf{o}_k$, $\ndim{o}$ & Observable vector and its dimension & -- \\
+    $\mathbf{y}_r$, $\ndim{y}$ & Waveform sample and its dimension & -- \\
+    $\ndim{u}$ & Dimension of the chosen current parameterization & -- \\
+    $\spectral_q$ & Spectral feature vector, $\nchan\nbin$ entries & -- \\
     $\mathbf{x}_{j|k}$ & Prediction $j$ steps ahead of step $k$ & -- \\
     $\mathbf{f}_{\boldsymbol{\theta}}$ & One-step prediction function & -- \\
     $\boldsymbol{\varphi}_j$ & Single-shooting rollout map over $j$ steps & -- \\
-    $d_\mathrm{y}, d_\mathrm{u}$ & \acs*{narx} output and input history lengths & -- \\
-    $\mathbf{h}_k$, $n_h$ & Input-output history state and its dimension & -- \\
-    $\boldsymbol{\theta}$ & Prediction-model parameters & -- \\
-    $\boldsymbol{\xi}_k$ & \acs*{mlp} input & -- \\
-    $L$ & Number of affine layers in the \acs*{mlp} & -- \\
-    $\mathbf{a}^{(\ell)}_k$ & \acs*{mlp} layer activation & -- \\
-    $\mathbf{W}^{(\ell)}$, $\mathbf{b}^{(\ell)}$ & \acs*{mlp} layer weights and biases & -- \\
-    $\mathcal{D}$ & Identification sample distribution & -- \\
-    $\mathbf{H}$ & Centred history snapshots & -- \\
-    $\mathbf{Z}_{k+1}$ & Centred successor spectral features & -- \\
-    $\boldsymbol{\Upsilon}$ & Centred input snapshots & -- \\
+    $\nhist{o}, \nhist{u}$ & Observation and input history lengths & -- \\
+    $\mathbf{h}_k$ & Input-output history state & -- \\
+    $\ndim{h}$, $\ndim{z}$ & History and shared-regressor dimensions & -- \\
+    $\nu$ & Training-example index; reference step $k$ is sample dependent & -- \\
+    $\ntrain$ & Number of training examples in the current dataset & -- \\
+    $\boldsymbol{\theta}$, $n_\theta$ & Prediction-model parameters and their number & -- \\
+    $n_{\mathrm{score}}$, $\nscore{wave}$, $\nscore{spec}$ & Scored predictions, waveform samples and spectral frames & -- \\
+    $\mathbf z_k$, $\mathbf z_k^{\mathrm{CNN}}$ & Shared \acs*{mlp}/\acs*{dmd} and \acs*{cnn} head inputs & -- \\
+    \bottomrule
+\end{tabular}
+
+\begin{tabular}{lll}
+    \toprule
+    Symbol & Description & Unit \\
+    \midrule
+    \multicolumn{3}{l}{\itshape Predictor architectures and control costs} \\
+    $n_{\mathrm{MLP}}$, $n_{\mathrm{CNN}}$ & \acs*{mlp} affine-layer and \acs*{cnn} convolutional-layer counts & -- \\
+    $n^{(\ell)}$ & Number of \acs*{mlp} units in layer $\ell$ & -- \\
+    $\mathbf{a}^{(\ell)}$ & Hidden-layer activation, with prediction step suppressed & -- \\
+    $\mathbf{W}^{(\ell)}$, $\mathbf{b}^{(\ell)}$ & Hidden-layer weights and biases & -- \\
+    $\mathbf{W}^{(n_{\mathrm{MLP}})}$, $\mathbf{b}^{(n_{\mathrm{MLP}})}$ & Output-layer weights and biases & -- \\
+    $\mathbf{X}^{(\ell)}_k$ & \acs*{cnn} feature array at layer $\ell$ and prediction step $k$ & -- \\
+    $c,c'$ & Output and input channel indices in a convolutional layer & -- \\
+    $n_{\mathrm{chan}}^{(\ell)}$, $n_{\mathrm{time}}^{(\ell)}$ & Feature channels and temporal positions in layer $\ell$ & -- \\
+    $n_{\mathrm{filter},t}$, $n_{\mathrm{filter},f}$ & Temporal and frequency filter sizes & -- \\
+    $n_{\mathrm{RF}}$ & Temporal receptive-field size & -- \\
+    $\mathcal{D}_{\mathrm{tr}}$ & Training dataset & -- \\
+    $\mathbf T$ & Centred successor spectral features & -- \\
+    $\boldsymbol{\Upsilon}$ & Input snapshots & -- \\
     $\boldsymbol{\Omega}$ & Stacked \acs*{dmdc} regressors & -- \\
     $\mathbf{A}_\mathrm{y}$, $\mathbf{B}_\mathrm{y}$, $\mathbf{c}_\mathrm{y}$ & Affine \acs*{dmdc} output-map parameters & -- \\
     $\mathbf{G}$ & Combined \acs*{dmdc} regression matrix & -- \\
-    $\rho$ & Retained \acs*{svd} rank & -- \\
-    $\ell$ & Stage cost & -- \\
-    $\ell_\mathrm{x}$, $\ell_\mathrm{u}$ & State-dependent and input-dependent stage-cost terms & -- \\
+    $n_{\mathrm{rank}}$, $\rho$ & Full and retained \acs*{svd} ranks & -- \\
+    $\mathbf V_{\mathrm L}$, $\mathbf V_{\mathrm R}$ & Left and right singular-vector matrices & -- \\
+    $\mathcal L$ & Loss or stage cost & -- \\
+    $\mathcal L_\mathrm{x}$, $\mathcal L_\mathrm{u}$ & State-dependent and input-dependent stage-cost terms & -- \\
     $V_\mathrm{f}$ & Terminal cost & -- \\
-    $J_H$ & Finite-horizon cost & -- \\
+    $\mathcal J$ & Finite-horizon cost & -- \\
     $\mathbf{Q}$, $\mathbf{R}$ & Weights of a quadratic stage cost & -- \\
     $w_1$, $w_2$ & Weights of the input penalties & -- \\
     $\mathbb{X}$, $\mathbb{U}$ & Admissible state and input sets & -- \\
     $\mathbb{X}_\mathrm{f}$ & Terminal set & -- \\
     $\mathbf{A}$, $\mathbf{B}$, $\mathbf{c}$ & State matrix, input matrix and offset of an affine prediction model & -- \\
-    $\mathbf{A}_q$, $\mathbf{B}_q$ & State and input Jacobians at predicted step $q$ & -- \\
+    $\mathbf{A}_{j|k}$, $\mathbf{B}_{j|k}$ & State and input Jacobians $j$ steps ahead of step $k$ & -- \\
     $\mathbf{I}_n$ & Identity matrix of size $n \times n$ & -- \\
     $\delta_{j|k}$ & Binary input-activation indicator & -- \\
     $u_\mathrm{max}$ & Per-electrode current bound & \si{\milli\ampere} \\
@@ -109,19 +132,21 @@ A running index is italic, a naming index upright.
     \midrule
     \multicolumn{3}{l}{\itshape Short-time Fourier transform} \\
     $f_\mathrm{s}$ & Sampling rate of the segmented signal & \si{\hertz} \\
-    $n$, $q$ & Sample index and spectral-frame index & -- \\
-    $n_q$, $t_q$ & Latest sample index and time of frame $q$ & --, \si{\second} \\
-    $L_\mathrm{s}$ & Segment length & -- \\
-    $H_\mathrm{s}$ & Hop between consecutive segments & -- \\
-    $x_{c,n}$, $\mathbf{x}_{q,c}$ & Channel sample and segment vector & \si{\volt} \\
-    $w_r$ & Taper weight at sample offset $r$ & -- \\
+    $r$, $q$ & Waveform sample and spectral-frame indices & -- \\
+    $r_q$, $t_q$ & Latest sample index and time of frame $q$ & --, \si{\second} \\
+    $\nseg$ & Segment length in waveform samples & -- \\
+    $\nhop$ & Hop between consecutive segments in waveform samples & -- \\
+    $y_{r,c}$ & Waveform sample at channel $c$ & \si{\volt} \\
+    $w_\beta$ & Taper weight at sample offset $\beta$ & -- \\
     $m$, $f_m$ & Frequency-bin index and frequency & --, \si{\hertz} \\
-    $\Delta f$ & Bin spacing, $f_\mathrm{s} / L_\mathrm{s}$ & \si{\hertz} \\
-    $\mathbf{X}_{q,c}$, $X_{q,c,m}$ & Fourier coefficients and one bin & \si{\volt} \\
+    $\Delta f$ & Bin spacing, $f_\mathrm{s} / \nseg$ & \si{\hertz} \\
+    $\nbin$ & Number of retained frequency bins & -- \\
+    $\mathbf Y_{q,c}$, $Y_{q,c,m}$ & Fourier coefficient vector and one bin & \si{\volt} \\
     $S_{q,c,m}$, $\overline{S}_{q,c,m}$ & Power density and trailing average & \si{\volt\squared\per\hertz} \\
-    $z_{q,c,m}$ & Log-power feature & -- \\
+    $\mathcal Y_{q,c,m}$ & Log-power feature & -- \\
     $a_m$ & One-sided folding factor & -- \\
-    $\alpha_\ell$, $L_\mathrm{k}$ & Temporal-kernel weight and length & -- \\
+    $\alpha_\beta$, $\nsmooth$ & Temporal-kernel weight and length & -- \\
+    $n_{\mathrm{support}}$ & Waveform samples supporting one smoothed spectral frame & -- \\
     \bottomrule
 \end{tabular}
 
