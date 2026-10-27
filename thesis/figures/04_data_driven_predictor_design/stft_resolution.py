@@ -68,14 +68,14 @@ def _periodograms(y: FloatArray, n_segment: int, n_hop: int) -> tuple[FloatArray
 
 
 def main() -> None:
-    """Write the two-panel resolution and variance figure."""
+    """Write segment-length and smoothing comparisons with subscripted counts."""
     y = _ez_trace()
-    fig, axes = plt.subplots(1, 2, figsize=style.figsize(height_in=3.0), constrained_layout=True)
+    fig, axes = plt.subplots(1, 2, figsize=style.figsize(height_in=2.5), constrained_layout=True)
 
     ax = axes[0]
     for idx, n_segment in enumerate(SEGMENT_LENGTHS):
         freqs, power = _periodograms(y, n_segment, n_segment // 2)
-        label = rf"$L_\mathrm{{s}} = {n_segment}$, $\Delta f = {FS / n_segment:.2f}$ Hz"
+        label = rf"$n_{{\mathrm{{seg}}}} = {n_segment}$, $\Delta f = {FS / n_segment:.2f}$ Hz"
         ax.semilogy(
             freqs,
             power[:PANEL_A_KERNEL].mean(axis=0),
@@ -92,7 +92,7 @@ def main() -> None:
     end = max(KERNEL_WIDTHS)
     for idx, width in enumerate(KERNEL_WIDTHS):
         ax.semilogy(
-            freqs, power[end - width : end].mean(axis=0), lw=0.9, color=f"C{idx}", label=rf"$L_\mathrm{{k}} = {width}$"
+            freqs, power[end - width : end].mean(axis=0), lw=0.9, color=f"C{idx}", label=rf"$n_{{\mathrm{{smooth}}}} = {width}$"
         )
     ax.set_title("(b) One segment length, three kernel widths", loc="left")
 

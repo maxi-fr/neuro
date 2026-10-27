@@ -11,8 +11,8 @@ usage: uv run latex-lint [-h] {compile,check,rule,install-skills,refs,format} ..
 
 positional arguments:
   {compile,check,rule,install-skills,refs,format}
-    compile             compile LaTeX document via pdflatex and biber recipe (<root> [-o/--output-dir PATH])
-    check               check an explicit UTF-8 root document (<root> [--ignore RULES])
+    compile             compile LaTeX document via pdflatex and biber recipe (<root> [-o/--output-dir PATH] [-v/--verbose])
+    check               check a root document or specific .tex file (<path> [--root ROOT] [--ignore RULES])
     rule                show an implemented rule and examples (<rule_id>)
     install-skills      install bundled agent skills ([preset] [-d/--dest PATH] [-f/--force])
     refs                manage reference papers and text extraction (fetch, extract)
@@ -23,5 +23,6 @@ options:
 ```
 
 Add all temporary files to tmp/
+Compile the thesis into out/
 
 When creating or editing figures follow [FIGURE_INSTRUCTIONS.md]

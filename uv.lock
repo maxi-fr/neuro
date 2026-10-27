@@ -1145,11 +1145,12 @@ wheels = [
 [[package]]
 name = "latex-linting"
 version = "0.1.0"
-source = { git = "https://github.com/maxi-fr/latex_linting#9e3b86e7def1eeb728d5863585417162a14d4b23" }
+source = { git = "https://github.com/maxi-fr/latex_linting#2d27bdcb7f3fa831c05c202f5bcea3b9ce72cce5" }
 dependencies = [
     { name = "fonttools" },
     { name = "httpx" },
     { name = "pypdf" },
+    { name = "pyyaml" },
 ]
 
 [[package]]

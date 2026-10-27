@@ -96,6 +96,34 @@ def test_dmd_trainer_rejects_depth_gt_0() -> None:
         trainer.fit(model, trajs)
 
 
+def test_dmd_trainer_rejects_residual_model() -> None:
+    """DmdTrainer raises ValueError if model.residual is True."""
+    model = WaveformMLPModel(
+        n_y=2,
+        n_u=2,
+        horizon=3,
+        n_channels=2,
+        n_controls=1,
+        n_outputs=2,
+        hidden_size=8,
+        depth=0,
+        activation="relu",
+        residual=True,
+        dt=1e-3,
+        downsample=1,
+        y_center=np.zeros(2),
+        y_scale=np.ones(2),
+        u_center=np.zeros(1),
+        u_scale=np.ones(1),
+        weights=(np.zeros((6, 2)),),
+        biases=(np.zeros(2),),
+    )
+    trainer = DmdTrainer()
+    trajs = [(np.zeros((10, 1)), np.zeros((10, 2)))]
+    with pytest.raises(ValueError, match="DmdTrainer requires direct prediction"):
+        trainer.fit(model, trajs)
+
+
 def _write_trajectories(tmp_path: Path, n_samples: int = 150) -> list[str]:
     """Write synthetic multi-channel simulation trajectories."""
     rng = np.random.default_rng(123)
@@ -110,6 +138,22 @@ def _write_trajectories(tmp_path: Path, n_samples: int = 150) -> list[str]:
     return files
 
 
+def test_dmd_train_rejects_residual_config(tmp_path: Path) -> None:
+    """train raises ValueError when training.fit is 'dmd' and model.residual is True."""
+    files = _write_trajectories(tmp_path, n_samples=50)
+    cfg = NNPredictorConfig(
+        simulation=SimulationConfig(dt=1e-3, downsample=1),
+        model=ModelConfig(n_y=2, n_u=2, depth=0, residual=True),
+        training=TrainingConfig(
+            fit="dmd",
+            eval_horizon_s=5e-3,
+            losses=LossSpecs(curriculum_mse=CurriculumMSESpec(weight=1.0, span_s=5e-3, curr_start=0, curr_end=1)),
+        ),
+    )
+    with pytest.raises(ValueError, match="requires direct prediction"):
+        train(cfg, files)
+
+
 def test_dmd_observable_end_to_end(tmp_path: Path) -> None:
     """DMD Observable training fits, scores, and round-trips to JAX inference."""
     files = _write_trajectories(tmp_path, n_samples=250)
@@ -122,7 +166,7 @@ def test_dmd_observable_end_to_end(tmp_path: Path) -> None:
 
     cfg = NNPredictorConfig(
         simulation=SimulationConfig(dt=dt, downsample=downsample),
-        model=ModelConfig(n_y=2, n_u=min_n_u, depth=0),
+        model=ModelConfig(n_y=2, n_u=min_n_u, depth=0, residual=False),
         training=TrainingConfig(
             fit="dmd",
             dmd_rank=10,
@@ -166,7 +210,7 @@ def test_dmd_waveform_end_to_end(tmp_path: Path) -> None:
 
     cfg = NNPredictorConfig(
         simulation=SimulationConfig(dt=dt, downsample=1),
-        model=ModelConfig(n_y=2, n_u=2, depth=0),
+        model=ModelConfig(n_y=2, n_u=2, depth=0, residual=False),
         training=TrainingConfig(
             fit="dmd",
             dmd_energy=0.98,
@@ -204,7 +248,7 @@ def test_dmd_observable_optuna_sweep_end_to_end(tmp_path: Path) -> None:
 
     cfg = NNPredictorConfig(
         simulation=SimulationConfig(dt=dt, downsample=downsample),
-        model=ModelConfig(n_y=2, n_u=min_n_u, depth=0),
+        model=ModelConfig(n_y=2, n_u=min_n_u, depth=0, residual=False),
         training=TrainingConfig(
             fit="dmd",
             eval_horizon_s=4 / fs_frame,

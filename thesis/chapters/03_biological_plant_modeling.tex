@@ -14,7 +14,7 @@ Figure~\ref{fig:plant_overview} summarizes the resulting path from stimulation c
 
 \begin{figure}
     \centering
-    \input{figures/02_biological_plant_modeling/plant_overview}
+    \input{figures/03_biological_plant_modeling/plant_overview}
     \caption{Overview of the biological plant. Scalp currents $\mathbf{u}$ are mapped through the stimulation lead field to regional membrane-potential perturbations $\mathbf{s}$, which act on a delayed stochastic network of Jansen-Rit nodes. Regional activity is mapped through the \ac{eeg} lead field to the scalp measurements available to the controller. The callout shows an example output of node $i$. Brain outlines, stimulation shading and electrode positions are schematic.}
     \label{fig:plant_overview}
 \end{figure}
@@ -34,7 +34,7 @@ The four intra-columnar projections are parameterized by the effective connectiv
 
 \begin{figure}
     \centering
-    \input{figures/02_biological_plant_modeling/jansen_rit_microcircuit}
+    \input{figures/03_biological_plant_modeling/jansen_rit_microcircuit}
     \caption{Block diagram of one Jansen-Rit node. Colored containers represent cell populations.
     Connectivity multipliers $c_1$ to $c_4$ lie between populations, synaptic filters lie at receiving boundaries and potential summation and sigmoid conversion lie inside the receiving population.
     Black signals denote mean potentials and magenta signals denote mean firing rates.
@@ -87,12 +87,12 @@ The noise processes are independent across regions.
 
 Collect the six states of~\eqref{eq:jr_node} into \mbox{$\mathbf{x}_i={\left[x_{i,1},\ldots,x_{i,6}\right]}^{\mathsf T}\in\mathbb{R}^{6}$}.
 Let $\mathbf{f}_i(\mathbf{x}_i;I_{\mathrm{coup},i},s_i)$ denote its deterministic right-hand side, obtained by setting $\zeta_i=0$.
-With $\hat{\mathbf{e}}_5$ the fifth canonical basis vector in $\mathbb{R}^6$, the regional dynamics are equivalently
+With $\mathbf{e}_5$ the fifth canonical basis vector in $\mathbb{R}^6$, the regional dynamics are equivalently
 %
 \begin{equation}
     \dot{\mathbf{x}}_i(t)
     =\mathbf{f}_i\!\left(\mathbf{x}_i(t);I_{\mathrm{coup},i}(t),s_i(t)\right)
-    +A_i a\,\zeta_i(t)\hat{\mathbf{e}}_5\,.
+    +A_i a\,\zeta_i(t)\mathbf{e}_5\,.
     \label{eq:network_node}
 \end{equation}
 %
@@ -117,20 +117,20 @@ This section specifies that input from structural connection weights and transmi
 
 \subsection{Structural Coupling}
 
-The network comprises $N=76$ brain regions, each represented by the six-state regional model defined above.
+The network comprises $\nreg{}=76$ brain regions, each represented by the six-state regional model defined above.
 Its connection weights and tract lengths are taken from the standard structural dataset distributed with \ac{tvb}, a platform for constructing and simulating whole-brain network models~\cite{SanzLeon2013,SanzLeon2015}.
 In this work, \ac{tvb} supplies the anatomical data; the numerical integration is specified separately below.
 
-The structural connectivity matrix $\mathbf{W}\in\mathbb{R}_{\geq 0}^{N\times N}$ assigns a weight $w_{ij}$ to the connection from sending region $j$ to receiving region $i$.
+The structural connectivity matrix $\mathbf{W}\in\mathbb{R}_{\geq 0}^{\nreg{}\times \nreg{}}$ assigns a weight $w_{ii'}$ to the connection from sending region $i'$ to receiving region $i$.
 The weights are normalized, dimensionless measures of relative connection strength rather than literal axon counts.
-The present model uses symmetric weights, $w_{ij}=w_{ji}$ and excludes self-connections by setting $w_{ii}=0$.
+The present model uses symmetric weights, $w_{ii'}=w_{i'i}$ and excludes self-connections by setting $w_{ii}=0$.
 These weights specify how strongly each sending region contributes to the receiving region's input, as in structural network models of interacting neural masses~\cite{SanzLeon2015}.
 
-Each connection also has a tract length $\ell_{ij}\in\mathbb{R}_{\geq 0}$, which determines when the sending region's activity reaches the receiving region.
+Each connection also has a tract length $\ell_{ii'}\in\mathbb{R}_{\geq 0}$, which determines when the sending region's activity reaches the receiving region.
 For a uniform conduction speed $c\in\mathbb{R}_{>0}$, the physical transmission delay is~\cite{SanzLeon2015}
 %
 \begin{equation}
-    d_{ij}^{\ast}=\frac{\ell_{ij}}{c}\,.
+    d_{ii'}=\frac{\ell_{ii'}}{c}\,.
     \label{eq:physical_delay}
 \end{equation}
 %
@@ -140,30 +140,30 @@ Figure~\ref{fig:connectome_matrices} shows the connection weights and the corres
 
 \begin{figure}[t] % latex-lint:ignore=FLOAT-01
     \centering
-    \includegraphics{figures/02_biological_plant_modeling/connectome_matrices}
+    \includegraphics{figures/03_biological_plant_modeling/connectome_matrices}
     \caption{Structural connectivity weights and conduction delays for the 76-region \ac{tvb} connectome. Rows are receiving regions and columns are sending regions in atlas order. The line separates right- and left-hemisphere regions. White cells have zero connection weight; the delay panel shows only connected pairs. Delays use a uniform conduction speed of \SI{50}{\milli\metre\per\milli\second}.}
     \label{fig:connectome_matrices}
 \end{figure}
 
 The coupling transmits population firing rates rather than membrane potentials directly~\cite{SanzLeon2015,Yu2024}.
-For each sending region $j$, the sigmoid $S$ converts the regional output $y_{\mathrm{reg},j}$ in~\eqref{eq:regional_output} into a firing rate.
-That signal reaches region $i$ after the delay $d_{ij}^{\ast}$, is weighted by $w_{ij}$ and contributes to the sum of incoming activity.
+For each sending region $i'$, the sigmoid $S$ converts the regional output $y_{\mathrm{reg},i'}$ in~\eqref{eq:regional_output} into a firing rate.
+That signal reaches region $i$ after the delay $d_{ii'}$, is weighted by $w_{ii'}$ and contributes to the sum of incoming activity.
 With global coupling factor $K\in\mathbb{R}_{\geq 0}$, the total input is
 %
 \begin{equation}
     I_{\mathrm{coup},i}(t)
-    =K\sum_{j=1}^{N}w_{ij}
-    S\!\left(y_{\mathrm{reg},j}(t-d_{ij}^{\ast})\right)\,.
+    =K\sum_{i'=1}^{\nreg{}}w_{ii'}
+    S\!\left(y_{\mathrm{reg},i'}(t-d_{ii'})\right)\,.
     \label{eq:continuous_coupling}
 \end{equation}
 %
-The factor $K$ scales all connections together and absorbs the overall normalization of the structural weights, while $w_{ij}$ retains their relative strengths.
+The factor $K$ scales all connections together and absorbs the overall normalization of the structural weights, while $w_{ii'}$ retains their relative strengths.
 Setting $K=0$ decouples the regions; increasing $K$ strengthens the incoming drive without changing the transmission delays.
 In~\eqref{eq:jr_node}, this input enters the excitatory synaptic pathway through $\dot{x}_{i,5}$.
 Activity from a connected region therefore changes the receiving region's excitatory \ac{psp}, which in turn changes its pyramidal firing through the local circuit~\cite{SanzLeon2015,Yu2024}.
 
 Together, the regional dynamics in~\eqref{eq:network_node} and the coupling in~\eqref{eq:continuous_coupling} define the network system.
-Stacking the regional states gives the current network state $\mathbf{x}(t)\in\mathbb{R}^{6N}$.
+Stacking the regional states gives the current network state $\mathbf{x}(t)\in\mathbb{R}^{6\nreg{}}$.
 Its current value alone does not determine the network's evolution because~\eqref{eq:continuous_coupling} also depends on earlier regional outputs.
 An initial history of those outputs over the longest connection delay is therefore required in addition to the initial regional states~\cite{SanzLeon2015}.
 
@@ -171,77 +171,77 @@ An initial history of those outputs over the longest connection delay is therefo
 
 For simulation, the continuous-time system is approximated on a uniform time grid using a stochastic Heun scheme~\cite{SanzLeon2015}.
 The plant step $\Delta t_\mathrm{p}=\SI{0.1}{\milli\second}$ gives 100 steps per \SI{10}{\milli\second} excitatory synaptic time constant. % so? why 0.1 ms?
-For integration index $k\in\mathbb{N}_0$, define the grid times and numerical regional states by
+For integration index $\kappa\in\mathbb{N}_0$, define the grid times and numerical regional states by
 %
 \begin{equation}
-    t_k=k\Delta t_\mathrm{p},
-    \qquad \mathbf{x}_{i,k}\approx\mathbf{x}_i(t_k)\,.
+    t_\kappa=\kappa\Delta t_\mathrm{p},
+    \qquad \mathbf{x}_{\kappa,i}\approx\mathbf{x}_i(t_\kappa)\,.
 \end{equation}
 %
-The physical delays in~\eqref{eq:physical_delay} are approximated by the nearest integer lag $n_{ij}\in\mathbb{N}_0$, giving the applied delay $d_{ij}$,
+The physical delays in~\eqref{eq:physical_delay} are approximated by the nearest integer lag $n_{\mathrm{delay},ii'}\in\mathbb{N}_0$, giving the applied delay $d_{ii'}^{[\Delta t_\mathrm{p}]}$,
 %
 \begin{equation}
-    n_{ij}=\operatorname{round}\!\left(\frac{d_{ij}^{\ast}}{\Delta t_\mathrm{p}}\right),
+    n_{\mathrm{delay},ii'}=\operatorname{round}\!\left(\frac{d_{ii'}}{\Delta t_\mathrm{p}}\right),
     \qquad
-    d_{ij}=n_{ij}\Delta t_\mathrm{p}\,.
+    d_{ii'}^{[\Delta t_\mathrm{p}]}=n_{\mathrm{delay},ii'}\Delta t_\mathrm{p}\,.
     \label{eq:delay_quantisation}
 \end{equation}
 %
 Rounding changes a physical delay by at most half a plant step, here \SI{0.05}{\milli\second}.
 
-The numerical regional output is \mbox{$y_{\mathrm{reg},j,k}=x_{j,2,k}-x_{j,3,k}$}.
-Using these outputs, the continuous coupling in~\eqref{eq:continuous_coupling} is approximated at step $k$ by
+The numerical regional output is \mbox{$y_{\mathrm{reg},\kappa,i'}=x_{\kappa,i',2}-x_{\kappa,i',3}$}.
+Using these outputs, the continuous coupling in~\eqref{eq:continuous_coupling} is approximated at step $\kappa$ by
 %
 \begin{equation*}
-    I_{\mathrm{coup},i,k}
-    =K\sum_{j=1}^{N}w_{ij}
-      S\!\left(y_{\mathrm{reg},j,k-n_{ij}}\right)\,.
+    I_{\mathrm{coup},\kappa,i}
+    =K\sum_{i'=1}^{\nreg{}}w_{ii'}
+      S\!\left(y_{\mathrm{reg},\kappa-n_{\mathrm{delay},ii'},i'}\right)\,.
 \end{equation*}
 %
-The term $y_{\mathrm{reg},j,k-n_{ij}}$ is the sending region's output from $n_{ij}$ steps earlier.
-Thus, $I_{\mathrm{coup},i,k}$ is the discrete approximation of the same network input, using the quantized delay and numerical output history.
+The term $y_{\mathrm{reg},\kappa-n_{\mathrm{delay},ii'},i'}$ is the sending region's output from $n_{\mathrm{delay},ii'}$ steps earlier.
+Thus, $I_{\mathrm{coup},\kappa,i}$ is the discrete approximation of the same network input, using the quantized delay and numerical output history.
 
 The Gaussian white-noise drive in~\eqref{eq:network_node} acts only on the excitatory velocity state $x_{i,5}$.
 Its contribution over one integration step is
 %
 \begin{equation*}
-    \xi_{i,k}
-    =A_i a\int_{t_k}^{t_{k+1}}\zeta_i(t)\,\mathrm{d}t
-    =A_i a\sigma\sqrt{\Delta t_\mathrm{p}}\,\eta_{i,k},
+    \xi_{\kappa,i}
+    =A_i a\int_{t_\kappa}^{t_{\kappa+1}}\zeta_i(t)\,\mathrm{d}t
+    =A_i a\sigma\sqrt{\Delta t_\mathrm{p}}\,\eta_{\kappa,i},
     \qquad
-    \text{with}\,\eta_{i,k}\sim\mathcal{N}(0, 1)\,,
+    \text{with}\,\eta_{\kappa,i}\sim\mathcal{N}(0, 1)\,,
 \end{equation*}
 %
 since
 %
 \begin{equation*}
-    \int_{t_k}^{t_{k+1}}\zeta_i(t)\,\mathrm{d}t
+    \int_{t_\kappa}^{t_{\kappa+1}}\zeta_i(t)\,\mathrm{d}t
     \sim
     \mathcal{N}\!\left(0, \sigma^2\Delta t_\mathrm{p}\right)\,.
 \end{equation*}
 %
-The draws $\eta_{i,k}$ are independent across regions and integration steps.
-With $s_{i,k}=s_i(t_k)$, the Heun predictor is
+The draws $\eta_{\kappa,i}$ are independent across regions and integration steps.
+With $s_{\kappa,i}=s_i(t_\kappa)$, the Heun predictor is
 %
 \begin{equation*}
-    \widetilde{\mathbf{x}}_{i,k+1}
-    =\mathbf{x}_{i,k}
+    \mathbf{x}^{(\mathrm{p})}_{\kappa+1,i}
+    =\mathbf{x}_{\kappa,i}
     +\Delta t_\mathrm{p}\,
-      \mathbf{f}_i\!\left(\mathbf{x}_{i,k};I_{\mathrm{coup},i,k},s_{i,k}\right)
-      +\xi_{i,k}\hat{\mathbf{e}}_5\,,
+      \mathbf{f}_i\!\left(\mathbf{x}_{\kappa,i};I_{\mathrm{coup},\kappa,i},s_{\kappa,i}\right)
+      +\xi_{\kappa,i}\mathbf{e}_5\,,
 \end{equation*}
 %
 and the corrected state is
 %
 \begin{align*}
-    \mathbf{x}_{i,k+1}
-    ={}&\mathbf{x}_{i,k}
+    \mathbf{x}_{\kappa+1,i}
+    ={}&\mathbf{x}_{\kappa,i}
     +\frac{\Delta t_\mathrm{p}}{2}
       \Big[
-      \mathbf{f}_i\!\left(\mathbf{x}_{i,k};I_{\mathrm{coup},i,k},s_{i,k}\right)
-      +\mathbf{f}_i\!\left(\widetilde{\mathbf{x}}_{i,k+1};I_{\mathrm{coup},i,k},s_{i,k}\right)
+      \mathbf{f}_i\!\left(\mathbf{x}_{\kappa,i};I_{\mathrm{coup},\kappa,i},s_{\kappa,i}\right)
+      +\mathbf{f}_i\!\left(\mathbf{x}^{(\mathrm{p})}_{\kappa+1,i};I_{\mathrm{coup},\kappa,i},s_{\kappa,i}\right)
       \Big]
-      +\xi_{i,k}\hat{\mathbf{e}}_5\,.
+      +\xi_{\kappa,i}\mathbf{e}_5\,.
 \end{align*}
 %
 The corrector averages the deterministic drift at the current and predicted states while reusing the same noise draw~\cite{SanzLeon2015}.
@@ -267,7 +267,7 @@ Within this model seizure propagation therefore refers to network-driven recruit
 
 \begin{figure}
     \centering
-    \includegraphics{figures/02_biological_plant_modeling/excitability_regimes}
+    \includegraphics{figures/03_biological_plant_modeling/excitability_regimes}
     \caption{Jansen-Rit dynamics at the three excitability levels. Left: Regional output $y_\mathrm{reg}$ over \SI{4}{\second} of simulation following a \SI{4}{\second} transient. Right: Corresponding Welch power spectral density, averaged over three segments of $16{,}000$ samples. Rows (a), (b) and (d) show uncoupled nodes: background tissue and the \ac{pz} fluctuate around a low-amplitude operating point, whereas the \ac{ez} exhibits a large-amplitude spike-wave limit cycle. Row (c) shows the same \ac{pz} node embedded in the 76-region network with three \ac{ez} nodes, where the coupling recruits it into an oscillation. Only the \ac{pz} is shown in both conditions to highlight this coupling-driven transition; a network trace for a recruited background region would show similar behaviour. All runs use the parameters in Table~\ref{tab:jr_params} and the same noise seed.}
     \label{fig:bifurcation}
 \end{figure}
@@ -283,7 +283,7 @@ Figure~\ref{fig:ez_pz_assignment} shows the five selected region centroids withi
 
 \begin{figure}
     \centering
-    \includegraphics{figures/02_biological_plant_modeling/ez_pz_assignment}
+    \includegraphics{figures/03_biological_plant_modeling/ez_pz_assignment}
     \caption{Regional excitability assignment in two projections of the \ac{tvb} atlas centroids. The head sketches at lower left indicate the viewing angles. The left hippocampus, parahippocampal cortex and amygdala form the \ac{ez}; the left inferior and ventral temporal regions form the \ac{pz}. The other 71 regions retain background excitability. Points denote region centroids, not anatomical boundaries.}
     \label{fig:ez_pz_assignment}
 \end{figure}
@@ -309,7 +309,7 @@ Figure~\ref{fig:uncontrolled_propagation} shows a representative run with near-f
 
 \begin{figure}
     \centering
-    \includegraphics{figures/02_biological_plant_modeling/uncontrolled_propagation}
+    \includegraphics{figures/03_biological_plant_modeling/uncontrolled_propagation}
     \caption{Cumulative regional recruitment in the saved uncontrolled seed-7000 run. The \ac{ez} onset is detected at $t=\SI{0.5}{\second}$; by $t=\SI{10.5}{\second}$, 34 of 38 left regions and no right regions have been recruited. The dotted line marks this time point.}
     \label{fig:uncontrolled_propagation}
 \end{figure}
@@ -367,13 +367,13 @@ With fixed geometry and conductivities, the regional contributions superpose lin
     =\mathbf{L}_\mathrm{EEG}\,\mathbf{y}_\mathrm{reg}(t)\,.
 \end{equation*}
 %
-Here $\mathbf{y}_\mathrm{reg}\in\mathbb{R}^{N}$ collects the regional outputs, $\mathbf{y}_\mathrm{EEG}\in\mathbb{R}^{M}$ contains the sensor measurements and $\mathbf{L}_\mathrm{EEG}\in\mathbb{R}^{M\times N}$ is the regional \ac{eeg} lead field.
+Here $\mathbf{y}_\mathrm{reg}\in\mathbb{R}^{\nreg{}}$ collects the regional outputs, $\mathbf{y}_\mathrm{EEG}\in\mathbb{R}^{\nchan{}}$ contains the sensor measurements and $\mathbf{L}_\mathrm{EEG}\in\mathbb{R}^{\nchan{}\times \nreg{}}$ is the regional \ac{eeg} lead field.
 
-The \ac{tvb} surface projection has $M=62$ sensor rows and 16,384 cortical-vertex columns~\cite{SanzLeon2015}.
-If $V_i$ is the set of vertices assigned to region $i$ and $L^{\mathrm{surf}}_{mv}$ is the projection from vertex $v$ to channel $m$, the regional matrix is
+The \ac{tvb} surface projection has $\nchan{}=62$ sensor rows and 16,384 cortical-vertex columns~\cite{SanzLeon2015}.
+If $V_i$ is the set of vertices assigned to region $i$ and $L^{\mathrm{surf}}_{cv}$ is the projection from vertex $v$ to channel $c$, the regional matrix is
 %
 \begin{equation*}
-    [\mathbf{L}_\mathrm{EEG}]_{mi}=\sum_{v\in V_i}L^{\mathrm{surf}}_{mv}\,.
+    L_{\mathrm{EEG},ci}=\sum_{v\in V_i}L^{\mathrm{surf}}_{cv}\,.
 \end{equation*}
 %
 Thus, all vertices in a region share its neural-mass time course, while the surface projection supplies their different sensor weights.
@@ -394,15 +394,16 @@ At the regional scale used here, this axis is approximated by the local cortical
 This motivates the additive perturbation $s_i$ in the argument of the pyramidal sigmoid in~\eqref{eq:jr_node}, rather than introducing stimulation as an additional synaptic firing-rate input~\cite{Kunze2016,Merlet2013,Yu2024}. % cite-checked: SUPPORTED
 
 Electric-field basis solutions were computed with ROAST, an automated finite-element modeling pipeline for \ac{tes}, using its standard MNI152 head model~\cite{Huang2019}. % cite-checked: SUPPORTED
-The selected montage comprises $P=3$ electrodes, ordered as TP9, CP5 and Ex8 in the current vector.
+The selected montage comprises $\nelec{}=3$ electrodes, ordered as TP9, CP5 and Ex8 in the current vector.
 Ex8 lies on the right posterior side of the lower head and belongs to ROAST's extension of the standard 10/05 electrode layout~\cite{ROASTElectrodeLayout}. % cite-checked: SUPPORTED
 It serves here as the reference/return electrode, following its use to limit the influence of the return electrode on the modeled brain regions in~\cite{Yu2024}. % cite-checked: SUPPORTED
 For each non-reference electrode $p$, let $\mathbf{E}_{p,i}\in\mathbb{R}^{3}$ denote the electric-field basis response per milliampere at the centroid of region $i$.
 It is computed by injecting \SI{1}{\milli\ampere} at electrode $p$ with the return current flowing through Ex8.
 The unit vector $\mathbf{n}_i\in\mathbb{R}^{3}$ specifies the regional orientation used to project this field onto the somato-dendritic axis.
 The assumed polarization length $\lambda_\mathrm{p}=\SI{0.35}{\milli\metre}$ converts the projected field into a membrane-potential shift~\cite{Radman2009}.
-The resulting stimulation lead field $\mathbf{L}_\mathrm{stim}\in\mathbb{R}^{N\times P}$ contains the regional membrane-potential shifts per milliampere of electrode current.
-Let $\mathbf{u}(t)\in\mathbb{R}^{P}$ collect the electrode currents and $\mathbf{s}(t)\in\mathbb{R}^{N}$ the resulting regional stimulation drives.
+The resulting stimulation lead field $\mathbf{L}_\mathrm{stim}\in\mathbb{R}^{\nreg{}\times \nelec{}}$ contains the regional membrane-potential shifts per milliampere of electrode current.
+Let $\mathbf{u}(t)\in\mathbb{R}^{\ndim{u}}$ collect the electrode currents and $\mathbf{s}(t)\in\mathbb{R}^{\nreg{}}$ the resulting regional stimulation drives.
+The present current parameterization has one coordinate per electrode, so $\ndim{u}=\nelec{}$.
 With currents expressed in milliamperes and stimulation drives in millivolts, their relation is
 %
 \begin{equation*}
@@ -412,9 +413,9 @@ With currents expressed in milliamperes and stimulation drives in millivolts, th
 with regional entries
 %
 \begin{equation*}
-    s_i(t)=\sum_{p=1}^{P}[\mathbf{L}_\mathrm{stim}]_{ip}u_p(t),
+    s_i(t)=\sum_{p=1}^{\nelec{}}L_{\mathrm{stim},ip}u_p(t),
     \qquad
-    [\mathbf{L}_\mathrm{stim}]_{ip}
+    L_{\mathrm{stim},ip}
     =\lambda_\mathrm{p}\,\mathbf{E}_{p,i}^{\mathsf{T}}\mathbf{n}_i\,.
 \end{equation*}
 %
@@ -427,13 +428,13 @@ By design, the individual electrode currents are constrained to respect safety a
 %
 \begin{equation*}
     |u_p(t)|\leq\SI{2}{\milli\ampere},
-    \qquad p=1,\ldots,P\,,
+    \qquad p=1,\ldots,\nelec{}\,,
 \end{equation*}
 %
 while charge conservation across the montage requires
 %
 \begin{equation*}
-    \sum_{p=1}^{P}u_p(t)=0\,,
+    \sum_{p=1}^{\nelec{}}u_p(t)=0\,,
 \end{equation*}
 %
 so that the applied montage injects no net current into the head.

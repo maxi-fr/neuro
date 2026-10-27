@@ -24,6 +24,9 @@
 %   * Direct single shooting (sensitivities across rollouts) vs. multiple shooting.
 %   * Resulting optimization classes: Convex QP (linear DMDc + quadratic cost) vs. non-convex NLP/SQP (nonlinear MLP).
 %   * Computational tractability and update deadline considerations.
+% - Limitations of optimization with learned predictors:
+%   * Exploitation of forecast errors by the optimizer.
+%   * Inaccurate learned current sensitivity and distribution shift under optimized currents.
 
 % Mapping from Previous Structure:
 % - Extracted from the control theory parts of Chapter 3 (03_foundations.tex, Sec. 3.3:
