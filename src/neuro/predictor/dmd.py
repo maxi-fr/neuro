@@ -12,14 +12,15 @@ if TYPE_CHECKING:
     from neuro.types import FloatArray
 
 
-def dmd(
+def dmd(  # noqa: PLR0913 -- X, Y plus SVD truncation, regularization, and diagnostics options
     X: FloatArray,
     Y: FloatArray,
     *,
     rank: int | None = None,
     energy: float | None = None,
     dmd_lambda: float = 0.0,
-) -> tuple[FloatArray, FloatArray]:
+    return_diagnostics: bool = False,
+) -> tuple[FloatArray, FloatArray] | tuple[FloatArray, FloatArray, int, float]:
     """Solve the Hankel-DMDc linear operator and affine bias: ``y ≈ W x + b``.
 
     Computes the truncated SVD on mean-centered inputs ``X̃ = X - x̄``, projects outputs
@@ -39,6 +40,8 @@ def dmd(
         Used when ``rank`` is ``None``. Defaults to 0.99 if both ``rank`` and ``energy`` are ``None``.
     dmd_lambda : float, optional
         Tikhonov regularization parameter applied to inverted singular values.
+    return_diagnostics : bool, default=False
+        Whether to return the retained SVD rank and condition number.
 
     Returns
     -------
@@ -46,6 +49,10 @@ def dmd(
         Linear weight matrix of shape ``(n_outputs, n_features)``.
     b : FloatArray
         Affine bias vector of shape ``(n_outputs,)``.
+    r : int
+        Retained SVD rank, returned only when ``return_diagnostics=True``.
+    cond : float
+        Condition number of retained singular values, returned only when ``return_diagnostics=True``.
     """
     x_arr = np.asarray(X, dtype=np.float64)
     y_arr = np.asarray(Y, dtype=np.float64)
@@ -83,6 +90,9 @@ def dmd(
 
     w = np.ascontiguousarray((y_tilde.T @ u_r * s_inv[None, :]) @ vt_r)
     b = np.ascontiguousarray(y_mean - w @ x_mean)
+    if return_diagnostics:
+        cond = float(s_r[0] / max(s_r[-1], 1e-12))
+        return w, b, r, cond
     return w, b
 
 
@@ -100,6 +110,8 @@ class DmdTrainer:
         self.rank = int(rank) if rank is not None else None
         self.energy = float(energy) if energy is not None else None
         self.dmd_lambda = float(dmd_lambda)
+        self.retained_rank: int | None = None
+        self.condition_number: float | None = None
 
     def fit(
         self,
@@ -143,13 +155,16 @@ class DmdTrainer:
         x_all = np.concatenate(x_list, axis=0)
         y_all = np.concatenate(y_list, axis=0)
 
-        w, b = dmd(
+        w, b, r, cond = dmd(
             x_all,
             y_all,
             rank=self.rank,
             energy=self.energy,
             dmd_lambda=self.dmd_lambda,
+            return_diagnostics=True,
         )
+        self.retained_rank = r
+        self.condition_number = cond
 
         readout = np.hstack([w, b[:, None]])
         model.install_readout(readout)

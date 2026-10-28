@@ -370,11 +370,12 @@ def _train_observable_dmd(cfg: NNPredictorConfig, data_files: list[str], geom: S
     if not isinstance(model, ObservableMLPModel):
         msg = "Observable DMD fitting requires an MLP model"
         raise TypeError(msg)
-    DmdTrainer(
+    trainer = DmdTrainer(
         rank=trn.dmd_rank,
         energy=trn.dmd_energy,
         dmd_lambda=trn.dmd_lambda,
-    ).fit(model, data.train_trajs)
+    )
+    trainer.fit(model, data.train_trajs)
 
     model.provenance = training_provenance(data_files, sim.cutoff_hz)
     model.downsample = sim.downsample
@@ -386,12 +387,18 @@ def _train_observable_dmd(cfg: NNPredictorConfig, data_files: list[str], geom: S
 
     val_frame_loss = _evaluate_val_mse(model, data.val_dataset, batch_size=trn.batch_size)
 
+    candidates: dict[str, float] = {
+        "val_loss": val_frame_loss,
+        "val_log_mse": frame_mse.pooled,
+    }
+    if trainer.retained_rank is not None:
+        candidates["retained_rank"] = float(trainer.retained_rank)
+    if trainer.condition_number is not None:
+        candidates["condition_number"] = float(trainer.condition_number)
+
     return RidgeTrainingResult(
         predictor=model,
-        candidates={
-            "val_loss": val_frame_loss,
-            "val_log_mse": frame_mse.pooled,
-        },
+        candidates=candidates,
         free_run=frame_mse,
         log_energy=None,
         val_trajs=data.val_trajs,

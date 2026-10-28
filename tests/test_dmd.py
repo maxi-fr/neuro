@@ -68,6 +68,19 @@ def test_dmd_rank_truncation_and_lambda() -> None:
     assert b_est.shape == (4,)
 
 
+def test_dmd_diagnostics_and_conditioning() -> None:
+    """dmd returns retained rank and conditioning when return_diagnostics=True."""
+    rng = np.random.default_rng(42)
+    x = rng.standard_normal((50, 10))
+    y = rng.standard_normal((50, 4))
+
+    w, b, r, cond = dmd(x, y, rank=3, dmd_lambda=1e-2, return_diagnostics=True)
+    assert w.shape == (4, 10)
+    assert b.shape == (4,)
+    assert r == 3
+    assert cond > 0.0
+
+
 def test_dmd_trainer_rejects_depth_gt_0() -> None:
     """DmdTrainer raises TypeError if model depth > 0."""
     model = WaveformMLPModel(
@@ -270,4 +283,4 @@ def test_dmd_observable_optuna_sweep_end_to_end(tmp_path: Path) -> None:
     value = OptunaSweep(cfg, files, tmp_path).objective(trial)
 
     assert isinstance(value, float)
-    assert trial.user_attrs.keys() == {"val_loss", "val_log_mse"}
+    assert {"val_loss", "val_log_mse", "retained_rank", "condition_number"}.issubset(trial.user_attrs.keys())
