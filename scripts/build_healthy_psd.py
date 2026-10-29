@@ -134,7 +134,7 @@ def build_healthy_psd(  # noqa: PLR0913
         ``sensor_0.y_mea`` is the 62-channel EEG; ``dynamics.lfp`` is the 76-region LFP that an
         identity-gain Predictor scores. Only used when ``knot_dt`` sets the rate.
     """
-    first_cfg = _batch_configs(yaml.safe_load(config_path.read_text(encoding="utf-8")))[0]
+    first_cfg = resolve_simulation_config(_batch_configs(yaml.safe_load(config_path.read_text(encoding="utf-8")))[0])
     dt_plant = float(first_cfg["dynamics"]["dt"])
     downsample = round(knot_dt / dt_plant) if knot_dt is not None else int(first_cfg["estimator"]["downsample"])
     fs = 1.0 / (dt_plant * downsample)
@@ -325,7 +325,9 @@ def main() -> None:
         or args.window != "hann"
         or args.asymmetric_window
     ):
-        first_cfg = _batch_configs(yaml.safe_load(args.config.read_text(encoding="utf-8")))[0]
+        first_cfg = resolve_simulation_config(
+            _batch_configs(yaml.safe_load(args.config.read_text(encoding="utf-8")))[0]
+        )
         dt_plant = float(first_cfg["dynamics"]["dt"])
         downsample = (
             round(args.knot_dt / dt_plant) if args.knot_dt is not None else int(first_cfg["estimator"]["downsample"])

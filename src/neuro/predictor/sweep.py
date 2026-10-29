@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import gc
 from typing import TYPE_CHECKING, Any
 
 import optuna
@@ -84,21 +85,25 @@ def _run_trial(
         trial.set_user_attr("projected_training_s", exc.projected_s)
         trial.set_user_attr("training_time_limit_s", exc.limit_s)
         raise optuna.TrialPruned(str(exc)) from exc
-    except (ValueError, RuntimeError) as exc:
+    except (ValueError, RuntimeError, MemoryError) as exc:
         err_msg = str(exc).lower()
-        if "nan" in err_msg or "out of memory" in err_msg or "cuda" in err_msg:
+        if isinstance(exc, MemoryError) or "nan" in err_msg or "out of memory" in err_msg or "cuda" in err_msg:
+            trial.set_user_attr("pruning_reason", "out_of_memory")
             raise optuna.TrialPruned from exc
         raise
     result.save(trial_dir)
     plot_training_curves(result, trial_dir / "loss_curve.png")
     plot_rollout_comparison(result, trial_dir / "comparison.png")
-    return score_trial(
+    score = score_trial(
         trial,
         candidates=result.candidates,
         objective=sweep.objective,
         trial_dir=trial_dir,
         closed_loop=sweep.closed_loop,
     )
+    del result
+    gc.collect()
+    return score
 
 
 class OptunaSweep:
@@ -170,5 +175,10 @@ class OptunaSweep:
         study = optuna.create_study(
             study_name=study_name, storage=storage, direction="minimize", load_if_exists=True, sampler=sampler
         )
-        study.optimize(self.objective, n_trials=self.sweep.n_trials)
+        completed = len(
+            [t for t in study.trials if t.state in {optuna.trial.TrialState.COMPLETE, optuna.trial.TrialState.PRUNED}]
+        )
+        remaining = max(0, self.sweep.n_trials - completed)
+        if remaining > 0:
+            study.optimize(self.objective, n_trials=remaining)
         return study

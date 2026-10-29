@@ -14,13 +14,13 @@ import style
 from neuro.types import FloatArray  # noqa: TC001 -- runtime import keeps the script runnable standalone
 
 DT = 0.1
-HORIZON = 9
-N_INTERVALS = 3
+HORIZON = 6
+N_INTERVALS = HORIZON
 A, B = 0.93, 0.35
 GAIN = 0.40
 U_MAX = 1.0
 X0 = 1.5
-GAPS = (0.55, -0.45)
+GAPS = (0.3, -0.25, 0.35, -0.2, 0.25)
 OUT = Path(__file__).with_suffix(".pdf")
 
 
@@ -54,7 +54,7 @@ def _rollout(x0: float, u: FloatArray) -> FloatArray:
 
 
 def _pieces(u: FloatArray) -> list[FloatArray]:
-    """Per-interval state pieces of a non-converged multiple-shooting iterate.
+    """Compute one-step pieces of a multiple-shooting iterate with dynamics defects.
 
     Each interval starts at its own decision variable, offset from the previous piece's end
     by the corresponding entry of ``GAPS``, so the continuity constraints are still violated.
@@ -75,22 +75,20 @@ def _pieces(u: FloatArray) -> list[FloatArray]:
 
 
 def main() -> None:
-    """Write the two-panel figure contrasting single with multiple shooting."""
+    """Write adjacent multiple- and single-shooting panels with one-step intervals."""
     u = _inputs()
     t = np.arange(HORIZON + 1) * DT
     single = _rollout(X0, u)
     pieces = _pieces(u)
     length = HORIZON // N_INTERVALS
 
-    fig, (ax_s, ax_m) = plt.subplots(2, 1, figsize=style.figsize(height_in=4.0), sharex=True, constrained_layout=True)
+    fig, (ax_m, ax_s) = plt.subplots(1, 2, figsize=style.figsize(height_in=2.7), sharey=True, constrained_layout=True)
 
     ax_s.plot(t, single, lw=1.6, color="C0", marker="o", ms=3.5, label="predicted trajectory")
     ax_s.plot(t[0], single[0], marker="s", ms=6, color="C3", ls="none", label=r"$\hat{\mathbf{x}}_k$")
     ax_s.set_title("Direct single shooting", loc="left")
     ax_s.annotate(
-        "only the inputs are decision variables,\n"
-        "so the dynamics hold at every iterate and\n"
-        "any iterate is a valid trajectory",
+        "Dynamics satisfied\nat every iterate",
         xy=(0.97, 0.94),
         xycoords="axes fraction",
         ha="right",
@@ -121,10 +119,11 @@ def main() -> None:
             xytext=(t_node, end),
             arrowprops={"arrowstyle": "<->", "lw": 1.0, "color": "C3"},
         )
+    ax_m.plot(t[-1], pieces[-1][-1], marker="o", ms=7, mfc="white", mec="C2", mew=1.4, ls="none")
     ax_m.plot(t[0], X0, marker="s", ms=6, color="C3", ls="none", label=r"$\hat{\mathbf{x}}_k$")
     ax_m.set_title("Direct multiple shooting", loc="left")
     ax_m.annotate(
-        "gaps: continuity equality constraints, closed only at\nconvergence; the drawn iterate is not a valid trajectory",
+        "Dynamics defects\nat an intermediate iterate",
         xy=(t[length], pieces[0][-1] + GAPS[0]),
         xytext=(0.97, 0.94),
         textcoords="axes fraction",
@@ -138,14 +137,13 @@ def main() -> None:
         ax_m.axvline(t_node, ls=":", lw=0.7, color="C2")
 
     for ax in (ax_s, ax_m):
-        ax.set_ylabel("State $x$ / a.u.")
+        ax.set_ylabel("State $x$ / 1")
+        ax.set_xlabel("Time / s")
         ax.legend(loc="lower left")
         ax.set_ylim(-0.6, 2.8)
         ax.grid(visible=True, lw=0.4, alpha=0.4)
         ax.set_axisbelow(True)
         ax.set_xlim(0.0, HORIZON * DT)
-
-    ax_m.set_xlabel("Time / s")
 
     fig.savefig(OUT)
     print(f"wrote {OUT}")

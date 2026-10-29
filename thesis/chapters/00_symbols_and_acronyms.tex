@@ -66,8 +66,9 @@ A running index is italic, a naming index upright.
     \multicolumn{3}{l}{\itshape Model predictive control} \\
     $\kappa, r, q, k$ & Plant step, waveform sample, spectral frame and predictor step & -- \\
     $j$ & Step offset within the prediction horizon & -- \\
-    $\npred$ & Prediction horizon length & -- \\
-    $\mathbf{x}$, $\ndim{x}$ & Prediction-model state and its dimension & -- \\
+    $H$ & Prediction horizon length & -- \\
+    $\Delta t$, $T_\mathrm{pred}$ & Controller sampling interval and prediction duration & \si{\second} \\
+    $\mathbf{x}$, $\ndim{x}$ & Dynamics-model state and its dimension & -- \\
     $\hat{\mathbf{x}}_k$ & State estimate at control step $k$ & -- \\
     $\mathbf{o}_k$, $\ndim{o}$ & Observable vector and its dimension & -- \\
     $\mathbf{y}_r$, $\ndim{y}$ & Waveform sample and its dimension & -- \\
@@ -110,8 +111,9 @@ A running index is italic, a naming index upright.
     $\mathbf{G}$ & Combined \acs*{dmdc} regression matrix & -- \\
     $n_{\mathrm{rank}}$, $\rho$ & Full and retained \acs*{svd} ranks & -- \\
     $\mathbf V_{\mathrm L}$, $\mathbf V_{\mathrm R}$ & Left and right singular-vector matrices & -- \\
-    $\mathcal L$ & Loss or stage cost & -- \\
-    $\mathcal L_\mathrm{x}$, $\mathcal L_\mathrm{u}$ & State-dependent and input-dependent stage-cost terms & -- \\
+    $\mathcal L$ & Predictor training loss & -- \\
+    $\ell$ & Control stage cost & -- \\
+    $\ell_\mathrm{x}$, $\ell_\mathrm{u}$ & State-dependent and input-dependent stage-cost terms & -- \\
     $V_\mathrm{f}$ & Terminal cost & -- \\
     $\mathcal J$ & Finite-horizon cost & -- \\
     $\mathbf{Q}$, $\mathbf{R}$ & Weights of a quadratic stage cost & -- \\

@@ -62,7 +62,20 @@ def dmd(  # noqa: PLR0913 -- X, Y plus SVD truncation, regularization, and diagn
     x_tilde = x_arr - x_mean
     y_tilde = y_arr - y_mean
 
-    u_mat, s, vt = np.linalg.svd(x_tilde, full_matrices=False)
+    m, n = x_tilde.shape
+    if m >= n:
+        c_mat = x_tilde.T @ x_tilde
+        evals, evecs = np.linalg.eigh(c_mat)
+        idx = np.argsort(evals)[::-1]
+        evals = np.maximum(evals[idx], 0.0)
+        s = np.sqrt(evals)
+        vt = evecs[:, idx].T
+        use_gram = True
+        u_mat = None
+    else:
+        u_mat, s, vt = np.linalg.svd(x_tilde, full_matrices=False)
+        use_gram = False
+
     k = len(s)
     if k == 0:
         msg = "Cannot fit DMD on empty features."
@@ -82,13 +95,19 @@ def dmd(  # noqa: PLR0913 -- X, Y plus SVD truncation, regularization, and diagn
 
     r = max(1, min(r, k))
 
-    u_r = u_mat[:, :r]
     s_r = s[:r]
     vt_r = vt[:r, :]
 
     s_inv = s_r / (s_r**2 + float(dmd_lambda)) if dmd_lambda > 0.0 else 1.0 / np.where(s_r > 0.0, s_r, 1e-12)
 
-    w = np.ascontiguousarray((y_tilde.T @ u_r * s_inv[None, :]) @ vt_r)
+    if use_gram:
+        safe_s_r = np.where(s_r > 0.0, s_r, 1e-12)
+        yx = y_tilde.T @ x_tilde
+        w = np.ascontiguousarray((yx @ vt_r.T * (s_inv / safe_s_r)[None, :]) @ vt_r)
+    else:
+        u_r = u_mat[:, :r]
+        w = np.ascontiguousarray((y_tilde.T @ u_r * s_inv[None, :]) @ vt_r)
+
     b = np.ascontiguousarray(y_mean - w @ x_mean)
     if return_diagnostics:
         cond = float(s_r[0] / max(s_r[-1], 1e-12))

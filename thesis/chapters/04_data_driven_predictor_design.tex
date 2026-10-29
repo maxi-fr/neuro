@@ -94,7 +94,7 @@ with $\mathbf{g}_{\boldsymbol{\theta}}$ denoting the increment model.
 The direct mapping and the residual mapping in~\eqref{eq:residual_predictor} produce observable predictions that can be evaluated using the same loss.
 
 Although the models are formulated as one-step predictors, multi-step forecasts are obtained by recursively applying the learned mapping under a sequence of candidate stimulation inputs.
-Let $\npred{}\in\mathbb{N}_{>0}$ denote the prediction horizon length and $j\in\{0,\ldots,\npred{}-1\}$ the step offset within it.
+Let $H\in\mathbb{N}_{>0}$ denote the prediction horizon length and $j\in\{0,\ldots,H-1\}$ the step offset within it.
 For recursive prediction, $\mathbf{o}_{j|k}$ denotes the observable $j$ steps ahead using the information available at step $k$.
 Set $\mathbf{o}_{0|k}=\mathbf{o}_k$.
 Starting from the measured history $\mathbf{h}_{0|k}=\mathbf{h}_k$, the prediction $j+1$ steps ahead is given by
@@ -106,7 +106,7 @@ Starting from the measured history $\mathbf{h}_{0|k}=\mathbf{h}_k$, the predicti
         \mathbf{h}_{j|k},
         \mathbf{u}_{j|k}
     \right),
-    \qquad j=0,\ldots,\npred{}-1\,,
+    \qquad j=0,\ldots,H-1\,,
     \label{eq:recursive_predictor}
 \end{equation}
 where $\mathbf{u}_{j|k}$ denotes the candidate stimulation currents for the interval from $k+j$ to $k+j+1$.
@@ -377,11 +377,11 @@ This step may differ between samples; its dependence on $\nu$ is left implicit.
 For sample $\nu$, the future currents and targets are collected as matrices whose columns are ordered in time,
 \begin{equation*}
     \mathbf U^{(\nu)}_{k}
-    =\begin{bmatrix}\mathbf u^{(\nu)}_{k}&\cdots&\mathbf u^{(\nu)}_{k+\npred{}-1}\end{bmatrix}
-    \in\mathbb R^{\ndim{u}\times \npred{}},\qquad
+    =\begin{bmatrix}\mathbf u^{(\nu)}_{k}&\cdots&\mathbf u^{(\nu)}_{k+H-1}\end{bmatrix}
+    \in\mathbb R^{\ndim{u}\times H},\qquad
     \mathbf O^{(\nu)}_{k}
-    =\begin{bmatrix}\mathbf o^{(\nu)}_{k+1}&\cdots&\mathbf o^{(\nu)}_{k+\npred{}}\end{bmatrix}
-    \in\mathbb R^{\ndim{o}\times \npred{}}\,.
+    =\begin{bmatrix}\mathbf o^{(\nu)}_{k+1}&\cdots&\mathbf o^{(\nu)}_{k+H}\end{bmatrix}
+    \in\mathbb R^{\ndim{o}\times H}\,.
 \end{equation*}
 Together with the initial history state from~\eqref{eq:predictor_history}, these form the dataset
 \begin{equation}
@@ -415,7 +415,7 @@ With the samples and coordinate transformations defined, the next subsection spe
 \subsection{Loss Functions and Training Strategies}
 
 For the constructed samples, mean squared error is used as the primary per-sample loss in~\eqref{eq:empirical_predictor_loss}, following standard regression practice~\cite{Goodfellow2016}.
-For sample $\nu$, let $n_{\mathrm{score}}\in\{1,\ldots,\npred{}\}$ be the number of predicted observations scored.
+For sample $\nu$, let $n_{\mathrm{score}}\in\{1,\ldots,H\}$ be the number of predicted observations scored.
 Using the recursive prediction notation from~\eqref{eq:recursive_predictor}, define
 \begin{equation}
     \mathcal{L}_\mathrm{obs}^{(\nu)}
@@ -452,7 +452,7 @@ In both cases the spectral loss is
 For spectral-output prediction, this is~\eqref{eq:observable_training_loss} with $n_{\mathrm{score}}=\nscore{spec}$.
 For waveform prediction starting at sample $r_q$, the frame $j$ steps ahead ends at sample $r_q+j \nhop{}$.
 Scoring $\nscore{spec}$ frames requires a predicted continuation of $\nscore{spec}\nhop{}$ waveform samples and the measured boundary history.
-Thus $\nscore{spec}\nhop{}\leq \npred{}$ for waveform prediction, whereas $\nscore{spec}\leq \npred{}$ for spectral prediction and $\nscore{wave}\leq \npred{}$ for the waveform loss.
+Thus $\nscore{spec}\nhop{}\leq H$ for waveform prediction, whereas $\nscore{spec}\leq H$ for spectral prediction and $\nscore{wave}\leq H$ for the waveform loss.
 Comparisons between the predictor families need to use the same spectral transformation characteristics.
 
 Waveform predictors use the weighted objective
