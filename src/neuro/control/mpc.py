@@ -1486,6 +1486,7 @@ def build_observable_problem(  # noqa: PLR0913 -- checkpoint plus the MPC cost/b
     w_u: float = 0.0,
     w_u_l1: float = 0.0,
     w_hinge: float = 0.0,
+    w_hinge_terminal: float | None = None,
     reference: HealthyReference | None = None,
     kirchhoff: bool = False,
     reduce_kirchhoff: bool = False,
@@ -1573,7 +1574,9 @@ def build_observable_problem(  # noqa: PLR0913 -- checkpoint plus the MPC cost/b
         costs.append(ReducedEffortCost(n=n, m=m, w_u=w_u, horizon=horizon))
     if w_u_l1 > 0 and l1_mode == "smooth":
         costs.append(PseudoHuberControlCost(n=n, m=m, weight=w_u_l1 / horizon, delta=1e-3))
-    envelope = _observable_envelope(reference, w_hinge)
+    w_hinge_term = w_hinge if w_hinge_terminal is None else float(w_hinge_terminal)
+    w_hinge_eff = max(w_hinge, w_hinge_term)
+    envelope = _observable_envelope(reference, w_hinge_eff)
     # The stage trajectory carries every Frame of the Control Horizon but the last, which lives
     # only in the terminal knot; the terminal Cost scores it so no predicted Frame goes unpriced.
     terminal: CostFunction = DiagonalCost.terminal_tracking(jnp.zeros(n), jnp.zeros(n), m)
@@ -1582,7 +1585,8 @@ def build_observable_problem(  # noqa: PLR0913 -- checkpoint plus the MPC cost/b
         hinge = ObservableHingeCost(envelope, w_hinge=w_hinge, horizon=horizon)
         output_hinge = OutputCost(model, hinge)
         costs.append(ExcludeInitialKnotState(output_hinge))
-        terminal = output_hinge.as_terminal()
+        term_hinge = ObservableHingeCost(envelope, w_hinge=w_hinge_term, horizon=horizon)
+        terminal = OutputCost(model, term_hinge.as_terminal())
     stage_cost: CostFunction = _combine_costs(costs)
     objective = Objective(stage_cost=stage_cost, terminal_cost=terminal, N=N)
 

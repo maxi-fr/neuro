@@ -36,7 +36,8 @@ The four intra-columnar projections are parameterized by the effective connectiv
     \centering
     \input{figures/03_biological_plant_modeling/jansen_rit_microcircuit}
     \caption{Block diagram of one Jansen-Rit node. Colored containers represent cell populations.
-    Connectivity multipliers $c_1$ to $c_4$ lie between populations, synaptic filters lie at receiving boundaries and potential summation and sigmoid conversion lie inside the receiving population.
+    Connectivity multipliers $c_1$ to $c_4$ lie between populations, and synaptic filters $h_{\mathrm e}$ and $h_{\mathrm i}$ lie at receiving boundaries.
+    Blocks marked $\Sigma$ sum their inputs, while $S$ denotes sigmoid conversion within a population.
     Black signals denote mean potentials and magenta signals denote mean firing rates.
     The two interneuron input filters share the response $x_{i,1}$: linearity allows $c_1$ and $c_3$ to precede the filters.
     The rates $r_{\mathrm p}=S(x_{i,2}-x_{i,3}+s_i)$, $r_{\mathrm e}=S(c_1x_{i,1})$ and $r_{\mathrm i}=S(c_3x_{i,1})$ denote pyramidal, excitatory-interneuron and inhibitory-interneuron mean firing rates, respectively.
@@ -382,7 +383,7 @@ This aggregation gives the $62\times 76$ matrix used in the plant.
 The reference convention of the supplied \ac{tvb} projection is retained in $\mathbf{L}_\mathrm{EEG}$.
 Because the assumed proportionality between neural-mass output and physical dipole density is not calibrated, the resulting simulated \ac{eeg} is a linearly scaled observation signal rather than an absolute prediction in clinical \si{\micro\volt}.
 
-\subsection{\acl{tes}}
+\subsection{\Acl{tes}}
 \label{sec:stimulation_interface}
 
 The actuation proceeds in the opposite physical direction.

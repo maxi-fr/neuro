@@ -1,44 +1,52 @@
 \chapter{Introduction}\label{ch:introduction}
 
-Some patients with epilepsy continue to experience seizures despite medication~\cite{Kwan2000,Chen2018}.
-Electrical stimulation offers an additional approach to treatment by modulating neural activity through implanted electrodes or non-invasive \ac{tes}~\cite{Morrell2011,Fregni2006,Auvichayapat2013}.
-Controlled studies of cathodal transcranial direct current stimulation have reported reductions in epileptiform discharges, although these changes did not establish substantial reductions in seizure frequency~\cite{Fregni2006,Auvichayapat2013}.
-These studies used prescribed electrode arrangements, current amplitudes and durations, without adjusting stimulation to ongoing neural activity during treatment~\cite{Fregni2006,Auvichayapat2013}.
-Closed-loop approaches instead use recorded neural activity to determine when or how to stimulate.
+Neurological disorders are a major source of illness and disability worldwide~\cite{WHONeurology2024}.
+Epilepsy is one such disorder, affecting around 50 million people worldwide.
+It is characterized by recurrent seizures~\cite{WHOEpilepsy2024}.
+Antiseizure medication can control seizures, but some patients continue to experience them despite treatment~\cite{Kwan2000,Chen2018}.
+For these patients, electrical stimulation has been investigated as an additional treatment that modulates neural activity through implanted electrodes or non-invasive \ac{tes}~\cite{Morrell2011,Fregni2006,Auvichayapat2013}.
+
+The way stimulation is delivered is distinct from the strategy used to determine when and how to apply it.
+In an open-loop strategy, stimulation follows a prescribed protocol without adjustment to ongoing neural activity.
+Studies of cathodal transcranial direct current stimulation used fixed electrode arrangements, current amplitudes and durations.
+They reported reductions in epileptiform discharges~\cite{Fregni2006,Auvichayapat2013}.
+Closed-loop strategies instead use recorded neural activity as feedback to determine when or how to stimulate.
+One such strategy is responsive stimulation, which triggers stimulation when specified activity is detected.
 Responsive stimulation triggered by intracranial recordings reduced seizure frequency relative to sham stimulation in a clinical trial~\cite{Morrell2011}.
-Closed-loop \ac{tes} has also been investigated using cortical recordings in a rodent model of epilepsy~\cite{Berenyi2012}.
+Alongside implanted responsive stimulation, closed-loop \ac{tes} has been investigated using cortical recordings in a rodent model of epilepsy~\cite{Berenyi2012}.
 
-Feedback can support decisions beyond triggering stimulation when abnormal activity is detected.
-\Ac{mpc} uses a dynamical model to predict the response to candidate stimulation sequences and selects inputs by optimizing a control objective subject to constraints~\cite{Rawlings2017,Chang2020}.
-The prediction model therefore connects the available measurements and stimulation inputs to the controller's estimate of future activity.
-Model-based neural control has been investigated at different scales, from feedback control of single-neuron dynamics by Fr\"ohlich and Jezernik~\cite{Frohlich2005} to seizure suppression in neural populations and networks~\cite{Chang2020,Liang2024}.
-For seizure-control \ac{mpc}, Chang et al.~\cite{Chang2020} identify a nonlinear Volterra prediction model from stimulation inputs and neural-mass outputs.
-Liang et al.~\cite{Liang2024} use dynamic mode decomposition to construct a model for \ac{mpc} in an epileptic network.
+In recent years, \ac{mpc} has emerged as a promising approach to closed-loop neurostimulation, leveraging dynamical models of neural activity to guide the selection of stimulation inputs~\cite{Chang2020,Fang2023,Liang2024,Steffen2025}.
+In general, \ac{mpc} uses a dynamics model to predict a system's response to candidate input sequences and selects a sequence by optimizing a control objective subject to constraints.
+Only the first input is applied before the optimization is repeated using updated measurements~\cite{Rawlings2017}.
+For neural stimulation, the inputs describe the applied electrical stimulation, and the model predicts the resulting neural activity.
+Model-based neural control has been investigated at different scales, from feedback control of single-neuron dynamics~\cite{Frohlich2005} to seizure suppression in neural populations and networks~\cite{Chang2020,Liang2024}.
+For seizure-control \ac{mpc}, one study identifies a nonlinear Volterra prediction model from stimulation inputs and neural-mass outputs~\cite{Chang2020}.
+Another uses dynamic mode decomposition to construct a prediction model for an epileptic network~\cite{Liang2024}.
 
-Besides the construction of the prediction model, a controller designer must choose which quantities it predicts.
-Spectral representations provide one way to describe seizure-related activity: Truong et al.~\cite{Truong2018} use \ac{stft} representations of \ac{eeg} to distinguish preictal from interictal activity.
+Rather than predicting neural activity itself, prediction models can instead target quantities derived from it.
+Spectral representations provide one way to describe seizure-related activity. Preictal activity is distinguished from interictal activity using \ac{stft} representations of \ac{eeg} in~\cite{Truong2018}.
 For control, related work has predicted measures of oscillatory activity directly.
-Fang and Yang~\cite{Fang2023} identify a dynamical model of regional spectral powers for \ac{mpc} in a simulation study of major depressive disorder.
-Steffen and Cannon~\cite{Steffen2025} use a multi-step neural-network model to predict the amplitude envelope of beta-band-filtered \acp{lfp} for deep brain stimulation in Parkinson's disease.
+In a simulation study of major depressive disorder, a dynamical model of regional spectral powers is identified from data for \ac{mpc}~\cite{Fang2023}.
+A multi-step neural-network model is used to predict the amplitude envelope of beta-band-filtered \acp{lfp} for deep brain stimulation in Parkinson's disease in~\cite{Steffen2025}.
 These approaches provide precedents for predicting derived quantities within \ac{mpc}, while addressing different disorders and measurement settings.
 With a spectral control objective, direct spectral prediction allows the controller to evaluate the objective from the predicted quantities themselves.
 Waveform prediction provides an alternative in which spectral quantities are computed from the predicted signal.
 
-The control objective also determines how seizure suppression is balanced against stimulation expenditure.
+Selecting stimulation requires balancing the desired change in neural activity against stimulation effort.
 Previous optimal-control studies have considered energy and sparsity penalties in neural populations and whole-brain networks~\cite{Chouzouris2021,Salfenmoser2022,Salfenmoser2023}.
 Penalizing stimulation magnitude and explicitly choosing stimulation intervals offer different ways to limit its use.
-Their comparison requires assessing control performance together with stimulation expenditure and the computational cost of selecting the inputs.
+Their comparison requires assessing control performance together with stimulation effort and the computational cost of selecting the inputs.
 
 Applying these control approaches through scalp electrodes introduces a further question about the setting in which they are evaluated.
 Several \ac{mpc} studies apply inputs directly to neural populations or network nodes and use regional activity as the output~\cite{Chang2020,Fang2023,Liang2024}.
 Scalp stimulation instead produces a spatially distributed electric field, while scalp \ac{eeg} reflects neural currents conducted through the head tissues~\cite{Huang2019,Buzsaki2012}.
-Yu et al.~\cite{Yu2024} include electric-field modeling and scalp \ac{eeg} feedback in a whole-brain simulation of closed-loop \ac{tes}, using a threshold-based feedback law.
-Their study provides a scalp-based feedback setting, whereas the cited seizure-control \ac{mpc} studies investigate predictive control through regional inputs and outputs.
+A whole-brain simulation of closed-loop \ac{tes} combines electric-field modeling and scalp \ac{eeg} feedback using a threshold-based feedback law~\cite{Yu2024}.
+This study provides a scalp-based feedback setting, whereas the other cited seizure-control \ac{mpc} studies investigate predictive control through regional inputs and outputs.
 
 Together, these studies leave three questions for the present investigation.
 How does \ac{mpc} perform when stimulation and measurement are mediated by scalp-electrode mappings rather than direct access to regional activity?
 Does direct prediction of scalp \ac{eeg} spectral quantities improve control with a spectral objective compared with waveform-based prediction?
-How do continuous sparsity-promoting formulations and explicit stimulation scheduling compare in control performance, stimulation expenditure and computational cost?
+How do continuous sparsity-promoting formulations and explicit stimulation scheduling compare in control performance, stimulation effort and computational cost?
 
 This thesis investigates these questions in a simulation study of \ac{mpc} for seizure control.
 A biophysical whole-brain model generates the stimulation responses and scalp \ac{eeg} used to identify prediction models and evaluate feedback control.
@@ -47,7 +55,7 @@ The three contributions are:
 
 \begin{enumerate}
     \item Evaluation of \ac{mpc} with constrained electrode currents in a biophysical simulation plant that maps scalp currents to regional stimulation and regional activity to scalp \ac{eeg}, including orientation-dependent neural polarization.
-    \item Development of data-driven models that directly predict sequences of \ac{stft}-derived scalp \ac{eeg} spectral quantities and comparison with waveform-based prediction under a common spectral control objective.
+    \item Development of data-driven models that directly predict sequences of \ac{stft}-derived scalp \ac{eeg} spectral power and comparison with waveform-based models within \ac{mpc} for seizure suppression.
     \item Formulation and comparison of sparsity-promoting \ac{mpc} approaches using mixed-integer stimulation scheduling and continuous relaxations.
 \end{enumerate}
 
