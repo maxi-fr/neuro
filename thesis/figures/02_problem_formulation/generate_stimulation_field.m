@@ -84,7 +84,7 @@ fprintf(fid, '\\begin{tikzpicture}[thesis figure,x=1mm,y=1mm]\n');
 fprintf(fid, '  \\node[anchor=south west,inner sep=0] at (0,0) {\\includegraphics{figures/02_problem_formulation/stimulation_field_render.png}};\n');
 fprintf(fid, '  \\node at (22,75) {\\textcolor[rgb]{0.75,0.22,0.14}{TPP9: $+1$ mA}};\n');
 fprintf(fid, '  \\node at (62,75) {\\textcolor[rgb]{0.12,0.30,0.65}{Ex8: $-1$ mA}};\n');
-fprintf(fid, '  \\node at (41,17) {Electric field magnitude / $\\mathrm{V}\\,\\mathrm{m}^{-1}$};\n');
+fprintf(fid, '  \\node at (41,17) {Electric field magnitude ($\\,\\mathrm{V}\\,\\mathrm{m}^{-1}$)};\n');
 fprintf(fid, '  \\node[thesis secondary] at (15,6) {$0$};\n');
 fprintf(fid, '  \\node[thesis secondary] at (41,6) {$%.3g$};\n', fieldMax / 2);
 fprintf(fid, '  \\node[thesis secondary] at (67,6) {$\\geq %.2f$};\n', fieldMax);

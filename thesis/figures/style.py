@@ -10,7 +10,7 @@ TEXTWIDTH_IN = TEXTWIDTH_PT * INCHES_PER_PT  # ~6.693 inches
 # PGF passes these values to \fontsize in TeX points, matching the TikZ styles.
 FONT_LARGE = 9.0  # Main figure header
 FONT_TITLE = 9.0  # Subplot title (e.g. "(a) Excitability...")
-FONT_LABEL = 9.0  # Axis labels (e.g. "Time / s", "$y_\\mathrm{LFP}$ / mV")
+FONT_LABEL = 9.0  # Axis labels (e.g. "Time (s)", "$y_\\mathrm{LFP}$ (mV)")
 FONT_TICK = 8.0  # Tick labels (numbers on axes)
 FONT_LEGEND = 8.0  # Legend entries
 FONT_ANNOTATION = 8.0  # In-plot descriptions, arrows, and labels

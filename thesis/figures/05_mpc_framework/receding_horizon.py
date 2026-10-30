@@ -132,7 +132,7 @@ def main() -> None:
     ax_u.set_ylim(0.41, U_MAX * 1.1)
 
     for ax in (ax_y, ax_u):
-        ax.set_xlabel("Time / s")
+        ax.set_xlabel("Time (s)")
         ax.grid(visible=True, lw=0.4, alpha=0.4)
         ax.set_axisbelow(True)
         ax.set_xlim(0.0, t_real[-1])

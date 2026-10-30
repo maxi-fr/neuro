@@ -81,7 +81,7 @@ def main() -> None:
 
     ax = axes[0]
     ax.plot(t, y, lw=0.6, color="C0")
-    ax.set_ylabel(r"$y_{\mathrm{LFP}}$ / mV")
+    ax.set_ylabel(r"$y_{\mathrm{LFP}}$ (mV)")
     ax.set_title("(a) Propagation-zone node recruited by the epileptogenic zone", loc="left")
 
     ax = axes[1]
@@ -91,9 +91,9 @@ def main() -> None:
     mesh = ax.pcolormesh(
         edges_t, edges_f, np.maximum(power.T, LOG_FLOOR), norm=LogNorm(), cmap="viridis", shading="flat"
     )
-    fig.colorbar(mesh, ax=ax, label=r"PSD / (mV$^2$ Hz$^{-1}$)", pad=0.02)
-    ax.set_ylabel("Frequency / Hz")
-    ax.set_xlabel("Time / s")
+    fig.colorbar(mesh, ax=ax, label=r"PSD (mV$^2$ Hz$^{-1}$)", pad=0.02)
+    ax.set_ylabel("Frequency (Hz)")
+    ax.set_xlabel("Time (s)")
     ax.set_title("(b) Spectrogram", loc="left")
 
     for ax in axes:

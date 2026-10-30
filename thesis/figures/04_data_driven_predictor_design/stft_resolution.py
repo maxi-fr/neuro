@@ -99,8 +99,8 @@ def main() -> None:
     for ax in axes:
         ax.set_xlim(0.0, BAND_MAX_HZ)
         ax.set_ylim(1e-3, 2e1)
-        ax.set_xlabel("Frequency / Hz")
-        ax.set_ylabel("PSD / mV$^2$ Hz$^{-1}$")
+        ax.set_xlabel("Frequency (Hz)")
+        ax.set_ylabel("PSD (mV$^2$ Hz$^{-1}$)")
         ax.grid(visible=True, lw=0.4, alpha=0.4)
         ax.set_axisbelow(True)
         ax.legend(loc="lower left")

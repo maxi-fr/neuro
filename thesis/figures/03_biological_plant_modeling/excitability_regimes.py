@@ -82,22 +82,22 @@ def main() -> None:
     )
     for row, ((t, y), label) in enumerate(panels):
         axes[row, 0].plot(t, y, lw=0.7, color="C0")
-        axes[row, 0].set_ylabel("$y_\\mathrm{LFP}$ / mV")
+        axes[row, 0].set_ylabel("$y_\\mathrm{LFP}$ (mV)")
         axes[row, 0].set_title(label, loc="left")
         axes[row, 0].set_xlim(0.0, 4.0)
 
         f, pxx = welch(y, fs=1.0 / DT, nperseg=2**14)
         band = f <= PSD_MAX_HZ
         axes[row, 1].semilogy(f[band], pxx[band], lw=0.8, color="C3")
-        axes[row, 1].set_ylabel("PSD / mV$^2$ Hz$^{-1}$")
+        axes[row, 1].set_ylabel("PSD (mV$^2$ Hz$^{-1}$)")
         axes[row, 1].set_xlim(0.0, PSD_MAX_HZ)
 
         for ax in axes[row]:
             ax.grid(visible=True, lw=0.4, alpha=0.4)
             ax.set_axisbelow(True)
 
-    axes[-1, 0].set_xlabel("Time / s")
-    axes[-1, 1].set_xlabel("Frequency / Hz")
+    axes[-1, 0].set_xlabel("Time (s)")
+    axes[-1, 1].set_xlabel("Frequency (Hz)")
     fig.savefig(OUT)
     print(f"wrote {OUT}")
 

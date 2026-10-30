@@ -89,8 +89,8 @@ def main() -> None:
     ax.vlines(frame_times, 0.0, FS / 2, colors="w", lw=0.35, alpha=0.5)
     ax.set_ylim(0.0, FS / 2)
     ax.set_yticks([0.0, 25.0, 50.0, 75.0, 100.0])
-    ax.set_ylabel("Frequency / Hz")
-    ax.set_xlabel("Time / s")
+    ax.set_ylabel("Frequency (Hz)")
+    ax.set_xlabel("Time (s)")
     ax.set_title("(b) Corresponding STFT spectra", loc="left")
 
     for ax in axes:

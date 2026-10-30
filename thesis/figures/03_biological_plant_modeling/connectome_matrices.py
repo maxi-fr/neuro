@@ -20,7 +20,7 @@ def main() -> None:
     connected = connectome.weights > 0
     panels = (
         (connectome.weights, "Connectivity weight", "Weight", "Blues", 3.0),
-        (connectome.delays, "Conduction delay", "Delay / ms", "Oranges", 3.0),
+        (connectome.delays, "Conduction delay", "Delay (ms)", "Oranges", 3.0),
     )
     fig, axes = plt.subplots(1, 2, figsize=style.figsize(height_in=3.55), constrained_layout=True)
     for ax, (values, title, bar_label, palette, maximum) in zip(axes, panels, strict=True):

@@ -137,8 +137,8 @@ def main() -> None:
         ax_m.axvline(t_node, ls=":", lw=0.7, color="C2")
 
     for ax in (ax_s, ax_m):
-        ax.set_ylabel("State $x$ / 1")
-        ax.set_xlabel("Time / s")
+        ax.set_ylabel("State $x$")
+        ax.set_xlabel("Time (s)")
         ax.legend(loc="lower left")
         ax.set_ylim(-0.6, 2.8)
         ax.grid(visible=True, lw=0.4, alpha=0.4)

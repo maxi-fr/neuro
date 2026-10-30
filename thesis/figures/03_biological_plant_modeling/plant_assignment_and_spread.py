@@ -94,7 +94,7 @@ def plot_assignment(connectome: Connectome) -> None:
         (0, 2, "Sagittal projection", (-80, 85)),
         (1, 2, "Frontal projection", (-65, 65)),
     )
-    names = ("Anterior coordinate / mm", "Left coordinate / mm", "Superior coordinate / mm")
+    names = ("Anterior coordinate (mm)", "Left coordinate (mm)", "Superior coordinate (mm)")
     for ax, (x_dim, y_dim, title, x_limits) in zip(axes, views, strict=True):
         for mask, label, color, size in categories:
             ax.scatter(
@@ -136,7 +136,7 @@ def plot_spread(connectome: Connectome) -> None:
         count = np.count_nonzero(profile.onsets[mask, None] <= profile.times[None, :], axis=0)
         ax.step(profile.times, count, where="post", label=label, color=color, linewidth=1.2)
     ax.axvline(10.5, color="black", linestyle=":", linewidth=0.8)
-    ax.set(xlim=(0, 12), ylim=(0, 34), xlabel="Time / s", ylabel="Recruited regions")
+    ax.set(xlim=(0, 12), ylim=(0, 34), xlabel="Time (s)", ylabel="Recruited regions")
     ax.set_xticks(np.arange(0, 13, 2))
     ax.grid(visible=True, linewidth=0.4, alpha=0.4)
     ax.set_axisbelow(True)
