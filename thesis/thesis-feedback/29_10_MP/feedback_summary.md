@@ -8,8 +8,8 @@
 | Metric | Count |
 | :--- | :--- |
 | **Total Review Comments & Annotations** | **36** |
-| **Status: (`[ ]`)** | **6** |
-| **Status: Resolved (`[x]`)** | **30** |
+| **Status: (`[ ]`)** | **2** |
+| **Status: Resolved (`[x]`)** | **34** |
 | **Primary Chapters Reviewed** | Chapter 1 (`01_introduction.tex`), pp. 1–2<br>Chapter 2 (`02_problem_formulation.tex`), pp. 3–6<br>Chapter 3 (`03_biological_plant_modeling.tex`), pp. 7–9 |
 
 ## 1. Introduction Structure & Narrative Flow (8 comments)
@@ -57,11 +57,13 @@ Revision note: INT-06 is addressed through a general MPC explanation followed by
 
 ## 3. Biophysical Plant Modeling (3 comments)
 
+Revision note: BIO-01 is addressed by using unnumbered roadmap prose in Chapter 3, matching Chapters 2 and 5; a thesis-wide roadmap review is outside this revision's scope. BIO-02 is addressed by expanding the plant's two roles in the thesis: generating datasets for predictor training and validation, and serving as the simulated system controlled by MPC during closed-loop evaluation, where regional activity is used to assess recruitment suppression.
+
 | ID | Status | Page (PDF / Doc) | Source File & Line(s) | Marked Text / Element | Reviewer Feedback (Max Pfefferkorn) |
 | :--- | :---: | :---: | :--- | :--- | :--- |
-| **BIO-01** | `[ ]` | PDF p. 21 (Doc p. 7) | [`03_biological_plant_modeling.tex:L8-11`](file:///C:/Users/frank/closed-loop-neurostimulation/thesis/chapters/03_biological_plant_modeling.tex#L8-L11) | `In Section 3.1... Section 3.2... Section 3.3... Section 3.4.` | In Chapter 2, you didn't use section numbers. Here, you do. This is inconsistent. Use one variant throughout the entire thesis. |
-| **BIO-02** | `[ ]` | PDF p. 21 (Doc p. 7) | [`03_biological_plant_modeling.tex:L4-6`](file:///C:/Users/frank/closed-loop-neurostimulation/thesis/chapters/03_biological_plant_modeling.tex#L4-L6) | `The simulation setting established in Chapter 2 requires a plant that represents seizure recruitment... The chapter is organized into four sections.` | Consider extending this by 2-3 sentences, making the connection and the purpose of this chapter more explicit. |
-| **BIO-03** | `[ ]` | PDF p. 21 (Doc p. 7) | [`03_biological_plant_modeling.tex:L28-30`](file:///C:/Users/frank/closed-loop-neurostimulation/thesis/chapters/03_biological_plant_modeling.tex#L28-L30) | `Each regional node i contains three interacting populations...` | Reference to a figure would be good to make this unambiguous and immediately understandable, because you "jump" between the terms "node", "region", and "cortical macro-column". You could also be more consistent with the terminology instead to make this immediately clear. |
+| **BIO-01** | `[x]` | PDF p. 21 (Doc p. 7) | [`03_biological_plant_modeling.tex:L8-11`](file:///C:/Users/frank/closed-loop-neurostimulation/thesis/chapters/03_biological_plant_modeling.tex#L8-L11) | `In Section 3.1... Section 3.2... Section 3.3... Section 3.4.` | In Chapter 2, you didn't use section numbers. Here, you do. This is inconsistent. Use one variant throughout the entire thesis. |
+| **BIO-02** | `[x]` | PDF p. 21 (Doc p. 7) | [`03_biological_plant_modeling.tex:L4-6`](file:///C:/Users/frank/closed-loop-neurostimulation/thesis/chapters/03_biological_plant_modeling.tex#L4-L6) | `The simulation setting established in Chapter 2 requires a plant that represents seizure recruitment... The chapter is organized into four sections.` | Consider extending this by 2-3 sentences, making the connection and the purpose of this chapter more explicit. |
+| **BIO-03** | `[x]` | PDF p. 21 (Doc p. 7) | [`03_biological_plant_modeling.tex:L28-30`](file:///C:/Users/frank/closed-loop-neurostimulation/thesis/chapters/03_biological_plant_modeling.tex#L28-L30) | `Each regional node i contains three interacting populations...` | Reference to a figure would be good to make this unambiguous and immediately understandable, because you "jump" between the terms "node", "region", and "cortical macro-column". You could also be more consistent with the terminology instead to make this immediately clear. |
 
 ---
 
@@ -69,7 +71,7 @@ Revision note: INT-06 is addressed through a general MPC explanation followed by
 
 | ID | Status | Page (PDF / Doc) | Source File & Line(s) | Marked Text / Element | Reviewer Feedback (Max Pfefferkorn) |
 | :--- | :---: | :---: | :--- | :--- | :--- |
-| **FIG-01** | `[ ]` | PDF p. 22 (Doc p. 8) | [`03_biological_plant_modeling.tex:L12-20`](file:///C:/Users/frank/closed-loop-neurostimulation/thesis/chapters/03_biological_plant_modeling.tex#L12-L20) | `Figure 3.1 (plant_overview)` | Put it on the same page where it is referenced. The image should then be understandable from the introductory paragraph to Chapter 3 as well. |
+| **FIG-01** | `[x]` | PDF p. 22 (Doc p. 8) | [`03_biological_plant_modeling.tex:L12-20`](file:///C:/Users/frank/closed-loop-neurostimulation/thesis/chapters/03_biological_plant_modeling.tex#L12-L20) | `Figure 3.1 (plant_overview)` | Put it on the same page where it is referenced. The image should then be understandable from the introductory paragraph to Chapter 3 as well. |
 | **FIG-02** | `[x]` | PDF p. 23 (Doc p. 9) | [`jansen_rit_microcircuit.tex`](file:///C:/Users/frank/closed-loop-neurostimulation/thesis/figures/03_biological_plant_modeling/jansen_rit_microcircuit.tex) | `Figure 3.2 TikZ diagram font size` | Enlarge font size please. |
 | **FIG-03** | `[x]` | PDF p. 23 (Doc p. 9) | [`03_biological_plant_modeling.tex:L39`](file:///C:/Users/frank/closed-loop-neurostimulation/thesis/chapters/03_biological_plant_modeling.tex#L39) | `...potential summation and sigmoid conversion lie inside the receiving population.` | Add symbols. *(Add corresponding mathematical symbols to the caption of Figure 3.2, e.g. $\sum$, $S(\cdot)$, $h(t)$, etc.).* |
 

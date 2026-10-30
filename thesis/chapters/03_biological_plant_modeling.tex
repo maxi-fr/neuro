@@ -1,23 +1,22 @@
-\chapter{Biophysical Plant Modeling}
-\label{ch:biological_plant_modeling}
+\chapter{Biophysical Plant Modeling}\label{ch:biological_plant_modeling}
 
-The simulation setting established in Chapter~\ref{ch:problem_formulation} requires a plant that represents seizure recruitment and its response to scalp stimulation.
-This chapter specifies that plant for generating identification data and evaluating closed-loop control.
-The chapter is organized into four sections.
+This chapter specifies the biophysical plant model introduced in Chapter~\ref{ch:problem_formulation}.
+Its simulated responses to stimulation provide datasets of electrode currents and scalp \ac{eeg} measurements for training and validating the data-driven predictors.
+The trained predictors are subsequently used within \ac{mpc} to select currents applied to the plant during closed-loop evaluation.
+The simulated scalp measurements provide feedback to the controller, while regional activity allows its ability to suppress the seizures to be assessed.
 
-In Section~\ref{sec:regional_neural_mass}, the Jansen-Rit model describes the neural-mass dynamics within each brain region.
-Structural coupling, conduction delays and numerical integration are specified in Section~\ref{sec:connectome}.
-Section~\ref{sec:parameter_selection} describes the regional excitability assignments and the calibration of seizure propagation.
-Finally, the measurement and stimulation mappings are defined in Section~\ref{sec:electrical_interfaces}.
+The chapter develops the plant from regional Jansen-Rit dynamics and their structural coupling, including conduction delays and numerical integration.
+Regional excitability assignments and network calibration establish the simulated seizure propagation setting, while measurement and stimulation mappings connect the neural dynamics to the scalp electrodes.
 Figure~\ref{fig:plant_overview} summarizes the resulting path from stimulation currents through the neural network to the measurements available for feedback.
 
 
-\begin{figure}
+\begin{figure}[h]
     \centering
     \input{figures/03_biological_plant_modeling/plant_overview}
-    \caption{Overview of the biological plant. Scalp currents $\mathbf{u}$ are mapped through the stimulation lead field to regional membrane-potential perturbations $\mathbf{s}$, which act on a delayed stochastic network of Jansen-Rit nodes. Regional activity is mapped through the \ac{eeg} lead field to the scalp measurements available to the controller. The callout shows an example output of node $i$. Brain outlines, stimulation shading and electrode positions are schematic.}
+    \caption{Overview of the biological plant. Scalp currents $\mathbf{u}$ are mapped through the stimulation lead field to signed regional membrane-potential perturbations $\mathbf{s}$, which act on a delayed stochastic network of Jansen-Rit nodes. The measurement map illustrates weighted contributions of regional activity to one recording electrode through the \ac{eeg} lead field. The resulting scalp measurements are available to the controller. The callout shows an example output of node $i$. Brain outlines, stimulation shading and electrode positions are schematic.}
     \label{fig:plant_overview}
 \end{figure}
+\pagebreak
 
 \section{Regional Neural-Mass Dynamics}
 \label{sec:regional_neural_mass}
@@ -27,7 +26,9 @@ This approximation is appropriate when the quantity of interest is a mesoscopic 
 Such population-level dynamics are suitable for studying the regional recruitment and large-scale synchronization relevant to seizure propagation.
 The Jansen-Rit model is used here because, unlike simpler phenomenological neural-mass models, it explicitly represents interacting pyramidal, excitatory interneuron and inhibitory interneuron populations with synaptic filtering, while remaining low-dimensional and capable of reproducing oscillatory and spike-wave-like epileptiform dynamics~\cite{Jansen1995,Wendling2002,Yu2024}.
 
-Each regional node $i$ contains three interacting populations: \acp{py}, \acp{ein} and \acp{iin}, connected as shown in Figure~\ref{fig:microcircuit}.
+In the whole-brain network, each brain region is represented by one node whose local dynamics follow the Jansen-Rit model.
+Although originally formulated for a cortical macro-column, this model is used here as a population-level description of regional activity.
+Each node $i$ comprises three interacting populations: \acp{py}, \acp{ein} and \acp{iin}, connected as shown in Figure~\ref{fig:microcircuit}.
 Pyramidal firing excites both interneuron populations.
 The \acp{ein} feed excitation back to the \acp{py} and therefore form a positive feedback pathway, whereas the \acp{iin} return inhibition and provide the principal negative feedback pathway.
 The four intra-columnar projections are parameterized by the effective connectivity coefficients $c_1$ to $c_4$, conventionally interpreted as average synaptic contact numbers in the Jansen-Rit model.

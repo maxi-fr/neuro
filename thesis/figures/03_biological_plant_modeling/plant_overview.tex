@@ -39,9 +39,9 @@
     }}
 ]
 
-    \path[panel, fill=black!2] (-7.05,-3.50) rectangle (-3.35,3.10);
-    \path[panel, fill=accentcolor!5] (-2.10,-3.50) rectangle (2.10,3.10);
-    \path[panel, fill=black!2] (3.35,-3.50) rectangle (7.05,3.10);
+    \path[panel, fill=black!2] (-7.05,-2.55) rectangle (-3.35,3.10);
+    \path[panel, fill=accentcolor!5] (-2.10,-2.55) rectangle (2.10,3.10);
+    \path[panel, fill=black!2] (3.35,-2.55) rectangle (7.05,3.10);
 
     \node at (-5.2,2.77) {Scalp currents};
     \begin{scope}[shift={(-5.2,0.65)}]
@@ -62,10 +62,8 @@
         \node[above left, inner sep=2pt] at (-1.12,1.03) {$+I$};
         \node[above right, inner sep=2pt] at (1.12,1.03) {$-I$};
     \end{scope}
-    \node[align=center, thesis secondary] at (-5.2,-1.43)
-        {Regional perturbations\\(signed response)};
-    \node at (-5.2,-2.45) {Stimulation map};
-    \node at (-5.2,-3.06) {$\mathbf{s}=\mathbf{L}_{\mathrm{stim}}\mathbf{u}$};
+    \node at (-5.2,-1.50) {Stimulation map};
+    \node at (-5.2,-2.11) {$\mathbf{s}=\mathbf{L}_{\mathrm{stim}}\mathbf{u}$};
 
     \begin{scope}[shift={(0,0.40)}]
         \pic {brain};
@@ -82,8 +80,8 @@
     \begin{scope}[shift={(0,3.10)}, xscale=0.95, yscale=0.65]
         \input{figures/03_biological_plant_modeling/plant_overview_activity}
     \end{scope}
-    \node[align=center] at (0,-2.35) {Delayed stochastic\\Jansen--Rit network};
-    \node at (0,-3.06) {$\mathbf{x}(t)\in\mathbb{R}^{6\nreg{}}$};
+    \node[align=center] at (0,-1.40) {Delayed stochastic\\Jansen--Rit network};
+    \node at (0,-2.11) {$\mathbf{x}(t)\in\mathbb{R}^{6\nreg{}}$};
 
     \node at (5.2,2.77) {Regional activity};
     \begin{scope}[shift={(5.2,0.65)}]
@@ -101,10 +99,8 @@
         }
         \node[electrode, fill=accentcolor!70, minimum size=6pt] at (recording) {};
     \end{scope}
-    \node[align=center, thesis secondary] at (5.2,-1.43)
-        {Weighted contributions to\\one recording electrode};
-    \node at (5.2,-2.45) {Measurement map};
-    \node at (5.2,-3.06) {$\mathbf{y}_{\mathrm{EEG}}=\mathbf{L}_{\mathrm{EEG}}\mathbf{y}_{\mathrm{reg}}$};
+    \node at (5.2,-1.50) {Measurement map};
+    \node at (5.2,-2.11) {$\mathbf{y}_{\mathrm{EEG}}=\mathbf{L}_{\mathrm{EEG}}\mathbf{y}_{\mathrm{reg}}$};
 
     \draw[flow] (-8.10,0) node[above right] {$\mathbf{u}(t)$} -- (-7.05,0);
     \draw[flow] (-3.35,0) -- node[above] {$\mathbf{s}(t)$} (-2.10,0);
