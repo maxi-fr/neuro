@@ -58,7 +58,8 @@
 \usepackage{booktabs} % Professional table formatting
 \usepackage{siunitx}
 \usepackage{tikz}
-\usetikzlibrary{arrows.meta, positioning, shapes.geometric, fit, backgrounds, calc}
+\usetikzlibrary{arrows.meta, positioning, shapes.geometric, fit, backgrounds, calc, external}
+\tikzexternalize[prefix=out/figures/]
 \tikzset{
     thesis figure/.style={font=\rmfamily\footnotesize},
     thesis heading/.style={font=\rmfamily\footnotesize\bfseries},

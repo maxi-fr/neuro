@@ -7,16 +7,16 @@ Keep file inspection and changes scoped to `thesis/`. Inspect parent-repository 
 Use the latex-lint command when needed:
 
 ```bash
-usage: uv run latex-lint [-h] {compile,check,rule,install-skills,refs,format} ...
+usage: uv run latex-lint [-h] {compile,check,rule,install-skills,refs,format,feedback}
 
 positional arguments:
-  {compile,check,rule,install-skills,refs,format}
     compile             compile LaTeX document via pdflatex and biber recipe (<root> [-o/--output-dir PATH] [-v/--verbose])
     check               check a root document or specific .tex file (<path> [--root ROOT] [--ignore RULES])
     rule                show an implemented rule and examples (<rule_id>)
     install-skills      install bundled agent skills ([preset] [-d/--dest PATH] [-f/--force])
     refs                manage reference papers and text extraction (fetch, extract)
     format              format LaTeX files with one sentence per line (<paths>...)
+    feedback            print comments with context and line numbers (<path>)
 
 options:
   -h, --help            show this help message and exit
