@@ -257,7 +257,7 @@ This integration advances the coupled regional dynamics; the next section specif
 
 Within the whole-brain model, regional differences in seizure susceptibility are introduced through the node-dependent excitatory synaptic gain $A_i$.
 Increasing $A_i$ strengthens excitation relative to inhibition and moves the isolated node toward an oscillatory instability.
-For the parameter regime used here, three excitability levels are assigned following the whole-brain epilepsy configuration in~\cite{Yu2024}. % cite-checked: SUPPORTED
+For the parameter regime used here, three excitability levels are assigned following the whole-brain epilepsy configuration in~\cite{Yu2024}.
 All other local Jansen-Rit parameters are shared across regions.
 
 Healthy background regions use $A_i=3.25\,\si{\milli\volt}$ and remain in a low-amplitude stable regime when isolated.
@@ -277,7 +277,7 @@ Within this model seizure propagation therefore refers to network-driven recruit
 
 \subsection{Anatomical Assignment}
 
-The assignment of the excitability levels to pathological regions follows the left mesial temporal configuration of the reference whole-brain epilepsy model in~\cite{Yu2024}. % cite-checked: SUPPORTED
+The assignment of the excitability levels to pathological regions follows the left mesial temporal configuration of the reference whole-brain epilepsy model in~\cite{Yu2024}.
 The \ac{ez} comprises the left hippocampus, left parahippocampal cortex and left amygdala.
 The \ac{pz} comprises adjacent left inferior temporal and left ventral temporal regions.
 All remaining nodes are assigned the background excitability.
@@ -295,13 +295,13 @@ Figure~\ref{fig:ez_pz_assignment} shows the five selected region centroids withi
 \label{sec:network_calibration}
 
 Table~\ref{tab:jr_params} summarizes the local node parameters and network parameters used throughout the simulations.
-The shared synaptic gains, time constants, sigmoid parameters, connectivity ratios and background input follow the standard Jansen-Rit parameterization~\cite{Jansen1995}. % cite-checked: SUPPORTED
+The shared synaptic gains, time constants, sigmoid parameters, connectivity ratios and background input follow the standard Jansen-Rit parameterization~\cite{Jansen1995}.
 The regional values of $A_i$ define the excitability partition described above and the conduction speed $c$ determines the tract delays through~\eqref{eq:delay_quantisation}.
 
 The remaining network-level parameters are the global coupling factor $K$ and white-noise amplitude $\sigma$.
 Increasing $K$ strengthens the delayed firing-rate input received from connected regions and therefore promotes recruitment beyond the \ac{ez}.
 Increasing $\sigma$ increases stochastic variability around the deterministic trajectories and alters the timing and reliability of recruitment in regions close to their oscillatory boundary.
-The pair $(K,\sigma)$ was calibrated to obtain an uncontrolled propagation pattern qualitatively resembling the left-temporal whole-brain epilepsy simulation in~\cite{Yu2024}. % cite-checked: SUPPORTED
+The pair $(K,\sigma)$ was calibrated to obtain an uncontrolled propagation pattern qualitatively resembling the left-temporal whole-brain epilepsy simulation in~\cite{Yu2024}.
 There, recruitment spreads through most of the left hemisphere while not extending to the right hemisphere.
 Inspired by this sequence, the present study targets recruitment through the \ac{pz} across the left hemisphere within approximately \SI{10}{\second} of \ac{ez} seizure onset.
 The resulting values are $K=0.60$ and $\sigma=0.86\,\si{\second^{-1/2}}$.
@@ -319,7 +319,7 @@ Figure~\ref{fig:uncontrolled_propagation} shows a representative run with near-f
 
 \begin{table}
     \centering
-    \caption{Parameters of the Jansen-Rit network model. Shared local parameters follow the original single-column fit~\cite{Jansen1995}; the regional excitability partition follows the whole-brain epilepsy configuration in~\cite{Yu2024}; $K$ and $\sigma$ are calibrated for the present connectome. The noise intensity $\sigma^2$ specifies the Gaussian white-noise drive $\zeta_i$ in~\eqref{eq:jr_node}.} % cite-checked: SUPPORTED
+    \caption{Parameters of the Jansen-Rit network model. Shared local parameters follow the original single-column fit~\cite{Jansen1995}; the regional excitability partition follows the whole-brain epilepsy configuration in~\cite{Yu2024}; $K$ and $\sigma$ are calibrated for the present connectome. The noise intensity $\sigma^2$ specifies the Gaussian white-noise drive $\zeta_i$ in~\eqref{eq:jr_node}.}
     \label{tab:jr_params}
     \begin{tabular}{lp{0.51\linewidth}ll}
         \toprule
@@ -360,7 +360,7 @@ The resulting lead-field matrices encode the spatial distribution of these poten
 
 Scalp \ac{eeg} provides the observation channel for the controller.
 Biophysically, synaptic currents flowing along the approximately aligned somato-dendritic axes of cortical \acp{py}, together with their return currents, form equivalent current dipoles whose dominant orientation is approximately normal to the local cortical surface.
-Because neighboring pyramidal neurons have similar orientations, their contributions can sum coherently and dominate the extracellular field at macroscopic scales~\cite{Buzsaki2012}. % cite-checked: SUPPORTED
+Because neighboring pyramidal neurons have similar orientations, their contributions can sum coherently and dominate the extracellular field at macroscopic scales~\cite{Buzsaki2012}.
 The Jansen-Rit output $y_{\mathrm{reg},i}$ in~\eqref{eq:regional_output} is the net excitatory-minus-inhibitory postsynaptic membrane potential of the pyramidal population, not a calibrated current-dipole moment.
 A fixed proportionality between this output and regional source density is assumed, as is customary when using neural-mass outputs for \ac{eeg} forward modeling~\cite{Jansen1995,David2003}.
 Volume conduction through the brain, skull and scalp then maps these sources to \ac{eeg} measurements at the electrodes.
@@ -392,15 +392,15 @@ Because the assumed proportionality between neural-mass output and physical dipo
 The actuation proceeds in the opposite physical direction.
 In \ac{tes}, currents applied at scalp electrodes generate a distributed electric field inside the head.
 The pyramidal populations are modeled as being polarized by the component of this field along their somato-dendritic axis.
-At the regional scale used here, this axis is approximated by the local cortical normal, so the normal electric-field component determines the effective membrane-potential perturbation~\cite{Buzsaki2012}. % cite-checked: SUPPORTED
+At the regional scale used here, this axis is approximated by the local cortical normal, so the normal electric-field component determines the effective membrane-potential perturbation~\cite{Buzsaki2012}.
 %At the regional scale used here, that axis is approximated by the regional orientation vector supplied with the \ac{tvb} connectivity and treated as a cortical-normal surrogate, so the field component along this orientation determines the effective membrane-potential perturbation~\cite{Buzsaki2012}. % note that for stimulation not TVB but ROAST is used
 %For mesial and non-neocortical regions such as the hippocampus and amygdala, this orientation is only a coarse modeling surrogate for the local somato-dendritic axis; the resulting stimulation sensitivity should therefore be interpreted at the regional-model level rather than as a detailed cellular polarization estimate.
-This motivates the additive perturbation $s_i$ in the argument of the pyramidal sigmoid in~\eqref{eq:jr_node}, rather than introducing stimulation as an additional synaptic firing-rate input~\cite{Kunze2016,Merlet2013,Yu2024}. % cite-checked: SUPPORTED
+This motivates the additive perturbation $s_i$ in the argument of the pyramidal sigmoid in~\eqref{eq:jr_node}, rather than introducing stimulation as an additional synaptic firing-rate input~\cite{Kunze2016,Merlet2013,Yu2024}.
 
-Electric-field basis solutions were computed with ROAST, an automated finite-element modeling pipeline for \ac{tes}, using its standard MNI152 head model~\cite{Huang2019}. % cite-checked: SUPPORTED
+Electric-field basis solutions were computed with ROAST, an automated finite-element modeling pipeline for \ac{tes}, using its standard MNI152 head model~\cite{Huang2019}.
 The selected montage comprises $\nelec{}=3$ electrodes, ordered as TP9, CP5 and Ex8 in the current vector.
-Ex8 lies on the right posterior side of the lower head and belongs to ROAST's extension of the standard 10/05 electrode layout~\cite{ROASTElectrodeLayout}. % cite-checked: SUPPORTED
-It serves here as the reference/return electrode, following its use to limit the influence of the return electrode on the modeled brain regions in~\cite{Yu2024}. % cite-checked: SUPPORTED
+Ex8 lies on the right posterior side of the lower head and belongs to ROAST's extension of the standard 10/05 electrode layout~\cite{ROASTElectrodeLayout}.
+It serves here as the reference/return electrode, following its use to limit the influence of the return electrode on the modeled brain regions in~\cite{Yu2024}.
 For each non-reference electrode $p$, let $\mathbf{E}_{p,i}\in\mathbb{R}^{3}$ denote the electric-field basis response per milliampere at the centroid of region $i$.
 It is computed by injecting \SI{1}{\milli\ampere} at electrode $p$ with the return current flowing through Ex8.
 The unit vector $\mathbf{n}_i\in\mathbb{R}^{3}$ specifies the regional orientation used to project this field onto the somato-dendritic axis.
@@ -444,7 +444,7 @@ while charge conservation across the montage requires
 so that the applied montage injects no net current into the head.
 Although sensing and stimulation are both governed by volume conduction, the two lead fields used here are not transposes of one another.
 This difference does not violate Helmholtz reciprocity.
-Helmholtz reciprocity relates measurement and stimulation configurations only when source geometry, electrode pairs and referencing are matched~\cite{Malmivuo1995}. % cite-checked: SUPPORTED
+Helmholtz reciprocity relates measurement and stimulation configurations only when source geometry, electrode pairs and referencing are matched~\cite{Malmivuo1995}.
 Here, the main difference is that Ex8 is used in the stimulation montage but is absent from the 62-channel \ac{tvb} \ac{eeg} layout.
 
 This completes the specification of the biophysical plant. Chapter~\ref{ch:data_driven_predictor_design} next considers how its scalp measurements can be used to construct predictive models for closed-loop control.

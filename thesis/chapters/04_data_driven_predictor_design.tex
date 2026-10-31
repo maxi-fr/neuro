@@ -20,8 +20,8 @@ The resulting prediction models are subsequently used in the \ac{mpc} framework 
 
 \section{Prediction Problem and Targets}\label{sec:prediction_problem}
 
-The available \ac{eeg} measurements can be predicted as waveform samples or transformed into spectral power features before prediction.
-Both tasks are formulated below using a common observable, with the spectral transformation specified in Section~\ref{sec:spectral_representation}.
+A common input-output formulation allows waveform and spectral predictors to be described through the same history and recursive prediction procedure.
+We first establish this formulation, then construct the spectral representation and examine the trade-offs between waveform and spectral prediction.
 
 \subsection{Input-Output Prediction Formulation}
 
@@ -39,7 +39,7 @@ The chosen representation defines the observable as
 \end{equation*}
 Accordingly, one prediction step corresponds to either one sample of the downsampled waveform or one hop of the \ac{stft}.
 
-Since the internal neural states of the biophysical plant are not directly observable, predictions are conditioned on finite histories of measured outputs and previously applied stimulation currents, following the input-output identification approach described in~\cite{Ljung1999}. % cite-checked: SUPPORTED
+Since the internal neural states of the biophysical plant are not directly observable, predictions are conditioned on finite histories of measured outputs and previously applied stimulation currents, following the input-output identification approach described in~\cite{Ljung1999}.
 We define the history state
 \begin{equation}
     \mathbf{h}_k =
@@ -107,7 +107,7 @@ where $\mathbf{u}_{j|k}$ denotes the candidate stimulation currents for the inte
 After each prediction, the history is updated by appending the newly predicted observable and the applied candidate current, while discarding the oldest entries.
 
 During recursive prediction, errors can propagate and accumulate over the horizon.
-Consequently, accurate one-step predictions do not necessarily guarantee accurate multi-step trajectories~\cite{Farina2011}. % cite-checked: SUPPORTED
+Consequently, accurate one-step predictions do not necessarily guarantee accurate multi-step trajectories~\cite{Farina2011}.
 The resulting forecasts provide the predicted system response to candidate stimulation sequences, which is subsequently used in the \ac{mpc} framework developed in Chapter~\ref{ch:mpc_framework}.
 
 
@@ -116,7 +116,7 @@ The resulting forecasts provide the predicted system response to candidate stimu
 To use spectral power as the observable in~\eqref{eq:one_step_predictor}, it must first be estimated from finite intervals of the measured waveform.
 The construction of these estimates determines which oscillatory features are retained and how quickly changes in neural activity are reflected in the observable.
 
-The \ac{stft} provides a time-frequency representation by applying the discrete Fourier transform to successive, potentially overlapping signal segments~\cite{Oppenheim2010}. % cite-checked: SUPPORTED
+The \ac{stft} provides a time-frequency representation by applying the discrete Fourier transform to successive, potentially overlapping signal segments~\cite{Oppenheim2010}.
 Let $y_{r,c}$ denote channel $c\in\{1,\ldots,\nchan{}\}$ of the preprocessed waveform sample $\mathbf{y}_r$, acquired at frequency $f_\mathrm{s}>0$, with $\nchan{}=\ndim{y}$ channels in total.
 For segment and hop lengths $\nseg{},\nhop{}\in\mathbb N_{>0}$, both expressed in samples, let $q\in\mathbb N_0$ index successive spectral frames and $\mathbf{w}\in\mathbb{R}^{\nseg{}}\setminus\{\mathbf 0\}$ contain the window weights.
 The Fourier coefficient at bin $m$ is
@@ -273,23 +273,19 @@ Figure~\ref{fig:stft_spectrogram} illustrates how recruitment of a simulated neu
     amplitude and frequency-specific power.}\label{fig:stft_spectrogram}
 \end{figure}
 
-The spectral construction aggregates measurements and discards Fourier phase.
-The next subsection considers how these choices affect prediction and the representation of stimulation responses.
+The next subsection examines how spectral aggregation and phase loss affect the prediction task.
 
 \subsection{Waveform Versus Spectral Prediction}\label{sec:waveform_versus_spectral}
 
-The stochastic input to the biophysical plant makes exact waveform evolution uncertain over a prediction horizon.
+The stochastic input to the biophysical plant makes exact waveform evolution uncertain over a longer prediction horizon.
 Even if a predictor captures an oscillation's amplitude and frequency, small phase errors can produce large sample-wise errors.
-Predicting spectral power avoids reproducing the individual Fourier phases and may therefore be easier.
-However, the spectral representation is not invertible: a waveform and its sign-reversed counterpart have identical power features and channel-wise spectra do not preserve relative phases between channels.
+Predicting spectral power avoids this phase-matching requirement, but discards information from both the target and the observation history.
+For example, a waveform and its sign-reversed counterpart have identical power features, and channel-wise spectra do not preserve relative phases between channels.
 The discarded information may help distinguish states that evolve differently under stimulation.
 
 The estimation trade-offs described in Section~\ref{sec:spectral_representation} also affect the prediction task: the \ac{stft} parameters determine both target variability and temporal responsiveness.
 Choosing a spectral target therefore requires selecting these parameters alongside the prediction model.
 
-For predictive control, the model must distinguish the effects of candidate stimulation currents.
-Responses that primarily change phase or affect frequencies outside the retained band can remain invisible in the spectral target.
-The choice of prediction target must therefore account for which stimulation responses are needed to evaluate the control objective.
 With the target and prediction procedure defined, the next section explains how the model parameters are learned from generated data.
 
 \section{Supervised Learning and Training Data}\label{sec:predictor_training}
@@ -330,7 +326,7 @@ The basic update is
 Computing the gradient in~\eqref{eq:predictor_gradient_descent} requires differentiating the loss through the network operations.
 Backpropagation performs this calculation efficiently by applying the chain rule, including the dependence of later predictions on earlier ones during training.
 To reduce computation per update, the gradient is estimated from a mini-batch of training samples~\cite{Goodfellow2016}.
-
+ 
 During control, the predictor encounters histories and stimulation sequences beyond the training examples, so fitting those examples is useful only if the learned mapping generalizes to new data.
 Overfitting occurs when improved agreement with the training data comes at the expense of this ability.
 Performance on separate validation data helps identify overfitting and guides model selection~\cite{Goodfellow2016}.
@@ -741,7 +737,7 @@ The compact \ac{svd} and its rank-$\rho$ truncation are
 where $\mathbf{V}_{\mathrm{L}}\in\mathbb{R}^{(\ndim{x}+\ndim{u})\times n_{\mathrm{rank}}}$ and $\mathbf{V}_{\mathrm{R}}\in\mathbb{R}^{\ntrain{}\times n_{\mathrm{rank}}}$ have orthonormal columns.
 The diagonal matrix $\boldsymbol{\Sigma}\in\mathbb{R}^{n_{\mathrm{rank}}\times n_{\mathrm{rank}}}$ contains singular values $\sigma_1\geq\cdots\geq \sigma_{n_{\mathrm{rank}}}>0$.
 The superscript $(\rho)$ denotes restriction to the first $\rho$ columns of $\mathbf{V}_{\mathrm{L}}$ and $\mathbf{V}_{\mathrm{R}}$ and the corresponding diagonal block of $\boldsymbol{\Sigma}$.
-Ridge regularization additionally penalizes the fitted coefficients to stabilize estimation when regressors are strongly correlated~\cite{Hoerl1970}.
+Ridge regularization additionally penalizes the fitted coefficients to stabilize estimation when regressors are strongly correlated~\cite{Boyd2004}.
 For a regularization parameter $\lambda\in\mathbb{R}_{\geq0}$, the regression restricted to the retained singular subspace becomes
 \begin{equation}
     \mathbf{G}^{\star}
@@ -771,7 +767,7 @@ The unregularized inverse factor $1/\sigma_a$ amplifies target perturbations alo
 Truncation selects which singular directions enter the fit by retaining only the first $\rho$ directions.
 Ridge regularization independently controls the coefficient penalty: within the retained subspace, it replaces $1/\sigma_a$ by $\sigma_a/(\sigma_a^2+\lambda)$.
 Relative to the unregularized fit, ridge therefore attenuates contributions from smaller singular values more strongly.
-Both truncation and ridge regularization can reduce sensitivity to the training data, at the cost of biasing the fitted mapping~\cite{Hoerl1970}.
+Both truncation and ridge regularization can reduce sensitivity to the training data, at the cost of biasing the fitted mapping~\cite{Boyd2004}.
 Discarding a direction with a small singular value can also remove information relevant to prediction; its low variation in the regressors does not establish that it is unimportant for the target.
 The same regression applies to other input-target pairs, allowing this fitting procedure to be adapted to the observable histories available here.
 
@@ -845,12 +841,12 @@ Its suitability depends on whether that restriction preserves the stimulation re
 The predictors developed in this chapter share the input-output formulation in~\eqref{eq:recursive_predictor}, but their usefulness for control depends on what their forecasts reveal about candidate stimulation sequences.
 The central question is whether the chosen representation, history and fitted mapping retain enough information to distinguish sequences that lead to different values of the control objective.
 
-For a spectral control objective, a spectral predictor directly forecasts the quantity to be controlled.
-A waveform predictor can serve the same objective by transforming its predicted waveforms into spectral power, as in~\eqref{eq:spectral_training_loss}.
-Both approaches can therefore be judged by their predictions of future spectral power, while using different information to obtain them.
-Direct spectral prediction avoids reproducing individual oscillation phases, but also excludes the phase information discussed in Section~\ref{sec:waveform_versus_spectral} from the observation history.
-If different underlying neural states produce identical spectral and current histories but respond differently to the same candidate stimulation, the spectral predictor cannot distinguish those responses.
-Retaining waveform histories gives the model access to phase information that may distinguish these states; its value for spectral control depends on whether it improves prediction of their power response to stimulation.
+Spectral prediction discards phase information from the observation history.
+If the response to stimulation depends on this information, waveform histories may help predict future spectral power more accurately.
+However, stochasticity and accumulating phase errors may limit reliable waveform prediction to horizons too short for effective seizure suppression.
+Direct spectral prediction avoids reproducing individual oscillation phases and may therefore provide useful forecasts over longer horizons.
+For \ac{mpc}, the prediction horizon must extend far enough to assess how candidate stimulation sequences affect subsequent neural activity.
+Reliable forecasts over longer horizons may therefore allow the controller to account for stimulation effects that shorter horizons miss.
 
 The training losses introduce a further distinction between reproducing recorded trajectories and selecting currents.
 The recursive losses assess forecasts under prescribed stimulation sequences, whereas control requires comparing forecasts under alternative sequences from the same measured history.
