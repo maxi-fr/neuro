@@ -81,7 +81,7 @@ The biophysical plant model represents a network of regional neural masses coupl
 Although regional activity is available for evaluating seizure suppression, the controller has access only to scalp \ac{eeg} and the applied electrode currents.
 Figure~\ref{fig:control_setting} provides an overview of the feedback loop and the offline identification procedure described below.
 
-\begin{figure}[!t]
+\begin{figure}[!t] % latex-lint:ignore=FLOAT-01
     \centering
     \input{figures/02_problem_formulation/control_setting}
     \caption{Simulation and predictive control framework: Solid arrows show online signal flow. Within \acs{mpc}, the control objective and constraints guide optimization using the prediction model. The healthy reference enters the control objective from outside the controller. The first input of the selected sequence is applied to the biophysical plant and processed \acs{eeg} measurements return to the prediction model. Below the feedback loop, dashed arrows show offline data generation and system identification.}\label{fig:control_setting}

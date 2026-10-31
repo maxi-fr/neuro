@@ -10,7 +10,7 @@ Regional excitability assignments and network calibration establish the simulate
 Figure~\ref{fig:plant_overview} summarizes the resulting path from stimulation currents through the neural network to the measurements available for feedback.
 
 
-\begin{figure}[h]
+\begin{figure}[h] % latex-lint:ignore=FLOAT-01
     \centering
     \input{figures/03_biological_plant_modeling/plant_overview}
     \caption{Overview of the biological plant. Scalp currents $\mathbf{u}$ are mapped through the stimulation lead field to signed regional membrane-potential perturbations $\mathbf{s}$, which act on a delayed stochastic network of Jansen-Rit nodes. The measurement map illustrates weighted contributions of regional activity to one recording electrode through the \ac{eeg} lead field. The resulting scalp measurements are available to the controller. The callout shows an example output of node $i$. Brain outlines, stimulation shading and electrode positions are schematic.}
@@ -171,13 +171,15 @@ An initial history of those outputs over the longest connection delay is therefo
 
 \subsection{Numerical Integration}
 
-For simulation, the continuous-time system is approximated on a uniform time grid using a stochastic Heun scheme~\cite{SanzLeon2015}.
-The plant step $\Delta t_\mathrm{p}=\SI{0.1}{\milli\second}$ gives 100 steps per \SI{10}{\milli\second} excitatory synaptic time constant. % so? why 0.1 ms?
-For integration index $\kappa\in\mathbb{N}_0$, define the grid times and numerical regional states by
+The network is simulated on a uniform time grid using a stochastic Heun scheme~\cite{SanzLeon2015}.
+The integration step $\Delta t_\mathrm{p}=\SI{0.1}{\milli\second}$ is chosen around 100 times shorter than the fastest synaptic time constant.
+Such small steps are necessary avoid numerical instability of the integration~\cite{Ableidinger2017}.
+
+On this grid, we define the times $t_\kappa$ and simulated regional states $\mathbf{x}_{\kappa,i}$ at integration index $\kappa\in\mathbb{N}_0$ by
 %
 \begin{equation}
     t_\kappa=\kappa\Delta t_\mathrm{p},
-    \qquad \mathbf{x}_{\kappa,i}\approx\mathbf{x}_i(t_\kappa)\,.
+    \qquad \mathbf{x}_{\kappa,i}=\mathbf{x}_i(t_\kappa)\in\mathbb{R}^{6}\,.
 \end{equation}
 %
 The physical delays in~\eqref{eq:physical_delay} are approximated by the nearest integer lag $n_{\mathrm{delay},ii'}\in\mathbb{N}_0$, giving the applied delay $d_{ii'}^{[\Delta t_\mathrm{p}]}$,
@@ -192,7 +194,7 @@ The physical delays in~\eqref{eq:physical_delay} are approximated by the nearest
 Rounding changes a physical delay by at most half a plant step, here \SI{0.05}{\milli\second}.
 
 The numerical regional output is \mbox{$y_{\mathrm{reg},\kappa,i'}=x_{\kappa,i',2}-x_{\kappa,i',3}$}.
-Using these outputs, the continuous coupling in~\eqref{eq:continuous_coupling} is approximated at step $\kappa$ by
+Using these outputs and the quantized delays, the coupling input to the discrete plant at step $\kappa$ is
 %
 \begin{equation*}
     I_{\mathrm{coup},\kappa,i}
@@ -201,7 +203,6 @@ Using these outputs, the continuous coupling in~\eqref{eq:continuous_coupling} i
 \end{equation*}
 %
 The term $y_{\mathrm{reg},\kappa-n_{\mathrm{delay},ii'},i'}$ is the sending region's output from $n_{\mathrm{delay},ii'}$ steps earlier.
-Thus, $I_{\mathrm{coup},\kappa,i}$ is the discrete approximation of the same network input, using the quantized delay and numerical output history.
 
 The Gaussian white-noise drive in~\eqref{eq:network_node} acts only on the excitatory velocity state $x_{i,5}$.
 Its contribution over one integration step is
@@ -344,12 +345,13 @@ Figure~\ref{fig:uncontrolled_propagation} shows a representative run with near-f
     \end{tabular}
 \end{table}
 
-The preceding sections define the autonomous and network-driven evolution of the neural state.
-Closed-loop control additionally requires an observation map from this hidden state to measurable scalp signals and an actuation map from electrode currents back to the neural dynamics.
+The calibrated network defines the seizure propagation scenario used to evaluate control.
+The controller observes this activity through scalp \ac{eeg} and acts on it through electrode currents.
+The next section specifies the corresponding observation and actuation maps.
 
 \section{Electrical Interfaces}
 \label{sec:electrical_interfaces}
-The two maps describe volume conduction through the tissues of the head: from neural sources to scalp potentials for measurement and from electrode currents to intracranial electric fields for stimulation~\cite{SanzLeon2015,Huang2019}.
+The two maps describe volume conduction through the tissues of the head: from neural sources to scalp potentials for measurement and from electrode currents to intracranial electric fields for stimulation.
 Under the quasi-static approximation and fixed tissue conductivities, electrical potentials and fields depend linearly on their sources~\cite{SanzLeon2015,Huang2019}.
 The resulting lead-field matrices encode the spatial distribution of these potentials and fields for the chosen head models and electrode configurations.
 

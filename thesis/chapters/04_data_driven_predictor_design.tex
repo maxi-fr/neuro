@@ -3,7 +3,7 @@
 Chapter~\ref{ch:biological_plant_modeling} introduced the biophysical plant used for simulation and evaluation in this thesis.
 The controller is assumed to have access only to measured scalp \ac{eeg} signals and applied stimulation currents, while the plant's governing equations, parameters and internal neural states remain unavailable to it.
 One possible approach is to identify the underlying mechanistic dynamics from these measurements.
-However, gradient-based identification of brain network models can be unstable near bifurcations because \ac{bptt} through the simulated dynamics can produce exploding gradients~\cite{pille2025tvboptim}.
+However, gradient-based identification of brain network models can be unstable near bifurcations because \ac{bptt} through the simulated dynamics can produce exploding gradients~\cite{Pille2025}.
 This chapter instead develops data-driven input-output models that predict neural responses from histories of \ac{eeg} observations and stimulation currents, without identifying the biophysical equations or explicitly estimating their internal states.
 For neural-network predictors, recursive training still requires differentiation through the learned dynamics.
 
@@ -257,7 +257,7 @@ Once initialized, the next spectral frame can already reflect newly acquired sam
 The time required for a seizure-related change to become distinguishable from background fluctuations consequently depends on its frequency content, magnitude and the chosen processing parameters.
 Figure~\ref{fig:stft_spectrogram} illustrates how recruitment of a simulated neural population produces changes in both the waveform and its time-varying spectrum.
 
-\begin{figure}[p]
+\begin{figure}[p] % latex-lint:ignore=FLOAT-01
     \centering
     \includegraphics{figures/04_data_driven_predictor_design/stft_resolution.pdf}
     \caption{Effects of segment length and temporal averaging on the \ac{lfp} spectrum of an uncoupled \ac{ez} node, sampled at \SI{50}{\hertz}.
@@ -266,7 +266,7 @@ Figure~\ref{fig:stft_spectrogram} illustrates how recruitment of a simulated neu
     Longer segments refine the frequency grid; averaging reduces fluctuations.}\label{fig:stft_resolution}
 \end{figure}
 
-\begin{figure}[p]
+\begin{figure}[p] % latex-lint:ignore=FLOAT-01
     \centering
     \includegraphics{figures/04_data_driven_predictor_design/stft_spectrogram.pdf}
     \caption{Waveform and spectrogram of a simulated
@@ -334,11 +334,11 @@ The basic update is
     \label{eq:predictor_gradient_descent}
 \end{equation}
 Computing the gradient in~\eqref{eq:predictor_gradient_descent} requires differentiating the loss through the network operations.
-Backpropagation performs this calculation efficiently by applying the chain rule~\cite{Goodfellow2016}, including the dependence of later predictions on earlier ones during training.
+Backpropagation performs this calculation efficiently by applying the chain rule, including the dependence of later predictions on earlier ones during training.
 To reduce computation per update, the gradient is estimated from a mini-batch of training samples~\cite{Goodfellow2016}.
 
 During control, the predictor encounters histories and stimulation sequences beyond the training examples, so fitting those examples is useful only if the learned mapping generalizes to new data.
-Overfitting occurs when improved agreement with the training data comes at the expense of this ability~\cite{Goodfellow2016}.
+Overfitting occurs when improved agreement with the training data comes at the expense of this ability.
 Performance on separate validation data helps identify overfitting and guides model selection~\cite{Goodfellow2016}.
 The next subsection describes how the trajectories for training and validation are generated.
 

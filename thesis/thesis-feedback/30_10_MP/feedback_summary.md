@@ -7,25 +7,14 @@
 
 | Metric | Count |
 | :--- | :--- |
-| **Total Review Comments & Action Items** | **33** |
-| **Status: Open (`[ ]`)** | **33** |
+| **Total Review Comments & Action Items** | **29** |
+| **Status: Open (`[ ]`)** | **29** |
 | **Status: Resolved (`[x]`)** | **0** |
 | **Primary Chapters Reviewed** | Chapter 3 (03_biological_plant_modeling.tex), pp. 12–18<br>Chapter 4 (04_data_driven_predictor_design.tex), pp. 19–30 |
 
 ---
 
-## 1. Biophysical Plant Modeling & Discretization (4 comments)
-
-| ID | Status | Page (PDF / Doc) | Source File & Line(s) | Marked Text / Element | Reviewer Feedback (Max Pfefferkorn) |
-| :--- | :---: | :---: | :--- | :--- | :--- |
-| **BIO-01** | `[ ]` | 26 / 12 | 03_biological_plant_modeling.tex:L174-176 | `The plant step $\Delta t_\mathrm{p} = \SI{0.1}{\milli\second}$ gives 100 steps per \SI{10}{\milli\second} excitatory synaptic time constant. For integration index $\kappa \in \mathbb{N}_0$, define the grid times and numerical regional states by...` | Please check this sentence again. I don't get it. |
-| **BIO-02** | `[ ]` | 26 / 12 | 03_biological_plant_modeling.tex:L178 | `\mathbf{x}_{\kappa,i} \approx \mathbf{x}_i(t_\kappa)` in `\eqref{eq:heun_grid_state}` | Why only approximately? |
-| **BIO-03** | `[ ]` | 29 / 15 | 03_biological_plant_modeling.tex:L347-349 | `The preceding sections define the autonomous and network-driven evolution of the neural state. Closed-loop control additionally requires an observation map from this hidden state to measurable scalp signals and an actuation map from electrode currents back to the neural dynamics.` | Make the transition smoother |
-| **BIO-04** | `[ ]` | 32 / 18 | 03_biological_plant_modeling.tex:L448-449 | `This completes the specification of the biophysical plant. Chapter~\ref{ch:data_driven_predictor_design} next considers how its scalp measurements can be used to construct predictive models for closed-loop control.` | Chapter 3 has generally improved, also in combination with the better problem formulation. Besides the explicitly commented point, I feel that in some parts, it could still "flow" a little smoother, making connections more explicit, but I'd consider this fine-tuning if time allows in the end. |
-
----
-
-## 2. Chapter 4 Narrative Flow & Top-Down Structure (5 comments)
+## 1. Chapter 4 Narrative Flow & Top-Down Structure (5 comments)
 
 | ID | Status | Page (PDF / Doc) | Source File & Line(s) | Marked Text / Element | Reviewer Feedback (Max Pfefferkorn) |
 | :--- | :---: | :---: | :--- | :--- | :--- |
@@ -37,7 +26,7 @@
 
 ---
 
-## 3. Mathematical Rigor, Observable Definitions & Notation (16 comments)
+## 2. Mathematical Rigor, Observable Definitions & Notation (16 comments)
 
 | ID | Status | Page (PDF / Doc) | Source File & Line(s) | Marked Text / Element | Reviewer Feedback (Max Pfefferkorn) |
 | :--- | :---: | :---: | :--- | :--- | :--- |
@@ -60,7 +49,7 @@
 
 ---
 
-## 4. Training Pipeline, Dataset Structure & Regularization (6 comments)
+## 3. Training Pipeline, Dataset Structure & Regularization (6 comments)
 
 | ID | Status | Page (PDF / Doc) | Source File & Line(s) | Marked Text / Element | Reviewer Feedback (Max Pfefferkorn) |
 | :--- | :---: | :---: | :--- | :--- | :--- |
@@ -73,7 +62,7 @@
 
 ---
 
-## 5. Model Architectures, Activations & Solver Compatibility (2 comments)
+## 4. Model Architectures, Activations & Solver Compatibility (2 comments)
 
 | ID | Status | Page (PDF / Doc) | Source File & Line(s) | Marked Text / Element | Reviewer Feedback (Max Pfefferkorn) |
 | :--- | :---: | :---: | :--- | :--- | :--- |
