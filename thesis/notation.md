@@ -8,8 +8,8 @@ Every count uses lowercase `n`, with a short subscript naming the counted quanti
 
 | Meaning | Notation |
 | --- | --- |
-| Regions, physical channels, electrodes, retained bins | $n_{\mathrm{reg}},n_{\mathrm{chan}},n_{\mathrm{elec}},n_{\mathrm{bin}}$ |
-| State, observable, waveform, current dimensions | $n_x,n_o,n_y,n_u$ |
+| Regions, physical channels, electrodes, frequency bins | $n_{\mathrm{reg}},n_{\mathrm{chan}},n_{\mathrm{elec}},n_{\mathrm{bin}}$ |
+| State, observable, current dimensions | $n_x,n_o,n_u$ |
 | History and regressor dimensions | $n_h,n_z$ |
 | Observation and current history lengths | $n_{\mathrm{past}\,o},n_{\mathrm{past}\,u}$ |
 | Prediction horizon | $H$ |
@@ -25,7 +25,7 @@ Every count uses lowercase `n`, with a short subscript naming the counted quanti
 | Integer conduction lag | $n_{\mathrm{delay},ii'}$ |
 | Full SVD rank | $n_{\mathrm{rank}}$ |
 
-Retained rank $\rho$ remains a truncation selector. Layer selection always uses a parenthesized superscript, including counts: $n_{\mathrm{chan}}^{(\ell)}$, $n_{\mathrm{time}}^{(\ell)}$, and the MLP width $n^{(\ell)}$. The input layer uses $(0)$; the preceding layer uses $(\ell-1)$. Subscripts identify the counted quantity or its constituent coordinates. Physical counts and coordinate dimensions remain distinct concepts: state equalities such as $n_y=n_{\mathrm{chan}}$ and $n_u=n_{\mathrm{elec}}$ explicitly where applicable.
+Retained rank $\rho$ remains a truncation selector. Layer selection always uses a parenthesized superscript, including counts: $n_{\mathrm{chan}}^{(\ell)}$, $n_{\mathrm{time}}^{(\ell)}$, and the MLP width $n^{(\ell)}$. The input layer uses $(0)$; the preceding layer uses $(\ell-1)$. Subscripts identify the counted quantity or its constituent coordinates. Use $n_{\mathrm{chan}}$ directly for the waveform dimension: each waveform coordinate is one EEG channel. The observable dimension is $n_o=n_{\mathrm{chan}}$ for waveforms and $n_o=n_{\mathrm{chan}}n_{\mathrm{bin}}$ for spectral features. State $n_u=n_{\mathrm{elec}}$ explicitly where applicable.
 
 ## Equation presentation
 
@@ -35,11 +35,11 @@ Use $\mathbf W^{(n_{\mathrm{MLP}})}$ and $\mathbf b^{(n_{\mathrm{MLP}})}$ for th
 
 Present CNN layers at array level using $\star$ for convolution between one filter and one input channel, with summation over input channels written separately. Use $c$ and $c'$ as output- and input-channel indices, respectively. Layer superscripts select arrays and layer-dependent counts; channel indices remain undecorated. Define filter support, unit strides, valid temporal extent, frequency padding, and bias broadcasting locally. An expanded entry formula is optional and must contribute more than implementation bookkeeping. A channel $\mathbf X_c^{(\ell)}$ is its full temporal or time-frequency array. Layer-zero channels correspond to physical EEG channels, with $n_{\mathrm{chan}}^{(0)}=n_{\mathrm{chan}}$; subsequent layers have their own channel counts. Restore the prediction-step index when connecting arrays to predictor inputs and outputs.
 
-Original Fourier-bin labels are $m\in\mathcal M$. Describe CNN input histories by their array shapes and axis meanings rather than component equations or a second frequency-bin index. Time runs from oldest to newest, and retained frequency bins are in ascending order. The head receives final feature-array entries in fixed order followed by current history and candidate current; flattening needs no separately named vector or operation.
+Fourier-bin labels are $m=0,\ldots,n_{\mathrm{bin}}-1$, with $n_{\mathrm{bin}}=\lfloor n_{\mathrm{seg}}/2\rfloor+1$ nonnegative-frequency bins. Frequency-band selection is specified with the experiments. Describe CNN input histories by their array shapes and axis meanings rather than component equations or a second frequency-bin index. Time runs from oldest to newest. The head receives final feature-array entries in fixed order followed by current history and candidate current; flattening needs no separately named vector or operation.
 
 ## Time and decorations
 
-Use arguments for continuous-time signals and indices for discrete sequences. Plant integration, waveform, spectral-frame, predictor, and prediction-offset indices are $\kappa,r,q,k,j$. Define $k=r$ or $k=q$ when specializing the predictor. Time zero is the plant trajectory origin.
+Use arguments for continuous-time signals and indices for discrete sequences. Plant integration, waveform, spectral-frame, predictor, and prediction-offset indices are $\kappa,r,q,k,j$. Keep the general predictor formulation in terms of $\mathbf o_k$ and $k$ only. Introduce $\mathbf y_r$ and $r$ in the waveform paragraph before the spectral subsection; define $k=r$ or $k=q$ when specializing the predictor. Time zero is the plant trajectory origin.
 
 Use $i,i'$ for regions, $c$ for physical channels, $p$ for electrodes, $\nu$ for training examples, $k$ for their reference steps, $\gamma$ for optimization iteration, and $\beta,\beta'$ for window/filter offsets when needed. In dataset construction, $k$ may differ between examples; its dependence on $\nu$ is left implicit.
 
@@ -47,7 +47,7 @@ Predictions use $\mathbf o_{j\mid k}$ with $\mathbf o_{0\mid k}=\mathbf o_k$. Th
 
 ## Signals, arrays, and training
 
-Keep the related family $\mathbf y_r$, $\mathbf Y_{q,c}$, $\boldsymbol{\mathcal Y}_{q,c}$, with scalar entries $y_{r,c}$, $Y_{q,c,m}$, $\mathcal Y_{q,c,m}$. Collect channels and retained bins in ascending order to form $\boldsymbol{\mathcal Y}_q$. Bold denotes vectors and arrays; specify their shape. Uppercase scalar array entries and calligraphic scalar losses are valid.
+Keep the related family $\mathbf y_r$, $\mathbf Y_{q,c}$, $\boldsymbol{\mathcal Y}_q$, with scalar entries $y_{r,c}$, $Y_{q,c,m}$, $\mathcal Y_{q,c,m}$. Collect the log-power features across channels and frequency bins in $\boldsymbol{\mathcal Y}_q$; the general formulation does not need an explicit stacking equation. Bold denotes vectors and arrays; specify their shape. Uppercase scalar array entries and calligraphic scalar losses are valid.
 
 The preprocessed waveform $\mathbf y_r$ differs from raw $\mathbf y_{\mathrm{EEG}}(t)$. The simulated scalp EEG has no calibrated physical amplitude unit. Apply the logarithm directly to its numerical power-density values; no physical reference normalization is introduced.
 

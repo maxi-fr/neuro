@@ -25,22 +25,11 @@ We first establish this formulation, then construct the spectral representation 
 
 \subsection{Input-Output Prediction Formulation}
 
-Let $\mathbf{o}_k \in \mathbb{R}^{\ndim{o}}$ denote the observable neural activity at discrete time step $k$, where $\ndim{o}$ is its dimension.
-Let $\mathbf{u}_k \in \mathbb{R}^{\ndim{u}}$ denote the stimulation currents held constant during the transition from $k$ to $k+1$, where $\ndim{u}$ is the dimension of the chosen current parameterization.
-Let $\mathbf{y}_r\in\mathbb{R}^{\ndim{y}}$ denote a multichannel \ac{eeg} waveform sample at sample index $r$, where $\ndim{y}$ is its coordinate dimension and let $\spectral{}_q$ denote a spectral power feature vector at frame index $q$.
-The latter will be constructed from spectral power-density estimates on a logarithmic scale.
-The chosen representation defines the observable as
-\begin{equation*}
-    \mathbf{o}_k =
-    \begin{cases}
-        \mathbf{y}_r, & \text{for waveform prediction, with } k=r,\\
-        \spectral{}_q, & \text{for spectral prediction, with } k=q.
-    \end{cases}\,.
-\end{equation*}
-Accordingly, one prediction step corresponds to either one sample of the downsampled waveform or one hop of the \ac{stft}.
+The observable is the measured vector of neural activity that the model is to predict: either multichannel \ac{eeg} amplitudes or spectral power features on a logarithmic scale.
+Let $\mathbf{o}_k\in\mathbb{R}^{\ndim{o}}$ denote this vector at discrete time $k\in\mathbb N_0$, with $\ndim{o}$ observable coordinates.
 
-Since the internal neural states of the biophysical plant are not directly observable, predictions are conditioned on finite histories of measured outputs and previously applied stimulation currents, following the input-output identification approach described in~\cite{Ljung1999}.
-We define the history state
+We assume that a sufficiently long history of measured outputs and applied stimulation currents contains the information needed to predict the observable response to stimulation~\cite{Ljung1999}.
+We therefore define the history state
 \begin{equation}
     \mathbf{h}_k =
     \begin{bmatrix}
@@ -55,8 +44,7 @@ We define the history state
     \label{eq:predictor_history}
 \end{equation}
 where $\nhist{o}\in\mathbb N_{>0}$ and $\nhist{u}\in\mathbb N_0$ denote the observation and input history lengths, respectively.
-The history dimension is $\ndim{h}=\nhist{o}\ndim{o}+\nhist{u}\ndim{u}$. For $\nhist{u}=0$, the past-current block is empty.
-We assume that a sufficiently long history state retains the information about the underlying dynamics needed to predict the observable response to stimulation~\cite{Ljung1999}.
+The history dimension is $\ndim{h}=\nhist{o}\ndim{o}+\nhist{u}\ndim{u}$.
 
 The one-step input-output prediction problem is formulated as
 \begin{equation}
@@ -67,14 +55,14 @@ The one-step input-output prediction problem is formulated as
     \label{eq:one_step_predictor}
 \end{equation}
 where $\mathbf{f}_{\boldsymbol{\theta}}$ denotes a prediction model parameterized by $\boldsymbol{\theta}\in\mathbb{R}^{n_\theta}$, with $n_\theta$ trainable parameters.
-The vector $\mathbf{o}_{1|k}$ is the predicted observable one step ahead of step $k$, given the information available at that step.
+The vector $\mathbf{o}_{1|k}$ is the predicted observable one step ahead of time step $k$, given the information available at that time.
 The conditional index distinguishes the prediction from the measured observable $\mathbf{o}_{k+1}$.
 The current observation $\mathbf{o}_k$ and previously applied currents are known when the prediction is made, while $\mathbf{u}_k$ specifies the stimulation applied over the upcoming interval.
 
 Two alternative parameterizations of~\eqref{eq:one_step_predictor} are considered.
 In \emph{direct prediction}, the model estimates the next observable $\mathbf{o}_{k+1}$.
 In \emph{residual prediction}, the model instead estimates the increment $\mathbf{o}_{k+1}-\mathbf{o}_k$ relative to the latest observation, such that
-\begin{equation}
+\begin{equation*}
     \mathbf{f}_{\boldsymbol{\theta}}
     \left(\mathbf{h}_k,\mathbf{u}_k\right)
     =
@@ -82,13 +70,11 @@ In \emph{residual prediction}, the model instead estimates the increment $\mathb
     +
     \mathbf{g}_{\boldsymbol{\theta}}
     \left(\mathbf{h}_k,\mathbf{u}_k\right)\,,
-    \label{eq:residual_predictor}
-\end{equation}
+\end{equation*}
 with $\mathbf{g}_{\boldsymbol{\theta}}$ denoting the increment model.
-The direct mapping and the residual mapping in~\eqref{eq:residual_predictor} produce observable predictions that can be evaluated using the same loss.
 
 Although the models are formulated as one-step predictors, multi-step forecasts are obtained by recursively applying the learned mapping under a sequence of candidate stimulation inputs.
-Let $H\in\mathbb{N}_{>0}$ denote the prediction horizon length and $j\in\{0,\ldots,H-1\}$ the step offset within it.
+Let $H\in\mathbb{N}_{>0}$ denote the prediction horizon length and $j\in\{0,\ldots,H\}$ the step offset within it.
 For recursive prediction, $\mathbf{o}_{j|k}$ denotes the observable $j$ steps ahead using the information available at step $k$.
 Set $\mathbf{o}_{0|k}=\mathbf{o}_k$.
 Starting from the measured history $\mathbf{h}_{0|k}=\mathbf{h}_k$, the prediction $j+1$ steps ahead is given by
@@ -108,27 +94,36 @@ After each prediction, the history is updated by appending the newly predicted o
 
 During recursive prediction, errors can propagate and accumulate over the horizon.
 Consequently, accurate one-step predictions do not necessarily guarantee accurate multi-step trajectories~\cite{Farina2011}.
-The resulting forecasts provide the predicted system response to candidate stimulation sequences, which is subsequently used in the \ac{mpc} framework developed in Chapter~\ref{ch:mpc_framework}.
 
+For waveform prediction, the observable consists of the \ac{eeg} amplitudes at a single sampling instant.
+Let $\mathbf{y}_r\in\mathbb R^{\nchan{}}$ denote the multichannel waveform sample at sample index $r\in\mathbb N_0$, with entry $y_{r,c}$ corresponding to channel $c\in\{1,\ldots,\nchan{}\}$.
+Thus, $\mathbf{o}_k=\mathbf{y}_r$ with $k=r$ and $\ndim{o}=\nchan{}$.
 
-\subsection{Spectral Representation and \ac{stft}}\label{sec:spectral_representation}
+\subsection{Spectral Observable and \ac{stft}}\label{sec:spectral_representation}
 
 To use spectral power as the observable in~\eqref{eq:one_step_predictor}, it must first be estimated from finite intervals of the measured waveform.
 The construction of these estimates determines which oscillatory features are retained and how quickly changes in neural activity are reflected in the observable.
 
 The \ac{stft} provides a time-frequency representation by applying the discrete Fourier transform to successive, potentially overlapping signal segments~\cite{Oppenheim2010}.
-Let $y_{r,c}$ denote channel $c\in\{1,\ldots,\nchan{}\}$ of the preprocessed waveform sample $\mathbf{y}_r$, acquired at frequency $f_\mathrm{s}>0$, with $\nchan{}=\ndim{y}$ channels in total.
-For segment and hop lengths $\nseg{},\nhop{}\in\mathbb N_{>0}$, both expressed in samples, let $q\in\mathbb N_0$ index successive spectral frames and $\mathbf{w}\in\mathbb{R}^{\nseg{}}\setminus\{\mathbf 0\}$ contain the window weights.
-The Fourier coefficient at bin $m$ is
+Let $f_\mathrm{s}>0$ denote the waveform sampling frequency.
+
+Each spectral frame is computed from a segment of $\nseg{}\in\mathbb N_{>0}$ waveform samples.
+The hop length $\nhop{}\in\mathbb N_{>0}$ is the number of samples by which the segment advances between frames.
+Frame $q\in\mathbb N_0$ therefore contains samples $q\nhop{},\ldots,q\nhop{}+\nseg{}-1$.
+The segment is weighted by a nonzero window vector $\mathbf w\in\mathbb R^{\nseg{}}$.
+Its entry $w_\beta$ weights the sample at offset $\beta\in\{0,\ldots,\nseg{}-1\}$ within the segment.
+The Fourier coefficient for channel $c$ at the nonnegative-frequency bins $m\in\{0,\ldots,\lfloor\nseg{}/2\rfloor\}$ is
 \begin{equation}
     Y_{q,c,m}
     =\sum_{\beta=0}^{\nseg{}-1}w_\beta
     y_{q \nhop{}+\beta,c}
     \exp\!\left(-\frac{2\pi\mathrm{i}m\beta}{\nseg{}}\right)\,,
 \end{equation}
-where $\beta$ selects a position within the segment and $\mathrm{i}$ is the imaginary unit.
-The coefficients form the complex vector $\mathbf{Y}_{q,c}\in\mathbb{C}^{\lfloor \nseg{}/2\rfloor+1}$.
-For real-valued signals, these coefficients correspond to $m=0,\ldots,\lfloor \nseg{}/2\rfloor$, with frequencies
+where $\mathrm{i}$ is the imaginary unit.
+Since the waveform is real-valued, the negative-frequency coefficients are complex conjugates of their positive-frequency counterparts and contain no additional information.
+There are $\nbin{}=\lfloor\nseg{}/2\rfloor+1$ nonnegative-frequency bins.
+Their coefficients form the vector $\mathbf{Y}_{q,c}\in\mathbb{C}^{\nbin{}}$.
+The frequency of bin $m$ and the spacing between bins are
 \begin{equation*}
     f_m=\frac{mf_\mathrm{s}}{\nseg{}},
     \qquad
@@ -205,8 +200,6 @@ Longer kernels combine power estimates over a longer interval.
 Unlike increasing $\nseg{}$, temporal smoothing does not alter the frequency grid.
 Figure~\ref{fig:stft_resolution} illustrates the distinction between these two forms of temporal aggregation.
 
-
-
 The spectral observable represents temporally averaged power density on a logarithmic scale.
 The logarithm compresses the feature range and maps multiplicative power changes to additive differences when power is large relative to the numerical floor.
 Averaging is performed before this transformation so that the features describe average power, yielding
@@ -219,18 +212,8 @@ Averaging is performed before this transformation so that the features describe 
 \end{equation*}
 Here, $\varepsilon>0$ is a small floor preventing undefined values at zero power.
 
-Let $\mathcal{M}=\{m_{\min},\ldots,m_{\max}\}$ denote the contiguous retained band, with $\nbin{}=|\mathcal{M}|$ bins.
-The endpoints satisfy $0\leq m_{\min}\leq m_{\max}\leq\lfloor\nseg{}/2\rfloor$.
-For each channel, the retained features are collected in ascending frequency order as
-\begin{equation*}
-    \spectral{}_{q,c}
-    =\begin{bmatrix}\mathcal{Y}_{q,c,m_{\min}}&\cdots&\mathcal{Y}_{q,c,m_{\max}}\end{bmatrix}^{\mathsf T}
-    \in\mathbb{R}^{\nbin{}},\qquad
-    \spectral{}_q
-    =\begin{bmatrix}\spectral{}_{q,1}^{\mathsf T}&\cdots&\spectral{}_{q,\nchan{}}^{\mathsf T}\end{bmatrix}^{\mathsf T}
-    \in\mathbb{R}^{\nchan{}\nbin{}}\,.
-\end{equation*}
-The observable dimension is $\ndim{o}=\nchan{}\nbin{}$ and prediction step $k$ corresponds to spectral frame $q$.
+The log-power features from all channels and frequency bins form the spectral observable $\spectral{}_q\in\mathbb R^{\nchan{}\nbin{}}$.
+For spectral prediction, $\mathbf{o}_k=\spectral{}_q$ with $k=q$ and $\ndim{o}=\nchan{}\nbin{}$.
 Each step therefore advances by $\nhop{}$ waveform samples.
 Although the observable is updated at this rate, it summarizes a longer history of measurements.
 A fully supported smoothed frame depends on
@@ -417,8 +400,8 @@ Using the recursive prediction notation from~\eqref{eq:recursive_predictor}, def
     \right\|_2^2\,.
     \label{eq:observable_training_loss}
 \end{equation}
-For waveform prediction, substituting $\mathbf{o}_k=\mathbf{y}_r$ and $\ndim{o}=\ndim{y}$ gives the waveform loss $\mathcal{L}_\mathrm{wave}^{(\nu)}$, which scores $\nscore{wave}=n_{\mathrm{score}}$ waveform samples.
-For spectral-output prediction, the same construction uses $\mathbf{o}_k=\spectral{}_q$ and $\ndim{o}=\ndim{y} \nbin{}$ to score $\nscore{spec}=n_{\mathrm{score}}$ spectral frames through the spectral loss $\mathcal{L}_\mathrm{spec}^{(\nu)}$.
+For waveform prediction, this gives the waveform loss $\mathcal{L}_\mathrm{wave}^{(\nu)}$, which scores $\nscore{wave}=n_{\mathrm{score}}$ waveform samples.
+For spectral-output prediction, the same construction uses $\mathbf{o}_k=\spectral{}_q$ and $\ndim{o}=\nchan{} \nbin{}$ to score $\nscore{spec}=n_{\mathrm{score}}$ spectral frames through the spectral loss $\mathcal{L}_\mathrm{spec}^{(\nu)}$.
 
 Waveform predictors can also be trained to reproduce spectral power rather than, or in addition to, the individual waveform samples.
 For this purpose, their predicted waveforms are transformed using the same transformation as the spectral targets.
@@ -431,7 +414,7 @@ This vector is constructed from the predicted waveform continuation when using a
 In both cases the spectral loss is
 \begin{equation}
     \mathcal{L}_\mathrm{spec}^{(\nu)}
-    = \frac{1}{\nscore{spec} \ndim{y} \nbin{}}
+    = \frac{1}{\nscore{spec} \nchan{} \nbin{}}
     \sum_{j=1}^{\nscore{spec}}
     \left\|
         \spectral{}^{(\nu)}_{j|q}
@@ -536,7 +519,7 @@ To apply the network to the prediction problem, the standardized history from~\e
 Here, $\widetilde{\mathbf{h}}_k$ is obtained by applying~\eqref{eq:predictor_standardization} to the observation and current entries of the history.
 The input in~\eqref{eq:mlp_input} assigns each observation coordinate, time lag and electrode current a fixed position.
 For waveform prediction, the observation entries are channel samples; for spectral prediction, they are channel-frequency features from consecutive frames.
-The output dimension is $\ndim{o}=\ndim{y}$ for waveform prediction or $\ndim{o}=\ndim{y} \nbin{}$ for spectral prediction.
+The output dimension is $\ndim{o}=\nchan{}$ for waveform prediction or $\ndim{o}=\nchan{} \nbin{}$ for spectral prediction.
 
 No activation is applied after the final affine layer in~\eqref{eq:mlp_layers}, allowing the output to take either sign without a fixed bound.
 This output range accommodates standardized waveform samples and log-power features, as well as their increments.
@@ -631,7 +614,7 @@ The prediction head receives features from every remaining time position and can
 Thus, $n_{\mathrm{RF}}$ describes the temporal extent of shared feature extraction, while the history length determines the information available to the complete predictor.
 
 For waveform prediction, $\mathbf X^{(0)}_k\in\mathbb R^{\nchan{}\times \nhist{o}}$ contains the standardized waveform history at prediction step $k$, arranged by \ac{eeg} channel and sample from oldest to newest.
-For spectral prediction, $\mathbf X^{(0)}_k\in\mathbb R^{\nchan{}\times \nhist{o}\times \nbin{}}$ contains the standardized spectral history, arranged by \ac{eeg} channel, frame from oldest to newest and ascending retained frequency bin.
+For spectral prediction, $\mathbf X^{(0)}_k\in\mathbb R^{\nchan{}\times \nhist{o}\times \nbin{}}$ contains the standardized spectral history, arranged by \ac{eeg} channel, frame from oldest to newest and frequency bin.
 For spectral layers, the same channel-level operation in~\eqref{eq:cnn_temporal_layer} uses two-dimensional filters $\mathbf W_{cc'}^{(\ell)}\in\mathbb R^{n_{\mathrm{filter},t}\times n_{\mathrm{filter},f}}$.
 The convolution now involves sliding a rectangular patch along time and frequency, multiplying its entries by the corresponding filter coefficients and summing over both offsets.
 As in the waveform case, these patch responses are then summed over input channels $c'$ to form each output channel $c$, before adding its bias and applying the activation.
@@ -676,7 +659,7 @@ The hypothesis is that adapting these filters to the prediction task can yield m
 Sharing filters reduces the parameters used for local feature extraction while leaving the prediction head free to weight features according to their positions.
 Specifically, a temporal layer uses $n_{\mathrm{chan}}^{(\ell)}(n_{\mathrm{chan}}^{(\ell-1)}n_{\mathrm{filter},t}+1)$ parameters and a time-frequency layer uses $n_{\mathrm{chan}}^{(\ell)}(n_{\mathrm{chan}}^{(\ell-1)}n_{\mathrm{filter},t}n_{\mathrm{filter},f}+1)$, regardless of the history length.
 Extending the history therefore increases the number of feature positions without requiring additional filter coefficients, although it increases the number of weights in the fully connected head.
-For illustration, consider waveform prediction with $\nchan{}=\ndim{y}=62$ channels, $\nelec{}=\ndim{u}=3$ stimulation electrodes, $\nhist{u}=10$ past currents and $\nhist{o}=100$ samples.
+For illustration, consider waveform prediction with $\nchan{}=62$ channels, $\nelec{}=\ndim{u}=3$ stimulation electrodes, $\nhist{u}=10$ past currents and $\nhist{o}=100$ samples.
 Two length-five convolutional layers with 32 and 16 feature channels, followed by a 16-unit hidden head, give 37,678 trainable parameters, including biases and the 62-dimensional output layer.
 An \ac{mlp} with the same histories and one 256-unit hidden layer has 1,611,838 parameters, approximately 43 times as many.
 The \ac{cnn} thus combines shared local feature extraction with a position-sensitive nonlinear prediction stage.
@@ -773,7 +756,7 @@ The same regression applies to other input-target pairs, allowing this fitting p
 
 % Methodology
 Because the biophysical state is unavailable to the controller, the history vector $\mathbf{h}_k$ from~\eqref{eq:predictor_history} replaces the state snapshot.
-Its observation entries stack consecutive spectral feature vectors $\spectral{}_k\in\mathbb{R}^{\ndim{o}}$, with $\ndim{o}=\ndim{y} \nbin{}$ and $k$ indexing spectral frames.
+Its observation entries stack consecutive spectral feature vectors $\spectral{}_k\in\mathbb{R}^{\ndim{o}}$, with $\ndim{o}=\nchan{} \nbin{}$ and $k$ indexing spectral frames.
 This use of delayed observations follows delay-coordinate approaches to \ac{dmd}~\cite{Arbabi2017}.
 Past currents remain part of the history and the candidate current is appended through the standardized regressor $\mathbf{z}_k\in\mathbb{R}^{\ndim{z}}$ from~\eqref{eq:mlp_input}.
 A mapping is fitted to the next spectral feature vector rather than to the complete successor history.
