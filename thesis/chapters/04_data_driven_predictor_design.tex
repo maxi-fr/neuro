@@ -5,7 +5,6 @@ The controller is assumed to have access only to measured scalp \ac{eeg} signals
 One possible approach is to identify the underlying mechanistic dynamics from these measurements.
 However, gradient-based identification of brain network models can be unstable near bifurcations because \ac{bptt} through the simulated dynamics can produce exploding gradients~\cite{Pille2025}.
 This chapter instead develops data-driven input-output models that predict neural responses from histories of \ac{eeg} observations and stimulation currents, without identifying the biophysical equations or explicitly estimating their internal states.
-For neural-network predictors, recursive training still requires differentiation through the learned dynamics.
 
 For seizure suppression, the predictor must capture how seizure-related neural activity evolves and responds to stimulation, using only scalp \ac{eeg} measurements and applied currents.
 We investigate two prediction targets: multichannel \ac{eeg} waveforms and spectral power features derived from the \ac{stft}.
@@ -273,47 +272,23 @@ With the target and prediction procedure defined, the next section explains how 
 
 \section{Supervised Learning and Training Data}\label{sec:predictor_training}
 
-The prediction models are fitted by supervised learning to trajectory data generated using the biophysical plant model.
-This section introduces the learning procedure, then specifies the stimulation data, their preprocessing and the losses used to train recursive forecasts.
-
-\subsection{Supervised Learning Foundations}
-
 In supervised learning, a parameterized mapping is fitted to examples of the desired input-output behaviour~\cite{Goodfellow2016}.
-Here, the inputs are the history state and prescribed stimulation currents and the targets are subsequent observations of neural activity.
+Here, the inputs are measured histories and prescribed stimulation currents, and the targets are subsequent observations of neural activity.
+For the nonlinear predictors, this mapping is represented by a neural network, comprising connected layers of weighted sums and nonlinear transformations~\cite{Goodfellow2016}.
+The weights and biases of these layers are learned from the training examples.
+In this thesis, \acp{mlp} and \acp{cnn} are considered for the nonlinear predictors.
+
 A per-sample loss $\mathcal{L}^{(\nu)}(\boldsymbol{\theta})\in\mathbb{R}_{\geq 0}$ measures disagreement between the model's prediction and the target for sample $\nu$.
 For $\ntrain{}\in\mathbb{N}_{>0}$ training samples, indexed by $\nu\in\{1,\ldots,\ntrain{}\}$, averaging these losses gives the empirical training objective
 \begin{equation}
     \mathcal{L}_\mathrm{tr}(\boldsymbol{\theta})
     = \frac{1}{\ntrain{}}
     \sum_{\nu=1}^{\ntrain{}}
-    \mathcal{L}^{(\nu)}(\boldsymbol{\theta})\,,
+    \mathcal{L}^{(\nu)}(\boldsymbol{\theta})\,.
     \label{eq:empirical_predictor_loss}
 \end{equation}
-where the dependence on $\boldsymbol{\theta}$ arises through the model predictions.
-
-For one-step training, the loss is calculated from the next observation predicted from a measured history.
-For multi-step training, the predictor is applied recursively as in~\eqref{eq:recursive_predictor}, using the recorded future currents but feeding predicted observations into the evolving history state.
-The loss is evaluated over the predicted trajectory without intermediate measurement correction.
-This reproduces the recursive prediction conditions encountered in \ac{mpc}.
-
-In gradient descent, the neural-network parameters are updated iteratively in the direction of the negative loss gradient~\cite{Goodfellow2016}.
-Let $\gamma\in\mathbb{N}_0$ index the optimization iteration, with current parameter vector $\boldsymbol{\theta}^{(\gamma)}$ and learning rate $\eta_\gamma>0$.
-The basic update is
-\begin{equation}
-    \boldsymbol{\theta}^{(\gamma+1)}
-    = \boldsymbol{\theta}^{(\gamma)}
-    - \eta_\gamma\nabla_{\boldsymbol{\theta}}
-    \mathcal{L}_\mathrm{tr}\left(\boldsymbol{\theta}^{(\gamma)}\right)\,.
-    \label{eq:predictor_gradient_descent}
-\end{equation}
-Computing the gradient in~\eqref{eq:predictor_gradient_descent} requires differentiating the loss through the network operations.
-Backpropagation performs this calculation efficiently by applying the chain rule, including the dependence of later predictions on earlier ones during training.
-To reduce computation per update, the gradient is estimated from a mini-batch of training samples~\cite{Goodfellow2016}.
- 
-During control, the predictor encounters histories and stimulation sequences beyond the training examples, so fitting those examples is useful only if the learned mapping generalizes to new data.
-Overfitting occurs when improved agreement with the training data comes at the expense of this ability.
-Performance on separate validation data helps identify overfitting and guides model selection~\cite{Goodfellow2016}.
-The next subsection describes how the trajectories for training and validation are generated.
+The neural-network parameters are fitted using gradient-based optimization, whereas the linear delay-embedded \ac{dmdc} coefficients are obtained by directly solving a least-squares problem~\cite{Goodfellow2016,Proctor2016}.
+Either way, both approaches require training examples, which are constructed from trajectories generated using the biophysical plant model.
 
 \subsection{Training Data Generation}
 
@@ -356,15 +331,15 @@ For sample $\nu$, the future currents and targets are collected as matrices whos
     =\begin{bmatrix}\mathbf o^{(\nu)}_{k+1}&\cdots&\mathbf o^{(\nu)}_{k+H}\end{bmatrix}
     \in\mathbb R^{\ndim{o}\times H}\,.
 \end{equation*}
-Together with the initial history state from~\eqref{eq:predictor_history}, these form the dataset
-\begin{equation}
+Together with the history state $\mathbf h_k^{(\nu)}$ at reference step $k$, these form the dataset
+\begin{equation*}
     \mathcal D_{\mathrm{tr}}
     =\left\{\left(\left(\mathbf h^{(\nu)}_{k},\mathbf U^{(\nu)}_{k}\right),
     \mathbf O^{(\nu)}_{k}\right) : \nu=1,\ldots,\ntrain{}\right\}\,.
-    \label{eq:predictor_training_dataset}
-\end{equation}
-Samples in~\eqref{eq:predictor_training_dataset} share measurements when their reference steps are close together.
+\end{equation*}
+Samples in $\mathcal D_{\mathrm{tr}}$ share measurements when their reference steps are close together.
 Complete trajectories are therefore assigned to training or validation before sample extraction to prevent shared signal intervals from appearing in both sets.
+The validation trajectories are used to select models and detect overfitting~\cite{Goodfellow2016}.
 
 The observation and current coordinates can have substantially different offsets and scales.
 Centering inputs and scaling them to comparable variances can improve the conditioning of neural-network optimization~\cite{LeCun1998}.
@@ -380,13 +355,15 @@ Separate coordinate-wise transformations are therefore applied to observations a
 where $a=1,\ldots,\ndim{o}$ and $b=1,\ldots,\ndim{u}$ index observable and current coordinates.
 The means $\bar{o}_a,\bar{u}_b$ and standard deviations $\sigma_{\mathrm{o},a},\sigma_{\mathrm{u},b}$ in~\eqref{eq:predictor_standardization} are computed from the training set.
 Each observation coordinate corresponds to an \ac{eeg} channel for waveforms or a channel-frequency pair for spectral features.
-The neural networks receive standardized histories and currents and produce standardized outputs.
-Predictions are transformed back before loss evaluation so that the loss measures errors on the original observable scale rather than weighting coordinates by their training-set variances.
+For neural-network training, the histories and currents in $\mathcal D_{\mathrm{tr}}$ are standardized using~\eqref{eq:predictor_standardization}, while the targets remain in the original observable coordinates.
+The network outputs are transformed back to unstandartized coordinates before loss evaluation so that the loss measures errors on the original observable scale rather than weighting coordinates by their training-set variances.
 The fitted transformations remain fixed during validation and testing.
 With the samples and coordinate transformations defined, the next subsection specifies the losses used to score predictions on the original observable scale.
 
 \subsection{Loss Functions and Training Strategies}
 
+For one-step training, the loss scores the next observation predicted from a measured history.
+For multi-step training, it scores a recursive forecast under the recorded future currents, without intermediate measurement correction, matching the prediction procedure in~\eqref{eq:recursive_predictor}.
 For the constructed samples, mean squared error is used as the primary per-sample loss in~\eqref{eq:empirical_predictor_loss}, following standard regression practice~\cite{Goodfellow2016}.
 For sample $\nu$, let $n_{\mathrm{score}}\in\{1,\ldots,H\}$ be the number of predicted observations scored.
 Using the recursive prediction notation from~\eqref{eq:recursive_predictor}, define
@@ -441,6 +418,7 @@ The weights in~\eqref{eq:combined_predictor_loss} also account for the different
 Spectral-output predictors use only the spectral loss in~\eqref{eq:spectral_training_loss}.
 
 The neural networks are trained with AdamW, which uses running estimates of the gradients and their squared values to adapt parameter updates and applies decoupled weight decay for regularization~\cite{Loshchilov2019}.
+Gradients are computed by backpropagation through the network operations and, for recursive forecasts, through preceding predictions~\cite{Goodfellow2016}.
 The networks are trained on shuffled mini-batches, with an initial learning-rate warm-up followed by cosine decay.
 
 During curriculum training, the scored length $n_{\mathrm{score}}$ of the observation-space MSE is increased from one step to its final value over a prescribed range of training epochs.
@@ -498,12 +476,10 @@ The hidden-layer activations investigated here are the hyperbolic tangent and so
 \end{equation}
 Both activations in~\eqref{eq:mlp_activations} are smooth and nonpolynomial.
 The hyperbolic tangent has range $(-1, 1)$, whereas softplus is a smooth approximation to the rectified linear activation $\sigma_\mathrm{ReLU}(x)=\max(0,x)$~\cite{Goodfellow2016}.
-ReLU is widely used for neural-network training, but is not differentiable at zero.
-When a trained ReLU network is embedded in an optimization problem, its nonsmoothness can cause convergence difficulties for nonlinear solvers that assume differentiable problem functions~\cite{Yang2022}.
-In \ac{mpc}, the predictor is evaluated within the optimization over future stimulation currents, so this issue concerns the control optimization even when network training succeeds.
-Tanh and softplus provide smooth mappings for this subsequent optimization.
+Smooth activations are used to support gradient-based optimization of stimulation currents in \ac{mpc}, where nonsmooth network mappings can cause convergence difficulties~\cite{Yang2022}.
 
-To apply the network to the prediction problem, the standardized history from~\eqref{eq:predictor_history} is concatenated with the standardized candidate current to give
+For the network input, the observation and current entries of $\mathbf h_k$ are standardized using~\eqref{eq:predictor_standardization}.
+The resulting history $\widetilde{\mathbf h}_k$ is concatenated with the standardized candidate current to give
 \begin{equation}
     \mathbf{z}_k
     =
@@ -516,8 +492,6 @@ To apply the network to the prediction problem, the standardized history from~\e
     \qquad n^{(0)}=\ndim{z}\,.
     \label{eq:mlp_input}
 \end{equation}
-Here, $\widetilde{\mathbf{h}}_k$ is obtained by applying~\eqref{eq:predictor_standardization} to the observation and current entries of the history.
-The input in~\eqref{eq:mlp_input} assigns each observation coordinate, time lag and electrode current a fixed position.
 For waveform prediction, the observation entries are channel samples; for spectral prediction, they are channel-frequency features from consecutive frames.
 The output dimension is $\ndim{o}=\nchan{}$ for waveform prediction or $\ndim{o}=\nchan{} \nbin{}$ for spectral prediction.
 

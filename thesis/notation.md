@@ -41,7 +41,7 @@ Fourier-bin labels are $m=0,\ldots,n_{\mathrm{bin}}-1$, with $n_{\mathrm{bin}}=\
 
 Use arguments for continuous-time signals and indices for discrete sequences. Plant integration, waveform, spectral-frame, predictor, and prediction-offset indices are $\kappa,r,q,k,j$. Keep the general predictor formulation in terms of $\mathbf o_k$ and $k$ only. Introduce $\mathbf y_r$ and $r$ in the waveform paragraph before the spectral subsection; define $k=r$ or $k=q$ when specializing the predictor. Time zero is the plant trajectory origin.
 
-Use $i,i'$ for regions, $c$ for physical channels, $p$ for electrodes, $\nu$ for training examples, $k$ for their reference steps, $\gamma$ for optimization iteration, and $\beta,\beta'$ for window/filter offsets when needed. In dataset construction, $k$ may differ between examples; its dependence on $\nu$ is left implicit.
+Use $i,i'$ for regions, $c$ for physical channels, $p$ for electrodes, $\nu$ for training examples, $k$ for their reference steps, and $\beta,\beta'$ for window/filter offsets when needed. In dataset construction, $k$ may differ between examples; its dependence on $\nu$ is left implicit.
 
 Predictions use $\mathbf o_{j\mid k}$ with $\mathbf o_{0\mid k}=\mathbf o_k$. The conditional index identifies prediction. Hats denote estimates; tildes denote standardization. The Heun intermediate state is $\mathbf x_{\kappa+1,i}^{(\mathrm p)}$ and basis vectors are $\mathbf e_i$. A superscript star selects an optimizer; parenthesized $(\rho)$ denotes truncation.
 
