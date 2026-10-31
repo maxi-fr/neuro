@@ -7,16 +7,10 @@ However, gradient-based identification of brain network models can be unstable n
 This chapter instead develops data-driven input-output models that predict neural responses from histories of \ac{eeg} observations and stimulation currents, without identifying the biophysical equations or explicitly estimating their internal states.
 For neural-network predictors, recursive training still requires differentiation through the learned dynamics.
 
-Two prediction targets are investigated: multichannel \ac{eeg} waveforms and spectral power features derived from the \ac{stft}.
-The chosen target representation defines both the predictor's observation history and its output; the training loss separately determines which discrepancies are penalized.
-Waveform prediction retains the phase and temporal structure of the measured signals, whereas spectral power prediction describes their evolving frequency content without requiring the precise phase evolution of individual oscillations to be reproduced.
-This motivates investigating spectral power as a prediction target for spectral control objectives~\cite{Chourdaki2026,Truong2018,Fang2023}.
-
-Three families of data-driven models are investigated for these prediction tasks.
-\Acp{mlp} provide a general-purpose nonlinear approach to learning input-output relationships from finite histories of observations and stimulation currents.
-\Acp{cnn} exploit local structure through shared filters, allowing temporal patterns in \ac{eeg} waveforms or time-frequency patterns in spectral representations to be captured.
-Finally, delay-embedded \ac{dmdc} provides a linear approach to spectral prediction.
-These architectures differ in their assumptions about the underlying input-output dynamics and provide alternative ways of representing the response to stimulation.
+For seizure suppression, the predictor must capture how seizure-related neural activity evolves and responds to stimulation, using only scalp \ac{eeg} measurements and applied currents.
+We investigate two prediction targets: multichannel \ac{eeg} waveforms and spectral power features derived from the \ac{stft}.
+Waveform prediction preserves temporal structure that may help distinguish stimulation responses, whereas spectral power prediction directly describes the oscillatory activity assessed by the spectral control objective.
+Transforming predicted waveforms into spectral power allows both approaches to be compared under that objective.
 
 The chapter first formulates the input-output prediction problem and identifies the requirements relevant to seizure control.
 It then introduces the waveform and spectral representations, followed by the supervised learning framework, training data, training objectives and predictor architectures.
@@ -484,7 +478,7 @@ The following section introduces the neural-network architectures fitted with th
 \section{Predictor Architectures}\label{sec:predictor_architectures}
 
 The training objectives above require a mapping from observation histories and stimulation currents to the next observable.
-We first consider fully connected networks, then convolutional networks that share local filters and finally an affine model fitted to spectral histories.
+We consider three predictor architectures that differ in how they represent the relationship between observation histories, stimulation currents and future neural activity.
 
 \subsection{\ac{mlp}}
 
