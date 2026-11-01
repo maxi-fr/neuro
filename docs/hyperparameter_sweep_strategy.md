@@ -2,6 +2,73 @@
 
 This is the protocol for the October 2026 replacement Sweep campaign. It supersedes the previous strategy. Rerun Observable MLP, Waveform MLP and Hankel-DMDc selection under the current implementation; carry forward the completed CNN architecture searches under `sweep_2026_10/cnn/`. Re-evaluate downstream controller choices using the selected Predictors. This document specifies planned work; results and execution status belong in each experiment's `report.md`.
 
+## Campaign execution tracking (Todo List)
+
+### Phase 1: Predictor Selection & Optimization
+- [x] **CNN Architecture Searches (§4.3)**: Carried forward completed searches under `sweep_2026_10/cnn/`.
+  - [x] Observable CNN architecture sweep (Trial 22 champion: $n_y=16$, $k_t=3, k_f=1$, head 78, `softplus`, `val_log_mse = 1.5996`).
+  - [x] Waveform CNN architecture sweep (Trial 24 champion: $n_y=29$, $k_t=5$, head 212, `tanh`, `val_loss = 60.0482`).
+  - [-] ~~Rescore on common validation windows & 3-seed confirmation (`[69, 70, 71]`) for top 3 distinct configurations~~ — **[SKIPPED]**
+  - [-] ~~CNN optimizer sweeps (25 trials per family; Observable lr $[10^{-4}, 3\times 10^{-3}]$, Waveform lr $[10^{-4}, 2\times 10^{-3}]$, wd $[10^{-6}, 10^{-3}]$)~~ — **[SKIPPED]**
+  - [-] ~~3-seed confirmation on optimizer finalists~~ — **[SKIPPED]**
+  - [x] Offline stability qualification (`evaluate_control_horizon`: amplitude growth $\le 3.0$, terminal NMSE $\le 1.25$) on architecture champions.
+- [ ] **Observable MLP (§4.1)**:
+  - [x] Joint capacity and history architecture search (25 trials; Trial 23 champion: $n_y=1$ Frame [0.5 s EEG support], width 1024, depth 1, `softplus`, `residual=True`, `val_loss = 1.6541`).
+  - [-] ~~3-seed confirmation (`[69, 70, 71]`) across top 3 distinct configurations (Trials 23, 20, 21)~~ — **[SKIPPED]**
+  - [ ] Offline stability qualification (`evaluate_control_horizon`: amplitude growth $\le 3.0$, terminal NMSE $\le 1.25$) on champion (Trial 23).
+  - [ ] Residual connection ablation (`residual: [true, false]`).
+  - [-] ~~Optimizer search on confirmed architecture (25 trials: lr $[10^{-4}, 3\times 10^{-3}]$, wd $[10^{-6}, 10^{-3}]$, batch size $[128, 256, 512]$)~~ — **[SKIPPED]**
+  - [-] ~~3-seed confirmation on optimizer finalists~~ — **[SKIPPED]**
+- [ ] **Waveform MLP (§4.2)**:
+  - [x] Joint capacity and history architecture search (25 trials; Trial 20 champion: $n_y=23$ samples [0.23 s history], width 256, depth 1, `tanh`, `residual=True`, `val_loss = 56.7467`).
+  - [-] ~~3-seed confirmation (`[69, 70, 71]`) across top 3 distinct configurations (Trials 20, 23, 16)~~ — **[SKIPPED]**
+  - [ ] Offline stability qualification (`evaluate_control_horizon`) on champion (Trial 20).
+  - [-] ~~Optimizer search on confirmed architecture (25 trials: lr $[10^{-4}, 2\times 10^{-3}]$, wd $[10^{-6}, 10^{-3}]$)~~ — **[SKIPPED]**
+  - [-] ~~3-seed confirmation on optimizer finalists~~ — **[SKIPPED]**
+- [ ] **Hankel-DMDc Grid (§4.4)**:
+  - [ ] 140 fits per hop for hops $\in [3, 5]$ ($n_y \in [1, 2, 4, 8]$, energy cutoff $\in [0.80\text{--}1.0]$, $\lambda \in [0, 10^{-2}]$).
+  - [ ] Common-window recursive validation MSE (`val_loss`) ranking and offline qualification.
+  - [ ] Development closed-loop evaluation between hop finalists.
+
+### Phase 2: Downstream Controller Experiments
+- [ ] **Effort Calibration (§6.1)**:
+  - [x] Observable MLP & CNN quadratic effort calibration ($w_u \in [0.1, 0.3, 1.0, 3.0, 10.0, 30.0, 100.0]$ on 5 development seeds; selected $w_u = 0.1\,\text{mA}^{-2}$ for both).
+  - [ ] Waveform MLP & CNN effort calibration (start at $w_y=1, w_\text{hinge}=1000, w_u=10$; sweep multipliers $[0.1, 0.3, 1, 3, 10, 30, 100]$).
+  - [ ] Hankel-DMDc independent effort calibration.
+  - [ ] (Optional) Sparse effort comparison ($w_{u,L1} \in [0, 0.01, 0.1]$).
+- [ ] **Observable Geometry Screening (§6.2)**:
+  - [x] Stage 1 (Backbone): Segment $[25, 50] \times$ hop $[3, 5]$ screened on 5 development seeds; top 2 retained backbones: `hop5_seg25` and `hop3_seg25` for both MLP and CNN.
+  - [ ] Stage 2 (Band): Compare $[0, 25]$, $[1, 25]$, $[3, 12]$ Hz on the two retained backbones.
+  - [ ] Stage 3 (Frame Kernel): Compare linear widths $[1, 4, 7]$ on selected backbone/band pair.
+  - [ ] Stage 4 (Taper): Compare asymmetric and symmetric Hann.
+  - [ ] Stage 5 (Confirmation): Compare final geometry against baseline on all 5 development seeds at single training seed 69 (3-seed confirmation descoped).
+- [ ] **Waveform Loss–Cost Alignment (§6.3)**:
+  - [ ] Fit Pure MSE, Pure STFT, and Joint (1:15) models at single seed 69 (3-seed confirmation descoped; staged under `waveform_loss_cost_alignment/`).
+  - [ ] Run closed-loop development simulations across Arms A–E (Pure MSE, Pure STFT, and Joint with tracking, hinge, and combined Costs).
+- [ ] **Terminal Weighting and Control Horizon (§6.4)**:
+  - [ ] Terminal state penalty multipliers $[1, 2, 5, 10]$.
+  - [ ] Control Horizon comparison: requested horizons $[0.6, 0.8, 1.0, 1.2, 1.5]$ s ($H = \lceil T/dt \rceil$).
+  - [ ] Predictor error extrapolation check beyond 1.0 s and solve deadline verification.
+  - [ ] Sequential effort recalibration on development seeds if Control Horizon shifts balance.
+
+### Phase 3: Final Benchmarking & Closure
+- [ ] **Pre-Launch Audit (§2.2, §7)**:
+  - [ ] Audit all excitation, reference, and historical manifests for overlap with 10 reserved final seeds (`[7100\text{--}7109]`).
+  - [ ] Freeze configs, checkpoints, standardizers, common Warm-up Period, and solver fallback settings.
+- [ ] **Final Benchmark Execution (§7)**:
+  - [ ] Execute 70 Plant simulations (7 arms $\times$ 10 final seeds, 12.0 s each):
+    1. Uncontrolled Plant
+    2. Threshold stimulation baseline
+    3. Observable MLP champion
+    4. Observable CNN champion
+    5. Observable Hankel-DMDc champion
+    6. Waveform MLP champion
+    7. Waveform CNN champion
+  - [ ] Paired difference analysis and 95% paired-bootstrap confidence intervals for Seizure Burden and Delivered Charge.
+- [ ] **Archiving & Drive Backup (§1)**:
+  - [ ] Final sync of local execution `artifacts/sweep_2026_10/` to backup `artifacts_gdrive/sweep_2026_10/`.
+  - [ ] Purge any intermediate staging in `results/sweep_2026_10/`.
+
 ## 1. Scope, carryover and storage
 
 Freeze these conventions for the campaign:
