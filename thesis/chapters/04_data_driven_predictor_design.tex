@@ -8,7 +8,8 @@ This chapter instead develops data-driven input-output models that predict neura
 
 For seizure suppression, the predictor must capture how seizure-related neural activity evolves and responds to stimulation, using only scalp \ac{eeg} measurements and applied currents.
 We investigate two prediction targets: multichannel \ac{eeg} waveforms and spectral power features derived from the \ac{stft}.
-Waveform prediction preserves temporal structure that may help distinguish stimulation responses, whereas spectral power prediction directly describes the oscillatory activity assessed by the spectral control objective.
+Waveform prediction retains phase information that may help distinguish stimulation responses, but requires the phase evolution to be reproduced.
+Spectral power prediction avoids this requirement and directly describes the oscillatory activity assessed by the spectral control objective, while discarding phase information from the observation history.
 Transforming predicted waveforms into spectral power allows both approaches to be compared under that objective.
 
 The chapter first formulates the input-output prediction problem and identifies the requirements relevant to seizure control.
@@ -263,7 +264,7 @@ The stochastic input to the biophysical plant makes exact waveform evolution unc
 Even if a predictor captures an oscillation's amplitude and frequency, small phase errors can produce large sample-wise errors.
 Predicting spectral power avoids this phase-matching requirement, but discards information from both the target and the observation history.
 For example, a waveform and its sign-reversed counterpart have identical power features, and channel-wise spectra do not preserve relative phases between channels.
-The discarded information may help distinguish states that evolve differently under stimulation.
+Spectral histories therefore cannot distinguish these waveforms even if their responses to stimulation differ.
 
 The estimation trade-offs described in Section~\ref{sec:spectral_representation} also affect the prediction task: the \ac{stft} parameters determine both target variability and temporal responsiveness.
 Choosing a spectral target therefore requires selecting these parameters alongside the prediction model.
@@ -356,7 +357,7 @@ where $a=1,\ldots,\ndim{o}$ and $b=1,\ldots,\ndim{u}$ index observable and curre
 The means $\bar{o}_a,\bar{u}_b$ and standard deviations $\sigma_{\mathrm{o},a},\sigma_{\mathrm{u},b}$ in~\eqref{eq:predictor_standardization} are computed from the training set.
 Each observation coordinate corresponds to an \ac{eeg} channel for waveforms or a channel-frequency pair for spectral features.
 For neural-network training, the histories and currents in $\mathcal D_{\mathrm{tr}}$ are standardized using~\eqref{eq:predictor_standardization}, while the targets remain in the original observable coordinates.
-The network outputs are transformed back to unstandartized coordinates before loss evaluation so that the loss measures errors on the original observable scale rather than weighting coordinates by their training-set variances.
+The network outputs are transformed back to the original observable coordinates before loss evaluation so that the loss measures errors on that scale rather than weighting coordinates by their training-set variances.
 The fitted transformations remain fixed during validation and testing.
 With the samples and coordinate transformations defined, the next subsection specifies the losses used to score predictions on the original observable scale.
 
@@ -798,11 +799,9 @@ Its suitability depends on whether that restriction preserves the stimulation re
 The predictors developed in this chapter share the input-output formulation in~\eqref{eq:recursive_predictor}, but their usefulness for control depends on what their forecasts reveal about candidate stimulation sequences.
 The central question is whether the chosen representation, history and fitted mapping retain enough information to distinguish sequences that lead to different values of the control objective.
 
-Spectral prediction discards phase information from the observation history.
-If the response to stimulation depends on this information, waveform histories may help predict future spectral power more accurately.
-However, stochasticity and accumulating phase errors may limit reliable waveform prediction to horizons too short for effective seizure suppression.
+Waveform histories retain phase information that may help distinguish how neural activity responds to candidate stimulation sequences.
+However, phase divergence caused by stochasticity may limit reliable waveform prediction to horizons too short for effective seizure suppression.
 Direct spectral prediction avoids reproducing individual oscillation phases and may therefore provide useful forecasts over longer horizons.
-For \ac{mpc}, the prediction horizon must extend far enough to assess how candidate stimulation sequences affect subsequent neural activity.
 Reliable forecasts over longer horizons may therefore allow the controller to account for stimulation effects that shorter horizons miss.
 
 The training losses introduce a further distinction between reproducing recorded trajectories and selecting currents.
