@@ -172,68 +172,35 @@ The following section specializes the general \ac{ocp} to the learned neurostimu
 
 \section{\ac{mpc} with Learned Input-Output Predictors}\label{sec:mpc_input_output_formulation}
 
-% some introduction
+% Introduce our neurostimulation MPC formulation by relating its predictor dynamics,
+% admissible currents and control costs to the general formulation above.
 
-\subsection{History-State Realization}
-% Refer to Chapter 4 for the observable and current histories rather than repeating their derivation.
-% Distinguish the learned output map o_{j+1|k} = f_theta(h_{j|k}, u_{j|k}) from the full history-state transition.
-% Construct the latter by shifting the histories and appending the predicted observable and candidate current.
-% Identify x = h in the general OCP only after defining this complete transition map.
-% Explain that most history-state coordinates are shifted entries, not newly predicted quantities.
-% Specify waveform-sample and spectral-frame time grids, controller updates and zero-order hold actuation.
+\subsection{Predictor Dynamics and Input Constraints}
+% Connect the input-output predictors of Chapter 4 to the general state-space dynamics
+% through a History State that shifts past observations and currents and appends new predictions and inputs.
+% Explain how waveform and spectral predictors fit this realization and its timing of prediction and actuation.
+% Introduce the admissible input set: per-electrode bounds of 2 mA in magnitude and Kirchhoff's zero-sum constraint.
+% These dynamics and constraints underlie each numerical transcription considered next.
 
 \subsection{\ac{narx} Transcription}
-% Motivate an output-lifted alternative to lifting the complete history state in multiple shooting.
-% Introduce future outputs and currents as decision variables and enforce the learned output-map equalities.
-% Reconstruct histories from fixed measured pre-horizon entries and the future output/current variables.
-% Explain how this eliminates redundant shift-register variables and copy constraints.
-% Develop the partially condensed variant: lift observation-history windows only at segment boundaries,
-% roll out between boundaries and reconstruct input histories directly from the current decision sequence.
-% Distinguish fully output-lifted one-step defects from boundary-window defects in the partially condensed variant.
-% State decision-variable and defect counts relative to full-history multiple shooting and single shooting.
-% Present algebraic structure here; runtime, convergence and the empirical choice of SS belong in Chapter 6.
-% Source: feat/narx_mpc, src/neuro/control/narx_mpc.py.
-% Benchmark context: knowledge-base/Notes/narx_mpc_benchmark.md.
-
-% State the specific input constraints in a short paragraph, without a separate subsection:
-% hard per-electrode bounds |u_p| <= 2 mA and Kirchhoff equality sum_p u_p = 0.
-% Retain these constraints in each transcription and distinguish them from soft suppression penalties.
+% Introduce the fully output-lifted NARX transcription: optimize future outputs and currents,
+% reconstruct their histories using measured pre-horizon data, and enforce the learned output-map equalities.
+% Explain its structural relationship to single shooting and full-history multiple shooting,
+% particularly the removal of redundant history-shift variables and constraints.
+% This establishes the third transcription compared experimentally in Chapter 6; performance belongs there.
 
 \subsection{Control Cost Functions}\label{sec:mpc_cost_functions}
 
-% Motivate the use of measurable proxies: recruitment is the ultimate control objective, but its
-% regional plant activity is unavailable to the controller, so the recruitment measure cannot be used directly.
-% Instead, formulate suppression costs from predicted scalp measurements.
-
-%% Healthy References
-% Explain the construction of empirical healthy channel means and channel-frequency log-power envelopes.
-% Use the same spectral transformation for healthy references and predicted quantities.
-
-%% Waveform Tracking Cost
-% Define squared waveform deviation from empirical healthy channel means.
-% This tracks a healthy operating point, not the phase of a prescribed healthy waveform.
-% Retain the implemented quadratic tracking cost.
-
-%% Spectral Suppression Cost
-% Define the squared one-sided hinge [predicted log power - healthy envelope]_+^2.
-% Explain why power below the healthy envelope is unpenalized.
-% Define weighting and averaging over scored times, channels and frequency bins.
-% Introduce the two evaluations of this objective:
-% (1) waveform predictor with spectral cost computed from its predicted waveform continuation;
-% (2) spectral predictor with the cost applied directly to predicted spectral features.
-% For waveform-derived spectra, explain the measured boundary history and overlapping spectral windows.
-% Overlapping STFT windows make the waveform-derived spectral cost depend jointly on multiple prediction steps, extending the stage-additive form in \eqref{eq:mpc_ocp}.
-% Together with waveform tracking, these establish the three predictor-cost combinations.
-
-%% Quadratic Current Effort and Combined Objective
-% Define the squared L2 current-effort term.
-% Interpret it as a current-effort measure; electrical energy requires an additional voltage/impedance model.
-% Assemble the suppression and stimulation terms into a modular weighted objective.
-% Components may be combined as required; the experiments specify the combinations investigated.
-% Explain horizon normalization and scoring of the final predicted sample or Frame.
-
-% Collect the specific predictor, constraints and modular cost into our OCP.
-% Explain final-prediction scoring and distinguish it from a stabilizing terminal construction.
+% Motivate suppression costs based on predicted scalp measurements as proxies for recruitment,
+% whose regional activity is unavailable to the controller.
+% Introduce the empirical healthy references and the implemented suppression costs:
+% squared waveform deviation from healthy channel means and squared one-sided excess log power above healthy envelopes.
+% Establish the three predictor-cost combinations: waveform prediction with waveform tracking,
+% waveform prediction with spectral suppression, and spectral prediction with spectral suppression.
+% Explain how spectra are obtained from waveform predictions and how this relates to the general cost formulation.
+% Introduce quadratic current effort and its weighted combination with suppression,
+% including the implemented averaging and horizon normalization and scoring of the final prediction.
+% This supplies the objectives for the experiments and the basis for the sparsity-promoting extensions that follow.
 
 \section{Sparsity-Promoting Control Formulations}\label{sec:mpc_sparse_formulations}
 

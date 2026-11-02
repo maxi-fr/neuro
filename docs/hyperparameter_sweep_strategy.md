@@ -1,292 +1,203 @@
-# Hyperparameter sweep strategy
+# Hyperparameter sweep strategy — November 2026
 
-This is the protocol for the October 2026 replacement Sweep campaign. It supersedes the previous strategy. Rerun Observable MLP, Waveform MLP and Hankel-DMDc selection under the current implementation; carry forward the completed CNN architecture searches under `sweep_2026_10/cnn/`. Re-evaluate downstream controller choices using the selected Predictors. This document specifies planned work; results and execution status belong in each experiment's `report.md`.
+This protocol defines Predictor selection, controller experiments and final evaluation for the November 2026 campaign in `artifacts/sweep_2026_11/`. It investigates how the prediction target, stimulation resolution, training Loss and MPC Cost affect Seizure Suppression, Delivered Charge and computation.
 
-## Campaign execution tracking (Todo List)
+All Observable Predictors use **dt=0.06 s: 50 Hz EEG and hop 3**. Waveform prediction and State Absorption remain at 100 Hz; investigate both distinct-current and blocked-current execution with 60 ms replanning. Select controller operating points using the **20–30 mAs mean Delivered Charge target** in Section 5.
 
-### Phase 1: Predictor Selection & Optimization
-- [x] **CNN Architecture Searches (§4.3)**: Carried forward completed searches under `sweep_2026_10/cnn/`.
-  - [x] Observable CNN architecture sweep (Trial 22 champion: $n_y=16$, $k_t=3, k_f=1$, head 78, `softplus`, `val_log_mse = 1.5996`).
-  - [x] Waveform CNN architecture sweep (Trial 24 champion: $n_y=29$, $k_t=5$, head 212, `tanh`, `val_loss = 60.0482`).
-  - [-] ~~Rescore on common validation windows & 3-seed confirmation (`[69, 70, 71]`) for top 3 distinct configurations~~ — **[SKIPPED]**
-  - [-] ~~CNN optimizer sweeps (25 trials per family; Observable lr $[10^{-4}, 3\times 10^{-3}]$, Waveform lr $[10^{-4}, 2\times 10^{-3}]$, wd $[10^{-6}, 10^{-3}]$)~~ — **[SKIPPED]**
-  - [-] ~~3-seed confirmation on optimizer finalists~~ — **[SKIPPED]**
-  - [x] Offline stability qualification (`evaluate_control_horizon`: amplitude growth $\le 3.0$, terminal NMSE $\le 1.25$) on architecture champions.
-- [ ] **Observable MLP (§4.1)**:
-  - [x] Joint capacity and history architecture search (25 trials; Trial 23 champion: $n_y=1$ Frame [0.5 s EEG support], width 1024, depth 1, `softplus`, `residual=True`, `val_loss = 1.6541`).
-  - [-] ~~3-seed confirmation (`[69, 70, 71]`) across top 3 distinct configurations (Trials 23, 20, 21)~~ — **[SKIPPED]**
-  - [ ] Offline stability qualification (`evaluate_control_horizon`: amplitude growth $\le 3.0$, terminal NMSE $\le 1.25$) on champion (Trial 23).
-  - [ ] Residual connection ablation (`residual: [true, false]`).
-  - [-] ~~Optimizer search on confirmed architecture (25 trials: lr $[10^{-4}, 3\times 10^{-3}]$, wd $[10^{-6}, 10^{-3}]$, batch size $[128, 256, 512]$)~~ — **[SKIPPED]**
-  - [-] ~~3-seed confirmation on optimizer finalists~~ — **[SKIPPED]**
-- [ ] **Waveform MLP (§4.2)**:
-  - [x] Joint capacity and history architecture search (25 trials; Trial 20 champion: $n_y=23$ samples [0.23 s history], width 256, depth 1, `tanh`, `residual=True`, `val_loss = 56.7467`).
-  - [-] ~~3-seed confirmation (`[69, 70, 71]`) across top 3 distinct configurations (Trials 20, 23, 16)~~ — **[SKIPPED]**
-  - [ ] Offline stability qualification (`evaluate_control_horizon`) on champion (Trial 20).
-  - [-] ~~Optimizer search on confirmed architecture (25 trials: lr $[10^{-4}, 2\times 10^{-3}]$, wd $[10^{-6}, 10^{-3}]$)~~ — **[SKIPPED]**
-  - [-] ~~3-seed confirmation on optimizer finalists~~ — **[SKIPPED]**
-- [ ] **Hankel-DMDc Grid (§4.4)**:
-  - [ ] 140 fits per hop for hops $\in [3, 5]$ ($n_y \in [1, 2, 4, 8]$, energy cutoff $\in [0.80\text{--}1.0]$, $\lambda \in [0, 10^{-2}]$).
-  - [ ] Common-window recursive validation MSE (`val_loss`) ranking and offline qualification.
-  - [ ] Development closed-loop evaluation between hop finalists.
+## Campaign execution checklist
 
-### Phase 2: Downstream Controller Experiments
-- [ ] **Effort Calibration (§6.1)**:
-  - [x] Observable MLP & CNN quadratic effort calibration ($w_u \in [0.1, 0.3, 1.0, 3.0, 10.0, 30.0, 100.0]$ on 5 development seeds; selected $w_u = 0.1\,\text{mA}^{-2}$ for both).
-  - [ ] Waveform MLP & CNN effort calibration (start at $w_y=1, w_\text{hinge}=1000, w_u=10$; sweep multipliers $[0.1, 0.3, 1, 3, 10, 30, 100]$).
-  - [ ] Hankel-DMDc independent effort calibration.
-  - [ ] (Optional) Sparse effort comparison ($w_{u,L1} \in [0, 0.01, 0.1]$).
-- [ ] **Observable Geometry Screening (§6.2)**:
-  - [x] Stage 1 (Backbone): Segment $[25, 50] \times$ hop $[3, 5]$ screened on 5 development seeds; top 2 retained backbones: `hop5_seg25` and `hop3_seg25` for both MLP and CNN.
-  - [ ] Stage 2 (Band): Compare $[0, 25]$, $[1, 25]$, $[3, 12]$ Hz on the two retained backbones.
-  - [ ] Stage 3 (Frame Kernel): Compare linear widths $[1, 4, 7]$ on selected backbone/band pair.
-  - [ ] Stage 4 (Taper): Compare asymmetric and symmetric Hann.
-  - [ ] Stage 5 (Confirmation): Compare final geometry against baseline on all 5 development seeds at single training seed 69 (3-seed confirmation descoped).
-- [ ] **Waveform Loss–Cost Alignment (§6.3)**:
-  - [ ] Fit Pure MSE, Pure STFT, and Joint (1:15) models at single seed 69 (3-seed confirmation descoped; staged under `waveform_loss_cost_alignment/`).
-  - [ ] Run closed-loop development simulations across Arms A–E (Pure MSE, Pure STFT, and Joint with tracking, hinge, and combined Costs).
-- [ ] **Terminal Weighting and Control Horizon (§6.4)**:
-  - [ ] Terminal state penalty multipliers $[1, 2, 5, 10]$.
-  - [ ] Control Horizon comparison: requested horizons $[0.6, 0.8, 1.0, 1.2, 1.5]$ s ($H = \lceil T/dt \rceil$).
-  - [ ] Predictor error extrapolation check beyond 1.0 s and solve deadline verification.
-  - [ ] Sequential effort recalibration on development seeds if Control Horizon shifts balance.
+Status as of 2026-11-02. Completed studies are reused; pending items describe the remaining experimental work. Optimizer Sweeps and three-seed confirmation are outside this campaign's scope.
 
-### Phase 3: Final Benchmarking & Closure
-- [ ] **Pre-Launch Audit (§2.2, §7)**:
-  - [ ] Audit all excitation, reference, and historical manifests for overlap with 10 reserved final seeds (`[7100\text{--}7109]`).
-  - [ ] Freeze configs, checkpoints, standardizers, common Warm-up Period, and solver fallback settings.
-- [ ] **Final Benchmark Execution (§7)**:
-  - [ ] Execute 70 Plant simulations (7 arms $\times$ 10 final seeds, 12.0 s each):
-    1. Uncontrolled Plant
-    2. Threshold stimulation baseline
-    3. Observable MLP champion
-    4. Observable CNN champion
-    5. Observable Hankel-DMDc champion
-    6. Waveform MLP champion
-    7. Waveform CNN champion
-  - [ ] Paired difference analysis and 95% paired-bootstrap confidence intervals for Seizure Burden and Delivered Charge.
-- [ ] **Archiving & Drive Backup (§1)**:
-  - [ ] Final sync of local execution `artifacts/sweep_2026_10/` to backup `artifacts_gdrive/sweep_2026_10/`.
-  - [ ] Purge any intermediate staging in `results/sweep_2026_10/`.
+### Phase 1: Predictor selection and qualification
 
-## 1. Scope, carryover and storage
+- [x] Observable MLP architecture search: 25 trials; Trial 23 (`n_y=1`, width 1024, depth 1, `softplus`, residual; `val_loss=1.6541`).
+- [x] Observable MLP saved qualification at H=17 / 1.02 s: growth 0.9288, terminal NMSE 0.3030; passed recorded gates.
+- [x] Observable CNN architecture search: Trial 22 (`n_y=16`, temporal/frequency kernels 3/1, head 78, `softplus`; historical `val_log_mse=1.5996`), baseline, pilots and temporal-kernel ablation.
+- [ ] Observable CNN actual-current Control Horizon qualification.
+- [x] Hankel-DMDc hop-3 grid: 140 fits; Trial 89 (`n_y=4`, energy 0.95, lambda 0.01, rank 1339; `val_loss=1.6197`).
+- [x] DMDc qualifications at H=10/14/17/20/25; saved reports record passes at actual durations 0.60/0.84/1.02/1.20/1.50 s.
+- [ ] Observable MLP residual-connection ablation (`true` versus `false`).
+- [x] Waveform MLP architecture search: Trial 20 (`n_y=23`, width 256, depth 1, `tanh`, residual; joint `val_loss=56.7467`).
+- [x] Waveform CNN architecture search: Trial 24 (`n_y=29`, temporal kernel 5, head 212, `tanh`; joint `val_loss=60.0482`).
+- [ ] Qualify both Waveform checkpoints at the actual matched Control Horizon and under intended current sequences.
 
-Freeze these conventions for the campaign:
+### Phase 2: Development controller studies
 
-- Per-channel mean/std standardization for Waveform EEG and Control Currents; per-channel-frequency mean/std for Observables. Fit statistics on training recordings only. Neural recursion uses standardized coordinates; every Loss uses original output units.
-- Waveform sampling rate 100 Hz. Curriculum MSE Span 0.25 s; STFT Span 1.0 s, symmetric Hann Segments of 50 samples, hop 25, 1–25 Hz band, no Frame smoothing. Joint Loss is MSE + 15 × STFT for both Waveform families.
-- Baseline Observable geometry: 50 Hz EEG, Segment 25 samples, hop 3, 1–25 Hz band, linear Frame Kernel of width 1, asymmetric Hann, no frequency pooling. Curriculum MSE Span is the nominal one-second recursive Rollout.
-- Capacity comparisons keep Loss, geometry, split, optimizer and schedule fixed within a family. Geometry and Loss–Cost comparisons are ranked by closed-loop performance, never by differently scaled validation Losses.
-- Controller arms use the same Plant, sensors, montage, Control Budget and solver settings except for the factor explicitly varied. Snapshot resolved settings before execution.
+- [x] Observable MLP/CNN effort grids: 35 runs per family, seven weights × five development seeds, dt=60 ms, H=17.
+- [x] CNN target-aligned baseline effort: `w_u=0.3` gives mean charge about 23.00 mAs and burden 0.0544.
+- [ ] Refine MLP effort: `w_u=0.3` gives 30.94 mAs and `w_u=1` gives 14.81 mAs; no original candidate meets the target.
+- [x] DMDc hop-3 effort comparison: 45 runs including baselines. At H=17, `w_u=0.3` gives 25.51 mAs and burden 0.0492; `w_u=0.1` gives 42.75 mAs and is outside target at that horizon.
+- [x] Hop-3 Segment-25/50 screening: ten runs per neural family. All four family/Segment means exceed 30 mAs at the original `w_u=0.1`.
+- [ ] Reconfirm Segment candidates at a common target-calibrated effort per family; then complete band, Frame Kernel and taper studies at hop 3.
+- [x] DMDc Control Horizon, terminal and exact-L1 studies. Selected point: H=10 / 0.60 s, `w_u=0.1`, terminal multiplier 1, `w_u_l1=0`.
+- [ ] Prepare and verify both Waveform execution policies for the timing study in Section 6.1.
+- [ ] Waveform timing study for both families: same checkpoint and fixed weights across native 10 ms, distinct-current 60 ms and blocked-current 60 ms execution.
+- [ ] Independent Waveform effort calibration for each 60 ms policy.
+- [ ] Waveform Loss–Cost arms A–E at effective training seed 69; alternate-policy ablation on the selected checkpoint/Cost.
+- [ ] Outstanding neural terminal/horizon studies and sequential effort recalibration where needed.
+- [ ] Optional declared follow-up: fixed-architecture Waveform training on 60 ms hold data, retaining 100 Hz EEG / 10 ms Predictor steps, compared with 20 ms hold training under blocked execution.
 
-| Existing work | Treatment |
+### Phase 3: Final evaluation and closure
+
+- [ ] Audit excitation, references and historical manifests for overlap with reserved final seeds `[7100–7109]`.
+- [ ] Freeze checkpoints, actual horizons, effort, timing policies, references, common Warm-up Period, solver/fallback and scoring.
+- [ ] Primary benchmark: 70 simulations, seven arms × ten reserved seeds, 12 s each; distinct-current 60 ms Waveform replanning.
+- [ ] Paired differences and 95% paired-bootstrap intervals for Burden/Charge, plus seed values, timing and failures.
+- [ ] If blocking is also evaluated on final seeds, predeclare two extra arms: nine arms / 90 runs. Otherwise blocking remains a five-development-seed ablation.
+- [ ] Complete experiment reports and package reproducibility artifacts.
+
+## 1. Scope and experiment organization
+
+Reuse the completed Predictor searches and development studies listed below. No new architecture or optimizer search is planned. Observable geometry studies keep hop 3 throughout. Training-initialization replication is limited to single-seed ablations; report this limitation separately from variability across Plant seeds.
+
+| Location under `artifacts/sweep_2026_11/` | Experiment |
 | --- | --- |
-| [CNN architecture searches](../artifacts/sweep_2026_10/cnn/report.md), backed up under `artifacts_gdrive/sweep_2026_10/cnn/` | Carry forward complete studies, checkpoints, manifests and source snapshots. Confirm finalists below; do not restart architecture searches. |
-| Excitation and healthy-reference datasets | Reuse. Audit recording identities and Plant seeds; derive geometry-specific references and standardizers where needed. |
-| `artifacts_gdrive/output_scaling_audit/` and its dated companion | Retain distribution and conditioning evidence. |
-| [Shared uncertainty calibration](../artifacts_gdrive/shared_uncertainty_10000/report.md) | Retain the frozen 1:15 objective. Calibration is a scaling choice, not evidence of optimal closed-loop performance. |
-| [Historical output-gradient calibration](../artifacts_gdrive/gradient_weight_calibration/report.md) | Retain the initial Waveform tracking/hinge Cost ratio, 1:1000. This does not calibrate effort through a trained Predictor. |
-| Earlier calibration packages and dataset-sensitivity investigation | Preserve as provenance; superseded training ratios do not define this campaign. |
-| Old MLP/DMDc searches and downstream controller Sweeps | Archive intact under `artifacts_gdrive/trash/`; rerun affected comparisons. |
+| `observable_mlp/`, `cnn/observable/` | Observable neural Predictor selection. |
+| `observable_effort_calibration/` | Neural effort calibration. |
+| `observable_geometry/` | Segment, band, Frame Kernel and taper comparisons. |
+| `observable_dmd/` | Hankel-DMDc identification and controller studies. |
 
-The previous strategy and relocation manifest are under `artifacts_gdrive/trash/sweep_strategy_2026_10_23/`. Historical configs retain original paths and objectives; use the relocation manifest to locate dependencies. Never resume archived Optuna databases or mix their scores into new rankings. Unrelated montage, mixed-integer and JAX diagnostic experiments remain in place.
+Each new experiment snapshots its model, simulation, reference and resolved settings locally. Comparison manifests reference these snapshots, never mutable production configs. Record source revision/patch, dependency lock, hardware/concurrency, data identities, effective seeds, timing and failures. Permanent outputs and `report.md` live in `artifacts/sweep_2026_11/<experiment>/`; temporary large Rollouts use `results/sweep_2026_11/`. Reports contain Motivation, Experimental Setup, Results, and Actionable Recommendation / Decision; mark unrun stages pending. Completed study databases remain frozen; new ablations use separate experiment directories.
 
-The campaign lives under `artifacts/sweep_2026_10/`, with backup storage under `artifacts_gdrive/sweep_2026_10/`. The completed CNN searches are part of this layout at `cnn/{observable,waveform}/`, with shared provenance at `cnn/reproducibility/`. Local storage is the execution copy; Drive stores the backup, not an independent study. Each experiment snapshots its base model, base simulation, healthy-reference specification and resolved candidates locally. Comparison manifests reference these snapshots, never mutable production configs. CNN migration records preserve original paths, config snapshots and trial identities while operational configs use the campaign paths. Copy required configs, checkpoints and provenance into downstream consuming experiments before execution.
+## 2. Data and seeds
 
-Record source revision, working-tree patch, dependency lock, hardware, data identities, effective random seeds, parameter counts, timing, failures and selected checkpoints. Each experiment has a `report.md` with Motivation, Experimental Setup, Results, and Actionable Recommendation / Decision sections; mark unrun stages as pending. Stage high-volume intermediate Rollouts in `results/sweep_2026_10/`; package required evidence before clearing that staging output at experiment completion. Archiving never deletes historical evidence.
+Reuse the existing 200-recording datasets: `data/experiment_excited_60ms/train` for Observable fitting and `data/experiment_excited_20ms/train` for initial Waveform fitting. Freeze sorted manifests and the existing first-160/last-40 recording split; overlapping windows remain within recording partitions. Shared excitation data stay under `data/`.
 
-## 2. Data partitions and random seeds
+The execution-policy comparison uses the same Waveform checkpoint across all three policies. Training on 60 ms holds is a separate ablation, not a prerequisite folded into that comparison. Retain native 10 ms sampling and match architecture, Loss, fit budget and recording scenarios/splits as closely as possible. Document unmatched data differences and assess transfer to repeated-current blocks and rapidly changing sequences.
 
-### 2.1 Predictor training and validation
+Completed neural searches used effective seeds `69 + trial.number`; retain those identities for selected checkpoints. New standalone ablations use effective seed 69 without a trial offset. Final results characterize frozen checkpoints rather than all training initializations. Compare histories/geometries on common held-out decision times with sufficient Priming and complete future Rollouts; distinguish search metrics from rescored diagnostics.
 
-Use existing 200-recording excitation datasets: `experiment_excited_60ms/train` for baseline Observable fitting and `experiment_excited_20ms/train` for Waveform fitting. Freeze sorted file manifests with the existing first-160/last-40 training/validation split. Keep recordings together; overlapping windows never cross the split. MLP/CNN comparisons within a representation use identical files and preprocessing. DMDc uses matching Observable data.
-
-Compare histories at common validation decision times: use the longest candidate's Priming Steps and require the entire future Rollout to exist. Freeze this scoring manifest before ranking. The existing Trainer can produce history-dependent window populations; when its metrics differ from this manifest, record them as search metrics and rescore saved candidates before shortlisting. Apply the same principle across geometries and initialization seeds. This document specifies requirements, not newly implemented runtime behavior.
-
-Broad neural searches use `training.seed: 69`. The current runner adds trial number, so the effective fit seed is `69 + trial.number`; record it. Confirmation fits run standalone at effective seeds `[69, 70, 71]`, without a trial offset. Initialization seeds are distinct in role from Plant/data-generation seeds even when numeric values coincide. DMDc fits are deterministic and need no initialization replicates.
-
-### 2.2 Closed-loop development and final evaluation
-
-| Partition | Explicit Plant seeds | Permitted use |
+| Partition | Explicit Plant seeds | Use |
 | --- | --- | --- |
-| Development, five seeds | `[7000, 7001, 7002, 7004, 7005]` | Effort, geometry, Loss–Cost, terminal weighting and Control Horizon selection; debugging and qualification. |
-| Final evaluation, ten seeds | `[7100, 7101, 7102, 7103, 7104, 7105, 7106, 7107, 7108, 7109]` | One frozen final comparison, including uncontrolled and threshold baselines. |
+| Development | `[7000,7001,7002,7004,7005]` | Calibration, timing, geometry, Loss–Cost, terminal/horizon selection and debugging. |
+| Reserved final | `[7100,7101,7102,7103,7104,7105,7106,7107,7108,7109]` | Frozen primary comparison and predeclared extra arms only. |
 
-Use explicit lists in manifests; runtime named seed tiers are not this partition protocol. Before launch, audit all excitation, healthy-reference and historical evaluation manifests for overlap with the final list and save the audit. Do not claim untouched status solely because numbers differ from development seeds. If prior use is found, resolve the partition before final execution; never silently replace difficult seeds.
+Earlier DMDc evaluations include development seeds and do not replace the reserved final comparison. Audit excitation/reference/evaluation identities for final-seed overlap before launch. Final outcomes never select settings; substantive redesign informed by them requires a new partition. Never screen seeds by difficulty or silently replace failures.
 
-Final seeds never guide checkpoints, references, normalization, qualification thresholds or controller settings. Freeze model identities, configurations, operating points, analyses and exclusion rules before running them. A substantive change after inspecting final outcomes requires a newly declared evaluation partition. Report all ten seeds, including those without appreciable uncontrolled seizure activity; never screen by observed difficulty.
+## 3. Training conventions and qualification
 
-## 3. Shared training and qualification protocol
+Use training-only per-channel mean/std for Waveform EEG and currents, and per-channel-frequency scaling for Observables. Neural recursion uses standardized coordinates; Losses use original output units.
 
-### 3.1 Baselines, budgets and resource pilots
+- **Observable:** 50 Hz, hop 3 / 60 ms; baseline Segment 25, 1–25 Hz, linear Frame Kernel width 1, asymmetric Hann, no bin pooling. Baseline minimum `n_u=9`; recompute after Segment/Kernel changes. Curriculum MSE uses nominal one-second recursive Span.
+- **Waveform:** 100 Hz, baseline `n_u=10`; MSE Span 0.25 s plus 15 × STFT over 1.0 s, symmetric Hann Segment 50, hop 25, 1–25 Hz, no smoothing. This training-Loss hop is distinct from Observable hop 3. Slower replanning does not change the training Loss.
+- **New neural ablations:** selected architecture and frozen optimizer/batch settings; 150 epochs, patience 20, curriculum epochs 10–80 where applicable and projected maximum fit time seven hours. Imported runs retain original schedules. Checkpoint selection/early stopping requires full curriculum eligibility.
 
-| Family | Baseline model | Optimizer baseline |
-| --- | --- | --- |
-| Observable MLP | Residual, `n_y=1`, `n_u=9`, width 256, depth 1, tanh | AdamW, learning rate 1e-4, weight decay 1e-5, batch 256 |
-| Waveform MLP | Residual, `n_y=15`, `n_u=10`, width 256, depth 1, softplus | Same as Observable MLP |
-| Observable CNN | Completed `cnn/observable/` candidate configs and weights | Architecture search used AdamW, 2e-4, 1e-5, batch 512 |
-| Waveform CNN | Completed `cnn/waveform/` configs and weights, shared 1:15 Loss | Same as Observable CNN |
-| Observable DMDc | `n_y=1`, geometry-dependent minimum `n_u`, energy cutoff 0.99, `dmd_lambda=1e-6` | DMDc fit; no gradient optimizer |
+Retain historical objectives: Observable CNN ranked `val_log_mse`; MLP/DMDc use recorded `val_loss`. Do not relabel scores or rank differently scaled pure-MSE, STFT and joint Losses together. Advance controller variants using common Plant metrics.
 
-New neural fits use 150 epochs, patience 20, curriculum expansion from epoch 10 to epoch 80, and `max_training_hours: 7.0`. Patience counts consecutive eligible epochs without validation improvement; it does not stop training before curriculum completion. Imported and archived runs retain their recorded patience. Qualify a full-curriculum baseline before each new broad architecture search; short resource or uncertainty pilots do not replace that fit. Select checkpoints only when the resolved schedule reports every enabled Loss active and the curriculum at full Span. Record `eligibility_start` and `selected_epoch`; do not infer eligibility from a rounded epoch label. Nominal offline evaluation duration is one second, rounded to the representation's time grid; record requested and actual durations.
+Save actual-recorded-current `evaluate_control_horizon` evidence at every resolved duration: maximum amplitude growth ≤3.0 and terminal NMSE ≤1.25, all required metrics finite. Record checkpoint hash, windows, preprocessing, reference/threshold identities and actual horizon. These gates are operational qualification, not stability proofs. Check inference/derivative agreement for supported solver paths, nonzero current sensitivity and full-horizon construction cost. Qualify upward-rounded or extrapolated horizons explicitly.
 
-Before each MLP search, pilot the baseline, maximum history at baseline width, and maximum history/width/depth. Measure host RAM, GPU peak memory, full-Span epoch time and projected fit time on the 4 GB GPU. Warm-up-only fitting does not establish full-Span feasibility. Pilot controller derivatives and solver construction for large models too. Freeze any reduced batch size across architecture candidates before launch; never change it selectively for a candidate. Keep the baseline learning rate unless a matched pilot supports changing it.
+Use one GPU fit at a time and record contention for controller timing. Resource pilots must reach the full Loss Span.
 
-Run one GPU fit at a time. CPU Plant runs may overlap only when measured capacity permits; record concurrency for interpretable runtime comparisons. Current runtime pruning projects the full epoch budget after three epochs using the latest two epoch durations, including elapsed compilation cost. It is an epoch-boundary forecast, not a hard seven-hour timeout. Report memory/runtime pruning separately from accuracy rejection; conclusions apply to configurations feasible on this hardware.
+## 4. Predictor selection
 
-New architecture and optimizer searches each have 25 trials per study, using the current seeded multivariate TPE sampler with 15 startup trials. An invocation adds trials to the database; check existing counts before resuming. Preserve failures and pruning reasons. Changes to budgets or ranges after seeing results require a recorded protocol amendment based on development evidence only.
+### 4.1 Observable MLP
 
-### 3.2 Objectives and three-seed confirmation
+Retain Trial 23 and all 25 trials: search `n_y=1–9`, widths `[128,256,512,768,1024]`, depths `[1,2,3]`, activations `[tanh,softplus]`, residual enabled, `n_u=9`. No new architecture/optimizer search. Fit the residual-off counterpart only as the declared ablation, with otherwise identical settings/data.
 
-| Representation | Search and confirmation ranking | Additional diagnostics |
-| --- | --- | --- |
-| Observable | `val_loss`: validation recursive MSE in recovered log-power units | `val_log_mse`, per-lookahead Frame error, Control Current sensitivity, growth and terminal normalized error |
-| Waveform | Fixed `val_loss` = original-unit curriculum MSE + 15 × STFT | One-second `rollout_nmse`, log-energy error, spectral Frame error, growth, terminal NMSE and Control Current sensitivity |
+### 4.2 Observable CNN
 
-All Tier 1 architecture, history, optimizer and DMDc searches use `sweep.objective: val_loss`, also the runtime default. For neural fits this aligns checkpoint selection, early stopping and configuration ranking after schedule eligibility. Other forecast metrics remain diagnostics and qualification evidence. Preserve imported CNN study objectives and scores; form current shortlists using recorded or rescored `val_loss` without relabeling historical study values.
+Retain Trial 22, all trials and temporal-kernel ablation, preserving direct output, valid temporal convolutions, full-history readout and historical objective. No new architecture/optimizer search. Geometry fits preserve the selected architecture where dimensionally possible and record required shape changes.
 
-Waveform checkpoint selection and architecture ranking minimize the same fixed joint Loss. MSE scores its 0.25 s Span; spectral supervision extends to one second. Never describe this aggregate as one-second waveform MSE. Aggregate Losses from pure-MSE, pure-STFT and joint arms are incomparable; rank their closed-loop comparisons using common Plant metrics and report common unweighted forecast diagnostics.
+### 4.3 Hankel-DMDc
 
-After each architecture search, rescore on common validation windows, shortlist the best three distinct configurations and fit each at all three confirmation seeds. Rank by arithmetic mean of the declared objective; report standard deviation and every individual value. Break exact ties by lower parameter count. Use the confirmed winning architecture for the family's optimizer search, then apply the same three-configuration, three-seed confirmation to its best optimizer candidates. Reuse a fit only if its effective seed, config, data, source and scoring protocol match exactly. Report limitations if fewer than three eligible configurations exist.
+Retain only the hop-3 grid for advancement: `n_y=[1,2,4,8]`, energy `[0.80,0.85,0.90,0.95,0.99,0.999,1.0]`, lambda `[0,1e-8,1e-6,1e-4,1e-2]`. Trial 89 is the recorded champion. Keep rank, conditioning and qualification evidence; no grid rerun, hop-finalist comparison or initialization replication is required.
 
-For CNNs confirm the top three rescored configurations from each imported architecture study, then run fresh optimizer searches. Replicated confirmation may select another configuration without invalidating the completed study. The small temporal-kernel ablation and memory-limited architecture trends are suggestive evidence, not established mechanisms or universal conclusions.
+### 4.4 Waveform MLP/CNN
 
-Require a saved `evaluate_control_horizon` report for every finalist using actual recorded future Control Currents and common held-out windows. Freeze the qualification manifest, stride, reference identity and scientific-threshold identity before screening. Retain prior gates: maximum amplitude-growth ratio at most 3.0 and terminal NMSE at most 1.25; undefined required metrics do not pass. Record the threshold calibration identity required by the evaluator and supporting held-out evidence. These are operational screening criteria, not proof of closed-loop stability. Planned/zero-input diagnostics alone never qualify a model. The Sweep runner does not automatically enforce these gates.
-
-Every initialization replicate must qualify before its configuration advances. Check current JAX/CasADi inference and derivative agreement, derivative construction cost, nonzero Control Current sensitivity and development solver behavior. Sensitivity magnitude is a diagnostic, not a reward to maximize. CNN report claims do not substitute for saved qualification evidence.
-
-Downstream tuning and final evaluation use the qualified seed-69 checkpoint of the aggregate-winning configuration. This fixes checkpoint identity without choosing the luckiest initialization. Report confirmation variance separately; ten-seed final Plant results characterize this frozen checkpoint, not all possible training initializations.
-
-## 4. Predictor Sweeps
-
-### 4.1 Observable MLP: joint capacity and history
-
-Freeze baseline geometry and residual prediction. Search dimensions jointly:
-
-| Parameter | Candidates |
-| --- | --- |
-| `model.n_y` | Integer 1–9 Frames |
-| `model.hidden_size` | `[128, 256, 512, 768, 1024]` |
-| `model.depth` | `[1, 2, 3]` |
-| `model.activation` | `[tanh, softplus]` |
-
-Keep `n_u=9` at baseline geometry. Cap the architecture search at one second of underlying EEG history: nine Frames contain 0.48 s between first and last endpoints and 0.98 s of EEG support, computed as `0.5 + (n_y - 1) * 0.06`. Ten Frames would exceed the cap. The old MLP Sweeps used one Frame (0.5 s of EEG support). Frame count, endpoint span, EEG support and future Control Horizon are different quantities.
-
-The MLP flattens history into its first dense layer. At 62 channels × 12 frequency bins, maximum history requires about 1.72 million first-layer weights at width 256 and 6.88 million at width 1024. These counts motivate pilots, not automatic exclusion. Retain the range unless pilots establish a limitation, then document it before the search.
-
-After architecture confirmation, optimize learning rate log-uniform `[1e-4, 3e-3]`, weight decay log-uniform `[1e-6, 1e-3]`, and batch size `[128, 256, 512]` on the frozen architecture. Confirm optimizer finalists under Section 3.2. Note: Investigate the residual connection (`model.residual`: `[true, false]`) for Observable MLP in subsequent ablations to evaluate direct vs. residual prediction on recursive rollout stability.
-
-### 4.2 Waveform MLP: joint capacity and history
-
-Use 100 Hz, `n_u=10`, and the frozen 1:15 joint Loss. Search jointly:
-
-| Parameter | Candidates |
-| --- | --- |
-| `model.n_y` | Integer 5–100 samples, approximately 0.05–1.0 s |
-| `model.hidden_size` | `[64, 128, 256]` |
-| `model.depth` | `[1, 2, 3]` |
-| `model.activation` | `[tanh, softplus]` |
-| `model.residual` | `[true, false]` |
-
-This caps the architecture search at one second of history, replacing fixed 150 ms history and the optional 250 ms extension. The maximum is about 6.7 times the old 15-sample history. At maximum history and width 256, the first layer has about 1.59 million weights for 62 EEG channels and three Control Current channels. Recursive training and controller derivatives still require pilots.
-
-After architecture confirmation, optimize learning rate log-uniform `[1e-4, 2e-3]` and weight decay log-uniform `[1e-6, 1e-3]`; keep the pilot-qualified batch size fixed. Confirm optimizer finalists under Section 3.2.
-
-### 4.3 CNN carryover and optimizer Sweeps
-
-Both CNN architecture studies are completed work under `cnn/{observable,waveform}/architecture/`. They use direct output, valid temporal convolutions, activation after every convolution, full-history flattening and optional hidden heads. Older newest-position checkpoints do not qualify under this runtime. Preserve complete studies, not only reported winning weights.
-
-The Observable search covered 5–17 Frames, 8–32 initial filters, depth 1–2, temporal kernel 3, frequency kernel `[1,3,5]`, tapering 0.5–1.0, tanh/softplus and hidden-head depth 0–1 with widths 32–744. The Waveform search covered 25–150 samples, 8–32 initial filters, depth 1–3, temporal kernels 3–9, the same tapering/activation/head-depth choices, and `trunk`/`geometric_mean` hidden widths. Original manifests define exact executed ranges and budgets.
-
-After common-window rescoring and three-seed confirmation, optimize learning rate log-uniform: Observable `[1e-4,3e-3]`, Waveform `[1e-4,2e-3]`; weight decay `[1e-6,1e-3]` log-uniform for both. Keep batch 512 unless a matched pilot requires a declared family-wide change. Confirm optimizer finalists under Section 3.2. No new CNN architecture study is planned.
-
-### 4.4 Hankel-DMDc: fresh fitting campaign
-
-Rerun DMDc. At each hop in `[3,5]`, fix Segment 25, band 1–25 Hz, Kernel width 1 and asymmetric Hann. Use the same 60 ms excitation recordings and split at both hops, so hop changes do not also change training excitation. Recompute `observable.min_past_controls()` and use that minimum as `n_u`; old nominal control-delay candidates below this minimum are invalid and removed.
-
-Evaluate the full Cartesian grid of `n_y=[1,2,4,8]`, energy cutoff `[0.80,0.85,0.90,0.95,0.99,0.999,1.0]`, and `dmd_lambda=[0,1e-8,1e-6,1e-4,1e-2]`: 140 fits per hop. Never set an explicit rank, which overrides energy truncation. Record retained rank and numerical conditioning; energy 1.0 does not establish good conditioning. Use the current DMDc Trainer and record its resolved preprocessing rather than imposing neural-specific scaling assumptions.
-
-Select within each geometry by common-window recursive validation MSE (`val_loss`) and qualification; retain `val_log_mse` as a diagnostic and compare hop finalists by development closed-loop scores. Deterministic fits need no initialization confirmation. Derive geometry-dependent references and calibrate DMDc effort independently.
+Use Trial 20 MLP and Trial 24 CNN from the completed searches at `artifacts/sweep_2026_10/waveform_mlp/` and `artifacts/sweep_2026_10/cnn/waveform/`. Snapshot the selected weights/config/provenance into each consuming experiment. Complete actual-horizon qualification, then use fixed checkpoints for timing studies. Fresh pure-MSE/STFT fits belong to Section 6.3.
 
 ## 5. Closed-loop protocol and selection
 
-Every development comparison uses all five development seeds; every final arm uses all ten final seeds. Runs last 12.0 s from the same Plant start, with paired noise seeds and initial conditions within each seed. Freeze regime, connectome, dynamics, leadfield, Field Projection, montage `[TP9, CP5, Ex8]`, Kirchhoff constraint, per-electrode limit 2 mA, any total-current/rate limits, solver tolerances, iteration limits and fallback policy in local snapshots. Record omitted limits explicitly.
+### 5.1 Independent timing quantities
 
-History and geometry affect Priming Steps. Use one common Warm-up Period per comparison, sufficient for every candidate Estimator and Predictor, and apply zero Control Current until then in all controlled arms. Freeze it from geometry/history requirements before execution. Report Seizure Burden and Delivered Charge over the full 12 s, plus post-Warm-up values. This avoids an unreported intervention-timing advantage for short histories. Use a common Warm-up Period across all final arms, including the threshold controller.
+| Arm/policy | Predictor / State Absorption | Replanning | Current updates |
+| --- | --- | --- | --- |
+| Observable MLP/CNN/DMDc | 60 ms | 60 ms | 60 ms |
+| Waveform native diagnostic | 10 ms | 10 ms | 10 ms |
+| Waveform distinct-current, primary | 10 ms | 60 ms | Six distinct planned 10 ms moves |
+| Waveform blocked ablation | 10 ms | 60 ms | One current per six-step block |
 
-Primary metric is Seizure Burden. Report Delivered Charge `integral ||u(t)||_1 dt` with explicit current/time units, final seizing-region count, PZ recruitment/containment, IPOPT success rate, fallback count, iteration count, and solve-time median/p95/max. Report end-to-end controller time separately from IPOPT time, construction/compilation separately from repeated decisions, and the fraction of decisions exceeding the controller period. State whether execution is simulated-time or wall-clock constrained; slow offline solves do not establish real-time feasibility.
+Record native step, replanning period, input block size, physical Control Horizon and phase separately. Keep Plant/sensor/filter rates unchanged. Absorb fresh Waveform measurements and the preceding actually applied current at every native tick. Advance plans/warm starts by consumed knots, not clock changes alone. Freeze fallback and feed actual fallback currents into subsequent history. Blocking constrains every future block, not only the executed first block.
 
-Use this frozen advancement rule throughout development:
+For common lookahead use `B=ceil(T_requested/0.06)`, handling exact integer-grid boundaries without floating-point overshoot; `H_observable=B`, `H_waveform=6*B`, `T_actual=0.06*B`. Nominal one second means 17 Frames or 102 Waveform samples, both 1.02 s. Native-rate Waveform diagnostics use that same duration. Preserve native-grid Cost normalization and terminal treatment; fewer solves do not justify scaling weights by six.
 
-1. Require offline qualification, all five Plant runs completed, and finite constraint-respecting applied Control Currents. A failed Plant run makes the arm ineligible; preserve partial evidence and its failure reason.
-2. Keep solver failures in results. A run completed using the declared fallback remains in its arm; report actual suppression, charge and solver success. Never average only successful solves or remove difficult seeds.
-3. Report the nondominated set in mean Seizure Burden and mean Delivered Charge, weighting Plant seeds equally. Advance the eligible candidate with smallest mean Seizure Burden; break exact ties by lower mean charge, higher solver success rate, then lower p95 solve time. Never invent a weighted burden/charge score after seeing results.
-4. Backbone screening advances the best two by the same ordered rule. Preserve every candidate's results, including dominated candidates. Charge-saving alternatives remain visible even when they are not the suppression-first champion.
+Distinct-current versus Observable compares complete formulations at common feedback cadence, retaining finer Waveform actuation. Blocked versus distinct-current isolates actuation freedom within a fixed checkpoint. A target-focused comparison with matched admissible currents additionally uses blocking, common physical horizon and aligned spectral Cost/reference semantics. Data and Estimator-latency differences remain limitations.
 
-Report means, standard deviations, individual seed values and paired differences against uncontrolled and threshold baselines. The final comparison adds 95% paired-bootstrap intervals for mean differences, resampling the ten Plant seeds together across arms. Training windows and solver decisions are not independent evaluation replicates. Uncertainty with ten seeds remains limited; avoid post hoc significance claims from repeated comparisons.
+### 5.2 Shared setup and measurements
 
-## 6. Controller experiments
+Use all five development seeds per arm, 12 s runs and paired initial conditions/noise. Freeze Plant regime/connectome, Leadfield, Field Projection, montage `[TP9,CP5,Ex8]`, Kirchhoff, 2 mA/electrode, any total-current/slew limits, solver settings and fallback. Report omitted limits and express rate bounds in physical units.
 
-### 6.1 Effort calibration for every selected Predictor
+Use one common Warm-up Period per comparison, sufficient for every Estimator/Predictor and released on a shared 60 ms boundary; all controlled arms, including threshold, emit zero until then. Report full-run and post-Warm-up Burden/Charge. Reused runs must match intervention timing, scoring and effective settings; otherwise use them as screening evidence and run the matched comparison.
 
-Start Observable controllers at `w_hinge=10`, `w_u=1`, `w_u_l1=0`; start Waveform controllers at `w_y=1`, `w_hinge=1000`, `w_u=10`, `w_u_l1=0`. The historical Waveform output-gradient calibration supplies only the initial tracking/hinge ratio; Observable Costs have different units and sensitivities.
+Report Burden, actual-current Delivered Charge `integral ||u(t)||_1 dt` in mAs, final seizing regions, PZ recruitment/containment, solve failures/fallbacks, success and iterations. Compute solve statistics only from actual attempts; playback is neither a successful solve nor a zero-time solve. Report latency median/p95/max, solves and controller time per simulated second, total simulation runtime and separate construction/compilation. Compare end-to-end deadlines with replanning period. Offline simulated-time execution does not establish real-time feasibility; wall-clock execution needs a declared delay/fallback policy.
 
-For every selected Predictor, compare effort multipliers `[0.1,0.3,1,3,10,30,100]` relative to its initial `w_u`, with state Cost fixed. Use five development seeds, report the suppression–charge frontier and select by Section 5. Recalibrate after selecting a changed Predictor/checkpoint or Cost; within controlled geometry or Loss–Cost ablations, hold calibrated effort fixed instead.
+### 5.3 Charge-target advancement
 
-Retain the previous optional sparse-effort comparison: after quadratic calibration, compare `w_u_l1=[0,0.01,0.1]` with the selected quadratic weight and state Cost fixed. Declare whether this extension is included before execution; the main campaign uses `w_u_l1=0`. Archived L1 results remain historical evidence, not current operating points.
+1. Require qualification, all five Plant runs completed, and finite constraint-respecting applied currents. Preserve failures/partial evidence. A completed fallback run remains in its arm.
+2. An eligible operating point has **mean full-run Delivered Charge in [20,30] mAs**, equally weighting development seeds. This is an operating target, not a clinical safety assertion or a per-seed current constraint. Report every seed and the complete Burden/Charge frontier, including out-of-target points.
+3. Within the target, minimize mean Burden; break exact ties by lower mean charge, higher solve success and lower p95 time. If none qualifies, refine calibration on development seeds; do not silently select an out-of-target winner.
+4. Fixed-weight ablations keep all declared arms and label target attainment. Recalibrate the selected final checkpoint/Cost/policy separately; do not tune each arm and call the result a fixed-weight comparison.
 
-### 6.2 Observable geometry for MLP and CNN
+Report means, standard deviations, individual seeds and paired differences. Final intervals resample the ten Plant seeds together across arms; windows and solver decisions are not independent replicates. Report final outcomes even if they leave the development charge target; do not retune or exclude based on reserved results.
 
-Run the sequence independently for the selected Observable MLP and CNN. Freeze architecture, optimizer, schedule and calibrated controller Cost weights. Screen geometries with fresh seed-69 fits, qualifying each before paired Plant comparisons. Confirm the final geometry and original baseline at all three matched training seeds. Reuse exact repeated candidates rather than duplicate baselines.
+## 6. Development studies
 
-1. **Backbone:** Segment `[25,50]` × hop `[3,5]` at 50 Hz; band 1–25 Hz, Kernel width 1, asymmetric Hann. Keep the top two backbones.
-2. **Band:** On both retained backbones compare `[0,25]`, `[1,25]`, `[3,12]` Hz; advance one backbone/band pair.
-3. **Frame Kernel:** On that pair compare linear widths `[1,4,7]`.
-4. **Taper:** Compare asymmetric and symmetric Hann on the selected configuration.
-5. **Confirmation:** Compare final geometry directly with the original baseline using identical fixed settings and all five development seeds. Report initialization variability and seed-level Plant outcomes; the staged search does not exhaust interactions.
+### 6.1 Timing and effort
 
-Preserve approximately the architecture-selected Frame endpoint history duration when changing hop: `n_y = max(1, 1 + round(D / dt))`, where `D=(original_n_y-1)*original_dt`. Record actual endpoint duration and total EEG support, including the Segment and Frame Kernel; Segment and smoothing changes intentionally alter support. Recompute minimum `n_u`, standardizers, checkpoints, references and controller artifacts. Keep excitation recordings and splits fixed across geometries.
+For each Waveform family compare the three policies using one checkpoint, physical horizon, common Warm-up Period and fixed weights. Use five development seeds and a matched Observable baseline. Preserve out-of-target outcomes in this policy ablation; measure suppression, Charge and runtime without assuming sixfold speedup. Both 60 ms policies are explicit arms; native 10 ms is a diagnostic.
 
-Nominal Control Horizon is one second: `H=ceil(1.0/dt)`, giving 17 steps/1.02 s at 60 ms or 10 steps/1.00 s at 100 ms. Qualify offline Rollouts to those actual durations. Segment length, bin spacing, hop and smoothing delay are distinct; report them separately. Recruitment detection latency requires a frozen source-space recruitment definition and sensor-space detection rule; it does not override the advancement rule.
+Calibrate the two 60 ms policies independently afterward. Start Waveform at `w_y=1,w_hinge=1000,w_u=10,w_u_l1=0`; effort multipliers `[0.1,0.3,1,3,10,30,100]`. Observable baseline uses `w_hinge=10,w_u_l1=0`; executed effort weights `[0.1,0.3,1,3,10,30,100]`. Refine where the target lacks coverage and declare added grids before execution. MLP refinement starts with `w_u=[0.4,0.5,0.6,0.8]` between existing bracketing points; CNN's provisional baseline is 0.3. Retain DMDc's horizon-specific calibrated evidence.
+
+Recalibrate after selected checkpoint/Cost/horizon/policy changes where needed. Hold weights fixed within ablations and report tuned points separately. Optional L1 work must be declared before execution; primary settings retain `w_u_l1=0` unless a documented development decision changes it. Historical DMDc L1 results remain evidence.
+
+### 6.2 Observable geometry, fixed hop 3
+
+Run MLP/CNN independently. Keep 50 Hz/hop 3 and architecture-selected Frame endpoint history. Recompute `n_u` support, standardizers, references/checkpoints after geometry changes. Segment/Kernel intentionally change EEG support. Freeze data/splits and optimizer/schedule; fresh fits use effective seed 69.
+
+1. **Segment:** preserve existing 25/50 screening. Reconfirm both at the same target-calibrated effort per family and common Warm-up Period. Advance one eligible backbone under Section 5.3; if neither meets target, refine the family's common effort before confirmation.
+2. **Band:** `[0,25]`, `[1,25]`, `[3,12]` Hz on the retained backbone.
+3. **Frame Kernel:** linear widths `[1,4,7]` on selected backbone/band.
+4. **Taper:** asymmetric versus symmetric Hann.
+5. **Confirmation:** final geometry versus baseline on all five development seeds at effective training seed 69 and declared fixed weights; independently recalibrate the selected final operating point. Three-seed confirmation stays descoped.
+
+Report Segment support, bin spacing, hop, smoothing latency and history separately. The staged search does not exhaust interactions. Use H=17 / 1.02 s until horizon selection.
 
 ### 6.3 Waveform Loss–Cost alignment
 
-Run this comparison for each selected Waveform family, freezing architecture, history, optimizer and schedule. Fit pure curriculum MSE, pure STFT, and joint 1:15 configurations at all three confirmation seeds. Use the declared active Loss for eligible checkpoint selection; qualify with common unweighted diagnostics. Use each seed-69 checkpoint for Plant runs and report validation variability across initializations.
+Freeze family architecture/history, optimizer/schedule, dataset and execution policy. Fit pure MSE, pure STFT and joint 1:15 at effective seed 69; select using each declared eligible Loss and qualify using common diagnostics. Use distinct-current 60 ms execution for primary A–E; investigate blocking on selected checkpoint/Cost separately rather than implicitly adding a full factorial.
 
-Calibrate effort once on that family's joint-Loss checkpoint under combined Cost, then hold it fixed across these arms:
+Calibrate effort on the joint checkpoint/combined Cost, then hold it fixed:
 
 | Arm | Training Loss | MPC Cost |
 | --- | --- | --- |
-| A | Pure MSE, weight 1 | Voltage tracking, `w_y=1`, hinge off |
-| B | Pure STFT, weight 15 | Spectral hinge, `w_hinge=1000`, tracking off |
-| C | Joint 1:15 | Voltage tracking only |
-| D | Joint 1:15 | Spectral hinge only |
-| E | Joint 1:15 | Combined tracking + hinge |
+| A | MSE, weight 1 | Tracking, `w_y=1`, hinge off |
+| B | STFT, weight 15 | Hinge, `w_hinge=1000`, tracking off |
+| C | Joint 1:15 | Tracking only |
+| D | Joint 1:15 | Hinge only |
+| E | Joint 1:15 | Combined tracking/hinge |
 
-The joint checkpoint is shared across C–E. This retains the old controlled fixed-effort comparison under current Loss units. Changes in total Cost scale relative to effort are part of this comparison, not proof of an intrinsically superior objective. Before final family benchmarking, recalibrate effort for the selected checkpoint/Cost and report the tuned operating point separately from this ablation.
+C–E share the joint checkpoint. Changes in state-Cost scale relative to effort are part of this comparison. Rank with common Plant outcomes, then recalibrate selected final points. Spectral target comparisons must align physical Segment support, band, taper, smoothing, reference semantics and normalization; wording alone does not make objectives equal.
 
 ### 6.4 Terminal weighting and Control Horizon
 
-On each selected controller compare terminal multipliers `[1,2,5,10]` for the active state penalty. For combined Waveform Cost, screen tracking and hinge terminal multipliers separately with the other fixed at 1, then confirm the proposed combination against uniform weighting. Keep effort fixed within this comparison.
+Compare terminal multipliers `[1,2,5,10]` for selected neural controllers, effort fixed. For combined Waveform Cost, screen tracking and hinge multipliers separately, then confirm any combination. Reuse completed DMDc candidates and target selection where the effective setup passes audit.
 
-Next compare requested Control Horizons `[0.6,0.8,1.0,1.2,1.5]` s with `H=ceil(T/dt)`; record `H*dt` and deduplicate identical resolved horizons. First evaluate Predictor error and qualification over every actual horizon, including 1.2/1.5 s extrapolation beyond the one-second training Rollout. Never assume one-second qualification transfers. Rank eligible controllers using development outcomes and report solve cost and deadline misses.
+| Requested horizon (s) | Actual (s) | Observable H | Waveform H |
+| --- | --- | --- | --- |
+| 0.6 | 0.60 | 10 | 60 |
+| 0.8 | 0.84 | 14 | 84 |
+| 1.0 | 1.02 | 17 | 102 |
+| 1.2 | 1.20 | 20 | 120 |
+| 1.5 | 1.50 | 25 | 150 |
 
-If the selected horizon changes the state/effort balance, repeat the same effort grid once on development seeds, freeze the operating point and report the sequential tuning dependency. No final-seed feedback enters these decisions.
+Qualify every actual duration, including extrapolation. Report deadline misses and Burden/Charge/runtime. Distinguish common-horizon controlled comparisons from independently tuned final controller-system comparisons. If horizon selection changes the operating point, recalibrate once on development seeds, then freeze. DMDc's historical H=10 point is a candidate, not a horizon imposed on other families.
 
-## 7. Final comparison and execution order
+## 7. Final benchmark and execution order
 
-Qualification and pilots precede broad fitting. MLP capacity/history searches and DMDc fitting can proceed while CNN finalists are rescored and confirmed, subject to resource limits. Architecture confirmation precedes optimizer selection and confirmation. Controller work starts only on qualified selected Predictors; each family's development experiments may proceed while another family trains.
+Prepare and verify timing separation, qualify the actual Control Horizons and complete the five-seed timing study before broad Waveform controller comparisons. Observable calibration and geometry studies can proceed independently. Complete Loss–Cost, terminal/horizon and final effort choices on development seeds only.
 
-After geometry/Loss–Cost selection, terminal weighting, Control Horizon and final development effort calibration, freeze the final manifest with seven arms:
+The primary final manifest has seven arms: uncontrolled, threshold, Observable MLP, Observable CNN, Observable DMDc, distinct-current Waveform MLP and distinct-current Waveform CNN. All Predictors replan at 60 ms. Threshold shares Plant, montage, Control Budget and common Warm-up Period; tune heuristic settings on development seeds only.
 
-1. Uncontrolled Plant.
-2. Threshold stimulation with the same Plant, montage, Control Budget and common Warm-up Period; tune any heuristic settings on development seeds only.
-3. Observable MLP.
-4. Observable CNN.
-5. Observable Hankel-DMDc.
-6. Waveform MLP.
-7. Waveform CNN.
+Run 70 × 12 s simulations on all ten reserved seeds. Blocking is a required development ablation; adding both blocked controllers to final evaluation means 90 runs and must be declared before reserved outcomes. Substituting a primary policy also requires a development-only amendment before final evaluation.
 
-Run 7 × 10 = 70 final Plant simulations, each 12 s, with the explicit final seed list. Record execution order before observing results; measure timing with consistent hardware contention. Report every arm even if a final run fails. Partial paired summaries identify missing pairs and never replace the planned ten-seed comparison.
-
-Before launch verify seed separation; local config/checkpoint/reference hashes; common Warm-up Period and scoring manifest; saved qualification reports at selected Control Horizons; three-seed confirmation records; frozen effort and solver fallback; baseline parity; and archive relocation records. This strategy and archival do not claim experiments have executed: their reports must record that evidence separately.
+Freeze run/scoring manifests, execution order, checkpoint/config/reference hashes, effective fit seeds, actual horizons, Warm-up Period, charge-target selection, qualification, source/dependencies and fallback. Keep timing contention consistent. Preserve every arm/failure; partial paired summaries identify missing pairs and never replace the planned benchmark. Package results and reproducibility records with each experiment.
