@@ -22,7 +22,7 @@ _NDIM_3D = 3
 def load_roast_3d_field_projection(
     path: str | Path,
 ) -> tuple[FloatArray, StrArray, StrArray, FloatArray]:
-    """Load a 3D ROAST electric field projection NPZ file: electrode current (mA) -> E-field (V/m) per region.
+    """Load the canonical ``projection_E`` and metadata from a 3D ROAST NPZ file.
 
     Returns
     -------
@@ -45,16 +45,7 @@ def load_roast_3d_field_projection(
         raise FileNotFoundError(msg)
 
     with np.load(p) as data:
-        if "projection_E" in data:
-            projection_E = np.asarray(data["projection_E"], dtype=np.float64)
-        elif "leadfield_E" in data:
-            projection_E = np.asarray(data["leadfield_E"], dtype=np.float64)
-        elif "leadfield_3d" in data:  # TODO: delete fallback for legacy 'leadfield_3d' key soon
-            projection_E = np.asarray(data["leadfield_3d"], dtype=np.float64)
-        else:
-            msg = f"NPZ file at {p} carries neither 'projection_E', 'leadfield_E' nor legacy 'leadfield_3d'"
-            raise KeyError(msg)
-
+        projection_E = np.asarray(data["projection_E"], dtype=np.float64)
         channel_labels = np.asarray(data["channel_labels"], dtype=np.str_)
         region_labels = np.asarray(data["region_labels"], dtype=np.str_)
         if "region_normals" not in data:

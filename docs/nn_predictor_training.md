@@ -837,6 +837,8 @@ PNGs.
 ### 8.6 JAX training and inference
 
 Training, evaluation, and MPC use JAX and share the Equinox Predictor classes.
+The gradient Trainer consumes `TrajectoryWindowDataset` windows and configured Loss
+objects with an explicit `LossContext` for physical output units.
 Portable NPZ checkpoints contain metadata, NumPy weights, and standardizers; they
 can be loaded without the legacy framework. The frozen reference tests in
 `tests/test_predictor_migration.py` pin outputs, losses, gradients, and an AdamW

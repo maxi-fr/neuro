@@ -68,11 +68,8 @@ all trials finish, so the run is not done when the last file appears.
   ```
 
   It would not change the depth conclusion — no scalp montage exceeds ~0.2 V/m at mesial temporal
-  — but it would allow a real montage *search* rather than accepting the given three. It also
-  emits **`leadfield_V`**, which `yu_dynamic` requires and the current NPZ lacks; that is probably
-  the stronger reason to run it.
+  — but it would allow a real montage *search* rather than accepting the given three.
 - **The plant's `stimulation` default** is `_Roast3DConfig` (the canonical 3-electrode montage
   `[TP9, CP5, Ex8]` with `data/roast_field_projection_3d.npz`).
 - **Duty cycle.** The working threshold policy runs at 95 %, not the 20 % of the `analytical` era.
-  That is inherent to a propagation block without lasting effects; implementing Yu §2.4 is what
-  would change it.
+  That is inherent to a propagation block without lasting effects.

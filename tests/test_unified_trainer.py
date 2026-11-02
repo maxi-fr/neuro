@@ -5,9 +5,7 @@ from __future__ import annotations
 import json
 from typing import TYPE_CHECKING
 
-import equinox as eqx
 import jax
-import jax.numpy as jnp
 import numpy as np
 import pytest
 
@@ -22,7 +20,10 @@ from neuro.config import (
     StftSpec,
     TrainingConfig,
 )
+from neuro.predictor.cnn import WaveformCNNModel
+from neuro.predictor.data import TrajectoryWindowDataset
 from neuro.predictor.gradient import fit_gradient_descent
+from neuro.predictor.losses import CurriculumMSE, LossContext
 from neuro.predictor.mlp import ObservableMLPModel, WaveformMLPModel
 from neuro.predictor.ridge import RidgeTrainingResult
 from neuro.predictor.train import TrainingResult, train
@@ -137,89 +138,43 @@ def test_waveform_save_round_trips_weights_standardizers_and_metadata(tmp_path: 
     assert loaded.provenance == result.predictor.provenance
 
 
-class _TinyNet(eqx.Module):
-    """A plain two-layer MLP, deliberately not one of the repo's modules."""
-
-    w1: jax.Array
-    b1: jax.Array
-    w2: jax.Array
-    b2: jax.Array
-
-    def __init__(self, n_in: int, n_out: int, key: jax.Array) -> None:
-        """Build a two-layer MLP."""
-        k1, k2 = jax.random.split(key)
-        bound1 = 1.0 / np.sqrt(n_in)
-        self.w1 = jax.random.uniform(k1, (n_in, 8), minval=-bound1, maxval=bound1)
-        self.b1 = jnp.zeros(8)
-        bound2 = 1.0 / np.sqrt(8)
-        self.w2 = jax.random.uniform(k2, (8, n_out), minval=-bound2, maxval=bound2)
-        self.b2 = jnp.zeros(n_out)
-
-    def __call__(self, x: jax.Array) -> jax.Array:
-        """Map ``(B, n_in)`` to ``(B, n_out)``."""
-        h = jax.nn.relu(x @ self.w1 + self.b1)
-        return h @ self.w2 + self.b2
-
-
-def test_gradient_descent_serves_any_module() -> None:
-    """The shared fit regresses a foreign module: the loss descends and stays finite."""
+@pytest.mark.parametrize("architecture", ["mlp", "cnn"])
+def test_gradient_descent_fits_predictor(architecture: str) -> None:
+    """Fit causal Control Current responses through real windows and the configured MSE Loss."""
     rng = np.random.default_rng(_SEED + 1)
-    n_in, n_out, n_samples = 4, 2, 256
-    x = rng.standard_normal((n_samples, n_in)).astype(np.float32)
-    w = rng.standard_normal((n_in, n_out)).astype(np.float32)
-    y = x @ w + 0.05 * rng.standard_normal((n_samples, n_out)).astype(np.float32)
-    cfg = TrainingConfig.model_validate(
-        {
-            "epochs": 20,
-            "batch_size": 32,
-            "learning_rate": 1e-2,
-            "weight_decay": 0.0,
-            "patience": 50,
-            "eval_horizon_s": 0.1,
-            "seed": _SEED,
-        }
+    u = rng.standard_normal((256, 1))
+    y = np.zeros_like(u)
+    for step in range(len(u) - 1):
+        y[step + 1] = 0.8 * y[step] + 0.3 * u[step]
+    cls = WaveformMLPModel if architecture == "mlp" else WaveformCNNModel
+    model = cls(
+        n_y=3,
+        n_u=2,
+        horizon=3,
+        n_channels=1,
+        n_controls=1,
+        n_outputs=1,
+        hidden_size=4,
+        depth=1,
+        activation="tanh",
+        residual=False,
+        key=jax.random.PRNGKey(_SEED),
     )
-
-    def mse(
-        model: _TinyNet,
-        y_hist: jax.Array,
-        u_hist: jax.Array,
-        u_future: jax.Array,
-        y_target: jax.Array,
-        epoch: int | None,
-    ) -> tuple[jax.Array, dict[str, float]]:
-        del u_hist, u_future, epoch
-        return jnp.mean((model(y_hist) - y_target) ** 2), {}
-
-    dummy_u = np.zeros((n_samples, 1), dtype=np.float32)
-    train_batches = [
-        (
-            x[i : i + cfg.batch_size],
-            dummy_u[i : i + cfg.batch_size],
-            dummy_u[i : i + cfg.batch_size],
-            y[i : i + cfg.batch_size],
-        )
-        for i in range(0, 200, cfg.batch_size)
-    ]
-    val_batches = [
-        (
-            x[i : i + cfg.batch_size],
-            dummy_u[i : i + cfg.batch_size],
-            dummy_u[i : i + cfg.batch_size],
-            y[i : i + cfg.batch_size],
-        )
-        for i in range(200, n_samples, cfg.batch_size)
-    ]
-
-    key = jax.random.PRNGKey(_SEED)
-    model = _TinyNet(n_in, n_out, key)
-    fit = fit_gradient_descent(model, train_batches, val_batches, cfg, seed=_SEED, loss_fn=mse)
-    train_losses, val_losses = fit.train_losses, fit.val_losses
-
-    assert len(train_losses) == len(val_losses) == 20
-    assert train_losses[-1] < train_losses[0]
-    assert val_losses[-1] < val_losses[0]
-    assert all(np.isfinite(value) for value in train_losses + val_losses)
+    train_data = TrajectoryWindowDataset([(u[:200], y[:200])], n_y=3, n_u=2, horizon=3)
+    val_data = TrajectoryWindowDataset([(u[200:], y[200:])], n_y=3, n_u=2, horizon=3)
+    fit = fit_gradient_descent(
+        model,
+        train_data,
+        val_data,
+        TrainingConfig(epochs=20, batch_size=32, learning_rate=1e-2, weight_decay=0.0, patience=50, eval_horizon_s=0.1),
+        seed=_SEED,
+        losses=[CurriculumMSE(1.0, 3, 0, 0, 0)],
+        ctx=LossContext(model.y_center, model.y_scale, 1000.0),
+    )
+    assert len(fit.train_losses) == len(fit.val_losses) == 20
+    assert fit.train_losses[-1] < fit.train_losses[0]
+    assert fit.val_losses[-1] < fit.val_losses[0]
+    assert all(np.isfinite(value) for value in fit.train_losses + fit.val_losses)
 
 
 def test_ridge_fit_on_depth2_mlp_fails_at_build_time(tmp_path: Path) -> None:

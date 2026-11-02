@@ -188,7 +188,7 @@ class PlantPair:
 
 
 def build_plants(config_path: Path = PLANT_CONFIG) -> PlantPair:
-    """Build the healthy and seizure plants from one config's ``dynamics`` block.
+    """Build paired Plants from a seizure regime or explicit regional numeric gains.
 
     Raises
     ------
@@ -204,7 +204,7 @@ def build_plants(config_path: Path = PLANT_CONFIG) -> PlantPair:
     conn = Connectome.from_config(dynamics_cfg["connectome"])
 
     expected = build_seizure_a_gains(conn)
-    is_seizure = dynamics_cfg.get("regime") == "seizure" or dynamics_cfg.get("params", {}).get("A") == "seizure"
+    is_seizure = dynamics_cfg.get("regime") == "seizure"
     has_matching_a = (
         "params" in dynamics_cfg
         and "A" in dynamics_cfg["params"]

@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+from dataclasses import replace
+from unittest.mock import Mock
+
 import numpy as np
 import pytest
+from pydantic import ValidationError
 from simulate.estimator import IdentityEstimator
 from simulate.reference import StepReference
 from simulate.sensor import GaussianSensor, full_state_measurement
@@ -18,6 +22,7 @@ from neuro.jansen_rit import (
     simulate_network,
 )
 from neuro.stimulation import StimulationModel
+from neuro.stimulation.null import NullStim
 
 _DT = 1e-4
 _N_REGIONS_TVB = 76
@@ -123,6 +128,51 @@ def test_dynamics_from_config_builds_network() -> None:
     out = np.asarray(out)
     assert out.shape == (_STATE_DIM, _N_REGIONS_TVB)
     assert np.isfinite(out).all()
+
+
+@pytest.mark.parametrize("regime", ["healthy", "seizure"])
+def test_params_config_accepts_numeric_gains_only(regime: str) -> None:
+    """Regime shorthands belong to Plant construction rather than numeric parameter parsing."""
+    with pytest.raises(ValidationError):
+        JansenRitParams.from_config({"A": regime})
+
+
+@pytest.mark.parametrize("regime", ["healthy", "seizure"])
+def test_regime_matches_numeric_gains_on_selected_connectome(regime: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Resolve gains in the selected region order and preserve the fixed-seed Plant Rollout."""
+    labels = np.asarray(["r0", "lHC", "lTCV", "lAMYG", "lTCI", "lPHC", "r1"])
+    conn = replace(
+        _toy_connectome(len(labels)),
+        region_labels=labels,
+        region_index={str(label): index for index, label in enumerate(labels)},
+    )
+    loader = Mock(return_value=conn)
+    monkeypatch.setattr(Connectome, "from_config", loader)
+    config = {
+        "regime": regime,
+        "seed": 42,
+        "dt": _DT,
+        "initial_state": "zeros",
+        "connectome": {"speed": 37.0, "K": 0.41},
+        "stimulation": {"model": "none"},
+        "params": {"sigma": 12.0},
+    }
+    actual = JansenRitDynamics.from_config(config)
+    loader.assert_called_once_with(config["connectome"])
+    expected_gains = (
+        np.full(len(labels), 3.25) if regime == "healthy" else np.asarray([3.25, 3.6, 3.4, 3.6, 3.4, 3.6, 3.25])
+    )
+    np.testing.assert_array_equal(actual.net_params.A, expected_gains)
+    expected = JansenRitDynamics(
+        dt=_DT,
+        params=JansenRitParams(A=expected_gains, sigma=12.0),
+        conn=conn,
+        stim=NullStim(len(labels)),
+        seed=42,
+    )
+    _, actual_states = simulate_network(dyn=actual, duration=0.002)
+    _, expected_states = simulate_network(dyn=expected, duration=0.002)
+    np.testing.assert_array_equal(actual_states, expected_states)
 
 
 class _ZeroStim(StimulationModel):

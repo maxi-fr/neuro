@@ -692,16 +692,24 @@ def test_resolve_simulation_config_sensors_shorthands() -> None:
         resolve_simulation_config({"sensors": "unknown"})
 
 
-def test_resolve_simulation_config_dynamics_regimes() -> None:
-    """resolve_simulation_config expands healthy and seizure dynamics regimes."""
+def test_resolve_simulation_config_dynamics_regimes(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Regime normalization retains defaults and defers regional gains until Plant construction."""
+
+    def unexpected_connectome_load(config: dict[str, object]) -> Connectome:
+        """Reject eager Connectome loads during configuration normalization."""
+        pytest.fail(f"Configuration normalization loaded the Connectome: {config}")
+
+    monkeypatch.setattr(Connectome, "from_config", unexpected_connectome_load)
     cfg_h = resolve_simulation_config({"dynamics": {"regime": "healthy"}})
     assert cfg_h["dynamics"]["class_path"] == "neuro.jansen_rit.JansenRitDynamics"
-    assert cfg_h["dynamics"]["params"]["A"] == 3.25
+    assert cfg_h["dynamics"]["regime"] == "healthy"
+    assert "A" not in cfg_h["dynamics"]["params"]
     assert cfg_h["dynamics"]["params"]["sigma"] == 280.0
     assert cfg_h["dynamics"]["connectome"] == {"speed": 50.0, "K": 0.60}
 
     cfg_s = resolve_simulation_config({"dynamics": {"regime": "seizure"}})
-    assert len(cfg_s["dynamics"]["params"]["A"]) == 76
+    assert cfg_s["dynamics"]["regime"] == "seizure"
+    assert "A" not in cfg_s["dynamics"]["params"]
     assert cfg_s["dynamics"]["params"]["sigma"] == 280.0
 
     with pytest.raises(ValueError, match="Unknown dynamics regime"):

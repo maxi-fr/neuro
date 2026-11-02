@@ -234,12 +234,6 @@ class AutoregressiveModel(DiscreteDynamics, InferencePredictor):
         else:
             super().__setattr__(name, value)
 
-    def with_provenance(self, provenance: TrainingProvenance, downsample: int) -> Self:
-        """Return an updated model with recorded provenance and downsample factor."""
-        object.__setattr__(self, "provenance", provenance)
-        object.__setattr__(self, "downsample", int(downsample))
-        return self
-
     @property
     def y_std(self) -> Standardizer:
         """Reconstruct the output Standardizer in waveform or channel-by-frequency shape."""
@@ -307,15 +301,6 @@ class AutoregressiveModel(DiscreteDynamics, InferencePredictor):
         if (len(args) >= 1 and hasattr(args[0], "X")) or "trajectory" in kwargs:
             return super().rollout(*args, **kwargs)
         return self.rollout_standardized(*args, **kwargs)
-
-    def forward(
-        self,
-        y_hist: jax.Array,
-        u_hist: jax.Array,
-        u_future: jax.Array,
-    ) -> jax.Array:
-        """Forward pass alias for batched standardized rollout."""
-        return self.rollout_standardized(y_hist, u_hist, u_future)
 
     def __call__(
         self,

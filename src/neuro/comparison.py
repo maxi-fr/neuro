@@ -305,19 +305,6 @@ def cost_metrics(logger: BaseLogger) -> dict[str, Any]:
     return res
 
 
-def format_cost_report(metrics: dict[str, Any]) -> str:
-    """Format cost contribution breakdown and normalization convention for evaluation reporting."""
-    lines = [
-        "Cost Contributions:",
-        f"  Spectral cost:         {metrics.get('cost_spectral_mean', float('nan')):.6f}",
-        f"  Quadratic effort cost: {metrics.get('cost_quadratic_effort_mean', float('nan')):.6f}",
-        f"  Sparse effort cost:    {metrics.get('cost_sparse_effort_mean', float('nan')):.6f}",
-        f"  Tracking cost:         {metrics.get('cost_tracking_mean', float('nan')):.6f}",
-        f"  Normalization:         {metrics.get('cost_normalization', 'unknown')}",
-    ]
-    return "\n".join(lines)
-
-
 def score_run(
     config: dict[str, Any], u_max: float, *, threshold: float = SEIZURE_PTP_MV, output_dir: Path | None = None
 ) -> dict[str, Any]:

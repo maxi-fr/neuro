@@ -26,7 +26,7 @@ _SEED = 42
 
 
 def test_ood_index_fit_and_query() -> None:
-    """OODIndex computes K-NN distances, global distances, and calibrated percentiles."""
+    """OODIndex separates outliers using K-NN distances and calibrated percentiles."""
     rng = np.random.default_rng(_SEED)
     ref = rng.standard_normal((100, 10))
     cal = rng.standard_normal((50, 10))
@@ -49,11 +49,6 @@ def test_ood_index_fit_and_query() -> None:
     q_out = index.percentiles(d_out)
     assert np.all((q_id >= 0.0) & (q_id <= 1.0))
     assert q_out[0] == 1.0
-
-    # Global standardized distance
-    g_id = index.global_distances(id_query)
-    g_out = index.global_distances(outlier)
-    assert g_out[0] > np.max(g_id)
 
 
 def test_extract_state_action_pairs_shapes() -> None:

@@ -12,12 +12,12 @@ from neuro.connectome import Connectome
 from neuro.eeg import build_eeg_leadfield
 from neuro.geometry import EXTRACEPHALIC_ELECTRODES_MM, centres_to_mni_ras, sensor_positions_mm
 from neuro.jansen_rit import JansenRitDynamics, JansenRitParams
-from neuro.stimulation import AnalyticalStim, DynamicYuStim, NullStim, Roast3DStim, build_stimulation
+from neuro.stimulation import AnalyticalStim, NullStim, Roast3DStim, build_stimulation
 from neuro.stimulation.base import StimulationConfig
 from neuro.stimulation.roast_io import convert_roast_field_projection_to_npz
 
 if TYPE_CHECKING:
-    from neuro.types import StrArray
+    from neuro.types import FloatArray, StrArray
 
 _N_REGIONS = 76
 _SHIPPED_FIELD_PROJECTION = Path("data/roast_field_projection_3d.npz")
@@ -196,10 +196,8 @@ def test_zero_current_short_circuits(connectome: Connectome) -> None:
 # --------------------------------------------------------------------------------------
 
 
-def _write_field_projection_npz(
-    path: Path, region_labels: StrArray, *, normals_zero: bool = False, legacy_key: bool = False
-) -> None:
-    """Write a synthetic ROAST field projection NPZ over the given region ordering."""
+def _write_field_projection_npz(path: Path, region_labels: StrArray, *, normals_zero: bool = False) -> None:
+    """Write canonical ``projection_E`` and metadata over the given region ordering."""
     rng = np.random.default_rng(999)
     n_nodes = len(region_labels)
     normals = np.zeros((n_nodes, 3)) if normals_zero else rng.standard_normal((n_nodes, 3))
@@ -208,13 +206,7 @@ def _write_field_projection_npz(
     lf_data = rng.standard_normal((63, n_nodes, 3))
     ch_labels = np.array(["TP9", "CP5"] + [f"C{i}" for i in range(60)] + ["Ex8"], dtype=str)
     r_labels = np.asarray(region_labels, dtype=str)
-    if legacy_key:
-        np.savez(path, leadfield_3d=lf_data, channel_labels=ch_labels, region_labels=r_labels, region_normals=normals)
-    else:
-        np.savez(path, leadfield_E=lf_data, channel_labels=ch_labels, region_labels=r_labels, region_normals=normals)
-
-
-_write_leadfield_npz = _write_field_projection_npz
+    np.savez(path, projection_E=lf_data, channel_labels=ch_labels, region_labels=r_labels, region_normals=normals)
 
 
 def test_roast_3d_defaults_to_canonical_montage(connectome: Connectome, tmp_path: Path) -> None:
@@ -228,7 +220,7 @@ def test_roast_3d_defaults_to_canonical_montage(connectome: Connectome, tmp_path
 
 
 def test_roast_3d_reduces_along_the_cortical_normal(connectome: Connectome, tmp_path: Path) -> None:
-    """The drive is ``lambda * (E . n)`` on the superposed field, checked against the raw file.
+    """Canonical electric fields produce ``lambda * (E . n)`` on the superposed montage.
 
     Precomputing ``lambda * (E_k . n)`` per electrode is only legitimate because the dot product
     commutes with the superposition over electrodes; this pins the identity down against the
@@ -243,20 +235,11 @@ def test_roast_3d_reduces_along_the_cortical_normal(connectome: Connectome, tmp_
     u = np.zeros(63)
     u[0], u[5], u[-1] = 1.0, 2.0, -3.0
     with np.load(npz) as raw:
-        leadfield = raw["leadfield_E"] if "leadfield_E" in raw else raw["leadfield_3d"]
+        projection = raw["projection_E"]
         normals = raw["region_normals"]
-    e_node = np.tensordot(u, leadfield, axes=(0, 0))
+    e_node = np.tensordot(u, projection, axes=(0, 0))
     expected = Roast3DStim.polarization_length_mm * (e_node * normals).sum(axis=1)
     np.testing.assert_allclose(stim.project(u), expected)
-
-
-def test_roast_3d_loads_legacy_leadfield_3d_key(connectome: Connectome, tmp_path: Path) -> None:
-    """Legacy leadfield_3d NPZ files must load gracefully via the fallback path."""
-    npz = tmp_path / "legacy.npz"
-    _write_field_projection_npz(npz, connectome.region_labels, legacy_key=True)
-    stim = _build({"model": "roast_3d", "field_projection_path": str(npz), "electrodes": None}, connectome)
-    assert isinstance(stim, Roast3DStim)
-    assert stim.n_controls == 63
 
 
 def test_roast_3d_projection_is_linear_and_signed(connectome: Connectome, tmp_path: Path) -> None:
@@ -362,23 +345,18 @@ def _write_cellstr(mat: h5py.File, group: h5py.Group, name: str, strings: list[s
 
 def _write_fake_roast_mat(
     path: Path,
-    projection_e: np.ndarray,
+    projection_e: FloatArray,
     channel_labels: list[str],
     roast_labels: list[str],
     region_labels: list[str],
-    region_normals: np.ndarray,
+    region_normals: FloatArray,
     *,
     normals_frame: str = "mni_ras",
-    projection_v: np.ndarray | None = None,
-    legacy_key: bool = False,
 ) -> None:
-    """Write a v7.3-style MAT file mimicking generate_roast_field_projection_3d.m's output layout."""
+    """Write canonical electric fields and metadata in MATLAB v7.3 layout."""
     with h5py.File(path, "w") as mat:
         # MATLAB writes arrays transposed relative to their numpy shape.
-        key = "leadfield_3d" if legacy_key else "projection_E"
-        mat.create_dataset(key, data=projection_e.transpose(2, 1, 0))
-        if projection_v is not None:
-            mat.create_dataset("projection_V", data=projection_v.T)
+        mat.create_dataset("projection_E", data=projection_e.transpose(2, 1, 0))
         meta = mat.create_group("metadata")
         _write_cellstr(mat, meta, "channelLabels", channel_labels)
         _write_cellstr(mat, meta, "roastLabels", roast_labels)
@@ -388,12 +366,10 @@ def _write_fake_roast_mat(
 
 
 def test_converter_recovers_v73_metadata(tmp_path: Path) -> None:
-    """The .m saves -v7.3, so the HDF5 path must decode labels rather than silently dropping them."""
+    """Convert MATLAB v7.3 electric fields and metadata without changing their numeric values."""
     rng = np.random.default_rng(7)
     projection_e = rng.standard_normal((5, 4, 3))
     projection_e[-1] = 0.0  # return row is the zero reference
-    projection_v = rng.standard_normal((5, 4))
-    projection_v[-1] = 0.0
     normals = rng.standard_normal((4, 3))
     channels = ["CP5", "TP9", "TP10", "Fz", "Ex8"]
     roast = ["CP5", "TPP9", "TPP10", "Fz", "Ex8"]
@@ -401,35 +377,16 @@ def test_converter_recovers_v73_metadata(tmp_path: Path) -> None:
 
     mat_path = tmp_path / "roast_field_projection_3d.mat"
     npz_path = tmp_path / "roast_field_projection_3d.npz"
-    _write_fake_roast_mat(mat_path, projection_e, channels, roast, regions, normals, projection_v=projection_v)
+    _write_fake_roast_mat(mat_path, projection_e, channels, roast, regions, normals)
 
     convert_roast_field_projection_to_npz(mat_path, npz_path)
 
     with np.load(npz_path) as out:
         np.testing.assert_allclose(out["projection_E"], projection_e)
-        np.testing.assert_allclose(out["projection_V"], projection_v)
         np.testing.assert_allclose(out["region_normals"], normals)
         assert list(out["channel_labels"]) == channels
         assert list(out["roast_labels"]) == roast
         assert list(out["region_labels"]) == regions
-
-
-def test_converter_supports_legacy_leadfield_3d_mat_key(tmp_path: Path) -> None:
-    """MAT files carrying the legacy leadfield_3d key must convert properly."""
-    rng = np.random.default_rng(123)
-    projection_e = rng.standard_normal((3, 2, 3))
-    projection_e[-1] = 0.0
-    normals = rng.standard_normal((2, 3))
-    mat_path = tmp_path / "legacy_roast.mat"
-    npz_path = tmp_path / "legacy_roast.npz"
-    _write_fake_roast_mat(
-        mat_path, projection_e, ["C1", "C2", "Ex8"], ["C1", "C2", "Ex8"], ["r1", "r2"], normals, legacy_key=True
-    )
-
-    convert_roast_field_projection_to_npz(mat_path, npz_path)
-
-    with np.load(npz_path) as out:
-        np.testing.assert_allclose(out["projection_E"], projection_e)
 
 
 def test_converter_rejects_connectome_frame_normals(tmp_path: Path) -> None:
@@ -452,112 +409,3 @@ def test_converter_rejects_nonzero_return_row(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="return row"):
         convert_roast_field_projection_to_npz(mat_path, tmp_path / "out.npz")
-
-
-# --------------------------------------------------------------------------------------
-# yu_dynamic
-# --------------------------------------------------------------------------------------
-
-
-def _write_dynamic_field_projection_npz(
-    path: Path, region_labels: StrArray, *, include_v: bool = True, legacy_key: bool = False
-) -> None:
-    """Write a synthetic ROAST field projection NPZ carrying projection_E (or leadfield_3d) and projection_V."""
-    rng = np.random.default_rng(42)
-    n_nodes = len(region_labels)
-    normals = rng.standard_normal((n_nodes, 3))
-    normals /= np.linalg.norm(normals, axis=1, keepdims=True)
-    lf_data = rng.standard_normal((63, n_nodes, 3))
-    v_data = rng.standard_normal((63, n_nodes))
-    ch_labels = np.array(["TP9", "CP5"] + [f"C{i}" for i in range(60)] + ["Ex8"], dtype=str)
-    r_labels = np.asarray(region_labels, dtype=str)
-
-    if legacy_key:
-        if include_v:
-            np.savez(
-                path,
-                leadfield_3d=lf_data,
-                leadfield_V=v_data,
-                channel_labels=ch_labels,
-                region_labels=r_labels,
-                region_normals=normals,
-            )
-        else:
-            np.savez(
-                path,
-                leadfield_3d=lf_data,
-                channel_labels=ch_labels,
-                region_labels=r_labels,
-                region_normals=normals,
-            )
-    elif include_v:
-        np.savez(
-            path,
-            projection_E=lf_data,
-            projection_V=v_data,
-            channel_labels=ch_labels,
-            region_labels=r_labels,
-            region_normals=normals,
-        )
-    else:
-        np.savez(
-            path,
-            projection_E=lf_data,
-            channel_labels=ch_labels,
-            region_labels=r_labels,
-            region_normals=normals,
-        )
-
-
-def test_dynamic_yu_defaults_to_canonical_montage(connectome: Connectome, tmp_path: Path) -> None:
-    """Without electrodes specified, DynamicYuStim defaults to [TP9, CP5, Ex8]."""
-    npz = tmp_path / "lf_dynamic.npz"
-    _write_dynamic_field_projection_npz(npz, connectome.region_labels)
-
-    stim = _build({"model": "yu_dynamic", "field_projection_path": str(npz)}, connectome)
-    assert isinstance(stim, DynamicYuStim)
-    assert stim.n_controls == 3
-    assert list(stim.control_labels) == ["TP9", "CP5", "Ex8"]
-
-
-def test_dynamic_yu_stim_project(connectome: Connectome, tmp_path: Path) -> None:
-    """DynamicYuStim projects currents using vector E-field magnitude and smooth voltage polarity."""
-    npz = tmp_path / "lf_dynamic.npz"
-    _write_dynamic_field_projection_npz(npz, connectome.region_labels)
-
-    stim = _build(
-        {"model": "yu_dynamic", "field_projection_path": str(npz), "alpha": 4.0, "electrodes": None}, connectome
-    )
-    assert isinstance(stim, DynamicYuStim)
-    assert stim.n_controls == 63
-    assert stim.alpha == 4.0
-
-    u = np.zeros(63)
-    u[0], u[-1] = 1.0, -1.0
-    drive = stim.project(u)
-    assert drive.shape == (_N_REGIONS,)
-    assert np.isfinite(drive).all()
-
-    # Scaling input current scales field magnitude linearly
-    u2 = 2.0 * u
-    drive2 = stim.project(u2)
-    assert not np.allclose(drive2, drive)
-
-
-def test_dynamic_yu_loads_legacy_leadfield_3d_key(connectome: Connectome, tmp_path: Path) -> None:
-    """DynamicYuStim must load legacy leadfield_3d NPZ files gracefully."""
-    npz = tmp_path / "lf_dynamic_legacy.npz"
-    _write_dynamic_field_projection_npz(npz, connectome.region_labels, legacy_key=True)
-
-    stim = _build({"model": "yu_dynamic", "field_projection_path": str(npz), "electrodes": None}, connectome)
-    assert isinstance(stim, DynamicYuStim)
-    assert stim.n_controls == 63
-
-
-def test_dynamic_yu_rejects_missing_projection_v(connectome: Connectome, tmp_path: Path) -> None:
-    """Loading a field projection without projection_V must fail with a clear error."""
-    npz = tmp_path / "lf_no_v.npz"
-    _write_dynamic_field_projection_npz(npz, connectome.region_labels, include_v=False)
-
-    with pytest.raises(ValueError, match="does not carry 'projection_V'"):
-        _build({"model": "yu_dynamic", "field_projection_path": str(npz)}, connectome)

@@ -5,27 +5,18 @@ from typing import TYPE_CHECKING, Any
 from neuro.predictor.base import (
     AutoregressiveModel,
     InferencePredictor,
-    _apply_activation,
-    _standardizer_arrays,
 )
 from neuro.predictor.cnn import (
     ObservableCNNModel,
     WaveformCNNModel,
 )
-from neuro.predictor.cnn import (
-    _CNNBase as _CNNModel,
-)
 from neuro.predictor.mlp import (
     ObservableMLPModel,
     WaveformMLPModel,
-    _mlp,
 )
 
 if TYPE_CHECKING:
     from neuro.types import FloatArray
-
-ShiftRegisterModel = AutoregressiveModel
-_MLPModel = WaveformMLPModel
 
 
 def inference_from_checkpoint(
@@ -49,13 +40,7 @@ __all__ = [
     "InferencePredictor",
     "ObservableCNNModel",
     "ObservableMLPModel",
-    "ShiftRegisterModel",
     "WaveformCNNModel",
     "WaveformMLPModel",
-    "_CNNModel",
-    "_MLPModel",
-    "_apply_activation",
-    "_mlp",
-    "_standardizer_arrays",
     "inference_from_checkpoint",
 ]

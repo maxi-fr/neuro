@@ -141,14 +141,13 @@ dynamics:
     electrodes: [TP9, CP5, EX8]   # omit for all 63 rows in the file
 ```
 
-The models are `none`, `analytical` (Coulomb point source, `electrodes` + `spread`),
-`roast_3d` (above) and `yu_dynamic` (`field_projection_path` + `electrodes` + `alpha`); each rejects the others' keys rather
-than ignoring them. `electrodes` selects and orders the montage on every model, so swapping
+The models are `none`, `analytical` (Coulomb point source, `electrodes` + `spread`), and
+`roast_3d` (above); each rejects the others' keys rather than ignoring them.
+`electrodes` selects and orders the montage on the active stimulation models, so swapping
 `model:` swaps the physics while holding the control problem fixed.
 
 The control vector is the per-electrode current over `stim.control_labels`, and must sum to zero.
-For `roast_3d` the last row is the `Ex8` return the leadfield is referenced to; for `yu_dynamic`
-dynamic vector superposition of electric fields ($L_E u$) and potentials ($L_V u$) is calculated inside `project(u)`.
+For `roast_3d` the last row is the `Ex8` return the Field Projection is referenced to.
 
 The leadfield holds the field in V/m per +1 mA at each channel, so $\mathbf{E} \cdot \hat{\mathbf{n}}$
 comes out in V/m -- that is mV/mm, and `Roast3DStim.polarization_length_mm` ($\lambda$ = 0.35 mm, the
@@ -168,9 +167,9 @@ $$\Bigl(\sum_k u_k \mathbf{E}_k\Bigr) \cdot \hat{\mathbf{n}} = \sum_k u_k (\math
 `(n_controls, n_nodes)` matrix at build time -- the same object as the analytical model's
 $\gamma$ -- and `project` is a single `u @ gamma`. The 3-vectors never reach the hot loop.
 
-File-backed models (`roast_3d`, `yu_dynamic`) assert their stored `region_labels` match the
-connectome's node order element-by-element, and `roast_3d` requires the region normals to come
-from its own leadfield file -- the leadfield and the normals it is reduced against are one
+The file-backed `roast_3d` model asserts its stored `region_labels` match the
+Connectome's node order element-by-element and requires the region normals to come
+from its own Field Projection file -- the Field Projection and the normals it is reduced against are one
 artefact from one MATLAB run sharing one MNI RAS frame.
 
 ---

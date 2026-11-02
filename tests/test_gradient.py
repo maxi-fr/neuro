@@ -10,6 +10,7 @@ import pytest
 from neuro.config import EegMsGeometry, TrainingConfig
 from neuro.predictor import gradient
 from neuro.predictor.cnn import WaveformCNNModel
+from neuro.predictor.data import TrajectoryWindowDataset
 from neuro.predictor.losses import CurriculumMSE, EegMsLoss, LossContext, total_loss
 from neuro.predictor.mlp import WaveformMLPModel
 
@@ -42,13 +43,21 @@ def _model(architecture: str = "mlp") -> AutoregressiveModel:
     )
 
 
-def _batch() -> tuple[jax.Array, jax.Array, jax.Array, jax.Array]:
-    """Return a batch with three EEG history samples and a three-step target."""
-    return (jnp.ones((2, 3, 1)), jnp.ones((2, 2, 1)), jnp.ones((2, 3, 1)), jnp.zeros((2, 3, 1)))
+def _dataset(n_windows: int = 2) -> TrajectoryWindowDataset:
+    """Build standardized continuous data with three history samples and three-step targets."""
+    n_steps = n_windows + 5
+    y = np.zeros((n_steps, 1))
+    y[:3] = 1.0
+    return TrajectoryWindowDataset([(np.ones((n_steps, 1)), y)], n_y=3, n_u=2, horizon=3)
+
+
+def _context() -> LossContext:
+    """Use the tiny Predictor's physical output scaling for configured Losses."""
+    return LossContext(jnp.array([2.0]), jnp.array([3.0]), 1000.0)
 
 
 def test_training_time_projection_stops_after_three_epochs(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Abort a projected over-budget fit after three epochs without actually waiting seven hours."""
+    """Abort a window-based fit after three epochs when it projects beyond seven hours."""
     clock = iter([0.0, 0.0, 10.0, 10.0, 210.0, 210.0, 410.0])
     monkeypatch.setattr(gradient, "perf_counter", lambda: next(clock))
     cfg = TrainingConfig(epochs=150, max_training_hours=7.0, eval_horizon_s=0.1)
@@ -56,10 +65,11 @@ def test_training_time_projection_stops_after_three_epochs(monkeypatch: pytest.M
     with pytest.raises(gradient.TrainingTimeLimitError) as caught:
         gradient.fit_gradient_descent(
             _model(),
-            [_batch()],
-            [_batch()],
+            _dataset(),
+            _dataset(),
             cfg,
             seed=1,
+            ctx=_context(),
             losses=[CurriculumMSE(1.0, 3, 0, 0, 0)],
             eligibility_start=80,
         )
@@ -71,31 +81,33 @@ def test_training_time_projection_stops_after_three_epochs(monkeypatch: pytest.M
 
 
 def test_training_time_projection_excludes_first_epoch_rate(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A slow compilation epoch does not inflate the projected steady training rate."""
+    """Exclude compilation time when projecting the remaining window-based fit duration."""
     clock = iter([0.0, 0.0, 20000.0, 20000.0, 20010.0, 20010.0, 20020.0, 20020.0, 20030.0])
     monkeypatch.setattr(gradient, "perf_counter", lambda: next(clock))
     fit = gradient.fit_gradient_descent(
         _model(),
-        [_batch()],
-        [_batch()],
+        _dataset(),
+        _dataset(),
         TrainingConfig(epochs=4, max_training_hours=7.0, eval_horizon_s=0.1),
         seed=1,
+        ctx=_context(),
         losses=[CurriculumMSE(1.0, 3, 0, 0, 0)],
     )
     assert len(fit.train_losses) == 4
 
 
 def test_training_time_projection_rechecks_after_initial_probe(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A fit that slows after its first three epochs is pruned on the next timing check."""
+    """Recheck the duration limit when window-based training slows after the initial probe."""
     clock = iter([0.0, 0.0, 10.0, 10.0, 20.0, 20.0, 30.0, 30.0, 430.0])
     monkeypatch.setattr(gradient, "perf_counter", lambda: next(clock))
     with pytest.raises(gradient.TrainingTimeLimitError) as caught:
         gradient.fit_gradient_descent(
             _model(),
-            [_batch()],
-            [_batch()],
+            _dataset(),
+            _dataset(),
             TrainingConfig(epochs=150, max_training_hours=7.0, eval_horizon_s=0.1),
             seed=1,
+            ctx=_context(),
             losses=[CurriculumMSE(1.0, 3, 0, 0, 0)],
             eligibility_start=80,
         )
@@ -104,32 +116,20 @@ def test_training_time_projection_rechecks_after_initial_probe(monkeypatch: pyte
 
 
 @pytest.mark.parametrize("architecture", ["mlp", "cnn"])
-@pytest.mark.parametrize("custom", [False, True])
-def test_weight_decay_preserves_standardizers(architecture: str, *, custom: bool) -> None:
+def test_weight_decay_preserves_standardizers(architecture: str) -> None:
+    """Train each supported architecture while retaining its fixed Standardizer buffers."""
     model = _model(architecture)
     names = ("y_center", "y_scale", "u_center", "u_scale")
     before = [np.asarray(getattr(model, name)).copy() for name in names]
 
-    def mse(
-        mod: AutoregressiveModel,
-        y: jax.Array,
-        uh: jax.Array,
-        uf: jax.Array,
-        target: jax.Array,
-        epoch: int | None,
-    ) -> tuple[jax.Array, dict[str, jax.Array]]:
-        """Score the Predictor using the custom Loss entry point."""
-        del epoch
-        return jnp.mean((mod.rollout(y, uh, uf) - target) ** 2), {}
-
     fit = gradient.fit_gradient_descent(
         model,
-        [_batch()],
-        [_batch()],
+        _dataset(),
+        _dataset(),
         TrainingConfig(epochs=2, learning_rate=0.05, weight_decay=0.2, eval_horizon_s=0.1),
         seed=1,
+        ctx=_context(),
         losses=[CurriculumMSE(1.0, 3, 0, 0, 0)],
-        loss_fn=mse if custom else None,
     )
     for name, expected in zip(names, before, strict=True):
         np.testing.assert_array_equal(np.asarray(getattr(fit.best_model, name)), expected)
@@ -141,6 +141,7 @@ def test_weight_decay_preserves_standardizers(architecture: str, *, custom: bool
 
 
 def test_curriculum_and_delayed_loss_do_not_retrace(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Train real windows without retracing curriculum or delayed Loss activation."""
     traces = []
     original = gradient.total_loss
 
@@ -164,12 +165,12 @@ def test_curriculum_and_delayed_loss_do_not_retrace(monkeypatch: pytest.MonkeyPa
     ]
     fit = gradient.fit_gradient_descent(
         _model(),
-        [_batch()],
-        [_batch()],
+        _dataset(),
+        _dataset(),
         TrainingConfig(epochs=5, patience=10, eval_horizon_s=0.1),
         seed=1,
+        ctx=_context(),
         losses=losses,
-        ctx=LossContext(jnp.array([2.0]), jnp.array([3.0]), 1000.0),
     )
     assert traces.count(True) == 1
     assert fit.train_components["eeg_ms"][:2] == [None, None]
@@ -178,7 +179,8 @@ def test_curriculum_and_delayed_loss_do_not_retrace(monkeypatch: pytest.MonkeyPa
     assert fit.train_components["L"][-1] == 3
 
 
-def test_prebatched_schedule_counts_every_update(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_window_dataset_schedule_counts_every_update(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Count all minibatch updates when building the warm-up and cosine schedules."""
     budgets = []
     original = gradient.lr_schedule
 
@@ -190,10 +192,11 @@ def test_prebatched_schedule_counts_every_update(monkeypatch: pytest.MonkeyPatch
     monkeypatch.setattr(gradient, "lr_schedule", record)
     gradient.fit_gradient_descent(
         _model(),
-        [_batch()] * 7,
-        [_batch()],
-        TrainingConfig(epochs=3, warmup_epochs=1, batch_size=32, patience=10, eval_horizon_s=0.1),
+        _dataset(14),
+        _dataset(),
+        TrainingConfig(epochs=3, warmup_epochs=1, batch_size=2, patience=10, eval_horizon_s=0.1),
         seed=1,
+        ctx=_context(),
         losses=[CurriculumMSE(1.0, 3, 0, 0, 0)],
     )
     assert budgets == [(7, 21)]

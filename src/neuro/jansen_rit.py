@@ -10,7 +10,7 @@ from pydantic import Field
 from simulate.component import NoLog
 from simulate.dynamics import Dynamics
 
-from neuro.config import StrictConfig, parse_array
+from neuro.config import StrictConfig
 from neuro.connectome import Connectome, _ConnectomeConfig
 from neuro.stimulation import NullStim, StimulationConfig, build_stimulation
 from neuro.stimulation.base import _Roast3DConfig
@@ -23,7 +23,7 @@ if TYPE_CHECKING:
 class _JansenRitParamsConfig(StrictConfig):
     """Config schema for :meth:`JansenRitParams.from_config` (the biophysical scalars)."""
 
-    A: float | list[float] | str = 3.25
+    A: float | list[float] = 3.25
     B: float = 22.0
     a: float = 100.0
     b: float = 50.0
@@ -118,19 +118,10 @@ class JansenRitParams:
 
     @classmethod
     def from_config(cls, config: dict[str, Any]) -> JansenRitParams:
-        """Build :class:`JansenRitParams` from a strictly-validated config dict."""
+        """Build numeric biophysical parameters from a strictly validated configuration."""
         kwargs = _JansenRitParamsConfig.model_validate(config).model_dump()
-        a = parse_array(kwargs["A"])
-        if a == "healthy":
-            kwargs["A"] = 3.25
-        elif a == "seizure":
-            from neuro.connectome import Connectome  # noqa: PLC0415 -- breaks circular import
-            from neuro.seizure import build_seizure_a_gains  # noqa: PLC0415 -- breaks circular import
-
-            conn = Connectome.from_config({"speed": 50.0, "K": 0.60})
-            kwargs["A"] = build_seizure_a_gains(conn)
-        else:
-            kwargs["A"] = np.asarray(a, dtype=np.float64) if isinstance(a, (list, tuple, np.ndarray)) else float(a)
+        if isinstance(kwargs["A"], list):
+            kwargs["A"] = np.asarray(kwargs["A"], dtype=np.float64)
         return cls(**kwargs)
 
 
@@ -392,7 +383,7 @@ class JansenRitDynamics(Dynamics[JansenRitStateLog | JansenRitLFPLog | NoLog]):
 
     @classmethod
     def from_config(cls, config: dict[str, Any]) -> Self:
-        """Instantiate the plant from a raw config dict."""
+        """Build the Plant and resolve regional regime gains against its selected Connectome."""
         cfg_dict = dict(config)
         regime = cfg_dict.get("regime")
         if regime is not None:
@@ -413,18 +404,14 @@ class JansenRitDynamics(Dynamics[JansenRitStateLog | JansenRitLFPLog | NoLog]):
         conn = Connectome.from_config(cfg.connectome.model_dump())
 
         params_data = cfg.params.model_dump()
-        if cfg.regime == "healthy" or params_data.get("A") == "healthy":
-            from neuro.seizure import A_HEALTHY  # noqa: PLC0415 -- breaks circular import with neuro.seizure
-
-            params = JansenRitParams.from_config({**params_data, "A": A_HEALTHY})
-        elif cfg.regime == "seizure" or params_data.get("A") == "seizure":
+        if cfg.regime is not None:
             from neuro.seizure import (  # noqa: PLC0415 -- breaks circular import with neuro.seizure
+                A_HEALTHY,
                 build_seizure_a_gains,
             )
 
-            params = JansenRitParams.from_config({**params_data, "A": build_seizure_a_gains(conn)})
-        else:
-            params = JansenRitParams.from_config(params_data)
+            params_data["A"] = A_HEALTHY if cfg.regime == "healthy" else build_seizure_a_gains(conn)
+        params = JansenRitParams.from_config(params_data)
 
         return cls(
             dt=cfg.dt,

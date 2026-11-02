@@ -42,11 +42,6 @@ def build_seizure_a_gains(connectome: Connectome) -> FloatArray:
     return a_gains
 
 
-def ez_pz_indices(connectome: Connectome) -> list[int]:
-    """Return the region indices of the EZ then PZ regions."""
-    return [connectome.region_index[name] for name in (*EZ_REGIONS, *PZ_REGIONS)]
-
-
 @dataclass(frozen=True)
 class SpreadProfile:
     """When each region is recruited into the seizure, and how loudly it rings.
@@ -110,11 +105,6 @@ class SpreadProfile:
         seizing = self.seizing()
         return np.count_nonzero(seizing if nodes is None else seizing[nodes], axis=0)
 
-    def recruited_by(self, t: float, nodes: npt.NDArray[np.bool_] | list[int] | None = None) -> int:
-        """Count the regions whose onset is at or before time ``t`` (s)."""
-        onsets = self.onsets if nodes is None else self.onsets[nodes]
-        return int(np.count_nonzero(onsets <= t))
-
     def seizure_state(self) -> FloatArray:
         """Fraction of regions seizing in each window, in ``[0, 1]``, shape ``(n_windows,)``.
 
@@ -175,40 +165,6 @@ def spread_profile_from_lfp(
     ptp = np.stack([np.ptp(y[:, s : s + window], axis=1) for s in starts], axis=1)
     times = np.asarray([(s + window) * dt - window_s / 2.0 for s in starts], dtype=np.float64)
     return SpreadProfile.from_ptp(times, ptp, threshold=threshold)
-
-
-def spread_profile_from_states(
-    x_traj: FloatArray,
-    dt: float,
-    *,
-    window_s: float = SPREAD_WINDOW_S,
-    hop_s: float = SPREAD_HOP_S,
-    threshold: float = SEIZURE_PTP_MV,
-) -> SpreadProfile:
-    """Measure when each region starts seizing from a logged state trajectory.
-
-    Parameters
-    ----------
-    x_traj
-        State trajectory, shape ``(n_samples, 6, n_nodes)`` -- the step axis first, as
-        ``simulate``'s logger stores it.
-    dt
-        Sampling interval of ``x_traj`` in seconds.
-    window_s
-        Length of the amplitude window in seconds.
-    hop_s
-        Spacing between consecutive windows in seconds.
-    threshold
-        Peak-to-peak amplitude in mV above which a region counts as seizing.
-
-    Returns
-    -------
-    SpreadProfile
-        Window times, the per-region amplitude envelope, and the onset times.
-    """
-    # lfp is elementwise, so the whole trajectory reduces to region LFP in one pass.
-    y = lfp(np.moveaxis(x_traj, 0, -1))
-    return spread_profile_from_lfp(y, dt, window_s=window_s, hop_s=hop_s, threshold=threshold)
 
 
 def spread_profile(

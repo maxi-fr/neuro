@@ -15,6 +15,7 @@ def _():
 
     from neuro.connectome import Connectome
     from neuro.jansen_rit import JansenRitDynamics, JansenRitParams, lfp, simulate_network
+    from neuro.seizure import build_seizure_a_gains
     from neuro.stimulation.montage_optimization import (
         SelectedMontageStim,
         build_target_field,
@@ -27,6 +28,7 @@ def _():
         JansenRitDynamics,
         JansenRitParams,
         SelectedMontageStim,
+        build_seizure_a_gains,
         build_target_field,
         lfp,
         load_field_projection_matrix,
@@ -274,6 +276,7 @@ def _(
     JansenRitDynamics,
     JansenRitParams,
     SelectedMontageStim,
+    build_seizure_a_gains,
     candidates,
     connectome,
     l_stim,
@@ -294,7 +297,7 @@ def _(
         _dt = 0.001
         _t_end = 3.0
 
-        _params = JansenRitParams.from_config({"A": "seizure"})
+        _params = JansenRitParams(A=build_seizure_a_gains(connectome))
         _dyn_uncontrolled = JansenRitDynamics(dt=_dt, params=_params, conn=connectome, seed=42)
         _t_vec, _x_uncontrolled = simulate_network(dyn=_dyn_uncontrolled, duration=_t_end)
         _lfp_uncontrolled = lfp(_x_uncontrolled)

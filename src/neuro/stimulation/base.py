@@ -83,16 +83,6 @@ class _Roast3DConfig(StrictConfig):
     electrodes: list[str] | None = Field(default_factory=lambda: list(_DEFAULT_ROAST_ELECTRODES))
 
 
-class _DynamicYuConfig(StrictConfig):
-    """Dynamic Yu stimulation model: ||L_E u|| * smooth_sign(L_V u - V_med)."""
-
-    model: Literal["yu_dynamic"] = "yu_dynamic"
-    field_projection_path: str | Path = "data/roast_field_projection_3d.npz"
-    electrodes: list[str] | None = Field(default_factory=lambda: list(_DEFAULT_ROAST_ELECTRODES))
-    alpha: float = Field(default=3.0, gt=0.0)
-    scale_factor: float = Field(default=1.0, gt=0.0)
-
-
 def _stim_discriminator(v: Any) -> str:  # noqa: ANN401 -- pydantic discriminator receives raw input
     """Extract model discriminator tag, defaulting to roast_3d when omitted."""
     if isinstance(v, dict):
@@ -103,7 +93,6 @@ def _stim_discriminator(v: Any) -> str:  # noqa: ANN401 -- pydantic discriminato
 StimulationConfig = Annotated[
     Annotated[_Roast3DConfig, Tag("roast_3d")]
     | Annotated[_NullConfig, Tag("none")]
-    | Annotated[_AnalyticalConfig, Tag("analytical")]
-    | Annotated[_DynamicYuConfig, Tag("yu_dynamic")],
+    | Annotated[_AnalyticalConfig, Tag("analytical")],
     Discriminator(_stim_discriminator),
 ]

@@ -4,7 +4,7 @@ import collections
 import copy
 from dataclasses import dataclass
 from time import perf_counter
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 import equinox as eqx
 import jax
@@ -43,8 +43,8 @@ class TrainingTimeLimitError(RuntimeError):
 
 
 @dataclass(frozen=True)
-class GradientFitResult[ModelT: eqx.Module]:
-    """Outcomes and curves from fitting an Equinox model with gradient descent."""
+class GradientFitResult[ModelT: AutoregressiveModel]:
+    """Outcomes and curves from fitting an autoregressive Predictor with gradient descent."""
 
     best_model: ModelT
     train_losses: list[float]
@@ -71,20 +71,19 @@ def lr_schedule(
     )
 
 
-def fit_gradient_descent[ModelT: eqx.Module](  # noqa: PLR0913, PLR0912, PLR0915, C901 -- complex training loop with validation and loss terms
+def fit_gradient_descent[ModelT: AutoregressiveModel](  # noqa: PLR0913, PLR0912, PLR0915, C901 -- complex training loop with validation and loss terms
     model: ModelT,
-    train_dataset: TrajectoryWindowDataset | Sequence[Any],
-    val_dataset: TrajectoryWindowDataset | Sequence[Any],
+    train_dataset: TrajectoryWindowDataset,
+    val_dataset: TrajectoryWindowDataset,
     cfg: TrainingConfig,
     *,
     seed: int,
-    losses: Sequence[Loss] = (),
-    ctx: LossContext | None = None,
+    losses: Sequence[Loss],
+    ctx: LossContext,
     desc: str = "Training",
     eligibility_start: int = 0,
-    loss_fn: Callable[..., Any] | None = None,
 ) -> GradientFitResult[ModelT]:
-    """Fit masked Losses and stop when completed epochs project an over-budget training duration."""
+    """Fit a Predictor on trajectory windows with configured Losses, checkpoint eligibility and timing limits."""
     training_started = perf_counter() if cfg.max_training_hours is not None else 0.0
     epoch_durations: list[float] = []
     if cfg.epochs <= eligibility_start:
@@ -94,15 +93,8 @@ def fit_gradient_descent[ModelT: eqx.Module](  # noqa: PLR0913, PLR0912, PLR0915
         )
         raise ValueError(msg)
 
-    if ctx is None:
-        ctx = LossContext(y_center=jnp.zeros(1), y_scale=jnp.ones(1), fs=1000.0)
-
     n_train = len(train_dataset)
-    steps_per_epoch = (
-        max(1, (n_train + cfg.batch_size - 1) // cfg.batch_size)
-        if isinstance(train_dataset, TrajectoryWindowDataset)
-        else max(1, n_train)
-    )
+    steps_per_epoch = max(1, (n_train + cfg.batch_size - 1) // cfg.batch_size)
     total_steps = max(steps_per_epoch * cfg.epochs, 1)
     warmup_steps = min(steps_per_epoch * cfg.warmup_epochs, total_steps - 1)
 
@@ -113,15 +105,14 @@ def fit_gradient_descent[ModelT: eqx.Module](  # noqa: PLR0913, PLR0912, PLR0915
     )
     optimizer = optax.adamw(learning_rate=schedule, weight_decay=cfg.weight_decay)
     parameter_filter = jax.tree.map(eqx.is_inexact_array, model)
-    if isinstance(model, AutoregressiveModel):
-        parameter_filter = eqx.tree_at(
-            lambda m: (m.y_center, m.y_scale, m.u_center, m.u_scale),
-            parameter_filter,
-            (False, False, False, False),
-        )
+    parameter_filter = eqx.tree_at(
+        lambda m: (m.y_center, m.y_scale, m.u_center, m.u_scale),
+        parameter_filter,
+        (False, False, False, False),
+    )
     opt_state = optimizer.init(eqx.filter(model, parameter_filter))
 
-    horizon = getattr(model, "horizon", 1)
+    horizon = model.horizon
     curr_mse = next((loss for loss in losses if isinstance(loss, CurriculumMSE)), None)
 
     def optimizer_step(
@@ -129,7 +120,7 @@ def fit_gradient_descent[ModelT: eqx.Module](  # noqa: PLR0913, PLR0912, PLR0915
         opt_s: optax.OptState,
         compute: Callable[[ModelT], tuple[jax.Array, dict[str, float | None]]],
     ) -> tuple[ModelT, optax.OptState, jax.Array, dict[str, float | None]]:
-        """Differentiate and update trainable leaves while preserving all fixed model state."""
+        """Update Predictor parameters while retaining fixed Standardizers."""
         params, fixed = eqx.partition(m, parameter_filter)
 
         def objective(p: ModelT) -> tuple[jax.Array, dict[str, float | None]]:
@@ -137,9 +128,8 @@ def fit_gradient_descent[ModelT: eqx.Module](  # noqa: PLR0913, PLR0912, PLR0915
             return compute(eqx.combine(p, fixed))
 
         (loss, parts), grads = eqx.filter_value_and_grad(objective, has_aux=True)(params)
-        if any(eqx.is_array(x) for x in jax.tree.leaves(params)):
-            updates, opt_s = optimizer.update(grads, opt_s, params)
-            m = eqx.combine(eqx.apply_updates(params, updates), fixed)
+        updates, opt_s = optimizer.update(grads, opt_s, params)
+        m = eqx.combine(eqx.apply_updates(params, updates), fixed)
         return m, opt_s, loss, parts
 
     @eqx.filter_jit
@@ -154,10 +144,8 @@ def fit_gradient_descent[ModelT: eqx.Module](  # noqa: PLR0913, PLR0912, PLR0915
         y_hist, u_hist, u_future, y_target = batch
 
         def compute(mod: ModelT) -> tuple[jax.Array, dict[str, float | None]]:
-            """Score the masked Rollout with full boundary history."""
-            rollout_fn: Any = getattr(mod, "rollout", mod)
-            model_history = y_hist[:, -mod.n_y :] if isinstance(mod, AutoregressiveModel) else y_hist
-            pred = rollout_fn(model_history, u_hist, u_future)
+            """Score the Predictor Rollout using its input window and full Loss boundary history."""
+            pred = mod.rollout(y_hist[:, -mod.n_y :], u_hist, u_future)
             batch_ctx = eqx.tree_at(lambda context: context.y_hist, ctx, y_hist, is_leaf=lambda x: x is None)
             loss_val, parts = total_loss(
                 losses, pred, y_target, batch_ctx, step_mask=step_mask, active_mask=active_mask
@@ -172,31 +160,11 @@ def fit_gradient_descent[ModelT: eqx.Module](  # noqa: PLR0913, PLR0912, PLR0915
         batch: tuple[jax.Array, jax.Array, jax.Array, jax.Array],
         eval_ctx: LossContext,
     ) -> tuple[jax.Array, dict[str, float | None]]:
-        """Validate full Loss Spans using boundary history and the Predictor input window."""
+        """Validate the Predictor on full Loss Spans with its boundary history."""
         y_hist, u_hist, u_future, y_target = batch
-        rollout_fn: Any = getattr(m, "rollout", m)
-        model_history = y_hist[:, -m.n_y :] if isinstance(m, AutoregressiveModel) else y_hist
-        pred = rollout_fn(model_history, u_hist, u_future)
+        pred = m.rollout(y_hist[:, -m.n_y :], u_hist, u_future)
         batch_ctx = eqx.tree_at(lambda context: context.y_hist, eval_ctx, y_hist, is_leaf=lambda x: x is None)
         return total_loss(losses, pred, y_target, batch_ctx, step_mask=None)
-
-    def _step_custom(
-        m: ModelT,
-        opt_s: optax.OptState,
-        batch_arrays: tuple[jax.Array, jax.Array, jax.Array, jax.Array],
-        ep: int,
-    ) -> tuple[ModelT, optax.OptState, jax.Array, dict[str, float | None]]:
-        """Fit one batch using the caller's Loss function."""
-        b0, b1, b2, b3 = batch_arrays
-        if loss_fn is None:
-            msg = "Custom training step invoked without loss_fn"
-            raise RuntimeError(msg)
-
-        def compute_fn(mod: ModelT) -> tuple[jax.Array, dict[str, float | None]]:
-            """Evaluate the caller's Loss at the current epoch."""
-            return loss_fn(mod, b0, b1, b2, b3, ep)
-
-        return optimizer_step(m, opt_s, compute_fn)
 
     best_val_loss = float("inf")
     best_model = model
@@ -226,22 +194,8 @@ def fit_gradient_descent[ModelT: eqx.Module](  # noqa: PLR0913, PLR0912, PLR0915
         all_keys: set[str] = set()
         batches = 0
 
-        train_iter: Any = (
-            batch_iterator(train_dataset, cfg.batch_size, rng=rng, shuffle=True)
-            if isinstance(train_dataset, TrajectoryWindowDataset)
-            else train_dataset
-        )
-        for batch in train_iter:
-            if loss_fn is not None:
-                b_jax = (
-                    jnp.asarray(batch[0]),
-                    jnp.asarray(batch[1]),
-                    jnp.asarray(batch[2]),
-                    jnp.asarray(batch[3]),
-                )
-                model, opt_state, loss, parts = _step_custom(model, opt_state, b_jax, epoch)
-            else:
-                model, opt_state, loss, parts = train_step(model, opt_state, batch, step_mask, active_mask)
+        for batch in batch_iterator(train_dataset, cfg.batch_size, rng=rng, shuffle=True):
+            model, opt_state, loss, parts = train_step(model, opt_state, batch, step_mask, active_mask)
             loss_val = float(loss)
             epoch_loss += loss_val
             for key, val in parts.items():
@@ -266,21 +220,9 @@ def fit_gradient_descent[ModelT: eqx.Module](  # noqa: PLR0913, PLR0912, PLR0915
         val_keys: set[str] = set()
         total_val_samples = 0
 
-        val_iter: Any = (
-            batch_iterator(val_dataset, cfg.batch_size, shuffle=False)
-            if isinstance(val_dataset, TrajectoryWindowDataset)
-            else val_dataset
-        )
-        for batch in val_iter:
+        for batch in batch_iterator(val_dataset, cfg.batch_size, shuffle=False):
             b_size = len(batch[0])
-            if loss_fn is not None:
-                b0 = jnp.asarray(batch[0])
-                b1 = jnp.asarray(batch[1])
-                b2 = jnp.asarray(batch[2])
-                b3 = jnp.asarray(batch[3])
-                val_loss_b, val_parts_b = loss_fn(model, b0, b1, b2, b3, None)
-            else:
-                val_loss_b, val_parts_b = eval_step(model, batch, val_ctx)
+            val_loss_b, val_parts_b = eval_step(model, batch, val_ctx)
             val_loss_sum += float(val_loss_b) * b_size
             total_val_samples += b_size
             for key, val in val_parts_b.items():

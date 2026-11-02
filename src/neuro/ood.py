@@ -256,22 +256,6 @@ class OODIndex:
         ranks = np.searchsorted(self.id_cal_distances, d, side="right")
         return ranks / float(len(self.id_cal_distances))
 
-    def global_distances(self, queries: FloatArray) -> FloatArray:
-        """Compute standardized global distance (diagonal Mahalanobis) from reference center.
-
-        Parameters
-        ----------
-        queries : FloatArray
-            Raw query vectors of shape ``(N_queries, D)``.
-
-        Returns
-        -------
-        FloatArray
-            Standardized Euclidean norm from training mean, shape ``(N_queries,)``.
-        """
-        q_std = self.standardize(queries)
-        return np.linalg.norm(q_std, axis=1)
-
     def coefficient_of_variation(self) -> float:
         """Compute the coefficient of variation CV = std(d_K) / mean(d_K) on calibration distances."""
         if len(self.id_cal_distances) == 0:

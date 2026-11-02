@@ -17,7 +17,7 @@ from trajopt.trajectory import Trajectory
 from trajopt.transcription.ipopt import Ipopt
 from trajopt.transcription.single_shooting import SingleShooting
 
-from neuro.comparison import cost_metrics, format_cost_report
+from neuro.comparison import cost_metrics
 from neuro.config import StftGeometry
 from neuro.control.costs import (
     ExcludeInitialKnotState,
@@ -987,8 +987,8 @@ def test_duplicating_identical_channels_leaves_normalized_cost_unchanged() -> No
     assert np.isclose(float(np.mean(multi_frames)), cost2)
 
 
-def test_cost_contributions_and_evaluation_report(tmp_path: Path) -> None:
-    """Evaluation reports separate spectral, quadratic-effort, and sparse-effort contributions."""
+def test_cost_contributions_and_evaluation_metrics(tmp_path: Path) -> None:
+    """Evaluation metrics preserve normalized spectral, quadratic and sparse Cost contributions."""
     horizon = 10
     n_channels, n_controls = 2, 2
     fs = 1000.0
@@ -1058,7 +1058,3 @@ def test_cost_contributions_and_evaluation_report(tmp_path: Path) -> None:
     assert np.isclose(metrics["cost_spectral_mean"], decomp["cost_spectral"])
     assert np.isclose(metrics["cost_quadratic_effort_mean"], decomp["cost_quadratic_effort"])
     assert np.isclose(metrics["cost_sparse_effort_mean"], decomp["cost_sparse_effort"])
-
-    report = format_cost_report(metrics)
-    assert "channel_mean" in report
-    assert "Spectral cost" in report

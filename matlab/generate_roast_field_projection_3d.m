@@ -1,6 +1,6 @@
 function [projection_E, metadata] = generate_roast_field_projection_3d(varargin)
 % GENERATE_ROAST_FIELD_PROJECTION_3D Computes the 3D electric field projection matrix (projection_E)
-% and potential matrix (leadfield_V) for 63 input channels (62 scalp electrodes + Ex8 return)
+% and potential matrix (projection_V) for 63 input channels (62 scalp electrodes + Ex8 return)
 % to 76 output Jansen-Rit node positions using the ROAST library.
 %
 % Outputs:

@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Any
 
+import jax
+import jax.numpy as jnp
 import numpy as np
 import pytest
 
@@ -17,6 +19,8 @@ from neuro.config import (
     StftSpec,
     TrainingConfig,
 )
+from neuro.predictor import gradient
+from neuro.predictor.data import TrajectoryWindowDataset
 from neuro.predictor.gradient import fit_gradient_descent
 from neuro.predictor.losses import (
     CurriculumMSE,
@@ -27,12 +31,14 @@ from neuro.predictor.losses import (
     eligibility_start_epoch,
     total_loss,
 )
+from neuro.predictor.mlp import WaveformMLPModel
 from neuro.predictor.train import TrainingResult, train
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
     from pathlib import Path
 
-    from neuro.predictor.base import AutoregressiveModel
+    from neuro.predictor.losses import Loss
 
 _SEED = 42
 _DT = 1e-3
@@ -156,58 +162,59 @@ def test_eligibility_start_epoch_uses_effective_schedules_and_disabled_terms() -
     assert eligibility_start_epoch([single_step]) == 0
 
 
-def test_final_selection_restores_lowest_val_loss_among_eligible_epochs() -> None:
-    """Final checkpoint selection restores lowest validation loss among eligible epochs, ignoring earlier minima."""
-
-    class DummyModel:
-        def __init__(self) -> None:
-            self.epoch_buf = 0.0
-
-    dummy_batch = (np.zeros((10, 1)), np.zeros((10, 1)), np.zeros((10, 1)), np.zeros((10, 1)))
-    batches = [dummy_batch]
-
-    # Synthetic validation loss course:
-    # Epoch 0: val_loss = 0.05 (misleading low minimum)
-    # Epoch 1: val_loss = 0.20
-    # Epoch 2: val_loss = 0.30
-    # Epoch 3 (eligibility start): val_loss = 0.15
-    # Epoch 4: val_loss = 0.10 (eligible minimum)
-    # Epoch 5: val_loss = 0.25
+def test_final_selection_restores_lowest_val_loss_among_eligible_epochs(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Restore the eligible minimum's Predictor weights while ignoring a lower pre-eligibility score."""
+    # Disable JIT only to supply a controlled validation curve through the real Loss scorer.
+    monkeypatch.setattr(gradient.eqx, "filter_jit", lambda function: function)
     val_loss_curve = [0.05, 0.20, 0.30, 0.15, 0.10, 0.25]
+    predictions = []
+    original = gradient.total_loss
 
-    def mock_loss(
-        mod: DummyModel,
-        _y: np.ndarray,
-        _uh: np.ndarray,
-        _uf: np.ndarray,
-        _yt: np.ndarray,
-        epoch: int | None,
-    ) -> tuple[float, dict[str, float | None]]:
-        assert isinstance(mod, DummyModel)
-        if epoch is None:
-            # Called from validation; track invocation via dummy param
-            idx = round(mod.epoch_buf)
-            idx = min(max(idx, 0), len(val_loss_curve) - 1)
-            return val_loss_curve[idx], {"mse": val_loss_curve[idx]}
-        # Training batch: record epoch into buffer
-        mod.epoch_buf = float(epoch)
-        return 1.0, {"mse": 1.0}
+    def score(
+        terms: Sequence[Loss],
+        pred: jax.Array,
+        true: jax.Array,
+        ctx: LossContext,
+        *,
+        step_mask: jax.Array | None = None,
+        active_mask: jax.Array | None = None,
+    ) -> tuple[jax.Array, dict[str, Any]]:
+        """Run configured Losses, replacing only validation scores with the declared curve."""
+        value, parts = original(terms, pred, true, ctx, step_mask=step_mask, active_mask=active_mask)
+        if step_mask is None:
+            value = jnp.asarray(val_loss_curve[len(predictions)])
+            predictions.append(np.asarray(pred).copy())
+        return value, parts
 
-    cfg = TrainingConfig(epochs=6, patience=3, eval_horizon_s=0.1)
+    monkeypatch.setattr(gradient, "total_loss", score)
+    model = WaveformMLPModel(
+        n_y=1,
+        n_u=1,
+        horizon=1,
+        n_channels=1,
+        n_controls=1,
+        n_outputs=1,
+        hidden_size=1,
+        depth=0,
+        residual=False,
+        key=jax.random.PRNGKey(1),
+    )
+    dataset = TrajectoryWindowDataset([(np.ones((3, 1)), np.ones((3, 1)))], n_y=1, n_u=1, horizon=1)
     fit = fit_gradient_descent(
-        cast("AutoregressiveModel", DummyModel()),
-        batches,
-        batches,
-        cfg,
+        model,
+        dataset,
+        dataset,
+        TrainingConfig(epochs=6, patience=3, learning_rate=0.1, warmup_epochs=0, weight_decay=0.0, eval_horizon_s=0.1),
         seed=1,
-        loss_fn=mock_loss,
+        losses=[CurriculumMSE(1.0, 1, 0, 0, 0)],
+        ctx=LossContext(model.y_center, model.y_scale, 1000.0),
         eligibility_start=3,
     )
-
-    # Epoch 0 had val_loss=0.05, but eligibility started at epoch 3.
     assert fit.selected_epoch == 4
-    # The restored model buffer must correspond to epoch 4
-    assert cast("DummyModel", fit.best_model).epoch_buf == 4.0
+    y_hist, u_hist, u_future, _ = dataset.get_batch([0])
+    restored = np.asarray(fit.best_model.rollout(y_hist, u_hist, u_future))
+    np.testing.assert_allclose(restored, predictions[4])
+    assert not np.allclose(restored, predictions[-1])
 
 
 def test_incompatible_schedule_budget_rejected_before_training() -> None:

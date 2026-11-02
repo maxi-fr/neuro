@@ -859,36 +859,21 @@ def resolve_artifact_dir(artifact: str | None, default_prefix: str) -> Path:
 
 
 def _resolve_dynamics_config(dyn: dict[str, Any]) -> None:
-    """Expand regime into canonical connectome, parameters and plant defaults."""
+    """Apply regime defaults while leaving regional gains to Plant construction."""
     regime = dyn.get("regime")
     params = dyn.setdefault("params", {})
-    if not isinstance(params, dict):
+    if not isinstance(params, dict) or regime is None:
         return
 
-    is_seizure = regime == "seizure" or params.get("A") == "seizure"
-    is_healthy = regime == "healthy" or params.get("A") == "healthy"
-
-    if is_seizure:
-        from neuro.connectome import Connectome  # noqa: PLC0415 -- breaks circular import with connectome
-        from neuro.seizure import build_seizure_a_gains  # noqa: PLC0415 -- breaks circular import with seizure
-
-        dyn.setdefault("class_path", "neuro.jansen_rit.JansenRitDynamics")
-        dyn.setdefault("dt", 1e-4)
-        dyn.setdefault("initial_state", "rest")
-        dyn.setdefault("connectome", {"speed": 50.0, "K": 0.60})
-        params.setdefault("sigma", 280.0)
-        conn = Connectome.from_config(dyn["connectome"])
-        params["A"] = build_seizure_a_gains(conn).tolist()
-    elif is_healthy:
-        dyn.setdefault("class_path", "neuro.jansen_rit.JansenRitDynamics")
-        dyn.setdefault("dt", 1e-4)
-        dyn.setdefault("initial_state", "rest")
-        dyn.setdefault("connectome", {"speed": 50.0, "K": 0.60})
-        params.setdefault("sigma", 280.0)
-        params["A"] = 3.25
-    elif regime is not None:
+    if regime not in ("healthy", "seizure"):
         msg = f"Unknown dynamics regime {regime!r}. Expected 'healthy' or 'seizure'."
         raise ValueError(msg)
+
+    dyn.setdefault("class_path", "neuro.jansen_rit.JansenRitDynamics")
+    dyn.setdefault("dt", 1e-4)
+    dyn.setdefault("initial_state", "rest")
+    dyn.setdefault("connectome", {"speed": 50.0, "K": 0.60})
+    params.setdefault("sigma", 280.0)
 
 
 def _resolve_sensors_config(config: dict[str, Any], plant_dt: float) -> None:

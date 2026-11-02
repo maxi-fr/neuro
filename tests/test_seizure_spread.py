@@ -1,12 +1,3 @@
-"""Tests for the seizure-propagation measurement used to tune ``K`` and ``sigma``.
-
-Covers the recruitment detector (threshold + persistence), the seizure state ``s(t)`` and its
-time mean, the propagation summary, the two ways a recorded run is reduced to a profile (region
-LFP and state trajectory), the healthy resting state that the seizure is started from, and the
-chunked ``spread_profile`` integration -- which must reproduce a single long
-``simulate_network`` call exactly.
-"""
-
 from dataclasses import replace
 
 import numpy as np
@@ -25,7 +16,6 @@ from neuro.seizure import (
     build_seizure_a_gains,
     spread_profile,
     spread_profile_from_lfp,
-    spread_profile_from_states,
     spread_summary,
 )
 from neuro.types import FloatArray
@@ -71,8 +61,8 @@ def test_onset_ignores_activity_below_threshold() -> None:
     assert np.all(np.isnan(SpreadProfile.from_ptp(times, ptp, threshold=7.0).onsets))
 
 
-def test_n_seizing_and_recruited_by() -> None:
-    """The instantaneous count follows the envelope; the recruited count follows the onsets."""
+def test_n_seizing_counts_regions_in_each_window() -> None:
+    """The instantaneous count follows the envelope for all regions or a selected subset."""
     times = _times(8)
     ptp = np.zeros((3, 8))
     ptp[0, :] = 10.0  # seizing throughout
@@ -81,9 +71,8 @@ def test_n_seizing_and_recruited_by() -> None:
     profile = SpreadProfile.from_ptp(times, ptp, threshold=5.0, persist_s=1.0)
 
     assert profile.n_seizing().tolist() == [1, 1, 1, 1, 2, 2, 2, 2]
-    assert profile.recruited_by(times[0]) == 1
-    assert profile.recruited_by(times[-1]) == 2
-    assert profile.recruited_by(times[-1], [2]) == 0
+    assert profile.n_seizing([1]).tolist() == [0, 0, 0, 0, 1, 1, 1, 1]
+    assert profile.n_seizing([2]).tolist() == [0] * 8
 
 
 def test_burden_is_the_time_mean_seizure_state() -> None:
@@ -112,31 +101,22 @@ def test_burden_separates_runs_the_terminal_count_ties() -> None:
     assert early_profile.burden() < late_profile.burden()
 
 
-def _states(n_samples: int, ptp_mv: FloatArray) -> FloatArray:
-    """A ``(n_samples, 6, n_regions)`` trajectory whose LFP ``x[1] - x[2]`` has the given amplitudes."""
-    wave = np.sign(np.sin(np.linspace(0.0, 8.0 * np.pi, n_samples)))
-    x_traj = np.zeros((n_samples, 6, len(ptp_mv)))
-    x_traj[:, 1, :] = 0.5 * ptp_mv[None, :] * wave[:, None]
-    return x_traj
-
-
-def test_spread_profile_from_states_matches_the_lfp_it_reduces_to() -> None:
-    """Reducing a state trajectory must agree with profiling the region LFP taken from it."""
+def test_spread_profile_from_lfp_measures_regional_amplitudes() -> None:
+    """Recorded LFP amplitudes determine the regional envelope and seizing count."""
     ptp_mv = np.array([20.0, 8.0, 1.0, 0.0])
-    x_traj = _states(200, ptp_mv)
+    wave = np.sign(np.sin(np.linspace(0.0, 8.0 * np.pi, 200)))
+    y = 0.5 * ptp_mv[:, None] * wave[None, :]
 
-    profile = spread_profile_from_states(x_traj, dt=0.01, threshold=5.0)
-    direct = spread_profile_from_lfp(lfp(np.moveaxis(x_traj, 0, -1)), dt=0.01, threshold=5.0)
+    profile = spread_profile_from_lfp(y, dt=0.01, threshold=5.0)
 
     assert profile.ptp[:, -1] == pytest.approx(ptp_mv)
-    assert profile.ptp == pytest.approx(direct.ptp)
     assert int(profile.n_seizing()[-1]) == 2
 
 
-def test_spread_profile_from_states_rejects_a_run_shorter_than_the_window() -> None:
+def test_spread_profile_from_lfp_rejects_a_run_shorter_than_the_window() -> None:
     """A run too short to fill one spread window raises rather than scoring nothing."""
     with pytest.raises(ValueError, match="shorter than the"):
-        spread_profile_from_states(_states(50, np.array([20.0])), dt=0.01, threshold=5.0)
+        spread_profile_from_lfp(np.zeros((1, 50)), dt=0.01, threshold=5.0)
 
 
 def test_summary_orders_ez_pz_and_hemispheres(connectome: Connectome) -> None:
