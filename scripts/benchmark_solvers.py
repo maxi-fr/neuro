@@ -45,7 +45,7 @@ def _require_artifacts(*paths: str) -> None:
 
 
 def main() -> None:
-    """Run the solver benchmark suite across optimal control problems and print summary tables."""
+    """Benchmark Waveform and Observable problems with explicit Kirchhoff constraints."""
     parser = argparse.ArgumentParser(description="Benchmark neurostimulation OCP solvers")
     parser.add_argument("--repeats", type=int, default=2, help="Number of open-loop timing repeats")
     parser.add_argument("--steps", type=int, default=3, help="Number of closed-loop MPC steps")
@@ -63,39 +63,30 @@ def main() -> None:
         required += [_OBSERVABLE_LINEAR, _OBSERVABLE_NONLINEAR, _OBSERVABLE_ENVELOPE]
     _require_artifacts(*required)
 
-    # Kirchhoff twice over, because the two formulations reach the same feasible set by different
-    # routes: as a hard equality it is a constraint row the solver must drive to tolerance, and by
-    # null-space reduction it holds identically, at the price of a coupled polytope on the bounds.
-    experiments: tuple[tuple[str, bool, bool], ...] = (
-        ("WAVEFORM OCP, Kirchhoff as hard equality", True, False),
-        ("WAVEFORM OCP, Kirchhoff by null-space reduction", False, True),
+    print("=" * 80)
+    print("1. WAVEFORM OCP, Kirchhoff as hard equality (Depth-2 MLP Predictor, 1 s Horizon)")
+    print("=" * 80)
+    open_comp, closed_comp = run_waveform_benchmark(
+        _WAVEFORM_ARTIFACT,
+        horizon=_WAVEFORM_HORIZON,
+        u_max=2.0,
+        w_y=1.0,
+        w_u=10.0,
+        reference=HealthyReference.load(_WAVEFORM_REFERENCE),
+        kirchhoff=True,
+        n_repeats=args.repeats,
+        num_steps=args.steps,
     )
-    for index, (title, kirchhoff, reduce_kirchhoff) in enumerate(experiments, start=1):
-        print("=" * 80)
-        print(f"{index}. {title} (Depth-2 MLP Predictor, 1 s Horizon)")
-        print("=" * 80)
-        open_comp, closed_comp = run_waveform_benchmark(
-            _WAVEFORM_ARTIFACT,
-            horizon=_WAVEFORM_HORIZON,
-            u_max=2.0,
-            w_y=1.0,
-            w_u=10.0,
-            reference=HealthyReference.load(_WAVEFORM_REFERENCE),
-            kirchhoff=kirchhoff,
-            reduce_kirchhoff=reduce_kirchhoff,
-            n_repeats=args.repeats,
-            num_steps=args.steps,
-        )
-        print(format_open_loop_table(open_comp))
-        print()
-        print(format_closed_loop_table(closed_comp))
-        print(flush=True)
+    print(format_open_loop_table(open_comp))
+    print()
+    print(format_closed_loop_table(closed_comp))
+    print(flush=True)
 
     if args.waveform_only:
         return
 
     for index, (label, artifact) in enumerate(
-        (("LINEAR", _OBSERVABLE_LINEAR), ("NONLINEAR", _OBSERVABLE_NONLINEAR)), start=3
+        (("LINEAR", _OBSERVABLE_LINEAR), ("NONLINEAR", _OBSERVABLE_NONLINEAR)), start=2
     ):
         print("=" * 80)
         print(f"{index}. {label} OBSERVABLE OCP (Log-Power Spectral Hinge Cost, 1 s Horizon)")

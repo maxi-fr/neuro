@@ -141,7 +141,7 @@ def config(tmp_path: Path) -> dict[str, Any]:
             "class_path": "neuro.control.mpc.TrajOptMPCController",
             "dt": _PLANT_DT * _DOWNSAMPLE,
             "problem": {
-                "class_path": "neuro.control.mpc.build_waveform_problem",
+                "class_path": "neuro.control.problems.build_waveform_problem",
                 "artifact": str(_artifact(tmp_path, provenance)),
                 "horizon": 50,
                 "reference": str(ref_path),
@@ -382,7 +382,7 @@ def test_observable_estimator_and_envelope_validation(tmp_path: Path) -> None:
             "class_path": "neuro.control.mpc.TrajOptMPCController",
             "dt": 0.10,
             "problem": {
-                "class_path": "neuro.control.mpc.build_observable_problem",
+                "class_path": "neuro.control.problems.build_observable_problem",
                 "artifact": str(art),
                 "reference": str(env_path),
             },
@@ -426,7 +426,7 @@ def test_observable_geometry_agreement_between_estimator_and_checkpoint(tmp_path
             "class_path": "neuro.control.mpc.TrajOptMPCController",
             "dt": 0.10,
             "problem": {
-                "class_path": "neuro.control.mpc.build_observable_problem",
+                "class_path": "neuro.control.problems.build_observable_problem",
                 "artifact": str(art),
             },
         },
@@ -481,7 +481,7 @@ def test_observable_envelope_geometry_agreement(tmp_path: Path) -> None:
             "class_path": "neuro.control.mpc.TrajOptMPCController",
             "dt": 0.10,
             "problem": {
-                "class_path": "neuro.control.mpc.build_observable_problem",
+                "class_path": "neuro.control.problems.build_observable_problem",
                 "artifact": str(art),
                 "reference": str(bad_env_path),
             },
@@ -527,7 +527,7 @@ def test_envelope_channel_count_and_sampling_rate_validation(tmp_path: Path) -> 
             "class_path": "neuro.control.mpc.TrajOptMPCController",
             "dt": 0.10,
             "problem": {
-                "class_path": "neuro.control.mpc.build_observable_problem",
+                "class_path": "neuro.control.problems.build_observable_problem",
                 "artifact": str(art),
                 "reference": str(bad_ch_path),
             },
@@ -578,7 +578,7 @@ def test_control_support_rule_in_checkpoint_validation(tmp_path: Path) -> None:
             "class_path": "neuro.control.mpc.TrajOptMPCController",
             "dt": 0.10,
             "problem": {
-                "class_path": "neuro.control.mpc.build_observable_problem",
+                "class_path": "neuro.control.problems.build_observable_problem",
                 "artifact": str(bad_art),
             },
         },
@@ -610,7 +610,7 @@ def test_mismatched_model_and_estimator_kinds(tmp_path: Path) -> None:
             "class_path": "neuro.control.mpc.TrajOptMPCController",
             "dt": 0.10,
             "problem": {
-                "class_path": "neuro.control.mpc.build_observable_problem",
+                "class_path": "neuro.control.problems.build_observable_problem",
                 "artifact": str(obs_art),
             },
         },
@@ -633,7 +633,7 @@ def test_mismatched_model_and_estimator_kinds(tmp_path: Path) -> None:
             "class_path": "neuro.control.mpc.TrajOptMPCController",
             "dt": _PLANT_DT * _DOWNSAMPLE,
             "problem": {
-                "class_path": "neuro.control.mpc.build_waveform_problem",
+                "class_path": "neuro.control.problems.build_waveform_problem",
                 "artifact": str(wave_art),
             },
         },

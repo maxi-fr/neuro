@@ -17,7 +17,8 @@ from neuro.control.casadi import (
     build_casadi_waveform_problem,
     decompose_casadi_cost,
 )
-from neuro.control.mpc import build_waveform_problem, decompose_cost
+from neuro.control.diagnostics import decompose_cost
+from neuro.control.problems import build_waveform_problem
 from neuro.predictor.inference import WaveformCNNModel
 from neuro.spectral import HealthyReference, ObservableEnvelope
 

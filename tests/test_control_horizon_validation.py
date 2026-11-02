@@ -290,7 +290,7 @@ def test_comparison_validate_grid_rejects_ineligible_arm(tmp_path: Path) -> None
             "class_path": "neuro.control.mpc.TrajOptMPCController",
             "dt": 0.02,
             "problem": {
-                "class_path": "neuro.control.mpc.build_waveform_problem",
+                "class_path": "neuro.control.problems.build_waveform_problem",
                 "artifact": str(art_path),
                 "horizon": 75,
                 "w_y": 0.0,

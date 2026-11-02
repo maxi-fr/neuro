@@ -21,7 +21,9 @@ from neuro.control.casadi import (
     decompose_casadi_cost,
 )
 from neuro.control.costs import ObservableHingeCost, jax_compute_observable_frames
-from neuro.control.mpc import TrajOptMPCController, build_waveform_problem, decompose_cost
+from neuro.control.diagnostics import decompose_cost
+from neuro.control.mpc import TrajOptMPCController
+from neuro.control.problems import build_waveform_problem
 from neuro.predictor.mlp import ObservableMLPModel, WaveformMLPModel
 from neuro.spectral import HealthyReference, ObservableEnvelope
 from neuro.transforms import Standardizer

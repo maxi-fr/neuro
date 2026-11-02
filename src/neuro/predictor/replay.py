@@ -9,7 +9,7 @@ import jax.numpy as jnp
 import numpy as np
 import yaml
 
-from neuro.control.mpc import NullspaceReducedModel, _build_problem
+from neuro.control.problems import _build_problem
 from neuro.predictor.inference import InferencePredictor
 from neuro.run_view import PredictionSeries
 
@@ -57,7 +57,7 @@ def replay_predictions(
 
 
 def prepare_replay(run: Run, config: dict[str, Any], destination: Path) -> None:
-    """Prepare Rollouts from component observations and recorded Control Currents."""
+    """Prepare Rollouts using the configured Predictor and recorded physical Control Currents."""
     dt = float(config["controller"]["dt"])
     if config["estimator"] != run.config["estimator"] or config["sensors"] != run.config["sensors"]:
         msg = "Replay requires the same sensor and Estimator configuration as the recording."
@@ -70,8 +70,6 @@ def prepare_replay(run: Run, config: dict[str, Any], destination: Path) -> None:
         raise ValueError(msg)
     problem = _build_problem(config["controller"]["problem"])
     model = problem.model
-    if isinstance(model, NullspaceReducedModel):
-        model = model.base_model
     if not isinstance(model, InferencePredictor):
         msg = "The configured Predictor does not implement replay."
         raise TypeError(msg)

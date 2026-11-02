@@ -10,6 +10,7 @@ import casadi as ca
 import numpy as np
 from simulate.controller import Controller
 
+from neuro.control.problems import _validate_observable_envelope
 from neuro.predictor.inference import (
     InferencePredictor,
     ObservableCNNModel,
@@ -571,8 +572,6 @@ def build_casadi_observable_problem(  # noqa: PLR0913 -- checkpoint plus the MPC
         raise ValueError(msg)
     envelope = ref.observable if ref is not None else None
     if w_hinge > 0 and envelope is not None:
-        from neuro.control.mpc import _validate_observable_envelope  # noqa: PLC0415 -- validation shared with trajopt
-
         _validate_observable_envelope(envelope, base)
         if envelope.power.size != base.n_outputs:
             msg = "envelope Frame shape does not match model output size"

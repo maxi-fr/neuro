@@ -23,14 +23,14 @@ from neuro.control.costs import (
     ExcludeInitialKnotState,
     ObservableFrameHingeCost,
     ObservableHingeCost,
-    ReducedEffortCost,
     SumCost,
     compute_waveform_observable_frames,
     frame_grid_offsets,
     has_whole_horizon_cost,
     jax_compute_observable_frames,
 )
-from neuro.control.mpc import build_waveform_problem, decompose_cost, kirchhoff_basis
+from neuro.control.diagnostics import decompose_cost
+from neuro.control.problems import build_waveform_problem
 from neuro.predictor.mlp import WaveformMLPModel
 from neuro.spectral import HealthyReference, ObservableEnvelope, compute_log_power_frames
 from neuro.transforms import Standardizer
@@ -563,20 +563,6 @@ def test_observable_frame_hinge_cost_with_history_prepends_past_outputs() -> Non
     numpy_hinge = np.maximum(0.0, numpy_frames - envelope.power[None]) ** 2
     want = (2.0 / cost.total_frames) * float(np.sum(np.mean(numpy_hinge, axis=(-2, -1))))
     np.testing.assert_allclose(float(stage_vals[0]), want, rtol=1e-10, atol=1e-12)
-
-
-def test_reduced_effort_cost_prices_the_expanded_currents() -> None:
-    """ReducedEffortCost scores ``||Z v||^2``, not ``||v||^2``, so reduction reprices nothing."""
-    rng = np.random.default_rng(11)
-    for m in (2, 3, 5):
-        Z = np.asarray(kirchhoff_basis(m))
-        cost = ReducedEffortCost(n=4, m=m - 1, w_u=0.7, horizon=5)
-        for v in rng.standard_normal((6, m - 1)):
-            expected = 0.7 / 5 * float((Z @ v) @ (Z @ v))
-            assert float(cost.evaluate(jnp.zeros(4), jnp.asarray(v))) == pytest.approx(expected, rel=1e-10)
-
-    # The terminal knot carries no control, and the cost has to be finite there.
-    assert float(ReducedEffortCost(n=4, m=2, w_u=1.0, horizon=5).evaluate(jnp.zeros(4))) == 0.0
 
 
 def test_waveform_problem_requires_reference_when_wy_positive(tmp_path: Path) -> None:

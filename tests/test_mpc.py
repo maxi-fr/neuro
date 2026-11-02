@@ -16,20 +16,12 @@ from trajopt.transcription.osqp import OSQP
 from trajopt.transcription.single_shooting import SingleShooting
 
 from neuro.config import StftGeometry
+from neuro.control.candidate import CandidateMPCController
 from neuro.control.costs import ObservableHingeCost
-from neuro.control.mpc import (
-    AugmentedActivationModel,
-    CandidateMPCController,
-    CanonicalDuals,
-    EpigraphInferenceModel,
-    NeuroProblem,
-    TrajOptMPCController,
-    TrajOptMPCLog,
-    _default_solver,
-    build_observable_problem,
-    build_waveform_problem,
-    canonicalize_duals,
-)
+from neuro.control.model_wrappers import AugmentedActivationModel, EpigraphInferenceModel
+from neuro.control.mpc import TrajOptMPCController, TrajOptMPCLog
+from neuro.control.problems import NeuroProblem, build_observable_problem, build_waveform_problem
+from neuro.control.solvers import CanonicalDuals, _default_solver, canonicalize_duals
 from neuro.filtering import ObservableEstimator
 from neuro.predictor.mlp import ObservableMLPModel, WaveformMLPModel
 from neuro.predictor.replay import prepare_replay, replay_predictions
@@ -246,7 +238,7 @@ def test_offline_preparation_reads_estimator_logs_and_saves_typed_predictions(tm
         "controller": {
             "dt": 0.01,
             "problem": {
-                "class_path": "neuro.control.mpc.build_waveform_problem",
+                "class_path": "neuro.control.problems.build_waveform_problem",
                 "artifact": str(artifact),
                 "horizon": 3,
                 "u_max": 1.0,
@@ -304,7 +296,7 @@ def test_from_config_dispatches_problem_factory(tmp_path: Path) -> None:
         {
             "dt": 0.01,
             "problem": {
-                "class_path": "neuro.control.mpc.build_waveform_problem",
+                "class_path": "neuro.control.problems.build_waveform_problem",
                 "artifact": str(artifact),
                 "horizon": 5,
                 "u_max": 0.5,
@@ -579,7 +571,7 @@ def test_observable_controller_from_config(tmp_path: Path) -> None:
         "class_path": "neuro.control.mpc.TrajOptMPCController",
         "dt": 0.10,
         "problem": {
-            "class_path": "neuro.control.mpc.build_observable_problem",
+            "class_path": "neuro.control.problems.build_observable_problem",
             "artifact": str(artifact),
             "horizon": 4,
             "u_max": 1.0,
@@ -658,7 +650,6 @@ def test_default_solver_selection(tmp_path: Path) -> None:
     envelope = ObservableEnvelope(power=np.full((2, 3), -2.0), fs=100.0, geometry=geometry)
     problems = (
         build_waveform_problem(art_wf, horizon=4, u_max=0.5, w_y=1.0, kirchhoff=True, reference=_ref(2)),
-        build_waveform_problem(art_wf, horizon=4, u_max=0.5, w_y=1.0, reduce_kirchhoff=True, reference=_ref(2)),
         build_waveform_problem(
             art_wf,
             horizon=4,
@@ -682,7 +673,7 @@ def test_controller_from_config_solver_variants(tmp_path: Path) -> None:
     cfg_default = {
         "dt": 0.01,
         "problem": {
-            "class_path": "neuro.control.mpc.build_waveform_problem",
+            "class_path": "neuro.control.problems.build_waveform_problem",
             "artifact": str(art),
             "horizon": 4,
             "u_max": 0.5,
@@ -700,7 +691,7 @@ def test_controller_from_config_solver_variants(tmp_path: Path) -> None:
             "options": {"constraint_tolerance": 1e-4, "cost_tolerance": 1e-4},
         },
         "problem": {
-            "class_path": "neuro.control.mpc.build_waveform_problem",
+            "class_path": "neuro.control.problems.build_waveform_problem",
             "artifact": str(art),
             "horizon": 4,
             "u_max": 0.5,
@@ -720,7 +711,7 @@ def test_controller_from_config_solver_variants(tmp_path: Path) -> None:
             "options": {"eps_abs": 1e-5},
         },
         "problem": {
-            "class_path": "neuro.control.mpc.build_waveform_problem",
+            "class_path": "neuro.control.problems.build_waveform_problem",
             "artifact": str(art),
             "horizon": 4,
             "u_max": 0.5,
@@ -741,7 +732,7 @@ def test_controller_from_config_solver_variants(tmp_path: Path) -> None:
             },
         },
         "problem": {
-            "class_path": "neuro.control.mpc.build_waveform_problem",
+            "class_path": "neuro.control.problems.build_waveform_problem",
             "artifact": str(art),
             "horizon": 4,
             "u_max": 0.5,
@@ -762,7 +753,7 @@ def test_controller_from_config_loud_validation_errors(tmp_path: Path) -> None:
         "dt": 0.01,
         "solver": {"name": "altro"},
         "problem": {
-            "class_path": "neuro.control.mpc.build_waveform_problem",
+            "class_path": "neuro.control.problems.build_waveform_problem",
             "artifact": str(art),
             "horizon": 4,
             "u_max": 0.5,
@@ -777,7 +768,7 @@ def test_controller_from_config_loud_validation_errors(tmp_path: Path) -> None:
         "dt": 0.01,
         "solver": "altro",
         "problem": {
-            "class_path": "neuro.control.mpc.build_waveform_problem",
+            "class_path": "neuro.control.problems.build_waveform_problem",
             "artifact": str(art),
             "horizon": 4,
             "u_max": 0.5,
@@ -805,7 +796,7 @@ def test_controller_from_config_loud_validation_errors(tmp_path: Path) -> None:
         "dt": 0.01,
         "solver": {"class_path": "trajopt.solvers.altro.ALTRO"},
         "problem": {
-            "class_path": "neuro.control.mpc.build_waveform_problem",
+            "class_path": "neuro.control.problems.build_waveform_problem",
             "artifact": str(art),
             "horizon": 4,
             "u_max": 0.5,
@@ -822,7 +813,7 @@ def test_controller_from_config_loud_validation_errors(tmp_path: Path) -> None:
         "dt": 0.01,
         "solver": {"class_path": "trajopt.solvers.boxqp.BoxQP"},
         "problem": {
-            "class_path": "neuro.control.mpc.build_waveform_problem",
+            "class_path": "neuro.control.problems.build_waveform_problem",
             "artifact": str(art),
             "horizon": 4,
             "u_max": 0.5,
@@ -839,18 +830,15 @@ def test_problem_carries_the_predictors_step_as_its_time_grid(tmp_path: Path) ->
     art = _build_checkpoint(tmp_path, depth=0, n_y=3, n_u=2, horizon=4, n_channels=2, n_controls=3)
     model_dt = WaveformMLPModel.load(art).dt
 
-    for problem in (
-        build_waveform_problem(art, horizon=4, u_max=0.5, kirchhoff=True, reference=_ref(2)),
-        build_waveform_problem(art, horizon=4, u_max=0.5, reduce_kirchhoff=True, reference=_ref(2)),
-    ):
-        np.testing.assert_allclose(np.asarray(problem.dt), model_dt)
+    problem = build_waveform_problem(art, horizon=4, u_max=0.5, kirchhoff=True, reference=_ref(2))
+    np.testing.assert_allclose(np.asarray(problem.dt), model_dt)
 
     # The controller decides at its config dt, which is free to differ from the grid it plans on.
     controller = TrajOptMPCController.from_config(
         {
             "dt": 10.0 * model_dt,
             "problem": {
-                "class_path": "neuro.control.mpc.build_waveform_problem",
+                "class_path": "neuro.control.problems.build_waveform_problem",
                 "artifact": str(art),
                 "horizon": 4,
                 "u_max": 0.5,
@@ -891,43 +879,6 @@ def test_canonicalize_duals_wraps_only_the_ipopt_backends(tmp_path: Path) -> Non
     np.testing.assert_allclose(np.asarray(res_wrapped.trajectory.U), np.asarray(res_bare.trajectory.U), atol=1e-8)
 
 
-def test_controller_emits_electrode_currents_under_nullspace_reduction(tmp_path: Path) -> None:
-    """A reduced controller commands the m expanded currents, not the m-1 reduced controls it solves in.
-
-    The Nullspace Frame drops the decision variable to ``m - 1``; the Plant still takes one current
-    per electrode, so the boundary has to expand through Z -- and the expansion is what makes
-    Kirchhoff hold exactly on what is actually applied.
-    """
-    n_controls = 3
-    art = _build_checkpoint(tmp_path, depth=0, n_y=2, n_u=2, horizon=3, n_channels=2, n_controls=n_controls)
-    cfg = {
-        "dt": 0.01,
-        "problem": {
-            "class_path": "neuro.control.mpc.build_waveform_problem",
-            "artifact": str(art),
-            "horizon": 3,
-            "u_max": 0.5,
-            "w_y": 1.0,
-            "w_u": 0.1,
-            "reduce_kirchhoff": True,
-            "reference": _ref(2),
-        },
-    }
-    controller = TrajOptMPCController.from_config(cfg)
-    assert controller.model.m == n_controls - 1
-    assert controller.n_electrodes == n_controls
-
-    rng = np.random.default_rng(21)
-    for step in range(6):
-        u, log = controller.update(step * 0.01, np.zeros(2), rng.standard_normal(2))
-        assert u.shape == (n_controls,)
-        assert log.u.shape == (n_controls,)
-        np.testing.assert_allclose(u.sum(), 0.0, atol=1e-12)
-        assert np.abs(u).max() <= 0.5 + 1e-6
-    assert not log.warmup
-    assert np.abs(u).max() > 0.0
-
-
 def test_default_ipopt_solver_options(tmp_path: Path) -> None:
     """_default_solver uses the tuned IPOPT tolerances (tol=1e-3, acceptable_tol=1e-2, acceptable_iter=5)."""
     art = _build_checkpoint(tmp_path, depth=0, n_y=2, n_u=2, horizon=3, n_channels=2, n_controls=3)
@@ -959,9 +910,6 @@ def test_build_observable_problem_mixed_integer_validation(tmp_path: Path) -> No
 
     with pytest.raises(ValueError, match="max_active_intervals must be an integer"):
         build_observable_problem(artifact, horizon=3, u_max=1.0, max_active_intervals=5)
-
-    with pytest.raises(NotImplementedError, match="integer mode does not currently support reduce_kirchhoff"):
-        build_observable_problem(artifact, horizon=3, u_max=1.0, w_active=0.1, reduce_kirchhoff=True)
 
 
 def test_build_observable_problem_mixed_integer_structure(tmp_path: Path) -> None:
@@ -1109,12 +1057,12 @@ def test_candidate_mpc_controller_update_and_config(tmp_path: Path) -> None:
     assert u_cmd.shape == (2,)
 
     cfg = {
-        "class_path": "neuro.control.mpc.CandidateMPCController",
+        "class_path": "neuro.control.candidate.CandidateMPCController",
         "dt": 0.06,
         "blocks": [[0], [1, 2]],
         "w_active": 0.3,
         "problem": {
-            "class_path": "neuro.control.mpc.build_observable_problem",
+            "class_path": "neuro.control.problems.build_observable_problem",
             "artifact": str(artifact),
             "horizon": 3,
             "u_max": 1.0,

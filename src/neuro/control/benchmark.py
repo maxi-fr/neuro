@@ -22,12 +22,8 @@ from trajopt.transcription.ipopt import Ipopt
 from trajopt.transcription.osqp import OSQP
 from trajopt.transcription.single_shooting import SingleShooting
 
-from neuro.control.mpc import (
-    IPOPT_DEFAULTS,
-    build_observable_problem,
-    build_waveform_problem,
-    canonicalize_duals,
-)
+from neuro.control.problems import build_observable_problem, build_waveform_problem
+from neuro.control.solvers import IPOPT_DEFAULTS, canonicalize_duals
 from neuro.predictor.inference import InferencePredictor
 
 if TYPE_CHECKING:
@@ -232,11 +228,10 @@ def run_waveform_benchmark(  # noqa: PLR0913 -- benchmark configuration knobs
     w_u: float = 0.1,
     reference: HealthyReference | None = None,
     kirchhoff: bool = True,
-    reduce_kirchhoff: bool = False,
     n_repeats: int = 5,
     num_steps: int = 10,
 ) -> tuple[SolverComparison, ClosedLoopComparison]:
-    """Run open-loop and closed-loop benchmarks on a Waveform Optimal Control Problem.
+    """Benchmark Waveform MPC with box bounds and an optional Kirchhoff equality.
 
     Parameters
     ----------
@@ -254,9 +249,6 @@ def run_waveform_benchmark(  # noqa: PLR0913 -- benchmark configuration knobs
         :class:`~neuro.spectral.HealthyReference` container carrying empirical channel means.
     kirchhoff
         Whether to enforce Kirchhoff Current Law as a hard equality constraint.
-    reduce_kirchhoff
-        Satisfy Kirchhoff by null-space reduction instead, exactly rather than to a tolerance,
-        the per-electrode limit becoming a coupled polytope on the reduced controls.
     n_repeats
         Repeats for open-loop timing.
     num_steps
@@ -270,7 +262,6 @@ def run_waveform_benchmark(  # noqa: PLR0913 -- benchmark configuration knobs
         w_u=w_u,
         reference=reference,
         kirchhoff=kirchhoff,
-        reduce_kirchhoff=reduce_kirchhoff,
     )
     model = problem.model
     if not isinstance(model, InferencePredictor):
@@ -280,9 +271,9 @@ def run_waveform_benchmark(  # noqa: PLR0913 -- benchmark configuration knobs
     bc, ws = initial_conditions(problem, x0)
 
     names = ["single_shooting", "ipopt", "altro", "osqp"]
-    if not kirchhoff and not reduce_kirchhoff:
+    if not kirchhoff:
         # The DDP backends clamp elementwise, so they have a seam for the box bounds and for
-        # nothing else: they join only when neither Kirchhoff formulation is in the problem.
+        # nothing else: they join only when the Kirchhoff equality is absent.
         names.extend(("boxqp", "ilqr"))
     solvers = benchmark_solvers(*names)
 

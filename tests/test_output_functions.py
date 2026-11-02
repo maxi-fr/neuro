@@ -14,7 +14,6 @@ from neuro.control.costs import (
     ObservableFrameHingeCost,
     jax_compute_observable_frames,
 )
-from neuro.control.mpc import NullspaceReducedModel
 from neuro.predictor.inference import ObservableMLPModel, WaveformMLPModel
 from neuro.spectral import ObservableEnvelope
 
@@ -132,21 +131,6 @@ def test_observable_mlp_model_output(tmp_path: Path) -> None:
     newest = x[(model.n_y - 1) * model.n_outputs : model.n_y * model.n_outputs]
     expected_y = newest * np.asarray(model.y_scale) + np.asarray(model.y_center)
     np.testing.assert_allclose(np.asarray(y), expected_y, rtol=1e-10, atol=1e-12)
-
-
-def test_nullspace_reduced_model_output(tmp_path: Path) -> None:
-    stem = _build_synthetic_checkpoint(tmp_path, is_observable=False, n_channels=3, n_controls=3)
-    base_model = WaveformMLPModel.load(stem)
-    reduced = NullspaceReducedModel(base_model)
-    assert reduced.p == base_model.p
-
-    rng = np.random.default_rng(_SEED)
-    x = jnp.asarray(rng.standard_normal(base_model.n))
-    v = jnp.asarray(rng.standard_normal(reduced.m))
-
-    y_red = reduced.output(x, v)
-    y_base = base_model.output(x)
-    np.testing.assert_allclose(np.asarray(y_red), np.asarray(y_base), rtol=1e-10, atol=1e-12)
 
 
 def _numerical_output_state_jacobian(

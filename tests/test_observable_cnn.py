@@ -18,7 +18,7 @@ from neuro.config import (
     StftGeometry,
     TrainingConfig,
 )
-from neuro.control.mpc import build_observable_problem
+from neuro.control.problems import build_observable_problem
 from neuro.predictor.cnn import ObservableCNNModel
 from neuro.predictor.inference import InferencePredictor
 from neuro.predictor.train import TrainingResult, train

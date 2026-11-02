@@ -322,7 +322,7 @@ def _check_predictor(config: Mapping[str, Any]) -> None:
     downsample = int(meta["downsample"])
     controller_dt = float(controller["dt"])
 
-    is_observable = "geometry" in meta or problem.get("class_path") == "neuro.control.mpc.build_observable_problem"
+    is_observable = "geometry" in meta or problem.get("class_path") == "neuro.control.problems.build_observable_problem"
 
     if is_observable:
         effective_decimated_dt = _check_observable_predictor(config, problem, meta, controller_dt, plant_dt)

@@ -85,7 +85,7 @@ Figure~\ref{fig:receding_horizon} shows how the plans change as new measurements
     The dotted horizontal line marks the upper input bound.}\label{fig:receding_horizon}
 \end{figure}
 
-Finite-horizon optimization alone does not guarantee closed-loop stability or recursive feasibility. % this kind of falls out of the sky. What even is recursive feasibility? 
+Finite-horizon optimization alone does not guarantee closed-loop stability or recursive feasibility. % this kind of falls out of the sky. What even is recursive feasibility?
 The terminal cost $V_\mathrm{f}$ can approximate the remaining cost of continuing from $\mathbf{x}_{H|k}$. % what is remaining cost? we need to explain somewhere that the finite horizon form is an approximation of the infinite horizon problem
 The terminal set $\mathbb{X}_\mathrm{f}\subseteq\mathbb{X}$ can restrict this endpoint to states from which admissible operation can continue.
 Setting $\mathbb{X}_\mathrm{f}=\mathbb{X}$ removes the additional endpoint restriction.
@@ -172,13 +172,14 @@ The following section specializes the general \ac{ocp} to the learned neurostimu
 
 \section{\ac{mpc} with Learned Input-Output Predictors}\label{sec:mpc_input_output_formulation}
 
+% some introduction
+
 \subsection{History-State Realization}
 % Refer to Chapter 4 for the observable and current histories rather than repeating their derivation.
 % Distinguish the learned output map o_{j+1|k} = f_theta(h_{j|k}, u_{j|k}) from the full history-state transition.
 % Construct the latter by shifting the histories and appending the predicted observable and candidate current.
 % Identify x = h in the general OCP only after defining this complete transition map.
-% Explain that most history-state coordinates are copied entries, not newly predicted quantities.
-% Initialize from measured observations and past currents, without an observer of the biological state.
+% Explain that most history-state coordinates are shifted entries, not newly predicted quantities.
 % Specify waveform-sample and spectral-frame time grids, controller updates and zero-order hold actuation.
 
 \subsection{\ac{narx} Transcription}
@@ -204,16 +205,16 @@ The following section specializes the general \ac{ocp} to the learned neurostimu
 % regional plant activity is unavailable to the controller, so the recruitment measure cannot be used directly.
 % Instead, formulate suppression costs from predicted scalp measurements.
 
-\subsubsection*{Healthy References}
+%% Healthy References
 % Explain the construction of empirical healthy channel means and channel-frequency log-power envelopes.
 % Use the same spectral transformation for healthy references and predicted quantities.
 
-\subsubsection*{Waveform Tracking Cost}
+%% Waveform Tracking Cost
 % Define squared waveform deviation from empirical healthy channel means.
 % This tracks a healthy operating point, not the phase of a prescribed healthy waveform.
 % Retain the implemented quadratic tracking cost.
 
-\subsubsection*{Spectral Suppression Cost}
+%% Spectral Suppression Cost
 % Define the squared one-sided hinge [predicted log power - healthy envelope]_+^2.
 % Explain why power below the healthy envelope is unpenalized.
 % Define weighting and averaging over scored times, channels and frequency bins.
@@ -224,7 +225,7 @@ The following section specializes the general \ac{ocp} to the learned neurostimu
 % Overlapping STFT windows make the waveform-derived spectral cost depend jointly on multiple prediction steps, extending the stage-additive form in \eqref{eq:mpc_ocp}.
 % Together with waveform tracking, these establish the three predictor-cost combinations.
 
-\subsubsection*{Quadratic Current Effort and Combined Objective}
+%% Quadratic Current Effort and Combined Objective
 % Define the squared L2 current-effort term.
 % Interpret it as a current-effort measure; electrical energy requires an additional voltage/impedance model.
 % Assemble the suppression and stimulation terms into a modular weighted objective.

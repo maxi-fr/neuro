@@ -58,40 +58,6 @@ class SumCost(CostFunction):
         return total
 
 
-class ReducedEffortCost(CostFunction):
-    """Quadratic effort ``(w_u / horizon) * ||Z v||^2`` on the reduced controls of a Nullspace Frame.
-
-    The reduced controls ``v`` are not the physical currents: the electrodes carry ``u = Z v``
-    over the last-electrode elimination basis, so scoring ``||v||^2`` would price a different
-    quantity than the unreduced problem does. For that basis ``Z^T Z = I + 1 1^T`` exactly, which
-    is this cost's closed form. Writing it as a control-only cost rather than folding ``Z^T Z``
-    into a quadratic cost's ``R`` keeps the state weight diagonal, which at deployment scale is a
-    ``(n,)`` vector rather than the dense ``(n, n)`` matrix trajopt would promote it to.
-    """
-
-    w_u: jax.Array
-    horizon: int = eqx.field(static=True)
-
-    def __init__(self, *, n: int, m: int, w_u: float, horizon: int) -> None:
-        """Initialize with the reduced state/control dimensions, effort weight, and horizon."""
-        super().__init__(n=n, m=m)
-        self.w_u = jnp.asarray(w_u)
-        self.horizon = int(horizon)
-
-    def evaluate(
-        self,
-        x: jax.Array,
-        u: jax.Array | None = None,
-        t: float | jax.Array = 0.0,
-    ) -> jax.Array:
-        """Evaluate ``(w_u / horizon) * (sum(v^2) + (sum v)^2)``, the expanded currents' squared norm."""
-        del x, t
-        if u is None:
-            return jnp.zeros(())
-        v = jnp.asarray(u)
-        return (self.w_u / self.horizon) * (jnp.sum(v**2) + jnp.sum(v) ** 2)
-
-
 def jax_compute_observable_frames(y: jax.Array, geometry: StftGeometry, *, fs: float) -> jax.Array:
     """Log-power Frames of ``y`` ``(H, n_channels)`` under an Observable geometry, differentiably.
 
