@@ -42,7 +42,7 @@ def main() -> None:
     reference = [load_channel(healthy_dir / f"sim_{i:03}.npz", channel)[2 * FS :] for i in range(9)]
     mean = np.concatenate(reference).mean()
     reference_frames = np.concatenate([log_power(y) for y in reference])
-    lower, envelope = np.quantile(reference_frames, [0.10, QUANTILE], axis=0)
+    lower, q25, q75, envelope = np.quantile(reference_frames, [0.10, 0.25, 0.75, QUANTILE], axis=0)
     frequencies = np.arange(13)
     healthy = load_channel(healthy_dir / "sim_009.npz", channel)[2 * FS : 20 * FS]
     seizure = load_channel(DATA / "uncontrolled_2" / "log.npz", channel)[2 * FS : 20 * FS]
@@ -50,11 +50,11 @@ def main() -> None:
     fig, (wave, spectral) = plt.subplots(1, 2, figsize=style.figsize(height_in=2.55), layout="constrained")
     wave.axhline(mean, color="0.25", linestyle="--", label="Healthy mean")
     spectral.fill_between(frequencies, lower[:13], envelope[:13], color="0.85", label="Reference 10th--90th pct.")
-    spectral.plot(frequencies, envelope[:13], color="0.25", linestyle="--", label="90th pct. threshold")
+    spectral.fill_between(frequencies, q25[:13], q75[:13], color="0.65", label="Reference 25th--75th pct.")
     for samples, label, color in [(healthy, "Healthy", "#0072B2"), (seizure, "Seizure", "#D55E00")]:
         frames = log_power(samples)
         wave.plot(10 + np.arange(4 * FS) / FS, samples[8 * FS : 12 * FS], label=label, color=color)
-        spectral.plot(frequencies, np.median(frames, axis=0)[:13], label=label, color=color)
+        spectral.plot(frequencies, np.median(frames, axis=0)[:13], label=f"{label} median", color=color)
         print(label, "RMS", np.sqrt(np.mean((samples - mean) ** 2)))
         print(label, "exceedance 3 Hz", np.mean(frames[:, 3] > envelope[3]), "frames", len(frames))
 
