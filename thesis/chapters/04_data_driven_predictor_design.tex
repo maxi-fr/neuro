@@ -365,7 +365,7 @@ With the samples and coordinate transformations defined, the next subsection spe
 
 For one-step training, the loss scores the next observation predicted from a measured history.
 For multi-step training, it scores a recursive forecast under the recorded future currents, without intermediate measurement correction, matching the prediction procedure in~\eqref{eq:recursive_predictor}.
-For the constructed samples, mean squared error is used as the primary per-sample loss in~\eqref{eq:empirical_predictor_loss}, following standard regression practice~\cite{Goodfellow2016}.
+For the constructed samples, \ac{mse} is used as the primary per-sample loss in~\eqref{eq:empirical_predictor_loss}, following standard regression practice~\cite{Goodfellow2016}.
 For sample $\nu$, let $n_{\mathrm{score}}\in\{1,\ldots,H\}$ be the number of predicted observations scored.
 Using the recursive prediction notation from~\eqref{eq:recursive_predictor}, define
 \begin{equation}
@@ -422,7 +422,7 @@ The neural networks are trained with AdamW, which uses running estimates of the 
 Gradients are computed by backpropagation through the network operations and, for recursive forecasts, through preceding predictions~\cite{Goodfellow2016}.
 The networks are trained on shuffled mini-batches, with an initial learning-rate warm-up followed by cosine decay.
 
-During curriculum training, the scored length $n_{\mathrm{score}}$ of the observation-space MSE is increased from one step to its final value over a prescribed range of training epochs.
+During curriculum training, the scored length $n_{\mathrm{score}}$ of the observation-space \ac{mse} is increased from one step to its final value over a prescribed range of training epochs.
 For waveform predictors, $n_{\mathrm{score}}$ counts waveform samples; for spectral-output predictors, it counts spectral frames, with $\nscore{spec}=n_{\mathrm{score}}$.
 Once activated, the auxiliary spectral loss is computed over its configured span $\nscore{spec}$, using $\nscore{spec}\nhop{}$ predicted waveform samples independently of the current curriculum length.
 This schedule is intended to stabilize optimization by first fitting local transitions before introducing errors from longer recursive forecasts.

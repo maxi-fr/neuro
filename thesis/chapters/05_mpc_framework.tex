@@ -61,7 +61,6 @@ Unlike the training loss $\mathcal L$, which is used to fit the predictor, this 
 The sets $\mathbb{X}$ and $\mathbb{U}$ contain the admissible states and inputs.
 Membership in these sets is required for a sequence to be feasible, regardless of its cost.
 If no state restrictions are imposed, $\mathbb{X}=\mathbb{R}^{\ndim{x}}$.
-In particular, penalizing seizure-related activity in $\ell$ allows its reduction to be traded against stimulation effort without requiring a hard bound on the predicted activity.  % this is a general formulation. Any seizure related talk is displace. This whole sentence/paragraph doesn't make sense: "In particular" what?
 
 Solving~\eqref{eq:mpc_ocp} yields an input sequence $\mathbf{u}^{\star}_{0|k},\ldots,\mathbf{u}^{\star}_{H-1|k}$.
 The controller applies its first element,
@@ -85,16 +84,15 @@ Figure~\ref{fig:receding_horizon} shows how the plans change as new measurements
     The dotted horizontal line marks the upper input bound.}\label{fig:receding_horizon}
 \end{figure}
 
-Finite-horizon optimization alone does not guarantee closed-loop stability or recursive feasibility. % this kind of falls out of the sky. What even is recursive feasibility?
-The terminal cost $V_\mathrm{f}$ can approximate the remaining cost of continuing from $\mathbf{x}_{H|k}$. % what is remaining cost? we need to explain somewhere that the finite horizon form is an approximation of the infinite horizon problem
-The terminal set $\mathbb{X}_\mathrm{f}\subseteq\mathbb{X}$ can restrict this endpoint to states from which admissible operation can continue.
-Setting $\mathbb{X}_\mathrm{f}=\mathbb{X}$ removes the additional endpoint restriction.
-When a local controller preserves the terminal set and the terminal cost satisfies suitable decrease conditions, these ingredients can establish stability and recursive feasibility~\cite{Mayne2000}.
-Recursive feasibility means that initial feasibility is preserved at subsequent updates.
-Merely assigning a cost to the final prediction does not establish either property.
+For a task that continues indefinitely, the finite horizon truncates the future cost to make the optimization tractable.
+The terminal cost $V_\mathrm{f}$ can estimate the cost that would accumulate beyond this horizon, starting from $\mathbf{x}_{H|k}$.
+At the next update, the controller needs a new feasible plan, which it can seek by extending the unused portion of the previous plan by one step.
+Preserving feasibility from one update to the next is called recursive feasibility.
+A terminal set $\mathbb{X}_\mathrm{f}\subseteq\mathbb{X}$ can restrict the endpoint to states where a local controller provides such an admissible extension under the prediction model.
+If the local controller preserves that set and the terminal cost decreases by at least the stage cost along its trajectories, the shifted plan also gives a decrease bound for the optimal cost, which can establish closed-loop stability under suitable assumptions~\cite{Mayne2000}.
 
-The \ac{ocp} defines the control objective and admissible predictions.
-The next section compares direct multiple and single shooting as two numerical representations of this problem.
+To compute a plan at each update, the dynamics must be represented in a form a numerical solver can handle.
+Direct multiple and single shooting make different choices about which variables the solver adjusts, changing the size of the problem and the structure of its derivatives.
 
 \section{Numerical Transcription and Solution}\label{sec:mpc_numerical_solution}
 
@@ -139,18 +137,16 @@ Under single shooting, they act on the rollout maps $\boldsymbol{\varphi}_j$.
 Input constraints retain their original form in either transcription.
 
 The choice of optimization variables also affects how model sensitivities enter the numerical problem.
-At predicted step $q=0,\ldots,H-1$, define the Jacobians $\mathbf{A}_q = \partial\mathbf{f}/\partial\mathbf{x}
-(\mathbf{x}_{q|k},\mathbf{u}_{q|k})$ and $\mathbf{B}_q = \partial\mathbf{f}/\partial\mathbf{u}
-(\mathbf{x}_{q|k},\mathbf{u}_{q|k})$,
-with $\mathbf{A}_q\in\mathbb{R}^{\ndim{x}\times\ndim{x}}$ and $\mathbf{B}_q\in\mathbb{R}^{\ndim{x}\times\ndim{u}}$.
-For $0\le r<j\le H$, repeated application of the chain rule gives
+At step offset $j=0,\ldots,H-1$, define the Jacobians $\mathbf{A}_{j|k} = \partial\mathbf{f}/\partial\mathbf{x}(\mathbf{x}_{j|k},\mathbf{u}_{j|k})$ and $\mathbf{B}_{j|k} = \partial\mathbf{f}/\partial\mathbf{u}(\mathbf{x}_{j|k},\mathbf{u}_{j|k})$,
+with $\mathbf{A}_{j|k}\in\mathbb{R}^{\ndim{x}\times\ndim{x}}$ and $\mathbf{B}_{j|k}\in\mathbb{R}^{\ndim{x}\times\ndim{u}}$.
+For $0\le i<j\le H$, repeated application of the chain rule gives
 %
 \begin{equation*}
-    \frac{\partial \mathbf{x}_{j|k}}{\partial \mathbf{u}_{r|k}}
-    = \mathbf{A}_{j-1}\mathbf{A}_{j-2}\cdots\mathbf{A}_{r+1}\mathbf{B}_r \,,
+    \frac{\partial \mathbf{x}_{j|k}}{\partial \mathbf{u}_{i|k}}
+    = \mathbf{A}_{j-1|k}\mathbf{A}_{j-2|k}\cdots\mathbf{A}_{i+1|k}\mathbf{B}_{i|k} \,,
 \end{equation*}
 %
-where the matrix product is the identity when $r=j-1$.
+where the matrix product is the identity when $i=j-1$.
 The same Jacobian product appears when an iterated prediction model is trained through a multiple-step rollout.
 The product may amplify or attenuate early-input sensitivities, impairing numerical conditioning.
 Single shooting therefore gives a smaller optimization problem, but its derivatives involve products across the prediction horizon.
@@ -168,82 +164,369 @@ The computational tradeoff depends on the dynamics, horizon length and numerical
 For a nonlinear dynamics model, either transcription gives a finite-dimensional \ac{nlp}.
 Both can be solved using \ac{sqp}, which forms quadratic subproblems with linearized constraints~\cite{Nocedal2006}.
 Alternatively, primal-dual interior-point methods, such as IPOPT, solve barrier subproblems while reducing the barrier parameter~\cite{Waechter2006,Nocedal2006}.
-The following section specializes the general \ac{ocp} to the learned neurostimulation predictors, current constraints and control costs used in this thesis.
+The following section specializes the general \ac{ocp} formulation to the learned neurostimulation predictors, control costs and current constraints used in this thesis.
 
-\section{\ac{mpc} with Learned Input-Output Predictors}\label{sec:mpc_input_output_formulation}
+\section{\ac{mpc} for Seizure Suppression}\label{sec:mpc_input_output_formulation}
 
-% Introduce our neurostimulation MPC formulation by relating its predictor dynamics,
-% admissible currents and control costs to the general formulation above.
+To use the learned input-output predictor for seizure suppression, we first express its history update as a state transition.
+The learned map $\mathbf f_{\boldsymbol\theta}$ in~\eqref{eq:recursive_predictor} predicts the next observable, whereas the general \ac{mpc} formulation requires a transition of the complete model state.
+For the history state $\mathbf h$ defined in~\eqref{eq:predictor_history}, this transition consists of shifting the stored entries and appending the predicted observable and candidate current, giving
+%
+\begin{equation}
+    \mathbf h_{j+1|k}
+    =\mathbf F_{\boldsymbol\theta}(\mathbf h_{j|k},\mathbf u_{j|k})
+    =\begin{bmatrix}
+        \mathbf o_{j-\nhist{o}+2|k}\\
+        \vdots\\
+        \mathbf o_{j|k}\\
+        \mathbf f_{\boldsymbol\theta}(\mathbf h_{j|k},\mathbf u_{j|k})\\[2pt]
+        \mathbf u_{j-\nhist{u}+1|k}\\
+        \vdots\\
+        \mathbf u_{j-1|k}\\
+        \mathbf u_{j|k}
+    \end{bmatrix},
+    \qquad j=0,\ldots,H-1\,.
+    \label{eq:mpc_history_transition}
+\end{equation}
+%
+Identifying $\mathbf x=\mathbf h$, $\mathbf f=\mathbf F_{\boldsymbol\theta}$ and $\hat{\mathbf x}_k=\mathbf h_k$ gives the state-space form in~\eqref{eq:mpc_prediction_dynamics}.
+This state-space form permits multiple shooting, but the structure of the history update allows a smaller transcription.
 
-\subsection{Predictor Dynamics and Input Constraints}
-% Connect the input-output predictors of Chapter 4 to the general state-space dynamics
-% through a History State that shifts past observations and currents and appends new predictions and inputs.
-% Explain how waveform and spectral predictors fit this realization and its timing of prediction and actuation.
-% Introduce the admissible input set: per-electrode bounds of 2 mA in magnitude and Kirchhoff's zero-sum constraint.
-% These dynamics and constraints underlie each numerical transcription considered next.
+\subsection{\acs{narx} Transcription}
 
-\subsection{\ac{narx} Transcription}
-% Introduce the fully output-lifted NARX transcription: optimize future outputs and currents,
-% reconstruct their histories using measured pre-horizon data, and enforce the learned output-map equalities.
-% Explain its structural relationship to single shooting and full-history multiple shooting,
-% particularly the removal of redundant history-shift variables and constraints.
-% This establishes the third transcription compared experimentally in Chapter 6; performance belongs there.
+Applying multiple shooting to~\eqref{eq:mpc_history_transition} introduces a history variable at each step and equalities that copy entries between consecutive histories.
+Each history can instead be assembled directly from fixed data and the corresponding observable and current decision variables.
+Substituting these entries for the history variable eliminates the copying equalities and leaves only the future observables $\mathbf o_{1|k},\ldots,\mathbf o_{H|k}$ and currents $\mathbf u_{0|k},\ldots,\mathbf u_{H-1|k}$ as decision variables.
+The dynamics constraint links these variables through the learned predictor,
+%
+\begin{equation}
+    \mathbf o_{j+1|k}
+    =\mathbf f_{\boldsymbol\theta}\!\left(
+      \begin{bmatrix}
+        \mathbf o_{j-\nhist{o}+1|k}^{\mathsf T} & \cdots & \mathbf o_{j|k}^{\mathsf T} &
+        \mathbf u_{j-\nhist{u}|k}^{\mathsf T} & \cdots & \mathbf u_{j-1|k}^{\mathsf T}
+      \end{bmatrix}^{\mathsf T},\,
+      \mathbf u_{j|k}\right),
+    \qquad j=0,\ldots,H-1\,.
+    \label{eq:mpc_narx_defects}
+\end{equation}
+%
+For integer offsets $s\leq0$, the observable entries are fixed measurements, $\mathbf o_{s|k}=\mathbf o_{k+s}$.
+Similarly, entries $\mathbf u_{s|k}=\mathbf u_{k+s}$ with $s<0$ are previously applied currents.
+They constitue fixed parameters which supply the initial history for the dynamics constraint in~\eqref{eq:mpc_narx_defects}.
+Table~\ref{tab:mpc_transcription_counts} compares the scalar decision-variable and dynamics-equality counts for the three transcriptions.
 
-\subsection{Control Cost Functions}\label{sec:mpc_cost_functions}
+\begin{table}
+    \centering
+    \caption{Scalar decision-variable and dynamics-equality counts for the three transcriptions.}\label{tab:mpc_transcription_counts}
+    \begin{tabular}{lcc}
+        \toprule
+        Transcription & Variables & Dynamics equalities \\
+        \midrule
+        Single shooting & $H\ndim{u}$ & $0$ \\
+        Multiple shooting & $(H+1)\ndim{h}+H\ndim{u}$ & $H\ndim{h}$ \\
+        \acs{narx} & $H(\ndim{o}+\ndim{u})$ & $H\ndim{o}$ \\
+        \bottomrule
+    \end{tabular}
+\end{table}
 
-% Motivate suppression costs based on predicted scalp measurements as proxies for recruitment,
-% whose regional activity is unavailable to the controller.
-% Introduce the empirical healthy references and the implemented suppression costs:
-% squared waveform deviation from healthy channel means and squared one-sided excess log power above healthy envelopes.
-% Establish the three predictor-cost combinations: waveform prediction with waveform tracking,
-% waveform prediction with spectral suppression, and spectral prediction with spectral suppression.
-% Explain how spectra are obtained from waveform predictions and how this relates to the general cost formulation.
-% Introduce quadratic current effort and its weighted combination with suppression,
-% including the implemented averaging and horizon normalization and scoring of the final prediction.
-% This supplies the objectives for the experiments and the basis for the sparsity-promoting extensions that follow.
+The transcription specifies how predictions enter the optimization.
+The next subsection completes the \ac{ocp} formulation for seizure suppression by introducing the costs and constraints.
+
+\subsection{Control Costs and Input Constraints}\label{sec:mpc_cost_functions}
+
+Regional recruitment cannot be assessed directly from the scalp \ac{eeg} observations available to the controller.
+So instead we extract features of predicted \ac{eeg} to serve as proxies for seizure activity and compare that to features extracted from \ac{eeg} signals of healthy simulated brains.
+To characterize healthy activity, we use unstimulated simulations in which all regions have the healthy background excitability described in Section~\ref{sec:parameter_selection}.
+
+Panel (a) of Figure~\ref{fig:mpc_suppression_references} shows that healthy fluctuations observed through an electrode are small on the scale of seizure oscillations.
+This difference motivates approximating the healthy waveform by a constant and penalizing large departures from it.
+For each channel, the reference is the mean of the waveform samples pooled across time and across the healthy reference trajectories.
+The vector of healthy channel means $\bar{\mathbf y}_{\mathrm{healthy}}\in\mathbb R^{\nchan}$ serves as the reference for a standard squared tracking cost~\cite{Rawlings2017},
+%
+\begin{equation}
+    \mathcal J_{\mathrm{wave}}
+    =\frac{1}{H}\sum_{j=1}^{H}
+      \left\|\mathbf y_{j|r}-\bar{\mathbf y}_{\mathrm{healthy}}\right\|_2^2\,.
+    \label{eq:mpc_waveform_cost}
+\end{equation}
+%
+Following the recursive prediction notation of Chapter~\ref{ch:data_driven_predictor_design}, $\mathbf y_{j|r}$ denotes the waveform observable $\mathbf o_{j|k}$ with the prediction boundary at waveform sample $k=r$.
+The waveform cost in~\eqref{eq:mpc_waveform_cost} penalizes sustained offsets and large oscillations around the healthy mean.
+Healthy fluctuations may also contribute to it, so reducing the tracking cost need not selectively attenuate seizure-related activity.
+
+A frequency-specific reference allows the penalty to focus on power that exceeds the range usually observed in healthy recordings.
+The reference recordings are transformed into log-power features as described in Section~\ref{sec:spectral_representation}.
+For each channel and frequency bin, the empirical 90th percentile across healthy reference frames sets the corresponding threshold in the healthy spectral envelope $\spectral_{\mathrm{healthy}}\in\mathbb R^{\nchan\nbin}$.
+A higher percentile leaves more healthy frames unpenalized and also tolerates larger increases in power.
+
+The spectral cost averages the squared excess log power over $\nscore{spec}\in\mathbb N_{>0}$ future frames, all channels, and all frequency bins,
+%
+\begin{equation}
+    \mathcal J_{\mathrm{spec}}
+    =\frac{1}{\nscore{spec}\nchan\nbin}
+      \sum_{j=1}^{\nscore{spec}}\sum_{c=1}^{\nchan}
+      \sum_{m=0}^{\nbin-1}
+      {\left[\mathcal Y_{j|q,c,m}
+      -\mathcal Y_{\mathrm{healthy},c,m}\right]}_+^2\,,
+    \label{eq:mpc_spectral_cost}
+\end{equation}
+%
+where ${[a]}_+=\max\{a,0\}$ for $a\in\mathbb R$.
+The prediction boundary is spectral frame $q$.
+The penalty vanishes at or below the healthy envelope.
+Panel (b) of Figure~\ref{fig:mpc_suppression_references} illustrates where seizure log power exceeds the envelope at the electrode CP5.
+
+\begin{figure}
+    \centering
+    \includegraphics{figures/05_mpc_framework/suppression_references}
+    \caption{Waveform and spectral references at scalp channel CP5 for unstimulated biophysical plant simulations.
+    The references are fitted to nine healthy runs after discarding the first \SI{2}{\second} of each recording.
+    Both evaluation runs use the same filtering and sampling at \SI{50}{\hertz}.
+    (a) Waveform excerpts from a separate healthy run and an uncontrolled seizure run against the fitted healthy mean.
+    (b) Median log power across frames from \SI{2}{\second} to \SI{20}{\second} for the same runs.
+The shaded band spans the 10th to 90th percentiles of the pooled healthy reference frames at each frequency, with the dashed upper edge marking the suppression threshold.
+    Frames use \SI{1}{\second} Hann windows and a \SI{0.5}{\second} hop.}\label{fig:mpc_suppression_references}
+\end{figure}
+
+A spectral predictor produces $\spectral_{j|q}$ directly, so~\eqref{eq:mpc_spectral_cost} can be applied to its predicted observables with $\nscore{spec}=H$.
+For a waveform predictor, the same spectral transformation used for the reference is applied to the measured waveform history joined to the predicted continuation.
+As in the spectral training loss, the measured history supplies the preceding samples required by overlapping segments and temporal smoothing, with $\nscore{spec}\nhop\leq H$.
+Each spectral penalty depends on several predicted waveform samples.
+Its derivatives therefore propagate through the windowed spectral transformation.
+
+The terminal cost $V_{\mathrm f}$ can use the waveform or spectral penalty at the horizon endpoint, with a weight independent of the corresponding horizon penalty.
+
+To balance predicted seizure suppression against electrode current, the objective includes a squared $L_2$ current cost,
+%
+\begin{equation}
+    \mathcal J_{L_2}
+    =\frac{1}{H}\sum_{j=0}^{H-1}
+      \|\mathbf u_{j|k}\|_2^2\,.
+    \label{eq:mpc_current_effort}
+\end{equation}
+%
+This cost is proportional to the time integral of squared current over the horizon and serves as a proxy for the supplied electrical energy.
+The objective combines the applicable suppression penalties and the $L_2$ current cost with nonnegative weights.
+
+The input constraints follow from the stimulation requirements in Section~\ref{sec:stimulation_interface}.
+The current bounds apply to each electrode, and Kirchhoff's current law requires the injected and return currents to balance at every interval.
+With one control coordinate per physical electrode, $\ndim{u}=\nelec$, the input set is
+%
+\begin{equation}
+    \mathbb U
+    =\left\{\mathbf u\in\mathbb R^{\ndim{u}}:\,
+        |u_p|\leq u_\mathrm{max},\ p=1,\ldots,\ndim{u},\quad % chktex 35 -- max names the current bound.
+        \sum_{p=1}^{\ndim{u}}u_p=0
+      \right\},
+    \qquad u_\mathrm{max}=\SI{2}{\milli\ampere}\,. % chktex 35 -- max names the current bound.
+    \label{eq:mpc_current_constraints}
+\end{equation}
+%
+Predicted activity is penalized through the suppression costs without additional state or terminal-set restrictions, giving $\mathbb X_{\mathrm f}=\mathbb X=\mathbb R^{\ndim{h}}$.
+The bounds in~\eqref{eq:mpc_current_constraints} limit instantaneous currents, while the $L_2$ current cost penalizes squared current across the horizon.
+The next section introduces penalties and constraints that favor intervals without stimulation.
 
 \section{Sparsity-Promoting Control Formulations}\label{sec:mpc_sparse_formulations}
 
-% Introduce L1 current penalties and Active Interval optimization as distinct sparsity mechanisms.
-% These options can replace or supplement the quadratic current-effort term.
-% Give the general formulation and specialize it to the spectral predictor and spectral suppression cost.
-% The experimental combinations and their comparative performance belong in Chapter 6.
+The aim is to prevent seizure onset or recruitment with interventions separated by periods in which neural activity evolves without applied current. % we need to explain
+Because \ac{mpc} looks ahead, it can schedule stimulation in anticipation of predicted pathological activity and allow intervals of zero current where the forecast supports doing so.
+Temporal sparsity concerns the number of these unstimulated intervals.
 
-\subsection{L1 Current Cost and Exact Epigraph Formulation}
-% Define the L1 penalty on physical electrode currents and explain its sparsity-promoting role.
-% Introduce auxiliary variables with -z <= u <= z and minimize their weighted sum.
-% Develop the exact epigraph formulation; do not develop the smooth approximation as a study method.
-% Distinguish summed absolute current from signed net charge and from the number of enabled intervals.
+\subsection{\texorpdfstring{$L_1$}{L1} Current Penalty}
 
-\subsection{Active Interval Optimization}
-% Introduce one shared binary variable delta_{j|k} per horizon interval.
-% Gate all physical electrode currents through -u_max,p delta <= u_p <= u_max,p delta.
-% Retain Kirchhoff's equality and the original predictor dynamics driven by physical currents.
-% Define both alternatives: a normalized activation penalty and a hard horizon-local activation cap.
-% Explain that the implementation treats penalty and cap as alternative options.
-% An enabled interval permits stimulation but need not contain nonzero current.
-% Count enabled intervals, not pulse onsets; adjacent enabled intervals may have different currents.
+A direct way to encourage zero currents is to charge a fixed cost for every nonzero current component. % citation
+This count is often called the $L_0$ penalty. % citation
+Its discontinuity at zero makes it difficult to use in a continuous optimization problem. % citation
+The $L_1$ penalty provides a continuous surrogate by charging in proportion to absolute current magnitude. % citation
+An example from neural stimulation is the minimum-charge entrainment problem studied by Pyragas et al.~\cite{Pyragas2020}. % i think we keep it general and then say something like: this idea has been applied to neurostimulation in x, y, z
+They minimize the integral of absolute current subject to entrainment and obtain waveforms that alternate between bounded stimulation and intervals of zero current under their phase model. % this would be part of the general part 
+This motivates using absolute current as a way to encourage off intervals while allowing current amplitudes to vary continuously.
 
-\subsection{Mixed-Integer Nonlinear Programming with Bonmin}
-% Formulate the binary-activation problem as a MINLP and explain the relevant solution principles.
-% Explain the implemented Bonmin solution route without claiming global optimality for nonconvex problems.
-% Report observed computational limitations only in Chapter 6.
+For the physical electrode currents, the horizon-averaged $L_1$ cost is
+%
+\begin{equation}
+    \mathcal J_{L_1}
+    =\frac{1}{H}\sum_{j=0}^{H-1}\|\mathbf u_{j|k}\|_1
+    =\frac{1}{H}\sum_{j=0}^{H-1}\sum_{p=1}^{\nelec}|u_{j|k,p}|\,.
+    \label{eq:mpc_l1_cost}
+\end{equation}
+%
+Let $\mathcal J_{\mathrm{supp}}$ denote the selected suppression cost, including its weight.
+The continuous-current objective can then be written as
+%
+\begin{equation}
+    \mathcal J_{\mathrm{cont}}
+    =\mathcal J_{\mathrm{supp}}
+     +w_{L_2}\mathcal J_{L_2}
+     +w_1\mathcal J_{L_1}\,,
+    \qquad w_{L_2},w_1\geq0\,,
+    \label{eq:mpc_sparse_continuous_cost}
+\end{equation}
+%
+where $\mathcal J_{L_2}$ is the $L_2$ current cost from~\eqref{eq:mpc_current_effort}.
+Setting either current weight to zero removes its term, so the absolute-current penalty can replace or supplement the $L_2$ current cost.
+Near zero, a small feasible increase in current can improve predicted suppression to first order while increasing the $L_2$ current cost only to second order.
+The absolute-current cost in~\eqref{eq:mpc_l1_cost} also increases to first order.
+If the predicted benefit of a small intervention falls below this marginal cost, the optimizer has a reason to leave the current at zero.
 
-\subsection{Continuous Relaxation and Homotopy}
-% Relax activation variables to [0, 1] and add beta sum_j delta_j(1-delta_j).
-% Explain continuation from the unpenalized relaxation through increasing integrality-penalty weights.
-% Describe warm starts between continuation passes, integrality tolerance and termination.
-% The implementation retains sufficiently integral solutions without a separate final rounding/recovery solve.
-% Explain that finite local continuation does not guarantee a globally optimal binary solution.
+The kink that promotes zero currents also makes the objective derivative undefined precisely at those currents.
+The gradient-based solvers discussed above use objective derivatives to determine their search directions.
+Here the kink can be represented by two linear inequalities because $|u|$ is the smallest value that is at least as large as both $u$ and $-u$.
+For $w_1>0$, introduce auxiliary variables $z_{j|k,p}$ and replace the last term in~\eqref{eq:mpc_sparse_continuous_cost} by
+%
+\begin{equation}
+    \frac{w_1}{H}\sum_{j=0}^{H-1}\sum_{p=1}^{\nelec}z_{j|k,p}\,,
+    \qquad
+    -z_{j|k,p}\leq u_{j|k,p}\leq z_{j|k,p}\,.
+    \label{eq:mpc_l1_epigraph}
+\end{equation}
+%
+The inequalities in~\eqref{eq:mpc_l1_epigraph} imply $z_{j|k,p}\geq|u_{j|k,p}|$.
+Since reducing any slack lowers the objective without changing the currents or predictions, minimization gives $z_{j|k,p}=|u_{j|k,p}|$.
+This gives an exact reformulation with a linear cost in the auxiliary variables.
 
-\subsection{Candidate \ac{mpc} with Grouped Activation Decisions}
-% Group neighboring horizon intervals into blocks sharing an activation decision.
-% Enumerate the 2^B block schedules and solve the continuous-current NLP for each schedule.
-% Fix currents to zero in disabled intervals; keep currents independently optimized within enabled blocks.
-% Add the enabled-interval penalty and select the lowest-cost successful candidate.
-% Unequal block lengths contribute according to enabled interval count, not enabled block count.
-% Explain that the implemented Candidate MPC uses the penalty formulation, without an explicit activation cap.
-% Exhaustive enumeration covers the restricted schedule set; local NLP solves do not establish global optimality.
+\subsection{Interval Activation Formulation}
+
+An unstimulated interval requires every electrode current to vanish simultaneously.
+To control the number of stimulated intervals directly, introduce one binary activation variable $\delta_{j|k}\in\{0, 1\}$ per interval, shared by all electrodes.
+The current constraints become
+%
+\begin{equation}
+    \begin{aligned}
+        -u_\mathrm{max}\delta_{j|k} % chktex 35 -- max names the current bound.
+        &\leq u_{j|k,p}\leq u_\mathrm{max}\delta_{j|k}, % chktex 35 -- max names the current bound.
+        \qquad p=1,\ldots,\nelec,\\
+        \sum_{p=1}^{\nelec}u_{j|k,p}&=0,
+        \qquad j=0,\ldots,H-1\,.
+    \end{aligned}
+    \label{eq:mpc_activation_gates}
+\end{equation}
+%
+The bounds apply at every horizon interval.
+When $\delta_{j|k}=0$, every physical current is zero; when $\delta_{j|k}=1$, the original admissible current set is recovered.
+The predictor remains driven by $\mathbf u_{j|k}$; the activation variable only restricts which currents may be applied.
+An enabled interval permits stimulation but does not require a nonzero current.
+
+To favor sparse stimulation, we penalize the fraction of intervals in which stimulation is enabled,
+%
+\begin{equation}
+    \mathcal J_{\mathrm{act}}
+    =\frac{1}{H}\sum_{j=0}^{H-1}\delta_{j|k}\,.
+    \label{eq:mpc_activation_cost}
+\end{equation}
+%
+Together with~\eqref{eq:mpc_activation_gates}, the dynamics and initial condition, this gives the penalized formulation
+%
+\begin{equation}
+    \min_{\mathbf u_{0|k},\ldots,\mathbf u_{H-1|k},\,
+          \delta_{0|k},\ldots,\delta_{H-1|k}}
+    \quad \mathcal J_{\mathrm{cont}}+w_{\mathrm{act}}\mathcal J_{\mathrm{act}},
+    \qquad w_{\mathrm{act}}>0\,.
+    \label{eq:mpc_activation_penalty_problem}
+\end{equation}
+%
+In~\eqref{eq:mpc_activation_penalty_problem}, the weight trades suppression and current effort against the fraction of enabled intervals measured by~\eqref{eq:mpc_activation_cost}.
+For independently chosen interval activations, an enabled interval with zero current can be disabled without affecting predictions and with lower cost.
+Consequently, minimizing over independent activation variables for fixed currents gives a normalized group $L_0$ cost, counting one per nonzero interval current vector before dividing by $H$.
+
+Alternatively, an activation cap replaces the penalty by the constraint
+%
+\begin{equation}
+    \sum_{j=0}^{H-1}\delta_{j|k}\leq K,
+    \qquad K\in\{0,\ldots,H\}\,,
+    \label{eq:mpc_activation_cap}
+\end{equation}
+%
+while minimizing $\mathcal J_{\mathrm{cont}}$.
+The cap in~\eqref{eq:mpc_activation_cap} bounds the number of stimulated intervals because any interval carrying current must be enabled.
+Under receding-horizon control, the allowance applies to the current plan and is reconsidered at the next update.
+
+\subsection{Solution Approaches for Activation Decisions}
+
+The combination of binary activation decisions and nonlinear predictor dynamics yields a \ac{minlp}.
+We consider three approaches to handling the binary decisions: branch and bound, continuous relaxation with homotopy, and enumeration of grouped activation schedules.
+
+\subsubsection*{Branch and Bound Algorithm}
+
+Branch and bound is a standard approach for \ac{minlp} problems~\cite{Bonami2008}.
+Fixing the activation schedule leaves a continuous \ac{nlp}.
+Since each of the $H$ intervals has two possible activation values, exhaustive enumeration could require up to $2^H$ such solves at every control update.
+Branch and bound can reduce this count by discarding entire branches of schedules.
+
+The search starts with one subproblem representing all schedules.
+It relaxes the binary restrictions to $0\leq\delta_{j|k}\leq1$ and solves the continuous problem.
+If an activation is fractional, the solver splits the schedules into two subsets by fixing that variable to zero in one subproblem and to one in the other.
+Repeating these splits produces a search tree whose nodes represent progressively more specified schedules.
+The best feasible integer solution found so far is called the incumbent.
+
+The minimum of a relaxed subproblem bounds from below the cost of every binary schedule it represents.
+If that bound reaches or exceeds the incumbent cost, the solver can discard the entire subset.
+This mechanism can save many \ac{nlp} solves, although each visited node still requires a relaxation solve and the tree may have up to $2^H$ leaves.
+Bonmin is the solver used here and its default method follows this approach~\cite{BonminManual}.
+With nonconvex learned dynamics, local relaxation minima may give unreliable bounds, so a global certificate would require valid bounds for those nonconvex subproblems.
+
+\subsubsection*{Continuous Relaxation and Homotopy}
+
+Solving one continuous relaxation avoids the search tree, but its fractional activations act as intermediate current bounds.
+A schedule with binary activations can instead be sought by adding a cost for violating the binary restriction.
+Sager et al.~\cite{Sager2006} use this idea in optimal control by solving a succession of relaxed problems with increasing penalty weights.
+For the activation schedule $\boldsymbol\delta=(\delta_{0|k},\ldots,\delta_{H-1|k})$, the penalty is
+%
+\begin{equation}
+    \mathcal P_\beta(\boldsymbol\delta)
+    =\beta\sum_{j=0}^{H-1}\delta_{j|k}(1-\delta_{j|k}),
+    \qquad\beta\geq0\,.
+    \label{eq:mpc_integrality_penalty}
+\end{equation}
+%
+For $\beta>0$, each summand in~\eqref{eq:mpc_integrality_penalty} vanishes at both binary values and is positive between them.
+The penalty therefore acts on violations of the binary restriction, known as integrality violations.
+
+The homotopy is the family of continuous problems obtained by varying $\beta$ from zero, where the objective is unpenalized.
+After each solve, the next problem increases $\beta$ and starts from the preceding solution.
+This gives the currents and the predictions an opportunity to adjust as the activation values are pushed toward zero or one.
+The sequence ends when a solve satisfies the binary restriction within the solver tolerance or when the continuation limit is reached.
+The computational cost depends on the number of continuation solves instead of the size of a search tree.
+Small increases in $\beta$ can require more solves, while large increases can make it harder for the solver to follow a favorable solution as the objective changes~\cite{Sager2006}.
+
+\subsubsection*{Candidate \ac{mpc} with Grouped Activation Decisions}
+
+Grouped enumeration keeps activation decisions binary and reduces the search by considering changes only at selected boundaries.
+The controller partitions the horizon into $B$ contiguous, nonempty blocks $\mathcal B_1,\ldots,\mathcal B_B$.
+All intervals in a block share one binary decision $d_b$, giving
+%
+\begin{equation}
+    \delta_{j|k}=d_b
+    \quad\text{for }j\in\mathcal B_b,
+    \qquad d_b\in\{0, 1\},
+    \qquad b=1,\ldots,B\,.
+    \label{eq:mpc_grouped_activation}
+\end{equation}
+%
+For each of the $2^B$ block schedules defined by~\eqref{eq:mpc_grouped_activation}, fix the activation values and optimize the continuous currents under the predictor dynamics and current constraints.
+Disabled blocks have zero current throughout.
+Within an enabled block, each interval's current vector remains independently optimized, so grouping activation decisions does not require holding the current constant over a block.
+
+Let $\mathbf d=(d_1,\ldots,d_B)$ and let $\mathbf u^{(\mathbf d)}$ denote the current sequence returned by a successful candidate solve.
+The score combines the continuous objective in~\eqref{eq:mpc_sparse_continuous_cost}, evaluated on the rollout for that candidate, with the activation penalty
+%
+\begin{equation}
+    C(\mathbf d)
+    =\mathcal J_{\mathrm{cont}}\!\left(\mathbf u^{(\mathbf d)}\right)
+     +\frac{w_{\mathrm{act}}}{H}
+      \sum_{b=1}^{B}|\mathcal B_b|d_b\,.
+    \label{eq:mpc_candidate_score}
+\end{equation}
+%
+The controller selects the successful candidate with the lowest score in~\eqref{eq:mpc_candidate_score} and applies its first current vector.
+The activation term is constant within each candidate solve and enters the comparison between schedules.
+Weighting by block length counts enabled intervals rather than enabled blocks, including when block lengths differ.
+The all-disabled schedule fixes the entire current sequence and can be evaluated by a rollout alone.
+
+With $B<H$, the partition sets an upper limit of $2^B$ continuous solves per update.
+Finer partitions admit more activation timings at the cost of more candidate solves.
+Coarser partitions are useful when the controller can give up some flexibility in when stimulation is enabled to keep the number of solves manageable.
 
 \section{Limitations of \ac{mpc} with Learned Predictors}\label{sec:mpc_learned_predictor_limitations}
 
