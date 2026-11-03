@@ -27,29 +27,37 @@ class SpectralComparison:
 
 
 def compare_spectra(series: PredictionSeries, view: ViewSettings) -> SpectralComparison | None:
-    """Compare one future Observable Frame or matching waveform Segments, excluding the initial knot."""
+    """Compare future Frames or Segments against their native observation timestamps, excluding the initial knot."""
+    if not len(series.t):
+        return None
     anchor = int(np.argmin(np.abs(series.t - view.decision)))
     steps = view.spectral_frame if series.frequencies.size else view.spectral_steps
-    if steps >= series.predicted_y.shape[1] or anchor + steps >= len(series.t):
+    if steps >= series.predicted_y.shape[1]:
+        return None
+    target_times = series.t[anchor] + np.arange(1, steps + 1) * series.dt
+    indices = np.searchsorted(series.observation_times, target_times - 1e-9)
+    if np.any(indices >= len(series.observation_times)):
+        return None
+    if not np.allclose(series.observation_times[indices], target_times, rtol=0, atol=1e-9):
         return None
     if series.frequencies.size:
         predicted = series.predicted_y[anchor, steps].reshape(-1, len(series.frequencies))
-        observed = series.observed_y[anchor + steps].reshape(predicted.shape)
+        observed = series.observed_y[indices[-1]].reshape(predicted.shape)
         result = SpectralComparison(
-            series.frequencies, predicted, observed, "log power", f"Frame at {series.t[anchor + steps]:.3f}s"
+            series.frequencies, predicted, observed, "log power", f"Frame at {target_times[-1]:.3f}s"
         )
     else:
         if steps <= 1:
             return None
         predicted = series.predicted_y[anchor, 1 : steps + 1]
-        observed = series.observed_y[anchor + 1 : anchor + steps + 1]
+        observed = series.observed_y[indices]
         fs = 1.0 / series.dt
         result = SpectralComparison(
             np.fft.rfftfreq(steps, series.dt),
             compute_periodograms(predicted, fs=fs, window=steps, hop=steps)[0],
             compute_periodograms(observed, fs=fs, window=steps, hop=steps)[0],
             "Power density (output units²/Hz)",
-            f"{series.t[anchor + 1]:.3f} to {series.t[anchor + steps]:.3f}s; Δf={fs / steps:g} Hz",
+            f"{target_times[0]:.3f} to {target_times[-1]:.3f}s; Δf={fs / steps:g} Hz",
         )
     return result if np.isfinite(result.predicted).all() and np.isfinite(result.observed).all() else None
 

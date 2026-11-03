@@ -156,16 +156,17 @@ class NeuroProblem(Problem):
     max_active_intervals: int | None = eqx.field(static=True, default=None)
     continuous_problem: Problem | None = eqx.field(default=None)
 
-    def __init__(  # noqa: PLR0913, PLR0917 -- carries problem definition plus domain evaluation metadata
+    def __init__(  # noqa: PLR0913 -- structural Problem plus domain evaluation metadata
         self,
         model: DiscreteDynamics,
         obj: Objective,
+        *,
         constraints: BuiltConstraintList | ConstraintList | None = None,
         N: int | None = None,
         dt: float | jax.Array = 0.05,
         integrator: Integrator | IntegratorCallable | None = None,
         binary_control_indices: Sequence[int] = (),
-        *,
+        control_block_steps: int = 1,
         horizon: int,
         u_max: ArrayLike,
         w_active: float | None = None,
@@ -177,7 +178,7 @@ class NeuroProblem(Problem):
         max_active_intervals: int | None = None,
         continuous_problem: Problem | None = None,
     ) -> None:
-        """Construct a NeuroProblem carrying domain weights, envelope, and bounds."""
+        """Construct native-grid domain metadata and structural Control Current blocking."""
         super().__init__(
             model=model,
             obj=obj,
@@ -186,6 +187,7 @@ class NeuroProblem(Problem):
             dt=dt,
             integrator=integrator,
             binary_control_indices=binary_control_indices,
+            control_block_steps=control_block_steps,
         )
         self.horizon = int(horizon)
         self.u_max = jnp.asarray(u_max, dtype=jnp.float64)
@@ -208,6 +210,7 @@ def _assemble_problem(  # noqa: PLR0913 -- the horizon's grid joins the five it 
     u_max: ArrayLike,
     kirchhoff: bool,
     binary_control_indices: Sequence[int] = (),
+    control_block_steps: int = 1,
     max_active_intervals: int | None = None,
     w_active: float | None = None,
     w_hinge: float = 0.0,
@@ -216,7 +219,7 @@ def _assemble_problem(  # noqa: PLR0913 -- the horizon's grid joins the five it 
     envelope: ObservableEnvelope | None = None,
     continuous_problem: Problem | None = None,
 ) -> NeuroProblem:
-    """Build boxed Control Currents with optional activation and Kirchhoff constraints."""
+    """Build native boxed Control Currents with structural blocking and optional activation constraints."""
     n, m = model.n, model.m
     horizon = N - 1
     if binary_control_indices:
@@ -244,6 +247,7 @@ def _assemble_problem(  # noqa: PLR0913 -- the horizon's grid joins the five it 
             dt=dt,
             binary_control_indices=binary_control_indices,
             horizon=horizon,
+            control_block_steps=control_block_steps,
             u_max=u_max_arr,
             w_active=w_active,
             w_hinge=w_hinge,
@@ -267,6 +271,7 @@ def _assemble_problem(  # noqa: PLR0913 -- the horizon's grid joins the five it 
         N=N,
         dt=dt,
         horizon=horizon,
+        control_block_steps=control_block_steps,
         u_max=u_max_arr,
         w_active=w_active,
         w_hinge=w_hinge,
@@ -363,7 +368,7 @@ def _wrap_epigraph_if_requested(
     w_u_l1: float,
     l1_mode: str,
 ) -> NeuroProblem:
-    """Wrap problem with exact L1 epigraph reformulation scaled by Control Horizon when requested."""
+    """Preserve native blocking while adding exact L1 epigraph coordinates when requested."""
     if l1_mode not in ("smooth", "epigraph"):
         msg = f"l1_mode must be 'smooth' or 'epigraph', got {l1_mode!r}"
         raise ValueError(msg)
@@ -377,6 +382,7 @@ def _wrap_epigraph_if_requested(
             N=epi_problem.N,
             dt=epi_problem.dt,
             binary_control_indices=epi_problem.binary_control_indices,
+            control_block_steps=epi_problem.control_block_steps,
             horizon=problem.horizon,
             u_max=problem.u_max,
             w_active=problem.w_active,
@@ -395,6 +401,7 @@ def build_waveform_problem(  # noqa: PLR0913 -- checkpoint plus the eleven MPC c
     artifact: str | Path,
     *,
     horizon: int,
+    control_block_steps: int = 1,
     u_max: ArrayLike,
     w_y: float = 1.0,
     w_u: float = 0.0,
@@ -406,7 +413,7 @@ def build_waveform_problem(  # noqa: PLR0913 -- checkpoint plus the eleven MPC c
     kirchhoff: bool = False,
     l1_mode: str = "smooth",
 ) -> NeuroProblem:
-    """Assemble physical-current Waveform MPC with tracking, spectral and effort Costs.
+    """Assemble native Waveform Costs and structurally blocked physical Control Currents.
 
     The objective minimizes tracking deviation from the healthy reference operating point,
     quadratic and L1 control effort, and one-sided log-power Frame hinges against ``reference``.
@@ -420,6 +427,8 @@ def build_waveform_problem(  # noqa: PLR0913 -- checkpoint plus the eleven MPC c
     horizon
         Control Horizon counted in model steps; the trajopt horizon is ``horizon + 1`` knot
         points.
+    control_block_steps
+        Native intervals sharing each independent Control Current vector.
     u_max
         Per-electrode amplitude bound: a scalar shared by every electrode or a
         length-``n_controls`` vector.
@@ -494,6 +503,7 @@ def build_waveform_problem(  # noqa: PLR0913 -- checkpoint plus the eleven MPC c
         objective,
         N=N,
         dt=base.dt,
+        control_block_steps=control_block_steps,
         u_max=u_max,
         kirchhoff=kirchhoff,
         w_u=w_u,

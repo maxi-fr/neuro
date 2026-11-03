@@ -696,7 +696,7 @@ kiwisolver==1.5.1 \
     --hash=sha256:f9b1c4900736e489a812c529100de4b8fb617d4db075e931e213c57424b83d9b \
     --hash=sha256:fc271a6f0a2126958f4090e5507b9da5848927dae331f8f763bd4aa642b3d2cd
     # via matplotlib
-latex-linting @ git+https://github.com/maxi-fr/latex_linting@2d27bdcb7f3fa831c05c202f5bcea3b9ce72cce5
+latex-linting @ git+https://github.com/maxi-fr/latex_linting@62b83e3713893a6f0f35884c80b7329d0c3bd505
     # via neuro
 llvmlite==0.49.0 \
     --hash=sha256:00f16db782f4a13c78c5804aedc434e46794a77e89999a168f9401106270e50a \
@@ -1684,7 +1684,7 @@ traitlets==5.16.1 \
     #   jupyter-client
     #   jupyter-core
     #   matplotlib-inline
-trajopt @ git+https://github.com/maxi-fr/trajopt.git@31a1d27e76b9ba815c1088ca52a7af0577c9e955
+trajopt @ git+https://github.com/maxi-fr/trajopt.git@e7ff2ee08344e52ef9401de717ce772b9044fca4
     # via neuro
 tvb-data==3.0.0 \
     --hash=sha256:681e9fb1fd807b57f9b55c7fd147ac7563ded90c978d42eeae1bb150adab0b12 \

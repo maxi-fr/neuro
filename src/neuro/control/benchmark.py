@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from typing import TYPE_CHECKING, Any
 
 import jax
@@ -23,7 +24,7 @@ from trajopt.transcription.osqp import OSQP
 from trajopt.transcription.single_shooting import SingleShooting
 
 from neuro.control.problems import build_observable_problem, build_waveform_problem
-from neuro.control.solvers import IPOPT_DEFAULTS, canonicalize_duals
+from neuro.control.solvers import IPOPT_DEFAULTS
 from neuro.predictor.inference import InferencePredictor
 
 if TYPE_CHECKING:
@@ -32,9 +33,57 @@ if TYPE_CHECKING:
 
     from trajopt.transcription.result import Solver
 
+    from neuro.control.casadi import CasADiMPCController
+    from neuro.control.mpc import TrajOptMPCController
     from neuro.spectral import HealthyReference
+    from neuro.types import FloatArray
 
 logger = logging.getLogger(__name__)
+
+
+def benchmark_controller(
+    controller: TrajOptMPCController | CasADiMPCController, measurements: FloatArray
+) -> dict[str, float]:
+    """Measure cold-inclusive native execution and report warmed timing separately from fixed-OCP latency.
+
+    Parameters
+    ----------
+    controller
+        Freshly constructed controller; construction is excluded, but the first attempt includes lazy compilation.
+    measurements
+        Native measurements of shape ``(n_updates, n_outputs)`` beginning at simulation time zero.
+    """
+    started = time.perf_counter()
+    solve_count = 0
+    controller_time = 0.0
+    warm_controller_time = 0.0
+    solve_times = []
+    first_attempt_controller_time = float("nan")
+    for k, measurement in enumerate(measurements):
+        _, log = controller.update(k * controller.dt, np.zeros(1), np.asarray(measurement, dtype=np.float64))
+        if solve_count:
+            warm_controller_time += log.controller_time
+        if log.solve_attempted:
+            if not solve_count:
+                first_attempt_controller_time = log.controller_time
+            solve_times.append(log.solve_time)
+        solve_count += int(log.solve_attempted)
+        controller_time += log.controller_time
+    duration = len(measurements) * controller.dt
+    return {
+        "native_updates": float(len(measurements)),
+        "solve_count": float(solve_count),
+        "simulated_duration_s": duration,
+        "solves_per_simulated_second": solve_count / duration,
+        "controller_time_s": controller_time,
+        "controller_time_per_simulated_second": controller_time / duration,
+        "wall_time_s": time.perf_counter() - started,
+        "first_attempt_controller_time_s": first_attempt_controller_time,
+        "first_attempt_solve_time_s": solve_times[0] if solve_times else float("nan"),
+        "warm_solve_time_mean_s": float(np.mean(solve_times[1:])) if len(solve_times) > 1 else float("nan"),
+        "warm_controller_time_s": warm_controller_time,
+    }
+
 
 _LABELS = {
     "single_shooting": "SingleShooting(Ipopt)",
@@ -95,15 +144,10 @@ def initial_conditions(problem: Problem, x0: jax.Array) -> tuple[BoundaryConditi
 
 
 def describe_problem(problem: Problem) -> str:
-    """Label a Problem by its grid and both transcriptions' decision-variable counts.
-
-    The count is the header rather than a footnote because it is what separates the two Ipopt rows:
-    single shooting eliminates the states, so its primal is ``(N - 1) * m`` and does not grow with
-    the Predictor's trailing window, while the direct transcription carries ``N * n`` state
-    variables and the matching defect rows on top.
-    """
+    """Label native geometry and reduced single/multiple-shooting decision counts."""
     N, n, m = int(problem.N), int(problem.model.n), int(problem.model.m)
-    return f"{type(problem.model).__name__} (N={N}, n={n}, m={m}; SS {(N - 1) * m} vars, MS {N * n + (N - 1) * m} vars)"
+    controls = (N - 1) // problem.control_block_steps * m
+    return f"{type(problem.model).__name__} (N={N}, n={n}, m={m}; SS {controls} vars, MS {N * n + controls} vars)"
 
 
 def _compare_per_solver(
@@ -167,15 +211,11 @@ _IPOPT_MAX_CPU_SECONDS = 120.0
 
 
 def benchmark_solvers(*names: str) -> dict[str, Solver]:
-    """Build the labelled solver set the benchmarks compare, capping the Ipopt-backed rows' runtime."""
+    """Build stock benchmark solvers with a runtime cap on IPOPT-backed rows."""
     return {
-        _LABELS[name]: canonicalize_duals(
-            get_benchmark_solver(
-                name,
-                options={"max_cpu_time": _IPOPT_MAX_CPU_SECONDS}
-                if "ipopt" in name or name == "single_shooting"
-                else None,
-            )
+        _LABELS[name]: get_benchmark_solver(
+            name,
+            options={"max_cpu_time": _IPOPT_MAX_CPU_SECONDS} if "ipopt" in name or name == "single_shooting" else None,
         )
         for name in names
     }

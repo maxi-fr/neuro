@@ -52,7 +52,7 @@ class _Panel:
 
 
 def _plot_run(axes: list[Axes], run: Run, view: ViewSettings) -> None:
-    """Draw recorded EEG, controller plans and applied Control Currents on synchronized axes."""
+    """Draw native observations and applied currents with plans anchored only to actual solve attempts."""
     panels = [_Panel(ax, view) for ax in axes]
     label = run.directory.name
     if "sensor_0.y_mea" in run.arrays or "sensor_0.eeg" in run.arrays:
@@ -62,9 +62,10 @@ def _plot_run(axes: list[Axes], run: Run, view: ViewSettings) -> None:
     if "controller.predicted_y" in run.arrays:
         series = run.planned_predictions()
         t, dt = series.t, series.dt
-        panels[1].traces(t, series.observed_y, view.output_channels, f"{label} observed")
+        panels[1].traces(series.observation_times, series.observed_y, view.output_channels, f"{label} observed")
         panels[1].rollouts(t, series.predicted_y, dt, view.output_channels, label)
         _, plans = run.signal("controller", "planned_u")
+        plans = plans[run.plan_attempts()]
         for anchor in decision_indices(t, view):
             plan_t = t[anchor] + np.arange(plans.shape[1] + 1) * dt
             panels[4].traces(
@@ -79,7 +80,7 @@ def _plot_run(axes: list[Axes], run: Run, view: ViewSettings) -> None:
 
 
 def plot_runs(runs: list[Run], view: ViewSettings, replays: dict[str, PredictionSeries]) -> Figure:
-    """Render both prediction conditions with raw signals and distinct applied/planned Control Current panels."""
+    """Render solve-time plans and native diagnostic replays using independently timestamped observations."""
     titles = [
         "Recorded EEG",
         "Predictions under planned Control Currents / observed Predictor outputs",
@@ -95,7 +96,7 @@ def plot_runs(runs: list[Run], view: ViewSettings, replays: dict[str, Prediction
     for run in runs:
         _plot_run(axes, run, view)
     for label, replay in replays.items():
-        panels[2].traces(replay.t, replay.observed_y, view.output_channels, f"{label} observed")
+        panels[2].traces(replay.observation_times, replay.observed_y, view.output_channels, f"{label} observed")
         panels[2].rollouts(replay.t, replay.predicted_y, replay.dt, view.output_channels, label)
     for ax, title in zip(axes, titles, strict=True):
         ax.set_title(title, loc="left", fontsize=10)

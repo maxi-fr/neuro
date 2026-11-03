@@ -275,13 +275,14 @@ def _build_mpc_knot_query(  # noqa: PLR0913 -- knot extraction requires log arra
     *,
     n_y: int,
     n_u: int,
+    observed_y: FloatArray,
 ) -> FloatArray:
-    """Construct one state-action query vector at decision d and lookahead knot k."""
+    """Combine native observed history and future predicted knots into one causal state-action query."""
     if n_y <= 1:
         y_win = all_pred_y[d, k]
     else:
         y_win_items = [
-            all_pred_y[d + step_offset, 0] if step_offset <= 0 else all_pred_y[d, step_offset]
+            observed_y[d + step_offset] if step_offset <= 0 else all_pred_y[d, step_offset]
             for step_offset in range(k - (n_y - 1), k + 1)
         ]
         y_win = np.concatenate(y_win_items, axis=0)
@@ -299,6 +300,23 @@ def _build_mpc_knot_query(  # noqa: PLR0913 -- knot extraction requires log arra
     return np.concatenate([y_win.reshape(-1), u_win.reshape(-1)])
 
 
+def _native_query_outputs(data: Mapping[str, FloatArray], predictions: FloatArray) -> FloatArray:
+    """Sample logged Estimator/measurement outputs on every native tick, retaining old unit-step archives."""
+    for component, name in (("estimator", "x_hat"), ("sensor_0", "y_mea")):
+        if f"{component}.{name}" in data:
+            times = np.asarray(data[f"{component}.t"])
+            ticks = np.asarray(data["controller.t"])
+            indices = np.searchsorted(times, ticks, side="right") - 1
+            if np.any(indices < 0):
+                msg = "Native measurements must cover the controller history without looking ahead"
+                raise ValueError(msg)
+            return np.asarray(data[f"{component}.{name}"], dtype=np.float64)[indices].reshape(len(ticks), -1)
+    if "controller.solve_attempted" in data and not np.asarray(data["controller.solve_attempted"]).all():
+        msg = "Multirate OOD history requires native Estimator or Sensor measurements"
+        raise ValueError(msg)
+    return predictions[:, 0]
+
+
 def extract_mpc_rollout_queries(
     log_file: str | Path,
     *,
@@ -306,7 +324,7 @@ def extract_mpc_rollout_queries(
     n_u: int = 0,
     model: InferencePredictor | None = None,
 ) -> tuple[FloatArray, FloatArray, IntArray]:
-    """Extract candidate Rollout queries from an MPC simulation log archive.
+    """Extract actual solve-attempt Rollout queries while retaining native applied-current history.
 
     Parameters
     ----------
@@ -326,7 +344,7 @@ def extract_mpc_rollout_queries(
     planned_u : FloatArray
         Planned Control Current sequences of shape ``(n_decisions, horizon, n_controls)``.
     valid_decisions : IntArray
-        Indices of decision steps executed outside the Warm-up Period and with full Priming.
+        Native indices of actual solve attempts with full Priming.
     """
     if model is not None:
         n_y = getattr(model, "n_y", n_y)
@@ -343,10 +361,16 @@ def extract_mpc_rollout_queries(
             if "controller.warmup" in data
             else np.zeros(len(all_pred_y), dtype=bool)
         )
+        attempted = (
+            np.asarray(data["controller.solve_attempted"], dtype=bool)
+            if "controller.solve_attempted" in data
+            else ~warmup
+        )
+        observed_y = _native_query_outputs(data, all_pred_y) if n_y > 1 else all_pred_y[:, 0]
 
     required_priming = max(n_y - 1, n_u - 1, 0)
     valid_idx = np.asarray(
-        [d for d in range(len(all_pred_y)) if not warmup[d] and d >= required_priming],
+        [d for d in range(len(all_pred_y)) if attempted[d] and d >= required_priming],
         dtype=np.intp,
     )
     if len(valid_idx) == 0:
@@ -358,7 +382,9 @@ def extract_mpc_rollout_queries(
     queries_list = [
         np.stack(
             [
-                _build_mpc_knot_query(all_pred_y, all_plan_u, all_applied_u, d, k, n_y=n_y, n_u=n_u)
+                _build_mpc_knot_query(
+                    all_pred_y, all_plan_u, all_applied_u, d, k, n_y=n_y, n_u=n_u, observed_y=observed_y
+                )
                 for k in range(horizon)
             ],
             axis=0,
@@ -373,13 +399,13 @@ def extract_mpc_rollout_queries(
 def _extract_control_metrics_from_log(
     data: Mapping[str, np.ndarray], run_cfg: dict[str, Any], metrics: dict[str, Any]
 ) -> None:
-    """Extract charge and amplitude from log data if not present in metrics."""
+    """Integrate native applied currents over recorded durations clipped to the simulation end."""
     if "controller.u" not in data or "controller.t" not in data:
         return
     u = np.asarray(data["controller.u"], dtype=np.float64)
     t = np.asarray(data["controller.t"], dtype=np.float64)
     t_end = float(run_cfg.get("t_end", t[-1] if len(t) > 0 else 12.0))
-    durations = np.diff(np.append(t, t_end))
+    durations = np.maximum(0.0, np.diff(np.minimum(np.append(t, t_end), t_end)))
     u_max = float(run_cfg.get("controller", {}).get("problem", {}).get("u_max", 2.0))
     if "delivered_charge" not in metrics:
         metrics["delivered_charge"] = float(np.sum(np.abs(u) * durations[:, None]))
@@ -392,23 +418,30 @@ def _extract_control_metrics_from_log(
 def _extract_solver_metrics_from_log(
     data: Mapping[str, np.ndarray], run_cfg: dict[str, Any], metrics: dict[str, Any]
 ) -> None:
-    """Extract solver runtime metrics from log data if not present in metrics."""
+    """Score actual attempts against replanning deadlines, preserving native update runtime separately."""
     if "controller.solve_time" not in data or "controller.warmup" not in data:
         return
     warmup = np.asarray(data["controller.warmup"], dtype=bool)
     solve_time = np.asarray(data["controller.solve_time"], dtype=np.float64)
-    solved = ~warmup
+    solved = (
+        np.asarray(data["controller.solve_attempted"], dtype=bool) if "controller.solve_attempted" in data else ~warmup
+    )
+    metrics.setdefault("solve_count", int(np.sum(solved)))
+    if "controller.controller_time" in data:
+        metrics.setdefault("controller_time_s", float(np.sum(data["controller.controller_time"])))
     if solved.any():
         if "solve_time_mean_s" not in metrics:
             metrics["solve_time_mean_s"] = float(np.mean(solve_time[solved]))
         if "solve_time_p95_s" not in metrics:
             metrics["solve_time_p95_s"] = float(np.quantile(solve_time[solved], 0.95))
         if "realtime_factor" not in metrics:
-            control_dt = float(run_cfg.get("controller", {}).get("dt", 0.06))
+            controller = run_cfg.get("controller", {})
+            control_dt = float(controller.get("replan_dt", controller.get("dt", 0.06)))
             metrics["realtime_factor"] = float(metrics["solve_time_p95_s"] / control_dt) if control_dt > 0 else 0.0
     if "controller.success" in data and "solve_success_rate" not in metrics:
         success = np.asarray(data["controller.success"], dtype=bool)
         metrics["solve_success_rate"] = float(np.mean(success[solved])) if solved.any() else 0.0
+        metrics.setdefault("solve_failures", int(np.sum(solved & ~success)))
 
 
 def extract_run_clinical_metrics(run_dir: str | Path) -> dict[str, Any]:
@@ -984,7 +1017,7 @@ def select_ood_candidate_states(  # noqa: PLR0913 -- candidate selection require
     n_u: int = 0,
     model: InferencePredictor | None = None,
 ) -> list[CandidateState]:
-    """Select candidate decision steps exceeding an OOD percentile threshold.
+    """Select actual solve-attempt states exceeding an OOD percentile threshold.
 
     Parameters
     ----------
@@ -1037,7 +1070,9 @@ def select_ood_candidate_states(  # noqa: PLR0913 -- candidate selection require
     else:
         scores = np.asarray(ood_scores, dtype=np.float64)
         with np.load(log_file) as log_data:
-            if "controller.warmup" in log_data:
+            if "controller.solve_attempted" in log_data:
+                valid_decisions = np.where(log_data["controller.solve_attempted"].astype(bool))[0]
+            elif "controller.warmup" in log_data:
                 valid_decisions = np.where(~log_data["controller.warmup"].astype(bool))[0]
             else:
                 valid_decisions = np.arange(len(scores))

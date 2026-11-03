@@ -21,7 +21,6 @@ from neuro.control.benchmark import (
     run_waveform_benchmark,
 )
 from neuro.control.problems import build_waveform_problem
-from neuro.control.solvers import CanonicalDuals
 from neuro.predictor.inference import InferencePredictor, WaveformMLPModel
 from neuro.spectral import HealthyReference
 

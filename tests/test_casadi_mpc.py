@@ -12,6 +12,7 @@ from trajopt.transcription.ipopt import Ipopt
 from neuro.config import StftGeometry
 from neuro.control.casadi import (
     CasADiMPCController,
+    CasADiMPCLog,
     CasADiWaveformProblem,
     _compute_casadi_observable_frames,
     _output_casadi,
@@ -169,7 +170,8 @@ def test_state_absorption_and_native_controller_step_outputs(tmp_path: Path) -> 
     for step in range(n_y - 1):
         u, log = controller.update(step * 0.01, ref=np.zeros(1), x_hat=rng.standard_normal(2))
         assert log.warmup
-        assert log.success
+        assert not log.solve_attempted
+        assert not log.success
         assert log.status == "warmup"
         np.testing.assert_array_equal(u, np.zeros(2))
         assert np.isnan(log.predicted_y).all()
@@ -191,7 +193,7 @@ def test_state_absorption_and_native_controller_step_outputs(tmp_path: Path) -> 
     np.testing.assert_allclose(log.cost, log.cost_tracking + log.cost_quadratic_effort, rtol=1e-5)
 
 
-def test_successful_solve_shifts_initial_guess(tmp_path: Path) -> None:
+def test_successful_solve_shifts_initial_guess(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     artifact = _build_checkpoint(tmp_path, depth=0, n_y=2, horizon=4)
     problem = build_casadi_waveform_problem(
         artifact, horizon=4, u_max=0.5, w_y=1.0, w_u=0.1, reference=_ref(2), kirchhoff=True
@@ -203,7 +205,14 @@ def test_successful_solve_shifts_initial_guess(tmp_path: Path) -> None:
     assert log.success
 
     expected_shifted_guess = np.vstack([log.planned_u[1:], log.planned_u[-1:]])
-    np.testing.assert_allclose(controller._u_guess, expected_shifted_guess)  # noqa: SLF001 -- internal initial guess state
+    original = controller.solve_state
+
+    def check_guess(x0: FloatArray, initial_u: FloatArray, initial_active: FloatArray | None = None) -> CasADiMPCLog:
+        np.testing.assert_allclose(initial_u, expected_shifted_guess)
+        return original(x0, initial_u, initial_active)
+
+    monkeypatch.setattr(controller, "solve_state", check_guess)
+    controller.update(0.02, np.zeros(1), np.array([0.3, -0.3]))
 
 
 def test_failed_solve_exposes_status_and_issues_zero_current(tmp_path: Path) -> None:
@@ -344,7 +353,8 @@ def test_reproduces_mpc_controller_golden_parity(tmp_path: Path) -> None:
         costs.append(log.cost)
 
     np.testing.assert_allclose(controls, _WAVEFORM_PARITY_CONTROLS, atol=1e-4)
-    np.testing.assert_allclose(costs, _WAVEFORM_PARITY_COSTS, atol=1e-4)
+    np.testing.assert_allclose(costs[3:], _WAVEFORM_PARITY_COSTS[3:], atol=1e-4)
+    assert np.isnan(costs[:3]).all()
 
 
 def _write_reference(tmp_path: Path, geom: StftGeometry, n_channels: int = 2, fs: float = 100.0) -> Path:
@@ -713,7 +723,7 @@ def test_observable_configured_update_and_warm_start(tmp_path: Path) -> None:
     np.testing.assert_allclose(log.planned_u.sum(axis=1), 0.0, atol=1e-6)
     assert np.all(np.abs(log.planned_u) <= 0.5 + 1e-6)
     np.testing.assert_allclose(log.cost, log.cost_spectral + log.cost_quadratic_effort + log.cost_sparse_effort)
-    np.testing.assert_allclose(controller._u_guess, np.vstack([log.planned_u[1:], log.planned_u[-1:]]))  # noqa: SLF001 -- warm-start contract
+    np.testing.assert_allclose(controller._u_guess, log.planned_u)  # noqa: SLF001 -- native plan is retained until the next solve boundary
 
 
 def test_observable_failed_solve_issues_no_current(tmp_path: Path) -> None:

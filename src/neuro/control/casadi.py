@@ -10,6 +10,7 @@ import casadi as ca
 import numpy as np
 from simulate.controller import Controller
 
+from neuro.control.execution import CommandPlayback, validate_control_blocks
 from neuro.control.problems import _validate_observable_envelope
 from neuro.predictor.inference import (
     InferencePredictor,
@@ -53,6 +54,10 @@ class CasADiMPCLog:
     planned_active: FloatArray | None = None
     active_count: float | None = None
     cost_active: float = 0.0
+    solve_attempted: bool = True
+    plan_index: int = 0
+    fallback: bool = False
+    controller_time: float = 0.0
 
 
 @dataclasses.dataclass(frozen=True)
@@ -77,6 +82,11 @@ class CasADiWaveformProblem:
     max_active_intervals: int | None = None
     w_active: float | None = None
     integer_solver: str = "bonmin"
+    control_block_steps: int = 1
+
+    def __post_init__(self) -> None:
+        """Validate native block structure before constructing any numerical solver."""
+        validate_control_blocks(self.control_block_steps, self.horizon, self.control_block_steps)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -469,6 +479,7 @@ def build_casadi_waveform_problem(  # noqa: PLR0913 -- checkpoint plus the MPC c
     artifact: str | Path | WaveformMLPModel | WaveformCNNModel,
     *,
     horizon: int,
+    control_block_steps: int = 1,
     u_max: ArrayLike,
     w_y: float = 1.0,
     w_u: float = 0.0,
@@ -484,7 +495,7 @@ def build_casadi_waveform_problem(  # noqa: PLR0913 -- checkpoint plus the MPC c
     w_active: float | None = None,
     integer_solver: str = "bonmin",
 ) -> CasADiWaveformProblem:
-    """Assemble waveform Costs with an optional active-step cap or penalty and integer solver."""
+    """Assemble native Waveform Costs, uniform current blocking and optional activation settings."""
     if isinstance(artifact, (WaveformMLPModel, WaveformCNNModel)):
         base = artifact
     else:
@@ -523,6 +534,7 @@ def build_casadi_waveform_problem(  # noqa: PLR0913 -- checkpoint plus the MPC c
     return CasADiWaveformProblem(
         model=base,
         horizon=horizon,
+        control_block_steps=control_block_steps,
         u_max=u_max_arr,
         w_y=w_y,
         w_u=w_u,
@@ -627,8 +639,10 @@ class CasADiMPCController(Controller[CasADiMPCLog]):
         self,
         dt: float,
         problem: CasADiWaveformProblem | CasADiObservableProblem,
+        replan_dt: float | None = None,
+        control_start_s: float | None = None,
     ) -> None:
-        """Initialize the CasADi Predictor controller and time solver construction."""
+        """Initialize native State Absorption, continuous current blocking and one compiled solver."""
         super().__init__(dt)
         self.problem = problem
         self.model = problem.model
@@ -638,8 +652,19 @@ class CasADiMPCController(Controller[CasADiMPCLog]):
         self.n_channels = int(self.model.n_channels)
         self._integer_mode = problem.max_active_intervals is not None or problem.w_active is not None
         self.dt = float(dt)
-        if not np.isclose(self.dt, self.model.dt):
+        if not np.isclose(self.dt, self.model.dt, rtol=1e-9, atol=0.0):
             msg = f"controller dt ({self.dt}) must match Predictor step ({self.model.dt})"
+            raise ValueError(msg)
+        self.replan_dt = float(dt if replan_dt is None else replan_dt)
+        self.control_start_s = 0.0 if control_start_s is None else float(control_start_s)
+        self._playback = CommandPlayback(
+            dt, self.replan_dt, self.horizon, control_start_s, max(self.model.priming_steps, self.model.n_history)
+        )
+
+        block = self.problem.control_block_steps if isinstance(self.problem, CasADiWaveformProblem) else 1
+        validate_control_blocks(block, self.horizon, self._playback.steps)
+        if block > 1 and self._integer_mode:
+            msg = "blocked execution supports continuous Control Currents without activation"
             raise ValueError(msg)
 
         self._state = np.asarray(self.model.initial_state(), dtype=np.float64)
@@ -657,8 +682,28 @@ class CasADiMPCController(Controller[CasADiMPCLog]):
             return ca.vertcat(*parts)
         return ca.SX(0.0)
 
-    def _build_solver(self) -> None:  # noqa: C901, PLR0915 -- single-shooting Costs and constraints share one graph
-        """Build single-shooting Costs and compile IPOPT or the configured integer solver."""
+    def _input_constraints(
+        self, k: int, current: ca.SX, active: ca.SX | None
+    ) -> tuple[list[ca.SX], list[float], list[float]]:
+        """Retain one Kirchhoff equality per block and native activation coupling rows."""
+        parts: list[ca.SX] = []
+        lower: list[float] = []
+        upper: list[float] = []
+        block = self.problem.control_block_steps if isinstance(self.problem, CasADiWaveformProblem) else 1
+        if self.problem.kirchhoff and k % block == 0:
+            parts.append(ca.sum1(current))
+            lower.append(0.0)
+            upper.append(0.0)
+        if active is not None:
+            for electrode in range(self.n_controls):
+                limit = float(self.problem.u_max[electrode]) * active[k]
+                parts.extend((current[electrode] - limit, -current[electrode] - limit))
+                lower.extend((-np.inf, -np.inf))
+                upper.extend((0.0, 0.0))
+        return parts, lower, upper
+
+    def _native_graph(self) -> tuple[ca.SX, ca.SX, ca.SX | None, ca.SX, ca.SX]:  # noqa: PLR0915 -- native Rollout shares Cost expressions
+        """Build native-plan prediction/Cost evaluators and retained constraint expressions."""
         h = self.horizon
         m = self.n_controls
         n_state = self.model.n
@@ -709,16 +754,10 @@ class CasADiMPCController(Controller[CasADiMPCLog]):
                 excess = ca.fmax(y_next - reference, 0.0)
                 cost_spectral = cost_spectral + (self.problem.w_hinge / (h * self.model.n_outputs)) * ca.sumsqr(excess)
 
-            if self.problem.kirchhoff:
-                g_parts.append(ca.sum1(u_k))
-                lbg.append(0.0)
-                ubg.append(0.0)
-            if active_sym is not None:
-                for electrode in range(m):
-                    limit = float(self.problem.u_max[electrode]) * active_sym[k]
-                    g_parts.extend((u_k[electrode] - limit, -u_k[electrode] - limit))
-                    lbg.extend((-np.inf, -np.inf))
-                    ubg.extend((0.0, 0.0))
+            constraints, lower, upper = self._input_constraints(k, u_k, active_sym)
+            g_parts.extend(constraints)
+            lbg.extend(lower)
+            ubg.extend(upper)
 
             x_curr = x_next
 
@@ -756,15 +795,37 @@ class CasADiMPCController(Controller[CasADiMPCLog]):
         self._lbg = np.asarray(lbg) if lbg else np.array([-np.inf])
         self._ubg = np.asarray(ubg) if ubg else np.array([np.inf])
 
-        self._lbx = np.tile(-self.problem.u_max, h)
-        self._ubx = np.tile(self.problem.u_max, h)
+        self._predicted_y_fn = ca.Function("pred_y", [x0_sym, u_sym], [ca.horzcat(*y_preds)])
+        self._costs_fn = ca.Function(
+            "costs",
+            [x0_sym, u_sym, active_sym] if active_sym is not None else [x0_sym, u_sym],
+            [cost_total, cost_tracking, cost_effort, cost_sparse, cost_spectral, cost_active]
+            if active_sym is not None
+            else [cost_total, cost_tracking, cost_effort, cost_sparse, cost_spectral],
+        )
+        return x0_sym, u_sym, active_sym, cost_total, g_sym
+
+    def _build_solver(self) -> None:
+        """Compile one solver over independent block currents while preserving native evaluators."""
+        x0_sym, u_sym, active_sym, cost_total, g_sym = self._native_graph()
+        h, m = self.horizon, self.n_controls
+        block = self.problem.control_block_steps if isinstance(self.problem, CasADiWaveformProblem) else 1
+        independent = h // block
+        v_sym = ca.SX.sym("v", independent * m)
+        expanded = ca.vertcat(*(v_sym[(k // block) * m : (k // block + 1) * m] for k in range(h)))
+        integer_mode = active_sym is not None
+        decision_sym = ca.vertcat(v_sym, active_sym) if active_sym is not None else v_sym
+        nlp = {
+            "x": decision_sym,
+            "p": x0_sym,
+            "f": ca.substitute(cost_total, u_sym, expanded),
+            "g": ca.substitute(g_sym, u_sym, expanded),
+        }
+        self._lbx = np.tile(-self.problem.u_max, independent)
+        self._ubx = np.tile(self.problem.u_max, independent)
         if active_sym is not None:
             self._lbx = np.concatenate((self._lbx, np.zeros(h)))
             self._ubx = np.concatenate((self._ubx, np.ones(h)))
-
-        decision_sym = ca.vertcat(u_sym, active_sym) if active_sym is not None else u_sym
-        nlp = {"x": decision_sym, "p": x0_sym, "f": cost_total, "g": g_sym}
-
         opts: dict[str, Any] = {
             "print_time": False,
             "ipopt.print_level": 0,
@@ -784,14 +845,6 @@ class CasADiMPCController(Controller[CasADiMPCLog]):
         opts.update(self.problem.solver_options)
 
         self._solver = ca.nlpsol("solver", self.problem.integer_solver if integer_mode else "ipopt", nlp, opts)
-        self._predicted_y_fn = ca.Function("pred_y", [x0_sym, u_sym], [ca.horzcat(*y_preds)])
-        self._costs_fn = ca.Function(
-            "costs",
-            [x0_sym, u_sym, active_sym] if active_sym is not None else [x0_sym, u_sym],
-            [cost_total, cost_tracking, cost_effort, cost_sparse, cost_spectral, cost_active]
-            if active_sym is not None
-            else [cost_total, cost_tracking, cost_effort, cost_sparse, cost_spectral],
-        )
 
     def _evaluate_costs(self, x0: FloatArray, u: FloatArray, active: FloatArray | None) -> tuple[float, ...]:
         """Evaluate every Cost component for a fixed plan."""
@@ -801,7 +854,7 @@ class CasADiMPCController(Controller[CasADiMPCLog]):
 
     @classmethod
     def from_config(cls, config: dict[str, Any]) -> Self:
-        """Instantiate controller from a configuration dictionary."""
+        """Instantiate native timing, common release and a CasADi Problem from configuration."""
         dt = float(config["dt"])
         prob_cfg = config["problem"]
         if isinstance(prob_cfg, (CasADiWaveformProblem, CasADiObservableProblem)):
@@ -820,7 +873,12 @@ class CasADiMPCController(Controller[CasADiMPCLog]):
         else:
             msg = f"Unexpected problem configuration: {type(prob_cfg)}"
             raise TypeError(msg)
-        return cls(dt=dt, problem=problem)
+        return cls(
+            dt=dt,
+            problem=problem,
+            replan_dt=config.get("replan_dt"),
+            control_start_s=config.get("control_start_s"),
+        )
 
     def solve_state(
         self,
@@ -828,7 +886,7 @@ class CasADiMPCController(Controller[CasADiMPCLog]):
         initial_u: FloatArray | None = None,
         initial_active: FloatArray | None = None,
     ) -> CasADiMPCLog:
-        """Solve a fixed Predictor state with an optional primal guess, without updating controller history.
+        """Solve independent current blocks and return a native-grid plan without changing history.
 
         Parameters
         ----------
@@ -845,7 +903,9 @@ class CasADiMPCController(Controller[CasADiMPCLog]):
             if initial_u is None
             else np.asarray(initial_u, dtype=np.float64).reshape(self.horizon, self.n_controls)
         )
-        guess = u_guess.reshape(-1)
+        block = self.problem.control_block_steps if isinstance(self.problem, CasADiWaveformProblem) else 1
+        independent = self.horizon // block
+        guess = u_guess[::block].reshape(-1)
         if self._integer_mode:
             active_guess = (
                 np.zeros(self.horizon, dtype=np.float64)
@@ -873,7 +933,8 @@ class CasADiMPCController(Controller[CasADiMPCLog]):
             costs = (0.0,) * 6
         else:
             decision = np.asarray(result["x"], dtype=np.float64).reshape(-1)
-            planned_u = decision[: self.horizon * self.n_controls].reshape(self.horizon, self.n_controls)
+            reduced = decision[: independent * self.n_controls].reshape(independent, self.n_controls)
+            planned_u = np.repeat(reduced, block, axis=0)
             planned_active = decision[self.horizon * self.n_controls :] if self._integer_mode else None
             predicted_y = np.asarray(self._predicted_y_fn(state, planned_u.reshape(-1)), dtype=np.float64).T
             costs = self._evaluate_costs(state, planned_u.reshape(-1), planned_active)
@@ -900,41 +961,61 @@ class CasADiMPCController(Controller[CasADiMPCLog]):
 
     def update(
         self,
-        t: float,  # noqa: ARG002 -- the goal is baked into the objective
+        t: float,
         ref: FloatArray,  # noqa: ARG002 -- reference target is set in problem
         x_hat: FloatArray,
     ) -> tuple[FloatArray, CasADiMPCLog]:
-        """Absorb a measurement, solve at the Predictor step, and emit the first Control Current."""
+        """Absorb every native measurement, solve on fixed boundaries and play copied physical currents."""
+        started = time.perf_counter()
         self._state = np.asarray(self.model.absorb(self._state, np.asarray(x_hat).reshape(-1), self._u_last))
+        tick, warmup, due = self._playback.phase(t, ready=self.model.is_ready(self._state))
+        log = self._plan() if due else self._idle_log(warmup=warmup)
+        if due:
+            self._playback.store(tick, log.planned_u, success=log.success)
+        current, index, fallback = self._playback.emit(tick, self.n_controls)
+        self._u_last = current.copy()
+        return current, dataclasses.replace(
+            log,
+            u=current.copy(),
+            plan_index=index,
+            fallback=fallback,
+            controller_time=time.perf_counter() - started,
+        )
 
-        if not self.model.is_ready(self._state):
-            u_zero = np.zeros(self.n_controls, dtype=np.float64)
-            self._u_last = u_zero
-            return u_zero, CasADiMPCLog(
-                u=u_zero,
-                cost=0.0,
-                success=True,
-                warmup=True,
-                status="warmup",
-                solve_time=0.0,
-                predicted_y=np.full((self.horizon + 1, self.model.n_outputs), np.nan),
-                planned_u=np.full((self.horizon, self.n_controls), np.nan),
-                planned_active=np.full(self.horizon, np.nan) if self._integer_mode else None,
-                active_count=float("nan") if self._integer_mode else None,
-                cost_spectral=0.0,
-                cost_quadratic_effort=0.0,
-                cost_sparse_effort=0.0,
-                cost_tracking=0.0,
-                normalization="channel_mean",
-            )
+    def _idle_log(self, *, warmup: bool) -> CasADiMPCLog:
+        """Create fixed-shape Warm-up or playback records without evaluating a planned Rollout or Cost."""
+        missing = float("nan")
+        return CasADiMPCLog(
+            u=np.zeros(self.n_controls),
+            cost=missing,
+            success=False,
+            warmup=warmup,
+            status="warmup" if warmup else "playback",
+            solve_time=missing,
+            predicted_y=np.full((self.horizon + 1, self.model.n_outputs), np.nan),
+            planned_u=np.full((self.horizon, self.n_controls), np.nan),
+            planned_active=np.full(self.horizon, np.nan) if self._integer_mode else None,
+            active_count=missing if self._integer_mode else None,
+            cost_active=missing,
+            cost_spectral=missing,
+            cost_quadratic_effort=missing,
+            cost_sparse_effort=missing,
+            cost_tracking=missing,
+            solve_attempted=False,
+        )
 
+    def _plan(self) -> CasADiMPCLog:
+        """Shift the consumed native guess before solving from the fully absorbed measured state."""
+        steps = self._playback.steps
+        if self._playback.plan_tick is not None:
+            self._u_guess = np.concatenate((self._u_guess[steps:], np.repeat(self._u_guess[-1:], steps, axis=0)))
+            self._active_guess = np.concatenate((self._active_guess[steps:], np.repeat(self._active_guess[-1], steps)))
         log = self.solve_state(self._state, self._u_guess, self._active_guess if self._integer_mode else None)
-        self._u_last = log.u.copy()
-        if log.success:
-            self._u_guess = np.vstack((log.planned_u[1:], log.planned_u[-1:]))
+        if np.isfinite(log.planned_u).all():
+            self._u_guess = log.planned_u.copy()
             if log.planned_active is not None:
-                self._active_guess = np.concatenate((log.planned_active[1:], log.planned_active[-1:]))
-        return log.u, log
+                self._active_guess = log.planned_active.copy()
+        return log
 
     def decompose_cost(self, x0: FloatArray, u: FloatArray, active: FloatArray | None = None) -> dict[str, Any]:
         """Decompose the optimal control cost for a fixed sequence of states and controls.
@@ -987,7 +1068,7 @@ def decompose_casadi_cost(
     u_seq: FloatArray,
     active: FloatArray | None = None,
 ) -> dict[str, Any]:
-    """Decompose the CasADi optimal control cost for a fixed sequence of states and controls.
+    """Decompose native-plan Costs using a controller aligned with the structural control block.
 
     Parameters
     ----------
@@ -1007,5 +1088,6 @@ def decompose_casadi_cost(
         ``cost_sparse_effort``, ``cost_tracking``, ``cost_active``, ``active_count``,
         ``cost_total``, and ``normalization``.
     """
-    controller = CasADiMPCController(dt=problem.model.dt, problem=problem)
+    block = problem.control_block_steps if isinstance(problem, CasADiWaveformProblem) else 1
+    controller = CasADiMPCController(dt=problem.model.dt, problem=problem, replan_dt=problem.model.dt * block)
     return controller.decompose_cost(x0, u_seq, active)

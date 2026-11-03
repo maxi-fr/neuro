@@ -157,6 +157,46 @@ def test_consistent_config_passes(config: dict[str, Any]) -> None:
         validate_simulation_config(config)
 
 
+def test_replanning_is_independent_of_native_rate_and_filters(config: dict[str, Any]) -> None:
+    config["controller"].update(replan_dt=0.12, control_start_s=0.12)
+    validate_simulation_config(config)
+
+
+@pytest.mark.parametrize(
+    "settings",
+    [{"replan_dt": 0.03}, {"replan_dt": 0.0}, {"control_start_s": 0.0}, {"replan_dt": 0.12, "control_start_s": 0.14}],
+)
+def test_invalid_replanning_and_explicit_release(config: dict[str, Any], settings: dict[str, float]) -> None:
+    config["controller"].update(settings)
+    with pytest.raises(ConfigConsistencyError, match=r"replan_dt|control_start_s"):
+        validate_simulation_config(config)
+
+
+def test_common_release_includes_observable_estimator_support(tmp_path: Path) -> None:
+    geom = StftGeometry(n_segment=20, n_hop=5, band_hz=(4.0, 16.0), n_bin_pool=2)
+    provenance = TrainingProvenance(cutoff_hz=25.0)
+    artifact = _obs_artifact(tmp_path, provenance, geom, dt=0.10, downsample=200, n_u=4)
+    config = {
+        **_plant(),
+        "estimator": {
+            "class_path": "neuro.filtering.ObservableEstimator",
+            "dt": _PLANT_DT,
+            "downsample": 200,
+            "geometry": geom.model_dump(),
+        },
+        "controller": {
+            "class_path": "neuro.control.mpc.TrajOptMPCController",
+            "dt": 0.1,
+            "control_start_s": 0.3,
+            "problem": {"artifact": str(artifact), "horizon": 10},
+        },
+    }
+    with pytest.raises(ConfigConsistencyError, match="Estimator/Predictor Priming"):
+        validate_simulation_config(config)
+    config["controller"]["control_start_s"] = 0.7
+    validate_simulation_config(config)
+
+
 def test_controller_dt_must_match_predictor(config: dict[str, Any]) -> None:
     """A controller stepping at a rate other than the predictor's native dt is rejected."""
     config["controller"]["dt"] = _PLANT_DT * 100

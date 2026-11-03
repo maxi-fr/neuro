@@ -10,12 +10,45 @@ from test_casadi_mpc import _build_checkpoint, _observable_fixture, _ref
 from test_observable_cnn import _model
 from test_waveform_cnn import _cnn
 
-from neuro.control.casadi import CasADiMPCController, _step_casadi, build_casadi_waveform_problem
+from neuro.control.casadi import CasADiMPCController, CasADiMPCLog, _step_casadi, build_casadi_waveform_problem
 from neuro.predictor.inference import ObservableCNNModel, WaveformCNNModel
 from neuro.spectral import HealthyReference, ObservableEnvelope
 
 if TYPE_CHECKING:
     from pathlib import Path
+
+    from neuro.types import FloatArray
+
+
+def _check_next_boundary_guesses(
+    controller: CasADiMPCController, plan: CasADiMPCLog, measurement: FloatArray, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Verify the next real solve receives consumed-prefix current and activation guesses."""
+    assert plan.planned_active is not None
+    expected_u = np.concatenate((plan.planned_u[1:], plan.planned_u[-1:]))
+    expected_active = np.r_[plan.planned_active[1:], plan.planned_active[-1]]
+    original = controller.solve_state
+    calls = []
+
+    def checked_solve(
+        state: FloatArray, initial_u: FloatArray | None = None, initial_active: FloatArray | None = None
+    ) -> CasADiMPCLog:
+        """Inspect actual boundary guesses before running the existing numerical solve."""
+        calls.append(state.copy())
+        assert initial_u is not None
+        assert initial_active is not None
+        np.testing.assert_allclose(initial_u, expected_u)
+        np.testing.assert_allclose(initial_active, expected_active)
+        return original(state, initial_u, initial_active)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(controller, "solve_state", checked_solve)
+        _, next_plan = controller.update(controller.model.n_history * controller.dt, np.zeros(1), measurement)
+    assert len(calls) == 1
+    assert next_plan.success
+    assert next_plan.planned_active is not None
+    np.testing.assert_allclose(controller._u_guess, next_plan.planned_u)  # noqa: SLF001 -- retain unshifted native guess
+    np.testing.assert_allclose(controller._active_guess, next_plan.planned_active)  # noqa: SLF001 -- retain unshifted activation guess
 
 
 def test_waveform_cnn_fixed_sequence_parity(tmp_path: Path) -> None:
@@ -41,8 +74,10 @@ def test_waveform_cnn_fixed_sequence_parity(tmp_path: Path) -> None:
 
 @pytest.mark.parametrize("cap", [0, 1])
 @pytest.mark.parametrize("cnn", [False, True])
-def test_configured_waveform_cap_produces_physical_plan(tmp_path: Path, cap: int, *, cnn: bool) -> None:
-    """Bonmin caps shared activation decisions and emits bounded balanced currents."""
+def test_configured_waveform_cap_produces_physical_plan(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, cap: int, *, cnn: bool
+) -> None:
+    """Bonmin emits feasible capped currents and advances native guesses at the next solve boundary."""
     artifact = tmp_path / "predictor"
     if cnn:
         _cnn(depth=1).save(artifact)
@@ -77,8 +112,10 @@ def test_configured_waveform_cap_produces_physical_plan(tmp_path: Path, cap: int
     np.testing.assert_allclose(current, log.planned_u[0])
     if cap == 0:
         np.testing.assert_allclose(log.planned_u, 0.0, atol=1e-6)
-    np.testing.assert_allclose(controller._active_guess, np.r_[log.planned_active[1:], log.planned_active[-1]])  # noqa: SLF001 -- shifted warm-start contract
+    np.testing.assert_allclose(controller._active_guess, log.planned_active)  # noqa: SLF001 -- retain unshifted activation guess
+    np.testing.assert_allclose(controller._u_guess, log.planned_u)  # noqa: SLF001 -- retain unshifted native guess
     assert model is None or controller.model.n_outputs == model.n_outputs
+    _check_next_boundary_guesses(controller, log, measurement, monkeypatch)
 
 
 def test_failed_integer_solve_issues_no_current(tmp_path: Path) -> None:
@@ -111,8 +148,10 @@ def test_failed_integer_solve_issues_no_current(tmp_path: Path) -> None:
 
 @pytest.mark.parametrize("cap", [0, 1])
 @pytest.mark.parametrize("cnn", [False, True])
-def test_configured_observable_cap_produces_physical_frame_plan(tmp_path: Path, cap: int, *, cnn: bool) -> None:
-    """Bonmin caps Observable MLP and CNN steps on their native Frame grid."""
+def test_configured_observable_cap_produces_physical_frame_plan(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, cap: int, *, cnn: bool
+) -> None:
+    """Bonmin caps Observable native Frames and advances current/activation guesses at solve boundaries."""
     if cnn:
         artifact = tmp_path / "observable_cnn"
         _model(n_values=1, n_controls=2).save(artifact)
@@ -154,9 +193,12 @@ def test_configured_observable_cap_produces_physical_frame_plan(tmp_path: Path, 
     np.testing.assert_allclose(log.planned_u.sum(axis=1), 0.0, atol=1e-6)
     np.testing.assert_allclose(current, log.planned_u[0])
     np.testing.assert_allclose(log.cost, log.cost_spectral + log.cost_quadratic_effort + log.cost_sparse_effort)
-    np.testing.assert_allclose(controller._active_guess, np.r_[log.planned_active[1:], log.planned_active[-1]])  # noqa: SLF001 -- shifted warm-start contract
+    np.testing.assert_allclose(controller._active_guess, log.planned_active)  # noqa: SLF001 -- retain unshifted activation guess
+    np.testing.assert_allclose(controller._u_guess, log.planned_u)  # noqa: SLF001 -- retain unshifted native guess
     if cap == 0:
         np.testing.assert_allclose(log.planned_u, 0.0, atol=1e-6)
+
+    _check_next_boundary_guesses(controller, log, measurement, monkeypatch)
 
     class FailedSolver:
         """Expose a failed Bonmin solve after the successful Observable plan."""
@@ -170,7 +212,9 @@ def test_configured_observable_cap_produces_physical_frame_plan(tmp_path: Path, 
             return {"success": False, "return_status": "infeasible"}
 
     controller._solver = FailedSolver()  # ty: ignore[invalid-assignment]  # noqa: SLF001 -- exercise failure contract
-    failed_current, failed_log = controller.update(controller.model.n_history * controller.dt, np.zeros(1), measurement)
+    failed_current, failed_log = controller.update(
+        (controller.model.n_history + 1) * controller.dt, np.zeros(1), measurement
+    )
     assert not failed_log.success
     assert failed_log.status == "infeasible"
     assert failed_log.planned_active is not None

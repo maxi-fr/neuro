@@ -180,7 +180,7 @@ def test_waveform_cnn_cost_parity_with_trajopt(
 
 
 def test_waveform_cnn_configured_controller_emits_feasible_plan(tmp_path: Path) -> None:
-    """A configured waveform CNN controller produces bounded, balanced plans and shifts initial guess."""
+    """A configured CNN produces feasible native plans and retains unshifted guesses until the next solve."""
     geom = StftGeometry(n_segment=15, n_hop=5, kernel="hann", kernel_width=2)
     fs = 100.0
     dt = 1.0 / fs
@@ -218,7 +218,8 @@ def test_waveform_cnn_configured_controller_emits_feasible_plan(tmp_path: Path) 
         meas = rng.standard_normal(controller.n_channels)
         u, log = controller.update(step * dt, ref=np.zeros(controller.n_channels), x_hat=meas)
         assert log.warmup
-        assert log.success
+        assert not log.success
+        assert not log.solve_attempted
         np.testing.assert_array_equal(u, np.zeros(controller.n_controls))
         assert np.all(np.isnan(log.planned_u))
         assert np.all(np.isnan(log.predicted_y))
@@ -242,16 +243,14 @@ def test_waveform_cnn_configured_controller_emits_feasible_plan(tmp_path: Path) 
     )
     np.testing.assert_allclose(log_first.cost, expected_cost, rtol=1e-5)
 
-    # Verify successful solve shifted initial guess
-    expected_shifted_first = np.vstack([log_first.planned_u[1:], log_first.planned_u[-1:]])
-    np.testing.assert_allclose(controller._u_guess, expected_shifted_first)  # noqa: SLF001 -- initial guess shift check
+    # The saved native guess is consumed at the next solve boundary.
+    np.testing.assert_allclose(controller._u_guess, log_first.planned_u)  # noqa: SLF001 -- unshifted guess contract
 
-    # Subsequent step verifies second solve succeeds and shifts its plan
+    # Subsequent step solves from the consumed-prefix guess and stores its new native plan.
     meas = rng.standard_normal(controller.n_channels)
     _, log_second = controller.update(n_history * dt, ref=np.zeros(controller.n_channels), x_hat=meas)
     assert log_second.success
-    expected_shifted_second = np.vstack([log_second.planned_u[1:], log_second.planned_u[-1:]])
-    np.testing.assert_allclose(controller._u_guess, expected_shifted_second)  # noqa: SLF001 -- second solve shift check
+    np.testing.assert_allclose(controller._u_guess, log_second.planned_u)  # noqa: SLF001 -- unshifted guess contract
 
 
 def test_waveform_cnn_failed_solve_issues_zero_current(tmp_path: Path) -> None:

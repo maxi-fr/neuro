@@ -102,7 +102,7 @@ class CandidateMPCController(Controller[TrajOptMPCLog]):
         blocks: list[list[int]] | None = None,
         w_active: float = 0.3,
     ) -> None:
-        """Initialize candidate schedules and physical Control Current history.
+        """Initialize candidate activation schedules, rejecting structural current blocking.
 
         Parameters
         ----------
@@ -116,6 +116,9 @@ class CandidateMPCController(Controller[TrajOptMPCLog]):
             Sparsity weight on active Control Horizon intervals.
         """
         super().__init__(dt)
+        if problem.control_block_steps > 1:
+            msg = "candidate activation schedules do not support structural Control Current blocking"
+            raise ValueError(msg)
         model = problem.model
         if not isinstance(model, InferencePredictor):
             msg = f"problem.model ({type(model).__name__}) does not implement InferencePredictor"
@@ -226,7 +229,8 @@ class CandidateMPCController(Controller[TrajOptMPCLog]):
         ref: FloatArray,  # noqa: ARG002 -- goal is baked into objective
         x_hat: FloatArray,
     ) -> tuple[FloatArray, TrajOptMPCLog]:
-        """Absorb measurement and apply the best candidate schedule's first physical Control Current."""
+        """Absorb native history and record candidate attempts separately from Warm-up and update runtime."""
+        update_started = time.perf_counter()
         self._state = np.asarray(self.model.absorb(self._state, np.asarray(x_hat).reshape(-1), self._u_last))
         knots = self.problem.N
         m_dim = self.n_controls
@@ -236,11 +240,11 @@ class CandidateMPCController(Controller[TrajOptMPCLog]):
             u_zero = np.zeros(self.n_electrodes, dtype=np.float64)
             return u_zero, TrajOptMPCLog(
                 u=u_zero,
-                cost=0.0,
-                success=True,
+                cost=float("nan"),
+                success=False,
                 warmup=True,
                 status="warmup",
-                solve_time=0.0,
+                solve_time=float("nan"),
                 predicted_y=np.full((knots, self.model.p), np.nan),
                 planned_u=np.full((knots - 1, self.n_electrodes), np.nan),
                 planned_active=np.full(knots - 1, np.nan),
@@ -251,6 +255,9 @@ class CandidateMPCController(Controller[TrajOptMPCLog]):
                 cost_sparse_effort=0.0,
                 cost_tracking=0.0,
                 normalization="channel_mean",
+                solve_attempted=False,
+                plan_index=-1,
+                controller_time=time.perf_counter() - update_started,
             )
 
         started = time.perf_counter()
@@ -297,4 +304,6 @@ class CandidateMPCController(Controller[TrajOptMPCLog]):
             cost_sparse_effort=costs_decomp["cost_sparse_effort"],
             cost_tracking=costs_decomp["cost_tracking"],
             normalization="channel_mean",
+            fallback=not best_success,
+            controller_time=time.perf_counter() - update_started,
         )

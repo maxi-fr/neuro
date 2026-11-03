@@ -36,7 +36,7 @@ def predict(model: InferencePredictor, state: jax.Array, controls: jax.Array, t:
 def replay_predictions(
     model: InferencePredictor, measurements: FloatArray, controls: FloatArray, times: FloatArray, *, horizon: int
 ) -> tuple[FloatArray, FloatArray]:
-    """Replay causal decision measurements and predict only futures fully covered by the recording."""
+    """Absorb every native measurement/applied current and compute diagnostic Rollouts with complete futures."""
     dt = float(times[1] - times[0])
     state = model.initial_state()
     previous = np.zeros(model.m)
@@ -57,7 +57,7 @@ def replay_predictions(
 
 
 def prepare_replay(run: Run, config: dict[str, Any], destination: Path) -> None:
-    """Prepare Rollouts using the configured Predictor and recorded physical Control Currents."""
+    """Save native diagnostic replays under applied currents independently of solver attempts."""
     dt = float(config["controller"]["dt"])
     if config["estimator"] != run.config["estimator"] or config["sensors"] != run.config["sensors"]:
         msg = "Replay requires the same sensor and Estimator configuration as the recording."
@@ -81,7 +81,7 @@ def prepare_replay(run: Run, config: dict[str, Any], destination: Path) -> None:
         raise ValueError(msg)
     predictions, observed = replay_predictions(model, measurements, controls, times, horizon=problem.N - 1)
     destination.parent.mkdir(parents=True, exist_ok=True)
-    PredictionSeries(times, predictions, observed, dt, run.frequencies()).save(destination)
+    PredictionSeries(times, predictions, observed, dt, run.frequencies(), times, "applied currents").save(destination)
     destination.with_suffix(".yaml").write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
     destination.with_suffix(".json").write_text(
         json.dumps({"source": str(run.directory.resolve()), "conditioning": "applied currents"}, indent=2),

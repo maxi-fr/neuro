@@ -5,6 +5,7 @@ import warnings
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from neuro.control.execution import execution_steps
 from neuro.predictor.checkpoint import load_meta
 from neuro.provenance import TrainingProvenance, plant_fingerprint
 from neuro.spectral import HealthyReference, ObservableEnvelope
@@ -310,7 +311,7 @@ def _check_waveform_reference(problem: Mapping[str, Any], meta: Mapping[str, Any
 
 
 def _check_predictor(config: Mapping[str, Any]) -> None:
-    """Require the loop's rate, anti-alias filter, horizon, plant, geometry, and reference to match the predictor's."""
+    """Validate native Predictor couplings and the independent solve/release timing contract."""
     controller = config["controller"]
     if controller["class_path"] not in _PREDICTIVE_CONTROLLERS:
         return
@@ -330,6 +331,10 @@ def _check_predictor(config: Mapping[str, Any]) -> None:
     else:
         effective_decimated_dt = _check_waveform_predictor(config, problem, controller_dt, plant_dt, downsample)
         _check_waveform_reference(problem, meta, controller_dt)
+    if not math.isclose(controller_dt, float(meta["dt"]), rel_tol=_REL_TOL):
+        msg = f"controller.dt ({controller_dt}) must equal the checkpoint's native dt ({meta['dt']})"
+        raise ConfigConsistencyError(msg)
+    _check_execution_timing(config, meta)
 
     online = _estimator_cutoff_hz(config["estimator"])
     offline = _training_cutoff_hz(effective_decimated_dt, downsample, provenance)
@@ -354,6 +359,46 @@ def _check_predictor(config: Mapping[str, Any]) -> None:
             "(dynamics or sensors differ); the prediction model is off-plant.",
             stacklevel=2,
         )
+
+
+def _check_execution_timing(config: Mapping[str, Any], meta: Mapping[str, Any]) -> None:
+    """Validate solve cadence and explicit common release against Estimator and Predictor Priming."""
+    controller = config["controller"]
+    problem = controller["problem"]
+    dt = float(controller["dt"])
+    try:
+        steps, release = execution_steps(
+            dt,
+            float(controller.get("replan_dt", dt)),
+            int(problem.get("horizon", meta["horizon"])),
+            controller.get("control_start_s"),
+        )
+    except ValueError as exc:
+        raise ConfigConsistencyError(str(exc)) from exc
+    block = problem.get("control_block_steps", 1)
+    horizon = int(problem.get("horizon", meta["horizon"]))
+    if isinstance(block, bool) or not isinstance(block, int) or block not in (1, steps) or horizon % block:
+        msg = "control_block_steps must be one or the execution prefix and divide the native Control Horizon"
+        raise ConfigConsistencyError(msg)
+    if controller.get("control_start_s") is None:
+        return
+    history = max(int(meta["n_y"]), int(meta["n_u"]))
+    estimator_delay = 0
+    estimator = config["estimator"]
+    if estimator["class_path"] == "neuro.filtering.ObservableEstimator":
+        geometry = _model_geometry(estimator["geometry"])
+        sample_dt = float(estimator["dt"]) * int(estimator.get("downsample", 1))
+        first_frame_s = (geometry.sample_support_steps(1.0 / sample_dt) - 1) * sample_dt
+        estimator_delay = math.ceil(first_frame_s / dt - _REL_TOL)
+    elif max(float(problem.get("w_hinge", 0.0)), float(problem.get("w_hinge_terminal") or 0.0)) > 0:
+        reference = _reference_path(problem)
+        if reference is not None:
+            envelope = HealthyReference.load(reference).observable
+            if envelope is not None:
+                history = max(history, envelope.geometry.sample_support_steps(envelope.fs))
+    if release < estimator_delay + history - 1:
+        msg = "control_start_s is too early for Estimator/Predictor Priming"
+        raise ConfigConsistencyError(msg)
 
 
 def validate_simulation_config(config: Mapping[str, Any]) -> None:

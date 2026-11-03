@@ -11,7 +11,8 @@ from trajopt.costs.output import OutputCost
 from trajopt.mpc import MPC
 from trajopt.solvers.altro import ALTRO
 from trajopt.solvers.boxqp import BoxQP
-from trajopt.transcription.ipopt import Ipopt
+from trajopt.trajectory import Trajectory
+from trajopt.transcription.ipopt import Ipopt, IpoptResult
 from trajopt.transcription.osqp import OSQP
 from trajopt.transcription.single_shooting import SingleShooting
 
@@ -21,7 +22,7 @@ from neuro.control.costs import ObservableHingeCost
 from neuro.control.model_wrappers import AugmentedActivationModel, EpigraphInferenceModel
 from neuro.control.mpc import TrajOptMPCController, TrajOptMPCLog
 from neuro.control.problems import NeuroProblem, build_observable_problem, build_waveform_problem
-from neuro.control.solvers import CanonicalDuals, _default_solver, canonicalize_duals
+from neuro.control.solvers import _build_solver
 from neuro.filtering import ObservableEstimator
 from neuro.predictor.mlp import ObservableMLPModel, WaveformMLPModel
 from neuro.predictor.replay import prepare_replay, replay_predictions
@@ -31,6 +32,9 @@ from neuro.transforms import Standardizer
 
 if TYPE_CHECKING:
     from pathlib import Path
+
+    from trajopt.problem import BoundaryConditions
+    from trajopt.program import Program, WarmStart
 
     from neuro.types import FloatArray
 
@@ -318,12 +322,7 @@ def test_per_electrode_bounds_rejected_when_mismatched(tmp_path: Path) -> None:
 
 
 def test_controller_keeps_absorbed_state_private(tmp_path: Path) -> None:
-    """``update`` persists the absorbed state and ``u_last`` as its own attributes.
-
-    ``state.x0`` after ``shift()`` is the prior solve's second knot -- a model prediction, not
-    the measurement-corrected state -- so the controller must not be reading its persistent
-    state back from the post-solve trajectory.
-    """
+    """Each native solve pins its own State-Absorbed history and stores the emitted current."""
     artifact = _build_checkpoint(tmp_path, n_y=4)
     problem = build_waveform_problem(artifact, horizon=3, u_max=0.5, w_y=1.0, reference=_ref(2))
     controller = TrajOptMPCController(dt=0.01, problem=problem)
@@ -335,7 +334,7 @@ def test_controller_keeps_absorbed_state_private(tmp_path: Path) -> None:
     assert not np.isnan(controller._state[:n_z]).any()  # noqa: SLF001 -- the test inspects the absorbed state it owns
     np.testing.assert_array_equal(controller._u_last, u_last)  # noqa: SLF001 -- the test verifies the private u_last persistence
     seed = controller.mpc.x0
-    assert not np.array_equal(np.asarray(seed), controller._state)  # noqa: SLF001 -- absorbed state vs post-solve seed
+    np.testing.assert_array_equal(seed, controller._state)  # noqa: SLF001 -- the solved initial state is measured history
 
 
 def test_reproduces_mpc_controller_control_sequence(tmp_path: Path) -> None:
@@ -354,7 +353,8 @@ def test_reproduces_mpc_controller_control_sequence(tmp_path: Path) -> None:
 
     controls, costs = _drive_golden(controller, n_steps=8, n_channels=controller.model.n_channels)
     np.testing.assert_allclose(controls, _WAVEFORM_PARITY_CONTROLS, atol=1e-4)
-    np.testing.assert_allclose(costs, _WAVEFORM_PARITY_COSTS, atol=1e-4)
+    np.testing.assert_allclose(costs[3:], _WAVEFORM_PARITY_COSTS[3:], atol=1e-4)
+    assert np.isnan(costs[:3]).all()
 
 
 def test_single_shooting_solver_succeeds_when_kirchhoff(tmp_path: Path) -> None:
@@ -643,7 +643,7 @@ def test_build_observable_problem_envelope_cross_validation(tmp_path: Path) -> N
 
 
 def test_default_solver_selection(tmp_path: Path) -> None:
-    """_default_solver picks SingleShooting(Ipopt) for every deployed formulation."""
+    """The default is stock SingleShooting(Ipopt) for every deployed formulation."""
     art_wf = _build_checkpoint(tmp_path / "wf", depth=0, n_y=3, n_u=2, horizon=4, n_channels=2, n_controls=3)
 
     geometry = StftGeometry(n_segment=4, n_hop=2)
@@ -660,7 +660,7 @@ def test_default_solver_selection(tmp_path: Path) -> None:
         ),
     )
     for problem in problems:
-        solver = _default_solver(problem)
+        solver = _build_solver(None, problem)
         assert isinstance(solver, SingleShooting)
         assert isinstance(solver.solver, Ipopt)
 
@@ -826,17 +826,18 @@ def test_controller_from_config_loud_validation_errors(tmp_path: Path) -> None:
 
 
 def test_problem_carries_the_predictors_step_as_its_time_grid(tmp_path: Path) -> None:
-    """The horizon's dt lives on the Problem, and it is the Predictor's own step, not the loop's."""
+    """The native controller and Problem grids match the Predictor while solves may run slower."""
     art = _build_checkpoint(tmp_path, depth=0, n_y=3, n_u=2, horizon=4, n_channels=2, n_controls=3)
     model_dt = WaveformMLPModel.load(art).dt
 
     problem = build_waveform_problem(art, horizon=4, u_max=0.5, kirchhoff=True, reference=_ref(2))
     np.testing.assert_allclose(np.asarray(problem.dt), model_dt)
 
-    # The controller decides at its config dt, which is free to differ from the grid it plans on.
+    # Slower replanning leaves native State Absorption and the prediction grid unchanged.
     controller = TrajOptMPCController.from_config(
         {
-            "dt": 10.0 * model_dt,
+            "dt": model_dt,
+            "replan_dt": 4.0 * model_dt,
             "problem": {
                 "class_path": "neuro.control.problems.build_waveform_problem",
                 "artifact": str(art),
@@ -846,44 +847,36 @@ def test_problem_carries_the_predictors_step_as_its_time_grid(tmp_path: Path) ->
             },
         }
     )
-    assert controller.dt == pytest.approx(10.0 * model_dt)
+    assert controller.dt == pytest.approx(model_dt)
+    assert controller.replan_dt == pytest.approx(4.0 * model_dt)
+    with pytest.raises(ValueError, match="Predictor step"):
+        TrajOptMPCController(dt=10.0 * model_dt, problem=problem)
     np.testing.assert_allclose(np.asarray(controller.mpc.program.problem.dt), model_dt)
 
 
-def test_canonicalize_duals_wraps_only_the_ipopt_backends(tmp_path: Path) -> None:
-    """The adapter covers the shifted-layout backends and returns every other solver untouched.
-
-    trajopt classifies solvers by ``isinstance``, so wrapping one it can still see through is the
-    difference between a correct benchmark row and a mislabelled one.
-    """
-    assert isinstance(canonicalize_duals(SingleShooting(solver=Ipopt())), CanonicalDuals)
-    assert isinstance(canonicalize_duals(Ipopt()), CanonicalDuals)
-    for solver in (ALTRO(), BoxQP()):
-        assert canonicalize_duals(solver) is solver
-
-    # SingleShooting eliminates the states, so Ipopt's bound duals are (N-1)*m long where the
-    # canonical Primal Vector is N*n + (N-1)*m: the adapter must blank them or the next shift dies.
+def test_single_shooting_canonical_duals_survive_native_advancement(tmp_path: Path) -> None:
+    """Stock single shooting returns canonical Multipliers usable by the persistent driver."""
     art = _build_checkpoint(tmp_path, depth=0, n_y=3, n_u=2, horizon=4, n_channels=2, n_controls=3)
     problem = build_waveform_problem(art, horizon=4, u_max=0.5, w_y=1.0, kirchhoff=True, reference=_ref(2))
     x0 = jnp.asarray(np.random.default_rng(7).standard_normal(problem.model.n))
-
-    bare = MPC(problem, SingleShooting(solver=Ipopt(options={"print_level": 0})), x0=x0)
-    res_bare = bare.solve()
+    driver = MPC(problem, SingleShooting(solver=Ipopt(options={"print_level": 0})), x0=x0)
+    program = driver.program
+    first = driver.solve()
     N, n, m = int(problem.N), int(problem.model.n), int(problem.model.m)
-    assert len(res_bare.mu) not in (0, N * n + (N - 1) * m)
-
-    wrapped = MPC(problem, canonicalize_duals(SingleShooting(solver=Ipopt(options={"print_level": 0}))), x0=x0)
-    res_wrapped = wrapped.solve()
-    assert res_wrapped.success
-    assert len(res_wrapped.mu) == 0
-    np.testing.assert_allclose(np.asarray(res_wrapped.trajectory.U), np.asarray(res_bare.trajectory.U), atol=1e-8)
+    assert first.success
+    assert len(first.mu) == N * n + (N - 1) * m
+    assert len(first.lam) == N * n + sum(problem.constraints.p)
+    driver.advance(1)
+    driver.measure(x0, 0.01)
+    assert driver.solve().success
+    assert driver.program is program
 
 
 def test_default_ipopt_solver_options(tmp_path: Path) -> None:
-    """_default_solver uses the tuned IPOPT tolerances (tol=1e-3, acceptable_tol=1e-2, acceptable_iter=5)."""
+    """Default single shooting retains the tuned IPOPT tolerances and Hessian approximation."""
     art = _build_checkpoint(tmp_path, depth=0, n_y=2, n_u=2, horizon=3, n_channels=2, n_controls=3)
     problem = build_waveform_problem(art, horizon=3, u_max=0.5, reference=_ref(2))
-    solver = _default_solver(problem)
+    solver = _build_solver(None, problem)
     assert isinstance(solver, SingleShooting)
     assert isinstance(solver.solver, Ipopt)
     opts = dict(solver.solver.options)
@@ -983,7 +976,7 @@ def _check_plan(
 
 
 def test_mixed_integer_mpc_controller_solve_and_update(tmp_path: Path) -> None:
-    """TrajOptMPCController solves binary mixed-integer plans certified by _check_plan."""
+    """Native-rate binary execution retains plans certified by _check_plan."""
     artifact, geom = _build_observable_checkpoint(tmp_path, n_channels=2, n_controls=2)
     n_values = geom.n_values(50.0)
     env_path = tmp_path / "obs_env_mi.npz"
@@ -1008,7 +1001,7 @@ def test_mixed_integer_mpc_controller_solve_and_update(tmp_path: Path) -> None:
         reference=HealthyReference.load(env_path),
         kirchhoff=True,
     )
-    ctrl = TrajOptMPCController(dt=0.06, problem=prob)
+    ctrl = TrajOptMPCController(dt=float(prob.dt[0]), problem=prob)
     assert ctrl.n_controls == 2
     assert ctrl.n_electrodes == 2
     assert ctrl.is_integer_mode
@@ -1075,7 +1068,7 @@ def test_candidate_mpc_controller_update_and_config(tmp_path: Path) -> None:
 
 
 def test_trajopt_mpc_controller_cont_polish(tmp_path: Path) -> None:
-    """TrajOptMPCController with init_mode='cont_polish' initializes from continuous relaxation."""
+    """Capped binary updates reuse stock drivers and retain the original reported Cost."""
     artifact, geom = _build_observable_checkpoint(tmp_path, n_channels=2, n_controls=2)
     n_values = geom.n_values(50.0)
     env_path = tmp_path / "obs_env_polish.npz"
@@ -1101,7 +1094,21 @@ def test_trajopt_mpc_controller_cont_polish(tmp_path: Path) -> None:
     )
     assert prob.continuous_problem is not None
 
-    ctrl = TrajOptMPCController(dt=0.06, problem=prob, init_mode="cont_polish")
+    ctrl = TrajOptMPCController(
+        dt=float(prob.dt[0]),
+        problem=prob,
+        init_mode="cont_polish",
+        solver={
+            "class_path": "trajopt.transcription.single_shooting.SingleShooting",
+            "solver": {
+                "class_path": "trajopt.transcription.ipopt.Ipopt",
+                "beta_initial": 2.0,
+                "beta_growth": 8.0,
+                "max_passes": 10,
+                "binary_tolerance": 1e-4,
+            },
+        },
+    )
     assert ctrl.init_mode == "cont_polish"
     assert ctrl._cont_mpc is not None  # noqa: SLF001 -- test verifies internal continuous driver creation
 
@@ -1109,6 +1116,25 @@ def test_trajopt_mpc_controller_cont_polish(tmp_path: Path) -> None:
     u_cmd, log = ctrl.update(0.0, np.zeros(2), np.zeros(model.n_outputs))
     assert log.warmup
     assert u_cmd.shape == (2,)
+
+    assert isinstance(ctrl.solver, SingleShooting)
+    assert ctrl.solver.solver.beta_initial == 2.0
+    assert ctrl.solver.solver.beta_growth == 8.0
+    assert ctrl.solver.solver.max_passes == 10
+    program = ctrl.mpc.program
+    continuous_program = ctrl._cont_mpc.program  # noqa: SLF001 -- both persistent drivers are the reuse boundary
+    for k in range(1, ctrl.model.n_history + 2):
+        u_cmd, log = ctrl.update(k * ctrl.dt, np.zeros(2), np.zeros(model.n_outputs))
+        if log.warmup:
+            continue
+        assert log.success
+        assert np.sum(log.planned_active) <= 1 + 1e-4
+        assert np.max(np.abs(log.planned_active - np.round(log.planned_active))) < 1e-4
+        checked = _check_plan(prob, np.asarray(ctrl.mpc.x0), log.planned_u, log.planned_active)
+        assert log.cost == pytest.approx(checked.objective, rel=1e-5)
+        np.testing.assert_allclose(u_cmd, log.planned_u[0])
+        assert ctrl.mpc.program is program
+        assert ctrl._cont_mpc.program is continuous_program  # noqa: SLF001 -- relaxation Program remains persistent
 
 
 def test_build_waveform_problem_epigraph_construction(tmp_path: Path) -> None:
@@ -1188,7 +1214,7 @@ def test_epigraph_exact_zero_recovery(tmp_path: Path) -> None:
 
 
 def test_trajopt_mpc_controller_epigraph_closed_loop(tmp_path: Path) -> None:
-    """TrajOptMPCController in epigraph mode produces physical outputs and warm-starts slack variables."""
+    """Epigraph execution retains native slack coordinates while emitting physical currents."""
     artifact = _build_checkpoint(tmp_path, n_channels=2, n_controls=2)
     prob = build_waveform_problem(
         artifact,
@@ -1204,7 +1230,8 @@ def test_trajopt_mpc_controller_epigraph_closed_loop(tmp_path: Path) -> None:
     ctrl = TrajOptMPCController(dt=0.01, problem=prob)
     assert ctrl.n_electrodes == 2
     assert ctrl._epigraph_mode  # noqa: SLF001 -- test verifies internal epigraph detection
-    assert ctrl._u_guess.shape == (3, 4)  # noqa: SLF001 -- verifies augmented guess dimensions
+
+    controller_program = ctrl.mpc.program
 
     # Warmup steps
     for k in range(ctrl.model.n_history - 1):
@@ -1223,13 +1250,14 @@ def test_trajopt_mpc_controller_epigraph_closed_loop(tmp_path: Path) -> None:
     # Check that planned_active matches physical currents
     expected_active = (np.abs(log.planned_u).max(axis=-1) > 1e-3).astype(np.float64)
     np.testing.assert_allclose(log.planned_active, expected_active)
-    # Check that _u_guess was warm-started with [u_shifted, abs(u_shifted)]
-    assert ctrl._u_guess.shape == (3, 4)  # noqa: SLF001
-    np.testing.assert_allclose(
-        ctrl._u_guess[:, 2:],  # noqa: SLF001
-        np.abs(ctrl._u_guess[:, :2]),  # noqa: SLF001
-        atol=1e-8,
-    )
+    assert controller_program is ctrl.mpc.program
+    native_plan = np.asarray(ctrl.mpc.controls)
+    np.testing.assert_allclose(native_plan[:, :2], log.planned_u)
+    assert np.all(native_plan[:, 2:] >= np.abs(native_plan[:, :2]) - 1e-6)
+    next_u, next_log = ctrl.update(t_ready + 0.01, ref=np.zeros(1), x_hat=np.ones(2))
+    assert next_log.success
+    assert next_u.shape == (2,)
+    assert controller_program is ctrl.mpc.program
 
 
 def test_epigraph_weight_matches_horizon_normalized_surrogate(tmp_path: Path) -> None:
@@ -1247,3 +1275,56 @@ def test_epigraph_weight_matches_horizon_normalized_surrogate(tmp_path: Path) ->
         l1_mode="epigraph",
     )
     np.testing.assert_allclose(float(cast("Any", prob.obj.stage_cost).weight), w_u_l1 / horizon)
+
+
+@pytest.mark.parametrize("mode", ["physical", "epigraph", "binary"])
+def test_failed_solve_absorbs_applied_zero_current(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mode: str) -> None:
+    """A failed nonzero iterate remains diagnostic; the next State Absorption receives fallback zero."""
+    if mode == "binary":
+        artifact, _ = _build_observable_checkpoint(tmp_path, n_y=2, n_u=2)
+        problem = build_observable_problem(artifact, horizon=3, u_max=0.5, w_active=0.2)
+    else:
+        artifact = _build_checkpoint(tmp_path, depth=0, n_y=2, n_u=2)
+        problem = build_waveform_problem(
+            artifact,
+            horizon=3,
+            u_max=0.5,
+            w_y=0.0,
+            w_u_l1=0.2 if mode == "epigraph" else 0.0,
+            l1_mode="epigraph" if mode == "epigraph" else "smooth",
+        )
+    dt = float(problem.dt[0])
+    controller = TrajOptMPCController(dt=dt, problem=problem)
+    program = controller.mpc.program
+
+    def failed_solve(_program: Program, bc: BoundaryConditions, ws: WarmStart) -> IpoptResult:
+        """Return an intentionally failed, nonzero native iterate from the Program seam."""
+        failed_u = jnp.full((3, problem.model.m), 0.25)
+        failed_ws = ws.with_primal(problem, U=failed_u)
+        states, controls = failed_ws.unpack(problem)
+        times = bc.t0 + jnp.arange(4) * dt
+        return IpoptResult(
+            trajectory=Trajectory(X=states, U=controls, t=times, dt=problem.dt),
+            success=False,
+            status=-1,
+            message="forced failure",
+            cost=1.0,
+            Z=failed_ws.Z,
+            info={},
+            constraint_violation=0.0,
+        )
+
+    monkeypatch.setattr(type(program), "solve", failed_solve)
+    n_outputs = controller.model.p
+    ready_index = controller.model.n_history - 1
+    for k in range(ready_index):
+        controller.update(k * dt, np.zeros(1), np.zeros(n_outputs))
+    command, failed = controller.update(ready_index * dt, np.zeros(1), np.ones(n_outputs))
+    assert not failed.success
+    np.testing.assert_array_equal(command, np.zeros(2))
+    np.testing.assert_array_equal(failed.planned_u, np.full((3, 2), 0.25))
+    absorbed = np.asarray(controller.mpc.x0)
+    expected = controller.model.absorb(absorbed, np.full(n_outputs, 2.0), command)
+    controller.update((ready_index + 1) * dt, np.zeros(1), np.full(n_outputs, 2.0))
+    np.testing.assert_allclose(controller.mpc.x0, expected)
+    assert controller.mpc.program is program

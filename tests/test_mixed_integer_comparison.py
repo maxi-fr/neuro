@@ -93,6 +93,7 @@ def test_failed_solve_stops_plant_before_advancing_and_preserves_status(monkeypa
                 cost=0.0,
                 success=True,
                 warmup=True,
+                solve_attempted=False,
                 status="warmup",
                 solve_time=0.0,
                 predicted_y=np.zeros((3, 1)),

@@ -62,10 +62,10 @@ def delivery_metrics(
     end_s: float,
     zero_ma: float = CURRENT_ZERO_MA,
 ) -> dict[str, float | int | None]:
-    """Reduce applied zero-order-held currents and first-step binary decisions."""
+    """Integrate native applied currents over clipped recorded intervals and count finite activation decisions."""
     t = np.asarray(times, dtype=np.float64).reshape(-1)
     u = np.asarray(currents, dtype=np.float64)
-    durations = np.diff(np.append(t, end_s)) if len(t) else np.empty(0)
+    durations = np.maximum(0.0, np.diff(np.minimum(np.append(t, end_s), end_s))) if len(t) else np.empty(0)
     delivered = np.any(np.abs(u) > zero_ma, axis=1) if len(t) else np.empty(0, dtype=bool)
     return {
         "enabled_steps": None
@@ -96,8 +96,10 @@ def _extract_solve_times(
     available: set[str],
     failure: SolveFailureError | None,
 ) -> FloatArray:
-    """Extract post-warmup solver runtimes, appending any terminal failure runtime."""
-    if "warmup" in available:
+    """Extract actual solve-attempt runtimes, appending any terminal failure runtime."""
+    if "solve_attempted" in available:
+        solved = logger.signal("controller", "solve_attempted")[1].reshape(-1).astype(bool)
+    elif "warmup" in available:
         solved = logger.signal("controller", "warmup")[1].reshape(-1) == 0
     else:
         solved = np.ones(len(control_t), dtype=bool)
@@ -118,11 +120,12 @@ def score_seed(config: dict[str, Any], *, threshold: float = SEIZURE_PTP_MV) -> 
     original_update = controller.update
 
     def stop_on_failure(t: float, ref: FloatArray, x_hat: FloatArray) -> tuple[FloatArray, Any]:
-        """Prevent the Plant from advancing after a failed optimization."""
+        """Stop only after failed optimization attempts, allowing ordinary command playback."""
         current, log = original_update(t, ref, x_hat)
         warmup = bool(getattr(log, "warmup", False))
         success = bool(getattr(log, "success", True))
-        if not warmup and not success:
+        attempted = bool(getattr(log, "solve_attempted", not warmup))
+        if attempted and not success:
             raise SolveFailureError(str(getattr(log, "status", "failed")), t, float(getattr(log, "solve_time", 0.0)))
         return current, log
 

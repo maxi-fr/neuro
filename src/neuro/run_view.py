@@ -14,7 +14,7 @@ from neuro.seizure import SEIZURE_PTP_MV, spread_profile_from_lfp
 from neuro.stimulation.base import select_rows
 
 if TYPE_CHECKING:
-    from neuro.types import FloatArray
+    from neuro.types import FloatArray, IntArray
 
 
 _NEAR_ZERO_THRESHOLD = 1e-6
@@ -22,22 +22,37 @@ _NEAR_ZERO_THRESHOLD = 1e-6
 
 @dataclass(frozen=True)
 class PredictionSeries:
-    """Decision times, Rollouts ``(n, H+1, p)``, and independently recorded outputs ``(n, p)``."""
+    """Plan times, Rollouts ``(n_plans, H+1, p)`` and outputs ``(n_observations, p)`` on their own clock."""
 
     t: FloatArray
     predicted_y: FloatArray
     observed_y: FloatArray
     dt: float
     frequencies: FloatArray = field(default_factory=lambda: np.empty(0, dtype=np.float64))
+    observed_t: FloatArray | None = None
+    conditioning: str = "planned currents"
+
+    @property
+    def observation_times(self) -> FloatArray:
+        """Return native observation times, including older collections sharing the plan clock."""
+        return self.t if self.observed_t is None else self.observed_t
 
     @classmethod
     def load(cls, path: Path) -> PredictionSeries:
-        """Read a prepared Rollout collection without loading a Predictor."""
+        """Read native observation timestamps and conditioning, retaining older prepared Rollout collections."""
         with np.load(path, allow_pickle=False) as data:
-            return cls(data["t"], data["predicted_y"], data["observed_y"], float(data["dt"]), data["frequencies"])
+            return cls(
+                data["t"],
+                data["predicted_y"],
+                data["observed_y"],
+                float(data["dt"]),
+                data["frequencies"],
+                data.get("observed_t"),
+                str(data["conditioning"]) if "conditioning" in data else "unspecified",
+            )
 
     def save(self, path: Path) -> None:
-        """Persist the typed Rollout collection as numeric arrays."""
+        """Persist Rollouts with independent native observation times and explicit input conditioning."""
         np.savez_compressed(
             path,
             t=self.t,
@@ -45,6 +60,8 @@ class PredictionSeries:
             observed_y=self.observed_y,
             dt=self.dt,
             frequencies=self.frequencies,
+            observed_t=self.observation_times,
+            conditioning=self.conditioning,
         )
 
 
@@ -105,11 +122,27 @@ class Run:
         return frequencies[: count * geometry.n_bin_pool].reshape(count, geometry.n_bin_pool).mean(axis=1)
 
     def planned_predictions(self) -> PredictionSeries:
-        """Pair controller Rollouts with independently logged physical outputs."""
+        """Select solve-time Rollouts while retaining every independently logged native observation."""
         times, outputs = self.signal("controller", "predicted_y")
+        attempts = self.plan_attempts()
         return PredictionSeries(
-            times, outputs, self.observed_outputs(), float(self.config["controller"]["dt"]), self.frequencies()
+            times[attempts],
+            outputs[attempts],
+            self.observed_outputs(),
+            float(self.config["controller"]["dt"]),
+            self.frequencies(),
+            times,
         )
+
+    def plan_attempts(self) -> IntArray:
+        """Return actual attempt indices; saved unit-step runs use their original Warm-up mask."""
+        if "controller.solve_attempted" in self.arrays:
+            mask = self.arrays["controller.solve_attempted"].reshape(-1).astype(bool)
+        elif "controller.warmup" in self.arrays:
+            mask = ~self.arrays["controller.warmup"].reshape(-1).astype(bool)
+        else:
+            mask = np.ones(len(self.arrays["controller.t"]), dtype=bool)
+        return np.flatnonzero(mask)
 
     def eeg(self) -> tuple[FloatArray, FloatArray]:
         """Read the Sensor's EEG log."""
@@ -211,7 +244,9 @@ def save_bookmark(path: Path, name: str, settings: ViewSettings) -> None:
 
 
 def decision_indices(times: FloatArray, settings: ViewSettings) -> list[int]:
-    """Select a decision and neighboring anchors at the requested decision spacing."""
+    """Select neighboring saved attempt anchors, including runs with no attempts during Warm-up."""
+    if not len(times):
+        return []
     center = int(np.argmin(np.abs(times - settings.decision)))
     return [
         i

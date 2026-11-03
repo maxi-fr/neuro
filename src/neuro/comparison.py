@@ -238,39 +238,58 @@ def control_metrics(us: FloatArray, u_max: float, dt: float) -> dict[str, float]
 
 
 def solver_metrics(logger: BaseLogger, control_dt: float) -> dict[str, float]:
-    """Score solve time and convergence from decision-rate controller records.
-
-    ``realtime_factor`` is the p95 solve time against the decision period the arm has to meet: the
-    arms decide at different rates, so a raw solve time does not compare across them, and anything
-    above 1.0 is a controller that cannot run online.
-    """
+    """Score actual solve attempts against the replanning deadline and aggregate all native update time."""
     available = {name for component, name in logger.signals() if component == "controller"}
     if not {"solve_time", "success", "warmup"} <= available:
         return {}
     warmup = logger.signal("controller", "warmup")[1].reshape(-1).astype(bool)
     success = logger.signal("controller", "success")[1].reshape(-1).astype(bool)
     solve_time = logger.signal("controller", "solve_time")[1].reshape(-1)
-    solved = ~warmup
+    solved = (
+        logger.signal("controller", "solve_attempted")[1].reshape(-1).astype(bool)
+        if "solve_attempted" in available
+        else ~warmup
+    )
+    totals = {
+        "solve_count": float(np.sum(solved)),
+        "solve_failures": float(np.sum(solved & ~success)),
+    }
+    if "controller_time" in available:
+        totals["controller_time_s"] = float(np.sum(logger.signal("controller", "controller_time")[1]))
     if not solved.any():
-        keys = ("solve_success_rate", "solve_time_mean_s", "solve_time_p95_s", "realtime_factor")
-        return dict.fromkeys(keys, float("nan"))
+        keys = (
+            "solve_success_rate",
+            "solve_time_mean_s",
+            "solve_time_p95_s",
+            "solve_time_median_s",
+            "solve_time_max_s",
+            "realtime_factor",
+        )
+        return {**dict.fromkeys(keys, float("nan")), **totals}
     p95 = float(np.quantile(solve_time[solved], 0.95))
     return {
+        **totals,
         "solve_success_rate": float(np.mean(success[solved])),
         "solve_time_mean_s": float(np.mean(solve_time[solved])),
         "solve_time_p95_s": p95,
+        "solve_time_median_s": float(np.median(solve_time[solved])),
+        "solve_time_max_s": float(np.max(solve_time[solved])),
         "realtime_factor": p95 / control_dt,
     }
 
 
 def cost_metrics(logger: BaseLogger) -> dict[str, Any]:
-    """Score decomposed cost contributions and report normalization convention from controller records."""
+    """Score decomposed Costs only at solve attempts, including attempted failures."""
     available = {name for component, name in logger.signals() if component == "controller"}
     required = {"cost_spectral", "cost_quadratic_effort", "cost_sparse_effort", "warmup"}
     if not required <= available:
         return {}
     warmup = logger.signal("controller", "warmup")[1].reshape(-1).astype(bool)
-    solved = ~warmup
+    solved = (
+        logger.signal("controller", "solve_attempted")[1].reshape(-1).astype(bool)
+        if "solve_attempted" in available
+        else ~warmup
+    )
     if not solved.any():
         return {
             "cost_spectral_mean": float("nan"),
@@ -308,7 +327,7 @@ def cost_metrics(logger: BaseLogger) -> dict[str, Any]:
 def score_run(
     config: dict[str, Any], u_max: float, *, threshold: float = SEIZURE_PTP_MV, output_dir: Path | None = None
 ) -> dict[str, Any]:
-    """Score one Simulation, including decomposed Costs, and optionally retain its logs and config."""
+    """Score native applied currents, actual attempts and update time, clipping charge to the simulation end."""
     config = lfp_logging(config)
     sim = Simulation.from_config(config)
     connectome = Connectome.from_config(config["dynamics"]["connectome"])
@@ -323,15 +342,19 @@ def score_run(
         control_dt = float(config["controller"]["dt"])
         control_t, controls = sim.logger.signal("controller", "u")
         # The final logged command has no duration inside the recorded simulation.
-        durations = np.diff(np.append(control_t, config["t_end"]))
+        durations = np.maximum(0.0, np.diff(np.minimum(np.append(control_t, config["t_end"]), config["t_end"])))
         metrics = {
             "wall_time_s": wall_time,
             **spread_metrics(sim.logger.signal("dynamics", "lfp")[1], sim.dt, connectome, threshold=threshold),
             **control_metrics(controls, u_max, control_dt),
-            **solver_metrics(sim.logger, control_dt),
+            **solver_metrics(sim.logger, float(config["controller"].get("replan_dt", control_dt))),
             **cost_metrics(sim.logger),
         }
         metrics["delivered_charge"] = float(np.sum(np.abs(controls) * durations[:, None]))
+        if "solve_count" in metrics:
+            metrics["solves_per_simulated_second"] = metrics["solve_count"] / config["t_end"]
+        if "controller_time_s" in metrics:
+            metrics["controller_time_per_simulated_second"] = metrics["controller_time_s"] / config["t_end"]
         metrics["mean_amplitude"] = float(
             np.sum(np.mean(np.abs(controls) / u_max, axis=1) * durations) / config["t_end"]
         )
