@@ -1,37 +1,79 @@
 \chapter{Experiments and Discussion}
 \label{ch:experiments_discussion}
 
-% ==============================================================================
-% Core Questions:
-% How do the proposed Predictors and MPC formulations perform in closed-loop against
-% the ground-truth Plant, what are their operational trade-offs, and where do they break down?
-% ==============================================================================
+\section{Experimental Protocol}
 
-% Contents:
-% - Experimental Protocol and Evaluation Criteria:
-%   * In-silico patient scenarios: Spontaneous seizure generation in EZ and recruitment into PZ.
-%   * Quantitative metrics: Seizure State, Seizure Burden, total injected charge, solve times.
-%   * Uncontrolled baseline and reference conditions.
-% - Study 0: Predictability experiment:
-%   * what metrics can 1. detect seizures and 2. are predictable
-%   * based of notebooks/state/scoring.py
-%   * Note: the metric should be the MPC cost function? instead of what is currently there 
-% - Study 1: Offline Predictor Benchmarking:
-%   * Selection of STFT geometry: Trading temporal responsiveness against frequency resolution.
-%   * Training loss comparison: Multi-step Rollout stability of spectral training loss vs. raw MSE loss.
-%   * Prediction-target comparison: waveform Predictors trained with a spectral Loss vs. Predictors
-%     that forecast spectral Observable Frames directly; compare Control Horizon accuracy and response to current.
-%   * Model comparison: Linear DMDc vs. Nonlinear MLP over the Control Horizon.
-% - Study 2: Numerical Solver and Transcription Benchmarking:
-%   * Solve time, convergence reliability, and constraint satisfaction across horizon lengths.
-%   * Single shooting vs. multiple shooting vs. NARX multiple shooting
-% - Study 3: Closed-Loop Seizure Suppression:
-%   * Proof of closed-loop efficacy: Attenuating seizure amplitude and preventing PZ recruitment via scalp EEG feedback.
-%   * Waveform MPC vs. Spectral MPC: Empirical demonstration of why waveform tracking fails while spectral MPC succeeds.
-%   * With the same spectral MPC Cost, compare waveform and direct spectral Predictors to isolate
-%     the effect of the prediction target on closed-loop Seizure Suppression.
-%   * Sparse Stimulation investigations: 
-%     * compare L_1 loss, bonmin, block candidate, homotopy
+\subsection{Plant Scenario and Baselines}
+% - Describe spontaneous seizure onset in the EZ and recruitment into the PZ.
+% - Define the uncontrolled and threshold-stimulation baselines and the healthy reference.
+% - Specify the shared montage, current constraints, Warm-up Period, and simulation duration.
+% - Replanning period: 60 ms for both. Predictor step: 20 ms Waveform, 60 ms Observable. Rationale: “We used a 60 ms replanning period for both controller families, following the better-performing Observable configuration in preliminary experiments.”
 
-% ---
-% would be great if we could define some measure for "unnecessary stimulation" i.e. stimulation when it wasn't immenently necessary for suppression
+\subsection{Evaluation and Controller Selection}
+% - Controller metrics: Seizure Burden, final seizing region count, Delivered Charge.
+% - Solver metrics: solve latency, constraint violations, fallback count.
+% - Controller validation: development Plant seeds. Select lowest mean Seizure Burden within 20--30 mAs mean Delivered Charge.
+% - Controller test: reserved Plant seeds. Report paired differences and bootstrap intervals for Seizure Burden and Delivered Charge.
+% - Predictor validation Loss: checkpoint selection. Predictor test Loss: separate held-out recordings, if available.
+% - Compare Predictors using a common scoring Loss within each comparison.
+
+\section{Observable Predictability and Response to Stimulation}
+
+\subsection{Seizure Detection}
+% - Compare candidate EEG Observables during healthy activity, seizure onset, and recruitment.
+% - Metrics: detection accuracy and onset timing against regional Seizure State.
+
+\subsection{Predictability and Stimulation Response}
+% - Use notebooks/state_scoring.py to score the predictability and controllability ensemble.
+% - Metrics: spread of future Observable values at fixed starting state; paired Observable change under stimulation at fixed state and noise.
+% - Decide whether to score the spectral state penalty alongside the Observable.
+
+\section{Offline Predictor Benchmark}
+
+\subsection{Hyperparameter Search and Model Selection}
+% - Summarize each search, ranking metric, selected configuration, and main trial patterns.
+% - Report full search spaces and trial results in the appendix.
+
+\subsection{Prediction Target}
+% - Compare Waveform-derived spectra and direct Observable forecasts on matched EEG histories and currents.
+% - Prediction-target metric: common spectral error against the recorded Observable.
+
+\subsection{Predictor Families}
+% - Spectral Predictors: compare Hankel-DMDc, MLP, and CNN on the same Observable.
+% - Waveform Predictors: compare MLP and CNN with the same validation Loss.
+% - Metric: common validation Loss on matched evaluation windows within each prediction target.
+
+\section{Solver and Transcription Benchmark}
+
+% - Benchmark single shooting, multiple shooting, and NARX multiple shooting.
+% - Match the Predictor, MPC Cost, constraints, initial plans, and physical Control Horizons across transcriptions.
+% - Metrics: solve latency, convergence rate, achieved objective, constraint violation.
+
+\section{Closed-Loop Seizure Suppression}
+
+\subsection{Spectral Observable Geometry}
+% - Vary Segment length, frequency band, Frame Kernel, and taper at a fixed 60 ms Frame interval.
+% - Describe each geometry by its frequency resolution and smoothing delay.
+% - Closed-loop validation metrics: Seizure Burden, final seizing regions, Delivered Charge.
+
+\subsection{Waveform Prediction Target}
+% - Compare Waveform controllers trained with waveform MSE, spectral Loss, or both under the planned Loss--Cost pairings.
+% - Use shared MPC Costs when attributing differences to training Loss.
+% - Compare waveform tracking, spectral hinge, and combined Costs using the same joint-loss checkpoint.
+% - Vary effort, terminal weight, and Control Horizon on validation seeds.
+% - Validation metrics: Seizure Burden, final seizing regions, Delivered Charge.
+
+\subsection{Controller Comparison}
+% - Compare uncontrolled, threshold, Observable DMDc, Observable MLP/CNN, and Waveform MLP/CNN arms.
+% - Test metrics: Seizure Burden, final seizing regions, Delivered Charge, solver failures.
+
+\subsection{Sparse Stimulation}
+% - Compare L1 effort, Bonmin, block candidates, and homotopy on a shared evaluation protocol.
+% - Metrics: stimulation active time, bout count, Delivered Charge, Seizure Burden, final seizing regions, solve latency.
+% - Open question: withhold one stimulation block in paired replay and measure the change in Seizure Burden over a fixed interval.
+
+\section{Discussion}
+% - Explain differences in Seizure Burden and final seizing region count using paired traces.
+% - Discuss trade-offs among Seizure Burden, Delivered Charge, and solve latency.
+% - Separate the controlled development comparisons from the reserved comparison of tuned controller systems.
+% - Discuss limitations from the Plant scenario, training seeds, and simulated-time execution.

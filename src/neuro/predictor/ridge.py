@@ -6,14 +6,12 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
-from neuro.predictor.evaluation import RolloutNMSE, free_run_stats
 from neuro.types import RidgeFittable
 
 if TYPE_CHECKING:
     from pathlib import Path
 
     from neuro.predictor.base import AutoregressiveModel
-    from neuro.predictor.evaluation import LogEnergyError, ObservableFrameMSE
     from neuro.types import FloatArray
 
 
@@ -64,44 +62,14 @@ class RidgeTrainer:
 
 @dataclass(frozen=True)
 class RidgeTrainingResult:
-    """Everything one closed-form Ridge training run produced; ``save`` persists it all.
-
-    Owned by the depth-0 waveform MLP arm whose free-run scores live on the sample grid, which
-    returns exactly this shape of result: a fitted Predictor, the free-run scores, and no
-    training curve. The absence of ``val_loss`` in ``candidates`` is deliberate: a closed-form
-    fit has no epoch loop, so the only objectives this arm can rank on are the two free-run
-    scores, ``rollout_nmse`` and ``log_energy``.
-
-    Attributes
-    ----------
-    predictor : WaveformMLPModel | ObservableMLPModel
-        The trained module holding the fitted readout, with the standardizers as buffers and the
-        recorded metadata (provenance, downsample) attached.
-    candidates : dict[str, float]
-        Every objective the sweep seam can rank this run on: ``rollout_nmse`` and ``log_energy``,
-        both lower-is-better.
-    free_run : RolloutNMSE | ObservableFrameMSE
-        Free-run error on ``val_trajs``, per step and pooled: rollout NMSE on the waveform kind,
-        log-power Frame MSE on the observable kind.
-    log_energy : LogEnergyError | None
-        Free-run windowed-energy log-ratio error on ``val_trajs``. ``None`` on the observable kind.
-    spectral_free_run : ObservableFrameMSE | None
-        Common log-power Frame MSE when waveform STFT geometry is configured.
-    val_trajs : list[tuple[FloatArray, FloatArray]]
-        The held-out ``(u, y)`` trajectories, kept whole so the caller can plot free runs.
-    """
+    """Store a closed-form Predictor, optional validation scores, and plotting trajectories."""
 
     predictor: AutoregressiveModel
     candidates: dict[str, float]
-    free_run: RolloutNMSE | ObservableFrameMSE
-    log_energy: LogEnergyError | None
     val_trajs: list[tuple[FloatArray, FloatArray]]
-    spectral_free_run: ObservableFrameMSE | None = None
 
     def save(self, artifact_dir: Path) -> None:
-        """Persist the checkpoint and native and configured spectral evaluation scores."""
+        """Save the checkpoint and any validation Loss."""
         self.predictor.save(artifact_dir / "model")
-        stats: dict[str, object] = dict(free_run_stats(self.free_run, self.log_energy, self.spectral_free_run))
-        if "val_loss" in self.candidates:
-            stats["val_loss"] = self.candidates["val_loss"]
+        stats = {"val_loss": self.candidates["val_loss"]} if "val_loss" in self.candidates else {}
         (artifact_dir / "training_stats.json").write_text(json.dumps(stats, indent=2))

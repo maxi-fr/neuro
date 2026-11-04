@@ -9,7 +9,6 @@ import pytest
 
 from neuro.config import (
     CategoricalParam,
-    ClosedLoopEvalConfig,
     CurriculumMSESpec,
     FloatParam,
     IntParam,
@@ -34,11 +33,9 @@ _WAVE_HORIZON = 3
 
 def _wave_config(
     *,
-    objective: str = "log_energy",
     sweep_model: dict[str, Any] | None = None,
-    closed_loop: ClosedLoopEvalConfig | None = None,
 ) -> NNPredictorConfig:
-    """A tiny but complete waveform config whose sweep names ``objective``."""
+    """Build a small Waveform sweep configuration."""
     span_s = _WAVE_HORIZON / _WAVE_DT
     losses = LossSpecs(curriculum_mse=CurriculumMSESpec(weight=1.0, span_s=span_s, curr_start=0, curr_end=2))
     return NNPredictorConfig(
@@ -53,22 +50,10 @@ def _wave_config(
                 "train_split": 0.5,
                 "seed": 21,
                 "patience": 50,
-                "eval_horizon_s": span_s,
                 "losses": losses,
             }
         ),
-        sweep=NNSweepConfig(objective=objective, model=sweep_model or {}, closed_loop=closed_loop),
-    )
-
-
-def _closed_loop_cfg() -> ClosedLoopEvalConfig:
-    """A minimal closed-loop evaluation section; the evaluation itself is stubbed in these tests."""
-    return ClosedLoopEvalConfig(
-        simulation_config="sim.yaml",
-        seeds=[69],
-        t_end=5.0,
-        seizure_ptp_mv=5.0,
-        max_seizing_regions=5,
+        sweep=NNSweepConfig(model=sweep_model or {}),
     )
 
 
@@ -95,33 +80,24 @@ def _stub_train(monkeypatch: pytest.MonkeyPatch, candidates: dict[str, float]) -
     return captured
 
 
-def _stub_closed_loop(monkeypatch: pytest.MonkeyPatch, score: float = 0.07) -> None:
-    """Replace the closed-loop evaluation with a fixed score and summary."""
-
-    def fake_eval(trial_dir: Path, eval_cfg: ClosedLoopEvalConfig) -> tuple[float, dict[str, float]]:
-        return score, {"seizure_burden": score, "suppressed_seeds": 1.0, "total_seeds": 2.0}
-
-    monkeypatch.setattr(sweep_module, "evaluate_closed_loop_suppression", fake_eval)
-
-
 def test_optuna_sweep_records_every_candidate_and_scores_the_named_objective(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The waveform arm records all Trainer candidates on the trial and returns the named one."""
-    candidates = {"log_energy": 0.31, "val_loss": 0.24, "rollout_nmse": 0.19}
+    candidates = {"val_loss": 0.24}
     captured = _stub_train(monkeypatch, candidates)
     trial = optuna.trial.FixedTrial({})
 
-    value = OptunaSweep(_wave_config(objective="rollout_nmse"), ["sim_0.npz"], tmp_path).objective(trial)
+    value = OptunaSweep(_wave_config(), ["sim_0.npz"], tmp_path).objective(trial)
 
-    assert value == pytest.approx(0.19)
+    assert value == pytest.approx(0.24)
     assert trial.user_attrs == candidates
     assert captured[0].model.n_y == 2  # the base config reaches the trainer
 
 
 def test_optuna_sweep_merges_suggested_params_into_the_config(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """A trial's suggested search-space value reaches the trainer inside the merged config."""
-    captured = _stub_train(monkeypatch, {"log_energy": 0.1, "val_loss": 0.2, "rollout_nmse": 0.3})
+    captured = _stub_train(monkeypatch, {"val_loss": 0.2})
     cfg = _wave_config(sweep_model={"depth": IntParam(type="int", low=0, high=3)})
     trial = optuna.trial.FixedTrial({"depth": 0})
 
@@ -158,44 +134,17 @@ def test_sweep_runs_25_trials_with_15_seeded_random_startup_trials(
     assert (tmp_path / "nn_predictor_sweep.db").is_file()
 
 
-@pytest.mark.parametrize(
-    ("config", "sweep_factory"),
-    [
-        (_wave_config(objective="closed_loop", closed_loop=_closed_loop_cfg()), OptunaSweep),
-    ],
-)
-def test_closed_loop_objective_works_for_both_predictor_kinds(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    config: object,
-    sweep_factory: type,
-) -> None:
-    """``closed_loop`` scores the sweep-level evaluation, for waveform and observable alike."""
-    candidates = {"log_energy": 0.31, "val_loss": 0.24, "rollout_nmse": 0.19}
-    _stub_train(monkeypatch, candidates)
-    _stub_closed_loop(monkeypatch)
-    trial = optuna.trial.FixedTrial({"spectral_radius": 0.9, "leak_rate": 0.1, "density": 0.1})
-
-    sweep = sweep_factory(config, ["sim_0.npz"], tmp_path)
-    value = sweep.objective(trial)
-
-    assert value == pytest.approx(0.07)
-    assert trial.user_attrs["closed_loop"] == pytest.approx(0.07)
-    assert trial.user_attrs["seizure_burden"] == pytest.approx(0.07)
-    assert trial.user_attrs["log_energy"] == pytest.approx(0.31)  # trainer candidates stay recorded
-
-
 def test_objective_missing_from_candidates_raises(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """A config-named objective the trained result cannot report fails loudly, not with a KeyError."""
-    _stub_train(monkeypatch, {"rollout_nmse": 0.15, "log_energy": 0.23})  # e.g. a ridge fit, no epoch loop
+    _stub_train(monkeypatch, {})
 
     with pytest.raises(ValueError, match="val_loss"):
-        OptunaSweep(_wave_config(objective="val_loss"), ["sim_0.npz"], tmp_path).objective(optuna.trial.FixedTrial({}))
+        OptunaSweep(_wave_config(), ["sim_0.npz"], tmp_path).objective(optuna.trial.FixedTrial({}))
 
 
-def test_observable_optuna_sweep_ranks_on_val_log_mse(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """The observable arm records {val_loss, val_log_mse} on the trial and ranks on the named one."""
-    candidates = {"val_loss": 0.042, "val_log_mse": 0.015}
+def test_observable_optuna_sweep_ranks_on_val_loss(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Rank the Observable trial on its validation Loss."""
+    candidates = {"val_loss": 0.042}
     _stub_train(monkeypatch, candidates)
     trial = optuna.trial.FixedTrial({})
 
@@ -215,16 +164,15 @@ def test_observable_optuna_sweep_ranks_on_val_log_mse(tmp_path: Path, monkeypatc
                 "train_split": 0.5,
                 "seed": 21,
                 "patience": 50,
-                "eval_horizon_s": span_s,
                 "losses": losses,
             }
         ),
         observable=geometry,
-        sweep=NNSweepConfig(objective="val_log_mse"),
+        sweep=NNSweepConfig(objective="val_loss"),
     )
 
     value = OptunaSweep(cfg, ["sim_0.npz"], tmp_path).objective(trial)
-    assert value == pytest.approx(0.015)
+    assert value == pytest.approx(0.042)
     assert trial.user_attrs == candidates
 
 
@@ -234,7 +182,7 @@ def test_cnn_sweep_only_samples_active_tapering_and_head_width(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, architecture: Literal["cnn", "mlp"], depth: int, head_depth: int
 ) -> None:
     """CNN trials omit inactive dimensions regardless of config order and save canonical settings."""
-    captured = _stub_train(monkeypatch, {"log_energy": 0.1})
+    captured = _stub_train(monkeypatch, {"val_loss": 0.1})
     cfg = _wave_config(
         sweep_model={
             "head_width": CategoricalParam(type="categorical", choices=["trunk", "geometric_mean"]),
@@ -267,7 +215,7 @@ def test_training_time_limit_prunes_trial_and_study_continues(tmp_path: Path, mo
         calls.append(seed_offset)
         if len(calls) == 1:
             raise TrainingTimeLimitError(3, 410.0, 29810.0, 25200.0)
-        return _StubResult({"log_energy": 0.1})
+        return _StubResult({"val_loss": 0.1})
 
     monkeypatch.setattr(sweep_module, "train", fake_train)
     sweep = OptunaSweep(_wave_config(), ["sim_0.npz"], tmp_path)

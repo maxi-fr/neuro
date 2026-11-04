@@ -60,7 +60,7 @@ def test_training_time_projection_stops_after_three_epochs(monkeypatch: pytest.M
     """Abort a window-based fit after three epochs when it projects beyond seven hours."""
     clock = iter([0.0, 0.0, 10.0, 10.0, 210.0, 210.0, 410.0])
     monkeypatch.setattr(gradient, "perf_counter", lambda: next(clock))
-    cfg = TrainingConfig(epochs=150, max_training_hours=7.0, eval_horizon_s=0.1)
+    cfg = TrainingConfig(epochs=150, max_training_hours=7.0)
 
     with pytest.raises(gradient.TrainingTimeLimitError) as caught:
         gradient.fit_gradient_descent(
@@ -88,7 +88,7 @@ def test_training_time_projection_excludes_first_epoch_rate(monkeypatch: pytest.
         _model(),
         _dataset(),
         _dataset(),
-        TrainingConfig(epochs=4, max_training_hours=7.0, eval_horizon_s=0.1),
+        TrainingConfig(epochs=4, max_training_hours=7.0),
         seed=1,
         ctx=_context(),
         losses=[CurriculumMSE(1.0, 3, 0, 0, 0)],
@@ -105,7 +105,7 @@ def test_training_time_projection_rechecks_after_initial_probe(monkeypatch: pyte
             _model(),
             _dataset(),
             _dataset(),
-            TrainingConfig(epochs=150, max_training_hours=7.0, eval_horizon_s=0.1),
+            TrainingConfig(epochs=150, max_training_hours=7.0),
             seed=1,
             ctx=_context(),
             losses=[CurriculumMSE(1.0, 3, 0, 0, 0)],
@@ -126,7 +126,7 @@ def test_weight_decay_preserves_standardizers(architecture: str) -> None:
         model,
         _dataset(),
         _dataset(),
-        TrainingConfig(epochs=2, learning_rate=0.05, weight_decay=0.2, eval_horizon_s=0.1),
+        TrainingConfig(epochs=2, learning_rate=0.05, weight_decay=0.2),
         seed=1,
         ctx=_context(),
         losses=[CurriculumMSE(1.0, 3, 0, 0, 0)],
@@ -167,7 +167,7 @@ def test_curriculum_and_delayed_loss_do_not_retrace(monkeypatch: pytest.MonkeyPa
         _model(),
         _dataset(),
         _dataset(),
-        TrainingConfig(epochs=5, patience=10, eval_horizon_s=0.1),
+        TrainingConfig(epochs=5, patience=10),
         seed=1,
         ctx=_context(),
         losses=losses,
@@ -194,7 +194,7 @@ def test_window_dataset_schedule_counts_every_update(monkeypatch: pytest.MonkeyP
         _model(),
         _dataset(14),
         _dataset(),
-        TrainingConfig(epochs=3, warmup_epochs=1, batch_size=2, patience=10, eval_horizon_s=0.1),
+        TrainingConfig(epochs=3, warmup_epochs=1, batch_size=2, patience=10),
         seed=1,
         ctx=_context(),
         losses=[CurriculumMSE(1.0, 3, 0, 0, 0)],

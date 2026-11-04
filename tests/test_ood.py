@@ -248,6 +248,9 @@ def test_format_ood_report() -> None:
     assert "CLOSED-LOOP CLINICAL EFFICACY & CONTROL PERFORMANCE" in report
     assert "Seizure Burden:          5.90%" in report
     assert "Total Delivered Charge:  6.865 mA*s" in report
+    assert "Solver Runtime (p95):    6.190s" in report
+    assert "Realtime factor" not in report
+    assert "Mean Control Amplitude" not in report
     assert "REALIZED TRAJECTORY (k=0) VS. PLANNED ROLLOUTS (k >= 1)" in report
     assert "CRITERION 1: OOD Distance Support Comparison" in report
     assert "CRITERION 6: Distance Concentration Diagnostic" in report
@@ -272,7 +275,7 @@ def test_extract_run_clinical_metrics() -> None:
     metrics = extract_run_clinical_metrics(run_dir)
     assert "seizure_burden" in metrics
     assert "delivered_charge" in metrics
-    assert "mean_amplitude" in metrics
+    assert {"mean_amplitude", "pz_recruited", "realtime_factor"}.isdisjoint(metrics)
     assert "kirchhoff_max" in metrics
     assert metrics["seizure_burden"] > 0.0
     assert metrics["delivered_charge"] > 0.0

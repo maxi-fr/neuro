@@ -56,7 +56,6 @@ def test_plot_training_curves_generates_image(tmp_path: Path) -> None:
                 "train_split": 0.5,
                 "seed": 42,
                 "patience": 10,
-                "eval_horizon_s": span_s,
                 "losses": losses,
             }
         ),
@@ -87,7 +86,6 @@ def test_plot_rollout_comparison_waveform_generates_image(tmp_path: Path) -> Non
                 "train_split": 0.5,
                 "seed": 42,
                 "patience": 10,
-                "eval_horizon_s": span_s,
                 "losses": losses,
             }
         ),
@@ -119,7 +117,6 @@ def test_plot_rollout_comparison_observable_generates_image(tmp_path: Path) -> N
                 "train_split": 0.5,
                 "seed": 42,
                 "patience": 10,
-                "eval_horizon_s": span_s,
                 "losses": losses,
             }
         ),

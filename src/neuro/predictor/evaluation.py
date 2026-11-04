@@ -9,7 +9,6 @@ from typing import TYPE_CHECKING, Any, Literal, NamedTuple
 import jax.numpy as jnp
 import numpy as np
 
-from neuro.metrics import DEFAULT_HOP_S, METRICS
 from neuro.predictor.data import frame_aligned_controls, load_trajectory, reduce_trajectory_to_frames
 from neuro.predictor.inference import InferencePredictor, ObservableCNNModel, ObservableMLPModel
 from neuro.predictor.replay import predict
@@ -71,28 +70,6 @@ def _rollout_windows(
         yield y_pred, np.stack([y[t0 + 1 : t0 + 1 + steps] for t0 in t0s]), t0s, y
 
 
-def accumulate_rollout_errors(
-    model: InferencePredictor,
-    trajectories: list[tuple[FloatArray, FloatArray]],
-    steps: int,
-    *,
-    stride: int = 25,
-    start: int | None = None,
-) -> tuple[FloatArray, FloatArray, FloatArray]:
-    """Accumulate per-step errors over free-run windows, summing every output axis after time."""
-    sq_err = np.zeros(steps, dtype=np.float64)
-    power = np.zeros(steps, dtype=np.float64)
-    pred_power = np.zeros(steps, dtype=np.float64)
-
-    for y_pred, y_true in rollout_batches(model, trajectories, steps, stride=stride, start=start):
-        value_axes = (0, *range(2, y_pred.ndim))
-        sq_err += ((y_pred - y_true) ** 2).sum(axis=value_axes)
-        power += (y_true**2).sum(axis=value_axes)
-        pred_power += (y_pred**2).sum(axis=value_axes)
-
-    return sq_err, power, pred_power
-
-
 def nmse(sq_err: FloatArray | float, power: FloatArray | float) -> FloatArray:
     """Normalize squared error by the true signal's energy, elementwise (``inf`` where it is silent).
 
@@ -103,111 +80,6 @@ def nmse(sq_err: FloatArray | float, power: FloatArray | float) -> FloatArray:
     err = np.asarray(sq_err, dtype=np.float64)
     ref = np.asarray(power, dtype=np.float64)
     return np.divide(err, ref, out=np.full_like(err, np.inf), where=ref > 0)
-
-
-def evaluate_free_run(
-    model: InferencePredictor,
-    val_trajs: list[tuple[FloatArray, FloatArray]],
-    eval_steps: int,
-    fs: float,
-) -> tuple[RolloutNMSE, LogEnergyError]:
-    """Score free-run rollouts and the windowed-energy course over the held-out trajectories.
-
-    Every training arm runs the same evaluation: waveform NMSE via :func:`evaluate_rollouts` and
-    the windowed-energy course the MPC costs via :func:`evaluate_log_energy`. The energy course
-    follows the metrics layer's own eeg_ms convention rather than a knob of its own, clamped
-    where the evaluation horizon is too short to hold one window.
-    """
-    energy_window = min(max(1, round(METRICS["eeg_ms"].window_s * fs)), eval_steps)
-    energy_hop = max(1, round(DEFAULT_HOP_S * fs))
-    rollout = evaluate_rollouts(model, val_trajs, eval_steps)
-    log_energy = evaluate_log_energy(model, val_trajs, eval_steps, window_steps=energy_window, hop_steps=energy_hop)
-    return rollout, log_energy
-
-
-class RolloutNMSE(NamedTuple):
-    """Free-run rollout NMSE, resolved per horizon step and pooled over the whole horizon."""
-
-    pooled: float
-    per_step: FloatArray
-
-
-def evaluate_rollouts(
-    model: InferencePredictor,
-    val_trajs: list[tuple[FloatArray, FloatArray]],
-    horizon: int,
-    step_stride: int = 25,
-) -> RolloutNMSE:
-    """Evaluate free-run rollout NMSE per horizon step and pooled over every step and window."""
-    sq_err, power, _ = accumulate_rollout_errors(model, val_trajs, horizon, stride=step_stride)
-    return RolloutNMSE(pooled=float(nmse(sq_err.sum(), power.sum())), per_step=nmse(sq_err, power))
-
-
-def window_energy(y: FloatArray, window_steps: int, hop_steps: int) -> FloatArray:
-    """Cross-channel mean square of ``(n_windows, steps, n_channels)`` per trailing window.
-
-    Returns shape ``(n_windows, n_positions)``, one energy per window position along the horizon.
-    """
-    starts = range(0, y.shape[1] - window_steps + 1, hop_steps)
-    return np.stack([(y[:, s : s + window_steps] ** 2).mean(axis=(1, 2)) for s in starts], axis=1)
-
-
-class LogEnergyError(NamedTuple):
-    """Free-run error in the functional the MPC actually costs, per window position and pooled."""
-
-    pooled: float
-    per_position: FloatArray
-
-
-def evaluate_log_energy(  # noqa: PLR0913
-    model: InferencePredictor,
-    val_trajs: list[tuple[FloatArray, FloatArray]],
-    horizon: int,
-    *,
-    window_steps: int,
-    hop_steps: int,
-    step_stride: int = 25,
-) -> LogEnergyError:
-    """Mean squared log-ratio of predicted to true windowed energy over free-run windows.
-
-    The MPC costs ``sumsqr(y)`` over its horizon, never the waveform, so this scores the quantity
-    the controller consumes: a phase-scrambled rollout carrying the right energy course is worth
-    the same to it, while waveform NMSE saturates at 1.0 once phase decorrelates and stops
-    separating models. Log-space because energy spans orders of magnitude between interictal and
-    ictal, and because the controller responds to the ratio rather than the difference.
-
-    Resolved per window rather than pooled over windows first: pooling the numerator and
-    denominator would let over- and under-prediction cancel across windows, which a model that is
-    right only on average would score perfectly.
-
-    Lower is better and ``0.0`` is exact; unlike NMSE it is unbounded above, so a prediction that
-    decays to silence is scored as the failure it is instead of tying with every other one.
-
-    Raises
-    ------
-    ValueError
-        If ``horizon`` is shorter than one window, which would leave nothing to score.
-    """
-    if horizon < window_steps:
-        msg = f"horizon ({horizon}) is shorter than the energy window ({window_steps} steps)."
-        raise ValueError(msg)
-
-    total: FloatArray | None = None
-    n_windows = 0
-    for y_pred, y_true in rollout_batches(model, val_trajs, horizon, stride=step_stride):
-        log_ratio = np.log(window_energy(y_pred, window_steps, hop_steps) + _ENERGY_EPS) - np.log(
-            window_energy(y_true, window_steps, hop_steps) + _ENERGY_EPS
-        )
-        sq = (log_ratio**2).sum(axis=0)
-        total = sq if total is None else total + sq
-        n_windows += y_pred.shape[0]
-
-    if total is None:
-        msg = "No validation trajectory is long enough to hold one free-run window."
-        raise ValueError(msg)
-
-    per_position = total / n_windows
-    return LogEnergyError(pooled=float(per_position.mean()), per_position=per_position)
 
 
 class ObservableFrameMSE(NamedTuple):
@@ -327,26 +199,6 @@ def evaluate_spectral_free_run(  # noqa: PLR0913 -- Predictor and physical evalu
         raise ValueError(msg)
     per_step = sq_err / (n_windows * val_trajs[0][1].shape[1] * geom.n_values(rate))
     return ObservableFrameMSE(pooled=float(per_step.mean()), per_step=per_step)
-
-
-def free_run_stats(
-    free_run: RolloutNMSE | ObservableFrameMSE,
-    log_energy: LogEnergyError | None,
-    spectral: ObservableFrameMSE | None = None,
-) -> dict[str, float | list[float]]:
-    """Serialize native scores and any additional common log-power Frame MSE."""
-    prefix = "nmse_rollout" if isinstance(free_run, RolloutNMSE) else "frame_mse"
-    stats: dict[str, float | list[float]] = {
-        prefix: free_run.pooled,
-        f"{prefix}_per_step": free_run.per_step.tolist(),
-    }
-    if spectral is not None:
-        stats["frame_mse"] = spectral.pooled
-        stats["frame_mse_per_step"] = spectral.per_step.tolist()
-    if log_energy is not None:
-        stats["log_energy"] = log_energy.pooled
-        stats["log_energy_per_position"] = log_energy.per_position.tolist()
-    return stats
 
 
 class EligibilityStatus(StrEnum):

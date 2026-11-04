@@ -67,7 +67,6 @@ def _wave_config(**training: object) -> NNPredictorConfig:
         "train_split": 0.5,
         "seed": _SEED,
         "patience": 50,
-        "eval_horizon_s": span_s,
         "losses": losses,
     }
     return NNPredictorConfig(
@@ -97,24 +96,12 @@ def _wave_model(depth: int) -> ModelConfig:
 
 
 def test_waveform_candidates_match_the_config_kind(tmp_path: Path) -> None:
-    """The waveform run records exactly ``{log_energy, val_loss, rollout_nmse}``, consistently."""
+    """Record the selected validation Loss for a neural Waveform fit."""
     result = _wave_train(_wave_config(), _write_trajectories(tmp_path, dt=_WAVE_DT, t=_T))
 
-    assert set(result.candidates) == {"log_energy", "val_loss", "rollout_nmse"}
-    assert result.log_energy is not None  # the waveform arm always scores it
-    assert result.candidates["log_energy"] == result.log_energy.pooled
+    assert set(result.candidates) == {"val_loss"}
     assert result.candidates["val_loss"] == min(result.val_losses)
-    assert result.candidates["rollout_nmse"] == result.free_run.pooled
     assert all(np.isfinite(value) for value in result.candidates.values())
-
-
-def test_candidates_contain_the_config_named_objective(tmp_path: Path) -> None:
-    """A ``sweep.objective`` named in config is always among the recorded candidates."""
-    wave = _wave_train(
-        _wave_config().model_copy(update={"sweep": NNSweepConfig(objective="rollout_nmse")}),
-        _write_trajectories(tmp_path, dt=_WAVE_DT, t=_T),
-    )
-    assert wave.candidates["rollout_nmse"] == wave.free_run.pooled
 
 
 def test_waveform_save_round_trips_weights_standardizers_and_metadata(tmp_path: Path) -> None:
@@ -166,7 +153,7 @@ def test_gradient_descent_fits_predictor(architecture: str) -> None:
         model,
         train_data,
         val_data,
-        TrainingConfig(epochs=20, batch_size=32, learning_rate=1e-2, weight_decay=0.0, patience=50, eval_horizon_s=0.1),
+        TrainingConfig(epochs=20, batch_size=32, learning_rate=1e-2, weight_decay=0.0, patience=50),
         seed=_SEED,
         losses=[CurriculumMSE(1.0, 3, 0, 0, 0)],
         ctx=LossContext(model.y_center, model.y_scale, 1000.0),
@@ -192,10 +179,7 @@ def test_ridge_fit_through_train_on_depth0_mlp(tmp_path: Path) -> None:
     assert isinstance(result, RidgeTrainingResult)
     assert isinstance(result.predictor, WaveformMLPModel)
     assert result.predictor.depth == 0
-    assert set(result.candidates) == {"rollout_nmse", "log_energy"}
-    assert result.candidates["rollout_nmse"] == result.free_run.pooled
-    assert result.log_energy is not None  # the waveform arm always scores it
-    assert result.candidates["log_energy"] == result.log_energy.pooled
+    assert result.candidates == {}
     assert all(np.isfinite(value) for value in result.candidates.values())
 
 
@@ -215,7 +199,6 @@ def _obs_config(**training: object) -> NNPredictorConfig:
         "train_split": 0.5,
         "seed": _SEED,
         "patience": 50,
-        "eval_horizon_s": span_s,
         "losses": losses,
     }
     return NNPredictorConfig(
@@ -227,15 +210,14 @@ def _obs_config(**training: object) -> NNPredictorConfig:
 
 
 def test_observable_candidates_match_the_config_kind(tmp_path: Path) -> None:
-    """The observable gradient-descent run records exactly {val_loss, val_log_mse}."""
+    """The observable gradient-descent run records exactly {val_loss}."""
     files = _write_trajectories(tmp_path, dt=0.004, t=600)
     cfg = _obs_config()
     result = train(cfg, files)
 
     assert isinstance(result, TrainingResult)
-    assert set(result.candidates) == {"val_loss", "val_log_mse"}
+    assert set(result.candidates) == {"val_loss"}
     assert result.candidates["val_loss"] == result.val_losses[result.selected_epoch]
-    assert result.candidates["val_log_mse"] == result.free_run.pooled
     assert np.isfinite(result.du_sensitivity)
     assert result.du_sensitivity > 0.0
     assert all(np.isfinite(value) for value in result.candidates.values())
@@ -256,8 +238,7 @@ def test_observable_ridge_fit_through_train_on_depth0_mlp(tmp_path: Path) -> Non
     assert isinstance(result, RidgeTrainingResult)
     assert isinstance(result.predictor, ObservableMLPModel)
     assert result.predictor.depth == 0
-    assert set(result.candidates) == {"val_loss", "val_log_mse"}
-    assert result.candidates["val_log_mse"] == result.free_run.pooled
+    assert set(result.candidates) == {"val_loss"}
     assert all(np.isfinite(value) for value in result.candidates.values())
 
     art_dir = tmp_path / "obs_ridge_art"
@@ -275,8 +256,8 @@ def test_observable_ridge_fit_on_depth2_mlp_fails_at_build_time(tmp_path: Path) 
 
 
 @pytest.mark.parametrize("fit", ["gradient_descent", "ridge", "dmd"])
-def test_waveform_spectral_score_and_boundary_history(tmp_path: Path, fit: str) -> None:
-    """STFT runs score boundary Frames despite short model history and persist the common metric."""
+def test_waveform_stft_loss_and_boundary_history(tmp_path: Path, fit: str) -> None:
+    """STFT training still handles boundary Frames without saving a separate spectral score."""
     spec = StftSpec(
         weight=1.0,
         n_span=32,
@@ -290,19 +271,15 @@ def test_waveform_spectral_score_and_boundary_history(tmp_path: Path, fit: str) 
         fit=fit,
         epochs=1,
         losses=LossSpecs(stft=spec),
-        eval_horizon_s=0.032,
     )
     if fit != "gradient_descent":
         cfg = cfg.model_copy(update={"model": cfg.model.model_copy(update={"depth": 0, "residual": False})})
     result = train(cfg, _write_trajectories(tmp_path, dt=_WAVE_DT, t=_T))
-    assert result.spectral_free_run is not None
-    assert result.spectral_free_run.per_step.shape == (8,)
-    assert np.isfinite(result.spectral_free_run.pooled)
     assert result.predictor.n_y == 2
     if isinstance(result, TrainingResult):
         assert result.train_components["M_out"] == [8.0]
         assert result.val_components["M_out"] == [8.0]
     result.save(tmp_path / "artifacts")
     stats = json.loads((tmp_path / "artifacts" / "training_stats.json").read_text())
-    assert stats["frame_mse"] == result.spectral_free_run.pooled
-    assert stats["frame_mse_per_step"] == result.spectral_free_run.per_step.tolist()
+    assert "frame_mse" not in stats
+    assert "frame_mse_per_step" not in stats

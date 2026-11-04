@@ -187,7 +187,7 @@ def test_spread_metrics_separate_the_ez_from_the_healthy_remainder(connectome: C
 
     assert metrics["ez_ptp_mv"] == pytest.approx(60.0, rel=1e-2)
     assert metrics["ez_recruited"] == len(EZ_REGIONS)
-    assert metrics["pz_recruited"] == 0.0
+    assert "pz_recruited" not in metrics
     assert metrics["healthy_ptp_mv"] == 0.0
     assert metrics["pz_ptp_mv"] == 0.0
     assert metrics["seizure_burden"] == pytest.approx(len(EZ_REGIONS) / len(connectome.region_labels))
@@ -204,12 +204,12 @@ def test_spread_metrics_censor_an_unrecruited_zone_instead_of_dropping_it(connec
     assert ez_only["t_pz"] > both["t_pz"]
 
 
-def test_control_metrics_score_effort_charge_and_the_kirchhoff_residual() -> None:
+def test_control_metrics_score_charge_and_the_kirchhoff_residual() -> None:
     us = np.tile(np.array([[1.0, 0.0, -1.0]]), (100, 1))
 
-    metrics = control_metrics(us, u_max=2.0, dt=0.01)
+    metrics = control_metrics(us, dt=0.01)
 
-    assert metrics["mean_amplitude"] == pytest.approx(2.0 / 3.0 / 2.0)
+    assert "mean_amplitude" not in metrics
     assert metrics["delivered_charge"] == pytest.approx(2.0)
     assert metrics["kirchhoff_max"] == pytest.approx(0.0, abs=1e-12)
 

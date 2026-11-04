@@ -10,12 +10,11 @@ from typing import TYPE_CHECKING, Annotated, Any, ClassVar, Literal
 
 import numpy as np
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from neuro.metrics import DEFAULT_HOP_S, METRICS
 from neuro.provenance import check_excitation_alignment
 from neuro.schedules import curriculum_completion
-from neuro.seizure_calibration import SEIZURE_PTP_MV
 
 if TYPE_CHECKING:
     from typing import Self
@@ -426,7 +425,6 @@ class TrainingConfig(StrictConfig):
     seed: int = Field(default=69, ge=0)
     patience: int = Field(default=50, ge=1)
     device: Literal["auto", "cpu", "cuda"] = "auto"
-    eval_horizon_s: float = Field(gt=0)
     # ``None`` only on the observable path, whose loss is a fixed MSE on the frame grid rather
     # than a configured set of terms; NNPredictorConfig requires one of the two.
     losses: LossSpecs | None = None
@@ -506,13 +504,6 @@ ParamSpec = Annotated[
 ]
 
 
-# Per-model candidate sets the sweep objective is validated against; ``closed_loop`` is the
-# sweep-level candidate every kind can rank on too.
-WAVEFORM_TRAINER_CANDIDATES = frozenset({"log_energy", "val_loss", "rollout_nmse"})
-OBSERVABLE_TRAINER_CANDIDATES = frozenset({"val_loss", "val_log_mse"})
-CLOSED_LOOP_OBJECTIVE = "closed_loop"
-
-
 SEED_TIERS: dict[str, list[int]] = {
     "small": [7000, 7001],
     "medium": [7000, 7001, 7002, 7004, 7005],
@@ -556,46 +547,15 @@ def resolve_seeds(seeds: object) -> list[int]:
     raise TypeError(msg)
 
 
-class ClosedLoopEvalConfig(StrictConfig):
-    """Settings for closed-loop evaluation in Optuna hyperparameter sweeps."""
-
-    simulation_config: str
-    seeds: list[int] = Field(default_factory=lambda: list(SEED_TIERS["medium"]))
-    t_end: float = Field(default=12.0, gt=0)
-    seizure_ptp_mv: float = Field(default=SEIZURE_PTP_MV, gt=0)
-    max_seizing_regions: int = Field(default=5, ge=0)
-    amplitude_weight: float = Field(default=0.0, ge=0)
-
-    @field_validator("seeds", mode="before")
-    @classmethod
-    def _resolve_seeds(cls, v: object) -> list[int]:
-        return resolve_seeds(v)
-
-
 class NNSweepConfig(StrictConfig):
-    """Optuna Sweep settings with validation Loss as the default objective.
-
-    ``objective`` names the Trainer candidate the study minimizes. It is a plain string here
-    because the sweep alone does not know the model kind; :class:`NNPredictorConfig` validates it
-    against the waveform/observable candidate sets (plus the sweep-level ``closed_loop``), so a
-    mismatched name fails at build time.
-    """
+    """Configure an Optuna sweep ranked by validation Loss."""
 
     n_trials: int = Field(default=25, ge=1)
     artifact: str | None = None
-    objective: str = "val_loss"
+    objective: Literal["val_loss"] = "val_loss"
     model: dict[str, ParamSpec] = Field(default_factory=dict)
     training: dict[str, ParamSpec] = Field(default_factory=dict)
     observable: dict[str, ParamSpec] = Field(default_factory=dict)
-    closed_loop: ClosedLoopEvalConfig | None = None
-
-    @model_validator(mode="after")
-    def _validate_objective(self) -> Self:
-        if self.objective == "closed_loop" and self.closed_loop is None:
-            msg = "objective 'closed_loop' requires a 'sweep.closed_loop' section."
-            raise ValueError(msg)
-        return self
-
 
 def _validate_observable_losses(losses: LossSpecs | None, geometry: StftGeometry, fs: float) -> None:
     if losses is None:
@@ -666,7 +626,7 @@ class NNPredictorConfig(StrictConfig):
 
     @model_validator(mode="after")
     def _validate_losses_and_horizon(self) -> Self:
-        """Validate CNN temporal support, Loss geometry, target Span, and schedule eligibility."""
+        """Validate CNN temporal support, training Losses, and schedule eligibility."""
         if self.model.architecture == "cnn":
             remaining = self.model.n_y - self.model.depth * (self.model.kernel_size - 1)
             if remaining < 1:
@@ -680,15 +640,6 @@ class NNPredictorConfig(StrictConfig):
                     f"model.n_u ({self.model.n_u}) violates the control-support rule: must be >= {min_n_u} "
                     f"(kernel_width={self.observable.kernel_width}, segment={self.observable.n_segment}, "
                     f"hop={self.observable.n_hop}) so the past-control window covers the Frame's sample support."
-                )
-                raise ValueError(msg)
-            fs_frame = self.observable.frame_rate(self.fs)
-            eval_frames = round(self.training.eval_horizon_s * fs_frame)
-            if eval_frames < 1:
-                msg = (
-                    f"training.eval_horizon_s ({self.training.eval_horizon_s} s) resolves to {eval_frames} "
-                    f"frame(s) at frame rate {fs_frame:g} Hz (hop={self.observable.n_hop}, fs={self.fs:g} Hz); "
-                    "must hold at least 1 Frame."
                 )
                 raise ValueError(msg)
         else:
@@ -708,8 +659,15 @@ class NNPredictorConfig(StrictConfig):
 
     @model_validator(mode="after")
     def _validate_sweep_exclusivity_and_keys(self) -> Self:
+        """Validate available sweep fits, objective, and search-space keys."""
         if self.sweep is None:
             return self
+
+        if self.observable is None and (
+            self.training.fit != "gradient_descent" or "fit" in self.sweep.training
+        ):
+            msg = "Waveform sweeps require training.fit='gradient_descent'. Run closed-form Waveform fits separately."
+            raise ValueError(msg)
 
         _validate_sweep_overlap_and_keys(self.sweep.model, self.model, "model")
         _validate_sweep_overlap_and_keys(self.sweep.training, self.training, "training")
@@ -721,8 +679,6 @@ class NNPredictorConfig(StrictConfig):
                 )
                 raise ValueError(msg)
             _validate_sweep_overlap_and_keys(self.sweep.observable, self.observable, "observable")
-        candidates = OBSERVABLE_TRAINER_CANDIDATES if self.observable is not None else WAVEFORM_TRAINER_CANDIDATES
-        _validate_sweep_objective(self.sweep.objective, candidates)
         return self
 
 
@@ -785,23 +741,6 @@ def _validate_sweep_overlap_and_keys(
             f" Overlap: {sorted(overlap_keys)}"
         )
         raise ValueError(msg)
-
-
-def _validate_sweep_objective(objective: str, candidates: frozenset[str]) -> None:
-    """Raise unless the named sweep objective is one the configured model's Trainer can report.
-
-    The Trainer candidates are per-model kind -- waveform ``{log_energy, val_loss, rollout_nmse}``
-    or observable ``{val_loss, val_log_mse}`` -- and ``closed_loop`` is the sweep-level candidate
-    every kind can rank on. Failing here catches a mismatched objective at build time instead of
-    on the first trial.
-    """
-    if objective in candidates or objective == CLOSED_LOOP_OBJECTIVE:
-        return
-    msg = (
-        f"sweep.objective {objective!r} is not a candidate the configured Trainer reports "
-        f"({sorted(candidates)}), nor the sweep-level 'closed_loop'."
-    )
-    raise ValueError(msg)
 
 
 def expand_dotted_dict(flat: dict[str, Any]) -> dict[str, Any]:

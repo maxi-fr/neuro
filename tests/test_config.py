@@ -7,7 +7,6 @@ from pydantic import ValidationError
 from neuro.config import (
     SEED_TIERS,
     CategoricalParam,
-    ClosedLoopEvalConfig,
     CurriculumMSESpec,
     FloatParam,
     IntParam,
@@ -30,7 +29,6 @@ from neuro.jansen_rit import JansenRitDynamics
 from neuro.seizure import build_seizure_a_gains
 
 _VALID_TRAINING = {
-    "eval_horizon_s": 0.2,
     "losses": {
         "curriculum_mse": {
             "weight": 1.0,
@@ -88,7 +86,7 @@ def test_known_keys_parsed() -> None:
         {"training": {**_VALID_TRAINING, "curriculum_alpha_min": 1.0}},
         {"training": {**_VALID_TRAINING, "curriculum_decay_fraction": 0.5}},
         {"model": {"latent_dim": 20}},
-        {"training": {"eval_horizon_s": 0.2, "losses": {"unknown_loss": {"weight": 1.0, "span_s": 0.2}}}},
+        {"training": {"losses": {"unknown_loss": {"weight": 1.0, "span_s": 0.2}}}},
     ],
 )
 def test_unknown_keys_rejected(raw: dict) -> None:
@@ -140,10 +138,23 @@ def test_sweep_objective_defaults_to_val_loss(*, observable: bool) -> None:
     assert cfg.sweep.objective == "val_loss"
 
 
-def test_closed_loop_objective_without_its_section_rejected() -> None:
-    """Test asking for the closed-loop objective without configuring the evaluation is rejected."""
-    with pytest.raises(ValidationError, match=r"requires a 'sweep\.closed_loop' section"):
-        NNPredictorConfig.from_dict({"training": _VALID_TRAINING, "sweep": {"objective": "closed_loop"}})
+@pytest.mark.parametrize("objective", ["log_energy", "rollout_nmse", "closed_loop"])
+def test_retired_waveform_sweep_objectives_are_rejected(objective: str) -> None:
+    """Require a supported objective when starting a Waveform sweep."""
+    with pytest.raises(ValidationError, match="Input should be 'val_loss'"):
+        NNPredictorConfig.from_dict({"training": _VALID_TRAINING, "sweep": {"objective": objective}})
+
+
+@pytest.mark.parametrize("fit", ["ridge", "dmd"])
+def test_closed_form_waveform_fits_cannot_enter_optuna(fit: str) -> None:
+    """Accept standalone closed-form Waveform fits and reject them in sweeps."""
+    raw = {
+        "training": {**_VALID_TRAINING, "fit": fit},
+        "model": {"depth": 0, "residual": False},
+    }
+    assert NNPredictorConfig.from_dict(raw).training.fit == fit
+    with pytest.raises(ValidationError, match="Waveform sweeps require"):
+        NNPredictorConfig.from_dict({**raw, "sweep": {"objective": "val_loss"}})
 
 
 def test_sweep_unknown_param_type_rejected() -> None:
@@ -166,11 +177,9 @@ def test_sweep_unknown_param_type_rejected() -> None:
         {"training": {**_VALID_TRAINING, "scaler": "standrd"}},
         {"training": {**_VALID_TRAINING, "warmup_epochs": -1}},
         {"training": {**_VALID_TRAINING, "epochs": 10, "warmup_epochs": 10}},
-        {"training": {"eval_horizon_s": 0.0, "losses": _VALID_TRAINING["losses"]}},
-        {"training": {"eval_horizon_s": 0.2, "losses": {}}},
+        {"training": {"losses": {}}},
         {
             "training": {
-                "eval_horizon_s": 0.2,
                 "losses": {
                     "curriculum_mse": {
                         "weight": 1.0,
@@ -184,7 +193,6 @@ def test_sweep_unknown_param_type_rejected() -> None:
         {
             "simulation": {"dt": 0.01, "downsample": 1},
             "training": {
-                "eval_horizon_s": 0.2,
                 "losses": {
                     "curriculum_mse": {"weight": 1.0, "span_s": 0.2, "curr_start": 0, "curr_end": 10},
                     "eeg_ms": {"weight": 1.0, "span_s": 0.05, "window_s": 0.1},
@@ -194,7 +202,6 @@ def test_sweep_unknown_param_type_rejected() -> None:
         {
             "simulation": {"dt": 0.01, "downsample": 1},
             "training": {
-                "eval_horizon_s": 0.2,
                 "losses": {
                     "curriculum_mse": {"weight": 1.0, "span_s": 0.2, "curr_start": 0, "curr_end": 10},
                     "stft": {"weight": 1.0, "n_span": 20, "n_segment": 40, "n_hop": 10},
@@ -204,7 +211,6 @@ def test_sweep_unknown_param_type_rejected() -> None:
         {
             "simulation": {"dt": 0.01, "downsample": 1},
             "training": {
-                "eval_horizon_s": 0.2,
                 "losses": {
                     "curriculum_mse": {"weight": 1.0, "span_s": 0.2, "curr_start": 0, "curr_end": 10},
                     "stft": {"weight": 1.0, "n_span": 20, "n_segment": 10, "n_hop": 5, "kernel_width": 4},
@@ -214,7 +220,6 @@ def test_sweep_unknown_param_type_rejected() -> None:
         {
             "simulation": {"dt": 0.01, "downsample": 1},
             "training": {
-                "eval_horizon_s": 0.2,
                 "losses": {
                     "curriculum_mse": {"weight": 1.0, "span_s": 0.2, "curr_start": 0, "curr_end": 10},
                     "stft": {"weight": 1.0, "n_span": 20, "n_segment": 10, "n_hop": 5, "kernel_width": 3},
@@ -224,7 +229,6 @@ def test_sweep_unknown_param_type_rejected() -> None:
         {
             "simulation": {"dt": 0.01, "downsample": 1},
             "training": {
-                "eval_horizon_s": 0.2,
                 "losses": {
                     "curriculum_mse": {"weight": 1.0, "span_s": 0.2, "curr_start": 0, "curr_end": 10},
                     "stft": {"weight": 1.0, "n_span": 20, "n_segment": 10, "n_hop": 10, "band_hz": [60.0, 80.0]},
@@ -234,7 +238,6 @@ def test_sweep_unknown_param_type_rejected() -> None:
         {
             "simulation": {"dt": 0.01, "downsample": 1},
             "training": {
-                "eval_horizon_s": 0.2,
                 "losses": {
                     "curriculum_mse": {"weight": 1.0, "span_s": 0.2, "curr_start": 0, "curr_end": 10},
                     "stft": {"weight": 1.0, "n_span": 20, "n_segment": 10, "n_hop": 10, "band_hz": [12.0, 3.0]},
@@ -244,7 +247,6 @@ def test_sweep_unknown_param_type_rejected() -> None:
         {
             "simulation": {"dt": 0.01, "downsample": 1},
             "training": {
-                "eval_horizon_s": 0.2,
                 "losses": {
                     "curriculum_mse": {"weight": 1.0, "span_s": 0.2, "curr_start": 0, "curr_end": 10},
                     "stft": {
@@ -260,7 +262,6 @@ def test_sweep_unknown_param_type_rejected() -> None:
         },
         {
             "training": {
-                "eval_horizon_s": 0.2,
                 "losses": {
                     "curriculum_mse": {
                         "weight": 1.0,
@@ -308,7 +309,6 @@ def test_valid_boundaries_accepted() -> None:
         {
             "model": {"depth": 0},
             "training": {
-                "eval_horizon_s": 0.2,
                 "losses": {
                     "curriculum_mse": {"weight": 1.0, "span_s": 0.2, "curr_start": 5, "curr_end": 5},
                 },
@@ -454,16 +454,9 @@ def test_jansen_rit_dynamics_rejects_unknown_key() -> None:
         JansenRitDynamics.from_config({"dt": 1e-4, "connectome": {"K": 1.0}, "seedd": 1})
 
 
-def test_sweep_without_closed_loop_section() -> None:
-    """Test omitting closed_loop leaves it unset rather than silently defaulted."""
-    cfg = NNPredictorConfig.from_dict({"training": _VALID_TRAINING, "sweep": {"n_trials": 10}})
-    assert cfg.sweep is not None
-    assert cfg.sweep.closed_loop is None
-
-
-def test_sweep_objective_validated_against_the_waveform_candidates() -> None:
-    """A waveform sweep may not name an observable-only candidate."""
-    with pytest.raises(ValidationError, match="not a candidate"):
+def test_waveform_sweep_rejects_the_historical_spectral_objective() -> None:
+    """New Waveform sweeps cannot rank trials by the retired spectral score."""
+    with pytest.raises(ValidationError, match="Input should be 'val_loss'"):
         NNPredictorConfig.from_dict({"training": _VALID_TRAINING, "sweep": {"objective": "val_log_mse"}})
 
 
@@ -471,7 +464,6 @@ def test_observable_predictor_rejects_reduction_losses() -> None:
     """An observable predictor rejects reduction losses (stft, eeg_ms)."""
     raw = {
         "training": {
-            "eval_horizon_s": 0.2,
             "losses": {
                 "curriculum_mse": {"weight": 1.0, "span_s": 0.2, "curr_start": 0, "curr_end": 10},
                 "stft": {"weight": 1.0, "n_span": 80, "n_segment": 64, "n_hop": 16, "band_hz": [4.0, 30.0]},
@@ -502,17 +494,14 @@ def test_observable_sweep_objective_validation() -> None:
             "kernel_width": 5,
         },
     }
-    # Accepts valid observable candidates
-    cfg1 = NNPredictorConfig.from_dict({**base, "sweep": {"objective": "val_log_mse"}})
-    assert cfg1.sweep is not None
-    assert cfg1.sweep.objective == "val_log_mse"
+    with pytest.raises(ValidationError, match="Input should be 'val_loss'"):
+        NNPredictorConfig.from_dict({**base, "sweep": {"objective": "val_log_mse"}})
 
     cfg2 = NNPredictorConfig.from_dict({**base, "sweep": {"objective": "val_loss"}})
     assert cfg2.sweep is not None
     assert cfg2.sweep.objective == "val_loss"
 
-    # Rejects waveform-only candidate
-    with pytest.raises(ValidationError, match=r"sweep\.objective 'rollout_nmse' is not a candidate"):
+    with pytest.raises(ValidationError, match="Input should be 'val_loss'"):
         NNPredictorConfig.from_dict({**base, "sweep": {"objective": "rollout_nmse"}})
 
 
@@ -541,8 +530,8 @@ def test_control_support_rule_validation() -> None:
         NNPredictorConfig.from_dict({**base, "model": {"n_u": 7}})
 
 
-def test_curriculum_span_and_eval_horizon_must_hold_at_least_one_frame() -> None:
-    """The curriculum span and eval horizon must resolve to at least one Frame at the Frame rate."""
+def test_curriculum_span_must_hold_at_least_one_frame() -> None:
+    """The curriculum span must resolve to at least one Frame at the Frame rate."""
     # dt = 1e-4, downsample = 200 -> fs = 50 Hz. Hop = 25 -> fs_frame = 2 Hz.
     # At fs_frame = 2 Hz, span_s = 0.1s gives round(0.1 * 2) = 0 frames (< 1).
     base = {
@@ -563,7 +552,6 @@ def test_curriculum_span_and_eval_horizon_must_hold_at_least_one_frame() -> None
             {
                 **base,
                 "training": {
-                    "eval_horizon_s": 1.0,
                     "losses": {
                         "curriculum_mse": {"weight": 1.0, "span_s": 0.1, "curr_start": 0, "curr_end": 10},
                     },
@@ -571,29 +559,11 @@ def test_curriculum_span_and_eval_horizon_must_hold_at_least_one_frame() -> None
             }
         )
 
-    # eval_horizon_s = 0.1s -> 0 frames -> rejected naming eval_horizon_s, frame rate, hop, fs
-    with pytest.raises(
-        ValidationError,
-        match=r"training\.eval_horizon_s \(0\.1 s\) resolves to 0 frame\(s\) at frame rate 2 Hz \(hop=25, fs=50 Hz\)",
-    ):
-        NNPredictorConfig.from_dict(
-            {
-                **base,
-                "training": {
-                    "eval_horizon_s": 0.1,
-                    "losses": {
-                        "curriculum_mse": {"weight": 1.0, "span_s": 1.0, "curr_start": 0, "curr_end": 10},
-                    },
-                },
-            }
-        )
-
-    # Conforming config with span_s = 1.0s (2 frames) and eval_horizon_s = 1.0s (2 frames) accepted
+    # Conforming config with span_s = 1.0s (2 frames) accepted
     conforming = NNPredictorConfig.from_dict(
         {
             **base,
             "training": {
-                "eval_horizon_s": 1.0,
                 "losses": {
                     "curriculum_mse": {"weight": 1.0, "span_s": 1.0, "curr_start": 0, "curr_end": 10},
                 },
@@ -629,18 +599,6 @@ def test_seed_tiers_resolution() -> None:
 
     with pytest.raises(ValueError, match="Unknown seed tier 'invalid'"):
         resolve_seeds("invalid")
-
-
-def test_closed_loop_eval_config_defaults_and_tiers() -> None:
-    """ClosedLoopEvalConfig defaults seeds to medium, t_end to 12.0s, and resolves seed tiers."""
-    cfg = ClosedLoopEvalConfig(simulation_config="sim.yaml")
-    assert cfg.seeds == [7000, 7001, 7002, 7004, 7005]
-    assert cfg.t_end == 12.0
-    assert cfg.seizure_ptp_mv == 5.0
-    assert cfg.max_seizing_regions == 5
-
-    cfg_small = ClosedLoopEvalConfig(simulation_config="sim.yaml", seeds="small")  # type: ignore[arg-type]
-    assert cfg_small.seeds == [7000, 7001]
 
 
 def test_jansen_rit_regime_healthy_and_seizure() -> None:

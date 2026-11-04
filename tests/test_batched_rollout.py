@@ -1,4 +1,4 @@
-"""Pin the stateless jax ``rollout`` batching and the free-run scoring it feeds."""
+"""Verify batched JAX Rollouts against individual Rollouts."""
 
 from __future__ import annotations
 
@@ -9,7 +9,6 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from neuro.predictor.evaluation import accumulate_rollout_errors
 from neuro.predictor.mlp import WaveformMLPModel
 from neuro.transforms import Standardizer
 
@@ -87,29 +86,3 @@ def test_batch_members_do_not_share_state() -> None:
 
     for i, j in itertools.combinations(range(4), 2):
         assert float(np.abs(preds[i] - preds[j]).max()) > 1e-6
-
-
-def test_accumulate_rollout_errors_matches_per_window_loop() -> None:
-    """The batched accumulator reproduces the per-window free run on the jax model."""
-    model = _model()
-    rng = np.random.default_rng(_SEED + 200)
-    trajs = [
-        (rng.standard_normal((90, model.n_controls)), rng.standard_normal((90, model.n_channels))),
-        (rng.standard_normal((70, model.n_controls)), rng.standard_normal((70, model.n_channels))),
-    ]
-
-    sq_err, power, pred_power = accumulate_rollout_errors(model, trajs, _STEPS, stride=7)
-
-    ref = np.zeros((3, _STEPS), dtype=np.float64)
-    k = model.priming_steps
-    for u, y in trajs:
-        for t0 in range(k, len(y) - _STEPS, 7):
-            y_pred = np.asarray(
-                model.free_run(y[t0 - k + 1 : t0 + 1][None], u[t0 - k : t0][None], u[t0 : t0 + _STEPS][None])
-            )[0]
-            y_true = y[t0 + 1 : t0 + 1 + _STEPS]
-            ref[0] += ((y_pred - y_true) ** 2).sum(axis=1)
-            ref[1] += (y_true**2).sum(axis=1)
-            ref[2] += (y_pred**2).sum(axis=1)
-
-    np.testing.assert_allclose(np.stack([sq_err, power, pred_power]), ref, rtol=1e-5, atol=1e-6)

@@ -657,8 +657,6 @@ it neither writes files nor imports `matplotlib`. It returns a
 | `predictor` | the best-epoch Equinox MLP/CNN model with fitted standardizers and native `dt` |
 | `train_losses`, `val_losses` | per-epoch total loss, one entry per epoch actually run |
 | `train_components`, `val_components` | per-epoch dict of unweighted loss components and diagnostics |
-| `rollout` | a [`RolloutNMSE`](../src/neuro/artifacts.py) — free-run NMSE `pooled` and `per_step` evaluated over `eval_horizon_s` |
-| `log_energy` | a [`LogEnergyError`](../src/neuro/artifacts.py) — free-run windowed-energy log-ratio error of §8.2.1, `pooled` and `per_position` |
 | `val_trajs` | the held-out `(u, y)` trajectories, whole |
 | `du_sensitivity` | the control-sensitivity scalar of §8.3 |
 
@@ -666,101 +664,9 @@ The caller decides what to persist and what to draw. `TrainingResult.save(artifa
 `model.npz` and `training_stats.json`; plotting lives in the run script (§8.5). The checkpoint is
 architecture-neutral and is loaded through `InferencePredictor.load` (§8.4).
 
-### 8.2 Free-run rollout NMSE
+### 8.2 Separate Predictor evaluation
 
-Carrying the notation of §1, §3 and §6 through this section, all in **raw EEG units**:
-
-| symbol | is | indices |
-| ------ | -- | ------- |
-| $y_t \in \mathbb{R}^{C}$ | one measured EEG sample at time step $t$ (§1) | channel $c$ |
-| $Y$ | the stacked validation targets (§3); $Y_{b,i,c}$ is horizon step $i$, channel $c$ of window $b$ | window $b$, step $i$, channel $c$ |
-| $\hat{Y}$ | the model's prediction of $Y$ — the rollout $F_\theta$ of §5.2, run from the window's true history | as $Y$ |
-
-Evaluation rollout horizon is configured explicitly via `training.eval_horizon_s`
-($N_\text{eval} = \max(1, \operatorname{round}(\text{eval\_horizon\_s} \cdot f_s))$), independent of the
-training rollout horizon $N = \max_i (\text{span\_steps}_i)$, and may exceed it.
-
-Lowercase $y$ is always a single time step; uppercase $Y$ is always the stacked $N_\text{eval}$-step block
-$[\,y_{k+1},\dots,y_{k+N_\text{eval}}\,]$ of §3, so $Y_{b,i,c} = y_{t_b + i,\,c}$ for the window starting at
-$t_b$. A hat is a prediction. $F_\theta$ is autoregressive, so $\hat{Y}$ is already a free-running
-rollout that feeds each predicted step back into its own history (§1, §5.2); there is no
-teacher-forced evaluation anywhere in this section. Everything is scored in **raw EEG units**: the
-model's standardized $\hat{z}$ is mapped back through `y_std.inverse_transform` (§3.1, §4.2).
-
-Every reported NMSE — here among the predictors — divides a summed squared error by the **energy** of
-the true signal over the same index set (the uncentred second moment, not the variance) through the
-single definition in [`nmse`](../src/neuro/artifacts.py), so $1.0$ is always the score of the zero
-predictor. [`evaluate_rollouts`](../src/neuro/artifacts.py) computes it over windows started on a
-stride-25 grid through the saved Predictor's JAX `free_run` interface. It scores the same causal
-Rollout as the MPC dynamics, resolved per horizon step $i$ and then pooled:
-
-$$
-\text{NMSE}_i = \frac{\sum_{b,c}\big(Y_{b,i,c} - \hat{Y}_{b,i,c}\big)^2}{\sum_{b,c} Y_{b,i,c}^2},
-\qquad
-\text{NMSE} = \frac{\sum_{i}\sum_{b,c}\big(Y_{b,i,c} - \hat{Y}_{b,i,c}\big)^2}{\sum_{i}\sum_{b,c} Y_{b,i,c}^2}.
-$$
-
-Pooling divides summed error by summed energy — it is *not* the plain mean of the per-step curve but
-its energy-weighted mean, so steps where the EEG is loud count for more. The per-step curve is the
-informative half: it shows *where* along the horizon the model stops beating silence
-($\text{NMSE}_i \to 1$), which the pooled scalar hides.
-
-[`accumulate_rollout_errors`](../src/neuro/artifacts.py) evaluates each trajectory's **whole** $t_0$
-grid through the generic predictor `free_run` interface. Waveform and Observable runtimes preserve
-their respective output shapes while the score reduces over the dimensions defined by the metric.
-
-The pooled NMSE remains available to the NN sweep as
-`objective: rollout_nmse` — but it is **no longer the default objective**, for the reason §8.2.1
-gives. Rolling out *past* the evaluation horizon $N_\text{eval}$ is a separate question, measured by
-[`probe_rollout_horizon.py`](../scripts/probe_rollout_horizon.py), which reports the same
-$\text{NMSE}_i$ alongside a power ratio $\sum \hat{Y}^2 / \sum Y^2$ — needed because a model that
-decays to zero output scores $\text{NMSE}_i \to 1$, indistinguishable on that number alone from one
-that is merely wrong.
-
-### 8.2.1 Log-energy error — the functional the MPC actually costs
-
-Waveform NMSE stops discriminating well before the horizons of interest. Its saturation value is
-exactly $1.0$ (the zero predictor), the plant's phase is chaotic, and at a $\approx 9.3$ Hz peak the
-waveform decorrelates within a couple hundred milliseconds — the same collapse
-[`raw_series_grid`](../src/neuro/metrics.py) is built around. Past that point every candidate reads
-$\approx 1.0$ and a sweep ranking on it is ranking sampler noise.
-
-The deeper reason is that NMSE measures a quantity the controller discards. The MPC's stage cost is
-`w_y * sumsqr(y_next) + w_u * sumsqr(u_curr)` ([`build_mpc_nlp`](../src/neuro/control.py)): it asks
-the predictor for **energy over the horizon** and for how that energy moves with $u$, never for a
-waveform. A phase-scrambled rollout carrying the right energy course yields the same optimal $u$.
-
-[`evaluate_log_energy`](../src/neuro/artifacts.py) scores that functional directly. With
-$E_{b,w} = \frac{1}{W C}\sum_{i \in w}\sum_c Y_{b,i,c}^2$ the cross-channel mean square of window
-$b$ over trailing window position $w$ (length $W$ steps, spaced by the hop):
-
-$$
-D_w = \frac{1}{B}\sum_b \Big(\log(\hat{E}_{b,w} + \varepsilon) - \log(E_{b,w} + \varepsilon)\Big)^2,
-\qquad D = \frac{1}{|w|}\sum_w D_w.
-$$
-
-Four choices, each load-bearing:
-
-- **Log space**, because energy spans orders of magnitude between interictal and ictal and the
-  controller responds to the ratio, not the difference.
-- **Resolved per window $b$ before averaging.** Pooling numerator and denominator first — which is
-  what the `pred_power` returned by `accumulate_rollout_errors` would give — lets over- and
-  under-prediction cancel across windows, so a model right only *on average* would score perfectly.
-- **Unbounded above**, so a prediction that decays to silence is scored as the failure it is rather
-  than tying at $1.0$ with everything else. $\varepsilon = 10^{-12}$ mV⁴ floors the log of a
-  collapsed prediction, not of a genuinely quiet one.
-- **Window and hop follow the metrics layer's own `eeg_ms` convention** (`METRICS["eeg_ms"].window_s`
-  and `DEFAULT_HOP_S`) rather than a config knob of their own, clamped where $N_\text{eval}$ is too
-  short to hold one window.
-
-Both scores are built on the shared batched-rollout generator
-[`rollout_batches`](../src/neuro/artifacts.py) — extracted out of `accumulate_rollout_errors` so the
-priming and free-run logic lives in one place — but they call it separately, so each traversal of the
-validation windows happens once per score. Cheap next to training, and not worth fusing the two
-accumulators for.
-
-$D = 0$ is exact and lower is better. It is **not** an NMSE and does not share NMSE's scale; do not
-compare the two numbers to each other.
+Use the [spectral evaluator](../src/neuro/predictor/evaluation.py) for common log-power Frame MSE and Control Horizon qualification for terminal NMSE and amplitude growth. Set the forecast horizon in the evaluation protocol.
 
 ### 8.3 `du_sensitivity` — is stimulation doing anything?
 
@@ -817,17 +723,10 @@ the plots and a copy of the resolved config YAML for provenance.
 | file | written by | contents |
 | ---- | ---------- | -------- |
 | `model.npz` | `save` | the artifact of §8.4 |
-| `training_stats.json` | `save` | `train_loss[]`, `val_loss[]`, `train_components{}`, `val_components{}`, `nmse_rollout`, `nmse_rollout_per_step[]`, `du_sensitivity` |
+| `training_stats.json` | `save` | `train_loss[]`, `val_loss[]`, `train_components{}`, `val_components{}`, `du_sensitivity` |
 | `loss_curve.png` | run script | total train vs. val loss and per-loss component curves per epoch |
 | `comparison.png` | run script | free-run rollout fans vs. truth on the first held-out trajectory, up to 200 anchors, 4 channels |
 | `<config>.yaml` | run script | copy of the resolved config, named after the source file |
-
-Two changes here are worth flagging because they are visible to anyone reading old runs. The
-teacher-forced `mse` key is **gone** — with `evaluate_model` deleted there is no teacher-forced
-evaluation left in the pipeline, and `nmse_rollout` is the metric. And `comparison.png` now overlays
-**free-run rollouts**, primed on true history and then running open-loop for `horizon` steps, where
-it used to plot teacher-forced $N$-step predictions; the curves are correspondingly worse and
-correspondingly more honest, since free-run is what the MPC does.
 
 [`sweep_nn_predictor.py`](../scripts/sweep_nn_predictor.py) calls the same `save` into each
 
@@ -893,7 +792,6 @@ out-of-range values raise `ValidationError` rather than silently defaulting.
 | `seed`                       | `69`    | seed for weight init **and** the epoch shuffle (`+ seed_offset` in sweeps) |
 | `patience`                   | `50`    | early-stopping patience (epochs)                              |
 | `device`                     | `auto`  | `auto` / `cpu` / `cuda` (`auto` selects CUDA if available)    |
-| `eval_horizon_s`             | *(required)* | evaluation rollout horizon in seconds                     |
 | `losses`                     | *(required)* | composable loss terms (at least one must be active)           |
 
 > **Device selection**: `device: "auto"` follows `jax.devices()[0]`, normally GPU when available.
@@ -929,7 +827,7 @@ where $\text{span\_steps} = \operatorname{round}(\text{span\_s} \cdot f_s)$. At 
   - `start_epoch: int = 0`
 
 **Units convention:** All time durations and horizons are specified in **seconds** (`span_s`,
-`eval_horizon_s`, `window_s`, `hop_s`), converted to steps via $f_s = 1 / (\text{dt} \cdot \text{downsample})$.
+`window_s`, `hop_s`), converted to steps via $f_s = 1 / (\text{dt} \cdot \text{downsample})$.
 All schedule checkpoints and gates are specified in integer **epochs** (`curr_start`, `curr_end`, `start_epoch`).
 
 ### Shipped presets
@@ -944,7 +842,7 @@ All schedule checkpoints and gates are specified in integer **epochs** (`curr_st
 
 All five target the 50 Hz / 8 s ROAST dataset described in Section 2.2 and share `n_y=15`, `n_u=10`,
 `hidden_size=64`, `depth=2`, `activation=softplus`, `batch_size=128`, `learning_rate=1e-5`,
-`weight_decay=5e-4`, `train_split=0.8`, `seed=69` and `eval_horizon_s=1.0`. These historical
+`weight_decay=5e-4`, `train_split=0.8` and `seed=69`. These historical
 presets used global median/IQR scaling; new runs use fixed per-coordinate mean/std scaling.
 
 The last two are a matched pair: the MSE is trusted only out to **0.2 s** and everything from there
@@ -993,18 +891,7 @@ artifact under `trial_<n>/`. A `ValueError` mentioning NaN is converted into `op
 
 ### 10.1 Choosing the objective
 
-`sweep.objective` selects what the study minimises and defaults to `val_loss`. Every candidate the
-Trainer reports is recorded as a trial user attribute, so saved candidates can be re-ranked without
-retraining when the required metric and evaluation protocol are available. Candidate sets depend
-on the Predictor and fit; `closed_loop` is additionally recorded only when configured.
-
-| `objective` | is | cost |
-| ----------- | -- | ---- |
-| `val_loss` *(default)* | Validation Loss at the selected eligible checkpoint; Observable DMDc reports recursive validation MSE | free; already computed |
-| `log_energy` | `result.log_energy.pooled` — the Waveform log-energy error of §8.2.1 | free; same rollouts as the NMSE |
-| `rollout_nmse` | `result.rollout.pooled` — the incumbent waveform NMSE of §8.2 | free |
-| `val_log_mse` | Separate Observable recursive log-power Frame MSE through the inference implementation | recorded for Observable fits |
-| `closed_loop` | the seizure-burden score from [`evaluate_closed_loop_suppression`](../src/neuro/closed_loop_eval.py) | one full simulation per seed per trial |
+Optuna ranks trials by `val_loss`. Trainer diagnostics are saved as trial user attributes.
 
 **`val_loss` is only comparable across trials while the loss composition is fixed.** It is the
 default for Tier 1 architecture, history and optimizer Sweeps under the
@@ -1013,27 +900,9 @@ lengths. It aligns neural checkpoint selection, early stopping and trial ranking
 scheduled Loss is eligible. Waveform joint Loss is MSE + 15 × STFT; Observable Loss is recursive MSE
 in original log-power units. Their numerical values are not comparable across representations.
 Changing Loss weights, Spans or representation requires common diagnostics and closed-loop
-comparison, rather than ranking the changed aggregate Losses. Fits that do not report `val_loss`,
-such as Waveform ridge fits, require an explicit supported objective.
+comparison, rather than ranking the changed aggregate Losses. Waveform ridge and DMD are standalone fits.
 
-**`closed_loop` requires a `sweep.closed_loop` section** (enforced at config load) and is best used
-as a *gate on finalists* rather than as the objective, for three reasons: seed variance with a
-handful of seeds means ranking on seed luck; it confounds predictor quality with the MPC's own
-`w_y`/`w_u` tuning, so a predictor that would win under different weights loses; and it costs
-`len(seeds)` full simulations per trial. The recommended flow is to sweep on fixed `val_loss`, then
-re-run the top-$k$ trials with `objective: closed_loop`. Note that the closed-loop evaluation runs
-whenever the section is present, whichever objective is selected, so its stats are recorded
-alongside the others.
-
-The score itself is the **seizure burden**: the fraction of regions seizing, averaged over the run
-and over the seeds, plus `amplitude_weight` (default `0.0`) times the mean stimulation amplitude.
-[`seizure_burden`](../src/neuro/closed_loop_eval.py) is the closed-loop reading of
-[`seizure_state`](../src/neuro/metrics.py) — the same $s(t) \in [0,1]$ the `state_scoring` notebook
-scores every observable against. It replaced a thresholded suppressed-seed count, which was integer
-over `len(seeds)` and so handed the sampler a few wide plateaus with no gradient between them;
-averaging over the run rather than reading the terminal window also rewards suppressing *early*.
-`max_seizing_regions` still defines the reported `suppressed_seeds` diagnostic but no longer drives
-the score.
+Evaluate selected checkpoints in closed loop with [the comparison runner](../scripts/run_comparison.py).
 
 ---
 
@@ -1041,10 +910,9 @@ the score.
 
 - **Derived training horizon vs explicit evaluation horizon.** Training rollout width is derived as
   $N = \max_i (\text{span\_steps}_i)$ across active loss terms, ensuring the computational graph is
-  only as wide as needed for the losses. Evaluation rollout horizon is set independently by
-  `eval_horizon_s` and may exceed the trained rollout width.
+  only as wide as needed for the losses. Separate evaluations set their own horizons.
 - **Seconds vs epochs units.** All spans, window lengths, hop intervals, and evaluation horizons are
-  given in seconds (`span_s`, `eval_horizon_s`, `window_s`, `hop_s`). All schedule checkpoints and
+  given in seconds (`span_s`, `window_s`, `hop_s`). All schedule checkpoints and
   gates are given in integer epoch numbers (`curr_start`, `curr_end`, `start_epoch`).
 - **Seconds round to samples with banker's rounding.** `round` is Python's, so a duration landing
   exactly on `.5` samples rounds to **even**: at $f_s = 50$, `hop_s: 0.05` gives $\operatorname{round}(2.5) = 2$

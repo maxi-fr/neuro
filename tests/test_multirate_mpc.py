@@ -178,19 +178,19 @@ def test_attempt_metrics_include_failure_and_exclude_playback(tmp_path: Path) ->
                 )
             },
         )
-    result = solver_metrics(logger, 0.06)
+    result = solver_metrics(logger)
     assert result["solve_count"] == 2
     assert result["solve_failures"] == 1
     assert result["solve_success_rate"] == 0.5
     assert result["solve_time_mean_s"] == pytest.approx(0.05)
-    assert result["realtime_factor"] == pytest.approx(np.quantile([0.02, 0.08], 0.95) / 0.06)
+    assert result["solve_time_p95_s"] == pytest.approx(np.quantile([0.02, 0.08], 0.95))
     assert result["controller_time_s"] == pytest.approx(0.005)
     assert cost_metrics(logger)["cost_spectral_mean"] == 3.0
     arrays = {f"controller.{name}": logger.signal("controller", name)[1] for _, name in logger.signals()}
     ood_metrics = {}
-    _extract_solver_metrics_from_log(arrays, {"controller": {"dt": 0.01, "replan_dt": 0.06}}, ood_metrics)
+    _extract_solver_metrics_from_log(arrays, ood_metrics)
     assert ood_metrics["solve_success_rate"] == result["solve_success_rate"]
-    assert ood_metrics["realtime_factor"] == result["realtime_factor"]
+    assert ood_metrics["solve_time_p95_s"] == result["solve_time_p95_s"]
 
 
 def test_plan_filtering_preserves_native_observation_targets(tmp_path: Path) -> None:

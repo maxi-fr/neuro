@@ -284,7 +284,6 @@ def test_cnn_closed_form_fits_reject_before_loading_data(fit: Literal["ridge", "
         model=ModelConfig(architecture="cnn", n_y=3, n_u=2, hidden_size=4, depth=1),
         training=TrainingConfig(
             fit=fit,
-            eval_horizon_s=0.02,
             losses=LossSpecs(curriculum_mse=CurriculumMSESpec(weight=1.0, span_s=0.02, curr_start=0, curr_end=1)),
         ),
     )
@@ -312,7 +311,6 @@ def test_cnn_train_save_load_and_controller_smoke(tmp_path: Path) -> None:
             weight_decay=0.0,
             train_split=0.5,
             patience=2,
-            eval_horizon_s=0.02,
             losses=LossSpecs(curriculum_mse=CurriculumMSESpec(weight=1.0, span_s=0.02, curr_start=0, curr_end=1)),
         ),
     )
@@ -458,7 +456,6 @@ def test_waveform_cnn_rejects_empty_temporal_support(n_y: int, depth: int, kerne
         NNPredictorConfig(
             model=ModelConfig(architecture="cnn", n_y=n_y, depth=depth, kernel_size=kernel_size),
             training=TrainingConfig(
-                eval_horizon_s=0.02,
                 losses=LossSpecs(curriculum_mse=CurriculumMSESpec(weight=1.0, span_s=0.02, curr_start=0, curr_end=1)),
             ),
         )

@@ -68,7 +68,6 @@ def _config(depth: int = 1, curr_start: int = 0, curr_end: int = 2, **training: 
         "train_split": 0.5,
         "seed": _SEED,
         "patience": 50,
-        "eval_horizon_s": span_s,
         "losses": losses,
     }
     return NNPredictorConfig(
@@ -143,12 +142,6 @@ def test_training_converges_and_scores_the_rollout(files: list[str]) -> None:
     # skip the first epoch's one-step persistence is nearly free and the masked curve need not
     # fall; the validation loss trusts the full span at every epoch and must.
     assert result.val_losses[-1] < result.val_losses[0]
-    assert np.isfinite(result.free_run.pooled)
-    assert np.all(np.isfinite(result.free_run.per_step))
-    assert result.free_run.per_step.shape == (_HORIZON,)
-    assert result.log_energy is not None  # the waveform arm always scores it
-    assert np.isfinite(result.log_energy.pooled)
-    assert np.all(np.isfinite(result.log_energy.per_position))
     assert np.isfinite(result.du_sensitivity)
     assert result.du_sensitivity > 0.0
     assert len(result.val_trajs) == 1
@@ -167,10 +160,6 @@ def test_save_round_trip_predicts_identically(files: list[str], tmp_path: Path) 
         "val_loss",
         "train_components",
         "val_components",
-        "nmse_rollout",
-        "nmse_rollout_per_step",
-        "log_energy",
-        "log_energy_per_position",
         "du_sensitivity",
         "eligibility_start",
         "selected_epoch",
@@ -179,9 +168,6 @@ def test_save_round_trip_predicts_identically(files: list[str], tmp_path: Path) 
     assert stats["eligibility_start"] == result.eligibility_start
     assert stats["selected_epoch"] == result.selected_epoch
     assert stats["stopping_reason"] == result.stopping_reason
-    assert stats["nmse_rollout"] == result.free_run.pooled
-    assert result.log_energy is not None  # the waveform arm always scores it
-    assert stats["log_energy"] == result.log_energy.pooled
 
     loaded = WaveformMLPModel.load(artifact_dir / "model")
 
@@ -351,19 +337,19 @@ def test_depth0_gradient_descent_starts_from_random_init_and_runs_every_epoch(fi
     assert len(linear.predictor.weights) == 1
     assert len(linear.train_losses) == 3
     assert len(nonlinear.train_losses) == 3
-    assert np.isfinite(linear.free_run.pooled)
+    assert np.isfinite(linear.candidates["val_loss"])
 
 
 def test_training_device_auto_and_explicit(files: list[str]) -> None:
     """Training follows the default backend and honors an explicit CPU request."""
     auto_res = _wave_train(_config(device="auto"), files)
     assert len(auto_res.train_losses) == 3
-    assert np.isfinite(auto_res.free_run.pooled)
+    assert np.isfinite(auto_res.candidates["val_loss"])
     assert isinstance(auto_res.predictor, WaveformMLPModel)
     assert auto_res.predictor.weights[0].devices() == {jax.devices()[0]}
 
     cpu_res = _wave_train(_config(device="cpu"), files)
     assert len(cpu_res.train_losses) == 3
-    assert np.isfinite(cpu_res.free_run.pooled)
+    assert np.isfinite(cpu_res.candidates["val_loss"])
     assert isinstance(cpu_res.predictor, WaveformMLPModel)
     assert cpu_res.predictor.weights[0].devices() == {jax.devices("cpu")[0]}

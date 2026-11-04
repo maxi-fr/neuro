@@ -7,9 +7,7 @@ import optuna
 import yaml
 from simulate.config import deep_merge
 
-from neuro.closed_loop_eval import evaluate_closed_loop_suppression
 from neuro.config import (
-    CLOSED_LOOP_OBJECTIVE,
     ModelConfig,
     NNPredictorConfig,
     NNSweepConfig,
@@ -26,53 +24,13 @@ if TYPE_CHECKING:
 
     from optuna.trial import BaseTrial
 
-    from neuro.config import ClosedLoopEvalConfig
-
-
-def score_trial(
-    trial: BaseTrial,
-    *,
-    candidates: dict[str, float],
-    objective: str,
-    trial_dir: Path,
-    closed_loop: ClosedLoopEvalConfig | None,
-) -> float:
-    """Record every candidate on the trial and return the config-named objective.
-
-    ``closed_loop`` is a sweep-level candidate: when its evaluation section is configured it is
-    computed on every trial (not only when named), so a finished study can be re-ranked on it.
-    Raises ``ValueError`` when the named objective is not among the recorded candidates, which
-    guards the per-fit candidate sets (``val_loss`` on a ridge fit that never trains).
-    """
-    recorded = dict(candidates)
-    for name, value in recorded.items():
-        trial.set_user_attr(name, value)
-    if closed_loop is not None:
-        score, summary = evaluate_closed_loop_suppression(trial_dir, closed_loop)
-        trial.set_user_attr(CLOSED_LOOP_OBJECTIVE, score)
-        for name, value in summary.items():
-            trial.set_user_attr(name, value)
-        recorded[CLOSED_LOOP_OBJECTIVE] = score
-    if objective not in recorded:
-        msg = (
-            f"sweep.objective {objective!r} is not among this run's candidates ({sorted(recorded)}); "
-            "the objective must be one the Trainer reports, or 'closed_loop'."
-        )
-        raise ValueError(msg)
-    return recorded[objective]
-
-
 def _run_trial(
     config: NNPredictorConfig,
     data_files: list[str],
     trial: BaseTrial,
     trial_dir: Path,
-    sweep: NNSweepConfig,
 ) -> float:
-    """Train one trial at ``config``, persist it under ``trial_dir`` and return the named objective.
-
-    Shared body of the two sweep objectives; projected runtime, NaN Losses, and memory errors prune trials.
-    """
+    """Train and save a trial, then return its validation Loss."""
     trial_dir.mkdir(parents=True, exist_ok=True)
     with (trial_dir / "trial_config.yaml").open("w") as f:
         yaml.dump(config.model_dump(exclude={"sweep"}), f)
@@ -94,13 +52,12 @@ def _run_trial(
     result.save(trial_dir)
     plot_training_curves(result, trial_dir / "loss_curve.png")
     plot_rollout_comparison(result, trial_dir / "comparison.png")
-    score = score_trial(
-        trial,
-        candidates=result.candidates,
-        objective=sweep.objective,
-        trial_dir=trial_dir,
-        closed_loop=sweep.closed_loop,
-    )
+    if "val_loss" not in result.candidates:
+        msg = "The trial did not report val_loss."
+        raise ValueError(msg)
+    for name, value in result.candidates.items():
+        trial.set_user_attr(name, value)
+    score = result.candidates["val_loss"]
     del result
     gc.collect()
     return score
@@ -111,7 +68,7 @@ class OptunaSweep:
 
     Each trial suggests the ``sweep.model`` and ``sweep.training`` search dimensions, merges them
     into the base config, trains through the unified entry point, records every Trainer candidate
-    on the trial, and returns the ``sweep.objective`` the study minimizes.
+    on the trial, and returns the validation Loss the study minimizes.
     """
 
     cfg: NNPredictorConfig
@@ -161,7 +118,7 @@ class OptunaSweep:
             )
         config = self.cfg.model_copy(update=update_dict)
         trial_dir = self.artifact_dir / f"trial_{trial.number}"
-        return _run_trial(config, self.data_files, trial, trial_dir, self.sweep)
+        return _run_trial(config, self.data_files, trial, trial_dir)
 
     def run(self) -> optuna.Study:
         """Run the configured trial budget with seeded multivariate TPE and timeout-resilient SQLite storage."""

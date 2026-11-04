@@ -36,13 +36,13 @@ def test_python_entry_points_do_not_import_pytorch() -> None:
 
 def test_training_cpu_setting_selects_a_cpu() -> None:
     """Explicit CPU training selects CPU even when another backend is the default."""
-    device = _training_device(TrainingConfig(device="cpu", eval_horizon_s=0.1))
+    device = _training_device(TrainingConfig(device="cpu"))
     assert device.platform == "cpu"
 
 
 def test_training_auto_setting_uses_default_backend() -> None:
     """Automatic training follows JAX's default backend."""
-    assert _training_device(TrainingConfig(eval_horizon_s=0.1)) == jax.devices()[0]
+    assert _training_device(TrainingConfig()) == jax.devices()[0]
 
 
 def test_training_cuda_setting_requires_a_gpu(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -57,4 +57,4 @@ def test_training_cuda_setting_requires_a_gpu(monkeypatch: pytest.MonkeyPatch) -
 
     monkeypatch.setattr(jax, "devices", unavailable)
     with pytest.raises(RuntimeError, match="cuda12"):
-        _training_device(TrainingConfig(device="cuda", eval_horizon_s=0.1))
+        _training_device(TrainingConfig(device="cuda"))

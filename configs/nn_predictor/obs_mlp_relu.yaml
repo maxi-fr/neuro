@@ -25,7 +25,6 @@ observable:
 training:
   fit: gradient_descent
   train_split: 0.8
-  eval_horizon_s: 1.0
   epochs: 150
   batch_size: 256
   learning_rate: 0.0001

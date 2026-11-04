@@ -1,21 +1,10 @@
 from __future__ import annotations
 
-import equinox as eqx
-import jax
-import jax.numpy as jnp
 import numpy as np
 import pytest
 
 from neuro.predictor.data import split_data_files
-from neuro.predictor.evaluation import (
-    accumulate_rollout_errors,
-    evaluate_log_energy,
-    evaluate_rollouts,
-    nmse,
-    window_energy,
-)
-from neuro.predictor.mlp import WaveformMLPModel
-from neuro.transforms import Standardizer
+from neuro.predictor.evaluation import nmse
 
 _RNG = np.random.default_rng(0)
 
@@ -49,103 +38,6 @@ def test_nmse_pooled_is_power_weighted_mean_of_per_step() -> None:
 
 def test_nmse_is_infinite_where_the_true_signal_is_silent() -> None:
     assert np.isinf(nmse(np.array([1.0, 0.0]), np.array([0.0, 0.0]))).all()
-
-
-def _tiny_mlp_model(*, n_y: int, n_u: int, horizon: int, n_eeg: int, n_controls: int) -> WaveformMLPModel:
-    """A randomly-initialised MLP module, enough to free-run a rollout."""
-    unit = Standardizer(center=np.zeros(n_eeg), scale=np.ones(n_eeg))
-    return WaveformMLPModel(
-        n_y=n_y,
-        n_u=n_u,
-        horizon=horizon,
-        n_channels=n_eeg,
-        n_controls=n_controls,
-        n_outputs=n_eeg,
-        hidden_size=4,
-        depth=1,
-        activation="relu",
-        dt=0.01,
-        y_std=unit,
-        u_std=Standardizer(center=np.zeros(n_controls), scale=np.ones(n_controls)),
-    )
-
-
-def _silent_mlp_model(*, n_y: int, n_u: int, horizon: int, n_eeg: int, n_controls: int) -> WaveformMLPModel:
-    """An MLP module whose every weight is zero, so it free-runs to exactly zero.
-
-    The residual skip is off: with it, a zero-weight stack would repeat the primed history's last
-    sample instead of staying silent, and these tests are about the metrics on a zero predictor.
-    """
-    model = _tiny_mlp_model(n_y=n_y, n_u=n_u, horizon=horizon, n_eeg=n_eeg, n_controls=n_controls)
-    meta, arrays = model.to_checkpoint()
-    meta["residual"] = False
-    model = WaveformMLPModel.from_checkpoint(meta, arrays)
-    return eqx.tree_at(
-        lambda m: (m.weights, m.biases), model, replace_fn=lambda tree: jax.tree.map(jnp.zeros_like, tree)
-    )
-
-
-def test_evaluate_rollouts_pools_its_own_per_step_curve() -> None:
-    horizon, n_eeg, n_controls = 6, 3, 2
-    model = WaveformMLPModel.from_checkpoint(
-        *_tiny_mlp_model(n_y=4, n_u=2, horizon=horizon, n_eeg=n_eeg, n_controls=n_controls).to_checkpoint()
-    )
-    trajs = [(_RNG.normal(size=(200, n_controls)), _RNG.normal(size=(200, n_eeg))) for _ in range(2)]
-
-    rollout = evaluate_rollouts(model, trajs, horizon)
-    _, power, _ = accumulate_rollout_errors(model, trajs, horizon, stride=25)
-
-    assert rollout.per_step.shape == (horizon,)
-    assert rollout.pooled == pytest.approx(float(np.average(rollout.per_step, weights=power)))
-
-
-def test_window_energy_is_the_cross_channel_mean_square_per_trailing_window() -> None:
-    y = np.arange(2 * 6 * 2, dtype=np.float64).reshape(2, 6, 2)
-
-    energy = window_energy(y, window_steps=4, hop_steps=2)
-
-    assert energy.shape == (2, 2)
-    assert energy[0, 0] == pytest.approx(float((y[0, 0:4] ** 2).mean()))
-    assert energy[1, 1] == pytest.approx(float((y[1, 2:6] ** 2).mean()))
-
-
-def test_log_energy_is_zero_when_the_prediction_matches() -> None:
-    """A silent model on a silent plant: both energies are floored identically, so the error is 0."""
-    horizon, n_eeg, n_controls = 6, 3, 2
-    model = WaveformMLPModel.from_checkpoint(
-        *_silent_mlp_model(n_y=4, n_u=2, horizon=horizon, n_eeg=n_eeg, n_controls=n_controls).to_checkpoint()
-    )
-    trajs = [(np.zeros((200, n_controls)), np.zeros((200, n_eeg))) for _ in range(2)]
-
-    score = evaluate_log_energy(model, trajs, horizon, window_steps=4, hop_steps=2)
-
-    assert score.pooled == pytest.approx(0.0)
-    assert score.per_position.shape == (2,)
-
-
-def test_log_energy_separates_a_silent_predictor_that_nmse_cannot() -> None:
-    """The motivating case: NMSE reads exactly 1.0 -- its saturation value -- and log-energy does not."""
-    horizon, n_eeg, n_controls = 6, 3, 2
-    model = WaveformMLPModel.from_checkpoint(
-        *_silent_mlp_model(n_y=4, n_u=2, horizon=horizon, n_eeg=n_eeg, n_controls=n_controls).to_checkpoint()
-    )
-    trajs = [(_RNG.normal(size=(200, n_controls)), _RNG.normal(size=(200, n_eeg))) for _ in range(2)]
-
-    assert evaluate_rollouts(model, trajs, horizon).pooled == pytest.approx(1.0)
-
-    score = evaluate_log_energy(model, trajs, horizon, window_steps=4, hop_steps=2)
-    assert np.isfinite(score.pooled)
-    assert score.pooled > 1.0
-
-
-def test_log_energy_rejects_a_horizon_shorter_than_one_window() -> None:
-    model = WaveformMLPModel.from_checkpoint(
-        *_tiny_mlp_model(n_y=4, n_u=2, horizon=6, n_eeg=3, n_controls=2).to_checkpoint()
-    )
-    trajs = [(_RNG.normal(size=(200, 2)), _RNG.normal(size=(200, 3))) for _ in range(2)]
-
-    with pytest.raises(ValueError, match="shorter than the energy window"):
-        evaluate_log_energy(model, trajs, 6, window_steps=8, hop_steps=2)
 
 
 def test_split_data_files_holds_out_the_tail() -> None:

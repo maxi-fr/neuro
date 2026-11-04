@@ -3,7 +3,6 @@ import shutil
 from pathlib import Path
 
 from neuro.config import load_config, resolve_artifact_dir, resolve_data_files
-from neuro.predictor.evaluation import free_run_stats
 from neuro.predictor.plotting import plot_rollout_comparison, plot_training_curves
 from neuro.predictor.train import TrainingResult, train
 
@@ -35,8 +34,7 @@ def main() -> None:
     plot_training_curves(result, artifact_dir / "loss_curve.png")
     plot_rollout_comparison(result, artifact_dir / "comparison.png")
 
-    scores = free_run_stats(result.free_run, result.log_energy)
-    summary = ", ".join(f"{k}: {v:.4f}" for k, v in scores.items() if isinstance(v, float))
+    summary = ", ".join(f"{name}: {value:.4f}" for name, value in result.candidates.items())
     # A closed-form fit has no epoch loop, so du sensitivity is only measured on the gradient arm.
     if isinstance(result, TrainingResult):
         summary += (
@@ -44,7 +42,8 @@ def main() -> None:
             f"(eligible from epoch {result.eligibility_start}, {result.stopping_reason})"
             f", du sensitivity: {result.du_sensitivity:.4f}"
         )
-    print(summary)
+    if summary:
+        print(summary)
     print(f"Saved NN predictor checkpoint -> {artifact_dir / 'model.npz'}")
     print(f"Plot saved to {artifact_dir / 'comparison.png'}")
 

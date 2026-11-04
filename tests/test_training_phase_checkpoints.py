@@ -94,7 +94,6 @@ def test_reproducing_regression_delayed_loss_and_curriculum_with_early_minimum(t
             weight_decay=0.0,
             train_split=0.5,
             seed=_SEED,
-            eval_horizon_s=span_s,
             losses=losses,
         ),
     )
@@ -204,7 +203,7 @@ def test_final_selection_restores_lowest_val_loss_among_eligible_epochs(monkeypa
         model,
         dataset,
         dataset,
-        TrainingConfig(epochs=6, patience=3, learning_rate=0.1, warmup_epochs=0, weight_decay=0.0, eval_horizon_s=0.1),
+        TrainingConfig(epochs=6, patience=3, learning_rate=0.1, warmup_epochs=0, weight_decay=0.0),
         seed=1,
         losses=[CurriculumMSE(1.0, 1, 0, 0, 0)],
         ctx=LossContext(model.y_center, model.y_scale, 1000.0),
@@ -234,7 +233,6 @@ def test_incompatible_schedule_budget_rejected_before_training() -> None:
             training=TrainingConfig(
                 epochs=10,
                 patience=5,
-                eval_horizon_s=span_s,
                 losses=losses,
             ),
         )
@@ -255,7 +253,6 @@ def test_run_with_no_delayed_terms_retains_ordinary_behavior(tmp_path: Path) -> 
         training=TrainingConfig(
             epochs=10,
             patience=3,
-            eval_horizon_s=span_s,
             losses=losses,
         ),
     )

@@ -399,26 +399,23 @@ def extract_mpc_rollout_queries(
 def _extract_control_metrics_from_log(
     data: Mapping[str, np.ndarray], run_cfg: dict[str, Any], metrics: dict[str, Any]
 ) -> None:
-    """Integrate native applied currents over recorded durations clipped to the simulation end."""
+    """Calculate Delivered Charge over clipped current holds and the Kirchhoff residual."""
     if "controller.u" not in data or "controller.t" not in data:
         return
     u = np.asarray(data["controller.u"], dtype=np.float64)
     t = np.asarray(data["controller.t"], dtype=np.float64)
     t_end = float(run_cfg.get("t_end", t[-1] if len(t) > 0 else 12.0))
     durations = np.maximum(0.0, np.diff(np.minimum(np.append(t, t_end), t_end)))
-    u_max = float(run_cfg.get("controller", {}).get("problem", {}).get("u_max", 2.0))
     if "delivered_charge" not in metrics:
         metrics["delivered_charge"] = float(np.sum(np.abs(u) * durations[:, None]))
-    if "mean_amplitude" not in metrics and t_end > 0:
-        metrics["mean_amplitude"] = float(np.sum(np.mean(np.abs(u) / u_max, axis=1) * durations) / t_end)
     if "kirchhoff_max" not in metrics:
         metrics["kirchhoff_max"] = float(np.max(np.abs(np.sum(u, axis=1))))
 
 
 def _extract_solver_metrics_from_log(
-    data: Mapping[str, np.ndarray], run_cfg: dict[str, Any], metrics: dict[str, Any]
+    data: Mapping[str, np.ndarray], metrics: dict[str, Any]
 ) -> None:
-    """Score actual attempts against replanning deadlines, preserving native update runtime separately."""
+    """Summarize actual solve attempts and native update runtime."""
     if "controller.solve_time" not in data or "controller.warmup" not in data:
         return
     warmup = np.asarray(data["controller.warmup"], dtype=bool)
@@ -434,10 +431,6 @@ def _extract_solver_metrics_from_log(
             metrics["solve_time_mean_s"] = float(np.mean(solve_time[solved]))
         if "solve_time_p95_s" not in metrics:
             metrics["solve_time_p95_s"] = float(np.quantile(solve_time[solved], 0.95))
-        if "realtime_factor" not in metrics:
-            controller = run_cfg.get("controller", {})
-            control_dt = float(controller.get("replan_dt", controller.get("dt", 0.06)))
-            metrics["realtime_factor"] = float(metrics["solve_time_p95_s"] / control_dt) if control_dt > 0 else 0.0
     if "controller.success" in data and "solve_success_rate" not in metrics:
         success = np.asarray(data["controller.success"], dtype=bool)
         metrics["solve_success_rate"] = float(np.mean(success[solved])) if solved.any() else 0.0
@@ -445,7 +438,7 @@ def _extract_solver_metrics_from_log(
 
 
 def extract_run_clinical_metrics(run_dir: str | Path) -> dict[str, Any]:
-    """Score Seizure Burden, suppression, delivered charge, and solver metrics for a closed-loop run.
+    """Read closed-loop outcomes and fill in charge and solver timings from the log.
 
     Parameters
     ----------
@@ -463,6 +456,8 @@ def extract_run_clinical_metrics(run_dir: str | Path) -> dict[str, Any]:
     if scores_file.exists():
         with scores_file.open(encoding="utf-8") as f:
             metrics.update(json.load(f))
+        for retired in ("mean_amplitude", "pz_recruited", "realtime_factor"):
+            metrics.pop(retired, None)
 
     cfg_file = path / "config.yaml"
     run_cfg: dict[str, Any] = {}
@@ -474,7 +469,7 @@ def extract_run_clinical_metrics(run_dir: str | Path) -> dict[str, Any]:
     if log_file.exists():
         with np.load(log_file) as data:
             _extract_control_metrics_from_log(data, run_cfg, metrics)
-            _extract_solver_metrics_from_log(data, run_cfg, metrics)
+            _extract_solver_metrics_from_log(data, metrics)
 
     return metrics
 
@@ -763,44 +758,32 @@ def _interpret_lookahead_dynamics(q_fut_med: float, q0_p95: float) -> tuple[str,
 
 
 def _format_clinical_report_block(clin: dict[str, Any] | None) -> tuple[str, str]:
-    """Format clinical efficacy and control performance block for the OOD report."""
+    """Format seizure outcomes, Delivered Charge, and solver performance for the OOD report."""
     if not clin:
         return "", ""
 
     burden = clin.get("seizure_burden")
     burden_str = f"{burden * 100:.2f}%" if burden is not None else "N/A"
     n_final = clin.get("n_seizing_final")
-    ez = clin.get("ez_recruited")
-    pz = clin.get("pz_recruited")
-    hl = clin.get("healthy_recruited")
     charge = clin.get("delivered_charge")
-    amp = clin.get("mean_amplitude")
     kcl = clin.get("kirchhoff_max")
     p95_s = clin.get("solve_time_p95_s")
-    rt = clin.get("realtime_factor")
     succ = clin.get("solve_success_rate")
 
     charge_str = f"{charge:.3f} mA*s" if charge is not None else "N/A"
-    amp_str = f"{amp * 100:.2f}% of u_max" if amp is not None else "N/A"
     kcl_str = f"{kcl:.2e} mA" if kcl is not None else "N/A"
 
     containment_str = f"{n_final:.0f} / 76 regions seizing at t_end" if n_final is not None else "N/A"
-    recruitment_str = (
-        f"\n                             (EZ: {ez:.0f}/3, PZ: {pz:.0f}/2, Healthy: {hl:.0f}/71)"
-        if ez is not None and pz is not None and hl is not None
-        else ""
-    )
 
-    solver_str = f"{p95_s:.3f}s (Realtime factor: {rt:.1f}x)" if p95_s is not None and rt is not None else "N/A"
+    solver_str = f"{p95_s:.3f}s" if p95_s is not None else "N/A"
     succ_str = f"{succ * 100:.1f}%" if succ is not None else "N/A"
 
     block = f"""--------------------------------------------------------------------------------
 CLOSED-LOOP CLINICAL EFFICACY & CONTROL PERFORMANCE
 --------------------------------------------------------------------------------
   * Seizure Burden:          {burden_str} (time-averaged network fraction seizing)
-  * Seizure Containment:     {containment_str}{recruitment_str}
+  * Seizure Containment:     {containment_str}
   * Total Delivered Charge:  {charge_str}
-  * Mean Control Amplitude:  {amp_str}
   * Kirchhoff Residual:      {kcl_str} (zero-sum charge balance)
   * Solver Runtime (p95):    {solver_str}
   * Solve Success Rate:      {succ_str}

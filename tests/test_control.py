@@ -172,6 +172,27 @@ def test_amplitude_threshold_controller_triggers_on_crossing() -> None:
     np.testing.assert_array_equal(controls[active], np.tile([-1.0, 1.0], (sum(active), 1)))
 
 
+def test_amplitude_threshold_controller_waits_for_shared_release() -> None:
+    """Keep stimulation off before release while filling the EEG window."""
+    controller = AmplitudeThresholdController.from_config(
+        {
+            "dt": _DT,
+            "amplitude": [-1.0, 1.0],
+            "threshold": 5.0,
+            "burst_duration": 1.0,
+            "window": 0.5,
+            "n_u": 2,
+            "control_start_s": 1.0,
+        }
+    )
+
+    controls, active = _run_threshold_controller(controller, np.tile([-4.0, 4.0], 6))
+
+    assert active == [False] * 10 + [True] * 2
+    np.testing.assert_array_equal(controls[:10], 0.0)
+    np.testing.assert_array_equal(controls[10], [-1.0, 1.0])
+
+
 def test_amplitude_threshold_controller_holds_burst_to_completion() -> None:
     """A burst runs its full duration even after the signal falls back below threshold.
 

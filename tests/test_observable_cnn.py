@@ -211,7 +211,6 @@ def test_observable_cnn_train_save_load_and_controller_smoke(tmp_path: Path) -> 
             weight_decay=0.0,
             train_split=0.5,
             patience=2,
-            eval_horizon_s=0.08,
             device="cpu",
             losses=LossSpecs(
                 curriculum_mse=CurriculumMSESpec(
@@ -374,5 +373,5 @@ def test_observable_cnn_rejects_empty_temporal_support(n_y: int, depth: int, ker
         NNPredictorConfig(
             observable=geometry,
             model=ModelConfig(architecture="cnn", n_y=n_y, depth=depth, kernel_size=kernel_size),
-            training=TrainingConfig(eval_horizon_s=0.1),
+            training=TrainingConfig(),
         )

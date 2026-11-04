@@ -297,7 +297,7 @@ def test_comparison_validate_grid_rejects_ineligible_arm(tmp_path: Path) -> None
             },
         },
     }
-    cell = Cell(run="test_arm", arm="unstable_arm", seed=7000, u_max=1.0, config=cfg)
+    cell = Cell(run="test_arm", arm="unstable_arm", seed=7000, config=cfg)
     trajectories = [_synthetic_trajectory(n_steps=200, seed=606)]
 
     eligibility = check_arm_eligibility(

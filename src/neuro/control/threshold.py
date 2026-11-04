@@ -35,6 +35,7 @@ class _AmplitudeThresholdControllerConfig(StrictConfig):
     window: float = Field(default=1.0, gt=0)
     channel: int | None = Field(default=None, ge=0)
     n_u: int = Field(default=1, ge=1)
+    control_start_s: float = Field(default=0.0, ge=0, allow_inf_nan=False)
 
 
 class AmplitudeThresholdController(Controller[AmplitudeThresholdControllerLog]):
@@ -49,8 +50,9 @@ class AmplitudeThresholdController(Controller[AmplitudeThresholdControllerLog]):
         window: float = 1.0,
         channel: int | None = None,
         n_u: int = 1,
+        control_start_s: float = 0.0,
     ) -> None:
-        """Initialize the trigger.
+        """Initialize the trigger and its earliest stimulation time.
 
         Parameters
         ----------
@@ -70,6 +72,8 @@ class AmplitudeThresholdController(Controller[AmplitudeThresholdControllerLog]):
             channel and triggers on the largest peak-to-peak among them.
         n_u
             Number of stimulation electrodes (control dimension).
+        control_start_s
+            Earliest simulation time at which a burst may start, in seconds.
         """
         super().__init__(dt)
         self.threshold = float(threshold)
@@ -77,6 +81,7 @@ class AmplitudeThresholdController(Controller[AmplitudeThresholdControllerLog]):
         self.window = float(window)
         self.channel = channel
         self.n_u = n_u
+        self.control_start_s = control_start_s
 
         amp = np.atleast_1d(np.asarray(amplitude, dtype=np.float64))
         if amp.size == 1:
@@ -93,7 +98,7 @@ class AmplitudeThresholdController(Controller[AmplitudeThresholdControllerLog]):
 
     @classmethod
     def from_config(cls, config: dict[str, Any]) -> Self:
-        """Instantiate the component from a raw configuration dictionary."""
+        """Instantiate the trigger and its release time from configuration."""
         cfg = _AmplitudeThresholdControllerConfig.model_validate(config)
         return cls(
             dt=cfg.dt,
@@ -103,6 +108,7 @@ class AmplitudeThresholdController(Controller[AmplitudeThresholdControllerLog]):
             window=cfg.window,
             channel=cfg.channel,
             n_u=cfg.n_u,
+            control_start_s=cfg.control_start_s,
         )
 
     def update(
@@ -111,7 +117,7 @@ class AmplitudeThresholdController(Controller[AmplitudeThresholdControllerLog]):
         ref: FloatArray,  # noqa: ARG002
         x_hat: FloatArray,
     ) -> tuple[FloatArray, AmplitudeThresholdControllerLog]:
-        """Ingest the EEG measurement and emit the burst amplitude while a burst is running."""
+        """Accumulate EEG during Warm-up and allow bursts at or after release."""
         y = np.atleast_1d(np.asarray(x_hat, dtype=np.float64).reshape(-1))
         if self._buf is None:
             self._buf = np.zeros((self._n_window, y.size), dtype=np.float64)
@@ -122,7 +128,7 @@ class AmplitudeThresholdController(Controller[AmplitudeThresholdControllerLog]):
         ptp = np.ptp(self._buf, axis=0)
         amplitude = float(ptp[self.channel] if self.channel is not None else ptp.max()) if filled else 0.0
 
-        triggered = t >= self._until and amplitude > self.threshold
+        triggered = t >= self.control_start_s and t >= self._until and amplitude > self.threshold
         if triggered:
             self._until = t + self.burst_duration
         active = t < self._until

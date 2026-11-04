@@ -69,7 +69,6 @@ class Cell:
     run: str
     arm: str
     seed: int
-    u_max: float
     config: dict[str, Any] = field(repr=False)
 
 
@@ -121,7 +120,7 @@ def lfp_logging(config: dict[str, Any]) -> dict[str, Any]:
 
 
 def expand_grid(manifest: ComparisonManifest) -> list[Cell]:
-    """Expand the manifest into one Cell per (arm, seed), seed-major.
+    """Expand the manifest into resolved run configs, ordered by seed then arm.
 
     Seed-major so a grid cut short by its time budget still covers every arm on the seeds it
     reached: an arm comparison missing two seeds is usable, one missing two arms is not.
@@ -131,9 +130,7 @@ def expand_grid(manifest: ComparisonManifest) -> list[Cell]:
         for arm in manifest.arms:
             config = arm_config(manifest, arm)
             config["dynamics"]["seed"] = seed
-            grid.append(
-                Cell(run=f"{arm}_s{seed}", arm=arm, seed=seed, u_max=control_bound(config) or 1.0, config=config)
-            )
+            grid.append(Cell(run=f"{arm}_s{seed}", arm=arm, seed=seed, config=config))
     return grid
 
 
@@ -198,8 +195,7 @@ def spread_metrics(
     worst onset the run can show rather than NaN. Left as NaN, the arm that prevented recruitment
     would drop out of the very column the arm that caused it appears in, and averaging over the
     recruited regions alone would rank one region recruited late below three recruited early. An
-    onset equal to the run length therefore reads "not recruited"; the ``*_recruited`` counts say
-    which of the two it was.
+    onset equal to the run length therefore reads "not recruited".
 
     Parameters
     ----------
@@ -223,22 +219,22 @@ def spread_metrics(
     }
     for name, idx in _region_groups(connectome).items():
         metrics[f"{name}_ptp_mv"] = float(np.mean(profile.ptp[idx]))
-        metrics[f"{name}_recruited"] = float(profile.n_seizing(idx)[-1])
+        if name != "pz":
+            metrics[f"{name}_recruited"] = float(profile.n_seizing(idx)[-1])
     return metrics
 
 
-def control_metrics(us: FloatArray, u_max: float, dt: float) -> dict[str, float]:
-    """Score effort, delivered charge and the Kirchhoff residual of the applied control."""
+def control_metrics(us: FloatArray, dt: float) -> dict[str, float]:
+    """Score Delivered Charge and the Kirchhoff residual of the applied current."""
     u = np.asarray(us, dtype=np.float64)
     return {
-        "mean_amplitude": float(np.mean(np.abs(u) / u_max)),
         "delivered_charge": float(np.sum(np.abs(u)) * dt),
         "kirchhoff_max": float(np.max(np.abs(np.sum(u, axis=1)))),
     }
 
 
-def solver_metrics(logger: BaseLogger, control_dt: float) -> dict[str, float]:
-    """Score actual solve attempts against the replanning deadline and aggregate all native update time."""
+def solver_metrics(logger: BaseLogger) -> dict[str, float]:
+    """Summarize wall-clock solve times and total native controller update time."""
     available = {name for component, name in logger.signals() if component == "controller"}
     if not {"solve_time", "success", "warmup"} <= available:
         return {}
@@ -263,7 +259,6 @@ def solver_metrics(logger: BaseLogger, control_dt: float) -> dict[str, float]:
             "solve_time_p95_s",
             "solve_time_median_s",
             "solve_time_max_s",
-            "realtime_factor",
         )
         return {**dict.fromkeys(keys, float("nan")), **totals}
     p95 = float(np.quantile(solve_time[solved], 0.95))
@@ -274,12 +269,11 @@ def solver_metrics(logger: BaseLogger, control_dt: float) -> dict[str, float]:
         "solve_time_p95_s": p95,
         "solve_time_median_s": float(np.median(solve_time[solved])),
         "solve_time_max_s": float(np.max(solve_time[solved])),
-        "realtime_factor": p95 / control_dt,
     }
 
 
 def cost_metrics(logger: BaseLogger) -> dict[str, Any]:
-    """Score decomposed Costs only at solve attempts, including attempted failures."""
+    """Summarize decomposed Costs over solve attempts, including failed attempts."""
     available = {name for component, name in logger.signals() if component == "controller"}
     required = {"cost_spectral", "cost_quadratic_effort", "cost_sparse_effort", "warmup"}
     if not required <= available:
@@ -311,23 +305,19 @@ def cost_metrics(logger: BaseLogger) -> dict[str, Any]:
         norm_sig = logger.signal("controller", "normalization")[1].reshape(-1)
         if len(norm_sig) > 0:
             norm_val = str(norm_sig[0])
-    res = {
+    return {
         "cost_spectral_mean": float(np.mean(spec[solved])),
         "cost_quadratic_effort_mean": float(np.mean(quad[solved])),
         "cost_sparse_effort_mean": float(np.mean(sparse[solved])),
         "cost_tracking_mean": float(np.mean(track[solved])),
         "cost_normalization": norm_val,
     }
-    if "active_count" in available:
-        act_sig = logger.signal("controller", "active_count")[1].reshape(-1)
-        res["active_count_mean"] = float(np.nanmean(act_sig[solved])) if len(act_sig[solved]) > 0 else float("nan")
-    return res
 
 
 def score_run(
-    config: dict[str, Any], u_max: float, *, threshold: float = SEIZURE_PTP_MV, output_dir: Path | None = None
+    config: dict[str, Any], *, threshold: float = SEIZURE_PTP_MV, output_dir: Path | None = None
 ) -> dict[str, Any]:
-    """Score native applied currents, actual attempts and update time, clipping charge to the simulation end."""
+    """Score seizure outcomes, applied charge, and solve attempts for one run."""
     config = lfp_logging(config)
     sim = Simulation.from_config(config)
     connectome = Connectome.from_config(config["dynamics"]["connectome"])
@@ -346,8 +336,8 @@ def score_run(
         metrics = {
             "wall_time_s": wall_time,
             **spread_metrics(sim.logger.signal("dynamics", "lfp")[1], sim.dt, connectome, threshold=threshold),
-            **control_metrics(controls, u_max, control_dt),
-            **solver_metrics(sim.logger, float(config["controller"].get("replan_dt", control_dt))),
+            **control_metrics(controls, control_dt),
+            **solver_metrics(sim.logger),
             **cost_metrics(sim.logger),
         }
         metrics["delivered_charge"] = float(np.sum(np.abs(controls) * durations[:, None]))
@@ -355,9 +345,6 @@ def score_run(
             metrics["solves_per_simulated_second"] = metrics["solve_count"] / config["t_end"]
         if "controller_time_s" in metrics:
             metrics["controller_time_per_simulated_second"] = metrics["controller_time_s"] / config["t_end"]
-        metrics["mean_amplitude"] = float(
-            np.sum(np.mean(np.abs(controls) / u_max, axis=1) * durations) / config["t_end"]
-        )
         if output_dir is not None:
             output_dir.mkdir(parents=True, exist_ok=True)
             (output_dir / "config.yaml").write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
@@ -395,7 +382,7 @@ def score_cell(
     if progress_dir is not None:
         record_progress(progress_dir, cell, started=started.isoformat(), state="running")
     try:
-        row |= score_run(cell.config, cell.u_max, threshold=threshold, output_dir=output_dir)
+        row |= score_run(cell.config, threshold=threshold, output_dir=output_dir)
     except Exception as exc:  # noqa: BLE001 -- one diverged arm must not lose the rest of the grid
         row["error"] = f"{type(exc).__name__}: {exc}"
     if progress_dir is not None:

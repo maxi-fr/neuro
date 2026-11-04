@@ -159,7 +159,6 @@ def test_dmd_train_rejects_residual_config(tmp_path: Path) -> None:
         model=ModelConfig(n_y=2, n_u=2, depth=0, residual=True),
         training=TrainingConfig(
             fit="dmd",
-            eval_horizon_s=5e-3,
             losses=LossSpecs(curriculum_mse=CurriculumMSESpec(weight=1.0, span_s=5e-3, curr_start=0, curr_end=1)),
         ),
     )
@@ -184,7 +183,6 @@ def test_dmd_observable_end_to_end(tmp_path: Path) -> None:
             fit="dmd",
             dmd_rank=10,
             dmd_lambda=1e-3,
-            eval_horizon_s=4 / fs_frame,
             losses=LossSpecs(
                 curriculum_mse=CurriculumMSESpec(weight=1.0, span_s=4 / fs_frame, curr_start=0, curr_end=1)
             ),
@@ -195,7 +193,6 @@ def test_dmd_observable_end_to_end(tmp_path: Path) -> None:
     result = train(cfg, files)
     assert isinstance(result, RidgeTrainingResult)
     assert "val_loss" in result.candidates
-    assert "val_log_mse" in result.candidates
     assert result.predictor.depth == 0
 
     # Save and round-trip to JAX ObservableMLPModel
@@ -227,15 +224,13 @@ def test_dmd_waveform_end_to_end(tmp_path: Path) -> None:
         training=TrainingConfig(
             fit="dmd",
             dmd_energy=0.98,
-            eval_horizon_s=span_s,
             losses=LossSpecs(curriculum_mse=CurriculumMSESpec(weight=1.0, span_s=span_s, curr_start=0, curr_end=1)),
         ),
     )
 
     result = train(cfg, files)
     assert isinstance(result, RidgeTrainingResult)
-    assert "rollout_nmse" in result.candidates
-    assert "log_energy" in result.candidates
+    assert result.candidates == {}
 
     # Save and round-trip to JAX WaveformMLPModel
     ckpt_path = tmp_path / "wave_model"
@@ -264,14 +259,13 @@ def test_dmd_observable_optuna_sweep_end_to_end(tmp_path: Path) -> None:
         model=ModelConfig(n_y=2, n_u=min_n_u, depth=0, residual=False),
         training=TrainingConfig(
             fit="dmd",
-            eval_horizon_s=4 / fs_frame,
             losses=LossSpecs(
                 curriculum_mse=CurriculumMSESpec(weight=1.0, span_s=4 / fs_frame, curr_start=0, curr_end=1)
             ),
         ),
         observable=geom,
         sweep=NNSweepConfig(
-            objective="val_log_mse",
+            objective="val_loss",
             training={
                 "dmd_energy": FloatParam(type="float", low=0.9, high=0.999),
                 "dmd_lambda": LogUniformParam(type="loguniform", low=1e-6, high=1e-1),
@@ -283,4 +277,4 @@ def test_dmd_observable_optuna_sweep_end_to_end(tmp_path: Path) -> None:
     value = OptunaSweep(cfg, files, tmp_path).objective(trial)
 
     assert isinstance(value, float)
-    assert {"val_loss", "val_log_mse", "retained_rank", "condition_number"}.issubset(trial.user_attrs.keys())
+    assert {"val_loss", "retained_rank", "condition_number"}.issubset(trial.user_attrs.keys())
