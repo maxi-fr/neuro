@@ -12,6 +12,10 @@
 %   * In-silico patient scenarios: Spontaneous seizure generation in EZ and recruitment into PZ.
 %   * Quantitative metrics: Seizure State, Seizure Burden, total injected charge, solve times.
 %   * Uncontrolled baseline and reference conditions.
+% - Study 0: Predictability experiment:
+%   * what metrics can 1. detect seizures and 2. are predictable
+%   * based of notebooks/state/scoring.py
+%   * Note: the metric should be the MPC cost function? instead of what is currently there 
 % - Study 1: Offline Predictor Benchmarking:
 %   * Selection of STFT geometry: Trading temporal responsiveness against frequency resolution.
 %   * Training loss comparison: Multi-step Rollout stability of spectral training loss vs. raw MSE loss.
@@ -20,18 +24,14 @@
 %   * Model comparison: Linear DMDc vs. Nonlinear MLP over the Control Horizon.
 % - Study 2: Numerical Solver and Transcription Benchmarking:
 %   * Solve time, convergence reliability, and constraint satisfaction across horizon lengths.
-%   * Single shooting vs. multiple shooting performance.
+%   * Single shooting vs. multiple shooting vs. NARX multiple shooting
 % - Study 3: Closed-Loop Seizure Suppression:
 %   * Proof of closed-loop efficacy: Attenuating seizure amplitude and preventing PZ recruitment via scalp EEG feedback.
 %   * Waveform MPC vs. Spectral MPC: Empirical demonstration of why waveform tracking fails while spectral MPC succeeds.
 %   * With the same spectral MPC Cost, compare waveform and direct spectral Predictors to isolate
 %     the effect of the prediction target on closed-loop Seizure Suppression.
-%   * Continuous vs. Pulse-Based Stimulation: Trade-offs between Seizure Burden reduction, stimulation duration,
-%     pulse counts, and solver complexity.
-% - Study 4: Sparse MPC investigations
-%   * compare L_1 loss, block candidate, homotopy
-% - Critical Discussion & Failure Analysis:
-%   * Analysis of negative results and controller breakdown modes (stochastic noise bursts, leadfield errors, latency limits).
-%   * Translational implications of findings.
+%   * Sparse Stimulation investigations: 
+%     * compare L_1 loss, bonmin, block candidate, homotopy
 
+% ---
 % would be great if we could define some measure for "unnecessary stimulation" i.e. stimulation when it wasn't immenently necessary for suppression
