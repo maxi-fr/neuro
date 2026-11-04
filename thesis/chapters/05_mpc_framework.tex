@@ -3,16 +3,17 @@
 The models developed in Chapter~\ref{ch:data_driven_predictor_design} predict the response of measured neural activity to a given stimulation sequence.
 To use these models for control, the stimulation sequence must be chosen to reduce seizure-related activity while limiting stimulation effort and satisfying current constraints.
 This chapter formulates that choice as a finite-horizon optimal control problem.
-Repeatedly solving this problem from updated measurements and applying only the first input constitutes \ac{mpc}.
 
-The chapter first establishes the general \ac{mpc} formulation and compares numerical solution methods.
-It then specifies the predictor dynamics, current constraints and control costs for the neurostimulation \ac{ocp}.
-Cost and constraint formulations that promote sparse stimulation are developed next.
-The chapter ends with a discussion of limitations of control with learned predictors.
+We first show how model predictive control turns this optimization problem into a feedback controller.
+We then compare two ways to re-formulate the problem for a numerical solver.
+With this general framework in place, we then specify it for our seizure suppression problem.
+We detail how the learned predictor, the current limits and the suppression objective enter the control problem.
+Finally, we examine how the cost and constraints can promote sparse stimulation.
 
 \section{General \ac{mpc} Formulation}\label{sec:mpc_formulation}
 
-We consider the discrete-time prediction model
+At each sampling instant, the controller plans a sequence of future inputs by predicting how the state would respond to each candidate sequence.
+For these predictions, we consider the discrete-time model
 %
 \begin{equation}
     \mathbf{x}_{k+1} = \mathbf{f}(\mathbf{x}_k,\mathbf{u}_k)\,,
@@ -21,16 +22,18 @@ We consider the discrete-time prediction model
 \end{equation}
 %
 where $\mathbf{x}_k\in\mathbb{R}^{\ndim{x}}$ is the model state and $\mathbf{u}_k\in\mathbb{R}^{\ndim{u}}$ is the input at time step $k\in\mathbb{N}_0$.
-At each update, measurements and past inputs provide the initial state $\hat{\mathbf{x}}_k$ from which future trajectories are predicted.
-For the predictors of Chapter~\ref{ch:data_driven_predictor_design}, this state contains the observation and input histories defined there.
+The prediction starts from $\mathbf{x}_{0|k}=\hat{\mathbf{x}}_k$, where $\hat{\mathbf{x}}_k$ is the state available to the controller.
+If not measured directly, its estimate can be updated using the latest measurement and the previously applied input~\cite{Findeisen2003}.
 
-Starting from $\mathbf{x}_{0|k}=\hat{\mathbf{x}}_k$, a candidate input sequence $\mathbf{u}_{0|k},\ldots,\mathbf{u}_{H-1|k}$ determines the predicted states through~\eqref{eq:mpc_prediction_dynamics}.
-The index $j|k$ denotes a prediction $j$ steps ahead of the current update $k$.
-Each input is held constant for one sampling interval $\Delta t>0$, so the horizon of $H\in\mathbb{N}_{>0}$ steps covers the duration $T_{\mathrm{pred}}=H\Delta t$.
+The controller plans over $H\in\mathbb{N}_{>0}$ sampling intervals of duration $\Delta t>0$, giving a prediction horizon of duration $T_{\mathrm{pred}}=H\Delta t$.
+Using the notation of Chapter~\ref{ch:data_driven_predictor_design}, $\mathbf{u}_{j|k}$ is the input planned at step $k$ for interval $j=0,\ldots,H-1$ and is held constant over that interval.
+Starting from $\mathbf{x}_{0|k}$, successive application of~\eqref{eq:mpc_prediction_dynamics} gives the predicted states $\mathbf{x}_{1|k},\ldots,\mathbf{x}_{H|k}$ for that input sequence.
 
 \begin{samepage}
-The input sequence is chosen to minimize a cost over this horizon while satisfying the state and input constraints.
-With real-valued stage cost $\ell:\mathbb{R}^{\ndim{x}}\times\mathbb{R}^{\ndim{u}}\to\mathbb{R}$ and terminal cost $V_\mathrm{f}:\mathbb{R}^{\ndim{x}}\to\mathbb{R}$, the resulting \ac{ocp} takes the standard form~\cite{Rawlings2017}
+Together, the planned inputs and predicted states let the controller assess both the effort a plan requires and the behavior it produces in the model.
+The objective encodes these considerations by assigning a cost to the planned inputs and predicted states.
+Any limits on the inputs or predicted states enter as constraints that a candidate sequence must satisfy.
+The controller therefore minimizes the objective over admissible input sequences, giving the \ac{ocp}~\cite{Rawlings2017}
 %
 \begin{equation}
     \begin{aligned}
@@ -51,67 +54,66 @@ With real-valued stage cost $\ell:\mathbb{R}^{\ndim{x}}\times\mathbb{R}^{\ndim{u
     \end{aligned}
     \label{eq:mpc_ocp}
 \end{equation}
+The objective $\mathcal{J}$ sums the stage cost $\ell:\mathbb{R}^{\ndim{x}}\times\mathbb{R}^{\ndim{u}}\to\mathbb{R}$ over the state and input pairs and adds a terminal cost $V_\mathrm{f}:\mathbb{R}^{\ndim{x}}\to\mathbb{R}$ on the final predicted state.
+The sets $\mathbb{X}\subseteq\mathbb{R}^{\ndim{x}}$ and $\mathbb{U}\subseteq\mathbb{R}^{\ndim{u}}$ specify the admissible states and inputs, respectively, and $\mathbb{X}_\mathrm{f}\subseteq\mathbb{X}$ specifies the admissible final states.
 \end{samepage}
 %
-Here, the predicted states are determined by the initial condition and dynamics for each candidate input sequence.
-The stage cost $\ell$ can penalize deviations from a desired operating condition together with input effort.
-Its weights set the relative penalties on state deviation and input effort.
-Unlike the training loss $\mathcal L$, which is used to fit the predictor, this cost is minimized over future inputs with the model held fixed.
-
-The sets $\mathbb{X}$ and $\mathbb{U}$ contain the admissible states and inputs.
-Membership in these sets is required for a sequence to be feasible, regardless of its cost.
-If no state restrictions are imposed, $\mathbb{X}=\mathbb{R}^{\ndim{x}}$.
-
-Solving~\eqref{eq:mpc_ocp} yields an input sequence $\mathbf{u}^{\star}_{0|k},\ldots,\mathbf{u}^{\star}_{H-1|k}$.
-The controller applies its first element,
+Solving~\eqref{eq:mpc_ocp} once gives an open-loop input sequence based on the information available at step $k$.
+Disturbances and model error can cause the actual trajectory to depart from the prediction.
+To account for that departure, the controller applies only the first input of an optimal sequence $\mathbf{u}^{\star}_{0|k},\ldots,\mathbf{u}^{\star}_{H-1|k}$,
 %
 \begin{equation*}
     \mathbf{u}_k=\mathbf{u}^{\star}_{0|k}\,.
 \end{equation*}
 %
-At time step $k+1$, new measurements provide the next initial state, and the problem is solved again with the horizon shifted forward by one step.
-The remaining inputs of the previous solution are therefore replaced by a new plan based on the measured response.
-Although each optimization computes an open-loop input sequence, replanning from updated measurements introduces feedback.
+At time step $k+1$, the problem is solved again from the updated initial state with the horizon shifted forward by one step.
+Although each optimization computes an open-loop input sequence, replanning from updated measurements introduces feedback~\cite{Findeisen2002}.
 Figure~\ref{fig:receding_horizon} shows how the plans change as new measurements become available.
 
 \begin{figure}
     \centering
     \includegraphics{figures/05_mpc_framework/receding_horizon}
     \caption{Illustration of receding-horizon control for a scalar system.
-    Dashed curves show selected future state and input plans; solid curves show the realized trajectory and applied inputs.
+    The plan and realized entries in the legend apply to both panels.
+    Dashed curves show predicted states and candidate inputs, while solid curves show the realized states and applied inputs.
+    State and input values are dimensionless.
     Replanning occurs at every sampling instant, with plans at $k=0$, $3$ and $6$ shown for clarity.
     The realized state departs from the nominal forecasts because of disturbances.
     The dotted horizontal line marks the upper input bound.}\label{fig:receding_horizon}
 \end{figure}
 
-For a task that continues indefinitely, the finite horizon truncates the future cost to make the optimization tractable.
-The terminal cost $V_\mathrm{f}$ can estimate the cost that would accumulate beyond this horizon, starting from $\mathbf{x}_{H|k}$.
-At the next update, the controller needs a new feasible plan, which it can seek by extending the unused portion of the previous plan by one step.
-Preserving feasibility from one update to the next is called recursive feasibility.
-A terminal set $\mathbb{X}_\mathrm{f}\subseteq\mathbb{X}$ can restrict the endpoint to states where a local controller provides such an admissible extension under the prediction model.
-If the local controller preserves that set and the terminal cost decreases by at least the stage cost along its trajectories, the shifted plan also gives a decrease bound for the optimal cost, which can establish closed-loop stability under suitable assumptions~\cite{Mayne2000}.
+For a task that continues indefinitely, the finite-horizon problem approximates the infinite-horizon control problem.
+A shorter horizon reduces the number of decision variables and constraints, while the terminal cost can approximate the cost beyond the endpoint~\cite{Rawlings2017,Mayne2000}.
 
-To compute a plan at each update, the dynamics must be represented in a form a numerical solver can handle.
-Direct multiple and single shooting make different choices about which variables the solver adjusts, changing the size of the problem and the structure of its derivatives.
+Receding-horizon replanning alone guarantees neither recursive feasibility nor asymptotic stability.
+An input sequence is feasible if it satisfies all constraints in~\eqref{eq:mpc_ocp}.
+Recursive feasibility means that feasibility at the initial update implies feasibility at subsequent updates.
+Asymptotic stability means that trajectories starting sufficiently close to the equilibrium stay close and converge to it~\cite{Rawlings2017}.
+Under nominal model dynamics, a suitable terminal constraint can preserve feasibility by ensuring an admissible continuation beyond the horizon.
+A terminal cost that decreases sufficiently along that continuation can also support a proof of asymptotic stability~\cite{Mayne2000,Rawlings2017,Findeisen2002}.
+
+These properties concern how successive solutions behave in closed loop.
+Computing each solution within a sampling interval is a separate requirement, which motivates the comparison of numerical transcriptions in the next section.
 
 \section{Numerical Transcription and Solution}\label{sec:mpc_numerical_solution}
 
-The numerical solution can treat predicted states as additional optimization variables (direct multiple shooting) or compute them from the inputs (direct single shooting).
+Direct multiple shooting and direct single shooting are two common ways to transcribe~\eqref{eq:mpc_ocp} for numerical optimization.
+They differ in how they represent the predicted states.
 
-Direct multiple shooting introduces the predicted states of~\eqref{eq:mpc_ocp} as independent optimization variables alongside the inputs.
-For one-step shooting intervals, it optimizes $(H+1)\ndim{x}$ state components together with $H\ndim{u}$ input components and enforces the dynamics through the continuity constraints~\cite{Bock1984}
+In multiple shooting, the predicted states are decision variables alongside the inputs.
+With one-step shooting intervals, the solver adjusts $(H+1)\ndim{x}$ state components together with $H\ndim{u}$ input components and imposes the initial condition and dynamics through the equality constraints~\cite{Bock1984}
 %
-\begin{equation}
+\begin{equation*}
     \mathbf{x}_{0|k} = \hat{\mathbf{x}}_k, \qquad
     \mathbf{x}_{j+1|k} - \mathbf{f}\!\left(\mathbf{x}_{j|k}, \mathbf{u}_{j|k}\right)
     = \mathbf{0},
-    \quad j = 0, \dots, H-1 \,. \label{eq:multiple_shooting}
-\end{equation}
+    \quad j = 0, \dots, H-1 \,.
+\end{equation*}
 %
-At an intermediate iterate, the equalities in~\eqref{eq:multiple_shooting} may not hold.
+At an intermediate iterate, these equalities may not hold.
 The iterate then consists of one-step trajectory pieces with gaps between them, as shown in Figure~\ref{fig:shooting}.
 
-Direct single shooting implements the input-only formulation of~\eqref{eq:mpc_ocp} by computing the predicted states through model rollout.
+Direct single shooting removes the need for these equality constraints by computing the predicted states through model rollout from the given initial state.
 Only the $H\ndim{u}$ input components are optimized.
 For a state $\mathbf{x}\in\mathbb{R}^{\ndim{x}}$ and inputs $\mathbf{u}_i\in\mathbb{R}^{\ndim{u}}$, $i=0,\ldots,H-1$, define the rollout maps $\boldsymbol{\varphi}_j$ recursively by
 %
@@ -127,18 +129,24 @@ For a state $\mathbf{x}\in\mathbb{R}^{\ndim{x}}$ and inputs $\mathbf{u}_i\in\mat
        \qquad j = 1, \dots, H-1 \,. \label{eq:single_shooting}
 \end{align}
 %
-By~\eqref{eq:single_shooting}, the predicted states for $j=1,\ldots,H$ satisfy $\mathbf{x}_{j|k} = \boldsymbol{\varphi}_j(\hat{\mathbf{x}}_k,
-\mathbf{u}_{0|k}, \dots, \mathbf{u}_{j-1|k})$.
-Substitution into the cost and state constraints leaves a numerical problem in the inputs alone, with the dynamics satisfied by construction.
-Every iterate defines a dynamically consistent rollout of the dynamics model, although it does not necessarily satisfy the remaining constraints.
+Evaluating the maps in~\eqref{eq:single_shooting} at $\hat{\mathbf{x}}_k$ and the candidate inputs gives the states used in the objective and state constraints.
+The dynamics therefore hold at every iterate, while the state and input limits still have to be enforced.
+In multiple shooting, the state constraints instead act directly on the state decision variables.
+The input constraints have the same form in both transcriptions.
 
-State constraints act directly on multiple-shooting variables.
-Under single shooting, they act on the rollout maps $\boldsymbol{\varphi}_j$.
-Input constraints retain their original form in either transcription.
+This difference also determines which derivatives a gradient-based solver needs to evaluate the objective and constraint sensitivities.
+In multiple shooting, each dynamics equality couples only adjacent states and the input between them.
+In single shooting, an input can affect every subsequent state, so the solver must account for how its effect propagates through the model.
 
-The choice of optimization variables also affects how model sensitivities enter the numerical problem.
-At step offset $j=0,\ldots,H-1$, define the Jacobians $\mathbf{A}_{j|k} = \partial\mathbf{f}/\partial\mathbf{x}(\mathbf{x}_{j|k},\mathbf{u}_{j|k})$ and $\mathbf{B}_{j|k} = \partial\mathbf{f}/\partial\mathbf{u}(\mathbf{x}_{j|k},\mathbf{u}_{j|k})$,
-with $\mathbf{A}_{j|k}\in\mathbb{R}^{\ndim{x}\times\ndim{x}}$ and $\mathbf{B}_{j|k}\in\mathbb{R}^{\ndim{x}\times\ndim{u}}$.
+At each offset $j=0,\ldots,H-1$, let $\mathbf{A}_{j|k}\in\mathbb{R}^{\ndim{x}\times\ndim{x}}$ and $\mathbf{B}_{j|k}\in\mathbb{R}^{\ndim{x}\times\ndim{u}}$ denote the state and input Jacobians, respectively.
+Both derivatives are evaluated at $(\mathbf{x}_{j|k},\mathbf{u}_{j|k})$.
+%
+\begin{equation*}
+    \mathbf{A}_{j|k} = \frac{\partial\mathbf{f}}{\partial\mathbf{x}}(\mathbf{x}_{j|k},\mathbf{u}_{j|k})\,,
+    \qquad
+    \mathbf{B}_{j|k} = \frac{\partial\mathbf{f}}{\partial\mathbf{u}}(\mathbf{x}_{j|k},\mathbf{u}_{j|k})\,.
+\end{equation*}
+%
 For $0\le i<j\le H$, repeated application of the chain rule gives
 %
 \begin{equation*}
@@ -146,8 +154,7 @@ For $0\le i<j\le H$, repeated application of the chain rule gives
     = \mathbf{A}_{j-1|k}\mathbf{A}_{j-2|k}\cdots\mathbf{A}_{i+1|k}\mathbf{B}_{i|k} \,,
 \end{equation*}
 %
-where the matrix product is the identity when $i=j-1$.
-The same Jacobian product appears when an iterated prediction model is trained through a multiple-step rollout.
+where the product of the state Jacobians is the identity when $i=j-1$.
 The product may amplify or attenuate early-input sensitivities, impairing numerical conditioning.
 Single shooting therefore gives a smaller optimization problem, but its derivatives involve products across the prediction horizon.
 Multiple shooting introduces additional variables and equality constraints, whose Jacobians involve local model derivatives and have a sparse structure~\cite{Bock1984,Rawlings2017}.
@@ -161,10 +168,10 @@ The computational tradeoff depends on the dynamics, horizon length and numerical
     Single shooting computes one continuous model rollout from the initial state, with only the inputs as optimization variables.}\label{fig:shooting}
 \end{figure}
 
-For a nonlinear dynamics model, either transcription gives a finite-dimensional \ac{nlp}.
-Both can be solved using \ac{sqp}, which forms quadratic subproblems with linearized constraints~\cite{Nocedal2006}.
-Alternatively, primal-dual interior-point methods, such as IPOPT, solve barrier subproblems while reducing the barrier parameter~\cite{Waechter2006,Nocedal2006}.
-The following section specializes the general \ac{ocp} formulation to the learned neurostimulation predictors, control costs and current constraints used in this thesis.
+When the objective or constraints are nonlinear, either transcription gives a constrained \ac{nlp}.
+Methods for solving the resulting \ac{nlp} include \ac{sqp}~\cite{Nocedal2006} and interior-point methods, as implemented in IPOPT~\cite{Waechter2006}.
+Both transcriptions require a prediction model, an objective and admissible sets.
+The next section specifies these ingredients for seizure suppression with the learned predictors.
 
 \section{\ac{mpc} for Seizure Suppression}\label{sec:mpc_input_output_formulation}
 
@@ -421,8 +428,8 @@ Adding the activation cost~\eqref{eq:mpc_activation_cost} to the continuous-curr
 \begin{equation}
     \min_{\mathbf u_{0|k},\ldots,\mathbf u_{H-1|k},\,
           \delta_{0|k},\ldots,\delta_{H-1|k}}
-    \quad \mathcal J_{\mathrm{cont}}+w_{\mathrm{act}}\mathcal J_{\delta},
-    \qquad w_{\mathrm{act}}>0\,.
+    \quad \mathcal J_{\mathrm{cont}}+w_{\delta}\mathcal J_{\delta},
+    \qquad w_{\delta}>0\,.
     \label{eq:mpc_activation_penalty_problem}
 \end{equation}
 %
@@ -491,7 +498,7 @@ The score combines the continuous objective in~\eqref{eq:mpc_sparse_continuous_c
 \begin{equation}
     C(\mathbf d)
     =\mathcal J_{\mathrm{cont}}\!\left(\mathbf u^{(\mathbf d)}\right)
-     +\frac{w_{\mathrm{act}}}{H}
+     +\frac{w_{\delta}}{H}
       \sum_{b=1}^{B}|\mathcal B_b|d_b\,.
     \label{eq:mpc_candidate_score}
 \end{equation}
@@ -506,7 +513,7 @@ Grouping into $B<H$ blocks limits the search to at most $2^B$ continuous solves 
 
 Relaxing the binary decisions to the interval $[0, 1]$ allows a continuous \ac{nlp} solver to optimize the currents and activations jointly.
 To recover a binary schedule from this relaxation, we penalize fractional activations, which would otherwise impose intermediate current bounds.
-Sager et al.~\cite{Sager2006} use this idea in optimal control by solving a succession of relaxed problems with increasing penalty weights.
+In optimal control, this approach has been applied by solving a sequence of relaxed problems with increasing penalty weights~\cite{Sager2006}.
 For the activation schedule $\boldsymbol\delta=(\delta_{0|k},\ldots,\delta_{H-1|k})$, the integrality penalty is
 %
 \begin{equation}
@@ -524,14 +531,12 @@ The sequence ends when a solve satisfies the binary restriction within the solve
 The computational cost depends on the number of continuation solves instead of the size of a search tree.
 Small increases in $\beta$ can require more solves, while large increases can make it harder for the solver to follow the solution branch traced by the preceding solves~\cite{Sager2006}.
 
-The activation constraints determine when current may be applied.
-Whether the resulting interventions suppress seizures also depends on how accurately the learned predictor estimates the effect of stimulation on neural activity.
-The next section examines how errors in those estimates limit closed-loop control.
+\section{Chapter Summary}
 
-\section{Limitations of \ac{mpc} with Learned Predictors}\label{sec:mpc_learned_predictor_limitations}
+By formulating seizure suppression as a receding-horizon problem, we can ask the controller to suppress activity that exceeds the healthy spectral envelope and to weigh that objective against the use of stimulation.
+The waveform cost gives us a different criterion for suppression, and the sparsity penalties let us distinguish between using less current and stimulating in fewer intervals.
+We can solve the resulting problems with single shooting, multiple shooting, or the \acs{narx} transcription, each of which represents the predicted trajectory differently in the optimization.
 
-% Explain how optimization can exploit forecast errors and inaccurate learned current sensitivities.
-% Discuss distribution shift under optimized stimulation relative to identification data.
-% Distinguish enforcing current constraints from guaranteeing seizure suppression or biological safety.
-% State the limits of the adopted nominal formulation and numerical solution guarantees.
-% Connect these methodological limitations to the evaluation questions in Chapter 6 without anticipating results.
+What remains to be seen is which combinations suppress seizures with little stimulation and can be solved quickly enough for feedback.
+In Chapter~\ref{ch:experiments_discussion}, we first evaluate the predictors offline, since the choice of stimulation depends on how well they capture the response to current over the control horizon.
+We then compare the controller formulations in closed-loop simulation.
