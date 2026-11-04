@@ -21,8 +21,7 @@
     $c$ & \acs*{eeg} channel index & \textendash{} \\
     $\nchan$ & Number of \acs*{eeg} waveform channels & \textendash{} \\
     $p$ & Stimulation electrode index & \textendash{} \\
-    $\nelec$ & Number of stimulation electrodes & \textendash{} \\
-    $\ndim{u}$ & Dimension of current parameterization, $\ndim{u}=\nelec$ & \textendash{} \\
+    $\ndim{u}$ & Dimension of stimulation current vector & \textendash{} \\
     \midrule
     \multicolumn{3}{@{}l}{\textit{Plant state and dynamics}} \\*
     $x_{i,1}, x_{i,2}, x_{i,3}$ & Pyramidal, excitatory and inhibitory \acs*{psp} of region $i$ & \si{\milli\volt} \\
@@ -60,7 +59,7 @@
     $y_{\mathrm{reg},i}$, $\mathbf{y}_\mathrm{reg}$ & Regional pyramidal output and stacked output vector & \si{\milli\volt} \\
     $\mathbf{y}_\mathrm{EEG}$ & Uncalibrated scalp \acs*{eeg} channel amplitudes & \textendash{} \\
     $\mathbf{L}_\mathrm{EEG}$ & Scalp \acs*{eeg} lead field, $\nchan \times \nreg$ & \textendash{} \\
-    $\mathbf{L}_\mathrm{stim}$ & Stimulation lead field, $\nreg \times \nelec$ & \si{\milli\volt\per\milli\ampere} \\
+    $\mathbf{L}_\mathrm{stim}$ & Stimulation lead field, $\nreg \times \ndim{u}$ & \si{\milli\volt\per\milli\ampere} \\
     $\mathbf{E}_{p,i}$ & Electric-field basis response per milliampere at region centroid $i$ & \si{\volt\per\metre\per\milli\ampere} \\
     $\mathbf{n}_i$ & Regional somato-dendritic orientation unit vector & \textendash{} \\
     $\lambda_\mathrm{p}$ & Neuronal somato-dendritic polarization length & \si{\milli\metre} \\

@@ -398,16 +398,15 @@ At the regional scale used here, this axis is approximated by the local cortical
 This motivates the additive perturbation $s_i$ in the argument of the pyramidal sigmoid in~\eqref{eq:jr_node}, rather than introducing stimulation as an additional synaptic firing-rate input~\cite{Kunze2016,Merlet2013,Yu2024}.
 
 Electric-field basis solutions were computed with ROAST, an automated finite-element modeling pipeline for \ac{tes}, using its standard MNI152 head model~\cite{Huang2019}.
-The selected montage comprises $\nelec{}=3$ electrodes, ordered as TP9, CP5 and Ex8 in the current vector.
+The selected montage comprises three electrodes ($\ndim{u}=3$), ordered as TP9, CP5 and Ex8 in the current vector.
 Ex8 lies on the right posterior side of the lower head and belongs to ROAST's extension of the standard 10/05 electrode layout~\cite{ROASTElectrodeLayout}.
 It serves here as the reference/return electrode, following its use to limit the influence of the return electrode on the modeled brain regions in~\cite{Yu2024}.
 For each non-reference electrode $p$, let $\mathbf{E}_{p,i}\in\mathbb{R}^{3}$ denote the electric-field basis response per milliampere at the centroid of region $i$.
 It is computed by injecting \SI{1}{\milli\ampere} at electrode $p$ with the return current flowing through Ex8.
 The unit vector $\mathbf{n}_i\in\mathbb{R}^{3}$ specifies the regional orientation used to project this field onto the somato-dendritic axis.
 The assumed polarization length $\lambda_\mathrm{p}=\SI{0.35}{\milli\metre}$ converts the projected field into a membrane-potential shift~\cite{Radman2009}.
-The resulting stimulation lead field $\mathbf{L}_\mathrm{stim}\in\mathbb{R}^{\nreg{}\times \nelec{}}$ contains the regional membrane-potential shifts per milliampere of electrode current.
+The resulting stimulation lead field $\mathbf{L}_\mathrm{stim}\in\mathbb{R}^{\nreg{}\times \ndim{u}}$ contains the regional membrane-potential shifts per milliampere of electrode current.
 Let $\mathbf{u}(t)\in\mathbb{R}^{\ndim{u}}$ collect the electrode currents and $\mathbf{s}(t)\in\mathbb{R}^{\nreg{}}$ the resulting regional stimulation drives.
-The present current parameterization has one coordinate per electrode, so $\ndim{u}=\nelec{}$.
 With currents expressed in milliamperes and stimulation drives in millivolts, their relation is
 %
 \begin{equation*}
@@ -417,7 +416,7 @@ With currents expressed in milliamperes and stimulation drives in millivolts, th
 with regional entries
 %
 \begin{equation*}
-    s_i(t)=\sum_{p=1}^{\nelec{}}L_{\mathrm{stim},ip}u_p(t),
+    s_i(t)=\sum_{p=1}^{\ndim{u}}L_{\mathrm{stim},ip}u_p(t),
     \qquad
     L_{\mathrm{stim},ip}
     =\lambda_\mathrm{p}\,\mathbf{E}_{p,i}^{\mathsf{T}}\mathbf{n}_i\,.
@@ -432,13 +431,13 @@ By design, the individual electrode currents are constrained to respect safety a
 %
 \begin{equation*}
     |u_p(t)|\leq\SI{2}{\milli\ampere},
-    \qquad p=1,\ldots,\nelec{}\,,
+    \qquad p=1,\ldots,\ndim{u}\,,
 \end{equation*}
 %
 while charge conservation across the montage requires
 %
 \begin{equation*}
-    \sum_{p=1}^{\nelec{}}u_p(t)=0\,,
+    \sum_{p=1}^{\ndim{u}}u_p(t)=0\,,
 \end{equation*}
 %
 so that the applied montage injects no net current into the head.

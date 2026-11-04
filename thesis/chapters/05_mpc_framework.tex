@@ -318,7 +318,7 @@ The objective combines the applicable suppression penalties and the $L_2$ curren
 
 The input constraints follow from the stimulation requirements in Section~\ref{sec:stimulation_interface}.
 The current bounds apply to each electrode, and Kirchhoff's current law requires the injected and return currents to balance at every interval.
-With one control coordinate per physical electrode, $\ndim{u}=\nelec$, the input set is
+With one control coordinate per physical electrode, the input set is
 %
 \begin{equation}
     \mathbb U
@@ -356,7 +356,7 @@ For the physical electrode currents, the horizon-averaged $L_1$ cost is
 \begin{equation}
     \mathcal J_{L_1}
     =\frac{1}{H}\sum_{j=0}^{H-1}\|\mathbf u_{j|k}\|_1
-    =\frac{1}{H}\sum_{j=0}^{H-1}\sum_{p=1}^{\nelec}|u_{j|k,p}|\,.
+    =\frac{1}{H}\sum_{j=0}^{H-1}\sum_{p=1}^{\ndim{u}}|u_{j|k,p}|\,.
     \label{eq:mpc_l1_cost}
 \end{equation}
 %
@@ -385,7 +385,7 @@ However, the $L_1$ cost can be represented exactly using auxiliary variables and
 For $w_1>0$, introduce auxiliary variables $z_{j|k,p}$ and replace the last term in~\eqref{eq:mpc_sparse_continuous_cost} by
 %
 \begin{equation}
-    \frac{w_1}{H}\sum_{j=0}^{H-1}\sum_{p=1}^{\nelec}z_{j|k,p}\,,
+    \frac{w_1}{H}\sum_{j=0}^{H-1}\sum_{p=1}^{\ndim{u}}z_{j|k,p}\,,
     \qquad
     -z_{j|k,p}\leq u_{j|k,p}\leq z_{j|k,p}\,.
     \label{eq:mpc_l1_epigraph}
@@ -405,8 +405,8 @@ The current constraints become
     \begin{aligned}
         -u_\mathrm{max}\delta_{j|k} % chktex 35 -- max names the current bound.
         &\leq u_{j|k,p}\leq u_\mathrm{max}\delta_{j|k}, % chktex 35 -- max names the current bound.
-        \qquad p=1,\ldots,\nelec,\\
-        \sum_{p=1}^{\nelec}u_{j|k,p}&=0,
+        \qquad p=1,\ldots,\ndim{u},\\
+        \sum_{p=1}^{\ndim{u}}u_{j|k,p}&=0,
         \qquad j=0,\ldots,H-1\,.
     \end{aligned}
     \label{eq:mpc_activation_gates}

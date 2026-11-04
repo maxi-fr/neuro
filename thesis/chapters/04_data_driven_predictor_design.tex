@@ -634,7 +634,7 @@ The hypothesis is that adapting these filters to the prediction task can yield m
 Sharing filters reduces the parameters used for local feature extraction while leaving the prediction head free to weight features according to their positions.
 Specifically, a temporal layer uses $n_{\mathrm{chan}}^{(\ell)}(n_{\mathrm{chan}}^{(\ell-1)}n_{\mathrm{filter},t}+1)$ parameters and a time-frequency layer uses $n_{\mathrm{chan}}^{(\ell)}(n_{\mathrm{chan}}^{(\ell-1)}n_{\mathrm{filter},t}n_{\mathrm{filter},f}+1)$, regardless of the history length.
 Extending the history therefore increases the number of feature positions without requiring additional filter coefficients, although it increases the number of weights in the fully connected head.
-For illustration, consider waveform prediction with $\nchan{}=62$ channels, $\nelec{}=\ndim{u}=3$ stimulation electrodes, $\nhist{u}=10$ past currents and $\nhist{o}=100$ samples.
+For illustration, consider waveform prediction with $\nchan{}=62$ channels, $\ndim{u}=3$ stimulation electrodes, $\nhist{u}=10$ past currents and $\nhist{o}=100$ samples.
 Two length-five convolutional layers with 32 and 16 feature channels, followed by a 16-unit hidden head, give 37,678 trainable parameters, including biases and the 62-dimensional output layer.
 An \ac{mlp} with the same histories and one 256-unit hidden layer has 1,611,838 parameters, approximately 43 times as many.
 The \ac{cnn} thus combines shared local feature extraction with a position-sensitive nonlinear prediction stage.

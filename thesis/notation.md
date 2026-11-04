@@ -8,7 +8,7 @@ Every count uses lowercase `n`, with a short subscript naming the counted quanti
 
 | Meaning | Notation |
 | --- | --- |
-| Regions, physical channels, electrodes, frequency bins | $n_{\mathrm{reg}},n_{\mathrm{chan}},n_{\mathrm{elec}},n_{\mathrm{bin}}$ |
+| Regions, physical channels, frequency bins | $n_{\mathrm{reg}},n_{\mathrm{chan}},n_{\mathrm{bin}}$ |
 | State, observable, current dimensions | $n_x,n_o,n_u$ |
 | History and regressor dimensions | $n_h,n_z$ |
 | Observation and current history lengths | $n_{\mathrm{past}\,o},n_{\mathrm{past}\,u}$ |
@@ -25,7 +25,7 @@ Every count uses lowercase `n`, with a short subscript naming the counted quanti
 | Integer conduction lag | $n_{\mathrm{delay},ii'}$ |
 | Full SVD rank | $n_{\mathrm{rank}}$ |
 
-Retained rank $\rho$ remains a truncation selector. Layer selection always uses a parenthesized superscript, including counts: $n_{\mathrm{chan}}^{(\ell)}$, $n_{\mathrm{time}}^{(\ell)}$, and the MLP width $n^{(\ell)}$. The input layer uses $(0)$; the preceding layer uses $(\ell-1)$. Subscripts identify the counted quantity or its constituent coordinates. Use $n_{\mathrm{chan}}$ directly for the waveform dimension: each waveform coordinate is one EEG channel. The observable dimension is $n_o=n_{\mathrm{chan}}$ for waveforms and $n_o=n_{\mathrm{chan}}n_{\mathrm{bin}}$ for spectral features. State $n_u=n_{\mathrm{elec}}$ explicitly where applicable.
+Retained rank $\rho$ remains a truncation selector. Layer selection always uses a parenthesized superscript, including counts: $n_{\mathrm{chan}}^{(\ell)}$, $n_{\mathrm{time}}^{(\ell)}$, and the MLP width $n^{(\ell)}$. The input layer uses $(0)$; the preceding layer uses $(\ell-1)$. Subscripts identify the counted quantity or its constituent coordinates. Use $n_{\mathrm{chan}}$ directly for the waveform dimension: each waveform coordinate is one EEG channel. The observable dimension is $n_o=n_{\mathrm{chan}}$ for waveforms and $n_o=n_{\mathrm{chan}}n_{\mathrm{bin}}$ for spectral features.
 
 ## Equation presentation
 
