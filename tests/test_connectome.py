@@ -3,8 +3,8 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from neuro.geometry import centres_to_mni_ras
 from neuro.plant.connectome import Connectome
+from neuro.plant.geometry import centres_to_mni_ras
 
 _N_REGIONS = 76
 _EZ_PZ_REGIONS = ("lHC", "lPHC", "lAMYG", "lTCI", "lTCV")

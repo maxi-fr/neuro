@@ -2,10 +2,10 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from observable_predictability.features import REPRESENTATIONS
+from experiments.observable_predictability.features import REPRESENTATIONS
 
 if TYPE_CHECKING:
-    from observable_predictability.archive import ObservableEvaluationBundle
+    from experiments.observable_predictability.archive import ObservableEvaluationBundle
 
 REPRESENTATION_LABELS: dict[str, str] = {
     "waveform": "Waveform (50 Hz)",

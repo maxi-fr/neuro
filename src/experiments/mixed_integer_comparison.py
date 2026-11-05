@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 from simulate.simulation import Simulation
 
-from neuro.comparison import lfp_logging, spread_metrics
+from experiments.comparison import lfp_logging, spread_metrics
 from neuro.plant.connectome import Connectome
 from neuro.plant.seizure import SEIZURE_PTP_MV
 

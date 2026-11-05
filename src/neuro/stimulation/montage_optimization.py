@@ -9,7 +9,7 @@ import numpy as np
 import osqp
 import scipy.sparse as sp
 
-from neuro.geometry import sensor_positions_mm
+from neuro.plant.geometry import sensor_positions_mm
 from neuro.stimulation.analytical import compute_gamma
 from neuro.stimulation.base import StimulationModel, check_n_controls
 from neuro.stimulation.roast_3d import load_roast_3d_field_projection

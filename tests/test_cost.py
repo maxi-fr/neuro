@@ -17,7 +17,7 @@ from trajopt.trajectory import Trajectory
 from trajopt.transcription.ipopt import Ipopt
 from trajopt.transcription.single_shooting import SingleShooting
 
-from neuro.comparison import cost_metrics
+from experiments.comparison import cost_metrics
 from neuro.config import StftGeometry
 from neuro.control.costs import (
     ExcludeInitialKnotState,

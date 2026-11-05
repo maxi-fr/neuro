@@ -13,7 +13,7 @@ from trajopt.transcription.ipopt import Ipopt
 from trajopt.transcription.osqp import OSQP
 from trajopt.transcription.single_shooting import SingleShooting
 
-from neuro.control.benchmark import (
+from experiments.benchmark import (
     format_closed_loop_table,
     format_open_loop_table,
     get_benchmark_solver,

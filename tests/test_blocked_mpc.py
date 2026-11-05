@@ -11,8 +11,8 @@ from trajopt.program import WarmStart
 from trajopt.solvers.altro import ALTRO
 from trajopt.transcription.ipopt import Ipopt
 
+from experiments.benchmark import describe_problem
 from neuro.config import StftGeometry
-from neuro.control.benchmark import describe_problem
 from neuro.control.candidate import CandidateMPCController
 from neuro.control.casadi import CasADiMPCController, build_casadi_waveform_problem, decompose_casadi_cost
 from neuro.control.diagnostics import _rollout_states, decompose_cost, planned_outputs

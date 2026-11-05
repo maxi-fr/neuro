@@ -13,14 +13,14 @@ def _():
     import numpy as np
     from matplotlib import pyplot as plt
 
-    from neuro.plant.seizure_calibration import SEIZURE_PTP_MV, SPREAD_WINDOW_S
-    from observable_predictability.archive import EVALUATION_SCORES_FILE, load_evaluation_bundle
-    from observable_predictability.features import REPRESENTATIONS
-    from observable_predictability.plots import (
+    from experiments.observable_predictability.archive import EVALUATION_SCORES_FILE, load_evaluation_bundle
+    from experiments.observable_predictability.features import REPRESENTATIONS
+    from experiments.observable_predictability.plots import (
         REPRESENTATION_LABELS,
         REPRESENTATION_PENALTY_LABELS,
         representation_shared_history_s,
     )
+    from neuro.plant.seizure_calibration import SEIZURE_PTP_MV, SPREAD_WINDOW_S
 
     return (
         EVALUATION_SCORES_FILE,

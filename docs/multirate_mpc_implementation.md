@@ -94,10 +94,10 @@ The first implementation adds no new slew constraints. If they are introduced la
 | `src/neuro/control/mpc.py` | Add timing config; split `update`; store/play a prefix; shift at the correct boundary; use native dt for outputs/Costs; correct applied-current history. Forward block structure through `NeuroProblem`, builders and wrappers. |
 | `src/neuro/control/casadi.py` | The same execution contract, CasADi block variables, native plan expansion and prefix-length warm-start shift. |
 | `src/neuro/validation.py` | Validate native rate, replanning ratio, supported block size, horizon and common-start alignment independently. Retain native-rate Estimator/filter/reference checks. |
-| `src/neuro/comparison.py` | Separate native current records from solve attempts and use replanning dt for deadlines. |
+| `src/experiments/comparison.py` | Separate native current records from solve attempts and use replanning dt for deadlines. |
 | `src/neuro/run_view.py`, `src/neuro/run_plot.py` | Display plans only at attempt timestamps and preserve native prediction spacing. |
-| `src/neuro/predictor/replay.py`, `src/neuro/ood.py` | Preserve native observations/applied-current replay; distinguish actual solver plans from diagnostic replays at other ticks. |
-| `src/neuro/control/benchmark.py` | Benchmark both fixed-state solves and actual replanning/playback execution. |
+| `src/neuro/predictor/replay.py`, `src/experiments/ood.py` | Preserve native observations/applied-current replay; distinguish actual solver plans from diagnostic replays at other ticks. |
+| `src/experiments/benchmark.py` | Benchmark both fixed-state solves and actual replanning/playback execution. |
 
 The current `simulate.Controller.evaluate` already applies zero-order hold between native ticks. No `simulate` scheduler change is required: changing its service interval to 60 ms would lose intermediate Waveform observations. The equality between `controller.dt` and native Predictor dt remains valid; it is the solve frequency that becomes independent. Reference/filter checks must not be redirected to `replan_dt`.
 

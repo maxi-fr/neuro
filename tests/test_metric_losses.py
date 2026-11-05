@@ -5,16 +5,16 @@ import jax.numpy as jnp
 import numpy as np
 import pytest
 
-from neuro.config import EegMsGeometry
-from neuro.predictor.losses import EegMsLoss, LossContext
-from observable_predictability.features import (
+from experiments.observable_predictability.features import (
     CONTROL_HORIZONS_S,
     HealthyConnectivityReference,
     compute_connectivity_penalty,
     compute_horizon_penalty,
     extract_connectivity_frames,
 )
-from observable_predictability.metrics import RolloutIdentity, windowed
+from experiments.observable_predictability.metrics import RolloutIdentity, windowed
+from neuro.config import EegMsGeometry
+from neuro.predictor.losses import EegMsLoss, LossContext
 
 _SEED = 42
 
@@ -134,9 +134,7 @@ def test_healthy_connectivity_reference_enforces_reference_split_and_bounds() ->
     rng = np.random.default_rng(801)
     n_pairs = 6
     ref_values = rng.uniform(-0.4, 0.4, size=(3, 20, n_pairs))
-    identities = [
-        RolloutIdentity("healthy", s, "interictal", 0, "zero", split="reference") for s in range(3)
-    ]
+    identities = [RolloutIdentity("healthy", s, "interictal", 0, "zero", split="reference") for s in range(3)]
 
     conn_ref = HealthyConnectivityReference.fit(ref_values, identities=identities)
     assert conn_ref.q05.shape == (n_pairs,)

@@ -124,15 +124,15 @@ neuro source today. Implement the accepted contract from the existing plan:
   preserve all native observations/applied currents in replay. Solve deadlines
   use replan_dt; within-plan spacing still uses native dt.
 
-The current [solver/Cost metrics](../src/neuro/comparison.py#L240) and
-[OOD readers](../src/neuro/ood.py#L396) use `~warmup` as the solve population;
+The current [solver/Cost metrics](../src/experiments/comparison.py#L240) and
+[OOD readers](../src/experiments/ood.py#L396) use `~warmup` as the solve population;
 that becomes wrong with playback. [Run.planned_predictions](../src/neuro/run_view.py#L107)
 currently selects all rows. Filter attempt rows without shifting their observed
 targets. Update benchmark decision counts and separate fixed-state solve latency
 from complete controller runtime and solves per simulated second.
 
 Delivered Charge is partly done already:
-[score_run](../src/neuro/comparison.py#L325) uses logged command durations and gives
+[score_run](../src/experiments/comparison.py#L325) uses logged command durations and gives
 the endpoint command zero duration; OOD has similar handling. Preserve that work
 and test irregular/end timestamps rather than replacing it with constant-dt sums.
 

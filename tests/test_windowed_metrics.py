@@ -3,8 +3,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from neuro.filtering import AntiAliasEstimator
-from observable_predictability.features import (
+from experiments.observable_predictability.features import (
     CONNECTIVITY_CANDIDATE_WINDOWS_S,
     CONTROL_HORIZONS_S,
     REPRESENTATIONS,
@@ -16,10 +15,11 @@ from observable_predictability.features import (
     extract_spectral_frames,
     select_connectivity_support_window,
 )
-from observable_predictability.metrics import (
+from experiments.observable_predictability.metrics import (
     RolloutIdentity,
     windowed,
 )
+from neuro.filtering import AntiAliasEstimator
 
 _FS = 1000.0
 # --- windowing semantics -------------------------------------------------------------------

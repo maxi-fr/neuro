@@ -3,7 +3,7 @@ from typing import TYPE_CHECKING, cast
 
 import numpy as np
 
-from neuro.ood import (
+from experiments.ood import (
     CandidateState,
     OODIndex,
     binned_prediction_error,

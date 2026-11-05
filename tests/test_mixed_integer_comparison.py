@@ -4,8 +4,8 @@ import numpy as np
 import pytest
 from simulate.logger import create_logger
 
+from experiments.mixed_integer_comparison import controller_arms, delivery_metrics, score_seed, target_summary
 from neuro.control.casadi import CasADiMPCLog
-from neuro.mixed_integer_comparison import controller_arms, delivery_metrics, score_seed, target_summary
 
 
 def test_delivery_uses_applied_currents_and_first_binary_decisions() -> None:
@@ -104,7 +104,7 @@ def test_failed_solve_stops_plant_before_advancing_and_preserves_status(monkeypa
             self.advanced = True
 
     sim = FakeSimulation()
-    monkeypatch.setattr("neuro.mixed_integer_comparison.Simulation.from_config", lambda _config: sim)
+    monkeypatch.setattr("experiments.mixed_integer_comparison.Simulation.from_config", lambda _config: sim)
     result = score_seed({"t_end": 12.0, "dynamics": {"seed": 7000}})
     assert result["solver_failure_status"] == "INFEASIBLE"
     assert result["solver_failures"] == 1

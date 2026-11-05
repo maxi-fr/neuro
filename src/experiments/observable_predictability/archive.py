@@ -13,8 +13,7 @@ if TYPE_CHECKING:
     from collections.abc import Mapping
 
 
-from neuro.config import StftGeometry
-from observable_predictability.features import (
+from experiments.observable_predictability.features import (
     CONTROL_HORIZONS_S,
     REPRESENTATIONS,
     ConnectivitySupportSelection,
@@ -22,11 +21,12 @@ from observable_predictability.features import (
     HealthySpectralReference,
     HealthyWaveformReference,
 )
-from observable_predictability.metrics import RolloutIdentity, validate_identities
-from observable_predictability.scoring import (
+from experiments.observable_predictability.metrics import RolloutIdentity, validate_identities
+from experiments.observable_predictability.scoring import (
     PotentialPredictability,
     SeizureRelevanceResult,
 )
+from neuro.config import StftGeometry
 
 SCHEMA_VERSION = 3
 

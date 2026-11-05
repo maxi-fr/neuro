@@ -7,14 +7,13 @@ from typing import TYPE_CHECKING
 import numpy as np
 import pytest
 
-from neuro.config import StftGeometry
-from observable_predictability.archive import (
+from experiments.observable_predictability.archive import (
     EVALUATION_SCORES_FILE,
     ScoreCacheMetadata,
     load_evaluation_bundle,
     validate_score_cache_metadata,
 )
-from observable_predictability.ensemble import (
+from experiments.observable_predictability.ensemble import (
     ARM_ZERO,
     Arm,
     Branch,
@@ -24,16 +23,17 @@ from observable_predictability.ensemble import (
     generate,
     load_or_score_ensemble,
 )
-from observable_predictability.features import (
+from experiments.observable_predictability.features import (
     REPRESENTATIONS,
 )
-from observable_predictability.metrics import (
+from experiments.observable_predictability.metrics import (
     RolloutIdentity,
 )
-from observable_predictability.scoring import (
+from experiments.observable_predictability.scoring import (
     ReplayMoments,
     compute_potential_predictability,
 )
+from neuro.config import StftGeometry
 
 if TYPE_CHECKING:
     from pathlib import Path

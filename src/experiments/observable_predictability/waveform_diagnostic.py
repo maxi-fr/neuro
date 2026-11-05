@@ -8,23 +8,23 @@ from typing import TYPE_CHECKING, cast
 import numpy as np
 from matplotlib import pyplot as plt
 
-from neuro.plant.seizure_calibration import SEIZURE_PTP_MV, SPREAD_WINDOW_S
-from neuro.spectral import LOG_FLOOR, compute_forecast_log_power_frames, compute_segment_window
-from observable_predictability.ensemble import (
+from experiments.observable_predictability.ensemble import (
     eeg_history_path,
     eeg_path,
     load_manifest,
     manifest_identities,
     region_history_path,
 )
-from observable_predictability.features import baseline_stft_geometry, condition_waveform_pair
-from observable_predictability.metrics import SEIZURE_BAND_HZ
-from observable_predictability.scoring import compute_potential_predictability, compute_replay_moments
+from experiments.observable_predictability.features import baseline_stft_geometry, condition_waveform_pair
+from experiments.observable_predictability.metrics import SEIZURE_BAND_HZ
+from experiments.observable_predictability.scoring import compute_potential_predictability, compute_replay_moments
+from neuro.plant.seizure_calibration import SEIZURE_PTP_MV, SPREAD_WINDOW_S
+from neuro.spectral import LOG_FLOOR, compute_forecast_log_power_frames, compute_segment_window
 
 if TYPE_CHECKING:
+    from experiments.observable_predictability.scoring import PotentialPredictability, ReplayMoments
     from neuro.config import StftGeometry
     from neuro.types import FloatArray
-    from observable_predictability.scoring import PotentialPredictability, ReplayMoments
 
 
 def frame_coefficients(history: FloatArray, future: FloatArray, geometry: StftGeometry) -> np.ndarray:

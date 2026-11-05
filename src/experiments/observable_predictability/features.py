@@ -22,7 +22,7 @@ if TYPE_CHECKING:
     from neuro.config import StftGeometry
     from neuro.types import BoolArray, FloatArray, IntArray
 
-from observable_predictability.metrics import SEIZURE_BAND_HZ, RolloutIdentity, windowed
+from experiments.observable_predictability.metrics import SEIZURE_BAND_HZ, RolloutIdentity, windowed
 
 DEFAULT_FRAME_HOP_S = 0.06
 DEFAULT_WAVEFORM_FS = 50.0

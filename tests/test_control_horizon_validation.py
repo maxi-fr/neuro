@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 import pytest
 
-from neuro.comparison import Cell, validate_grid
+from experiments.comparison import Cell, validate_grid
 from neuro.config import StftGeometry
 from neuro.predictor.evaluation import (
     EligibilityStatus,

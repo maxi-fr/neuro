@@ -9,6 +9,19 @@ import pytest
 from trajopt.costs.quadratic import DiagonalCost
 from trajopt.dynamics.base import DiscreteDynamics
 
+from experiments.observable_predictability.features import (
+    CONTROL_HORIZONS_S,
+    HealthySpectralReference,
+    HealthyWaveformReference,
+    baseline_stft_geometry,
+    compute_horizon_penalty,
+    compute_spectral_penalty,
+    compute_waveform_penalty,
+    extract_spectral_frames,
+)
+from experiments.observable_predictability.metrics import (
+    RolloutIdentity,
+)
 from neuro.config import StftGeometry
 from neuro.control.costs import ExcludeInitialKnotState, ObservableFrameHingeCost, ObservableHingeCost
 from neuro.predictor.data import reduce_trajectory_to_frames
@@ -21,19 +34,6 @@ from neuro.predictor.losses import (
 from neuro.spectral import (
     compute_forecast_log_power_frames,
     compute_log_power_frames,
-)
-from observable_predictability.features import (
-    CONTROL_HORIZONS_S,
-    HealthySpectralReference,
-    HealthyWaveformReference,
-    baseline_stft_geometry,
-    compute_horizon_penalty,
-    compute_spectral_penalty,
-    compute_waveform_penalty,
-    extract_spectral_frames,
-)
-from observable_predictability.metrics import (
-    RolloutIdentity,
 )
 
 if TYPE_CHECKING:
@@ -374,9 +374,7 @@ def test_healthy_waveform_and_spectral_references_enforce_reference_split() -> N
     rng = np.random.default_rng(701)
     wave_runs = rng.standard_normal((3, 50, 4))
     spec_runs = rng.standard_normal((3, 15, 4, 12))
-    good_ident = [
-        RolloutIdentity("healthy", s, "interictal", 0, "zero", split="reference") for s in range(3)
-    ]
+    good_ident = [RolloutIdentity("healthy", s, "interictal", 0, "zero", split="reference") for s in range(3)]
 
     wave_ref = HealthyWaveformReference.fit(wave_runs, identities=good_ident)
     spec_ref = HealthySpectralReference.fit(spec_runs, identities=good_ident)
@@ -422,16 +420,14 @@ def test_spectral_penalty_matches_mpc_observable_hinge_costs(horizon_s: float) -
     with jax.enable_x64():
         times, frames = extract_spectral_frames(cont_50, fs, history=history_50, geometry=geom)
         frame_penalties = compute_spectral_penalty(frames, spec_ref, one_sided=True, scale=1.0)
-        offline_horizon_cost = float(
-            compute_horizon_penalty(times, frame_penalties, horizon_s, weight=w_hinge)
-        )
+        offline_horizon_cost = float(compute_horizon_penalty(times, frame_penalties, horizon_s, weight=w_hinge))
 
         # 1. Parity with ObservableHingeCost (used by build_observable_problem)
         envelope = spec_ref.to_observable_envelope()
-        np.testing.assert_allclose(envelope.power, np.quantile(ref_frames.reshape(-1, n_channels, n_bins), 0.90, axis=0))
-        stage_hinge = ExcludeInitialKnotState(
-            ObservableHingeCost(envelope, w_hinge=w_hinge, horizon=n_frames)
+        np.testing.assert_allclose(
+            envelope.power, np.quantile(ref_frames.reshape(-1, n_channels, n_bins), 0.90, axis=0)
         )
+        stage_hinge = ExcludeInitialKnotState(ObservableHingeCost(envelope, w_hinge=w_hinge, horizon=n_frames))
         term_hinge = ObservableHingeCost(envelope, w_hinge=w_hinge, horizon=n_frames, terminal=True)
 
         y_frames_knots = jnp.concatenate(
@@ -455,13 +451,19 @@ def test_spectral_penalty_matches_mpc_observable_hinge_costs(horizon_s: float) -
             n_history: int = support
 
             def __init__(self) -> None:
-                super().__init__(n=1, m=1, p=n_channels)
+                """Initialize a model whose single state stores a sample index."""
+                super().__init__(n=1, m=1, ne=1, p=n_channels)
 
-            def discrete_dynamics(self, x: jax.Array, u: jax.Array, t: jax.Array, dt: jax.Array) -> jax.Array:
+            def discrete_dynamics(
+                self, x: jax.Array, u: jax.Array, t: float | jax.Array, dt: float | jax.Array
+            ) -> jax.Array:
+                """Hold the sample index supplied by the test."""
                 del u, t, dt
                 return x
 
-            def output(self, x: jax.Array) -> jax.Array:
+            def output(self, x: jax.Array, u: jax.Array | None = None, t: float | jax.Array = 0.0) -> jax.Array:
+                """Return the waveform sample at the current index."""
+                del u, t
                 idx = jnp.rint(x[0]).astype(jnp.int64)
                 return joined_50[idx]
 

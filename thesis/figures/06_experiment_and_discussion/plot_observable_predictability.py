@@ -9,16 +9,16 @@ import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.ticker import MaxNLocator
 
-from observable_predictability.archive import load_evaluation_bundle
-from observable_predictability.ensemble import load_manifest, load_scalp_rollout, manifest_identities
-from observable_predictability.features import condition_waveform_pair
-from observable_predictability.plots import representation_shared_history_s
+from experiments.observable_predictability.archive import load_evaluation_bundle
+from experiments.observable_predictability.ensemble import load_manifest, load_scalp_rollout, manifest_identities
+from experiments.observable_predictability.features import condition_waveform_pair
+from experiments.observable_predictability.plots import representation_shared_history_s
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import style
 
 if TYPE_CHECKING:
-    from observable_predictability.archive import ObservableEvaluationBundle
+    from experiments.observable_predictability.archive import ObservableEvaluationBundle
 
 LABELS = {"waveform": "Waveform", "spectral": "Spectral log-power", "connectivity": "Functional connectivity"}
 COLORS = ("#0072B2", "#D55E00", "#009E73")

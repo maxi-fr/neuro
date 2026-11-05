@@ -19,12 +19,11 @@ def _():
     import numpy as np
     import yaml
 
-    import neuro.ood
+    import experiments.ood
 
-    importlib.reload(neuro.ood)
+    importlib.reload(experiments.ood)
 
-    from neuro.config import StftGeometry
-    from neuro.ood import (
+    from experiments.ood import (
         OODIndex,
         binned_prediction_error,
         evaluate_prediction_errors,
@@ -36,6 +35,7 @@ def _():
         select_ood_candidate_states,
         simulate_ras_branch,
     )
+    from neuro.config import StftGeometry
     from neuro.predictor.data import frame_aligned_controls, load_trajectory, reduce_trajectory_to_frames
     from neuro.predictor.inference import InferencePredictor
 

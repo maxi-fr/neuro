@@ -11,12 +11,7 @@ import numpy as np
 from scipy.signal import decimate
 from simulate.config import load_config as load_sim_config
 
-from neuro.config import StftGeometry, resolve_simulation_config
-from neuro.plant.connectome import Connectome
-from neuro.plant.eeg import build_eeg_leadfield, focal_channels
-from neuro.plant.jansen_rit import JansenRitDynamics, lfp, simulate_network
-from neuro.plant.seizure import A_HEALTHY, SPREAD_WINDOW_S, build_seizure_a_gains, spread_profile_from_lfp
-from observable_predictability.archive import (
+from experiments.observable_predictability.archive import (
     EVALUATION_SCORES_FILE,
     SCHEMA_VERSION,
     ObservableEvaluationBundle,
@@ -25,7 +20,7 @@ from observable_predictability.archive import (
     load_evaluation_bundle,
     save_evaluation_bundle,
 )
-from observable_predictability.features import (
+from experiments.observable_predictability.features import (
     CONNECTIVITY_CANDIDATE_WINDOWS_S,
     CONNECTIVITY_VALID_PAIR_THRESHOLD,
     CONTROL_HORIZONS_S,
@@ -51,17 +46,22 @@ from observable_predictability.features import (
     extract_spectral_frames,
     select_connectivity_support_window,
 )
-from observable_predictability.metrics import (
+from experiments.observable_predictability.metrics import (
     SEIZURE_BAND_HZ,
     RolloutIdentity,
     validate_identities,
 )
-from observable_predictability.scoring import (
+from experiments.observable_predictability.scoring import (
     ReplayMoments,
     compute_potential_predictability,
     compute_replay_moments,
     score_zero_current_seizure_relevance,
 )
+from neuro.config import StftGeometry, resolve_simulation_config
+from neuro.plant.connectome import Connectome
+from neuro.plant.eeg import build_eeg_leadfield, focal_channels
+from neuro.plant.jansen_rit import JansenRitDynamics, lfp, simulate_network
+from neuro.plant.seizure import A_HEALTHY, SPREAD_WINDOW_S, build_seizure_a_gains, spread_profile_from_lfp
 
 if TYPE_CHECKING:
     from collections.abc import Iterator, Sequence

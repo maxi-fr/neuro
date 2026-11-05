@@ -10,10 +10,10 @@ if TYPE_CHECKING:
 
     from neuro.types import FloatArray, IntArray
 
-from observable_predictability.features import (
+from experiments.observable_predictability.features import (
     DEFAULT_FRAME_HOP_S,
 )
-from observable_predictability.metrics import RolloutIdentity, validate_identities
+from experiments.observable_predictability.metrics import RolloutIdentity, validate_identities
 
 
 @dataclass(frozen=True)

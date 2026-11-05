@@ -5,7 +5,7 @@ import logging
 import sys
 from pathlib import Path
 
-from neuro.control.benchmark import (
+from experiments.benchmark import (
     format_closed_loop_table,
     format_open_loop_table,
     run_observable_benchmark,
@@ -55,7 +55,7 @@ def main() -> None:
     # absent row legible rather than silent. cyipopt logs a line per callback at INFO, which would
     # bury the tables, so only the benchmark module is turned up.
     logging.basicConfig(level=logging.WARNING, format="%(levelname)s %(name)s: %(message)s")
-    logging.getLogger("neuro.control.benchmark").setLevel(logging.INFO)
+    logging.getLogger("experiments.benchmark").setLevel(logging.INFO)
     logging.getLogger("cyipopt").setLevel(logging.WARNING)
 
     required = [_WAVEFORM_ARTIFACT, _WAVEFORM_REFERENCE]

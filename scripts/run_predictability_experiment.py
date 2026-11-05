@@ -8,8 +8,7 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
-from neuro.plant.seizure import A_HEALTHY, SPREAD_WINDOW_S, build_seizure_a_gains
-from observable_predictability.ensemble import (
+from experiments.observable_predictability.ensemble import (
     BRANCHES,
     DEFAULT_EVALUATION_PROTOCOL,
     DEFAULT_PRE_BRANCH_S,
@@ -21,6 +20,7 @@ from observable_predictability.ensemble import (
     generate_iter,
     load_or_score_ensemble,
 )
+from neuro.plant.seizure import A_HEALTHY, SPREAD_WINDOW_S, build_seizure_a_gains
 
 if TYPE_CHECKING:
     from collections.abc import Sequence

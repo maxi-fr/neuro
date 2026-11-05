@@ -39,7 +39,7 @@
 %   uv run python thesis/figures/06_experiment_and_discussion/plot_observable_predictability.py
 %   artifacts/observable_predictability_expanded results/observable_predictability_30x30
 % - To rebuild the waveform split from those stores, run
-%   uv run python -m observable_predictability.waveform_diagnostic
+%   uv run python -m experiments.observable_predictability.waveform_diagnostic
 %   results/observable_predictability_30x30 artifacts/observable_predictability_expanded
 
   \begin{figure}[tbp]
@@ -49,7 +49,6 @@
     Plant snapshot taken at 14 s. The future noise realization varies across traces.}
     \label{fig:observable_replays}
   \end{figure}
-}
 
 \subsection{Suppression Penalty and Seizure State}
 
@@ -73,7 +72,6 @@
     Each panel reports one pooled Pearson coefficient.}
     \label{fig:observable_penalty_state}
   \end{figure}
-}
 
 \subsection{Potential Predictability}
 
@@ -144,7 +142,7 @@
 % - Metrics: solve latency, convergence rate, achieved objective, constraint violation.
 
 \section{Closed-Loop Seizure Suppression}
- 
+
 \subsection{Spectral Observable Geometry}
 % - Vary Segment length, frequency band, Frame Kernel, and taper at a fixed 60 ms Frame interval.
 % - Describe each geometry by its frequency resolution and smoothing delay.

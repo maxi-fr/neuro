@@ -7,7 +7,7 @@ from pathlib import Path
 import yaml
 from simulate.config import load_config
 
-from neuro.mixed_integer_comparison import SEEDS, controller_arms, score_seed, target_summary
+from experiments.mixed_integer_comparison import SEEDS, controller_arms, score_seed, target_summary
 from neuro.validation import validate_simulation_config
 
 

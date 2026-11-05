@@ -8,7 +8,7 @@ import numpy as np
 import pytest
 from simulate.config import load_config
 
-from neuro.comparison import (
+from experiments.comparison import (
     ArmSpec,
     ComparisonManifest,
     arm_config,

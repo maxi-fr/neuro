@@ -7,9 +7,9 @@ from pathlib import Path
 import numpy as np
 from scipy.io import savemat
 
-from neuro.geometry import centres_to_mni_ras, sensor_positions_mm
 from neuro.plant.connectome import Connectome
 from neuro.plant.eeg import build_eeg_leadfield
+from neuro.plant.geometry import centres_to_mni_ras, sensor_positions_mm
 
 with warnings.catch_warnings():
     warnings.simplefilter("ignore", UserWarning)

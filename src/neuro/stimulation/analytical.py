@@ -4,7 +4,7 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
-from neuro.geometry import EXTRACEPHALIC_ELECTRODES_MM, SENSORS_FILE, sensor_positions_mm
+from neuro.plant.geometry import EXTRACEPHALIC_ELECTRODES_MM, SENSORS_FILE, sensor_positions_mm
 from neuro.stimulation.base import StimulationModel, check_n_controls
 
 if TYPE_CHECKING:

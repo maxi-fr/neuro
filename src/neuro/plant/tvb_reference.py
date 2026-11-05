@@ -6,8 +6,8 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
-from neuro.geometry import SENSORS_FILE
 from neuro.plant.eeg import _PROJECTION_FILE, _REGION_MAPPING_FILE, _mirror_partner_permutation
+from neuro.plant.geometry import SENSORS_FILE
 
 with warnings.catch_warnings():
     warnings.simplefilter("ignore", UserWarning)

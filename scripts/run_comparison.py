@@ -26,10 +26,10 @@ import multiprocessing
 
 import yaml
 
-from neuro import comparison
+from experiments import comparison
 
 if TYPE_CHECKING:
-    from neuro.comparison import Cell, ComparisonManifest
+    from experiments.comparison import Cell, ComparisonManifest
 
 _THRESHOLD_MV = 0.0
 _PROGRESS_DIR: Path | None = None

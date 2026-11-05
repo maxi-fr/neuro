@@ -12,9 +12,8 @@ import numpy as np
 import pytest
 from scipy.signal import decimate
 
-from neuro.plant.seizure import SPREAD_WINDOW_S
-from observable_predictability.archive import EVALUATION_SCORES_FILE, SCHEMA_VERSION, load_evaluation_bundle
-from observable_predictability.ensemble import (
+from experiments.observable_predictability.archive import EVALUATION_SCORES_FILE, SCHEMA_VERSION, load_evaluation_bundle
+from experiments.observable_predictability.ensemble import (
     ARM_ZERO,
     Arm,
     Branch,
@@ -39,11 +38,12 @@ from observable_predictability.ensemble import (
     run_parent,
     run_segment,
 )
-from observable_predictability.features import condition_waveform_pair
-from observable_predictability.metrics import (
+from experiments.observable_predictability.features import condition_waveform_pair
+from experiments.observable_predictability.metrics import (
     RolloutIdentity,
     validate_identities,
 )
+from neuro.plant.seizure import SPREAD_WINDOW_S
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
