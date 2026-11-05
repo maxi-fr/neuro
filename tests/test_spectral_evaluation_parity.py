@@ -6,8 +6,11 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
+from trajopt.costs.quadratic import DiagonalCost
+from trajopt.dynamics.base import DiscreteDynamics
 
 from neuro.config import StftGeometry
+from neuro.control.costs import ExcludeInitialKnotState, ObservableFrameHingeCost, ObservableHingeCost
 from neuro.predictor.data import reduce_trajectory_to_frames
 from neuro.predictor.evaluation import evaluate_spectral_free_run
 from neuro.predictor.losses import (
@@ -18,6 +21,19 @@ from neuro.predictor.losses import (
 from neuro.spectral import (
     compute_forecast_log_power_frames,
     compute_log_power_frames,
+)
+from observable_predictability.features import (
+    CONTROL_HORIZONS_S,
+    HealthySpectralReference,
+    HealthyWaveformReference,
+    baseline_stft_geometry,
+    compute_horizon_penalty,
+    compute_spectral_penalty,
+    compute_waveform_penalty,
+    extract_spectral_frames,
+)
+from observable_predictability.metrics import (
+    RolloutIdentity,
 )
 
 if TYPE_CHECKING:
@@ -349,3 +365,175 @@ def test_unstandardized_curriculum_mask_matches_prefix_under_jit() -> None:
     )
     np.testing.assert_allclose(actual, expected, rtol=1e-6)
     np.testing.assert_allclose(gradient, expected_gradient, rtol=1e-6)
+
+
+# --- Ticket 02: Healthy references and MPC Cost parity -------------------------------------
+
+
+def test_healthy_waveform_and_spectral_references_enforce_reference_split() -> None:
+    rng = np.random.default_rng(701)
+    wave_runs = rng.standard_normal((3, 50, 4))
+    spec_runs = rng.standard_normal((3, 15, 4, 12))
+    good_ident = [
+        RolloutIdentity("healthy", s, "interictal", 0, "zero", split="reference") for s in range(3)
+    ]
+
+    wave_ref = HealthyWaveformReference.fit(wave_runs, identities=good_ident)
+    spec_ref = HealthySpectralReference.fit(spec_runs, identities=good_ident)
+
+    assert wave_ref.mean.shape == (4,)
+    assert wave_ref.scale.shape == (4,)
+    assert spec_ref.mean.shape == (12, 4)
+    assert spec_ref.channel_bin_mean.shape == (4, 12)
+    assert spec_ref.scale.shape == (12, 4)
+
+    bad_split = [RolloutIdentity("healthy", 0, "interictal", 0, "zero", split="eval")]
+    with pytest.raises(ValueError, match="split='reference'"):
+        HealthyWaveformReference.fit(wave_runs[:1], identities=bad_split)
+    with pytest.raises(ValueError, match="split='reference'"):
+        HealthySpectralReference.fit(spec_runs[:1], identities=bad_split)
+
+    bad_plant = [RolloutIdentity("seizure", 0, "ictal", 0, "zero", split="reference")]
+    with pytest.raises(ValueError, match="plant='healthy'"):
+        HealthyWaveformReference.fit(wave_runs[:1], identities=bad_plant)
+    with pytest.raises(ValueError, match="plant='healthy'"):
+        HealthySpectralReference.fit(spec_runs[:1], identities=bad_plant)
+
+
+@pytest.mark.parametrize("horizon_s", CONTROL_HORIZONS_S)
+def test_spectral_penalty_matches_mpc_observable_hinge_costs(horizon_s: float) -> None:
+    """Offline spectral penalty matches ObservableHingeCost and ObservableFrameHingeCost across Control Horizons."""
+    rng = np.random.default_rng(702)
+    geom = baseline_stft_geometry()
+    fs = 50.0
+    n_channels = 4
+    n_bins = geom.n_values(fs)
+    n_frames = round(horizon_s / 0.06)
+    n_steps = n_frames * geom.n_hop
+    support = geom.sample_support_steps(fs)
+    w_hinge = 2.5
+
+    ref_frames = rng.standard_normal((2, 20, n_channels, n_bins))
+    spec_ref = HealthySpectralReference.fit(ref_frames)
+    # Zero pre-branch history and high reference offset at knot 0 so the pre-branch knot-0 Frame has 0 excess
+    history_50 = np.zeros((support, n_channels), dtype=np.float64)
+    cont_50 = rng.standard_normal((n_steps, n_channels)) + 5.0
+
+    with jax.enable_x64():
+        times, frames = extract_spectral_frames(cont_50, fs, history=history_50, geometry=geom)
+        frame_penalties = compute_spectral_penalty(frames, spec_ref, one_sided=True, scale=1.0)
+        offline_horizon_cost = float(
+            compute_horizon_penalty(times, frame_penalties, horizon_s, weight=w_hinge)
+        )
+
+        # 1. Parity with ObservableHingeCost (used by build_observable_problem)
+        envelope = spec_ref.to_observable_envelope()
+        np.testing.assert_allclose(envelope.power, np.quantile(ref_frames.reshape(-1, n_channels, n_bins), 0.90, axis=0))
+        stage_hinge = ExcludeInitialKnotState(
+            ObservableHingeCost(envelope, w_hinge=w_hinge, horizon=n_frames)
+        )
+        term_hinge = ObservableHingeCost(envelope, w_hinge=w_hinge, horizon=n_frames, terminal=True)
+
+        y_frames_knots = jnp.concatenate(
+            [jnp.zeros((1, n_channels * n_bins), dtype=jnp.float64), jnp.asarray(frames.reshape(n_frames, -1))],
+            axis=0,
+        )
+        u_dummy_frames = jnp.zeros((n_frames, 1), dtype=jnp.float64)
+        t_frames = jnp.arange(n_frames + 1, dtype=jnp.float64) * 0.06
+        mpc_obs_cost = float(
+            jnp.sum(stage_hinge.stage_costs(y_frames_knots[:-1], u_dummy_frames, t_frames[:-1]))
+            + term_hinge.evaluate(y_frames_knots[-1], None, t_frames[-1])
+        )
+
+        # 2. Parity with ObservableFrameHingeCost (waveform-to-spectral MPC cost)
+        joined_50 = jnp.concatenate(
+            [jnp.asarray(history_50, dtype=jnp.float64), jnp.asarray(cont_50, dtype=jnp.float64)],
+            axis=0,
+        )
+
+        class _IdentityWaveformModel(DiscreteDynamics):
+            n_history: int = support
+
+            def __init__(self) -> None:
+                super().__init__(n=1, m=1, p=n_channels)
+
+            def discrete_dynamics(self, x: jax.Array, u: jax.Array, t: jax.Array, dt: jax.Array) -> jax.Array:
+                del u, t, dt
+                return x
+
+            def output(self, x: jax.Array) -> jax.Array:
+                idx = jnp.rint(x[0]).astype(jnp.int64)
+                return joined_50[idx]
+
+            def past_outputs(self, x: jax.Array, n_past: int) -> jax.Array:
+                idx = jnp.rint(x[0]).astype(jnp.int64)
+                return jax.lax.dynamic_slice(joined_50, (idx - n_past, jnp.int64(0)), (n_past, n_channels))
+
+        model = _IdentityWaveformModel()
+        frame_stage = ObservableFrameHingeCost(
+            model,
+            envelope,
+            w_hinge=w_hinge,
+            horizon=n_steps,
+            total_frames=n_frames,
+        )
+        frame_term = frame_stage.as_terminal(w_hinge=w_hinge)
+        # Knot states carry sample indices support - 1 .. support - 1 + n_steps in joined_50
+        x_wave_knots = jnp.arange(support - 1, support + n_steps, dtype=jnp.float64)[:, None]
+        u_dummy_wave = jnp.zeros((n_steps, 1), dtype=jnp.float64)
+        t_grid = jnp.arange(n_steps + 1, dtype=jnp.float64) / fs
+        mpc_wave_hinge_cost = float(
+            jnp.sum(frame_stage.stage_costs(x_wave_knots[:-1], u_dummy_wave, t_grid[:-1]))
+            + frame_term.evaluate(x_wave_knots[-1], None, t_grid[-1])
+        )
+
+    np.testing.assert_allclose(offline_horizon_cost, mpc_obs_cost, rtol=1e-12, atol=1e-12)
+    np.testing.assert_allclose(offline_horizon_cost, mpc_wave_hinge_cost, rtol=1e-12, atol=1e-12)
+
+
+@pytest.mark.parametrize("horizon_s", CONTROL_HORIZONS_S)
+def test_waveform_and_quadratic_spectral_penalties_match_mpc_diagonal_tracking_cost(horizon_s: float) -> None:
+    """Offline Waveform and two-sided Spectral penalties match DiagonalCost.tracking across Control Horizons."""
+    rng = np.random.default_rng(703)
+    fs = 50.0
+    n_channels = 4
+    n_frames = round(horizon_s / 0.06)
+    n_steps = round(horizon_s * fs)
+    w_y = 1.75
+
+    wave_ref = HealthyWaveformReference.fit(rng.standard_normal((2, 40, n_channels)))
+    cont_50 = rng.standard_normal((n_steps, n_channels))
+    sample_times = np.arange(1, n_steps + 1, dtype=np.float64) / fs
+    frame_times = np.arange(1, n_frames + 1, dtype=np.float64) * 0.06
+
+    # Sample-level and 60 ms Frame-level waveform penalties
+    sample_penalties = compute_waveform_penalty(cont_50, wave_ref, scale=1.0)
+    frame_penalties = compute_waveform_penalty(cont_50, wave_ref, scale=1.0, frame_hop=3)
+    horizon_from_samples = float(compute_horizon_penalty(sample_times, sample_penalties, horizon_s))
+    horizon_from_frames = float(compute_horizon_penalty(frame_times, frame_penalties, horizon_s))
+    np.testing.assert_allclose(horizon_from_samples, horizon_from_frames, rtol=1e-12, atol=1e-12)
+
+    with jax.enable_x64():
+        q_diag = jnp.full(n_channels, 2.0 * w_y / (n_steps * n_channels), dtype=jnp.float64)
+        r_diag = jnp.zeros(1, dtype=jnp.float64)
+        stage = DiagonalCost.tracking(
+            q_diag,
+            r_diag,
+            jnp.asarray(wave_ref.mean, dtype=jnp.float64),
+            jnp.zeros(1, dtype=jnp.float64),
+        )
+        stage_cost = ExcludeInitialKnotState(stage)
+        term_cost = stage.as_terminal()
+        y_knots = jnp.concatenate(
+            [jnp.zeros((1, n_channels), dtype=jnp.float64), jnp.asarray(cont_50, dtype=jnp.float64)],
+            axis=0,
+        )
+        u_zeros = jnp.zeros((n_steps, 1), dtype=jnp.float64)
+        t_steps = jnp.arange(n_steps + 1, dtype=jnp.float64) / fs
+        mpc_tracking_val = float(
+            jnp.sum(stage_cost.stage_costs(y_knots[:-1], u_zeros, t_steps[:-1]))
+            + term_cost.evaluate(y_knots[-1], None, t_steps[-1])
+        )
+
+    np.testing.assert_allclose(w_y * horizon_from_frames, mpc_tracking_val, rtol=1e-12, atol=1e-12)
+    assert n_frames * 3 == n_steps

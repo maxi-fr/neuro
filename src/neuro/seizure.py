@@ -108,8 +108,7 @@ class SpreadProfile:
     def seizure_state(self) -> FloatArray:
         """Fraction of regions seizing in each window, in ``[0, 1]``, shape ``(n_windows,)``.
 
-        The seizure state ``s(t)`` this repo controls against: the window-centred reading of
-        :func:`neuro.metrics.seizure_state`, which measures the same criterion on a causal grid.
+        The windows are labelled by their centres.
         """
         return self.n_seizing() / self.ptp.shape[0]
 

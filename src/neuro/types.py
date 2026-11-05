@@ -5,6 +5,7 @@ from typing import Literal, Protocol, get_args, runtime_checkable
 import numpy as np
 import numpy.typing as npt
 
+BoolArray = npt.NDArray[np.bool_]
 FloatArray = npt.NDArray[np.float64]
 Float32Array = npt.NDArray[np.float32]
 IntArray = npt.NDArray[np.intp]

@@ -17,16 +17,110 @@
 % - Predictor validation Loss: checkpoint selection. Predictor test Loss: separate held-out recordings, if available.
 % - Compare Predictors using a common scoring Loss within each comparison.
 
-\section{Observable Predictability and Response to Stimulation}
+\section{Observable Predictability and Seizure State}
+\label{sec:observable_predictability}
 
-\subsection{Seizure Detection}
-% - Compare candidate EEG Observables during healthy activity, seizure onset, and recruitment.
-% - Metrics: detection accuracy and onset timing against regional Seizure State.
+% Experimental setup
+% - 30 evaluation parent trajectories per Plant, with zero current throughout. Capture the healthy
+%   snapshot at 4 s and seizure snapshots at 1, 3, 7, and 14 s. The seizure Plant supplies 120
+%   snapshots from 30 trajectories. Snapshots from the same trajectory share pre-branch dynamics.
+% - From each snapshot, run 30 independent future noise realizations for 3 s with identical full
+%   Plant state and recorded pre-branch EEG. Both criteria use the 3600 seizure-Plant evaluation
+%   replays. Separate healthy reference runs calibrate penalties, and development runs set
+%   connectivity support before evaluation.
+% - Use causally low-pass-filtered 50 Hz scalp EEG from 62 channels. Spectral log-power uses a
+%   25-sample asymmetric Hann Segment and a three-sample Frame hop. Functional connectivity uses
+%   signed imaginary coherency in the 3--12 Hz band and a trailing Welch window. Report the support
+%   selected on the development split from the final archive.
+% - Define s(t) = N^{-1} \sum_{\ell=1}^N
+%   \mathbf{1}\{\operatorname{ptp}(y_{\mathrm{reg},\ell}[t-1\,\mathrm{s},t])>5\,\mathrm{mV}\}.
+%   This is the fraction of Plant regions seizing in the trailing LFP window.
+% - Generate the four PDFs before cleaning the 30x30 replay stores. From the repository root run
+%   uv run python thesis/figures/06_experiment_and_discussion/plot_observable_predictability.py
+%   artifacts/observable_predictability_expanded results/observable_predictability_30x30
+% - To rebuild the waveform split from those stores, run
+%   uv run python -m observable_predictability.waveform_diagnostic
+%   results/observable_predictability_30x30 artifacts/observable_predictability_expanded
 
-\subsection{Predictability and Stimulation Response}
-% - Use notebooks/state_scoring.py to score the predictability and controllability ensemble.
-% - Metrics: spread of future Observable values at fixed starting state; paired Observable change under stimulation at fixed state and noise.
-% - Decide whether to score the spectral state penalty alongside the Observable.
+  \begin{figure}[tbp]
+    \centering
+    \includegraphics{figures/06_experiment_and_discussion/observable_replays.pdf}
+    \caption{Eight zero-current replays of the 50 Hz scalp EEG at TP9 from the same seizure
+    Plant snapshot taken at 14 s. The future noise realization varies across traces.}
+    \label{fig:observable_replays}
+  \end{figure}
+}
+
+\subsection{Suppression Penalty and Seizure State}
+
+% - For each representation pair the observed penalty p_j with the contemporaneous s_j on
+%   the 60 ms Frame grid. Average Waveform sample penalties within each Frame.
+% - Waveform penalty: \langle (x_c-\mu^{\mathrm{H}}_c)^2\rangle_c.
+%   Spectral penalty: \langle [z_{cf}-q^{\mathrm{H}}_{0.90,cf}]_+^2\rangle_{c,f}.
+%   Connectivity penalty: \langle \max(0,q^{\mathrm{H}}_{0.05,k}-z_k,
+%   z_k-q^{\mathrm{H}}_{0.95,k})^2\rangle_k over the fixed eligible channel pairs.
+%   H denotes the healthy reference, z the observed feature, and [a]_+=\max(0,a).
+% - Pooled Pearson r = \sum_j (p_j-\bar p)(s_j-\bar s) /
+%   \sqrt{\sum_j (p_j-\bar p)^2 \sum_j (s_j-\bar s)^2}.
+%   Pool all finite matched points across seizure-Plant evaluation snapshots, replays, and Frames.
+%   Interpret r as linear association. Inspect the scatter for saturation and dispersion.
+
+  \begin{figure}[tbp]
+    \centering
+    \includegraphics{figures/06_experiment_and_discussion/observable_penalty_state.pdf}
+    \caption{Suppression penalty versus contemporaneous Seizure State for each EEG representation.
+    Each point is one finite matched pair from a zero-current seizure-Plant replay.
+    Each panel reports one pooled Pearson coefficient.}
+    \label{fig:observable_penalty_state}
+  \end{figure}
+}
+
+\subsection{Potential Predictability}
+
+% - At each lookahead h and component k, let y_{irk}(h) be replay r from snapshot i.
+%   Define the replay mean \bar y_{ik} and use sample variances:
+%   \widehat V_{N,k}=n^{-1}\sum_i \operatorname{Var}_r(y_{irk}),
+%   \widehat V_{S,k}=\operatorname{Var}_i(\bar y_{ik})-\widehat V_{N,k}/m.
+%   Here n is the number of snapshots and m the number of replays per snapshot.
+% - \widehat P(h)=\sum_k\widehat V_{S,k}/\sum_k(\widehat V_{S,k}+\widehat V_{N,k}).
+%   Sum variances over components with complete replays at that lookahead. V_N measures future
+%   stochastic spread at fixed state. V_S estimates reproducible between-snapshot variance after
+%   correcting for the residual noise in finite replay means.
+% - Interpret P as potential squared-error skill relative to the unconditional mean at that
+%   lookahead, when the entire starting Plant state and required history are known. The result
+%   depends on the sampled distribution of snapshots. Finite estimates can be negative, and
+%   zero total variance leaves the ratio undefined.
+% - References: \cite[Sec.~3a, Eqs.~(1)--(3)]{Schubert2002} and
+%   \cite[Sec.~3.1, Eqs.~(1)--(4)]{Matsumura2010} for the finite-ensemble variance estimator.
+%   \cite[Sec.~2]{DelSole2004} motivates the stochastic forecast from a known initial state.
+% - Waveform diagnostic: at each Frame endpoint, let x_j be the 25 trailing samples of a channel,
+%   ordered from oldest to newest. Compute m(t)=\sum_j w_j x_j/\sum_j w_j with the asymmetric
+%   Hann weights and r(t)=x(t)-m(t). Recompute the ceiling for each component and for the
+%   original Waveform. Compare pooled curves and groups based on starting s_0 below or at least
+%   0.25. This exploratory cutoff was chosen from a gap in the pilot ensemble. Normalize each
+%   curve by its own total variance within the group.
+
+\IfFileExists{figures/06_experiment_and_discussion/observable_potential_predictability.pdf}{%
+  \begin{figure}[tbp]
+    \centering
+    \includegraphics{figures/06_experiment_and_discussion/observable_potential_predictability.pdf}
+    \caption{Full-state potential predictability over lookahead for the three EEG representations.
+    Dashed markers indicate the history support of the windowed features. At later lookaheads,
+    their Frames use only post-branch samples.}
+    \label{fig:observable_potential_predictability}
+  \end{figure}
+}{}
+
+\IfFileExists{figures/06_experiment_and_discussion/observable_waveform_split.pdf}{%
+  \begin{figure}[tbp]
+    \centering
+    \includegraphics{figures/06_experiment_and_discussion/observable_waveform_split.pdf}
+    \caption{Potential predictability of the Waveform, its trailing weighted mean, and the
+    Waveform after subtracting that mean. Panels pool all snapshots or group by Seizure State
+    \(s_0\) at the replay start. The dashed line marks the support of the trailing mean.}
+    \label{fig:observable_waveform_split}
+  \end{figure}
+}{}
 
 \section{Offline Predictor Benchmark}
 
@@ -50,7 +144,7 @@
 % - Metrics: solve latency, convergence rate, achieved objective, constraint violation.
 
 \section{Closed-Loop Seizure Suppression}
-
+ 
 \subsection{Spectral Observable Geometry}
 % - Vary Segment length, frequency band, Frame Kernel, and taper at a fixed 60 ms Frame interval.
 % - Describe each geometry by its frequency resolution and smoothing delay.

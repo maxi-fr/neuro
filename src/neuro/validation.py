@@ -89,7 +89,7 @@ def _check_rates(config: Mapping[str, Any]) -> None:
 
 def _model_geometry(raw: Any) -> StftGeometry:  # noqa: ANN401 -- a checkpoint mapping or an already-built geometry
     """Rebuild the Observable geometry a checkpoint or config section carries."""
-    from neuro.config import StftGeometry  # noqa: PLC0415 -- neuro.config imports neuro.metrics, which imports this
+    from neuro.config import StftGeometry  # noqa: PLC0415 -- load STFT geometry when constructing the estimator
 
     return StftGeometry.model_validate(raw)
 

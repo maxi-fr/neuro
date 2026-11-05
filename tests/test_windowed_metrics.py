@@ -3,28 +3,25 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from neuro.metrics import (
-    BASELINE_FINE_HOP_S,
-    BASELINE_FINE_UNTIL_S,
-    DEFAULT_HOP_S,
-    METRICS,
-    Metric,
-    envelope,
-    raw_series_grid,
-    sample_at,
-    seizure_state,
+from neuro.filtering import AntiAliasEstimator
+from observable_predictability.features import (
+    CONNECTIVITY_CANDIDATE_WINDOWS_S,
+    CONTROL_HORIZONS_S,
+    REPRESENTATIONS,
+    baseline_stft_geometry,
+    compute_seizure_state,
+    condition_waveform_pair,
+    connectivity_pair_indices,
+    extract_connectivity_frames,
+    extract_spectral_frames,
+    select_connectivity_support_window,
+)
+from observable_predictability.metrics import (
+    RolloutIdentity,
     windowed,
 )
 
 _FS = 1000.0
-_RNG = np.random.default_rng(0)
-
-
-def _sine(freq_hz: float, duration_s: float, amplitude: float = 1.0, n_channels: int = 4) -> np.ndarray:
-    t = np.arange(round(duration_s * _FS)) / _FS
-    return np.tile(amplitude * np.sin(2.0 * np.pi * freq_hz * t), (n_channels, 1))
-
-
 # --- windowing semantics -------------------------------------------------------------------
 
 
@@ -48,7 +45,7 @@ def test_windows_are_causal_and_never_see_the_future() -> None:
     signals = np.zeros((3, 2000))
     signals[:, 1000:] = 1.0
 
-    times, values = windowed(signals, _FS, METRICS["eeg_ms"].reduce, window_s=0.1, hop_s=0.05)
+    times, values = windowed(signals, _FS, lambda block, _: (block**2).mean(axis=1), window_s=0.1, hop_s=0.05)
 
     assert np.all(values[:, times <= 1.0] == 0.0)
     assert values[:, -1] == pytest.approx(1.0)
@@ -58,7 +55,7 @@ def test_the_first_window_covering_the_step_is_the_one_ending_just_after_it() ->
     signals = np.zeros((1, 2000))
     signals[:, 1000:] = 1.0
 
-    times, values = windowed(signals, _FS, METRICS["eeg_ms"].reduce, window_s=0.1, hop_s=0.05)
+    times, values = windowed(signals, _FS, lambda block, _: (block**2).mean(axis=1), window_s=0.1, hop_s=0.05)
     first_nonzero = times[np.flatnonzero(values[0] > 0.0)[0]]
 
     assert first_nonzero == pytest.approx(1.05)
@@ -91,185 +88,190 @@ def test_each_window_sees_exactly_window_samples() -> None:
     assert set(widths) == {100}
 
 
-# --- individual metrics --------------------------------------------------------------------
-
-
-def test_block_ptp_of_a_sine_is_twice_its_amplitude() -> None:
-    _, values = METRICS["block_ptp"](_sine(20.0, 1.0, amplitude=3.0), _FS)
-
-    assert values == pytest.approx(6.0, rel=1e-2)
-
-
-def test_eeg_ms_of_a_sine_is_half_its_squared_amplitude() -> None:
-    _, values = METRICS["eeg_ms"](_sine(20.0, 1.0, amplitude=2.0), _FS)
-
-    assert values == pytest.approx(2.0, rel=1e-2)
-
-
-def test_line_length_is_a_per_sample_density_so_it_does_not_grow_with_the_window() -> None:
-    signals = _sine(10.0, 3.0)
-    short = Metric("ll_short", 0.1, METRICS["line_length"].reduce)
-    long = Metric("ll_long", 0.5, METRICS["line_length"].reduce)
-
-    _, short_values = short(signals, _FS)
-    _, long_values = long(signals, _FS)
-
-    assert np.median(short_values) == pytest.approx(np.median(long_values), rel=1e-2)
-
-
-def test_line_length_grows_with_frequency_at_fixed_amplitude() -> None:
-    _, slow = METRICS["line_length"](_sine(5.0, 2.0), _FS)
-    _, fast = METRICS["line_length"](_sine(20.0, 2.0), _FS)
-
-    assert np.median(fast) > 3.0 * np.median(slow)
-
-
-def test_band_power_passes_an_in_band_tone_and_rejects_an_out_of_band_one() -> None:
-    _, in_band = METRICS["band_power"](_sine(6.0, 3.0), _FS)
-    _, out_of_band = METRICS["band_power"](_sine(40.0, 3.0), _FS)
-
-    assert np.median(in_band) > 100.0 * np.median(out_of_band)
-
-
-def test_fc_strength_separates_identical_channels_from_independent_ones() -> None:
-    identical = np.tile(_RNG.normal(size=(1, 3000)), (6, 1))
-    independent = _RNG.normal(size=(6, 3000))
-
-    _, locked = METRICS["fc_strength"](identical, _FS)
-    _, unlocked = METRICS["fc_strength"](independent, _FS)
-
-    assert np.median(locked) == pytest.approx(1.0, abs=1e-6)
-    assert abs(np.median(unlocked)) < 0.2
-
-
-def test_fc_strength_is_blind_to_the_sign_a_channel_sees_a_shared_source_with() -> None:
-    """The EEG forward operator is signed: an inverted channel is synchronous, not unrelated."""
-    source = _RNG.normal(size=(1, 3000))
-    flipped = np.tile(source, (6, 1)) * np.array([1.0, -1.0, 1.0, -1.0, 1.0, -1.0])[:, None]
-
-    _, values = METRICS["fc_strength"](flipped, _FS)
-
-    assert np.median(values) == pytest.approx(1.0, abs=1e-6)
-
-
-def test_spectral_centroid_recovers_the_frequency_of_a_pure_tone() -> None:
-    _, values = METRICS["spectral_centroid"](_sine(10.0, 3.0), _FS)
-
-    assert np.median(values) == pytest.approx(10.0, abs=1.5)
-
-
-def test_spectral_centroid_rises_when_the_tone_does() -> None:
-    _, low = METRICS["spectral_centroid"](_sine(6.0, 3.0), _FS)
-    _, high = METRICS["spectral_centroid"](_sine(30.0, 3.0), _FS)
-
-    assert np.median(high) > np.median(low) + 10.0
-
-
-# --- registry ------------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize("name", sorted(METRICS))
-def test_every_metric_returns_a_finite_series_on_the_same_grid(name: str) -> None:
-    signals = _RNG.normal(size=(8, 3000)) + _sine(8.0, 3.0, n_channels=8)
-
-    times, values = METRICS[name](signals, _FS)
-
-    assert values.shape == (8, len(times))
-    assert len(times) > 0
-    assert np.all(np.isfinite(values))
-    assert times[0] == pytest.approx(METRICS[name].window_s)
-    assert np.allclose(np.diff(times), DEFAULT_HOP_S)
-
-
-@pytest.mark.parametrize("name", sorted(METRICS))
-def test_every_metric_accepts_an_arbitrary_channel_subset(name: str) -> None:
-    signals = _RNG.normal(size=(62, 3000)) + _sine(8.0, 3.0, n_channels=62)
-    subset = np.array([27, 55, 12, 14])
-
-    times_all, _ = METRICS[name](signals, _FS)
-    times_subset, values_subset = METRICS[name](signals[subset], _FS)
-
-    assert np.array_equal(times_all, times_subset)
-    assert np.all(np.isfinite(values_subset))
-
-
-@pytest.mark.parametrize("name", sorted(METRICS))
-def test_registry_keys_match_the_metric_names(name: str) -> None:
-    assert METRICS[name].name == name
-
-
-# --- the window-free series ------------------------------------------------------------------
-
-_SETTLED = slice(round(1.5 * _FS), None)
-
-
-def test_envelope_recovers_the_amplitude_of_an_in_band_tone() -> None:
-    """The pi/2 scaling is what makes this the amplitude rather than the mean-rectified value."""
-    values = envelope(_sine(7.0, 4.0, amplitude=2.5), _FS)
-
-    assert np.mean(values[:, _SETTLED]) == pytest.approx(2.5, rel=0.02)
-
-
-def test_envelope_follows_an_amplitude_step() -> None:
-    t = np.arange(round(8.0 * _FS)) / _FS
-    signals = np.tile((1.0 + 2.0 * (t > 4.0)) * np.sin(2.0 * np.pi * 7.0 * t), (3, 1))
-
-    values = envelope(signals, _FS)
-
-    assert np.mean(values[:, round(3.5 * _FS)]) == pytest.approx(1.0, rel=0.02)
-    assert np.mean(values[:, round(7.5 * _FS)]) == pytest.approx(3.0, rel=0.02)
-
-
-def test_envelope_rejects_a_tone_outside_the_band() -> None:
-    in_band = envelope(_sine(7.0, 4.0), _FS)
-    out_of_band = envelope(_sine(60.0, 4.0), _FS)
-
-    assert np.mean(out_of_band[:, _SETTLED]) < 0.01 * np.mean(in_band[:, _SETTLED])
-
-
-def test_envelope_is_causal_so_a_burst_casts_no_shadow_before_itself() -> None:
-    """A Hilbert envelope would leak the burst backwards -- and inflate the predictability it feeds."""
-    signals = _sine(7.0, 4.0)
-    signals[:, : round(2.0 * _FS)] = 0.0
-
-    values = envelope(signals, _FS)
-
-    assert np.max(values[:, : round(2.0 * _FS)]) < 1e-9
-    assert np.mean(values[:, round(3.5 * _FS) :]) == pytest.approx(1.0, rel=0.02)
-
-
-def test_raw_series_grid_is_fine_early_and_the_shared_grid_later() -> None:
-    grid = raw_series_grid(3.0, hop_s=DEFAULT_HOP_S)
-    fine, coarse = grid[grid < BASELINE_FINE_UNTIL_S], grid[grid >= BASELINE_FINE_UNTIL_S]
-
-    assert grid[0] == pytest.approx(BASELINE_FINE_HOP_S)
-    assert np.allclose(np.diff(fine), BASELINE_FINE_HOP_S)
-    assert np.allclose(np.diff(coarse), DEFAULT_HOP_S)
-    assert grid[-1] == pytest.approx(3.0)
-
-
-def test_sample_at_reads_the_instant_a_windowed_value_would_be_stamped() -> None:
-    """Sample ``j`` is stamped at ``(j + 1) / fs``, the same right-edge convention as `windowed`."""
-    signals = np.zeros((2, 2000))
-    signals[:, 1000:] = 1.0
-
-    values = sample_at(signals, _FS, np.array([0.999, 1.0, 1.001]))
-
-    assert np.array_equal(values, [[0.0, 0.0, 1.0], [0.0, 0.0, 1.0]])
-
-
-def test_sample_at_keeps_the_channel_axis() -> None:
-    signals = _RNG.normal(size=(62, 3000))
-
-    values = sample_at(signals, _FS, raw_series_grid(3.0))
-
-    assert values.shape == (62, len(raw_series_grid(3.0)))
-
-
-def test_seizure_state_times_are_branch_referenced_and_start_at_zero() -> None:
-    """The region LFP leads the branch by one window, so the first causal point is lookahead 0."""
-    times, state = seizure_state(np.zeros((76, 4000)), _FS, window_s=1.0, hop_s=0.05)
-
-    assert times[0] == pytest.approx(0.0)
-    assert times[-1] == pytest.approx(3.0)
-    assert len(times) == len(state) == 61
+def test_baseline_stft_geometry_matches_november_protocol() -> None:
+    geom = baseline_stft_geometry()
+
+    assert geom.n_segment == 25
+    assert geom.n_hop == 3
+    assert geom.band_hz == (1.0, 25.0)
+    assert geom.n_bin_pool == 1
+    assert geom.kernel == "linear"
+    assert geom.kernel_width == 1
+    assert geom.window == "hann"
+    assert geom.asymmetric_window is True
+    assert geom.sample_support_steps(50.0) == 25
+    assert geom.n_values(50.0) == 12
+
+
+def test_condition_scalp_waveform_matches_antialias_estimator_and_continuous_join() -> None:
+    rng = np.random.default_rng(17)
+    fs_raw = 1000.0
+    target_fs = 50.0
+    downsample = 20
+    n_hist_raw = 600  # 0.60 s -> 30 samples at 50 Hz
+    n_cont_raw = 900  # 0.90 s -> 45 samples at 50 Hz
+    n_channels = 4
+
+    history_raw = rng.standard_normal((n_hist_raw, n_channels))
+    continuation_raw = rng.standard_normal((n_cont_raw, n_channels))
+    joined_raw = np.concatenate([history_raw, continuation_raw], axis=0)
+
+    # 1. Split conditioning with history warm-up vs continuous join conditioning
+    _, post_from_split = condition_waveform_pair(
+        continuation_raw, fs_raw, history_raw=history_raw, cutoff_hz=25.0, target_fs=target_fs
+    )
+    _, full_from_joined = condition_waveform_pair(joined_raw, fs_raw, cutoff_hz=25.0, target_fs=target_fs)
+    n_hist_50 = n_hist_raw // downsample
+
+    assert post_from_split.shape == (n_cont_raw // downsample, n_channels)
+    np.testing.assert_allclose(post_from_split, full_from_joined[n_hist_50:], rtol=1e-13, atol=1e-13)
+
+    # 2. Sample-for-sample parity with online AntiAliasEstimator
+    estimator = AntiAliasEstimator(dt=1.0 / fs_raw, downsample=downsample)
+    u_zero = np.zeros(1)
+    online_decimated: list[np.ndarray] = []
+    for step, sample in enumerate(joined_raw):
+        x_hat, _ = estimator.update(step / fs_raw, sample, u_zero)
+        if (step + 1) % downsample == 0:
+            online_decimated.append(x_hat.copy())
+    online_post = np.stack(online_decimated[n_hist_50:], axis=0)
+    np.testing.assert_allclose(post_from_split, online_post, rtol=1e-13, atol=1e-13)
+
+    # 3. Already conditioned 50 Hz input passes through unchanged
+    _, passthrough = condition_waveform_pair(post_from_split, target_fs)
+    np.testing.assert_array_equal(passthrough, post_from_split)
+
+
+def test_spectral_and_seizure_state_extraction_match_continuous_joined_signal() -> None:
+    rng = np.random.default_rng(23)
+    fs_50 = 50.0
+    n_hist = 61  # 25 + 12 * 3 samples -> branch aligns with continuous Frame grid
+    n_cont = 75  # 1.50 s at 50 Hz
+    n_channels = 4
+
+    history_50 = rng.standard_normal((n_hist, n_channels))
+    cont_50 = rng.standard_normal((n_cont, n_channels))
+    joined_50 = np.concatenate([history_50, cont_50], axis=0)
+
+    times_split, frames_split = extract_spectral_frames(cont_50, fs_50, history=history_50)
+    times_full, frames_full = extract_spectral_frames(joined_50, fs_50)
+
+    t_branch = n_hist / fs_50
+    post_mask = times_full > t_branch + 1e-9
+    np.testing.assert_allclose(times_split, times_full[post_mask] - t_branch, rtol=1e-12, atol=1e-12)
+    np.testing.assert_allclose(frames_split, frames_full[post_mask], rtol=1e-12, atol=1e-12)
+
+    # Regional LFP Seizure State continuity across branch boundary
+    fs_lfp = 500.0
+    lfp_hist = rng.uniform(-2.0, 2.0, size=(1000 + 8 * 30, 8))
+    lfp_cont = rng.uniform(-5.0, 5.0, size=(round(1.50 * fs_lfp), 8))
+    lfp_joined = np.concatenate([lfp_hist, lfp_cont], axis=0)
+
+    s_times_split, s_split = compute_seizure_state(lfp_cont, fs_lfp, lfp_history=lfp_hist, hop_s=0.06, window_s=2.0)
+    s_times_full, s_full = compute_seizure_state(lfp_joined, fs_lfp, hop_s=0.06, window_s=2.0)
+    lfp_branch_s = lfp_hist.shape[0] / fs_lfp
+    lfp_post_mask = s_times_full > lfp_branch_s + 1e-9
+
+    np.testing.assert_allclose(s_times_split, s_times_full[lfp_post_mask] - lfp_branch_s, rtol=1e-12, atol=1e-12)
+    np.testing.assert_allclose(s_split, s_full[lfp_post_mask], rtol=1e-12, atol=1e-12)
+    assert "seizure_state" not in REPRESENTATIONS
+    assert REPRESENTATIONS == ("waveform", "spectral", "connectivity")
+
+
+def test_connectivity_extraction_pair_count_bounds_continuity_and_lag_sign() -> None:
+    fs = 50.0
+    n_channels = 8
+    assert len(connectivity_pair_indices(n_channels)) == 28
+
+    rng = np.random.default_rng(31)
+    n_hist = 60  # 1.20 s at 50 Hz
+    n_cont = 75  # 1.50 s at 50 Hz
+    history = rng.standard_normal((n_hist, 4))
+    continuation = rng.standard_normal((n_cont, 4))
+    joined = np.concatenate([history, continuation], axis=0)
+
+    ext_split = extract_connectivity_frames(continuation, fs, history=history, window_s=1.02)
+    ext_full = extract_connectivity_frames(joined, fs, window_s=1.02)
+
+    t_branch = n_hist / fs
+    post_mask = ext_full.times > t_branch + 1e-9
+    np.testing.assert_allclose(ext_split.times, ext_full.times[post_mask] - t_branch, rtol=1e-12, atol=1e-12)
+    np.testing.assert_allclose(ext_split.values, ext_full.values[post_mask], rtol=1e-12, atol=1e-12)
+    assert ext_split.values.shape == (25, 6)
+    assert np.all(ext_split.valid_mask)
+    assert np.all((ext_split.values >= -1.0) & (ext_split.values <= 1.0))
+
+    # Zero-lag vs known quarter-cycle lag vs reversed lag at 10 Hz
+    t = np.arange(150, dtype=np.float64) / fs
+    freq = 10.0
+    sig_base = np.sin(2.0 * np.pi * freq * t)
+    sig_zero_lag = 2.5 * sig_base
+    sig_lag_pos = np.sin(2.0 * np.pi * freq * t - 0.5 * np.pi)
+    sig_lag_neg = np.sin(2.0 * np.pi * freq * t + 0.5 * np.pi)
+
+    zero_lag_ext = extract_connectivity_frames(
+        np.column_stack([sig_base, sig_zero_lag]), fs, window_s=1.02, band_hz=(9.0, 11.0)
+    )
+    pos_lag_ext = extract_connectivity_frames(
+        np.column_stack([sig_base, sig_lag_pos]), fs, window_s=1.02, band_hz=(9.0, 11.0)
+    )
+    neg_lag_ext = extract_connectivity_frames(
+        np.column_stack([sig_base, sig_lag_neg]), fs, window_s=1.02, band_hz=(9.0, 11.0)
+    )
+    swapped_ext = extract_connectivity_frames(
+        np.column_stack([sig_lag_pos, sig_base]), fs, window_s=1.02, band_hz=(9.0, 11.0)
+    )
+
+    assert np.max(np.abs(zero_lag_ext.values)) < 1e-12
+    assert np.all(pos_lag_ext.values > 0.3)
+    np.testing.assert_allclose(neg_lag_ext.values, -pos_lag_ext.values, rtol=1e-12, atol=1e-12)
+    np.testing.assert_allclose(swapped_ext.values, -pos_lag_ext.values, rtol=1e-12, atol=1e-12)
+
+
+def test_connectivity_validity_masks_insufficient_segments_and_low_power() -> None:
+    fs = 50.0
+    rng = np.random.default_rng(41)
+    signals = rng.standard_normal((100, 3))
+
+    # 1. Single-segment window (window_s=0.50 -> M=1 < M_min=4) is completely masked
+    single_seg = extract_connectivity_frames(signals, fs, window_s=0.50, min_segments=4)
+    assert np.all(single_seg.n_segments == 1)
+    assert not np.any(single_seg.valid_mask)
+    assert np.all(np.isnan(single_seg.values))
+
+    # 2. Zero/below-floor power on channel 1 masks pairs (0, 1) and (1, 2) while keeping pair (0, 2) valid
+    low_power = signals.copy()
+    low_power[:, 1] = 0.0
+    masked_ext = extract_connectivity_frames(low_power, fs, window_s=1.02)
+    assert masked_ext.pairs == ((0, 1), (0, 2), (1, 2))
+    assert not np.any(masked_ext.valid_mask[:, 0])
+    assert np.all(masked_ext.valid_mask[:, 1])
+    assert not np.any(masked_ext.valid_mask[:, 2])
+    assert np.all(np.isnan(masked_ext.values[:, 0]))
+    assert np.all(np.isfinite(masked_ext.values[:, 1]))
+    assert np.all(np.isnan(masked_ext.values[:, 2]))
+
+
+def test_select_connectivity_support_window_enforces_dev_split_and_reports_horizon_ratios() -> None:
+    fs = 50.0
+    rng = np.random.default_rng(53)
+    # 2 states, 3 replicates, 75 post-branch samples (1.50 s), 4 channels, with 150-sample (3.0 s) pre-branch history
+    base_state = rng.standard_normal((2, 1, 75, 4))
+    dev_waveforms = np.tile(base_state, (1, 3, 1, 1)) + 0.05 * rng.standard_normal((2, 3, 75, 4))
+    dev_histories = np.tile(rng.standard_normal((2, 1, 150, 4)), (1, 3, 1, 1))
+
+    selection = select_connectivity_support_window(
+        dev_waveforms,
+        fs,
+        dev_histories=dev_histories,
+        repeatability_target=0.50,
+    )
+    assert selection.selected_window_s in CONNECTIVITY_CANDIDATE_WINDOWS_S
+    assert selection.qualified is True
+    assert set(selection.candidate_spreads) == set(CONNECTIVITY_CANDIDATE_WINDOWS_S)
+    for h in CONTROL_HORIZONS_S:
+        assert selection.support_to_horizon_ratio[h] == pytest.approx(selection.selected_window_s / h)
+
+    bad_ident = [RolloutIdentity("seizure", 1, "ictal", 0, "zero", split="eval")]
+    with pytest.raises(ValueError, match="split='dev'"):
+        select_connectivity_support_window(dev_waveforms.reshape(6, 75, 4), fs, identities=bad_ident)

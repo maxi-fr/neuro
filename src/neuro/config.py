@@ -12,7 +12,6 @@ import numpy as np
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from neuro.metrics import DEFAULT_HOP_S, METRICS
 from neuro.provenance import check_excitation_alignment
 from neuro.schedules import curriculum_completion
 
@@ -22,6 +21,8 @@ if TYPE_CHECKING:
     import optuna
 
 _MIN_SMOOTHED_FRAMES = 2
+_EEG_MS_WINDOW_S = 0.1
+_EEG_MS_HOP_S = 0.05
 
 
 def parse_array(val: Any) -> Any:  # noqa: ANN401
@@ -274,12 +275,7 @@ class StftGeometry(ObservableGeometry):
 
 
 class EegMsGeometry(ObservableGeometry):
-    """Trailing mean-square window geometry in seconds, as metrics.py defines it.
-
-    Both fields default to ``None``, meaning "whatever grid ``metrics.py`` scores ``eeg_ms`` on";
-    the resolution happens in the ``*_steps`` methods, so the defaults live in exactly one place --
-    :mod:`neuro.metrics` -- rather than being copied here.
-    """
+    """Trailing mean-square geometry with a 100 ms window and 50 ms hop by default."""
 
     kind: ClassVar[str] = "eeg_ms"
 
@@ -287,8 +283,8 @@ class EegMsGeometry(ObservableGeometry):
     hop_s: float | None = Field(default=None, gt=0)
 
     def window_steps(self, fs: float) -> int:
-        """Trailing-window length in steps at ``fs``, defaulting to the ``eeg_ms`` metric's window."""
-        window_s = self.window_s if self.window_s is not None else METRICS["eeg_ms"].window_s
+        """Return the trailing-window length in samples at ``fs``."""
+        window_s = self.window_s if self.window_s is not None else _EEG_MS_WINDOW_S
         return round(window_s * fs)
 
     def segment_steps(self, fs: float) -> int:
@@ -296,8 +292,8 @@ class EegMsGeometry(ObservableGeometry):
         return self.window_steps(fs)
 
     def hop_steps(self, fs: float) -> int:
-        """Window spacing in steps at ``fs``, defaulting to the metrics layer's own hop."""
-        hop_s = self.hop_s if self.hop_s is not None else DEFAULT_HOP_S
+        """Return the spacing between trailing windows in samples at ``fs``."""
+        hop_s = self.hop_s if self.hop_s is not None else _EEG_MS_HOP_S
         return round(hop_s * fs)
 
     def n_frames(self, span_steps: int, fs: float) -> int:

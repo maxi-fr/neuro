@@ -246,7 +246,7 @@ class ObservableEstimator(Estimator[ObservableEstimatorLog]):
     @classmethod
     def from_config(cls, config: dict[str, Any]) -> Self:
         """Instantiate the component from a raw configuration dictionary."""
-        from neuro.config import StftGeometry  # noqa: PLC0415 -- neuro.config imports this module via neuro.metrics
+        from neuro.config import StftGeometry  # noqa: PLC0415 -- load STFT geometry when constructing the estimator
 
         geom_raw = config["geometry"]
         geometry = geom_raw if isinstance(geom_raw, StftGeometry) else StftGeometry.model_validate(geom_raw)
