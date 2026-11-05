@@ -4,7 +4,7 @@ from pathlib import Path
 from simulate.config import load_config
 
 from neuro.predictor.replay import prepare_replay
-from neuro.run_view import Run, discover_runs
+from neuro.runs.record import Run, discover_runs
 
 
 def main() -> None:

@@ -1,7 +1,8 @@
 import numpy as np
 
-from neuro.prediction_spectra import compare_spectra
-from neuro.run_view import PredictionSeries, ViewSettings
+from neuro.runs.record import PredictionSeries
+from neuro.runs.spectra import compare_spectra
+from neuro.runs.view import ViewSettings
 
 
 def test_waveform_spectra_compare_identical_future_support_and_scaling() -> None:

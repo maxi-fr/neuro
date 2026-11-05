@@ -11,7 +11,8 @@ from neuro.spectral import compute_periodograms
 if TYPE_CHECKING:
     from matplotlib.figure import Figure
 
-    from neuro.run_view import PredictionSeries, ViewSettings
+    from neuro.runs.record import PredictionSeries
+    from neuro.runs.view import ViewSettings
     from neuro.types import FloatArray
 
 

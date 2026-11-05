@@ -11,12 +11,12 @@ import yaml
 
 from neuro.control.problems import _build_problem
 from neuro.predictor.inference import InferencePredictor
-from neuro.run_view import PredictionSeries
+from neuro.runs.record import PredictionSeries
 
 if TYPE_CHECKING:
     from pathlib import Path
 
-    from neuro.run_view import Run
+    from neuro.runs.record import Run
     from neuro.types import FloatArray
 
 

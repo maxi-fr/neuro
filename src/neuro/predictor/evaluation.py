@@ -12,7 +12,7 @@ import numpy as np
 from neuro.predictor.data import frame_aligned_controls, load_trajectory, reduce_trajectory_to_frames
 from neuro.predictor.inference import InferencePredictor, ObservableCNNModel, ObservableMLPModel
 from neuro.predictor.replay import predict
-from neuro.run_view import Run
+from neuro.runs.record import Run
 from neuro.spectral import HealthyReference, compute_forecast_log_power_frames, compute_log_power_frames
 
 if TYPE_CHECKING:

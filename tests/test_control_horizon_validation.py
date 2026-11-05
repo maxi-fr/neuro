@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 import pytest
 
-from neuro.comparison import Cell, check_arm_eligibility, validate_grid
+from neuro.comparison import Cell, validate_grid
 from neuro.config import StftGeometry
 from neuro.predictor.evaluation import (
     EligibilityStatus,
@@ -16,9 +16,10 @@ from neuro.predictor.evaluation import (
     evaluate_control_horizon,
 )
 from neuro.predictor.mlp import WaveformMLPModel
-from neuro.run_view import Run
+from neuro.runs.record import Run
 from neuro.spectral import compute_log_power_frames
 from neuro.transforms import Standardizer
+from neuro.validation import ConfigConsistencyError
 
 if TYPE_CHECKING:
     from neuro.types import FloatArray
@@ -276,8 +277,8 @@ def test_comparison_workflow_candidate_eligibility_check() -> None:
     assert not eligibility.passed
 
 
-def test_comparison_validate_grid_rejects_ineligible_arm(tmp_path: Path) -> None:
-    """The arm gate rejects calibrated instability and the grid rejects missing calibration."""
+def test_comparison_grid_validates_config_without_empirical_gate(tmp_path: Path) -> None:
+    """The grid checks config consistency without screening Predictor rollouts."""
     unstable_model = _create_synthetic_model(gain=1.1, horizon=75, dt=0.02)
     art_path = tmp_path / "unstable_model"
     unstable_model.save(art_path)
@@ -293,27 +294,17 @@ def test_comparison_validate_grid_rejects_ineligible_arm(tmp_path: Path) -> None
                 "class_path": "neuro.control.problems.build_waveform_problem",
                 "artifact": str(art_path),
                 "horizon": 75,
+                "u_max": 1.0,
                 "w_y": 0.0,
             },
         },
     }
     cell = Cell(run="test_arm", arm="unstable_arm", seed=7000, config=cfg)
-    trajectories = [_synthetic_trajectory(n_steps=200, seed=606)]
+    validate_grid([cell])
 
-    eligibility = check_arm_eligibility(
-        cell, trajectories, thresholds=ScientificThresholds(calibration_identity="test-fixture calibration")
-    )
-    assert not eligibility.passed
-    assert eligibility.status == EligibilityStatus.FAIL
-
-    # When no trajectories provided: yields INSUFFICIENT_EVIDENCE, never PASS
-    no_calib = check_arm_eligibility(cell, None)
-    assert not no_calib.passed
-    assert no_calib.status == EligibilityStatus.INSUFFICIENT_EVIDENCE
-
-    # validate_grid with trajectories raises ValueError
-    with pytest.raises(ValueError, match="failed Control Horizon eligibility"):
-        validate_grid([cell], trajectories)
+    cfg["controller"]["dt"] = 0.04
+    with pytest.raises(ConfigConsistencyError, match=r"controller\.dt"):
+        validate_grid([cell])
 
 
 def test_missing_calibration_cannot_qualify_a_stable_predictor() -> None:
@@ -384,8 +375,8 @@ def test_spectral_errors_use_causal_frames_at_each_lookahead(horizon: int) -> No
     assert report.terminal_metrics["spectral_error"] == pytest.approx(expected[-1])
 
 
-def test_comparison_loads_reference_geometry_for_spectral_qualification(tmp_path: Path) -> None:
-    """The comparison gate applies the spectral limit using the saved reference geometry."""
+def test_candidate_evaluation_loads_reference_geometry_for_spectral_qualification(tmp_path: Path) -> None:
+    """Standalone candidate evaluation applies the spectral limit using saved reference geometry."""
     model = _create_synthetic_model(horizon=4)
     artifact = tmp_path / "model"
     model.save(artifact)
@@ -413,10 +404,10 @@ def test_comparison_loads_reference_geometry_for_spectral_qualification(tmp_path
         }
     }
     data = [_synthetic_trajectory(n_steps=30)]
-    missing = check_arm_eligibility(config, data)
+    missing = check_candidate_eligibility(config, data)
     assert missing.status == EligibilityStatus.INSUFFICIENT_EVIDENCE
     assert any("calibration" in reason.lower() for reason in missing.reasons)
-    rejected = check_arm_eligibility(
+    rejected = check_candidate_eligibility(
         config,
         data,
         thresholds=ScientificThresholds(

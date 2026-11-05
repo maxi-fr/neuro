@@ -12,9 +12,10 @@ def _():
     import marimo as mo
     import matplotlib.pyplot as plt
 
-    from neuro.prediction_spectra import plot_spectra
-    from neuro.run_plot import plot_runs
-    from neuro.run_view import PredictionSeries, Run, ViewSettings, discover_runs, load_bookmarks, save_bookmark
+    from neuro.runs.plotting import plot_runs
+    from neuro.runs.record import PredictionSeries, Run, discover_runs
+    from neuro.runs.spectra import plot_spectra
+    from neuro.runs.view import ViewSettings, load_bookmarks, save_bookmark
 
     return (
         Path,

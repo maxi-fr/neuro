@@ -26,7 +26,7 @@ from neuro.control.solvers import _build_solver
 from neuro.filtering import ObservableEstimator
 from neuro.predictor.mlp import ObservableMLPModel, WaveformMLPModel
 from neuro.predictor.replay import prepare_replay, replay_predictions
-from neuro.run_view import PredictionSeries, Run
+from neuro.runs.record import PredictionSeries, Run
 from neuro.spectral import HealthyReference, ObservableEnvelope
 from neuro.transforms import Standardizer
 

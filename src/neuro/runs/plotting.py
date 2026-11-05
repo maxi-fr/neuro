@@ -6,13 +6,14 @@ from typing import TYPE_CHECKING
 import matplotlib.pyplot as plt
 import numpy as np
 
-from neuro.run_view import decision_indices
+from neuro.runs.view import decision_indices
 
 if TYPE_CHECKING:
     from matplotlib.axes import Axes
     from matplotlib.figure import Figure
 
-    from neuro.run_view import PredictionSeries, Run, ViewSettings
+    from neuro.runs.record import PredictionSeries, Run
+    from neuro.runs.view import ViewSettings
     from neuro.types import FloatArray
 
 
