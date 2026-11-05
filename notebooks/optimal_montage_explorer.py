@@ -13,9 +13,9 @@ def _():
     import marimo as mo
     import matplotlib.pyplot as plt
 
-    from neuro.connectome import Connectome
-    from neuro.jansen_rit import JansenRitDynamics, JansenRitParams, lfp, simulate_network
-    from neuro.seizure import build_seizure_a_gains
+    from neuro.plant.connectome import Connectome
+    from neuro.plant.jansen_rit import JansenRitDynamics, JansenRitParams, lfp, simulate_network
+    from neuro.plant.seizure import build_seizure_a_gains
     from neuro.stimulation.montage_optimization import (
         SelectedMontageStim,
         build_target_field,

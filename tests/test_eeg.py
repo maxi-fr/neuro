@@ -4,9 +4,9 @@ import re
 
 import numpy as np
 
-from neuro.connectome import Connectome
-from neuro.eeg import build_eeg_leadfield
 from neuro.geometry import sensor_positions_mm
+from neuro.plant.connectome import Connectome
+from neuro.plant.eeg import build_eeg_leadfield
 
 _N_REGIONS = 76
 _N_CHANNELS = 62

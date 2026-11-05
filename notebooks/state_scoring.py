@@ -13,7 +13,7 @@ def _():
     import numpy as np
     from matplotlib import pyplot as plt
 
-    from neuro.seizure_calibration import SEIZURE_PTP_MV, SPREAD_WINDOW_S
+    from neuro.plant.seizure_calibration import SEIZURE_PTP_MV, SPREAD_WINDOW_S
     from observable_predictability.archive import EVALUATION_SCORES_FILE, load_evaluation_bundle
     from observable_predictability.features import REPRESENTATIONS
     from observable_predictability.plots import (

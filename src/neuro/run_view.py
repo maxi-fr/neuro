@@ -9,8 +9,8 @@ import numpy as np
 import yaml
 
 from neuro.config import StftGeometry
-from neuro.eeg import build_eeg_leadfield
-from neuro.seizure import SEIZURE_PTP_MV, spread_profile_from_lfp
+from neuro.plant.eeg import build_eeg_leadfield
+from neuro.plant.seizure import SEIZURE_PTP_MV, spread_profile_from_lfp
 from neuro.stimulation.base import select_rows
 
 if TYPE_CHECKING:

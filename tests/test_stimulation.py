@@ -8,10 +8,10 @@ import numpy as np
 import pytest
 from pydantic import TypeAdapter, ValidationError
 
-from neuro.connectome import Connectome
-from neuro.eeg import build_eeg_leadfield
 from neuro.geometry import EXTRACEPHALIC_ELECTRODES_MM, centres_to_mni_ras, sensor_positions_mm
-from neuro.jansen_rit import JansenRitDynamics, JansenRitParams
+from neuro.plant.connectome import Connectome
+from neuro.plant.eeg import build_eeg_leadfield
+from neuro.plant.jansen_rit import JansenRitDynamics, JansenRitParams
 from neuro.stimulation import AnalyticalStim, NullStim, Roast3DStim, build_stimulation
 from neuro.stimulation.base import StimulationConfig
 from neuro.stimulation.roast_io import convert_roast_field_projection_to_npz

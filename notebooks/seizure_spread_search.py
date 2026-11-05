@@ -16,9 +16,9 @@ def imports():
     from matplotlib import patheffects as path_effects
     from matplotlib import pyplot as plt
 
-    from neuro.connectome import Connectome
-    from neuro.jansen_rit import JansenRitDynamics, JansenRitParams, resting_state
-    from neuro.seizure import (
+    from neuro.plant.connectome import Connectome
+    from neuro.plant.jansen_rit import JansenRitDynamics, JansenRitParams, resting_state
+    from neuro.plant.seizure import (
         DT,
         EZ_REGIONS,
         PZ_REGIONS,

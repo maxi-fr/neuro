@@ -205,7 +205,8 @@ def _(mo, restored, selected_runs):
         (
             run.eeg_channel_labels()
             for run in selected_runs
-            if run.config.get("sensors", {}).get("measurement", {}).get("class_path") == "neuro.eeg.EEGMeasurement"
+            if run.config.get("sensors", {}).get("measurement", {}).get("class_path")
+            in {"neuro.eeg.EEGMeasurement", "neuro.plant.eeg.EEGMeasurement"}
         ),
         [],
     )

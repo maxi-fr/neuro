@@ -12,6 +12,7 @@ import yaml
 from scipy.spatial.distance import cdist
 from simulate.simulation import Simulation
 
+from neuro.config import resolve_simulation_config
 from neuro.control.schedule import ScheduleController, build_input_schedule
 
 if TYPE_CHECKING:
@@ -412,9 +413,7 @@ def _extract_control_metrics_from_log(
         metrics["kirchhoff_max"] = float(np.max(np.abs(np.sum(u, axis=1))))
 
 
-def _extract_solver_metrics_from_log(
-    data: Mapping[str, np.ndarray], metrics: dict[str, Any]
-) -> None:
+def _extract_solver_metrics_from_log(data: Mapping[str, np.ndarray], metrics: dict[str, Any]) -> None:
     """Summarize actual solve attempts and native update runtime."""
     if "controller.solve_time" not in data or "controller.warmup" not in data:
         return
@@ -1169,7 +1168,7 @@ def simulate_ras_branch(  # noqa: PLR0913 -- branch simulation requires duration
     holds: int | list[int] = 1,
     prefix: str = "cand",
 ) -> list[Path]:
-    """Simulate Option B Random Amplitude Schedule (RAS) branches from a candidate state.
+    """Simulate Option B Random Amplitude Schedule (RAS) branches from a saved run's candidate state.
 
     Parameters
     ----------
@@ -1206,7 +1205,7 @@ def simulate_ras_branch(  # noqa: PLR0913 -- branch simulation requires duration
         raise FileNotFoundError(msg)
 
     with cfg_file.open(encoding="utf-8") as f:
-        run_cfg = yaml.safe_load(f) or {}
+        run_cfg = resolve_simulation_config(yaml.safe_load(f) or {})
 
     with np.load(log_file) as log_data:
         u_rec = np.asarray(log_data["controller.u"], dtype=np.float64)

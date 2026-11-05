@@ -9,7 +9,7 @@ from pydantic import Field
 
 from neuro.config import StrictConfig
 from neuro.geometry import SENSORS_FILE
-from neuro.jansen_rit import lfp as regional_lfp
+from neuro.plant.jansen_rit import lfp as regional_lfp
 
 if TYPE_CHECKING:
     from neuro.types import FloatArray, StrArray

@@ -8,7 +8,7 @@ from neuro.stimulation.null import NullStim
 from neuro.stimulation.roast_3d import Roast3DStim
 
 if TYPE_CHECKING:
-    from neuro.connectome import Connectome
+    from neuro.plant.connectome import Connectome
 
 __all__ = [
     "AnalyticalStim",

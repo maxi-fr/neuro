@@ -12,10 +12,10 @@ from scipy.signal import decimate
 from simulate.config import load_config as load_sim_config
 
 from neuro.config import StftGeometry, resolve_simulation_config
-from neuro.connectome import Connectome
-from neuro.eeg import build_eeg_leadfield, focal_channels
-from neuro.jansen_rit import JansenRitDynamics, lfp, simulate_network
-from neuro.seizure import A_HEALTHY, SPREAD_WINDOW_S, build_seizure_a_gains, spread_profile_from_lfp
+from neuro.plant.connectome import Connectome
+from neuro.plant.eeg import build_eeg_leadfield, focal_channels
+from neuro.plant.jansen_rit import JansenRitDynamics, lfp, simulate_network
+from neuro.plant.seizure import A_HEALTHY, SPREAD_WINDOW_S, build_seizure_a_gains, spread_profile_from_lfp
 from observable_predictability.archive import (
     EVALUATION_SCORES_FILE,
     SCHEMA_VERSION,
@@ -333,7 +333,7 @@ def build_plants(config_path: Path | dict[str, Any] | None = None) -> PlantPair:
         and np.allclose(np.asarray(dynamics_cfg["params"]["A"], dtype=np.float64), expected)
     )
     if not (is_seizure or has_matching_a):
-        msg = f"{config_path} does not carry the EZ/PZ A vector of neuro.seizure.build_seizure_a_gains"
+        msg = f"{config_path} does not carry the EZ/PZ A vector of neuro.plant.seizure.build_seizure_a_gains"
         raise ValueError(msg)
 
     seizure = JansenRitDynamics.from_config(dynamics_cfg)
@@ -1193,7 +1193,7 @@ def _fit_references_and_freeze_dev_parameters(
     HealthyConnectivityReference,
     ConnectivitySupportSelection,
 ]:
-    """Fit healthy references on ``split='reference'`` and select connectivity support on ``split='dev'``."""
+    """Fit healthy references from matched Waveforms and histories and select connectivity support on dev."""
     ref_ids, ref_histories, ref_waveforms = _extract_healthy_split_waveforms(
         base_dir,
         manifest,
@@ -1208,7 +1208,7 @@ def _fit_references_and_freeze_dev_parameters(
     ref_spec_frames = np.stack(
         [
             extract_spectral_frames(
-                waveform,
+                np.asarray(waveform),
                 protocol.target_fs,
                 history=history,
                 geometry=protocol.stft_geometry,

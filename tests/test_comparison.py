@@ -26,8 +26,8 @@ from neuro.comparison import (
     summarize,
     write_rows,
 )
-from neuro.connectome import Connectome
-from neuro.seizure import EZ_REGIONS, PZ_REGIONS
+from neuro.plant.connectome import Connectome
+from neuro.plant.seizure import EZ_REGIONS, PZ_REGIONS
 from neuro.validation import validate_simulation_config
 
 if TYPE_CHECKING:

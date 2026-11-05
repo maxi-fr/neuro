@@ -283,7 +283,7 @@ def test_comparison_validate_grid_rejects_ineligible_arm(tmp_path: Path) -> None
     unstable_model.save(art_path)
 
     cfg = {
-        "dynamics": {"class_path": "neuro.jansen_rit.JansenRitDynamics", "dt": 1e-4, "params": {"K": 0.6}},
+        "dynamics": {"class_path": "neuro.plant.jansen_rit.JansenRitDynamics", "dt": 1e-4, "params": {"K": 0.6}},
         "sensors": {"class_path": "simulate.sensor.GaussianSensor", "dt": 1e-4, "std_dev": 0.0},
         "estimator": {"class_path": "neuro.filtering.AntiAliasEstimator", "dt": 1e-4, "downsample": 200},
         "controller": {

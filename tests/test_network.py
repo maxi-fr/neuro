@@ -3,8 +3,8 @@ from dataclasses import replace
 import numpy as np
 import pytest
 
-from neuro.connectome import Connectome
-from neuro.jansen_rit import JansenRitDynamics, JansenRitParams, lfp, simulate_network
+from neuro.plant.connectome import Connectome
+from neuro.plant.jansen_rit import JansenRitDynamics, JansenRitParams, lfp, simulate_network
 from neuro.types import FloatArray
 
 _DT = 1e-4

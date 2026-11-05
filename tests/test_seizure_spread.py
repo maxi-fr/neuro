@@ -3,9 +3,9 @@ from dataclasses import replace
 import numpy as np
 import pytest
 
-from neuro.connectome import Connectome
-from neuro.jansen_rit import JansenRitDynamics, JansenRitParams, lfp, resting_state, simulate_network
-from neuro.seizure import (
+from neuro.plant.connectome import Connectome
+from neuro.plant.jansen_rit import JansenRitDynamics, JansenRitParams, lfp, resting_state, simulate_network
+from neuro.plant.seizure import (
     A_HEALTHY,
     DT,
     EZ_REGIONS,

@@ -17,7 +17,7 @@ from neuro.stimulation.roast_3d import load_roast_3d_field_projection
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
-    from neuro.connectome import Connectome
+    from neuro.plant.connectome import Connectome
     from neuro.types import FloatArray, IntArray, StrArray
 
 _logger = logging.getLogger(__name__)

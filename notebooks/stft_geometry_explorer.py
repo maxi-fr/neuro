@@ -12,12 +12,12 @@ def _():
     from pydantic import ValidationError
 
     from neuro.config import StftGeometry
-    from neuro.connectome import Connectome
-    from neuro.eeg import build_eeg_leadfield, focal_channels
     from neuro.filtering import antialias_filter
     from neuro.geometry import sensor_positions_mm
+    from neuro.plant.connectome import Connectome
+    from neuro.plant.eeg import build_eeg_leadfield, focal_channels
+    from neuro.plant.seizure import EZ_REGIONS, spread_profile_from_lfp
     from neuro.predictor.data import load_trajectory
-    from neuro.seizure import EZ_REGIONS, spread_profile_from_lfp
     from neuro.spectral import compute_log_power_frames, compute_segment_window
 
     return (

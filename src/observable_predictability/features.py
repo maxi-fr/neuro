@@ -7,7 +7,7 @@ import numpy as np
 from scipy.signal import sosfilt
 
 from neuro.filtering import design_lowpass_sos
-from neuro.seizure_calibration import SEIZURE_PTP_MV, SPREAD_WINDOW_S
+from neuro.plant.seizure_calibration import SEIZURE_PTP_MV, SPREAD_WINDOW_S
 from neuro.spectral import (
     HealthyReference,
     ObservableEnvelope,

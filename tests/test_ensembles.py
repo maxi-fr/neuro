@@ -12,7 +12,7 @@ import numpy as np
 import pytest
 from scipy.signal import decimate
 
-from neuro.seizure import SPREAD_WINDOW_S
+from neuro.plant.seizure import SPREAD_WINDOW_S
 from observable_predictability.archive import EVALUATION_SCORES_FILE, SCHEMA_VERSION, load_evaluation_bundle
 from observable_predictability.ensemble import (
     ARM_ZERO,

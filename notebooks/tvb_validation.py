@@ -12,9 +12,9 @@ def _():
     import numpy as np
     from matplotlib import pyplot as plt
 
-    from neuro.connectome import Connectome
-    from neuro.jansen_rit import JansenRitDynamics, JansenRitParams, lfp, simulate_network
-    from neuro.tvb_reference import build_reference_simulator, reference_eeg_leadfield, run_reference
+    from neuro.plant.connectome import Connectome
+    from neuro.plant.jansen_rit import JansenRitDynamics, JansenRitParams, lfp, simulate_network
+    from neuro.plant.tvb_reference import build_reference_simulator, reference_eeg_leadfield, run_reference
     from utils.processing import band_energy, compute_psd, steady_window
 
     return (
@@ -263,7 +263,7 @@ def _(band_energy, conn, hr_eeg, np, plt, steady_window, tvb):
 def _(build_reference_simulator, conn, mo, np, plt, reference_eeg_leadfield):
     from tvb.datatypes.sensors import SensorsEEG
 
-    from neuro.eeg import _mirror_partner_permutation, build_eeg_leadfield
+    from neuro.plant.eeg import _mirror_partner_permutation, build_eeg_leadfield
 
     _sim = build_reference_simulator(conn, with_eeg=True)
     _tvb_leadfield = reference_eeg_leadfield(_sim)

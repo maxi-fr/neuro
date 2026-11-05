@@ -22,11 +22,11 @@ from neuro.config import (
     resolve_seeds,
     resolve_simulation_config,
 )
-from neuro.connectome import Connectome
 from neuro.control.zero import ZeroController
-from neuro.eeg import EEGMeasurement
-from neuro.jansen_rit import JansenRitDynamics
-from neuro.seizure import build_seizure_a_gains
+from neuro.plant.connectome import Connectome
+from neuro.plant.eeg import EEGMeasurement
+from neuro.plant.jansen_rit import JansenRitDynamics
+from neuro.plant.seizure import build_seizure_a_gains
 
 _VALID_TRAINING = {
     "losses": {
@@ -626,7 +626,7 @@ def test_resolve_simulation_config_expands_defaults() -> None:
     assert resolved["reference"]["dt"] == 1e-4
     assert resolved["reference"]["step_value"] == 0.0
     assert resolved["sensors"]["class_path"] == "simulate.sensor.GaussianSensor"
-    assert resolved["sensors"]["measurement"]["class_path"] == "neuro.eeg.EEGMeasurement"
+    assert resolved["sensors"]["measurement"]["class_path"] == "neuro.plant.eeg.EEGMeasurement"
 
 
 def test_resolve_simulation_config_immutability() -> None:
@@ -659,7 +659,7 @@ def test_resolve_simulation_config_dynamics_regimes(monkeypatch: pytest.MonkeyPa
 
     monkeypatch.setattr(Connectome, "from_config", unexpected_connectome_load)
     cfg_h = resolve_simulation_config({"dynamics": {"regime": "healthy"}})
-    assert cfg_h["dynamics"]["class_path"] == "neuro.jansen_rit.JansenRitDynamics"
+    assert cfg_h["dynamics"]["class_path"] == "neuro.plant.jansen_rit.JansenRitDynamics"
     assert cfg_h["dynamics"]["regime"] == "healthy"
     assert "A" not in cfg_h["dynamics"]["params"]
     assert cfg_h["dynamics"]["params"]["sigma"] == 280.0

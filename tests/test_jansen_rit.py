@@ -4,8 +4,8 @@ from dataclasses import replace
 import numpy as np
 import pytest
 
-from neuro.connectome import Connectome
-from neuro.jansen_rit import (
+from neuro.plant.connectome import Connectome
+from neuro.plant.jansen_rit import (
     JansenRitDynamics,
     JansenRitParams,
     _heun_step_jit,

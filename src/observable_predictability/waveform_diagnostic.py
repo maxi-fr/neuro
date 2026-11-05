@@ -3,12 +3,12 @@ from __future__ import annotations
 import sys
 from dataclasses import replace
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 import numpy as np
 from matplotlib import pyplot as plt
 
-from neuro.seizure_calibration import SEIZURE_PTP_MV, SPREAD_WINDOW_S
+from neuro.plant.seizure_calibration import SEIZURE_PTP_MV, SPREAD_WINDOW_S
 from neuro.spectral import LOG_FLOOR, compute_forecast_log_power_frames, compute_segment_window
 from observable_predictability.ensemble import (
     eeg_history_path,
@@ -53,7 +53,7 @@ def snapshot_phase_agreement(coefficients: np.ndarray, n_replays: int) -> FloatA
 
 
 def main(directory: Path, destination: Path) -> None:
-    """Compare waveform, power and phase on matched evaluation replays."""
+    """Compare waveform, power and phase on matched evaluation replays with recorded histories."""
     manifest = load_manifest(directory)
     geometry = baseline_stft_geometry()
     fs = 50.0
@@ -89,12 +89,13 @@ def main(directory: Path, destination: Path) -> None:
             history, waveform = condition_waveform_pair(
                 continuation.T, manifest["fs"], history_raw=history_store[row // n_replays].T
             )
-            spectrum = frame_coefficients(history, waveform, geometry)
+            # Conditioning returns a history when one is supplied.
+            spectrum = frame_coefficients(cast("FloatArray", history), waveform, geometry)
             coeff = spectrum[..., lo:hi] * scale
             if row == 0:
                 np.testing.assert_allclose(
                     np.log(abs(coeff) ** 2 + LOG_FLOOR),
-                    compute_forecast_log_power_frames(history, waveform, geometry, fs=fs),
+                    compute_forecast_log_power_frames(cast("FloatArray", history), waveform, geometry, fs=fs),
                     atol=1e-8,
                 )
             waveforms.append(waveform)

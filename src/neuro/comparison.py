@@ -22,7 +22,8 @@ from simulate.config import deep_merge, load_config
 from simulate.simulation import Simulation
 
 from neuro.config import SEED_TIERS, StrictConfig, resolve_seeds, resolve_simulation_config
-from neuro.connectome import Connectome
+from neuro.plant.connectome import Connectome
+from neuro.plant.seizure import EZ_REGIONS, PZ_REGIONS, SEIZURE_PTP_MV, spread_profile_from_lfp, spread_summary
 from neuro.predictor.evaluation import (
     EligibilityStatus,
     HorizonEligibility,
@@ -30,7 +31,6 @@ from neuro.predictor.evaluation import (
     ScientificThresholds,
     check_candidate_eligibility,
 )
-from neuro.seizure import EZ_REGIONS, PZ_REGIONS, SEIZURE_PTP_MV, spread_profile_from_lfp, spread_summary
 from neuro.validation import validate_simulation_config
 
 if TYPE_CHECKING:
@@ -190,8 +190,8 @@ def spread_metrics(
 ) -> dict[str, float]:
     """Score Seizure Burden, the spread schedule and per-group amplitude from the region LFP.
 
-    Onsets come from :func:`neuro.seizure.spread_summary` and are censored at the run duration, as
-    :meth:`neuro.seizure.SpreadSummary.score` censors them: a zone that never seizes scores the
+    Onsets come from :func:`neuro.plant.seizure.spread_summary` and are censored at the run duration, as
+    :meth:`neuro.plant.seizure.SpreadSummary.score` censors them: a zone that never seizes scores the
     worst onset the run can show rather than NaN. Left as NaN, the arm that prevented recruitment
     would drop out of the very column the arm that caused it appears in, and averaging over the
     recruited regions alone would rank one region recruited late below three recruited early. An

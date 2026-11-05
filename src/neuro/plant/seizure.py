@@ -5,13 +5,13 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
-from neuro.jansen_rit import JansenRitDynamics, lfp, simulate_network
-from neuro.seizure_calibration import SEIZURE_PTP_MV, SPREAD_HOP_S, SPREAD_PERSIST_S, SPREAD_WINDOW_S
+from neuro.plant.jansen_rit import JansenRitDynamics, lfp, simulate_network
+from neuro.plant.seizure_calibration import SEIZURE_PTP_MV, SPREAD_HOP_S, SPREAD_PERSIST_S, SPREAD_WINDOW_S
 
 if TYPE_CHECKING:
     import numpy.typing as npt
 
-    from neuro.connectome import Connectome
+    from neuro.plant.connectome import Connectome
     from neuro.types import FloatArray
 
 

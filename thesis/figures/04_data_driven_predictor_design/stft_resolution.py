@@ -13,8 +13,8 @@ from scipy.signal.windows import hann
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import style
 
-from neuro.connectome import Connectome
-from neuro.jansen_rit import JansenRitDynamics, JansenRitParams, lfp, simulate_network
+from neuro.plant.connectome import Connectome
+from neuro.plant.jansen_rit import JansenRitDynamics, JansenRitParams, lfp, simulate_network
 from neuro.types import FloatArray  # noqa: TC001 -- runtime import keeps the script runnable standalone
 
 DT = 1e-4
@@ -92,7 +92,11 @@ def main() -> None:
     end = max(KERNEL_WIDTHS)
     for idx, width in enumerate(KERNEL_WIDTHS):
         ax.semilogy(
-            freqs, power[end - width : end].mean(axis=0), lw=0.9, color=f"C{idx}", label=rf"$n_{{\mathrm{{smooth}}}} = {width}$"
+            freqs,
+            power[end - width : end].mean(axis=0),
+            lw=0.9,
+            color=f"C{idx}",
+            label=rf"$n_{{\mathrm{{smooth}}}} = {width}$",
         )
     ax.set_title("(b) One segment length, three kernel widths", loc="left")
 

@@ -553,6 +553,7 @@ class NNSweepConfig(StrictConfig):
     training: dict[str, ParamSpec] = Field(default_factory=dict)
     observable: dict[str, ParamSpec] = Field(default_factory=dict)
 
+
 def _validate_observable_losses(losses: LossSpecs | None, geometry: StftGeometry, fs: float) -> None:
     if losses is None:
         return
@@ -659,9 +660,7 @@ class NNPredictorConfig(StrictConfig):
         if self.sweep is None:
             return self
 
-        if self.observable is None and (
-            self.training.fit != "gradient_descent" or "fit" in self.sweep.training
-        ):
+        if self.observable is None and (self.training.fit != "gradient_descent" or "fit" in self.sweep.training):
             msg = "Waveform sweeps require training.fit='gradient_descent'. Run closed-form Waveform fits separately."
             raise ValueError(msg)
 
@@ -794,7 +793,10 @@ def resolve_artifact_dir(artifact: str | None, default_prefix: str) -> Path:
 
 
 def _resolve_dynamics_config(dyn: dict[str, Any]) -> None:
-    """Apply regime defaults while leaving regional gains to Plant construction."""
+    """Resolve the Plant class path and apply regime defaults."""
+    if dyn.get("class_path") == "neuro.jansen_rit.JansenRitDynamics":
+        dyn["class_path"] = "neuro.plant.jansen_rit.JansenRitDynamics"
+
     regime = dyn.get("regime")
     params = dyn.setdefault("params", {})
     if not isinstance(params, dict) or regime is None:
@@ -804,7 +806,7 @@ def _resolve_dynamics_config(dyn: dict[str, Any]) -> None:
         msg = f"Unknown dynamics regime {regime!r}. Expected 'healthy' or 'seizure'."
         raise ValueError(msg)
 
-    dyn.setdefault("class_path", "neuro.jansen_rit.JansenRitDynamics")
+    dyn.setdefault("class_path", "neuro.plant.jansen_rit.JansenRitDynamics")
     dyn.setdefault("dt", 1e-4)
     dyn.setdefault("initial_state", "rest")
     dyn.setdefault("connectome", {"speed": 50.0, "K": 0.60})
@@ -812,18 +814,22 @@ def _resolve_dynamics_config(dyn: dict[str, Any]) -> None:
 
 
 def _resolve_sensors_config(config: dict[str, Any], plant_dt: float) -> None:
-    """Expand sensors shorthand ('eeg') into full sensor definitions."""
+    """Expand EEG shorthand and resolve the EEG measurement class path."""
     sensors = config.get("sensors")
     if sensors is None or sensors == "eeg":
         config["sensors"] = {
             "class_path": "simulate.sensor.GaussianSensor",
             "dt": plant_dt,
             "std_dev": 0.0,
-            "measurement": {"class_path": "neuro.eeg.EEGMeasurement"},
+            "measurement": {"class_path": "neuro.plant.eeg.EEGMeasurement"},
         }
     elif isinstance(sensors, str):
         msg = f"Unknown sensors shorthand {sensors!r}. Expected 'eeg' or a sensor dict."
         raise ValueError(msg)
+    elif isinstance(sensors, dict):
+        measurement = sensors.get("measurement")
+        if isinstance(measurement, dict) and measurement.get("class_path") == "neuro.eeg.EEGMeasurement":
+            measurement["class_path"] = "neuro.plant.eeg.EEGMeasurement"
 
 
 def resolve_simulation_config(config: dict[str, Any]) -> dict[str, Any]:

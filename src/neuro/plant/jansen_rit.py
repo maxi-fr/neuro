@@ -11,7 +11,7 @@ from simulate.component import NoLog
 from simulate.dynamics import Dynamics
 
 from neuro.config import StrictConfig
-from neuro.connectome import Connectome, _ConnectomeConfig
+from neuro.plant.connectome import Connectome, _ConnectomeConfig
 from neuro.stimulation import NullStim, StimulationConfig, build_stimulation
 from neuro.stimulation.base import _Roast3DConfig
 
@@ -70,7 +70,7 @@ class JansenRitParams:
         ``x5'`` equation; ``sigma = 0`` gives a noiseless (deterministic) run.
 
     The network structure (weights, delays, EEG leadfield, global coupling ``K``) lives on
-    :class:`~neuro.connectome.Connectome`, and the stimulation drive / control current projection on a
+    :class:`~neuro.plant.connectome.Connectome`, and the stimulation drive / control current projection on a
     :class:`~neuro.stimulation.base.StimulationModel`, not here.
     """
 
@@ -405,7 +405,7 @@ class JansenRitDynamics(Dynamics[JansenRitStateLog | JansenRitLFPLog | NoLog]):
 
         params_data = cfg.params.model_dump()
         if cfg.regime is not None:
-            from neuro.seizure import (  # noqa: PLC0415 -- breaks circular import with neuro.seizure
+            from neuro.plant.seizure import (  # noqa: PLC0415 -- breaks circular import with neuro.plant.seizure
                 A_HEALTHY,
                 build_seizure_a_gains,
             )

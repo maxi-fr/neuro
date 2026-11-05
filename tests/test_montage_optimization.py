@@ -3,7 +3,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from neuro.connectome import Connectome
+from neuro.plant.connectome import Connectome
 from neuro.stimulation.analytical import compute_gamma
 from neuro.stimulation.montage_optimization import (
     SelectedMontageStim,

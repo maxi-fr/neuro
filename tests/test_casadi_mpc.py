@@ -150,7 +150,7 @@ def test_configuration_constructs_continuous_controller(tmp_path: Path) -> None:
     np.testing.assert_allclose(controller.problem.u_max, [0.6, 0.6])
 
     sim_config = {
-        "dynamics": {"class_path": "neuro.jansen_rit.JansenRitDynamics", "dt": 0.01},
+        "dynamics": {"class_path": "neuro.plant.jansen_rit.JansenRitDynamics", "dt": 0.01},
         "estimator": {"class_path": "neuro.filtering.PassThroughEstimator", "dt": 0.01},
         "sensors": {"class_path": "simulate.sensor.GaussianSensor", "dt": 0.01},
         "controller": config["controller"],
@@ -417,7 +417,7 @@ def test_configuration_constructs_controller_with_all_costs(tmp_path: Path) -> N
     assert controller.model.n_history >= support
 
     sim_config = {
-        "dynamics": {"class_path": "neuro.jansen_rit.JansenRitDynamics", "dt": dt},
+        "dynamics": {"class_path": "neuro.plant.jansen_rit.JansenRitDynamics", "dt": dt},
         "estimator": {"class_path": "neuro.filtering.PassThroughEstimator", "dt": dt},
         "sensors": {"class_path": "simulate.sensor.GaussianSensor", "dt": dt},
         "controller": config["controller"],

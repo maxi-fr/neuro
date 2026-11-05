@@ -7,7 +7,7 @@ import numpy as np
 import pytest
 import yaml
 
-from neuro.config import StftGeometry
+from neuro.config import StftGeometry, resolve_simulation_config
 from neuro.predictor.mlp import ObservableMLPModel, WaveformMLPModel
 from neuro.provenance import (
     TrainingProvenance,
@@ -30,7 +30,7 @@ _N_CONTROLS = 3
 def _plant() -> dict[str, Any]:
     """The plant blocks shared by the training data and the closed-loop config under test."""
     return {
-        "dynamics": {"class_path": "neuro.jansen_rit.JansenRitDynamics", "dt": _PLANT_DT, "params": {"K": 0.6}},
+        "dynamics": {"class_path": "neuro.plant.jansen_rit.JansenRitDynamics", "dt": _PLANT_DT, "params": {"K": 0.6}},
         "sensors": {"class_path": "simulate.sensor.GaussianSensor", "dt": _PLANT_DT, "std_dev": 0.0},
     }
 
@@ -335,6 +335,18 @@ def test_artifact_without_provenance_skips_those_checks(config: dict[str, Any], 
     with warnings.catch_warnings():
         warnings.simplefilter("error")
         validate_simulation_config(config)
+
+
+def test_moved_plant_classes_preserve_saved_fingerprints() -> None:
+    """Resolve old Plant class paths without invalidating saved artifact fingerprints."""
+    saved = _plant()
+    saved["dynamics"]["class_path"] = "neuro.jansen_rit.JansenRitDynamics"
+    saved["sensors"]["measurement"] = {"class_path": "neuro.eeg.EEGMeasurement"}
+    resolved = resolve_simulation_config(saved)
+
+    assert resolved["dynamics"]["class_path"] == "neuro.plant.jansen_rit.JansenRitDynamics"
+    assert resolved["sensors"]["measurement"]["class_path"] == "neuro.plant.eeg.EEGMeasurement"
+    assert plant_fingerprint(resolved) == plant_fingerprint(saved)
 
 
 def test_data_plant_fingerprint_reads_the_batch_base(tmp_path: Path) -> None:

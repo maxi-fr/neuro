@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import warnings
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -11,7 +12,7 @@ import numpy as np
 import yaml
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping, Sequence
+    from collections.abc import Sequence
     from typing import Self
 
 # The plant is what the predictor is identified on; the seed only picks a realisation of it and
@@ -20,9 +21,18 @@ _VOLATILE_DYNAMICS_KEYS = frozenset({"seed", "log"})
 
 
 def plant_fingerprint(config: Mapping[str, Any]) -> str:
-    """Hash the plant-defining blocks -- ``dynamics`` and ``sensors`` -- of a simulation config."""
+    """Hash the Plant configuration using stable class identifiers for saved artifacts."""
     dynamics = {k: v for k, v in config.get("dynamics", {}).items() if k not in _VOLATILE_DYNAMICS_KEYS}
-    payload = json.dumps({"dynamics": dynamics, "sensors": config.get("sensors")}, sort_keys=True, default=str)
+    if dynamics.get("class_path") == "neuro.plant.jansen_rit.JansenRitDynamics":
+        dynamics["class_path"] = "neuro.jansen_rit.JansenRitDynamics"
+
+    sensors = config.get("sensors")
+    if isinstance(sensors, Mapping):
+        measurement = sensors.get("measurement")
+        if isinstance(measurement, Mapping) and measurement.get("class_path") == "neuro.plant.eeg.EEGMeasurement":
+            sensors = {**sensors, "measurement": {**measurement, "class_path": "neuro.eeg.EEGMeasurement"}}
+
+    payload = json.dumps({"dynamics": dynamics, "sensors": sensors}, sort_keys=True, default=str)
     return hashlib.sha256(payload.encode()).hexdigest()
 
 

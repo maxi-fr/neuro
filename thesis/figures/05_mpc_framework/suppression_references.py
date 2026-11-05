@@ -1,7 +1,7 @@
 """Compare reference-based suppression penalties on saved unstimulated EEG."""
 
-from pathlib import Path
 import sys
+from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -10,8 +10,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import style
 
 from neuro.config import StftGeometry
-from neuro.eeg import build_eeg_leadfield
 from neuro.filtering import antialias_filter
+from neuro.plant.eeg import build_eeg_leadfield
 from neuro.spectral import compute_log_power_frames
 from neuro.types import FloatArray
 

@@ -9,8 +9,8 @@ import numpy as np
 from simulate.simulation import Simulation
 
 from neuro.comparison import lfp_logging, spread_metrics
-from neuro.connectome import Connectome
-from neuro.seizure import SEIZURE_PTP_MV
+from neuro.plant.connectome import Connectome
+from neuro.plant.seizure import SEIZURE_PTP_MV
 
 if TYPE_CHECKING:
     from simulate.logger import BaseLogger

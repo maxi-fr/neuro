@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
-from neuro.seizure import A_HEALTHY, SPREAD_WINDOW_S, build_seizure_a_gains
+from neuro.plant.seizure import A_HEALTHY, SPREAD_WINDOW_S, build_seizure_a_gains
 from observable_predictability.ensemble import (
     BRANCHES,
     DEFAULT_EVALUATION_PROTOCOL,

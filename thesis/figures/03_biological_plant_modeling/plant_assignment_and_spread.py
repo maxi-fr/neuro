@@ -15,8 +15,8 @@ if TYPE_CHECKING:
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import style
 
-from neuro.connectome import Connectome
-from neuro.seizure import EZ_REGIONS, PZ_REGIONS, spread_profile_from_lfp
+from neuro.plant.connectome import Connectome
+from neuro.plant.seizure import EZ_REGIONS, PZ_REGIONS, spread_profile_from_lfp
 
 ROOT = Path(__file__).resolve().parents[3]
 OUT = Path(__file__).resolve().parent

@@ -13,7 +13,7 @@ def _():
     from pydantic import ValidationError
 
     from neuro.config import StftSpec
-    from neuro.eeg import build_eeg_leadfield
+    from neuro.plant.eeg import build_eeg_leadfield
     from neuro.predictor.data import load_trajectory
     from neuro.predictor.inference import WaveformMLPModel
     from neuro.predictor.losses import frame_kernel, pool_bins, smooth_frames, spectrogram

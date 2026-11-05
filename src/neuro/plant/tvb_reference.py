@@ -6,8 +6,8 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
-from neuro.eeg import _PROJECTION_FILE, _REGION_MAPPING_FILE, _mirror_partner_permutation
 from neuro.geometry import SENSORS_FILE
+from neuro.plant.eeg import _PROJECTION_FILE, _REGION_MAPPING_FILE, _mirror_partner_permutation
 
 with warnings.catch_warnings():
     warnings.simplefilter("ignore", UserWarning)
@@ -21,7 +21,7 @@ with warnings.catch_warnings():
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
-    from neuro.connectome import Connectome
+    from neuro.plant.connectome import Connectome
     from neuro.types import FloatArray
 
 

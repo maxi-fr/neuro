@@ -14,8 +14,8 @@ from scipy.signal.windows import hann
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import style
 
-from neuro.connectome import Connectome
-from neuro.jansen_rit import JansenRitDynamics, JansenRitParams, lfp, resting_state, simulate_network
+from neuro.plant.connectome import Connectome
+from neuro.plant.jansen_rit import JansenRitDynamics, JansenRitParams, lfp, resting_state, simulate_network
 from neuro.types import FloatArray  # noqa: TC001 -- runtime import keeps the script runnable standalone
 
 DT = 1e-4

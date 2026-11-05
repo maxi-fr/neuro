@@ -10,8 +10,8 @@ def _():
     import numpy as np
     from matplotlib import pyplot as plt
 
-    from neuro.connectome import Connectome
-    from neuro.eeg import build_eeg_leadfield
+    from neuro.plant.connectome import Connectome
+    from neuro.plant.eeg import build_eeg_leadfield
 
     return Connectome, build_eeg_leadfield, mo, np, plt
 
