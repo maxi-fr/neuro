@@ -3,9 +3,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from neuro.plant.connectome import Connectome
-from neuro.stimulation.analytical import compute_gamma
-from neuro.stimulation.montage_optimization import (
+from experiments.montage_optimization import (
     SelectedMontageStim,
     build_target_field,
     load_field_projection_matrix,
@@ -13,6 +11,8 @@ from neuro.stimulation.montage_optimization import (
     solve_l1_montage_qp,
     sweep_sparse_montages,
 )
+from neuro.plant.connectome import Connectome
+from neuro.stimulation.analytical import compute_gamma
 
 
 @pytest.fixture(scope="module")

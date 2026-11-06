@@ -13,15 +13,15 @@ def _():
     import marimo as mo
     import matplotlib.pyplot as plt
 
-    from neuro.plant.connectome import Connectome
-    from neuro.plant.jansen_rit import JansenRitDynamics, JansenRitParams, lfp, simulate_network
-    from neuro.plant.seizure import build_seizure_a_gains
-    from neuro.stimulation.montage_optimization import (
+    from experiments.montage_optimization import (
         SelectedMontageStim,
         build_target_field,
         load_field_projection_matrix,
         sweep_sparse_montages,
     )
+    from neuro.plant.connectome import Connectome
+    from neuro.plant.jansen_rit import JansenRitDynamics, JansenRitParams, lfp, simulate_network
+    from neuro.plant.seizure import build_seizure_a_gains
 
     return (
         Connectome,
