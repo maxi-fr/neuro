@@ -75,7 +75,7 @@ def _pieces(u: FloatArray) -> list[FloatArray]:
 
 
 def main() -> None:
-    """Write adjacent multiple- and single-shooting panels with one-step intervals."""
+    """Plot scalar multiple and single shooting with one-step intervals."""
     u = _inputs()
     t = np.arange(HORIZON + 1) * DT
     single = _rollout(X0, u)
@@ -85,7 +85,7 @@ def main() -> None:
     fig, (ax_m, ax_s) = plt.subplots(1, 2, figsize=style.figsize(height_in=2.7), sharey=True, constrained_layout=True)
 
     ax_s.plot(t, single, lw=1.6, color="C0", marker="o", ms=3.5, label="predicted trajectory")
-    ax_s.plot(t[0], single[0], marker="s", ms=6, color="C3", ls="none", label=r"$\hat{\mathbf{x}}_k$")
+    ax_s.plot(t[0], single[0], marker="s", ms=6, color="C3", ls="none", label=r"$\hat{x}_k$")
     ax_s.set_title("Direct single shooting", loc="left")
     ax_s.annotate(
         "Dynamics satisfied\nat every iterate",
@@ -108,7 +108,7 @@ def main() -> None:
             mec="C2",
             mew=1.4,
             ls="none",
-            label=r"decision variable $\mathbf{x}_{j|k}$" if i == 0 else None,
+            label=r"decision variable $x_{j|k}$" if i == 0 else None,
         )
     for i, gap in enumerate(GAPS):
         t_node = t[(i + 1) * length]
@@ -120,7 +120,7 @@ def main() -> None:
             arrowprops={"arrowstyle": "<->", "lw": 1.0, "color": "C3"},
         )
     ax_m.plot(t[-1], pieces[-1][-1], marker="o", ms=7, mfc="white", mec="C2", mew=1.4, ls="none")
-    ax_m.plot(t[0], X0, marker="s", ms=6, color="C3", ls="none", label=r"$\hat{\mathbf{x}}_k$")
+    ax_m.plot(t[0], X0, marker="s", ms=6, color="C3", ls="none", label=r"$\hat{x}_k$")
     ax_m.set_title("Direct multiple shooting", loc="left")
     ax_m.annotate(
         "Dynamics defects\nat an intermediate iterate",

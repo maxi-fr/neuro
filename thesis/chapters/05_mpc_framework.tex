@@ -4,11 +4,9 @@ The models developed in Chapter~\ref{ch:data_driven_predictor_design} predict th
 To use these models for control, the stimulation sequence must be chosen to reduce seizure-related activity while limiting stimulation effort and satisfying current constraints.
 This chapter formulates that choice as a finite-horizon optimal control problem.
 
-We first show how model predictive control turns this optimization problem into a feedback controller.
-We then compare two ways to re-formulate the problem for a numerical solver.
-With this general framework in place, we then specify it for our seizure suppression problem.
-We detail how the learned predictor, the current limits and the suppression objective enter the control problem.
-Finally, we examine how the cost and constraints can promote sparse stimulation.
+The chapter first explains how model predictive control uses this problem in a feedback loop and compares two numerical transcriptions.
+It then develops the formulation for seizure suppression using the learned predictor, the suppression objective and the current limits.
+The chapter closes by examining how costs and constraints can promote sparse stimulation.
 
 \section{General \ac{mpc} Formulation}\label{sec:mpc_formulation}
 
@@ -46,16 +44,16 @@ The controller therefore minimizes the objective over admissible input sequences
         & \mathbf{x}_{0|k}=\hat{\mathbf{x}}_k, \\
         & \mathbf{x}_{j+1|k}=\mathbf{f}(\mathbf{x}_{j|k},\mathbf{u}_{j|k}),
           \qquad j=0,\ldots,H-1, \\
-        & \mathbf{x}_{j|k}\in\mathbb{X},
+        & \mathbf{x}_{j|k}\in\mathcal{X},
           \qquad j=0,\ldots,H, \\
-        & \mathbf{u}_{j|k}\in\mathbb{U},
+        & \mathbf{u}_{j|k}\in\mathcal{U},
           \qquad j=0,\ldots,H-1, \\
-        & \mathbf{x}_{H|k}\in\mathbb{X}_\mathrm{f}\,.
+        & \mathbf{x}_{H|k}\in\mathcal{X}_\mathrm{f}\,.
     \end{aligned}
     \label{eq:mpc_ocp}
 \end{equation}
 The objective $\mathcal{J}$ sums the stage cost $\ell:\mathbb{R}^{\ndim{x}}\times\mathbb{R}^{\ndim{u}}\to\mathbb{R}$ over the state and input pairs and adds a terminal cost $V_\mathrm{f}:\mathbb{R}^{\ndim{x}}\to\mathbb{R}$ on the final predicted state.
-The sets $\mathbb{X}\subseteq\mathbb{R}^{\ndim{x}}$ and $\mathbb{U}\subseteq\mathbb{R}^{\ndim{u}}$ specify the admissible states and inputs, respectively, and $\mathbb{X}_\mathrm{f}\subseteq\mathbb{X}$ specifies the admissible final states.
+The sets $\mathcal{X}\subseteq\mathbb{R}^{\ndim{x}}$ and $\mathcal{U}\subseteq\mathbb{R}^{\ndim{u}}$ specify the admissible states and inputs, respectively, and $\mathcal{X}_\mathrm{f}\subseteq\mathcal{X}$ specifies the admissible final states.
 \end{samepage}
 %
 Solving~\eqref{eq:mpc_ocp} once gives an open-loop input sequence based on the information available at step $k$.
@@ -67,6 +65,7 @@ To account for that departure, the controller applies only the first input of an
 \end{equation*}
 %
 At time step $k+1$, the problem is solved again from the updated initial state with the horizon shifted forward by one step.
+This procedure is called receding-horizon control.
 Although each optimization computes an open-loop input sequence, replanning from updated measurements introduces feedback~\cite{Findeisen2002}.
 Figure~\ref{fig:receding_horizon} shows how the plans change as new measurements become available.
 
@@ -82,18 +81,12 @@ Figure~\ref{fig:receding_horizon} shows how the plans change as new measurements
     The dotted horizontal line marks the upper input bound.}\label{fig:receding_horizon}
 \end{figure}
 
-For a task that continues indefinitely, the finite-horizon problem approximates the infinite-horizon control problem.
-A shorter horizon reduces the number of decision variables and constraints, while the terminal cost can approximate the cost beyond the endpoint~\cite{Rawlings2017,Mayne2000}.
+A task may continue indefinitely, but limiting the prediction horizon gives the solver a finite set of decision variables and constraints at each update.
+The terminal cost can approximate the cost beyond the horizon~\cite{Rawlings2017,Mayne2000}.
 
-Receding-horizon replanning alone guarantees neither recursive feasibility nor asymptotic stability.
-An input sequence is feasible if it satisfies all constraints in~\eqref{eq:mpc_ocp}.
-Recursive feasibility means that feasibility at the initial update implies feasibility at subsequent updates.
-Asymptotic stability means that trajectories starting sufficiently close to the equilibrium stay close and converge to it~\cite{Rawlings2017}.
-Under nominal model dynamics, a suitable terminal constraint can preserve feasibility by ensuring an admissible continuation beyond the horizon.
-A terminal cost that decreases sufficiently along that continuation can also support a proof of asymptotic stability~\cite{Mayne2000,Rawlings2017,Findeisen2002}.
-
-These properties concern how successive solutions behave in closed loop.
-Computing each solution within a sampling interval is a separate requirement, which motivates the comparison of numerical transcriptions in the next section.
+Replanning alone does not ensure that a feasible plan exists at every subsequent update or that the closed-loop state converges to the target equilibrium~\cite{Rawlings2017,Mayne2000}.
+For feedback at the chosen sampling rate, the controller must also solve each finite-horizon problem within one sampling interval.
+The next section compares two ways to formulate that problem for a numerical solver.
 
 \section{Numerical Transcription and Solution}\label{sec:mpc_numerical_solution}
 
@@ -163,15 +156,14 @@ The computational tradeoff depends on the dynamics, horizon length and numerical
 \begin{figure}
     \centering
     \includegraphics{figures/05_mpc_framework/shooting}
-    \caption{Direct multiple and single shooting over one prediction horizon.
+    \caption{Direct multiple and single shooting for a scalar system over one prediction horizon.
     Multiple shooting treats the state at each sampling instant as an optimization variable; gaps between the one-step predictions and the next state variables indicate violated dynamics constraints at an intermediate iterate.
     Single shooting computes one continuous model rollout from the initial state, with only the inputs as optimization variables.}\label{fig:shooting}
 \end{figure}
 
 When the objective or constraints are nonlinear, either transcription gives a constrained \ac{nlp}.
 Methods for solving the resulting \ac{nlp} include \ac{sqp}~\cite{Nocedal2006} and interior-point methods, as implemented in IPOPT~\cite{Waechter2006}.
-Both transcriptions require a prediction model, an objective and admissible sets.
-The next section specifies these ingredients for seizure suppression with the learned predictors.
+The next section develops the \ac{mpc} formulation for seizure suppression and shows how the learned predictor's history structure reduces the number of decision variables relative to full-state multiple shooting.
 
 \section{\ac{mpc} for Seizure Suppression}\label{sec:mpc_input_output_formulation}
 
@@ -321,14 +313,14 @@ The current bounds apply to each electrode, and Kirchhoff's current law requires
 With one control coordinate per physical electrode, the input set is
 %
 \begin{equation}
-    \mathbb U
+    \mathcal U
     =\left\{\mathbf u\in\mathbb R^{\ndim{u}}:\,
         |u_p|\leq u_\mathrm{max},\ p=1,\ldots,\ndim{u},\quad % chktex 35 -- max names the current bound.
         \sum_{p=1}^{\ndim{u}}u_p=0
-      \right\}    \label{eq:mpc_current_constraints}
+      \right\}\,.    \label{eq:mpc_current_constraints}
 \end{equation}
 %
-Predicted activity is penalized through the suppression costs without additional state or terminal-set restrictions, giving $\mathbb X_{\mathrm f}=\mathbb X=\mathbb R^{\ndim{h}}$.
+Predicted activity is penalized through the suppression costs without additional state or terminal-set restrictions, giving $\mathcal X_{\mathrm f}=\mathcal X=\mathbb R^{\ndim{h}}$.
 The bounds in~\eqref{eq:mpc_current_constraints} limit instantaneous currents, while the $L_2$ current cost penalizes squared current across the horizon.
 The next section introduces penalties and constraints that favor intervals without stimulation.
 
@@ -450,6 +442,7 @@ Since only the first current vector of each plan is applied before replanning, n
 
 The combination of binary activation decisions and nonlinear predictor dynamics yields a \ac{minlp}.
 A standard continuous \ac{nlp} solver cannot enforce the binary restrictions directly.
+Solving the \ac{minlp} is generally more computationally expensive than solving the corresponding continuous relaxation because it requires searches over activation schedules.
 We therefore discuss three different approaches to handling the binary decisions.
 
 \subsubsection*{Branch and Bound}
@@ -522,9 +515,9 @@ For the activation schedule $\boldsymbol\delta=(\delta_{0|k},\ldots,\delta_{H-1|
 \end{equation}
 %
 For $\beta>0$, each summand in~\eqref{eq:mpc_integrality_penalty} vanishes at both binary values and is positive between them.
-The homotopy\footnote{Here, a homotopy is a family of optimization problems that changes continuously with a parameter~\cite{Sager2006}.} starts at $\beta=0$, where the integrality penalty vanishes for every relaxed schedule.
-At each subsequent step, $\beta$ is increased and the solver is initialized with the preceding solution.
-The solver then reoptimizes the currents and activation variables under the larger integrality penalty.
+The homotopy varies the integrality penalty gradually across a sequence of relaxed problems.
+The first solve uses $\beta=0$, so every relaxed schedule has zero integrality penalty.
+At each subsequent step, a larger $\beta$ raises the cost of fractional activations, and the solver starts from the previous solution to reoptimize the currents and activations.
 The sequence ends when a solve satisfies the binary restriction within the solver tolerance or when the continuation limit is reached.
 The computational cost depends on the number of continuation solves instead of the size of a search tree.
 Small increases in $\beta$ can require more solves, while large increases can make it harder for the solver to follow the solution branch traced by the preceding solves~\cite{Sager2006}.
