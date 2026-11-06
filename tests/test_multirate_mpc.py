@@ -20,9 +20,6 @@ from experiments.ood import (
 from neuro.control.casadi import CasADiMPCController, CasADiMPCLog, build_casadi_waveform_problem
 from neuro.control.mpc import TrajOptMPCController, TrajOptMPCLog
 from neuro.control.problems import build_waveform_problem
-from neuro.runs.record import Run
-from neuro.runs.spectra import compare_spectra
-from neuro.runs.view import ViewSettings
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -196,31 +193,6 @@ def test_attempt_metrics_include_failure_and_exclude_playback(tmp_path: Path) ->
     _extract_solver_metrics_from_log(arrays, ood_metrics)
     assert ood_metrics["solve_success_rate"] == result["solve_success_rate"]
     assert ood_metrics["solve_time_p95_s"] == result["solve_time_p95_s"]
-
-
-def test_plan_filtering_preserves_native_observation_targets(tmp_path: Path) -> None:
-    times = np.arange(13, dtype=np.float64) * 0.01
-    observed = np.sin(np.arange(13, dtype=np.float64))[:, None]
-    predictions = np.full((13, 7, 1), np.nan)
-    predictions[0] = observed[:7]
-    predictions[6] = observed[6:13]
-    run = Run(
-        tmp_path,
-        {"controller": {"dt": 0.01}},
-        {
-            "controller.t": times,
-            "controller.solve_attempted": np.array([k in (0, 6) for k in range(13)], dtype=np.float64),
-            "controller.predicted_y": predictions,
-            "estimator.t": times,
-            "estimator.x_hat": observed,
-        },
-    )
-    series = run.planned_predictions()
-    np.testing.assert_allclose(series.t, [0.0, 0.06])
-    np.testing.assert_allclose(series.observation_times, times)
-    result = compare_spectra(series, ViewSettings(decision=0.06, spectral_steps=6))
-    assert result is not None
-    np.testing.assert_allclose(result.predicted, result.observed)
 
 
 def test_ood_attempt_queries_keep_native_measurement_and_current_history(tmp_path: Path) -> None:

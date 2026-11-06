@@ -268,13 +268,6 @@ def eligibility_start_epoch(losses: Sequence[Loss]) -> int:
     return max((loss_eligibility_start(loss) for loss in losses), default=0)
 
 
-def specs_eligibility_start(specs: LossSpecs | dict[str, LossSpec] | None, fs: float) -> int:
-    """First training epoch where every enabled Loss is active and every curriculum at full Span from specs."""
-    if specs is None:
-        return 0
-    return eligibility_start_epoch(build_losses(specs, fs))
-
-
 def spectrogram(x: jax.Array, n_segment: int, n_hop: int, fs: float, *, window: jax.Array | None = None) -> jax.Array:
     """Compute hopped periodograms using the supplied taper or periodic Hann."""
     t_len = x.shape[-1]

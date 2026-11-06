@@ -283,16 +283,6 @@ class EnsembleConfig:
                             )
         return validate_identities(identities)
 
-    @property
-    def n_replicates(self) -> int:
-        """Noise replicates per parent snapshot on development and evaluation splits."""
-        return self.n_children
-
-    @property
-    def n_rollouts(self) -> int:
-        """Evaluation Rollouts stored per branch and arm, indexed ``parent * n_children + child``."""
-        return self.n_parents * self.n_children
-
 
 @dataclass
 class PlantPair:

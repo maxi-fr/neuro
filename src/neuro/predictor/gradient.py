@@ -144,8 +144,8 @@ def fit_gradient_descent[ModelT: AutoregressiveModel](  # noqa: PLR0913, PLR0912
         y_hist, u_hist, u_future, y_target = batch
 
         def compute(mod: ModelT) -> tuple[jax.Array, dict[str, float | None]]:
-            """Score the Predictor Rollout using its input window and full Loss boundary history."""
-            pred = mod.rollout(y_hist[:, -mod.n_y :], u_hist, u_future)
+            """Score the standardized Predictor Rollout using its input window and full Loss history."""
+            pred = mod.rollout_standardized(y_hist[:, -mod.n_y :], u_hist, u_future)
             batch_ctx = eqx.tree_at(lambda context: context.y_hist, ctx, y_hist, is_leaf=lambda x: x is None)
             loss_val, parts = total_loss(
                 losses, pred, y_target, batch_ctx, step_mask=step_mask, active_mask=active_mask
@@ -160,9 +160,9 @@ def fit_gradient_descent[ModelT: AutoregressiveModel](  # noqa: PLR0913, PLR0912
         batch: tuple[jax.Array, jax.Array, jax.Array, jax.Array],
         eval_ctx: LossContext,
     ) -> tuple[jax.Array, dict[str, float | None]]:
-        """Validate the Predictor on full Loss Spans with its boundary history."""
+        """Validate standardized Rollouts on full Loss Spans with their boundary history."""
         y_hist, u_hist, u_future, y_target = batch
-        pred = m.rollout(y_hist[:, -m.n_y :], u_hist, u_future)
+        pred = m.rollout_standardized(y_hist[:, -m.n_y :], u_hist, u_future)
         batch_ctx = eqx.tree_at(lambda context: context.y_hist, eval_ctx, y_hist, is_leaf=lambda x: x is None)
         return total_loss(losses, pred, y_target, batch_ctx, step_mask=None)
 

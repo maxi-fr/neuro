@@ -666,7 +666,7 @@ architecture-neutral and is loaded through `InferencePredictor.load` (§8.4).
 
 ### 8.2 Separate Predictor evaluation
 
-Use the [spectral evaluator](../src/neuro/predictor/evaluation.py) for common log-power Frame MSE and Control Horizon qualification for terminal NMSE and amplitude growth. Set the forecast horizon in the evaluation protocol.
+Use the [spectral evaluator](../src/neuro/predictor/evaluation.py) for common log-power Frame MSE. Set the forecast horizon in the evaluation protocol.
 
 ### 8.3 `du_sensitivity` — is stimulation doing anything?
 

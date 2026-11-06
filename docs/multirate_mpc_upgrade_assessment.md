@@ -120,16 +120,15 @@ neuro source today. Implement the accepted contract from the existing plan:
 - Extend validation independently for native rate, integral replanning ratio,
   b=1 or b=r, H>=r, H divisible by b, and aligned sufficient common start.
 - Add `solve_attempted`, `plan_index`, `fallback` and `controller_time` consistently
-  across both logs. Use attempt masks in comparison, OOD, views and plots;
-  preserve all native observations/applied currents in replay. Solve deadlines
+  across both logs. Use attempt masks in comparison and OOD. Preserve native
+  observations and applied currents for OOD analysis. Solve deadlines
   use replan_dt; within-plan spacing still uses native dt.
 
 The current [solver/Cost metrics](../src/experiments/comparison.py#L240) and
 [OOD readers](../src/experiments/ood.py#L396) use `~warmup` as the solve population;
-that becomes wrong with playback. [Run.planned_predictions](../src/neuro/run_view.py#L107)
-currently selects all rows. Filter attempt rows without shifting their observed
-targets. Update benchmark decision counts and separate fixed-state solve latency
-from complete controller runtime and solves per simulated second.
+that becomes wrong with playback. Update benchmark decision counts and report
+fixed-state solve latency separately from complete controller runtime and solves
+per simulated second.
 
 Delivered Charge is partly done already:
 [score_run](../src/experiments/comparison.py#L325) uses logged command durations and gives

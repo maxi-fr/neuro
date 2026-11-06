@@ -202,7 +202,7 @@ def test_curriculum_scores_only_the_trusted_prefix() -> None:
 
 
 def test_stft_is_gated_off_until_start_epoch() -> None:
-    """total_loss gates off the spectral term when ctx.epoch < stft.start_epoch."""
+    """Gate off the spectral Loss on a standardized Rollout before its start epoch."""
     rng = np.random.default_rng(_SEED + 1)
     n_y, n_u, horizon, c, n_controls, batch, w_stft = 2, 2, 6, 5, 2, 32, 0.1
     model = _model(n_y, n_u, horizon, c, n_controls)
@@ -211,7 +211,7 @@ def test_stft_is_gated_off_until_start_epoch() -> None:
     u_hist = jnp.asarray(rng.standard_normal((batch, n_u, n_controls)), dtype=jnp.float32)
     u_future = jnp.asarray(rng.standard_normal((batch, horizon, n_controls)), dtype=jnp.float32)
     true_traj = jnp.asarray(rng.standard_normal((batch, horizon, c)), dtype=jnp.float32)
-    pred_traj = model.rollout(y_hist, u_hist, u_future)
+    pred_traj = model.rollout_standardized(y_hist, u_hist, u_future)
 
     losses: list[Loss] = [
         CurriculumMSE(weight=1.0, span_steps=horizon, start_epoch=0, curr_start=0, curr_end=0),

@@ -1,14 +1,17 @@
 import marimo
 
 __generated_with = "0.24.2"
-app = marimo.App(width="full", app_title="Module Dependency Explorer")
+app = marimo.App(
+    width="full",
+    app_title="Module Dependency & Dead Code Explorer",
+)
 
 
 @app.cell(hide_code=True)
 def _():
     import ast
+    import contextlib
     from collections import defaultdict, deque
-    from dataclasses import dataclass, field
     from pathlib import Path
 
     import marimo as mo
@@ -16,11 +19,13 @@ def _():
     import pandas as pd
     import plotly.graph_objects as go
 
-    return Path, ast, dataclass, defaultdict, deque, field, go, mo, np, pd
+    return Path, ast, contextlib, defaultdict, deque, go, mo, np, pd
 
 
 @app.cell(hide_code=True)
-def _(Path, ast, dataclass, defaultdict, field):
+def _(Path, ast, contextlib, defaultdict):
+    from dataclasses import dataclass, field
+
     @dataclass
     class EdgeInfo:
         source: str
@@ -37,6 +42,22 @@ def _(Path, ast, dataclass, defaultdict, field):
         rel_path: str
         loc: int
 
+    @dataclass
+    class SymbolInfo:
+        module: str
+        name: str
+        kind: str  # "function" | "class" | "method" | "field"
+        parent_class: str
+        lineno: int
+        is_private: bool
+        is_dunder: bool
+        category: str  # "unused" | "test_only" | "internal_only" | "active"
+        same_file_refs: int
+        src_refs: list[str] = field(default_factory=list)
+        scripts_refs: list[str] = field(default_factory=list)
+        tests_refs: list[str] = field(default_factory=list)
+        imported_by: list[str] = field(default_factory=list)
+
     def is_marimo_cell(node: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
         for dec in node.decorator_list:
             if isinstance(dec, ast.Attribute) and dec.attr == "cell":
@@ -45,7 +66,16 @@ def _(Path, ast, dataclass, defaultdict, field):
                 return True
         return False
 
-    def parse_repo_dependencies(repo_root: Path) -> tuple[dict[str, ModuleInfo], list[EdgeInfo]]:
+    def parse_repo_dependencies(
+        repo_root: Path,
+    ) -> tuple[
+        dict[str, ModuleInfo],
+        list[EdgeInfo],
+        list[SymbolInfo],
+        dict[str, list[SymbolInfo]],
+        dict[str, list[tuple[str, str]]],
+        dict[str, list[tuple[str, str, str]]],
+    ]:
         modules: dict[str, ModuleInfo] = {}
         file_map: dict[str, tuple[Path, str, Path]] = {}
 
@@ -117,9 +147,12 @@ def _(Path, ast, dataclass, defaultdict, field):
                 parts.pop()
             return None
 
+        # Parse ASTs and extract imports for all files in file_map
+        parsed_trees: dict[str, ast.AST] = {}
         for mod_name, (p, root_group, base_root) in file_map.items():
             rel = p.relative_to(base_root)
             tree = ast.parse(p.read_text(encoding="utf-8"))
+            parsed_trees[mod_name] = tree
 
             tc_nodes: set[ast.AST] = set()
             func_scope: dict[ast.AST, str] = {}
@@ -203,11 +236,242 @@ def _(Path, ast, dataclass, defaultdict, field):
                     edges.append(chosen)
                     break
 
-        return modules, edges
+        # --- Symbol and Dead Code Analysis Across All Scopes ---
+        # Also parse tests/ for reference tracking
+        test_trees: dict[str, ast.AST] = {}
+        tests_root = repo_root / "tests"
+        if tests_root.is_dir():
+            for p in sorted(tests_root.rglob("*.py")):
+                if "__pycache__" in p.parts:
+                    continue
+                with contextlib.suppress(Exception):
+                    test_trees[p.name] = ast.parse(p.read_text(encoding="utf-8"))
+
+        # Collect file reference tokens
+        # For each file: group, set of imported symbols per target_mod, set of all Name IDs, set of all Attribute attrs
+        file_tokens: dict[str, tuple[str, dict[str, set[str]], set[str], set[str]]] = {}
+        for mod_name, (_p, root_group, _base_root) in file_map.items():
+            tree = parsed_trees[mod_name]
+            imp_syms: dict[str, set[str]] = defaultdict(set)
+            name_ids: set[str] = set()
+            attr_names: set[str] = set()
+            for node in ast.walk(tree):
+                if isinstance(node, ast.ImportFrom):
+                    t = resolve_internal_target(node.module or "")
+                    if t:
+                        for a in node.names:
+                            imp_syms[t].add(a.name)
+                elif isinstance(node, ast.Name):
+                    name_ids.add(node.id)
+                elif isinstance(node, ast.Attribute):
+                    attr_names.add(node.attr)
+            file_tokens[mod_name] = (root_group, imp_syms, name_ids, attr_names)
+
+        for tname, ttree in test_trees.items():
+            imp_syms = defaultdict(set)
+            name_ids = set()
+            attr_names = set()
+            for node in ast.walk(ttree):
+                if isinstance(node, ast.ImportFrom):
+                    t = resolve_internal_target(node.module or "")
+                    if t:
+                        for a in node.names:
+                            imp_syms[t].add(a.name)
+                elif isinstance(node, ast.Name):
+                    name_ids.add(node.id)
+                elif isinstance(node, ast.Attribute):
+                    attr_names.add(node.attr)
+            file_tokens[f"tests.{tname}"] = ("tests", imp_syms, name_ids, attr_names)
+
+        # Collect definitions in src/ modules
+        symbols_list: list[SymbolInfo] = []
+        module_symbols_map: dict[str, list[SymbolInfo]] = defaultdict(list)
+        internal_calls_map: dict[str, list[tuple[str, str]]] = defaultdict(list)
+        external_calls_map: dict[str, list[tuple[str, str, str]]] = defaultdict(list)
+
+        for mod_name, (_p, root_group, _base_root) in file_map.items():
+            if root_group != "src":
+                continue
+            tree = parsed_trees[mod_name]
+
+            # Track imports for call resolution
+            local_imported_syms: dict[str, tuple[str, str]] = {}
+            for node in ast.walk(tree):
+                if isinstance(node, ast.ImportFrom):
+                    t = resolve_internal_target(node.module or "")
+                    if t:
+                        for a in node.names:
+                            local_imported_syms[a.asname or a.name] = (t, a.name)
+
+            local_defined_names: set[str] = set()
+            raw_defs: list[tuple[str, str, str, int, bool, bool]] = []
+
+            for node in tree.body:
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    is_priv = node.name.startswith("_") and not (
+                        node.name.startswith("__") and node.name.endswith("__")
+                    )
+                    is_dund = node.name.startswith("__") and node.name.endswith("__")
+                    raw_defs.append((node.name, "function", "", node.lineno, is_priv, is_dund))
+                    local_defined_names.add(node.name)
+
+                    # Extract local and external calls from this function
+                    for sub in ast.walk(node):
+                        if isinstance(sub, ast.Call):
+                            call_name = (
+                                sub.func.id
+                                if isinstance(sub.func, ast.Name)
+                                else (sub.func.attr if isinstance(sub.func, ast.Attribute) else None)
+                            )
+                            if call_name and call_name != node.name and call_name in local_imported_syms:
+                                ext_mod, ext_sym = local_imported_syms[call_name]
+                                external_calls_map[mod_name].append((node.name, ext_mod, ext_sym))
+
+                elif isinstance(node, ast.ClassDef):
+                    is_priv = node.name.startswith("_") and not (
+                        node.name.startswith("__") and node.name.endswith("__")
+                    )
+                    is_dund = node.name.startswith("__") and node.name.endswith("__")
+                    raw_defs.append((node.name, "class", "", node.lineno, is_priv, is_dund))
+                    local_defined_names.add(node.name)
+
+                    for sub in node.body:
+                        if isinstance(sub, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                            sub_priv = sub.name.startswith("_") and not (
+                                sub.name.startswith("__") and sub.name.endswith("__")
+                            )
+                            sub_dund = sub.name.startswith("__") and sub.name.endswith("__")
+                            raw_defs.append((sub.name, "method", node.name, sub.lineno, sub_priv, sub_dund))
+                            local_defined_names.add(sub.name)
+
+                            for cnode in ast.walk(sub):
+                                if isinstance(cnode, ast.Call):
+                                    call_name = (
+                                        cnode.func.id
+                                        if isinstance(cnode.func, ast.Name)
+                                        else (cnode.func.attr if isinstance(cnode.func, ast.Attribute) else None)
+                                    )
+                                    if call_name and call_name in local_imported_syms:
+                                        ext_mod, ext_sym = local_imported_syms[call_name]
+                                        external_calls_map[mod_name].append(
+                                            (f"{node.name}.{sub.name}", ext_mod, ext_sym)
+                                        )
+
+                        elif isinstance(sub, ast.AnnAssign) and isinstance(sub.target, ast.Name):
+                            sub_priv = sub.target.id.startswith("_")
+                            raw_defs.append((sub.target.id, "field", node.name, sub.lineno, sub_priv, False))
+                            local_defined_names.add(sub.target.id)
+
+            # Extract intra-module calls
+            for node in tree.body:
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    for sub in ast.walk(node):
+                        if isinstance(sub, ast.Call):
+                            call_name = (
+                                sub.func.id
+                                if isinstance(sub.func, ast.Name)
+                                else (sub.func.attr if isinstance(sub.func, ast.Attribute) else None)
+                            )
+                            if call_name and call_name in local_defined_names and call_name != node.name:
+                                internal_calls_map[mod_name].append((node.name, call_name))
+
+            # Reference counting across scopes for each defined symbol
+            for sym, kind, parent, lineno, is_priv, is_dund in raw_defs:
+                # Count same file references (excluding definition line)
+                same_file_refs = 0
+                for node in ast.walk(tree):
+                    if hasattr(node, "lineno") and node.lineno == lineno:
+                        continue
+                    if (isinstance(node, ast.Name) and node.id == sym) or (
+                        isinstance(node, ast.Attribute) and node.attr == sym
+                    ):
+                        same_file_refs += 1
+
+                src_refs: list[str] = []
+                scripts_refs: list[str] = []
+                tests_refs: list[str] = []
+                imported_by: list[str] = []
+
+                for other_name, (grp, imp_map, name_ids, attr_names) in file_tokens.items():
+                    if other_name == mod_name:
+                        continue
+                    has_ref = False
+                    is_direct_import = sym in imp_map.get(mod_name, set())
+
+                    if is_direct_import:
+                        imported_by.append(other_name)
+                        has_ref = True
+                    elif (
+                        kind in ("function", "class")
+                        and (sym in name_ids or sym in attr_names)
+                        and (mod_name in imp_map or any(m.startswith(mod_name) for m in imp_map))
+                    ) or sym in attr_names:
+                        has_ref = True
+
+                    if has_ref:
+                        if grp == "src":
+                            src_refs.append(other_name)
+                        elif grp in ("scripts", "notebooks"):
+                            scripts_refs.append(other_name)
+                        elif grp == "tests":
+                            tests_refs.append(other_name)
+
+                # Determine category
+                if is_dund:
+                    cat = "active"  # Standard Python protocol dunders are invoked by runtime
+                elif src_refs or scripts_refs:
+                    cat = "active"
+                elif tests_refs:
+                    cat = "test_only"
+                elif same_file_refs > 0:
+                    cat = "internal_only"
+                else:
+                    cat = "unused"
+
+                sym_info = SymbolInfo(
+                    module=mod_name,
+                    name=sym,
+                    kind=kind,
+                    parent_class=parent,
+                    lineno=lineno,
+                    is_private=is_priv,
+                    is_dunder=is_dund,
+                    category=cat,
+                    same_file_refs=same_file_refs,
+                    src_refs=sorted(src_refs),
+                    scripts_refs=sorted(scripts_refs),
+                    tests_refs=sorted(tests_refs),
+                    imported_by=sorted(imported_by),
+                )
+                symbols_list.append(sym_info)
+                module_symbols_map[mod_name].append(sym_info)
+
+        return (
+            modules,
+            edges,
+            symbols_list,
+            module_symbols_map,
+            internal_calls_map,
+            external_calls_map,
+        )
 
     repo_root = Path(__file__).resolve().parent.parent
-    all_modules, all_edges = parse_repo_dependencies(repo_root)
-    return all_edges, all_modules
+    (
+        all_modules,
+        all_edges,
+        all_symbols,
+        all_module_symbols,
+        all_internal_calls,
+        all_external_calls,
+    ) = parse_repo_dependencies(repo_root)
+    return (
+        all_edges,
+        all_external_calls,
+        all_internal_calls,
+        all_module_symbols,
+        all_modules,
+        all_symbols,
+    )
 
 
 @app.cell(hide_code=True)
@@ -219,6 +483,7 @@ def _(all_modules, mo):
     show_deferred = mo.ui.checkbox(value=True, label="Deferred (function-local) imports")
     show_type_checking = mo.ui.checkbox(value=False, label="TYPE_CHECKING imports")
 
+    show_edge_symbols = mo.ui.checkbox(value=False, label="Show imported symbols on edges")
     hide_isolated = mo.ui.checkbox(value=False, label="Hide isolated modules")
     group_by_subsystem = mo.ui.checkbox(value=True, label="Group Mermaid subgraphs")
     highlight_special = mo.ui.checkbox(value=True, label="Highlight cycle-breakers & cross-subpackage edges")
@@ -247,6 +512,7 @@ def _(all_modules, mo):
         include_scripts,
         mermaid_dir,
         show_deferred,
+        show_edge_symbols,
         show_top_level,
         show_type_checking,
         subsystem_colors,
@@ -341,16 +607,16 @@ def _(
     mermaid_dir,
     mo,
     show_deferred,
+    show_edge_symbols,
     show_top_level,
     show_type_checking,
     subsystem_filter,
 ):
     header = mo.md(
         """
-        # 🕸️ Module Dependency Explorer
+        # 🕸️ Module Dependency & Dead Code Explorer
 
-        Filesystem-driven AST dependency graph for `src/`, with optional `scripts/` and `notebooks/` overlays.
-        An arrow **`A --> B`** means **`A` imports `B`**.
+        Interactive AST dependency graph and symbol-level dead code detector for `src/` (with optional `scripts/` and `notebooks/` overlays).
         """
     )
 
@@ -376,6 +642,7 @@ def _(
                     show_top_level,
                     show_deferred,
                     show_type_checking,
+                    show_edge_symbols,
                     hide_isolated,
                     group_by_subsystem,
                     highlight_special,
@@ -559,17 +826,25 @@ def _(
     highlight_special,
     is_cross_subpackage_edge,
     mermaid_dir,
+    show_edge_symbols,
     subsystem_colors,
 ):
     def node_id(mod_name: str) -> str:
         return "m_" + mod_name.replace(".", "_").replace("-", "_")
 
     def short_label(mod_name: str, subsystem: str) -> str:
-        # Strip shared top-level package prefix only when inside a multi-part package
         top_pkg = subsystem.split(".", maxsplit=1)[0]
         if mod_name.startswith(f"{top_pkg}.") and mod_name != top_pkg:
             return mod_name.removeprefix(f"{top_pkg}.")
         return mod_name
+
+    def format_edge_label(symbols: set[str]) -> str:
+        if not symbols or not show_edge_symbols.value:
+            return ""
+        sorted_syms = sorted(symbols)
+        if len(sorted_syms) <= 2:
+            return f'|"{", ".join(sorted_syms)}"|'
+        return f'|"{sorted_syms[0]}, {sorted_syms[1]} (+{len(sorted_syms) - 2})"|'
 
     lines = [f"flowchart {mermaid_dir.value}"]
 
@@ -596,13 +871,15 @@ def _(
     for _edge_idx, _e in enumerate(filtered_edges):
         u = node_id(_e.source)
         v = node_id(_e.target)
+        sym_lbl = format_edge_label(_e.symbols)
+
         if _e.kind == "top_level":
-            lines.append(f"    {u} --> {v}")
+            lines.append(f"    {u} -->{sym_lbl} {v}")
         elif _e.kind == "deferred":
-            lines.append(f"    {u} -.->|deferred| {v}")
+            lines.append(f"    {u} -.->|deferred{sym_lbl.replace('|', ' ')}| {v}")
             deferred_link_indices.append(_edge_idx)
         else:
-            lines.append(f"    {u} -.->|tc| {v}")
+            lines.append(f"    {u} -.->|tc{sym_lbl.replace('|', ' ')}| {v}")
             tc_link_indices.append(_edge_idx)
 
         if _e.kind == "top_level" and is_cross_subpackage_edge(_e.source, _e.target):
@@ -627,6 +904,287 @@ def _(
 
     mermaid_source = "\n".join(lines)
     return (mermaid_source,)
+
+
+@app.cell(hide_code=True)
+def _(
+    all_external_calls,
+    all_internal_calls,
+    all_module_symbols,
+    defaultdict,
+    filtered_edges,
+    focus,
+    mo,
+    pd,
+):
+    if focus == "All modules (no focus)" or focus not in all_module_symbols:
+        focus_view = mo.md(
+            "> [!NOTE]\n"
+            "> Select a specific **Focus module** in the top controls to inspect its exported API, "
+            "dead code status, upstream imported symbols, and function/class call graph."
+        )
+    else:
+        _syms = all_module_symbols.get(focus, [])
+        _cat_badge = {
+            "active": "🟢 Active",
+            "internal_only": "🔵 Internal-Only",
+            "test_only": "🟡 Test-Only",
+            "unused": "🔴 Unused Anywhere",
+        }
+
+        sym_rows = [
+            {
+                "Symbol": f"{_s.parent_class}.{_s.name}" if _s.parent_class else _s.name,
+                "Kind": _s.kind,
+                "Line": _s.lineno,
+                "Status": _cat_badge.get(_s.category, _s.category),
+                "Privacy": "Private (_)" if _s.is_private else "Public",
+                "Same-File Refs": _s.same_file_refs,
+                "Src Refs": len(_s.src_refs),
+                "Scripts/NB Refs": len(_s.scripts_refs),
+                "Tests Refs": len(_s.tests_refs),
+                "Imported By": ", ".join(_s.imported_by[:4]) + ("..." if len(_s.imported_by) > 4 else "")
+                if _s.imported_by
+                else "—",
+            }
+            for _s in sorted(_syms, key=lambda x: (x.category, x.name))
+        ]
+        focus_sym_df = pd.DataFrame(sym_rows)
+
+        # Upstream imports for this module
+        upstream_rows = [
+            {
+                "Imported Target Module": _e.target,
+                "Kind": _e.kind,
+                "Symbols Imported": ", ".join(sorted(_e.symbols)) if _e.symbols else "whole module",
+                "Locations": ", ".join(_e.locations),
+            }
+            for _e in filtered_edges
+            if _e.source == focus
+        ]
+        focus_up_df = pd.DataFrame(upstream_rows)
+
+        # Build symbol-level Mermaid call graph for this module
+        local_calls = all_internal_calls.get(focus, [])
+        ext_calls = all_external_calls.get(focus, [])
+
+        sym_mermaid_lines = ["flowchart LR"]
+        sym_mermaid_lines.append(f'    subgraph sg_local["{focus} (Definitions)"]')
+        for s in _syms:
+            s_id = f"s_{s.name}_{s.lineno}"
+            label = f"{s.parent_class}.{s.name}" if s.parent_class else s.name
+            sym_mermaid_lines.append(f'        {s_id}["{label} ({s.kind})"]')
+        sym_mermaid_lines.append("    end")
+
+        # Local internal calls
+        for caller, callee in local_calls:
+            # find ids
+            caller_s = next((s for _s in _syms if s.name == caller), None)
+            callee_s = next((s for _s in _syms if s.name == callee), None)
+            if caller_s and callee_s:
+                sym_mermaid_lines.append(
+                    f"    s_{caller_s.name}_{caller_s.lineno} --> s_{callee_s.name}_{callee_s.lineno}"
+                )
+
+        # External calls
+        by_ext_mod: dict[str, set[str]] = defaultdict(set)
+        for _caller, ext_mod, ext_sym in ext_calls:
+            by_ext_mod[ext_mod].add(ext_sym)
+
+        for ext_idx, (ext_mod, ext_sym_set) in enumerate(sorted(by_ext_mod.items())):
+            sym_mermaid_lines.append(f'    subgraph sg_ext_{ext_idx}["{ext_mod}"]')
+            sym_mermaid_lines.extend(f'        ext_{ext_idx}_{esym}["{esym}"]' for esym in sorted(ext_sym_set))
+            sym_mermaid_lines.append("    end")
+
+        for caller, ext_mod, ext_sym in ext_calls:
+            caller_s = next((_s for _s in _syms if caller in (_s.name, f"{_s.parent_class}.{_s.name}")), None)
+            ext_idx = [m for m, _ in sorted(by_ext_mod.items())].index(ext_mod)
+            if caller_s:
+                sym_mermaid_lines.append(f"    s_{caller_s.name}_{caller_s.lineno} -.-> ext_{ext_idx}_{ext_sym}")
+
+        focus_call_graph_mmd = "\n".join(sym_mermaid_lines)
+
+        focus_view = mo.vstack(
+            [
+                mo.md(f"## 🎯 Focus Drill-Down: `{focus}`"),
+                mo.hstack(
+                    [
+                        mo.stat(value=f"{len(_syms)}", label="Symbols Defined"),
+                        mo.stat(
+                            value=f"{sum(1 for _s in _syms if s.category == 'active')}",
+                            label="🟢 Active",
+                        ),
+                        mo.stat(
+                            value=f"{sum(1 for _s in _syms if s.category == 'internal_only')}",
+                            label="🔵 Internal-Only",
+                        ),
+                        mo.stat(
+                            value=f"{sum(1 for _s in _syms if s.category == 'test_only')}",
+                            label="🟡 Test-Only",
+                        ),
+                        mo.stat(
+                            value=f"{sum(1 for _s in _syms if s.category == 'unused')}",
+                            label="🔴 Unused Anywhere",
+                        ),
+                    ]
+                ),
+                mo.md("### 📦 Exported Symbols & Usage"),
+                mo.ui.table(focus_sym_df, selection=None),
+                mo.md("### 📥 Upstream Modules & Symbols Imported"),
+                mo.ui.table(focus_up_df, selection=None)
+                if not focus_up_df.empty
+                else mo.md("_No upstream internal imports._"),
+                mo.md("### 🔬 Symbol-Level Internal Call & Usage Graph"),
+                mo.mermaid(focus_call_graph_mmd)
+                if len(_syms) <= 40
+                else mo.md("_Module has more than 40 symbols; see table above for full reference._"),
+            ]
+        )
+    return (focus_view,)
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    category_options = [
+        "All Categories",
+        "🔴 Unused Anywhere (Dead Code)",
+        "🟡 Test-Only",
+        "🔵 Internal-Only (Private Candidate)",
+        "🟢 Active in Production",
+    ]
+    kind_options = ["All Kinds", "function", "class", "method", "field"]
+
+    cat_filter = mo.ui.dropdown(options=category_options, value="All Categories", label="Category")
+    kind_filter = mo.ui.dropdown(options=kind_options, value="All Kinds", label="Symbol Kind")
+    hide_priv_toggle = mo.ui.checkbox(value=False, label="Exclude private (_*) symbols")
+    hide_dund_toggle = mo.ui.checkbox(value=True, label="Exclude dunder (__*__) methods")
+    search_input = mo.ui.text(value="", label="Search symbol name")
+
+    dead_code_controls = mo.hstack(
+        [cat_filter, kind_filter, hide_priv_toggle, hide_dund_toggle, search_input],
+        justify="start",
+        wrap=True,
+    )
+    return (
+        cat_filter,
+        dead_code_controls,
+        hide_dund_toggle,
+        hide_priv_toggle,
+        kind_filter,
+        search_input,
+    )
+
+
+@app.cell(hide_code=True)
+def _(
+    all_symbols,
+    cat_filter,
+    dead_code_controls,
+    hide_dund_toggle,
+    hide_priv_toggle,
+    kind_filter,
+    mo,
+    pd,
+    search_input,
+):
+    cat_key_map = {
+        "🔴 Unused Anywhere (Dead Code)": "unused",
+        "🟡 Test-Only": "test_only",
+        "🔵 Internal-Only (Private Candidate)": "internal_only",
+        "🟢 Active in Production": "active",
+    }
+    _cat_badge = {
+        "active": "🟢 Active",
+        "internal_only": "🔵 Internal-Only",
+        "test_only": "🟡 Test-Only",
+        "unused": "🔴 Unused Anywhere",
+    }
+
+    filtered_syms = all_symbols
+    if cat_filter.value in cat_key_map:
+        target_cat = cat_key_map[cat_filter.value]
+        filtered_syms = [_s for _s in filtered_syms if _s.category == target_cat]
+
+    if kind_filter.value != "All Kinds":
+        filtered_syms = [_s for _s in filtered_syms if _s.kind == kind_filter.value]
+
+    if hide_priv_toggle.value:
+        filtered_syms = [_s for _s in filtered_syms if not _s.is_private]
+
+    if hide_dund_toggle.value:
+        filtered_syms = [_s for _s in filtered_syms if not _s.is_dunder]
+
+    if search_input.value.strip():
+        q = search_input.value.strip().lower()
+        filtered_syms = [_s for _s in filtered_syms if q in _s.name.lower() or q in _s.module.lower()]
+
+    _rows = [
+        {
+            "Module": _s.module,
+            "Symbol": f"{_s.parent_class}.{_s.name}" if _s.parent_class else _s.name,
+            "Kind": _s.kind,
+            "Line": _s.lineno,
+            "Category": _cat_badge.get(_s.category, _s.category),
+            "Privacy": "Private (_)" if _s.is_private else "Public",
+            "Same-File Refs": _s.same_file_refs,
+            "Src Refs": len(_s.src_refs),
+            "Scripts/NB Refs": len(_s.scripts_refs),
+            "Tests Refs": len(_s.tests_refs),
+            "Imported By": ", ".join(_s.imported_by[:3]) + ("..." if len(_s.imported_by) > 3 else "")
+            if _s.imported_by
+            else "—",
+        }
+        for _s in filtered_syms
+    ]
+    sym_inventory_df = pd.DataFrame(_rows)
+
+    # Actionable dead code list (public unused symbols)
+    public_unused = [_s for _s in all_symbols if _s.category == "unused" and not _s.is_private and not _s.is_dunder]
+    dead_code_summary = mo.md(
+        f"""
+        ### 🚨 Actionable Dead Code Summary ({len(public_unused)} public symbols unused anywhere)
+        The following public definitions in `src/` have **zero references** across `src/`, `scripts/`, `notebooks/`, and `tests/`:
+
+        | Module | Symbol | Kind | Line |
+        | :--- | :--- | :--- | :--- |
+        """
+        + "\n".join(
+            f"| `{_s.module}` | `{_s.parent_class + '.' if _s.parent_class else ''}{_s.name}` | {_s.kind} | L{_s.lineno} |"
+            for _s in sorted(public_unused, key=lambda x: (x.module, x.lineno))
+        )
+    )
+
+    dead_code_tab = mo.vstack(
+        [
+            mo.md("## 💀 Dead Code & Symbol Inventory Across `src/`"),
+            mo.hstack(
+                [
+                    mo.stat(value=f"{len(all_symbols)}", label="Total Definitions"),
+                    mo.stat(
+                        value=f"{sum(1 for _s in all_symbols if _s.category == 'active')}",
+                        label="🟢 Active",
+                    ),
+                    mo.stat(
+                        value=f"{sum(1 for _s in all_symbols if _s.category == 'internal_only')}",
+                        label="🔵 Internal-Only",
+                    ),
+                    mo.stat(
+                        value=f"{sum(1 for _s in all_symbols if _s.category == 'test_only')}",
+                        label="🟡 Test-Only",
+                    ),
+                    mo.stat(
+                        value=f"{sum(1 for _s in all_symbols if _s.category == 'unused')}",
+                        label="🔴 Unused Anywhere",
+                    ),
+                ]
+            ),
+            dead_code_controls,
+            mo.md(f"**Showing {len(filtered_syms)} symbols:**"),
+            mo.ui.table(sym_inventory_df, selection=None),
+            dead_code_summary,
+        ]
+    )
+    return (dead_code_tab,)
 
 
 @app.cell(hide_code=True)
@@ -747,7 +1305,7 @@ def _(
         _sub_mods = [_m for _m, _info in sorted(filtered_modules.items()) if _info.subsystem == _sub_name]
         if not _sub_mods:
             continue
-        _top_pkg = _sub_name.split(".")[0]
+        _top_pkg = _sub_name.split(".", maxsplit=1)[0]
         nx = [pos[_m][0] for _m in _sub_mods]
         ny = [pos[_m][1] for _m in _sub_mods]
         labels = [
@@ -852,7 +1410,7 @@ def _(
         margin={"l": 180, "r": 20, "t": 60, "b": 140},
     )
 
-    rows = []
+    _metric_rows = []
     for _m in ordered_mods:
         _info = filtered_modules[_m]
         top_out = [_e.target for _e in filtered_edges if _e.source == _m and _e.kind == "top_level"]
@@ -861,7 +1419,7 @@ def _(
         fan_out = len(top_out) + len(def_out)
         fan_in = sum(1 for _e in filtered_edges if _e.target == _m and _e.kind in {"top_level", "deferred"})
         instability = round(fan_out / (fan_in + fan_out), 2) if (fan_in + fan_out) > 0 else 0.0
-        rows.append(
+        _metric_rows.append(
             {
                 "Module": _m,
                 "Group": _info.root_group,
@@ -876,7 +1434,7 @@ def _(
                 "TYPE_CHECKING Imports": ", ".join(tc_out),
             }
         )
-    metrics_df = pd.DataFrame(rows)
+    metrics_df = pd.DataFrame(_metric_rows)
     return matrix_fig, metrics_df, network_fig
 
 
@@ -884,9 +1442,11 @@ def _(
 def _(
     all_kind_cycles,
     cross_subpackage_edges,
+    dead_code_tab,
     deferred_edges,
     filtered_edges,
     filtered_modules,
+    focus_view,
     matrix_fig,
     mermaid_source,
     metrics_df,
@@ -965,6 +1525,8 @@ def _(
     tabs = mo.ui.tabs(
         {
             "Mermaid Dependency Graph": mermaid_tab,
+            "Focus & Symbol Call Graph": focus_view,
+            "Dead Code & Symbol Inventory": dead_code_tab,
             "Plotly Network & Adjacency Matrix": plotly_tab,
             "Cycle & Architecture Diagnostics": diagnostics_tab,
         }

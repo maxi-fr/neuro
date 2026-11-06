@@ -21,6 +21,13 @@ from pydantic import Field, field_validator
 from simulate.config import deep_merge, load_config
 from simulate.simulation import Simulation
 
+from experiments.closed_loop_metrics import (
+    current_hold_durations,
+    delivered_charge,
+    kirchhoff_residual,
+    solve_attempt_mask,
+    solve_time_metrics,
+)
 from neuro.config import SEED_TIERS, StrictConfig, resolve_seeds, resolve_simulation_config
 from neuro.plant.connectome import Connectome
 from neuro.plant.seizure import EZ_REGIONS, PZ_REGIONS, SEIZURE_PTP_MV, spread_profile_from_lfp, spread_summary
@@ -216,27 +223,25 @@ def spread_metrics(
     return metrics
 
 
-def control_metrics(us: FloatArray, dt: float) -> dict[str, float]:
-    """Score Delivered Charge and the Kirchhoff residual of the applied current."""
-    u = np.asarray(us, dtype=np.float64)
+def control_metrics(times: FloatArray, currents: FloatArray, *, end_s: float) -> dict[str, float]:
+    """Score Delivered Charge and the Kirchhoff residual from the native current log."""
+    u = np.asarray(currents, dtype=np.float64)
     return {
-        "delivered_charge": float(np.sum(np.abs(u)) * dt),
-        "kirchhoff_max": float(np.max(np.abs(np.sum(u, axis=1)))),
+        "delivered_charge": delivered_charge(u, current_hold_durations(times, end_s)),
+        "kirchhoff_max": kirchhoff_residual(u),
     }
 
 
 def solver_metrics(logger: BaseLogger) -> dict[str, float]:
-    """Summarize wall-clock solve times and total native controller update time."""
+    """Summarize attempted solve times and total native controller update time."""
     available = {name for component, name in logger.signals() if component == "controller"}
     if not {"solve_time", "success", "warmup"} <= available:
         return {}
-    warmup = logger.signal("controller", "warmup")[1].reshape(-1).astype(bool)
     success = logger.signal("controller", "success")[1].reshape(-1).astype(bool)
     solve_time = logger.signal("controller", "solve_time")[1].reshape(-1)
-    solved = (
-        logger.signal("controller", "solve_attempted")[1].reshape(-1).astype(bool)
-        if "solve_attempted" in available
-        else ~warmup
+    solved = solve_attempt_mask(
+        logger.signal("controller", "warmup")[1],
+        logger.signal("controller", "solve_attempted")[1] if "solve_attempted" in available else None,
     )
     totals = {
         "solve_count": float(np.sum(solved)),
@@ -244,37 +249,22 @@ def solver_metrics(logger: BaseLogger) -> dict[str, float]:
     }
     if "controller_time" in available:
         totals["controller_time_s"] = float(np.sum(logger.signal("controller", "controller_time")[1]))
-    if not solved.any():
-        keys = (
-            "solve_success_rate",
-            "solve_time_mean_s",
-            "solve_time_p95_s",
-            "solve_time_median_s",
-            "solve_time_max_s",
-        )
-        return {**dict.fromkeys(keys, float("nan")), **totals}
-    p95 = float(np.quantile(solve_time[solved], 0.95))
     return {
         **totals,
-        "solve_success_rate": float(np.mean(success[solved])),
-        "solve_time_mean_s": float(np.mean(solve_time[solved])),
-        "solve_time_p95_s": p95,
-        "solve_time_median_s": float(np.median(solve_time[solved])),
-        "solve_time_max_s": float(np.max(solve_time[solved])),
+        "solve_success_rate": float(np.mean(success[solved])) if solved.any() else float("nan"),
+        **solve_time_metrics(solve_time[solved]),
     }
 
 
 def cost_metrics(logger: BaseLogger) -> dict[str, Any]:
-    """Summarize decomposed Costs over solve attempts, including failed attempts."""
+    """Summarize decomposed Costs across logged solve attempts, including failures."""
     available = {name for component, name in logger.signals() if component == "controller"}
     required = {"cost_spectral", "cost_quadratic_effort", "cost_sparse_effort", "warmup"}
     if not required <= available:
         return {}
-    warmup = logger.signal("controller", "warmup")[1].reshape(-1).astype(bool)
-    solved = (
-        logger.signal("controller", "solve_attempted")[1].reshape(-1).astype(bool)
-        if "solve_attempted" in available
-        else ~warmup
+    solved = solve_attempt_mask(
+        logger.signal("controller", "warmup")[1],
+        logger.signal("controller", "solve_attempted")[1] if "solve_attempted" in available else None,
     )
     if not solved.any():
         return {
@@ -309,7 +299,7 @@ def cost_metrics(logger: BaseLogger) -> dict[str, Any]:
 def score_run(
     config: dict[str, Any], *, threshold: float = SEIZURE_PTP_MV, output_dir: Path | None = None
 ) -> dict[str, Any]:
-    """Score seizure outcomes, applied charge, and solve attempts for one run."""
+    """Score seizure outcomes, timestamped applied currents, and solve attempts for one run."""
     config = lfp_logging(config)
     sim = Simulation.from_config(config)
     connectome = Connectome.from_config(config["dynamics"]["connectome"])
@@ -321,18 +311,14 @@ def score_run(
         if sim.logger is None:
             msg = "Simulation logger is missing after run."
             raise RuntimeError(msg)
-        control_dt = float(config["controller"]["dt"])
         control_t, controls = sim.logger.signal("controller", "u")
-        # The final logged command has no duration inside the recorded simulation.
-        durations = np.maximum(0.0, np.diff(np.minimum(np.append(control_t, config["t_end"]), config["t_end"])))
         metrics = {
             "wall_time_s": wall_time,
             **spread_metrics(sim.logger.signal("dynamics", "lfp")[1], sim.dt, connectome, threshold=threshold),
-            **control_metrics(controls, control_dt),
+            **control_metrics(control_t, controls, end_s=config["t_end"]),
             **solver_metrics(sim.logger),
             **cost_metrics(sim.logger),
         }
-        metrics["delivered_charge"] = float(np.sum(np.abs(controls) * durations[:, None]))
         if "solve_count" in metrics:
             metrics["solves_per_simulated_second"] = metrics["solve_count"] / config["t_end"]
         if "controller_time_s" in metrics:

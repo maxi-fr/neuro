@@ -12,6 +12,13 @@ import yaml
 from scipy.spatial.distance import cdist
 from simulate.simulation import Simulation
 
+from experiments.closed_loop_metrics import (
+    current_hold_durations,
+    delivered_charge,
+    kirchhoff_residual,
+    solve_attempt_mask,
+    solve_time_metrics,
+)
 from neuro.config import resolve_simulation_config
 from neuro.control.schedule import ScheduleController, build_input_schedule
 
@@ -400,38 +407,34 @@ def extract_mpc_rollout_queries(
 def _extract_control_metrics_from_log(
     data: Mapping[str, np.ndarray], run_cfg: dict[str, Any], metrics: dict[str, Any]
 ) -> None:
-    """Calculate Delivered Charge over clipped current holds and the Kirchhoff residual."""
+    """Fill missing Delivered Charge and Kirchhoff metrics from timestamped currents."""
     if "controller.u" not in data or "controller.t" not in data:
         return
     u = np.asarray(data["controller.u"], dtype=np.float64)
     t = np.asarray(data["controller.t"], dtype=np.float64)
     t_end = float(run_cfg.get("t_end", t[-1] if len(t) > 0 else 12.0))
-    durations = np.maximum(0.0, np.diff(np.minimum(np.append(t, t_end), t_end)))
     if "delivered_charge" not in metrics:
-        metrics["delivered_charge"] = float(np.sum(np.abs(u) * durations[:, None]))
+        metrics["delivered_charge"] = delivered_charge(u, current_hold_durations(t, t_end))
     if "kirchhoff_max" not in metrics:
-        metrics["kirchhoff_max"] = float(np.max(np.abs(np.sum(u, axis=1))))
+        metrics["kirchhoff_max"] = kirchhoff_residual(u)
 
 
 def _extract_solver_metrics_from_log(data: Mapping[str, np.ndarray], metrics: dict[str, Any]) -> None:
-    """Summarize actual solve attempts and native update runtime."""
+    """Fill missing solve-attempt and native update metrics from the controller log."""
     if "controller.solve_time" not in data or "controller.warmup" not in data:
         return
     warmup = np.asarray(data["controller.warmup"], dtype=bool)
     solve_time = np.asarray(data["controller.solve_time"], dtype=np.float64)
-    solved = (
-        np.asarray(data["controller.solve_attempted"], dtype=bool) if "controller.solve_attempted" in data else ~warmup
-    )
+    solved = solve_attempt_mask(warmup, data.get("controller.solve_attempted"))
     metrics.setdefault("solve_count", int(np.sum(solved)))
     if "controller.controller_time" in data:
         metrics.setdefault("controller_time_s", float(np.sum(data["controller.controller_time"])))
     if solved.any():
-        if "solve_time_mean_s" not in metrics:
-            metrics["solve_time_mean_s"] = float(np.mean(solve_time[solved]))
-        if "solve_time_p95_s" not in metrics:
-            metrics["solve_time_p95_s"] = float(np.quantile(solve_time[solved], 0.95))
+        timings = solve_time_metrics(solve_time.reshape(-1)[solved])
+        for name in ("solve_time_mean_s", "solve_time_p95_s"):
+            metrics.setdefault(name, timings[name])
     if "controller.success" in data and "solve_success_rate" not in metrics:
-        success = np.asarray(data["controller.success"], dtype=bool)
+        success = np.asarray(data["controller.success"], dtype=bool).reshape(-1)
         metrics["solve_success_rate"] = float(np.mean(success[solved])) if solved.any() else 0.0
         metrics.setdefault("solve_failures", int(np.sum(solved & ~success)))
 

@@ -205,12 +205,14 @@ def test_spread_metrics_censor_an_unrecruited_zone_instead_of_dropping_it(connec
 
 
 def test_control_metrics_score_charge_and_the_kirchhoff_residual() -> None:
-    us = np.tile(np.array([[1.0, 0.0, -1.0]]), (100, 1))
+    """Integrate irregular current holds and clip at the recorded run end."""
+    times = np.array([0.0, 0.01, 0.04, 0.12])
+    us = np.array([[0.5, 0.0, -0.5], [1.0, 0.0, -1.0], [1.5, 0.0, -1.5], [2.0, 0.0, -2.0]])
 
-    metrics = control_metrics(us, dt=0.01)
+    metrics = control_metrics(times, us, end_s=0.10)
 
     assert "mean_amplitude" not in metrics
-    assert metrics["delivered_charge"] == pytest.approx(2.0)
+    assert metrics["delivered_charge"] == pytest.approx(0.01 + 0.06 + 0.18)
     assert metrics["kirchhoff_max"] == pytest.approx(0.0, abs=1e-12)
 
 

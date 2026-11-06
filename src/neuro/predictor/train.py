@@ -99,7 +99,7 @@ def _du_sensitivity(
     n_probes: int = _DU_PROBES,
     key: jax.Array | None = None,
 ) -> float:
-    """Estimate Control Current sensitivity using only the Predictor input history.
+    """Estimate standardized Rollout sensitivity to Control Current using the Predictor input history.
 
     Uses the Hutchinson trace estimator: for random Gaussian projections ``v ~ N(0, I)``,
     ``E[||J^T v||^2] = ||J||_F^2``. Reverse-mode vector-Jacobian products on batched representative
@@ -115,7 +115,7 @@ def _du_sensitivity(
     y_hist = y_hist[:, -model.n_y :]
     batch_size = y_hist.shape[0]
 
-    out, vjp_fn = jax.vjp(lambda u: model.rollout(y_hist, u_hist, u), u_future)
+    out, vjp_fn = jax.vjp(lambda u: model.rollout_standardized(y_hist, u_hist, u), u_future)
     if key is None:
         key = jax.random.PRNGKey(0)
 
@@ -281,7 +281,7 @@ def _evaluate_val_mse(
     val_dataset: TrajectoryWindowDataset,
     batch_size: int = 256,
 ) -> float:
-    """Score validation mini-batches with sample-weighted MSE in original output units."""
+    """Score standardized validation Rollouts with sample-weighted MSE in original output units."""
     if len(val_dataset) == 0:
         return 0.0
     val_loss_sum = 0.0
@@ -289,7 +289,7 @@ def _evaluate_val_mse(
     for y_hist, u_hist, u_future, y_target in batch_iterator(val_dataset, batch_size=batch_size, shuffle=False):
         b_size = y_hist.shape[0]
         total_samples += b_size
-        pred = model.rollout(y_hist, u_hist, u_future)
+        pred = model.rollout_standardized(y_hist, u_hist, u_future)
         scale = model.y_scale.reshape(pred.shape[2:])
         loss = jnp.mean(((pred - y_target) * scale) ** 2)
         val_loss_sum += float(loss) * b_size

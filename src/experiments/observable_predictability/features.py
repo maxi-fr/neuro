@@ -299,10 +299,6 @@ class HealthyWaveformReference:
             fs=float(fs),
         )
 
-    def to_healthy_reference(self) -> HealthyReference:
-        """Convert to a :class:`~neuro.spectral.HealthyReference` for MPC problem assembly."""
-        return HealthyReference(eeg_mean=self.mean)
-
     @property
     def scale(self) -> FloatArray:
         """Alias for per-channel standard deviation ``std``."""
@@ -1157,11 +1153,6 @@ class ConnectivityPenaltyResult(NamedTuple):
     pair_valid_fraction: float
     frame_valid_fraction: float
     pair_penalties: FloatArray
-
-    @property
-    def frame_penalty(self) -> FloatArray:
-        """Alias for ``penalty``."""
-        return self.penalty
 
 
 def compute_connectivity_penalty(

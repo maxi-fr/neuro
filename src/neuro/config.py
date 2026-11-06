@@ -8,7 +8,6 @@ import typing
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Any, ClassVar, Literal
 
-import numpy as np
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -23,21 +22,6 @@ if TYPE_CHECKING:
 _MIN_SMOOTHED_FRAMES = 2
 _EEG_MS_WINDOW_S = 0.1
 _EEG_MS_HOP_S = 0.05
-
-
-def parse_array(val: Any) -> Any:  # noqa: ANN401
-    """Parse a configuration value that might be an array or a path to an array."""
-    if isinstance(val, str) and (val.endswith((".npy", ".npz", ".npv"))):
-        loaded = np.load(val)
-        if isinstance(loaded, np.ndarray):
-            return loaded
-
-        keys = list(loaded.keys())
-        if keys:
-            return loaded[keys[0]]
-        msg = f"NPZ file {val} is empty"
-        raise ValueError(msg)
-    return val
 
 
 class StrictConfig(BaseModel):
@@ -166,10 +150,6 @@ class ObservableGeometry(StrictConfig):
         """Count the Observable Frames a length-``span_steps`` span holds at ``fs``."""
         raise NotImplementedError
 
-    def frame_supports(self, span_steps: int, fs: float) -> tuple[tuple[int, int], ...]:
-        """Half-open ``[start, end)`` sample support of every Frame, in span-relative indices."""
-        raise NotImplementedError
-
     def n_values(self, fs: float) -> int:
         """Count the scored values a Frame carries per channel."""
         raise NotImplementedError
@@ -239,13 +219,6 @@ class StftGeometry(ObservableGeometry):
             return 0
         return self.n_segment_frames(span_steps) - self.kernel_width + 1
 
-    def frame_supports(self, span_steps: int, fs: float) -> tuple[tuple[int, int], ...]:
-        """Sample support of every smoothed Frame: the ``kernel_width`` segments it pools."""
-        return tuple(
-            (m * self.n_hop, (m + self.kernel_width - 1) * self.n_hop + self.n_segment)
-            for m in range(self.n_frames(span_steps, fs))
-        )
-
     def n_values(self, fs: float) -> int:
         """Pooled in-band bin count per channel; ``pool_bins`` drops the trailing remainder."""
         bin_lo, bin_hi = self.bin_range(fs)
@@ -301,11 +274,6 @@ class EegMsGeometry(ObservableGeometry):
         if span_steps < self.window_steps(fs):
             return 0
         return (span_steps - self.window_steps(fs)) // self.hop_steps(fs) + 1
-
-    def frame_supports(self, span_steps: int, fs: float) -> tuple[tuple[int, int], ...]:
-        """Sample support of every trailing window, in span-relative indices."""
-        n_window, n_hop = self.window_steps(fs), self.hop_steps(fs)
-        return tuple((m * n_hop, m * n_hop + n_window) for m in range(self.n_frames(span_steps, fs)))
 
     def n_values(self, fs: float) -> int:  # noqa: ARG002 -- one mean square per channel, at any rate
         """One mean-square value per channel."""

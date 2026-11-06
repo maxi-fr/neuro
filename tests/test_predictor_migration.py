@@ -53,7 +53,7 @@ def _enable_x64() -> Iterator[None]:
 
 
 def test_waveform_mlp_forward_parity() -> None:
-    """Match the frozen legacy reference without importing its framework."""
+    """Match the frozen reference for a standardized Waveform Rollout."""
     rng = np.random.default_rng(42)
     n_y, n_u, horizon, n_c, n_m, _hidden = 3, 2, 5, 4, 2, 8
 
@@ -66,13 +66,13 @@ def test_waveform_mlp_forward_parity() -> None:
     u_hist = rng.standard_normal((B, n_u, n_m)).astype(np.float32)
     u_future = rng.standard_normal((B, horizon, n_m)).astype(np.float32)
 
-    j_out = np.asarray(j_model.rollout(jnp.asarray(y_hist), jnp.asarray(u_hist), jnp.asarray(u_future)))
+    j_out = np.asarray(j_model.rollout_standardized(jnp.asarray(y_hist), jnp.asarray(u_hist), jnp.asarray(u_future)))
 
     np.testing.assert_allclose(j_out, reference["expected_0"], rtol=1e-5, atol=1e-6)
 
 
 def test_observable_mlp_forward_parity() -> None:
-    """Match the frozen legacy reference without importing its framework."""
+    """Match the frozen reference for a standardized Observable Rollout."""
     rng = np.random.default_rng(43)
     geometry = StftGeometry(n_segment=16, n_hop=4, band_hz=(4.0, 20.0), n_bin_pool=2)
     n_vals = geometry.n_values(50.0)
@@ -87,7 +87,7 @@ def test_observable_mlp_forward_parity() -> None:
     u_hist = rng.standard_normal((B, n_u, n_m)).astype(np.float32)
     u_future = rng.standard_normal((B, horizon, n_m)).astype(np.float32)
 
-    j_out = np.asarray(j_model.rollout(jnp.asarray(y_hist), jnp.asarray(u_hist), jnp.asarray(u_future)))
+    j_out = np.asarray(j_model.rollout_standardized(jnp.asarray(y_hist), jnp.asarray(u_hist), jnp.asarray(u_future)))
 
     np.testing.assert_allclose(j_out, reference["expected_0"], rtol=1e-5, atol=1e-6)
 
@@ -186,7 +186,7 @@ def test_eeg_ms_loss_parity() -> None:
 
 
 def test_bptt_gradient_and_adamw_step_parity() -> None:
-    """Match the frozen legacy reference without importing its framework."""
+    """Match the frozen gradient and update through a standardized Rollout."""
     rng = np.random.default_rng(49)
     n_y, n_u, horizon, n_c, n_m, _hidden = 2, 2, 3, 2, 1, 4
 
@@ -202,7 +202,8 @@ def test_bptt_gradient_and_adamw_step_parity() -> None:
 
     # Differentiate the causal multi-step Rollout.
     def loss_fn(m: JaxWaveformMLP) -> jax.Array:
-        p = m.rollout(jnp.asarray(y_hist), jnp.asarray(u_hist), jnp.asarray(u_future))
+        """Score the standardized Rollout against the fixture target."""
+        p = m.rollout_standardized(jnp.asarray(y_hist), jnp.asarray(u_hist), jnp.asarray(u_future))
         return jnp.mean((p - jnp.asarray(target)) ** 2)
 
     j_loss, j_grads = eqx.filter_value_and_grad(loss_fn)(j_model)

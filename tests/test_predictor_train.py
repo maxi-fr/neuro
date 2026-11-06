@@ -94,7 +94,7 @@ def _wave_train(cfg: NNPredictorConfig, files: list[str], *, seed_offset: int = 
 
 
 def _validation_loss(cfg: NNPredictorConfig, files: list[str], model: WaveformMLPModel) -> float:
-    """Re-score validation windows with fixed per-channel mean/std preprocessing."""
+    """Re-score standardized validation Rollouts with fixed per-channel preprocessing."""
     mdl = cfg.model
     fs = cfg.fs
     assert cfg.training.losses is not None
@@ -119,7 +119,7 @@ def _validation_loss(cfg: NNPredictorConfig, files: list[str], model: WaveformML
         data.val_dataset, batch_size=cfg.training.batch_size, shuffle=False
     ):
         b_size = y_hist.shape[0]
-        pred = model.rollout(y_hist, u_hist, u_future)
+        pred = model.rollout_standardized(y_hist, u_hist, u_future)
         loss, _ = total_loss(losses, pred, y_future, ctx)
         batch_losses.append(float(loss))
         batch_sizes.append(b_size)
@@ -148,7 +148,7 @@ def test_training_converges_and_scores_the_rollout(files: list[str]) -> None:
 
 
 def test_save_round_trip_predicts_identically(files: list[str], tmp_path: Path) -> None:
-    """``save`` writes the checkpoint and stats; the reloaded module rolls out bit-identically."""
+    """Verify saved stats and bit-identical standardized Rollouts after reloading."""
     result = _wave_train(_config(), files)
     artifact_dir = tmp_path / "artifacts"
     artifact_dir.mkdir()
@@ -177,8 +177,8 @@ def test_save_round_trip_predicts_identically(files: list[str], tmp_path: Path) 
     y_hist = jnp.asarray(result.predictor.y_std.transform(y[k - n_y : k]), dtype=jnp.float32)[None]
     u_hist = jnp.asarray(result.predictor.u_std.transform(u[k - n_u : k]), dtype=jnp.float32)[None]
     u_future = jnp.asarray(result.predictor.u_std.transform(u[k : k + _HORIZON]), dtype=jnp.float32)[None]
-    want = result.predictor.rollout(y_hist, u_hist, u_future)
-    got = loaded.rollout(y_hist, u_hist, u_future)
+    want = result.predictor.rollout_standardized(y_hist, u_hist, u_future)
+    got = loaded.rollout_standardized(y_hist, u_hist, u_future)
     np.testing.assert_array_equal(np.asarray(got), np.asarray(want))
 
 

@@ -162,7 +162,7 @@ def test_eligibility_start_epoch_uses_effective_schedules_and_disabled_terms() -
 
 
 def test_final_selection_restores_lowest_val_loss_among_eligible_epochs(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Restore the eligible minimum's Predictor weights while ignoring a lower pre-eligibility score."""
+    """Restore the eligible minimum's standardized Rollout despite a lower pre-eligibility score."""
     # Disable JIT only to supply a controlled validation curve through the real Loss scorer.
     monkeypatch.setattr(gradient.eqx, "filter_jit", lambda function: function)
     val_loss_curve = [0.05, 0.20, 0.30, 0.15, 0.10, 0.25]
@@ -211,7 +211,7 @@ def test_final_selection_restores_lowest_val_loss_among_eligible_epochs(monkeypa
     )
     assert fit.selected_epoch == 4
     y_hist, u_hist, u_future, _ = dataset.get_batch([0])
-    restored = np.asarray(fit.best_model.rollout(y_hist, u_hist, u_future))
+    restored = np.asarray(fit.best_model.rollout_standardized(y_hist, u_hist, u_future))
     np.testing.assert_allclose(restored, predictions[4])
     assert not np.allclose(restored, predictions[-1])
 

@@ -95,8 +95,7 @@ The first implementation adds no new slew constraints. If they are introduced la
 | `src/neuro/control/casadi.py` | The same execution contract, CasADi block variables, native plan expansion and prefix-length warm-start shift. |
 | `src/neuro/validation.py` | Validate native rate, replanning ratio, supported block size, horizon and common-start alignment independently. Retain native-rate Estimator/filter/reference checks. |
 | `src/experiments/comparison.py` | Separate native current records from solve attempts and use replanning dt for deadlines. |
-| `src/neuro/run_view.py`, `src/neuro/run_plot.py` | Display plans only at attempt timestamps and preserve native prediction spacing. |
-| `src/neuro/predictor/replay.py`, `src/experiments/ood.py` | Preserve native observations/applied-current replay; distinguish actual solver plans from diagnostic replays at other ticks. |
+| `src/experiments/ood.py` | Preserve native observations/applied-current replay; distinguish actual solver plans from diagnostic replays at other ticks. |
 | `src/experiments/benchmark.py` | Benchmark both fixed-state solves and actual replanning/playback execution. |
 
 The current `simulate.Controller.evaluate` already applies zero-order hold between native ticks. No `simulate` scheduler change is required: changing its service interval to 60 ms would lose intermediate Waveform observations. The equality between `controller.dt` and native Predictor dt remains valid; it is the solve frequency that becomes independent. Reference/filter checks must not be redirected to `replan_dt`.
@@ -188,8 +187,6 @@ Update these consumers together:
 
 - `comparison.solver_metrics` and `cost_metrics`: mask attempts, count failures as attempts, compute solve latency/success without playback or Warm-up records, and use `replan_dt` as the deadline denominator. Aggregate native `controller_time` separately to include absorption/playback work.
 - `score_run`: retain actual command timestamps and truncate interval durations at the simulation end for Delivered Charge. A logged endpoint command has zero delivered duration.
-- `Run.planned_predictions` and plotting: select attempt rows/timestamps while preserving native spacing inside each Rollout. Align observed outputs explicitly; filtering plans must not shift their observation targets.
-- `predictor/replay.py`: continue absorbing all native observations and applied currents. Diagnostic actual-current Rollouts may be evaluated at every native tick; label them independently from solver attempts and solver plans.
 - `ood.py`: replace `~warmup` as the definition of solved decisions wherever plans, timing or success are read. Replay/bootstrap sampling at decision times must use the correct population.
 - `mixed_integer_comparison.py`: preserve existing b=1 behavior and ensure any shared solve-time/failure readers do not treat replay ticks as attempts.
 - `control/benchmark.py`: report fixed-OCP latency separately from complete controller runtime/solves per simulated second. A one-step driver benchmark alone does not exercise the new policy.

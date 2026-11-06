@@ -286,21 +286,11 @@ class AutoregressiveModel(DiscreteDynamics, InferencePredictor):
         u_hist: jax.Array,
         u_future: jax.Array,
     ) -> jax.Array:
-        """Batched standardized rollout over ``horizon`` steps: ``(B, ...) -> (B, horizon, ...)``."""
+        """Run a batched standardized Rollout with output shape ``(batch, horizon, ...)``."""
         y_h = jnp.asarray(y_hist)
         u_h = jnp.asarray(u_hist)
         u_f = jnp.asarray(u_future)
         return jax.vmap(self.rollout_standardized_one)(y_h, u_h, u_f)
-
-    def rollout(
-        self,
-        *args: Any,  # noqa: ANN401 -- dynamic MPC dispatch accepts varying arguments
-        **kwargs: Any,  # noqa: ANN401 -- dynamic MPC dispatch accepts varying arguments
-    ) -> Any:  # noqa: ANN401 -- returns Trajectory for MPC or jax.Array for training
-        """Forward simulate MPC trajectory or evaluate batched standardized training rollout."""
-        if (len(args) >= 1 and hasattr(args[0], "X")) or "trajectory" in kwargs:
-            return super().rollout(*args, **kwargs)
-        return self.rollout_standardized(*args, **kwargs)
 
     def __call__(
         self,

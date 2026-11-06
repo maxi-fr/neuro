@@ -8,6 +8,12 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 from simulate.simulation import Simulation
 
+from experiments.closed_loop_metrics import (
+    current_hold_durations,
+    delivered_charge,
+    solve_attempt_mask,
+    solve_time_metrics,
+)
 from experiments.comparison import lfp_logging, spread_metrics
 from neuro.plant.connectome import Connectome
 from neuro.plant.seizure import SEIZURE_PTP_MV
@@ -62,19 +68,19 @@ def delivery_metrics(
     end_s: float,
     zero_ma: float = CURRENT_ZERO_MA,
 ) -> dict[str, float | int | None]:
-    """Integrate native applied currents over clipped recorded intervals and count finite activation decisions."""
-    t = np.asarray(times, dtype=np.float64).reshape(-1)
+    """Score logged current holds and planned activation decisions up to the run end."""
     u = np.asarray(currents, dtype=np.float64)
-    durations = np.maximum(0.0, np.diff(np.minimum(np.append(t, end_s), end_s))) if len(t) else np.empty(0)
-    delivered = np.any(np.abs(u) > zero_ma, axis=1) if len(t) else np.empty(0, dtype=bool)
+    durations = current_hold_durations(times, end_s)
+    delivered = np.any(np.abs(u) > zero_ma, axis=1) if len(durations) else np.empty(0, dtype=bool)
+    duty_s = np.sum(durations[delivered])
     return {
         "enabled_steps": None
         if active is None
         else int(np.sum(np.asarray(active, dtype=np.float64) > ACTIVE_DECISION_THRESHOLD)),
         "applied_nonzero_steps": int(np.sum(delivered)),
-        "delivered_current_duty_s": float(np.sum(durations[delivered])),
-        "delivered_current_duty_cycle": float(np.sum(durations[delivered]) / end_s),
-        "delivered_charge_mc": float(np.sum(np.abs(u) * durations[:, None])),
+        "delivered_current_duty_s": float(duty_s),
+        "delivered_current_duty_cycle": float(duty_s / end_s),
+        "delivered_charge_mc": delivered_charge(u, durations),
         "squared_current_ma2_s": float(np.sum(u**2 * durations[:, None])),
     }
 
@@ -96,13 +102,11 @@ def _extract_solve_times(
     available: set[str],
     failure: SolveFailureError | None,
 ) -> FloatArray:
-    """Extract actual solve-attempt runtimes, appending any terminal failure runtime."""
-    if "solve_attempted" in available:
-        solved = logger.signal("controller", "solve_attempted")[1].reshape(-1).astype(bool)
-    elif "warmup" in available:
-        solved = logger.signal("controller", "warmup")[1].reshape(-1) == 0
-    else:
-        solved = np.ones(len(control_t), dtype=bool)
+    """Read native attempt times, including the terminal failure absent from the log."""
+    solved = solve_attempt_mask(
+        logger.signal("controller", "warmup")[1] if "warmup" in available else np.zeros(len(control_t), dtype=bool),
+        logger.signal("controller", "solve_attempted")[1] if "solve_attempted" in available else None,
+    )
     if "solve_time" in available:
         times = logger.signal("controller", "solve_time")[1].reshape(-1)[solved]
     else:
@@ -113,7 +117,7 @@ def _extract_solve_times(
 
 
 def score_seed(config: dict[str, Any], *, threshold: float = SEIZURE_PTP_MV) -> dict[str, Any]:
-    """Run one Plant seed, stopping at the first failed solve and retaining its status."""
+    """Score one Plant seed, stopping at the first failed solve and retaining its timing and status."""
     config = lfp_logging(config)
     sim = Simulation.from_config(config)
     controller = sim.controller
@@ -146,6 +150,7 @@ def score_seed(config: dict[str, Any], *, threshold: float = SEIZURE_PTP_MV) -> 
     active = _extract_planned_active(logger, available)
     end_s = float(failure.time_s if failure is not None else config["t_end"])
     times = _extract_solve_times(logger, control_t, available, failure)
+    timings = solve_time_metrics(times) if len(times) else {}
     result: dict[str, Any] = {
         "seed": config["dynamics"]["seed"],
         "completed": failure is None,
@@ -155,9 +160,9 @@ def score_seed(config: dict[str, Any], *, threshold: float = SEIZURE_PTP_MV) -> 
         "solver_construction_s": getattr(controller, "construction_time_s", None),
         "solve_count": len(times),
         "solver_failures": int(failure is not None),
-        "solve_time_mean_s": float(np.mean(times)) if len(times) else None,
-        "solve_time_p95_s": float(np.quantile(times, 0.95)) if len(times) else None,
-        "solve_time_max_s": float(np.max(times)) if len(times) else None,
+        "solve_time_mean_s": timings.get("solve_time_mean_s"),
+        "solve_time_p95_s": timings.get("solve_time_p95_s"),
+        "solve_time_max_s": timings.get("solve_time_max_s"),
         **delivery_metrics(control_t, controls, active, end_s=end_s),
         "n_seizing_final": None,
     }

@@ -34,12 +34,12 @@ Loss comparisons, sparse MPC formulations and solver benchmarks stay supported.
 
 ## Interface and duplication improvements
 
-- [ ] Give training Rollouts one explicit interface: call
+- [x] Give training Rollouts one explicit interface: call
   `rollout_standardized()` or the Predictor's callable interface, and let the
-  inherited trajopt `rollout()` handle trajectories. Remove argument probing and
-  dynamic Trainer dispatch after migrating callers.
-- [ ] Consolidate applied-current and solver scoring from `comparison.py`,
-  `mixed_integer_comparison.py`, `ood.py` and `run_view.py`. Use logged timestamps
+  inherited trajopt `rollout()` handle trajectories. Remove argument probing.
+- [ ] Remove dynamic Trainer dispatch after migrating callers.
+- [x] Consolidate applied-current and solver scoring from `comparison.py`,
+  `mixed_integer_comparison.py` and `ood.py`. Use logged timestamps
   for Delivered Charge, preserve distinct failure policies and distinguish
   actual solve attempts from Warm-up Period and plan playback.
 - [ ] Resolve the Plant's implicit stimulation default: requiring an explicit

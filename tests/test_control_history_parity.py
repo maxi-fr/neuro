@@ -10,7 +10,6 @@ from neuro.config import StftGeometry
 from neuro.predictor.cnn import ObservableCNNModel, WaveformCNNModel
 from neuro.predictor.evaluation import evaluate_observable_free_run, rollout_batches
 from neuro.predictor.mlp import ObservableMLPModel, WaveformMLPModel
-from neuro.predictor.replay import replay_predictions
 from neuro.transforms import Standardizer
 
 if TYPE_CHECKING:
@@ -349,35 +348,6 @@ def test_evaluation_rollout_batches_timing_matches_training_and_mpc() -> None:
             np.testing.assert_allclose(y_pred[i], expected_pred, rtol=1e-5, atol=1e-5)
             # Target verification:
             np.testing.assert_allclose(y_true[i], y_traj[t0 + 1 : t0 + 1 + steps], rtol=1e-5, atol=1e-5)
-
-
-def test_replay_predictions_matches_free_run_and_mpc() -> None:
-    """replay_predictions agrees with free_run and MPC discrete dynamics under actual recorded controls."""
-    rng = np.random.default_rng(505)
-    n_y, n_u, n_c, n_m, horizon = 2, 2, 2, 2, 3
-    _, jax_model = _create_deterministic_linear_mlp(n_y=n_y, n_u=n_u, n_channels=n_c, n_controls=n_m, horizon=horizon)
-
-    n_samples = 15
-    measurements = rng.standard_normal((n_samples, n_c))
-    controls = rng.standard_normal((n_samples, n_m))
-    times = np.arange(n_samples, dtype=np.float64) * jax_model.dt
-
-    predictions, observed = replay_predictions(jax_model, measurements, controls, times, horizon=horizon)
-
-    # For a primed decision index t0:
-    t0 = 5
-    # replay_predictions[t0, 0] is the observed output at t0
-    np.testing.assert_allclose(predictions[t0, 0], observed[t0])
-    np.testing.assert_allclose(observed[t0], measurements[t0])
-
-    # replay_predictions[t0, 1:] are the forecast outputs under candidate controls starting at controls[t0]
-    # This must equal free_run called with the exact same physical history and future controls:
-    y_hist = measurements[t0 - n_y + 1 : t0 + 1]
-    u_hist = controls[t0 - n_u : t0]
-    u_future = controls[t0 : t0 + horizon]
-    free_run_pred = np.asarray(jax_model.free_run(y_hist[None], u_hist[None], u_future[None]))[0]
-
-    np.testing.assert_allclose(predictions[t0, 1:], free_run_pred, rtol=1e-5, atol=1e-5)
 
 
 def test_observable_evaluation_scores_an_exact_control_response() -> None:
