@@ -1,3 +1,6 @@
+
+% Generally: Each experiment should have its own question, setup, results, and interpretation.
+
 \chapter{Experiments and Discussion}
 \label{ch:experiments_discussion}
 
@@ -17,108 +20,152 @@
 % - Predictor validation Loss: checkpoint selection. Predictor test Loss: separate held-out recordings, if available.
 % - Compare Predictors using a common scoring Loss within each comparison.
 
-\section{Observable Predictability and Seizure State}
-\label{sec:observable_predictability}
+\section{Observable Predictability and Seizure State}%
+  \label{sec:observable_predictability}
 
-% Experimental setup
-% - 30 evaluation parent trajectories per Plant, with zero current throughout. Capture the healthy
-%   snapshot at 4 s and seizure snapshots at 1, 3, 7, and 14 s. The seizure Plant supplies 120
-%   snapshots from 30 trajectories. Snapshots from the same trajectory share pre-branch dynamics.
-% - From each snapshot, run 30 independent future noise realizations for 3 s with identical full
-%   Plant state and recorded pre-branch EEG. Both criteria use the 3600 seizure-Plant evaluation
-%   replays. Separate healthy reference runs calibrate penalties, and development runs set
-%   connectivity support before evaluation.
-% - Use causally low-pass-filtered 50 Hz scalp EEG from 62 channels. Spectral log-power uses a
-%   25-sample asymmetric Hann Segment and a three-sample Frame hop. Functional connectivity uses
-%   signed imaginary coherency in the 3--12 Hz band and a trailing Welch window. Report the support
-%   selected on the development split from the final archive.
-% - Define s(t) = N^{-1} \sum_{\ell=1}^N
-%   \mathbf{1}\{\operatorname{ptp}(y_{\mathrm{reg},\ell}[t-1\,\mathrm{s},t])>5\,\mathrm{mV}\}.
-%   This is the fraction of Plant regions seizing in the trailing LFP window.
-% - Generate the four PDFs before cleaning the 30x30 replay stores. From the repository root run
-%   uv run python thesis/figures/06_experiment_and_discussion/plot_observable_predictability.py
-%   artifacts/observable_predictability_expanded results/observable_predictability_30x30
-% - To rebuild the waveform split from those stores, run
-%   uv run python -m experiments.observable_predictability.waveform_diagnostic
-%   results/observable_predictability_30x30 artifacts/observable_predictability_expanded
+Predictive seizure suppression uses forecasts of scalp \ac{eeg} to evaluate the suppression cost for candidate stimulation sequences.
+The waveform describes how the signal evolves in each channel, and spectral log-power describes how its power is distributed across frequencies.
+Functional connectivity describes statistical dependence between signals, such as consistent phase differences between oscillations in two \ac{eeg} channels.
+Functional connectivity is an established tool for characterizing brain states and analyzing how coordination across \ac{eeg} channels changes during seizures~\cite{Roffet2025,Kramer2010,Liang2024}.
+Because seizure activity can spread across regions, relationships between channels may help track recruitment alongside changes in the power of individual channels.
 
-  \begin{figure}[tbp]
-    \centering
-    \includegraphics{figures/06_experiment_and_discussion/observable_replays.pdf}
-    \caption{Eight zero-current replays of the 50 Hz scalp EEG at TP9 from the same seizure
-    Plant snapshot taken at 14 s. The future noise realization varies across traces.}
-    \label{fig:observable_replays}
-  \end{figure}
+Here, we compare the waveform, spectral log-power, and functional connectivity on two criteria relevant to predictive seizure suppression.
+The first criterion is how closely each representation's suppression cost tracks the fraction of seizing plant regions.
+The second is how much of the representation's future variation is predictable from the starting plant state and signal history.
+These criteria inform whether to retain functional connectivity as an observable and how far ahead to score the waveform and spectral training losses.
 
-\subsection{Suppression Penalty and Seizure State}
+\subsection{Simulation Setup}
 
-% - For each representation pair the observed penalty p_j with the contemporaneous s_j on
-%   the 60 ms Frame grid. Average Waveform sample penalties within each Frame.
-% - Waveform penalty: \langle (x_c-\mu^{\mathrm{H}}_c)^2\rangle_c.
-%   Spectral penalty: \langle [z_{cf}-q^{\mathrm{H}}_{0.90,cf}]_+^2\rangle_{c,f}.
-%   Connectivity penalty: \langle \max(0,q^{\mathrm{H}}_{0.05,k}-z_k,
-%   z_k-q^{\mathrm{H}}_{0.95,k})^2\rangle_k over the fixed eligible channel pairs.
-%   H denotes the healthy reference, z the observed feature, and [a]_+=\max(0,a).
-% - Pooled Pearson r = \sum_j (p_j-\bar p)(s_j-\bar s) /
-%   \sqrt{\sum_j (p_j-\bar p)^2 \sum_j (s_j-\bar s)^2}.
-%   Pool all finite matched points across seizure-Plant evaluation snapshots, replays, and Frames.
-%   Interpret r as linear association. Inspect the scatter for saturation and dispersion.
+The healthy and seizure plants each ran for 30 trajectories without stimulation.
+A snapshot consists of the full simulated plant state at a selected time and the recorded \ac{eeg} history up to that time.
+Each healthy trajectory supplied one snapshot at \SI{4}{\second}, and each seizure trajectory supplied four snapshots at \(1\), \(3\), \(7\), and \SI{14}{\second}.
+The 120 seizure snapshots thus come from 30 distinct trajectories.
 
-  \begin{figure}[tbp]
-    \centering
-    \includegraphics{figures/06_experiment_and_discussion/observable_penalty_state.pdf}
-    \caption{Suppression penalty versus contemporaneous Seizure State for each EEG representation.
-    Each point is one finite matched pair from a zero-current seizure-Plant replay.
-    Each panel reports one pooled Pearson coefficient.}
-    \label{fig:observable_penalty_state}
-  \end{figure}
+From each snapshot, the simulator continued for \SI{3}{\second} without stimulation under 30 independent realizations of future noise.
+Each such continuation is called a replay.
+Differences between replays of the same snapshot reflect the effect of future noise because their starting state and recorded history are identical.
+Both analyses use the same 3600 seizure-plant replays.
+Figure~\ref{fig:observable_replays} shows how the waveform diverges across replays from one snapshot.
+
+All three representations used causally low-pass-filtered scalp \ac{eeg} sampled at \SI{50}{\hertz} from 62 channels.
+Spectral log-power used a trailing 25-sample segment with an asymmetric Hann window and a three-sample frame hop.
+For functional connectivity, let \(S_{q,c,c',m}\) denote the Welch cross-spectrum of channels \(c\) and \(c'\) at frequency bin \(m\), estimated from the trailing window at frame \(q\).
+The estimate averages the products of the tapered Fourier coefficients of channel \(c\) with the complex conjugates of those of channel \(c'\) across Welch segments.
+The power spectrum for channel \(c\) is the diagonal term \(S_{q,c,c,m}\).
+For the set \(\mathcal B\) of bins in the \SIrange{3}{12}{\hertz} band, the feature is
+\begin{equation}
+  \mathcal C_{q,c,c'} = \frac{1}{|\mathcal B|}\sum_{m\in\mathcal B}
+  \frac{\operatorname{Im}\bigl(S_{q,c,c',m}\bigr)}
+       {\sqrt{S_{q,c,c,m}\,S_{q,c',c',m}}} \,.
+  \label{eq:connectivity_feature}
+\end{equation}
+The signed imaginary part of coherency captures phase-lagged relationships and suppresses contributions from instantaneous mixing of independent sources~\cite{Nolte2004}.
+The trailing Welch window of \SI{1.02}{\second} was selected on a separate development ensemble and yielded one feature per frame for each of the 1891 channel pairs.
+Separate healthy reference runs calibrated the suppression costs.
+
+\begin{figure}
+  \centering
+  \includegraphics{figures/06_experiment_and_discussion/observable_replays.pdf}
+  \caption{Eight zero-current replays of the \SI{50}{\hertz} scalp \ac{eeg} at TP9 from the same seizure plant snapshot taken at \SI{14}{\second}.
+  The future noise realization varies across traces.}%
+  \label{fig:observable_replays}
+\end{figure}
+
+\subsection{Suppression Cost and Seizure State}
+
+Applying the regional recruitment criterion of Section~\ref{sec:network_calibration}, the seizure state \(s(t)\) is the fraction of plant regions classified as seizing at time \(t\),
+\begin{equation}
+  s(t) = \frac{1}{\nreg}\sum_{\ell=1}^{\nreg}
+  \mathbf{1}\!\left\{
+    \operatorname{ptp}_{\tau\in[t-\SI{1}{\second},\,t]} y_{\mathrm{reg},\ell}(\tau)
+    > \SI{5}{\milli\volt}
+  \right\}\,.
+  \label{eq:seizure_state}
+\end{equation}
+Here \(y_{\mathrm{reg},\ell}\) is the local field potential of region \(\ell\), \(\operatorname{ptp}\) denotes the maximum minus the minimum over the indicated window, and \(\mathbf{1}\) is the indicator function.
+
+The waveform and spectral costs from~\eqref{eq:mpc_waveform_cost} and~\eqref{eq:mpc_spectral_cost} were evaluated on the recorded signals one frame at a time.
+For each \SI{60}{\milli\second} frame, the waveform cost averages over the three samples ending at the frame endpoint and is normalized by the number of channels.
+The spectral cost uses the log-power of that frame.
+
+For each channel pair \((c,c')\), the empirical 5th and 95th percentiles across healthy reference frames define the lower and upper bounds \(\mathcal C^{\mathrm{lo}}_{\mathrm{healthy},c,c'}\) and \(\mathcal C^{\mathrm{hi}}_{\mathrm{healthy},c,c'}\).
+The functional-connectivity cost averages the squared distance outside this interval,
+\begin{equation*}
+  \mathcal J_{\mathrm{conn}}(q)
+  = \frac{1}{|\mathcal E|}\sum_{(c,c')\in\mathcal E}
+     {\max\!\left\{0,\,
+       \mathcal C^{\mathrm{lo}}_{\mathrm{healthy},c,c'}-\mathcal C_{q,c,c'},\,
+       \mathcal C_{q,c,c'}-\mathcal C^{\mathrm{hi}}_{\mathrm{healthy},c,c'}
+     \right\}}^2 \,.
+\end{equation*}
+Here \(\mathcal C_{q,c,c'}\) is the feature from~\eqref{eq:connectivity_feature}, and \(\mathcal E\) is the set of eligible channel pairs.
+
+Each observation pairs the seizure state \(s(t_q)\) from~\eqref{eq:seizure_state} at the frame endpoint \(t_q\) with the cost from the same frame and replay.
+For each representation separately, we compute Pearson's correlation coefficient \(r\)~\cite{NIST1997Correlation} over all finite pairs pooled across the 120 seizure-plant snapshots, 30 replays per snapshot, and 50 frames per replay, giving \(180\,000\) pairs.
+
+\begin{figure}
+  \centering
+  \includegraphics{figures/06_experiment_and_discussion/observable_penalty_state.pdf}
+  \caption{Suppression cost versus contemporaneous seizure state for each \ac{eeg} representation.
+  Each point pairs the cost for one frame with the fraction of seizing regions at that frame's endpoint in the same zero-current seizure-plant replay.
+  The vertical axes show the mean squared waveform deviation, the mean squared excess log-power, and the mean squared deviation outside the healthy coherency interval, respectively.
+  Each panel reports Pearson's \(r\) over all plotted pairs.}%
+  \label{fig:observable_penalty_state}
+\end{figure}
+
+Spectral log-power had the strongest association with seizure state (\(r=0.98\)), followed by the waveform (\(r=0.92\)) and functional connectivity (\(r=0.45\)).
+The greater dispersion of the connectivity cost in Figure~\ref{fig:observable_penalty_state} means that similar levels of recruitment could incur substantially different costs.
 
 \subsection{Potential Predictability}
 
-% - At each lookahead h and component k, let y_{irk}(h) be replay r from snapshot i.
-%   Define the replay mean \bar y_{ik} and use sample variances:
-%   \widehat V_{N,k}=n^{-1}\sum_i \operatorname{Var}_r(y_{irk}),
-%   \widehat V_{S,k}=\operatorname{Var}_i(\bar y_{ik})-\widehat V_{N,k}/m.
-%   Here n is the number of snapshots and m the number of replays per snapshot.
-% - \widehat P(h)=\sum_k\widehat V_{S,k}/\sum_k(\widehat V_{S,k}+\widehat V_{N,k}).
-%   Sum variances over components with complete replays at that lookahead. V_N measures future
-%   stochastic spread at fixed state. V_S estimates reproducible between-snapshot variance after
-%   correcting for the residual noise in finite replay means.
-% - Interpret P as potential squared-error skill relative to the unconditional mean at that
-%   lookahead, when the entire starting Plant state and required history are known. The result
-%   depends on the sampled distribution of snapshots. Finite estimates can be negative, and
-%   zero total variance leaves the ratio undefined.
-% - References: \cite[Sec.~3a, Eqs.~(1)--(3)]{Schubert2002} and
-%   \cite[Sec.~3.1, Eqs.~(1)--(4)]{Matsumura2010} for the finite-ensemble variance estimator.
-%   \cite[Sec.~2]{DelSole2004} motivates the stochastic forecast from a known initial state.
-% - Waveform diagnostic: at each Frame endpoint, let x_j be the 25 trailing samples of a channel,
-%   ordered from oldest to newest. Compute m(t)=\sum_j w_j x_j/\sum_j w_j with the asymmetric
-%   Hann weights and r(t)=x(t)-m(t). Recompute the ceiling for each component and for the
-%   original Waveform. Compare pooled curves and groups based on starting s_0 below or at least
-%   0.25. This exploratory cutoff was chosen from a gap in the pilot ensemble. Normalize each
-%   curve by its own total variance within the group.
+Potential predictability measures the fraction of future variance attributable to differences between starting snapshots.
+At lookahead \(h\), let \(o_{irk}(h)\) be observable component \(k\) in replay \(r\) from snapshot \(i\), and let \(\bar o_{ik}(h)\) be its mean across replays.
+For \(n\) snapshots and \(m\) replays per snapshot, the sample variance estimates are
+\begin{align}
+  \widehat V_{N,k}(h) &= \frac{1}{n}\sum_i \operatorname{Var}_r\bigl(o_{irk}(h)\bigr),\\
+  \widehat V_{S,k}(h) &= \operatorname{Var}_i\bigl(\bar o_{ik}(h)\bigr) - \frac{\widehat V_{N,k}(h)}{m}\,.
+\end{align}
+The first term measures stochastic variation at fixed starting state.
+The second estimates reproducible variation across snapshots after correcting for the noise in the finite replay means~\cite{Schubert2002, Matsumura2010}.
+The ratio sums the variance terms over components with complete replays at each lookahead,
+\begin{equation}
+  \widehat P(h) = \frac{\sum_k \widehat V_{S,k}(h)}
+  {\sum_k \bigl(\widehat V_{S,k}(h) + \widehat V_{N,k}(h)\bigr)}\,.
+\end{equation}
+This ratio estimates the potential squared-error skill relative to the unconditional mean at the same lookahead when the full initial plant state and required history are known~\cite{DelSole2004}.
+The estimate depends on the sampled distribution of snapshots.
 
-\IfFileExists{figures/06_experiment_and_discussion/observable_potential_predictability.pdf}{%
-  \begin{figure}[tbp]
-    \centering
-    \includegraphics{figures/06_experiment_and_discussion/observable_potential_predictability.pdf}
-    \caption{Full-state potential predictability over lookahead for the three EEG representations.
-    Dashed markers indicate the history support of the windowed features. At later lookaheads,
-    their Frames use only post-branch samples.}
-    \label{fig:observable_potential_predictability}
-  \end{figure}
-}{}
+\begin{figure}
+  \centering
+  \includegraphics{figures/06_experiment_and_discussion/observable_potential_predictability.pdf}
+  \caption{Full-state potential predictability across all seizure snapshots.
+  The left panel compares the three \ac{eeg} representations.
+  The right panel compares the waveform, its trailing weighted mean, and the residual after subtracting that mean.
+  Dashed lines mark the duration of the spectral segment and the trailing connectivity window on the left and the duration of the trailing mean window on the right.}%
+  \label{fig:observable_potential_predictability}
+\end{figure}
 
-\IfFileExists{figures/06_experiment_and_discussion/observable_waveform_split.pdf}{%
-  \begin{figure}[tbp]
-    \centering
-    \includegraphics{figures/06_experiment_and_discussion/observable_waveform_split.pdf}
-    \caption{Potential predictability of the Waveform, its trailing weighted mean, and the
-    Waveform after subtracting that mean. Panels pool all snapshots or group by Seizure State
-    \(s_0\) at the replay start. The dashed line marks the support of the trailing mean.}
-    \label{fig:observable_waveform_split}
-  \end{figure}
-}{}
+Functional connectivity was nearly perfectly predictable at the first frame, when most of its trailing window was shared across replays.
+At \SI{1.02}{\second}, the first frame with an entirely post-branch connectivity window, its potential predictability was \(0.11\), compared with \(0.55\) for spectral log-power and \(0.54\) for the waveform (Figure~\ref{fig:observable_potential_predictability}, left).
+The rapid decline as shared history left the window, together with the weaker association between the cost and seizure state, motivated the exclusion of functional connectivity from the subsequent predictor and controller benchmarks.
+
+The waveform diagnostic separated the slow level from faster fluctuations.
+At each frame endpoint, the trailing mean for each channel used the same 25 asymmetric Hann weights as the spectral segment, normalized to sum to one.
+The residual was the waveform at that endpoint minus its trailing weighted mean.
+The diagnostic scored the waveform, trailing mean, and residual on the same frame grid, each normalized by its own total variance.
+
+At \SI{0.24}{\second}, potential predictability was \(0.69\) for the residual and \(0.99\) for the trailing mean (Figure~\ref{fig:observable_potential_predictability}, right).
+By \SI{0.96}{\second}, the residual fell to \(0.05\) while the mean retained \(0.91\).
+Spectral log-power retained \(0.56\) at the same lookahead.
+
+In preliminary training, predictors scored over longer waveform horizons tended to retain the slow level while losing the seizure oscillations.
+The replay results suggest a mechanism for this behavior.
+Under squared error, the best point prediction is the conditional mean.
+As oscillations drift out of phase across possible futures, averaging those futures attenuates the oscillations while preserving the more reproducible slow level.
+The waveform suppression cost penalizes both sustained offsets and large oscillations around the healthy mean, as defined in~\eqref{eq:mpc_waveform_cost}.
+A forecast that loses the oscillations can therefore understate their contribution to the cost.
+Spectral log-power retains information about their power without requiring a forecast of their instantaneous phase.
+These results motivated training loss scoring spans of \SI{0.25}{\second} for the waveform and \SI{1}{\second} for spectral log-power.
 
 \section{Offline Predictor Benchmark}
 

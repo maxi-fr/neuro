@@ -325,9 +325,7 @@ With one control coordinate per physical electrode, the input set is
     =\left\{\mathbf u\in\mathbb R^{\ndim{u}}:\,
         |u_p|\leq u_\mathrm{max},\ p=1,\ldots,\ndim{u},\quad % chktex 35 -- max names the current bound.
         \sum_{p=1}^{\ndim{u}}u_p=0
-      \right\},
-    \qquad u_\mathrm{max}=\SI{2}{\milli\ampere}\,. % chktex 35 -- max names the current bound.
-    \label{eq:mpc_current_constraints}
+      \right\}    \label{eq:mpc_current_constraints}
 \end{equation}
 %
 Predicted activity is penalized through the suppression costs without additional state or terminal-set restrictions, giving $\mathbb X_{\mathrm f}=\mathbb X=\mathbb R^{\ndim{h}}$.

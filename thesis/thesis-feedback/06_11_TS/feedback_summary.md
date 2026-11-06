@@ -1,0 +1,56 @@
+# Thesis Review Feedback & Action Items (06/11 Review by Tom Schenk)
+
+> [!NOTE]
+> Extracted from `thesis_tom_feedback.pdf` in `thesis/thesis-feedback/06_11_TS/`.
+
+## Overview & Statistics
+
+| Metric | Count |
+| :--- | :--- |
+| **Total Review Comments & Action Items** | **16** |
+| **Status: Open (`[ ]`)** | **16** |
+| **Status: Resolved (`[x]`)** | **0** |
+| **Primary Chapters Reviewed** | Chapter 5 (`05_mpc_framework.tex`), pp. 38–48 |
+
+---
+
+## 2. Narrative Flow, Transitions & Moderation (6 comments)
+
+| ID | Status | Page (PDF / Doc) | Source File & Line(s) | Marked Text / Element | Reviewer Feedback (Tom Schenk) |
+| :--- | :---: | :---: | :--- | :--- | :--- |
+| **FLOW-01** | `[ ]` | 52 / 38 | [`05_mpc_framework.tex:L7-11`](file:///C:/Users/frank/closed-loop-neurostimulation/thesis/chapters/05_mpc_framework.tex#L7-L11) | `We first show how model predictive control turns this optimization problem into a feedback controller. We then compare two ways to re-formulate the problem for a numerical solver. With this general framework in place, we then specify it for our seizure suppression problem. We detail how the learned predictor, the current limits and the suppression objective enter the control problem. Finally, we examine how the cost and constraints can promote sparse stimulation.` | Dreimal aus vier Sätzen "We" als Satzanfang liest sich etwas holprig |
+| **FLOW-02** | `[ ]` | 53 / 39 | [`05_mpc_framework.tex:L85-87`](file:///C:/Users/frank/closed-loop-neurostimulation/thesis/chapters/05_mpc_framework.tex#L85-L87) | `For a task that continues indefinitely, the finite-horizon problem approximates the infinite-horizon control problem. A shorter horizon reduces the number of decision variables and constraints, while the terminal cost can approximate the cost beyond the endpoint [13], [59].` | Hier würde ich in einem Satz beschreiben, wieso man finite geht (weil man das andere nicht lösen kann) und dann die Kosten beschreiben |
+| **FLOW-03** | `[ ]` | 53 / 39 | [`05_mpc_framework.tex:L88-94`](file:///C:/Users/frank/closed-loop-neurostimulation/thesis/chapters/05_mpc_framework.tex#L88-L94) | `Receding-horizon replanning alone guarantees neither recursive feasibility nor asymptotic stability... Under nominal model dynamics, a suitable terminal constraint can preserve feasibility... A terminal cost that decreases sufficiently along that continuation can also support a proof of asymptotic stability...` | Ich verstehe, was du mir hier sagen willst. In deiner konkreten MPC-Formulierung auf Seite 44 setzt du aber<br>$$\mathcal X_{\mathrm f}=\mathcal X=\mathbb R^{n_h}.$$<br>Du verwendest also gerade keine zusätzlichen Terminalmengenbeschränkungen, mit denen du eine entsprechende Stabilitätsgarantie begründen würdest.<br><br>Damit stellt sich mir hier im Nachinein die Frage, warum du diesen theoretischen Exkurs an dieser Stelle so ausführlich behandelst. |
+| **FLOW-04** | `[ ]` | 53 / 39 | [`05_mpc_framework.tex:L95-96`](file:///C:/Users/frank/closed-loop-neurostimulation/thesis/chapters/05_mpc_framework.tex#L95-L96) | `These properties concern how successive solutions behave in closed loop. Computing each solution within a sampling interval is a separate requirement, which motivates the comparison of numerical transcriptions in the next section.` | Vielleicht liegt es an mir, aber mein Gehirn findet das hier etwas holprig. Vorschlag: While these properties concern the closed-loop behavior of MPC, its practical implementation also requires solving the optimization problem at each sampling instant. The numerical approaches used to formulate and solve this problem are discussed in the next section. |
+| **FLOW-05** | `[ ]` | 56 / 42 | [`05_mpc_framework.tex:L173-176`](file:///C:/Users/frank/closed-loop-neurostimulation/thesis/chapters/05_mpc_framework.tex#L173-L176) & [`05_mpc_framework.tex:L240-243`](file:///C:/Users/frank/closed-loop-neurostimulation/thesis/chapters/05_mpc_framework.tex#L240-L243) | Section transition to Section 5.3 (`\section{\ac{mpc} for Seizure Suppression}`) | An der Stelle würde ich mir eine Moderation für die kommende Section wünschen, weil der thematische Cut innerhalb der MPC ja schon recht groß ist. ChatGPT Vorschlag um zeigen, was ich meine: The choice of transcription depends on the structure of the prediction model. In this work, the learned predictors introduced in Chapter 4 use histories of measured EEG observables and applied stimulation currents rather than physical neural states. This history-based representation provides additional structure that can be exploited to formulate the MPC optimization problem more compactly. The following section develops this formulation for seizure suppression. |
+| **FLOW-06** | `[ ]` | 59 / 45 | [`05_mpc_framework.tex:L337-342`](file:///C:/Users/frank/closed-loop-neurostimulation/thesis/chapters/05_mpc_framework.tex#L337-L342) | Section 5.4 opening: `The squared-current cost penalizes current magnitude. To also limit how often current is applied, we seek stimulation schedules that suppress predicted pathological activity while leaving some intervals unstimulated.` | Finde es logisch schön aufgebaut. Wenn du die verschiedenen ALternativen später vergleichst, würde ich das hier noch irgendwie als VErweis vermerken, damit man weiß, warum du das erklärst. |
+
+---
+
+## 3. Control Formulation & Problem Intuition (4 comments)
+
+| ID | Status | Page (PDF / Doc) | Source File & Line(s) | Marked Text / Element | Reviewer Feedback (Tom Schenk) |
+| :--- | :---: | :---: | :--- | :--- | :--- |
+| **CTRL-01** | `[ ]` | 53 / 39 | [`05_mpc_framework.tex:L88`](file:///C:/Users/frank/closed-loop-neurostimulation/thesis/chapters/05_mpc_framework.tex#L88) | `Receding-horizon replanning` | Das kommt hier das erste Mal vor, ich würde das weiter oben schon einmal benennen, bspw. in dem Absatz "At time step ...." 2 Absätze weiter oben |
+| **CTRL-02** | `[ ]` | 53 / 39 | [`05_mpc_framework.tex:L88-94`](file:///C:/Users/frank/closed-loop-neurostimulation/thesis/chapters/05_mpc_framework.tex#L88-L94) | `Receding-horizon replanning alone guarantees neither recursive feasibility nor asymptotic stability. An input sequence is feasible if it satisfies all constraints in (5.2)...` | Würde den LEser an der STelle hier mitnehmen, wieso man das überhaupt braucht (Damit dein Gehirn nicht geschockt wird oder was weiß ich) |
+| **CTRL-03** | `[ ]` | 60 / 46 | [`05_mpc_framework.tex:L453-456`](file:///C:/Users/frank/closed-loop-neurostimulation/thesis/chapters/05_mpc_framework.tex#L453-L456) | Section 5.4.3 opening: `The combination of binary activation decisions and nonlinear predictor dynamics yields a mixed-integer nonlinear program (MINLP). A standard continuous NLP solver cannot enforce the binary restrictions directly. We therefore discuss three different approaches to handling the binary decisions.` | Falls es für deine späteren Ergebnisse relevant ist, könnte man hier bereits erwähnen, dass Mixed-Integer-OCPs aufgrund der zusätzlichen diskreten Entscheidungsvariablen in der Regel deutlich aufwendiger zu lösen sind. Das kann insbesondere bei begrenzter Rechenzeit die Lösungsqualität oder die REchenzeit beeinflussen. Dafür lassen sich Stimulationsintervalle explizit aktivieren oder deaktivieren. Das würde auch direkt motivieren, warum du neben der Mixed-Integer-Formulierung alternative Ansätze wie \(L_1\)-Regularisierung und Continuous RElaxation untersuchst. Andernfalls könnte man sich als Leser fragen, warum man die binären Entscheidungen nicht einfach direkt optimiert. |
+
+---
+
+## 4. Mathematical Notation, Set Definitions & Algorithms (4 comments)
+
+| ID | Status | Page (PDF / Doc) | Source File & Line(s) | Marked Text / Element | Reviewer Feedback (Tom Schenk) |
+| :--- | :---: | :---: | :--- | :--- | :--- |
+| **MATH-01** | `[ ]` | 52 / 38 | [`05_mpc_framework.tex:L18-26`](file:///C:/Users/frank/closed-loop-neurostimulation/thesis/chapters/05_mpc_framework.tex#L18-L26) | `\mathbf{x}_{k+1} = \mathbf{f}(\mathbf{x}_k,\mathbf{u}_k)` ... `where \mathbf{x}_k \in \mathbb{R}^{\ndim{x}} is the model state and \mathbf{u}_k \in \mathbb{R}^{\ndim{u}} is the input at time step k \in \mathbb{N}_0.` | ich habe irgendwann mal ein Stylesheet des ccps bekommen, dass zeitlich veränderliche Variablen kursiv gefordert hat. Da das aber in der ganzen Thesis nicht so ist, vermute ich mal, dass das egal ist :) |
+| **MATH-02** | `[ ]` | 53 / 39 | [`05_mpc_framework.tex:L49-58`](file:///C:/Users/frank/closed-loop-neurostimulation/thesis/chapters/05_mpc_framework.tex#L49-L58) | `The sets \mathbb{X}\subseteq\mathbb{R}^{\ndim{x}} and \mathbb{U}\subseteq\mathbb{R}^{\ndim{u}} specify the admissible states and inputs, respectively, and \mathbb{X}_\mathrm{f}\subseteq\mathbb{X} specifies the admissible final states.` | Die Schreibweisen habe ich so noch nie gesehen, kenne eher mit \mathcal. Du bist da durch die Thesis hindurch auch uneinheitlich (siehe TRainingsdaten Seite 27 oder dein \mathcal B auf Seite 47) |
+| **MATH-03** | `[ ]` | 62 / 48 | [`05_mpc_framework.tex:L526-530`](file:///C:/Users/frank/closed-loop-neurostimulation/thesis/chapters/05_mpc_framework.tex#L526-L530) | `The homotopy\footnote{Here, a homotopy is a family of optimization problems that changes continuously with a parameter [64].} starts at \beta = 0, where the integrality penalty vanishes for every relaxed schedule. At each subsequent step...` | Das Konzept Homotopie würde ich mit mehr als einer Fußnote erklären oder nicht als Fachwort erwähnen, sondern einfach die Auswirkung von ß erklären |
+
+---
+
+## 5. Figures, Architecture & Remarks (3 comments)
+
+| ID | Status | Page (PDF / Doc) | Source File & Line(s) | Marked Text / Element | Reviewer Feedback (Tom Schenk) |
+| :--- | :---: | :---: | :--- | :--- | :--- |
+| **REV-01** | `[ ]` | 54 / 40 | [`05_mpc_framework.tex:L98-103`](file:///C:/Users/frank/closed-loop-neurostimulation/thesis/chapters/05_mpc_framework.tex#L98-L103) | `\section{Numerical Transcription and Solution}` | Finde den Ansatz interessant, erst mit Multiple SHooting einzusteigen, weil das andere ja irgendwie der simplere Fall ist. Finde die Section aber coool, also nicht wunndern, dass hier nichts makiert ist :) |
+| **FIG-01** | `[ ]` | 55 / 41 | [`shooting.py:L123-142`](file:///C:/Users/frank/closed-loop-neurostimulation/thesis/figures/05_mpc_framework/shooting.py#L123-L142) & [`05_mpc_framework.tex:L163-169`](file:///C:/Users/frank/closed-loop-neurostimulation/thesis/chapters/05_mpc_framework.tex#L163-L169) | Figure 5.2 (`shooting.pdf`) y-axis label (`State $x$`) vs legend (`decision variable $\mathbf{x}_{j|k}$` and `$\hat{\mathbf{x}}_k$`) | Wieso ist das jetzt kursiv? Weil du nur einen State beachtest und nicht den ganzen Vektor? Dann passt die Legende (das Rote) aber auch nicht |
+| **REV-02** | `[ ]` | 55 / 41 | [`05_mpc_framework.tex:L172`](file:///C:/Users/frank/closed-loop-neurostimulation/thesis/chapters/05_mpc_framework.tex#L172) | `sequential quadratic programming (SQP)` | Ich glaub ich krieg PTBS |
