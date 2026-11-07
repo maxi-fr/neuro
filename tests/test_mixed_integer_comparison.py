@@ -41,6 +41,23 @@ def test_three_arms_keep_shared_config_and_target_requires_four_completed_seeds(
     assert target_summary(rows)["capped"] == {"suppressed_seeds": 4, "target_met": True, "completed_seeds": 5}
 
 
+def test_controller_arms_resolves_legacy_plant_class_paths() -> None:
+    """Rewrite legacy Plant and measurement module paths to neuro.plant."""
+    base = {
+        "controller": {"class_path": "old", "problem": {"class_path": "old", "u_max": 2.0}},
+        "dynamics": {"class_path": "neuro.jansen_rit.JansenRitDynamics", "seed": 7000},
+        "sensors": {
+            "class_path": "simulate.sensor.GaussianSensor",
+            "dt": 1e-4,
+            "measurement": {"class_path": "neuro.eeg.EEGMeasurement"},
+        },
+    }
+    arms = controller_arms(base, cap=3, weight=0.5)
+    for arm in arms.values():
+        assert arm["dynamics"]["class_path"] == "neuro.plant.jansen_rit.JansenRitDynamics"
+        assert arm["sensors"]["measurement"]["class_path"] == "neuro.plant.eeg.EEGMeasurement"
+
+
 def test_solver_status_logger_accepts_status_longer_than_warmup() -> None:
     """Retain Bonmin's status after the warmup row initializes logger buffers."""
     logger = create_logger({"controller": 2})

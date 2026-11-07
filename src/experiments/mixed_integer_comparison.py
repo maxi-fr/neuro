@@ -15,6 +15,7 @@ from experiments.closed_loop_metrics import (
     solve_time_metrics,
 )
 from experiments.comparison import lfp_logging, spread_metrics
+from neuro.config import resolve_simulation_config
 from neuro.plant.connectome import Connectome
 from neuro.plant.seizure import SEIZURE_PTP_MV
 
@@ -41,14 +42,15 @@ class SolveFailureError(Exception):
 
 
 def controller_arms(base: dict[str, Any], *, cap: int, weight: float) -> dict[str, dict[str, Any]]:
-    """Build paired continuous, capped, and penalized CasADi controller configurations."""
+    """Build paired continuous, capped, and penalized CasADi controller configurations from a Plant base."""
+    resolved_base = resolve_simulation_config(base)
     arms = {}
     for name, setting in (
         ("continuous", {}),
         ("capped", {"max_active_intervals": cap}),
         ("penalized", {"w_active": weight}),
     ):
-        config = copy.deepcopy(base)
+        config = copy.deepcopy(resolved_base)
         config["t_end"] = 12.0
         config["controller"]["class_path"] = "neuro.control.casadi.CasADiMPCController"
         problem = config["controller"]["problem"]
@@ -118,7 +120,7 @@ def _extract_solve_times(
 
 def score_seed(config: dict[str, Any], *, threshold: float = SEIZURE_PTP_MV) -> dict[str, Any]:
     """Score one Plant seed, stopping at the first failed solve and retaining its timing and status."""
-    config = lfp_logging(config)
+    config = resolve_simulation_config(lfp_logging(config))
     sim = Simulation.from_config(config)
     controller = sim.controller
     original_update = controller.update

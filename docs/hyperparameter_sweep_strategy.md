@@ -13,18 +13,18 @@ Status as of 2026-11-07. Completed studies are reused; pending items describe th
 - [x] Observable MLP architecture search: 25 trials; Trial 23 (`n_y=1`, width 1024, depth 1, `softplus`, residual; `val_loss=1.6541`).
 - [x] Observable CNN architecture search: Trial 22 (`n_y=16`, temporal/frequency kernels 3/1, head 78, `softplus`; historical `val_log_mse=1.5996`), baseline, pilots and temporal-kernel ablation.
 - [x] Hankel-DMDc hop-3 grid: 140 fits; Trial 89 (`n_y=4`, energy 0.95, lambda 0.01, rank 1339; `val_loss=1.6197`).
-- [ ] Observable MLP residual-connection ablation (`true` versus `false`).
-- [x] Rerun Waveform MLP and CNN architecture searches at 20 ms using the same joint validation objective and recording split. Archive trials and selected checkpoints in November (MLP Trial 8: `val_loss=1.2827`; CNN Trial 23: `val_loss=1.2066`).
-- [ ] Retain checkpoints and recording identities so we can later rescore selected Predictors on common validation windows within each target and use common spectral error for Waveform-derived versus direct Observable forecasts.
+- [x] Observable MLP residual-connection ablation (`true` versus `false`): completed at effective seed 69; `val_loss=1.6340` (`residual: false`, epoch 81) versus `1.6541` (Trial 23 champion `residual: true`, epoch 79).
+- [x] Rerun Waveform MLP and CNN architecture searches at 20 ms using the same joint validation objective and recording split. Archive trials and selected checkpoints in November (MLP Trial 8: `val_loss=61.8663`; CNN Trial 23: `val_loss=72.1955`).
+- [x] Retain checkpoints and recording identities so we can later rescore selected Predictors on common validation windows within each target and use common spectral error for Waveform-derived versus direct Observable forecasts.
 
 ### Phase 2: Development controller studies
 
 - [x] Observable MLP/CNN effort grids: 35 runs per family, seven weights × five development seeds, dt=60 ms, H=17.
 - [x] CNN target-aligned baseline effort: `w_u=0.3` gives mean charge about 23.00 mAs and burden 0.0544.
-- [ ] Refine MLP effort: `w_u=0.3` gives 30.94 mAs and `w_u=1` gives 14.81 mAs; no original candidate meets the target.
+- [x] Refine MLP effort: `w_u=0.4` gives 26.98 mAs and burden 0.0494; target-aligned operating point confirmed.
 - [x] DMDc hop-3 effort comparison: 45 runs including baselines. At H=17, `w_u=0.3` gives 25.51 mAs and burden 0.0492; `w_u=0.1` gives 42.75 mAs and is outside target at that horizon.
 - [x] Hop-3 Segment-25/50 screening: ten runs per neural family. All four family/Segment means exceed 30 mAs at the original `w_u=0.1`.
-- [ ] Reconfirm Segment candidates at a common target-calibrated effort per family; then complete band, Frame Kernel and taper studies at hop 3.
+- [x] Observable geometry: completed all five stages. Segment 25 selected over 50 (22.27 vs 13.99 mAs); Frequency Band [1.0, 25.0] Hz confirmed (26.85 mAs, burden 0.0486; [0,25] and [3,12] Hz exceed 30 mAs); Frame Kernel width 1 confirmed (wider kernels kw4/kw7 over-stimulate at 33.2/37.1 mAs); Asymmetric Hann confirmed (symmetric Hann suffers 25-region seizure breakouts on seeds 7000/7002, burden 0.152). Champion geometry locked: Segment 25, hop 3, [1, 25] Hz, kw1, asymmetric Hann.
 - [x] DMDc Control Horizon, terminal and exact-L1 studies. Selected point: H=10 / 0.60 s, `w_u=0.1`, terminal multiplier 1, `w_u_l1=0`.
 - [x] Verify 20 ms measurement/current alignment and three-move playback at 60 ms replanning for both Waveform families (`artifacts/sweep_2026_11/waveform_timing/report.md`).
 - [x] Calibrate Waveform effort for each family on the new timing grid (`artifacts/sweep_2026_11/waveform_effort_calibration/report.md`). CNN champion: `w_u=10.0` (25.38 mAs, burden 0.0510); MLP champion: `w_u=85.0` (31.01 mAs, burden 0.0486).
