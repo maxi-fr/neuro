@@ -92,7 +92,10 @@ The estimate depends on the sampled distribution of snapshots.
   \label{fig:observable_potential_predictability}
 \end{figure}
 
-The functional connectivity feature was nearly perfectly predictable at the first frame, when most of its trailing segment was shared across branches.
+At the first frame, ending \SI{60}{\milli\second} after the snapshot, potential predictability was \(0.90\) for spectral log-power and approximately \(0.99\) for both the waveform and functional connectivity.
+The asymmetric Hann window gives the three branch-specific samples the largest weights, so their fluctuations can affect the spectral estimate despite the shared history.
+The lower predictability is consistent with the variability of single-segment \ac{stft} estimates discussed in Section~\ref{sec:spectral_representation}.
+
 The first frame containing only post-snapshot samples ended at \SI{0.54}{\second}.
 At that lookahead, potential predictability was \(0.46\) for the functional connectivity feature, \(0.64\) for spectral log-power, and \(0.70\) for the waveform (Figure~\ref{fig:observable_potential_predictability}, left).
 
