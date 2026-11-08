@@ -297,10 +297,10 @@ The stimulation sequences are chosen to expose the predictor to different curren
 This follows the system-identification principle of persistent excitation, which relates the variation in applied inputs to the parameters that can be identified~\cite{Ljung1999}.
 Here, current conservation restricts that variation to the zero-sum current subspace.
 
-Two datasets are generated using the pathological plant from Chapter~\ref{ch:biological_plant_modeling}.
-Each dataset contains 200 trajectories of \SI{12}{\second} under random-amplitude stimulation.
+Two excitation datasets are generated using the pathological plant from Chapter~\ref{ch:biological_plant_modeling}.
+Each contains 200 trajectories of \SI{12}{\second} under random-amplitude stimulation.
 At each stimulation update, independent amplitudes are drawn uniformly from $[-3, 3]$~\si{\milli\ampere} for the three electrodes and held constant until the next update, subject to the spatial constraints below.
-The holding intervals are \SI{60}{\milli\second} in one dataset and \SI{100}{\milli\second} in the other, matching the two spectral prediction-step durations investigated in this thesis.
+The waveform predictors are fitted using currents held for \SI{20}{\milli\second}, and the spectral predictors are fitted using currents held for \SI{60}{\milli\second}.
 Different random seeds are used for the plant's stochastic input and the stimulation sequence in each trajectory.
 
 The electrode mean is subtracted from each current draw to enforce current conservation.
@@ -308,7 +308,7 @@ If any balanced electrode current exceeds \SI{3}{\milli\ampere} in magnitude, th
 The training cap exceeds the \SI{2}{\milli\ampere} bound used during control to include responses to larger current amplitudes.
 This choice broadens the sampled input range without establishing identifiability or coverage of every response to optimized stimulation.
 The resulting scalp \ac{eeg} and electrode-current trajectories provide the data for training and validation.
-The predictors are tested on separately generated trajectories with held-out seeds.
+The common offline benchmark scores both predictor types on the validation partition of the \SI{60}{\milli\second} dataset.
 Before samples can be extracted from these trajectories, their temporal resolution and observation representation must be matched to the prediction task.
 
 \subsection{Preprocessing and Dataset Construction}

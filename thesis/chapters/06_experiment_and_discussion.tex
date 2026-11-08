@@ -155,23 +155,74 @@ This variability and the rapid drop in potential predictability for the function
 \section{Offline Predictor Benchmark}
 
 \subsection{Hyperparameter Search and Model Selection}
-% - Summarize each search, ranking metric, selected configuration, and main trial patterns.
+% - Summarize how the architecture and identification settings were selected.
 % - Report full search spaces and trial results in the appendix.
+
+\begin{table}
+  \centering
+  \caption{Predictor configurations selected by validation loss.
+  The \ac{eeg} history duration includes the full spectral segment underlying the oldest frame.
+  Spectral kernel sizes are given in time steps by frequency bins.}\label{tab:offline_predictor_selection}
+  \input{tables/06_experiment_and_discussion/offline_predictor_selection.tex}
+\end{table}
+
+All five checkpoints were rescored on the same \(6{,}400\) forecast windows from 40 validation recordings.
 
 \subsection{Prediction Target}
 % - Compare Waveform-derived spectra and direct Observable forecasts on matched EEG histories and currents.
 % - Prediction-target metric: common spectral error against the recorded Observable.
 
-\subsection{Predictor Families}
-% - Spectral Predictors: compare Hankel-DMDc, MLP, and CNN on the same Observable.
+\begin{figure}
+  \centering
+  \includegraphics{figures/06_experiment_and_discussion/offline_predictor_lookahead.pdf}
+  \caption{Log-power \ac{mse} by lookahead on the validation recordings with \SI{60}{\milli\second} current holds.
+  Observable predictors forecast log-power directly, while Waveform forecasts are transformed to the same spectral representation.
+  Persistence repeats the last measured spectral frame.}\label{fig:offline_predictor_lookahead}
+\end{figure}
+
+The direct spectral forecasts had lower mean log-power error than the waveform-derived forecasts.
+
+\subsection{Predictor Architectures}
+ % - Spectral Predictors: compare Hankel-DMDc, MLP, and CNN on the same Observable.
 % - Waveform Predictors: compare MLP and CNN with the same validation Loss.
 % - Metric: common validation Loss on matched evaluation windows within each prediction target.
 
+\begin{table}
+  \centering
+  \caption{Matched log-power \ac{mse} averaged equally over the 17 lookaheads in Figure~\ref{fig:offline_predictor_lookahead}.}\label{tab:offline_predictor_matched_scores}
+  \input{tables/06_experiment_and_discussion/offline_predictor_matched_scores.tex}
+\end{table}
+
+Hankel-\ac{dmdc} had the lowest mean error, while the Observable \ac{cnn} had the lowest error at \SI{1.02}{\second}.
+
 \section{Solver and Transcription Benchmark}
 
-% - Benchmark single shooting, multiple shooting, and NARX multiple shooting.
-% - Match the Predictor, MPC Cost, constraints, initial plans, and physical Control Horizons across transcriptions.
-% - Metrics: solve latency, convergence rate, achieved objective, constraint violation.
+We compared the three transcriptions from Table~\ref{tab:mpc_transcription_counts} by solving the same control problem with IPOPT from one snapshot during a seizure.
+The benchmark used a nonlinear waveform predictor with 62 \ac{eeg} channels, two control inputs, and a horizon of $H=20$ steps.
+
+\begin{table}
+  \centering
+  \caption{Decision-variable counts and solve times for the three benchmark transcriptions.}\label{tab:mpc_transcription_benchmark}
+  \begin{tabular}{lrrl}
+    \toprule
+    Transcription & Decision variables & Solve time (s) & Outcome \\
+    \midrule
+    Full-state multiple shooting & $18{,}090$ & $>30$ & Timed out \\
+    \acs{narx} multiple shooting & $1{,}280$ & $11.7$ & Converged \\
+    Single shooting & $40$ & $0.53$ & Converged \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+Full-state multiple shooting had the largest decision vector because it introduced a separate predictor history at each shooting node.
+The solver timed out before completing an iteration on this problem.
+The \acs{narx} transcription eliminated the repeated history variables but still included every predicted channel at each step in the decision vector.
+Even with that reduction, the \acs{narx} solve took about 22 times as long as single shooting, which optimized only the stimulation currents.
+The single-shooting solve took about nine times the \SI{60}{\milli\second} update interval used in the closed-loop experiments.
+
+Multiple shooting can be preferable when long rollouts make single shooting poorly conditioned, since its dynamics constraints use only local derivatives (Section~\ref{sec:mpc_numerical_solution}).
+In our simulations, the single-shooting solves generally proceeded without numerical stability issues.
+We chose single shooting for the closed-loop experiments because its solve times made repeated replanning practical.
 
 \section{Closed-Loop Seizure Suppression}
 
