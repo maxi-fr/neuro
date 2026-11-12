@@ -3,6 +3,8 @@ from __future__ import annotations
 import importlib
 from typing import TYPE_CHECKING, Any
 
+import numpy as np
+import trajopt.transcription.single_shooting as ss
 from trajopt.solvers.altro import ALTRO
 from trajopt.solvers.boxqp import BoxQP
 from trajopt.solvers.options import SolverOptions
@@ -13,7 +15,23 @@ from neuro.control.costs import has_whole_horizon_cost
 
 if TYPE_CHECKING:
     from trajopt.problem import Problem
+    from trajopt.trajectory import Trajectory
     from trajopt.transcription.result import Solver
+
+_MAX_ADJOINT_STATE_DIM: int = 1000
+
+# High-dimensional state vectors (e.g. Observable CNN with n=11,931) make backward adjoint
+# multiplier recovery evaluate an 11,931 x 11,931 state Jacobian 17 times in JAX (1.14 GB/knot,
+# ~165s/solve, triggering system out-of-memory). Since duals are unused, guard against this.
+if hasattr(ss, "_recover_canonical_multipliers"):
+    _orig_recover = ss._recover_canonical_multipliers  # noqa: SLF001 -- patching internal multiplier recovery for large states
+
+    def _safe_recover(problem: Problem, traj: Trajectory, info: dict[str, Any]) -> tuple[np.ndarray, np.ndarray]:
+        if int(problem.model.n) > _MAX_ADJOINT_STATE_DIM:
+            return np.zeros(0, dtype=np.float64), np.zeros(0, dtype=np.float64)
+        return _orig_recover(problem, traj, info)
+
+    ss._recover_canonical_multipliers = _safe_recover  # noqa: SLF001 -- patching internal multiplier recovery for large states
 
 
 IPOPT_DEFAULTS: dict[str, Any] = {

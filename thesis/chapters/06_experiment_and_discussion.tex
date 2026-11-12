@@ -230,16 +230,78 @@ We chose single shooting for the closed-loop experiments because its solve times
 \section{Closed-Loop Seizure Suppression}
 
 \subsection{Spectral Observable Geometry}
-% - Vary Segment length, frequency band, Frame Kernel, and taper at a fixed 60 ms Frame interval.
-% - Describe each geometry by its frequency resolution and smoothing delay.
-% - Closed-loop validation metrics: Seizure Burden, final seizing regions, Delivered Charge.
+Section~\ref{sec:spectral_representation} described how segment length, frame averaging, and tapering change the spectral estimate available to the controller.
+Sustained stimulation at the current limit delivered about \SI{45}{\milli\ampere\second} and consistently suppressed seizures in preliminary runs.
+We therefore asked which spectral geometries maintained suppression with substantially less charge.
+
+We varied segment length, frequency band, smoothing kernel width, and taper in successive comparisons on the same five development seeds.
+Each geometry used its own spectral \ac{mlp} predictor and healthy reference.
+We held the sampling frequency at \SI{50}{\hertz}, the frame hop and replanning interval at \SI{60}{\milli\second}, the control horizon at 17 frames (\SI{1.02}{\second}), and the quadratic current-cost weight at $0.4$.
+
+Seizure burden is the mean fraction of regions seizing over the full \SI{12}{\second} run, expressed as a percentage.
+For each of the $N_{\mathrm{win}}$ complete \SI{1}{\second} windows, spaced \SI{0.25}{\second} apart, we evaluate the seizure state in~\eqref{eq:seizure_state} at the window endpoint $t_i$.
+The burden $B$ is
+\begin{equation*}
+  B = \frac{100\,\%}{N_{\mathrm{win}}}\sum_{i=1}^{N_{\mathrm{win}}} s(t_i)\,.
+\end{equation*}
+We also count the regions seizing in the last window and integrate the sum of absolute electrode currents over the run to obtain delivered charge.
+
+\begin{table}[htbp] % latex-lint:ignore=FLOAT-01
+  \centering
+  \caption{Closed-loop outcomes for the spectral geometry sweep, averaged over five development seeds.
+  Both segment lengths started control at \SI{1.98}{\second}, while all band settings started at \SI{0.48}{\second}.
+  The smoothing and taper stages started control when the required history was available.}\label{tab:spectral_geometry_sweep}
+  \begin{tabular}{@{}llrrr@{}}
+    \toprule
+    Stage & Setting & Burden (\%) & Charge (mAs) & Final seizing regions \\
+    \midrule
+    Segment & 25 samples & 11.44 & 22.27 & 8.8 \\
+            & 50 samples & 11.71 & 14.00 & 9.2 \\
+    \addlinespace
+    Band & \SIrange{0}{25}{\hertz} & 4.78 & 30.63 & 3.4 \\
+         & \SIrange{1}{25}{\hertz} & 4.86 & 26.85 & 3.8 \\
+         & \SIrange{3}{12}{\hertz} & 4.91 & 31.51 & 3.2 \\
+    \addlinespace
+    Smoothing & 1 frame & 4.86 & 26.85 & 3.8 \\
+              & 4 frames & 4.48 & 33.24 & 3.4 \\
+              & 7 frames & 4.36 & 37.05 & 3.2 \\
+    \addlinespace
+    Taper & Rising half-Hann & 4.86 & 26.85 & 3.8 \\
+          & Symmetric Hann & 15.20 & 27.69 & 14.2 \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+Doubling the segment from 25 to 50 samples refined the frequency grid from \SI{2}{\hertz} to \SI{1}{\hertz} and extended the waveform history needed for each frame.
+We withheld stimulation in both arms until \SI{1.98}{\second} to give the 50-sample predictor time to initialize its spectral and past-current histories and to compare the two segment lengths at the same start time.
+This delay left seed 7005 without stimulation when the seizure reached the \ac{pz} at \SI{1.50}{\second}.
+The longer segment delivered less charge with similar mean burden (Table~\ref{tab:spectral_geometry_sweep}), while the shorter segment reduced the mean solve time from \SI{8.52}{\second} to \SI{4.87}{\second}.
+
+When the 25-sample controller started as soon as its history was available at \SI{0.48}{\second}, the seizure in seed 7005 stayed out of the \ac{pz} for the full run.
+Burden on that seed dropped from \SI{35.73}{\percent} to \SI{4.62}{\percent}, accounting for most of the difference between the two baseline means.
+We retained the 25-sample segment because its shorter initialization allowed earlier intervention on fast-spreading seizures.
+
+The band comparison used the earlier start for all three bands.
+The \SIrange{1}{25}{\hertz} band used less charge than either the band that included zero frequency or the narrower \SIrange{3}{12}{\hertz} band, with similar mean burden across all three.
+Keeping the \SIrange{1}{25}{\hertz} band fixed, averaging over four or seven frames extended the waveform support by \SI{180}{\milli\second} or \SI{360}{\milli\second}, respectively, and postponed the first control update.
+Wider kernels yielded slightly lower mean burden and higher mean charge than the unsmoothed frames at the same current-cost weight.
+
+The tapers yielded similar mean charge, but the symmetric Hann allowed the seizure to reach the \ac{pz} in two of five runs, with 30 regions seizing at the end of each.
+We observed no such propagation with the rising half-Hann.
+The rising half-Hann gives the newest samples more weight at the same frame endpoint, which may help the controller respond to emerging activity before it spreads.
+We carried the 25-sample segment, three-sample hop, \SIrange{1}{25}{\hertz} band, and rising half-Hann without frame averaging forward as the shared geometry for the spectral prediction and control comparisons.
 
 \subsection{Waveform Prediction Target}
 % - Compare Waveform controllers trained with waveform MSE, spectral Loss, or both under the planned Loss--Cost pairings.
 % - Use shared MPC Costs when attributing differences to training Loss.
 % - Compare waveform tracking, spectral hinge, and combined Costs using the same joint-loss checkpoint.
-% - Vary effort, terminal weight, and Control Horizon on validation seeds.
+% - Vary terminal weight and Control Horizon on development seeds.
 % - Validation metrics: Seizure Burden, final seizing regions, Delivered Charge.
+
+\subsection{Stimulation Cost Weight}
+% - Vary the quadratic stimulation cost weight $w_u$ for the Observable and Waveform controllers on the same five development Plant seeds.
+% - Hold the Predictor checkpoint, remaining MPC Cost terms, and Control Horizon fixed within each sweep.
+% - Plot full-run Delivered Charge (mAs) and Seizure Burden (\%) against $w_u$ on a logarithmic axis, showing individual seeds and means.
 
 \subsection{Controller Comparison}
 % - Compare uncontrolled, threshold, Observable DMDc, Observable MLP/CNN, and Waveform MLP/CNN arms.
@@ -252,6 +314,7 @@ We chose single shooting for the closed-loop experiments because its solve times
 
 \section{Discussion}
 % - Explain differences in Seizure Burden and final seizing region count using paired traces.
+% - Explain why full suppression (zero final seizing regions) is unattainable under the implemented stimulation model: the remaining seizing regions cannot be controlled by the available stimulation inputs.
 % - Discuss trade-offs among Seizure Burden, Delivered Charge, and solve latency.
 % - Separate the controlled development comparisons from the reserved comparison of tuned controller systems.
 % - Discuss limitations from the Plant scenario, training seeds, and simulated-time execution.

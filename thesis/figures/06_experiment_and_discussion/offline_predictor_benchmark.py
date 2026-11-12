@@ -262,7 +262,7 @@ def main() -> None:
             "Value",
             "Checkpoint",
         ),
-        selection,
+        selection,  # ty: ignore[invalid-argument-type]
     )
 
     reference = models[0]

@@ -49,14 +49,18 @@ Does direct prediction of scalp \ac{eeg} spectral quantities improve control wit
 How do continuous sparsity-promoting formulations and explicit stimulation scheduling compare in control performance, stimulation effort and computational cost?
 
 This thesis investigates these questions in a simulation study of \ac{mpc} for seizure control.
-A biophysical whole-brain model generates the stimulation responses and scalp \ac{eeg} used to identify prediction models and evaluate feedback control.
-The controller uses the identified models to select electrode currents.
-The three contributions are:
+The literature review informs the choice of neural dynamics, control objectives and \ac{mpc} formulations.
+The simulation environment combines a whole-brain network of Jansen-Rit models with scalp measurement and stimulation models to generate training data and evaluate feedback control.
+The study makes three contributions.
 
 \begin{enumerate}
-    \item Evaluation of \ac{mpc} with constrained electrode currents in a biophysical simulation plant that maps scalp currents to regional stimulation and regional activity to scalp \ac{eeg}, including orientation-dependent neural polarization.
-    \item Development of data-driven models that directly predict sequences of \ac{stft}-derived scalp \ac{eeg} spectral power and comparison with waveform-based models within \ac{mpc} for seizure suppression.
-    \item Formulation and comparison of sparsity-promoting \ac{mpc} approaches using mixed-integer stimulation scheduling and continuous relaxations.
+    \item We evaluate whether \ac{mpc} can suppress simulated seizures using only scalp \ac{eeg} as feedback and constrained electrode currents as inputs.
+          We use regional activity in the simulation to assess seizure suppression and recruitment.
+    \item We develop data-driven models that forecast scalp \ac{eeg} power across frequencies and compare them with models that forecast waveforms from which power is computed.
+          This comparison tests whether forecasting power directly improves seizure suppression under a spectral control objective.
+    \item We investigate two ways to promote sparse stimulation by leaving more intervals unstimulated.
+          An absolute-current penalty favors zero currents, while mixed-integer scheduling explicitly chooses which intervals to leave off and what currents to apply in the others.
+          We assess the trade-off between seizure suppression, stimulation effort and computational cost.
 \end{enumerate}
 
 The following chapters develop and evaluate these contributions.

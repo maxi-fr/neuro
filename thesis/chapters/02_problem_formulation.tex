@@ -75,6 +75,13 @@ In \ac{tes}, electrical currents are applied through scalp electrodes to influen
 These currents produce electric fields within the head, with their spatial distribution depending on the electrode arrangement and the electrical properties of the tissues~\cite{Huang2019}.
 The effects of stimulation on collective neural activity can be investigated by combining a head model with a model of neural populations~\cite{Merlet2013,Kunze2016}.
 Together, scalp measurements and stimulation provide the observation and intervention interfaces for feedback control.
+Figure~\ref{fig:scalp_interfaces} illustrates these two interfaces.
+
+\begin{figure} % [!ht] % latex-lint:ignore=FLOAT-01
+    \centering
+    \input{figures/02_problem_formulation/scalp_interfaces}
+    \caption{Scalp measurement and stimulation.\ (a) Electrodes in an \acs{eeg} cap provide voltage measurements shown as three illustrative channel traces.\ (b) A current source applies stimulation through scalp electrodes.}\label{fig:scalp_interfaces}
+\end{figure}
 
 \section{Simulation and \ac{mpc} Framework}\label{sec:control_engineering_setting}
 

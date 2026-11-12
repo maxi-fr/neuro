@@ -1,0 +1,76 @@
+\tikzsetnextfilename{scalp_interfaces}
+\begin{tikzpicture}[
+    thesis figure,
+    >=Stealth,
+    line cap=round,
+    line join=round,
+    panel/.style={draw=black!35, fill=black!2, rounded corners=3pt, line width=0.6pt},
+    wire/.style={draw=accentcolor!85!black, line width=0.7pt},
+    contact/.style={circle, draw=accentcolor!85!black, fill=white, inner sep=0pt,
+        minimum size=3.5pt, line width=0.6pt},
+    pad/.style={draw=accentcolor!85!black, fill=accentcolor!20, rounded corners=1pt,
+        minimum width=0.44cm, minimum height=0.19cm, inner sep=0pt, line width=0.7pt},
+    trace/.style={draw=black!80, line width=0.55pt},
+    pics/head/.style={code={
+        \path[draw=black!65, fill=white, line width=0.7pt]
+            (1.38,0.36) -- (1.40,0.78)
+            .. controls (1.06,0.71) and (0.88,0.79) .. (0.90,1.02)
+            -- (0.86,1.29) -- (0.62,1.35)
+            .. controls (0.53,1.38) and (0.60,1.47) .. (0.67,1.55)
+            -- (0.89,1.84)
+            .. controls (0.84,2.28) and (1.08,2.66) .. (1.46,2.82)
+            .. controls (1.86,3.01) and (2.46,2.95) .. (2.78,2.64)
+            .. controls (3.17,2.28) and (3.13,1.78) .. (2.93,1.49)
+            .. controls (2.69,1.18) and (2.62,0.81) .. (2.69,0.36)
+            -- cycle;
+        \draw[black!55, line width=0.55pt]
+            (1.03,1.80) -- (1.19,1.80)
+            (0.89,1.12) -- (1.03,1.13)
+            (1.91,1.71) .. controls (2.19,1.89) and (2.24,1.50) .. (2.03,1.44)
+            .. controls (1.96,1.42) and (1.94,1.48) .. (1.96,1.53);
+    }}
+]
+    \path[panel] (0,0) rectangle (7.42,3.84);
+    \node[anchor=west, thesis heading] at (0.23,3.53) {(a) EEG measurement};
+    \pic {head};
+    \path[draw=accentcolor!85!black, fill=accentcolor!14, line width=0.7pt]
+        (0.96,2.17)
+        .. controls (1.10,2.83) and (1.58,3.10) .. (2.24,3.00)
+        .. controls (2.81,2.94) and (3.11,2.57) .. (3.08,2.01)
+        .. controls (2.45,2.15) and (1.72,2.16) .. (0.96,2.17) -- cycle;
+    \foreach \x/\y in {1.35/2.44,1.71/2.76,2.13/2.78,2.57/2.65,
+        1.83/2.38,2.30/2.36,2.81/2.28} {
+        \node[contact] at (\x,\y) {};
+    }
+    \draw[wire, ->] (3.07,2.24) -- (3.85,2.24);
+    \node[anchor=west, thesis secondary] at (4.10,2.96) {Example EEG channels};
+    \begin{scope}[shift={(4.15,2.49)}]
+        \draw[trace] plot[smooth] coordinates {(0,0) (0.20,0.04) (0.36,-0.06)
+            (0.54,0.08) (0.74,0.02) (0.92,-0.10) (1.10,0.12) (1.28,-0.05)
+            (1.50,0.05) (1.72,-0.07) (1.91,0.03) (2.12,0.08) (2.34,-0.03) (2.66,0)};
+    \end{scope}
+    \begin{scope}[shift={(4.15,1.93)}]
+        \draw[trace] plot[smooth] coordinates {(0,0) (0.22,-0.04) (0.40,0.08)
+            (0.57,-0.02) (0.73,-0.13) (0.91,0.11) (1.10,0.02) (1.30,-0.09)
+            (1.47,0.12) (1.63,-0.03) (1.86,-0.06) (2.04,0.04) (2.30,-0.05) (2.66,0)};
+    \end{scope}
+    \begin{scope}[shift={(4.15,1.37)}]
+        \draw[trace] plot[smooth] coordinates {(0,0) (0.22,0.07) (0.43,-0.06)
+            (0.65,0.04) (0.84,0.08) (1.04,-0.08) (1.24,-0.12) (1.45,0.03)
+            (1.61,0.10) (1.83,-0.05) (2.04,0.06) (2.24,-0.06) (2.43,0.03) (2.66,0)};
+    \end{scope}
+    \draw[black!65, ->] (4.15,0.82) -- node[below, thesis secondary] {Time} (6.81,0.82);
+
+    \begin{scope}[xshift=7.74cm]
+        \path[panel] (0,0) rectangle (7.42,3.84);
+        \node[anchor=west, thesis heading] at (0.23,3.53) {(b) Electrical stimulation};
+        \pic {head};
+        \draw[wire] (1.29,2.73) -- (1.29,3.17) -- (3.96,3.17) -- (3.96,2.11) -- (4.55,2.11);
+        \draw[wire] (2.98,2.34) -- (3.57,2.34) -- (3.57,1.57) -- (4.55,1.57);
+        \node[pad, rotate=36] at (1.29,2.73) {};
+        \node[pad, rotate=-68] at (2.98,2.34) {};
+        \path[draw=black!60, fill=white, rounded corners=2pt, line width=0.7pt]
+            (4.55,1.27) rectangle (6.81,2.41);
+        \node at (5.68,1.84) {Current source};
+    \end{scope}
+\end{tikzpicture}

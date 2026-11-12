@@ -192,14 +192,14 @@
 \begin{document}
 
 \Metadata{
-	title=Eine minimale LaTeX-Vorlage für schriftliche (Abschluss-)Arbeiten am IAT,
-	author=Rudi Ratlos,
-	keywords={TU Darmstadt \sep Corporate Design \sep LaTeX},
+	title=Data-Driven Model Predictive Control for Seizure Suppression with Sparse Stimulation,
+	author=Max Frankenberg,
+	keywords={model predictive control \sep transcranial electrical stimulation \sep seizure suppression \sep electroencephalography \sep sparse stimulation \sep mixed-integer optimization},
 }
 
-\title{Eine minimale \LaTeX-Vorlage für schriftliche (Abschluss-)Arbeiten am IAT}
+\title{Data-Driven Model Predictive Control for Seizure Suppression with Sparse Stimulation}
 \subtitle{\textmd{Electrical Engineering and Information Technology program}}
-\author[R. Ratlos]{Rudi Ratlos}
+\author[M. Frankenberg]{Max Frankenberg}
 \reviewer*[First Examiner,Supervisor]{Prof.~Dr.-Ing. Rolf Findeisen \and NameGoesHere}
 
 \department{etit}
@@ -207,7 +207,7 @@
 \addTitleBox{\includegraphics[width=\linewidth]{figures/CCPS_logo}}
 
 %\date{\today}
-\submissiondate{1. April 2020}
+\submissiondate{23.11.2026}
 
 \lowertitleback{
 	Technische Universität Darmstadt\\
@@ -236,14 +236,37 @@
 \affidavit[digital]
 
 \section*{Abstract}
-	% Abstract structure (increasing scope):
-	% 1. Context (current state of the topic)
-	% 2. Problem or open research points
-	% 3. Solution
-	% 4. Key takeaway
+Focal seizures begin in a limited part of the brain and can spread to connected regions.
+This thesis examines whether \acf*{mpc} can limit that spread by using scalp \acf*{eeg} to guide transcranial electrical stimulation.
 
+Data-driven prediction models are studied for use within \acs*{mpc}.
+The models are trained to forecast either \acs*{eeg} waveforms or spectral log-power given recent scalp recordings, previously applied currents, and a candidate stimulation sequence.
+Two approaches to sparse stimulation are evaluated within \acs*{mpc}.
+An $L_1$ penalty is added to the cost to encourage zero electrode currents, while mixed-integer formulations use binary variables to directly select which intervals can receive stimulation.
+
+The controllers are evaluated in closed-loop simulations of a biophysical whole-brain model of focal epilepsy.
+With either prediction target, \acs*{mpc} reduced the average fraction of brain regions involved in seizures compared with no stimulation and threshold-triggered stimulation.
+Both controllers also delivered less charge than the threshold controller.
+In offline validation, direct forecasts of spectral log-power were more accurate than those obtained from predicted waveforms.
+Adding a penalty on active intervals to the current penalty increased total time without stimulation while maintaining similar seizure suppression and delivered charge.
+
+\begin{otherlanguage}{ngerman}
 \section*{Zusammenfassung}
-	Additional abstract in German.
+Fokale epileptische Anfälle beginnen in einem begrenzten Bereich des Gehirns und können sich auf verbundene Hirnregionen ausbreiten.
+Diese Arbeit untersucht, ob sich diese Ausbreitung mit modellprädiktiver Regelung (\acs*{mpc}) begrenzen lässt, wenn die transkranielle elektrische Stimulation anhand eines an der Kopfhaut aufgezeichneten Elektroenzephalogramms (\acs*{eeg}) angepasst wird.
+
+Für den Einsatz in der \acs*{mpc} werden datengetriebene Vorhersagemodelle untersucht.
+Die Modelle werden darauf trainiert, entweder \acs*{eeg}-Signalverläufe oder logarithmierte Spektralleistungen vorherzusagen.
+Als Eingaben dienen die jüngsten \acs*{eeg}-Messwerte, die zuvor angelegten Ströme und eine zu bewertende Stimulationsfolge.
+Um die Stimulation auf weniger Intervalle zu beschränken, werden zwei Ansätze untersucht.
+Ein $L_1$-Strafterm in der Kostenfunktion begünstigt Stromwerte von null, während in den gemischt-ganzzahligen Formulierungen binäre Variablen direkt festlegen, in welchen Intervallen stimuliert werden darf.
+
+Die Regler werden im geschlossenen Regelkreis an einem biophysikalischen Ganzhirnmodell der fokalen Epilepsie erprobt.
+Mit beiden Vorhersagezielen verringerte die \acs*{mpc} den mittleren Anteil der an einem Anfall beteiligten Hirnregionen sowohl gegenüber Simulationen ohne Stimulation als auch gegenüber schwellenwertgesteuerter Stimulation.
+Beide Regler gaben zudem weniger Ladung ab als der schwellenwertgesteuerte Regler.
+In der Offline-Validierung war die direkte Vorhersage logarithmierter Spektralleistungen genauer als deren Berechnung aus vorhergesagten Signalverläufen.
+Wurde der Strafterm für die Ströme um einen Strafterm für aktive Stimulationsintervalle ergänzt, nahm die stimulationsfreie Gesamtzeit bei vergleichbarer Anfallsunterdrückung und abgegebener Ladung zu.
+\end{otherlanguage}
 
 \cleardoublepage
 

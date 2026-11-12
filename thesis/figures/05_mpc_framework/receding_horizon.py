@@ -98,9 +98,7 @@ def main() -> None:
     y_real, u_real, plans = _closed_loop()
     t_real = np.arange(len(y_real)) * DT
 
-    fig, (ax_y, ax_u) = plt.subplots(
-        1, 2, figsize=style.figsize(height_in=2.7), sharex=True, constrained_layout=True
-    )
+    fig, (ax_y, ax_u) = plt.subplots(1, 2, figsize=style.figsize(height_in=2.7), sharex=True, constrained_layout=True)
 
     for i, (k, u_plan, y_plan) in enumerate(plans):
         t_plan = (k + np.arange(HORIZON + 1)) * DT

@@ -24,6 +24,7 @@ if TYPE_CHECKING:
 
     from optuna.trial import BaseTrial
 
+
 def _run_trial(
     config: NNPredictorConfig,
     data_files: list[str],

@@ -31,6 +31,7 @@ from neuro.control.diagnostics import (
     decompose_cost,
     planned_outputs,
 )
+from neuro.control.execution import CommandPlayback
 from neuro.control.mpc import TrajOptMPCLog
 from neuro.control.problems import _build_problem
 from neuro.predictor.inference import InferencePredictor
@@ -101,8 +102,9 @@ class CandidateMPCController(Controller[TrajOptMPCLog]):
         problem: Problem,
         blocks: list[list[int]] | None = None,
         w_active: float = 0.3,
+        control_start_s: float | None = None,
     ) -> None:
-        """Initialize candidate activation schedules, rejecting structural current blocking.
+        """Initialize candidate activation schedules and an optional common release.
 
         Parameters
         ----------
@@ -114,6 +116,8 @@ class CandidateMPCController(Controller[TrajOptMPCLog]):
             List of Control Horizon knot indices partitioned into decision blocks.
         w_active
             Sparsity weight on active Control Horizon intervals.
+        control_start_s
+            Common release on the native solve grid.
         """
         super().__init__(dt)
         if problem.control_block_steps > 1:
@@ -126,6 +130,11 @@ class CandidateMPCController(Controller[TrajOptMPCLog]):
         self.problem = problem
         self.model = model
         self.horizon = int(problem.N - 1)
+        self._release = (
+            None
+            if control_start_s is None
+            else CommandPlayback(dt, dt, self.horizon, control_start_s, max(model.priming_steps, model.n_history))
+        )
         self.blocks = blocks if blocks is not None else [[0, 1, 2], [3, 4, 5], [6, 7, 8, 9]]
         self.w_active = float(w_active)
         self.schedules = self._build_schedules(self.blocks, self.horizon)
@@ -152,11 +161,17 @@ class CandidateMPCController(Controller[TrajOptMPCLog]):
 
     @classmethod
     def from_config(cls, config: dict[str, Any]) -> CandidateMPCController:
-        """Instantiate CandidateMPCController from a configuration dictionary."""
+        """Instantiate candidate schedules and common release from configuration."""
         problem = _build_problem(config["problem"])
         blocks = config.get("blocks")
         w_active = float(config.get("w_active", 0.3))
-        return cls(float(config["dt"]), problem, blocks=blocks, w_active=w_active)
+        return cls(
+            float(config["dt"]),
+            problem,
+            blocks=blocks,
+            w_active=w_active,
+            control_start_s=config.get("control_start_s"),
+        )
 
     def _evaluate_candidates(
         self,
@@ -229,13 +244,15 @@ class CandidateMPCController(Controller[TrajOptMPCLog]):
         ref: FloatArray,  # noqa: ARG002 -- goal is baked into objective
         x_hat: FloatArray,
     ) -> tuple[FloatArray, TrajOptMPCLog]:
-        """Absorb native history and record candidate attempts separately from Warm-up and update runtime."""
+        """Absorb native history during Warm-up and evaluate candidates after release."""
         update_started = time.perf_counter()
         self._state = np.asarray(self.model.absorb(self._state, np.asarray(x_hat).reshape(-1), self._u_last))
         knots = self.problem.N
         m_dim = self.n_controls
 
-        if not self.model.is_ready(self._state):
+        ready = self.model.is_ready(self._state)
+        due = ready if self._release is None else self._release.phase(t, ready=ready)[2]
+        if not due:
             self._u_last = np.zeros(m_dim, dtype=np.float64)
             u_zero = np.zeros(self.n_electrodes, dtype=np.float64)
             return u_zero, TrajOptMPCLog(

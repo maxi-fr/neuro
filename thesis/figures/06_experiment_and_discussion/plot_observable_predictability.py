@@ -67,7 +67,7 @@ def plot_penalty_scatter(bundle: ObservableEvaluationBundle, lag_points: FloatAr
     plt.close(fig)
 
 
-def plot_predictability(
+def plot_predictability( # noqa: PLR0913, PLR0917
     bundle: ObservableEvaluationBundle,
     split_path: Path,
     lag_times: FloatArray,

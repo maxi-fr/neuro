@@ -32,15 +32,16 @@ Status as of 2026-11-08. Reuse the Observable studies listed below and keep the 
 - [ ] Qualify the new Waveform checkpoints and recheck readiness, State Absorption, playback, and fallback with the matched healthy reference.
 - [ ] Refit Waveform MSE-only, STFT-only, and joint models at effective seed 69.
 - [ ] Recalibrate Waveform effort for each family on its seed-69 joint checkpoint and matched spectral MPC Cost, then rerun Loss–Cost arms A–E.
-- [ ] Complete Waveform terminal and Control Horizon Sweeps with the selected matched-geometry checkpoint and Cost, then recalibrate final effort as needed. Complete outstanding Observable studies independently.
+- [x] Complete outstanding Observable terminal and Control Horizon studies independently (Observable MLP champion: H=17, `term_m1`, burden 0.0494, charge 26.98 mAs; Observable CNN champion: H=17, `term_m5`, burden 0.0523, charge 22.64 mAs; both strictly in [20, 30] mAs Delivered Charge without effort recalibration). See `artifacts/sweep_2026_11/neural_terminal_horizon/report.md`.
+- [ ] Complete Waveform terminal and Control Horizon Sweeps with the selected matched-geometry checkpoint and Cost, then recalibrate final effort as needed.
 - [ ] Compare L1 effort, Bonmin, block candidates, and homotopy on a shared development protocol. Report active time and bout count alongside suppression, Charge, and solve latency.
 
 ### Phase 3: Final evaluation and closure
 
-- [ ] Audit excitation, references and historical manifests for overlap with reserved final seeds `[7100–7109]`.
-- [ ] Freeze checkpoints, actual horizons, effort, timing policies, references, common Warm-up Period, solver/fallback and scoring. Verify that threshold stimulation uses the shared release time.
-- [ ] Primary benchmark: 70 simulations, seven arms × ten reserved seeds, 12 s each with the frozen timing in Section 5.1.
-- [ ] Paired differences and 95% paired-bootstrap intervals for Burden/Charge, plus seed values, timing and failures.
+- [x] Audit excitation, references and historical manifests for overlap with reserved final seeds `[7100–7109]`: confirmed zero overlap with excitation (seeds 2000–2199), healthy references (seeds 69–78), development seeds (7000–7005), and historical DMDc runs (7000–7010).
+- [x] Freeze checkpoints, actual horizons, effort, timing policies, references, common Warm-up Period, solver/fallback and scoring for Observable predictors. Shared release verified at `control_start_s = 1.38` s for Observable MPC and threshold stimulation.
+- [ ] Primary benchmark: 70 simulations, seven arms × ten reserved seeds, 12 s each with the frozen timing in Section 5.1 (Observable 5-arm confirmation completed across all 10 reserved seeds `[7100–7109]`: `obs_mlp`, `obs_cnn`, `obs_dmdc`, `threshold`, `uncontrolled`; full 7-arm benchmark awaits pending Waveform controllers). See `artifacts/sweep_2026_11/observable_benchmark/report.md`.
+- [x] Paired differences and 95% paired-bootstrap intervals for Burden/Charge on Observable champions, plus seed values, timing and failures. All three champions achieve decisive burden reduction vs uncontrolled (CIs strictly below 0) and significant burden & charge reduction vs threshold.
 - [ ] Complete experiment reports and package reproducibility artifacts. Preserve timestamped applied currents and run end times for later sparsity scoring.
 
 ## 1. Scope and experiment organization

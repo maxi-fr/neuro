@@ -82,9 +82,7 @@ def main() -> None:
     edges_t = np.concatenate([frame_times, [frame_times[-1] + N_HOP / FS]])
     d_f = freqs[1] - freqs[0]
     edges_f = np.concatenate([freqs - 0.5 * d_f, [freqs[-1] + 0.5 * d_f]])
-    mesh = ax.pcolormesh(
-        edges_t, edges_f, np.maximum(power.T, 1e-12), norm=LogNorm(), cmap="viridis", shading="flat"
-    )
+    mesh = ax.pcolormesh(edges_t, edges_f, np.maximum(power.T, 1e-12), norm=LogNorm(), cmap="viridis", shading="flat")
     fig.colorbar(mesh, ax=ax, label=r"$|Y_{q,m}|^2$", pad=0.02)
     ax.vlines(frame_times, 0.0, FS / 2, colors="w", lw=0.35, alpha=0.5)
     ax.set_ylim(0.0, FS / 2)

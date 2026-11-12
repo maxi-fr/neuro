@@ -975,7 +975,7 @@ def test_mixed_integer_mpc_controller_solve_and_update(tmp_path: Path) -> None:
 
 
 def test_candidate_mpc_controller_update_and_config(tmp_path: Path) -> None:
-    """CandidateMPCController evaluates combinatorial schedules and builds from config."""
+    """CandidateMPCController respects its configured release while absorbing history."""
     artifact, _ = _build_observable_checkpoint(tmp_path, n_channels=2, n_controls=2)
     prob = build_observable_problem(artifact, horizon=3, u_max=1.0, kirchhoff=True)
 
@@ -997,6 +997,7 @@ def test_candidate_mpc_controller_update_and_config(tmp_path: Path) -> None:
     cfg = {
         "class_path": "neuro.control.candidate.CandidateMPCController",
         "dt": 0.06,
+        "control_start_s": 1.38,
         "blocks": [[0], [1, 2]],
         "w_active": 0.3,
         "problem": {
@@ -1010,6 +1011,12 @@ def test_candidate_mpc_controller_update_and_config(tmp_path: Path) -> None:
     loaded = CandidateMPCController.from_config(cfg)
     assert loaded.dt == 0.06
     assert len(loaded.schedules) == 4
+    for tick in range(23):
+        current, log = loaded.update(tick * 0.06, np.zeros(2), np.zeros(model.n_outputs))
+        assert log.warmup
+        np.testing.assert_array_equal(current, np.zeros(2))
+    _, log = loaded.update(1.38, np.zeros(2), np.zeros(model.n_outputs))
+    assert log.solve_attempted
 
 
 def test_trajopt_mpc_controller_cont_polish(tmp_path: Path) -> None:
