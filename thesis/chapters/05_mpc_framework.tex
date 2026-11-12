@@ -73,7 +73,6 @@ Figure~\ref{fig:receding_horizon} shows how the plans change as new measurements
     \centering
     \includegraphics{figures/05_mpc_framework/receding_horizon}
     \caption{Illustration of receding-horizon control for a scalar system.
-    The plan and realized entries in the legend apply to both panels.
     Dashed curves show predicted states and candidate inputs, while solid curves show the realized states and applied inputs.
     State and input values are dimensionless.
     Replanning occurs at every sampling instant, with plans at $k=0$, $3$ and $6$ shown for clarity.
@@ -83,9 +82,9 @@ Figure~\ref{fig:receding_horizon} shows how the plans change as new measurements
 
 A task may continue indefinitely, but limiting the prediction horizon gives the solver a finite set of decision variables and constraints at each update.
 The terminal cost can approximate the cost beyond the horizon~\cite{Rawlings2017,Mayne2000}.
+For feedback at the chosen sampling rate, the controller must also solve each finite-horizon problem within one sampling interval.
 
 Replanning alone does not ensure that a feasible plan exists at every subsequent update or that the closed-loop state converges to the target equilibrium~\cite{Rawlings2017,Mayne2000}.
-For feedback at the chosen sampling rate, the controller must also solve each finite-horizon problem within one sampling interval.
 The next section compares two ways to formulate that problem for a numerical solver.
 
 \section{Numerical Transcription and Solution}\label{sec:mpc_numerical_solution}
@@ -127,7 +126,7 @@ The dynamics therefore hold at every iterate, while the state and input limits s
 In multiple shooting, the state constraints instead act directly on the state decision variables.
 The input constraints have the same form in both transcriptions.
 
-This difference also determines which derivatives a gradient-based solver needs to evaluate the objective and constraint sensitivities.
+This difference in the optimization variables also determines which derivatives a gradient-based solver needs to evaluate the objective and constraint sensitivities.
 In multiple shooting, each dynamics equality couples only adjacent states and the input between them.
 In single shooting, an input can affect every subsequent state, so the solver must account for how its effect propagates through the model.
 
@@ -188,7 +187,7 @@ For the history state $\mathbf h$ defined in~\eqref{eq:predictor_history}, this 
     \label{eq:mpc_history_transition}
 \end{equation}
 %
-Identifying $\mathbf x=\mathbf h$, $\mathbf f=\mathbf F_{\boldsymbol\theta}$ and $\hat{\mathbf x}_k=\mathbf h_k$ gives the state-space form in~\eqref{eq:mpc_prediction_dynamics}.
+Identifying $\mathbf x\equiv\mathbf h$, $\mathbf f\equiv\mathbf F_{\boldsymbol\theta}$ and $\hat{\mathbf x}_k\equiv\mathbf h_k$ gives the state-space form in~\eqref{eq:mpc_prediction_dynamics}.
 This state-space form permits multiple shooting, but the structure of the history update allows a smaller transcription.
 
 \subsection{\acs{narx} Transcription}
@@ -238,10 +237,10 @@ Regional recruitment cannot be assessed directly from the scalp \ac{eeg} observa
 So instead we extract features of predicted \ac{eeg} to serve as proxies for seizure activity and compare that to features extracted from \ac{eeg} signals of healthy simulated brains.
 To characterize healthy activity, we use unstimulated simulations in which all regions have the healthy background excitability described in Section~\ref{sec:parameter_selection}.
 
-Panel (a) of Figure~\ref{fig:mpc_suppression_references} shows that healthy fluctuations observed through an electrode are small on the scale of seizure oscillations.
+Figure~\ref{fig:mpc_suppression_references}(a) shows that healthy fluctuations observed through an electrode are small on the scale of seizure oscillations. % chktex 36 -- The panel letter follows the figure number without a space.
 This difference motivates approximating the healthy waveform by a constant and penalizing large departures from it.
-For each channel, the reference is the mean of the waveform samples pooled across time and across the healthy reference trajectories.
-The vector of healthy channel means $\bar{\mathbf y}_{\mathrm{healthy}}\in\mathbb R^{\nchan}$ serves as the reference for a standard squared tracking cost~\cite{Rawlings2017},
+For each channel, the reference is the mean of the waveform samples pooled across time and across the unstimulated healthy simulations.
+The vector of healthy channel means $\bar{\mathbf y}_{\mathrm{healthy}}\in\mathbb R^{\nchan}$ serves as the reference for a standard quadratic tracking cost~\cite{Rawlings2017},
 %
 \begin{equation}
     \mathcal J_{\mathrm{wave}}
@@ -274,7 +273,7 @@ The spectral cost averages the squared excess log power over $\nscore{spec}\in\m
 where ${[a]}_+=\max\{a,0\}$ for $a\in\mathbb R$.
 The prediction boundary is spectral frame $q$.
 The penalty vanishes at or below the healthy envelope.
-Panel (b) of Figure~\ref{fig:mpc_suppression_references} illustrates where seizure log power exceeds the envelope at the electrode CP5.
+Figure~\ref{fig:mpc_suppression_references}(b) illustrates where seizure log power exceeds the envelope at the electrode CP5. % chktex 36 -- The panel letter follows the figure number without a space.
 
 \begin{figure}
     \centering
@@ -337,7 +336,7 @@ This count is often called the $L_0$ penalty.
 Each current contributes the same amount regardless of its magnitude, so the penalty jumps when a current departs from zero.
 The discontinuity makes the count unsuitable for direct use with a solver that requires objective gradients.
 A continuous surrogate is the $L_1$ penalty, which sums the absolute current magnitudes.
-For the discrete-time maximum hands-off problem studied by Nagahara et al., the $L_0$ and $L_1$ formulations have the same minimizers if the $L_1$ problem is normal and has a solution~\cite{Nagahara2016}.
+For the discrete-time maximum hands-off problem, the $L_0$ and $L_1$ formulations have the same minimizers if the $L_1$ problem is normal and has a solution~\cite{Nagahara2016}.
 In that setting, normality excludes switching-function values at which the minimizing input is ambiguous.
 Here the $L_1$ cost is used to promote sparse currents in an objective that also includes a suppression cost.
 
@@ -372,10 +371,11 @@ The $L_1$ penalty therefore favors keeping a current at zero when the predicted 
 The kink that promotes zero currents also makes the $L_1$ term nondifferentiable at those currents.
 The gradient-based solvers discussed above use objective derivatives to determine their search directions.
 However, the $L_1$ cost can be represented exactly using auxiliary variables and linear inequalities.
-For $w_1>0$, introduce auxiliary variables $z_{j|k,p}$ and replace the last term in~\eqref{eq:mpc_sparse_continuous_cost} by
+For $w_1>0$, introduce real auxiliary variables $z_{j|k,p}$ and replace $\mathcal J_{L_1}$ in~\eqref{eq:mpc_sparse_continuous_cost} with the auxiliary cost $\widetilde{\mathcal J}_{L_1}$, defined by
 %
 \begin{equation}
-    \frac{w_1}{H}\sum_{j=0}^{H-1}\sum_{p=1}^{\ndim{u}}z_{j|k,p}\,,
+    \widetilde{\mathcal J}_{L_1}
+    = \frac{1}{H}\sum_{j=0}^{H-1}\sum_{p=1}^{\ndim{u}}z_{j|k,p}\,,
     \qquad
     -z_{j|k,p}\leq u_{j|k,p}\leq z_{j|k,p}\,.
     \label{eq:mpc_l1_epigraph}
@@ -383,7 +383,7 @@ For $w_1>0$, introduce auxiliary variables $z_{j|k,p}$ and replace the last term
 %
 The inequalities in~\eqref{eq:mpc_l1_epigraph} imply $z_{j|k,p}\geq|u_{j|k,p}|$.
 Since reducing any slack lowers the objective without changing the currents or predictions, minimization gives $z_{j|k,p}=|u_{j|k,p}|$.
-This gives an exact reformulation with a linear cost in the auxiliary variables.
+At these values, $\widetilde{\mathcal J}_{L_1}=\mathcal J_{L_1}$.
 
 \subsection{Interval Activation Formulation}
 
@@ -413,16 +413,17 @@ To favor sparse stimulation, we penalize the fraction of intervals in which stim
     \label{eq:mpc_activation_cost}
 \end{equation}
 %
-Adding the activation cost~\eqref{eq:mpc_activation_cost} to the continuous-current objective gives the following problem, subject to~\eqref{eq:mpc_activation_gates}, the dynamics, and the initial condition.
+Adding the activation cost~\eqref{eq:mpc_activation_cost} to the continuous-current objective gives the following problem
 %
 \begin{equation}
     \min_{\mathbf u_{0|k},\ldots,\mathbf u_{H-1|k},\,
           \delta_{0|k},\ldots,\delta_{H-1|k}}
     \quad \mathcal J_{\mathrm{cont}}+w_{\delta}\mathcal J_{\delta},
-    \qquad w_{\delta}>0\,.
+    \qquad w_{\delta}>0\,,
     \label{eq:mpc_activation_penalty_problem}
 \end{equation}
 %
+subject to~\eqref{eq:mpc_activation_gates}, the dynamics, and the initial condition.
 For a fixed current sequence, any interval with nonzero current must be enabled.
 If activation variables are independent, the activation penalty makes it optimal to disable every interval with zero current.
 Thus, minimizing over the activation variables makes $\mathcal J_{\delta}$ equal to the fraction of intervals with nonzero current, a normalized group $L_0$ count.
@@ -450,7 +451,7 @@ We therefore discuss three different approaches to handling the binary decisions
 Branch and bound is a standard approach to solving a \ac{minlp}~\cite{Bonami2008}.
 Its role here can be understood by considering the cost of solving a separate continuous \ac{nlp} for each fixed activation schedule.
 Since each of the $H$ intervals has two possible activation values, exhaustive enumeration could require up to $2^H$ such solves at every control update.
-The branch and bound algorithm can reduce this count by discarding entire branches of schedules. 
+The branch and bound algorithm can reduce this count by discarding entire branches of schedules.
 
 The basic branching mechanism starts from a continuous relaxation in which each binary restriction is replaced by $0\leq\delta_{j|k}\leq1$.
 If an activation is fractional, the solver splits the schedules into two subsets by fixing that variable to zero in one subproblem and to one in the other.
