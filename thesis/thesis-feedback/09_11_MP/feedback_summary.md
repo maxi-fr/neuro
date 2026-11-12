@@ -8,8 +8,8 @@
 | Metric | Count |
 | :--- | :--- |
 | **Total Review Comments & Action Items** | **25** |
-| **Status: Open (`[ ]`)** | **14** |
-| **Status: Resolved (`[x]`)** | **11** |
+| **Status: Open (`[ ]`)** | **9** |
+| **Status: Resolved (`[x]`)** | **16** |
 | **Primary Chapters Reviewed** | Chapter 5 (`05_mpc_framework.tex`), pp. 38–48 |
 
 ---
@@ -29,8 +29,8 @@
 
 | ID | Status | Page (PDF / Doc) | Source File & Line(s) | Marked Text / Element | Reviewer Feedback (Max Pfefferkorn) |
 | :--- | :---: | :---: | :--- | :--- | :--- |
-| **TRAN-01** | `[ ]` | 54 / 40 | 05_mpc_framework.tex:L91-155 | Section 5.2 (`\section{Numerical Transcription and Solution}`) | This section tries to do the comparison for each "property" of the two methods, which leads to jumping back and forth.<br><br>I would try to first describe one of the methods, and then the other. For the second one, you could refer back to the first one to highlight the differences, but this would bring some more structure into the section. But you'll have to test this and see how if it works out. |
-| **TRAN-02** | `[ ]` | 54 / 40 | 05_mpc_framework.tex:L126-128 | `In multiple shooting, the state constraints instead act directly on the state decision variables. The input constraints have the same form in both transcriptions.` | I would move this to the multiple shooting description and make it clear there; Here, you should use a parallel structure to only describe single shooting; try to avoid jumping |
+| **TRAN-01** | `[x]` | 54 / 40 | 05_mpc_framework.tex:L91-155 | Section 5.2 (`\section{Numerical Transcription and Solution}`) | This section tries to do the comparison for each "property" of the two methods, which leads to jumping back and forth.<br><br>I would try to first describe one of the methods, and then the other. For the second one, you could refer back to the first one to highlight the differences, but this would bring some more structure into the section. But you'll have to test this and see how if it works out. |
+| **TRAN-02** | `[x]` | 54 / 40 | 05_mpc_framework.tex:L126-128 | `In multiple shooting, the state constraints instead act directly on the state decision variables. The input constraints have the same form in both transcriptions.` | I would move this to the multiple shooting description and make it clear there; Here, you should use a parallel structure to only describe single shooting; try to avoid jumping |
 | **TRAN-03** | `[x]` | 54 / 40 | 05_mpc_framework.tex:L130 | `This difference` in `This difference also determines which derivatives a gradient-based solver needs to evaluate the objective and constraint sensitivities.` | in the optimization variables<br>or something like this, to make it clear. |
 
 ---
@@ -68,6 +68,6 @@
 
 | ID | Status | Page (PDF / Doc) | Source File & Line(s) | Marked Text / Element | Reviewer Feedback (Max Pfefferkorn) |
 | :--- | :---: | :---: | :--- | :--- | :--- |
-| **ACT-01** | `[ ]` | 61 / 47 | 05_mpc_framework.tex:L470-478 | Margin note next to `Candidate MPC with Grouped Activation Decisions` / Eq. (5.17) (`The controller partitions the horizon into B contiguous, nonempty blocks...`) | Just to make this clear: The controller selects the partitioning; this is not given a priori? And the blocks do not need to have the same lengths, correct?<br><br>Could you state this explicit here to make it unambiguous, please? |
-| **SUMM-01** | `[ ]` | 62 / 48 | 05_mpc_framework.tex:L527-529 | `The waveform cost gives us a different criterion for suppression,` in Section 5.5 (`\section{Chapter Summary}`) | This is very vague.<br>The summary should clearly summarize what options we have to design the controller and what these options do. Please rework the summary. |
-| **SUMM-02** | `[ ]` | 62 / 48 | 05_mpc_framework.tex:L529-533 | Margin note on Section 5.5 (`\section{Chapter Summary}`) | As said, generally rework. Also, the writing style is a little too casual here and could be more formal for ascientific text. |
+| **ACT-01** | `[x]` | 61 / 47 | 05_mpc_framework.tex:L470-478 | Margin note next to `Candidate MPC with Grouped Activation Decisions` / Eq. (5.17) (`The controller partitions the horizon into B contiguous, nonempty blocks...`) | Just to make this clear: The controller selects the partitioning; this is not given a priori? And the blocks do not need to have the same lengths, correct?<br><br>Could you state this explicit here to make it unambiguous, please? |
+| **SUMM-01** | `[x]` | 62 / 48 | 05_mpc_framework.tex:L527-529 | `The waveform cost gives us a different criterion for suppression,` in Section 5.5 (`\section{Chapter Summary}`) | This is very vague.<br>The summary should clearly summarize what options we have to design the controller and what these options do. Please rework the summary. |
+| **SUMM-02** | `[x]` | 62 / 48 | 05_mpc_framework.tex:L529-533 | Margin note on Section 5.5 (`\section{Chapter Summary}`) | As said, generally rework. Also, the writing style is a little too casual here and could be more formal for ascientific text. |

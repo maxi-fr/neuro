@@ -53,7 +53,7 @@ The controller therefore minimizes the objective over admissible input sequences
     \label{eq:mpc_ocp}
 \end{equation}
 The objective $\mathcal{J}$ sums the stage cost $\ell:\mathbb{R}^{\ndim{x}}\times\mathbb{R}^{\ndim{u}}\to\mathbb{R}$ over the state and input pairs and adds a terminal cost $V_\mathrm{f}:\mathbb{R}^{\ndim{x}}\to\mathbb{R}$ on the final predicted state.
-The sets $\mathcal{X}\subseteq\mathbb{R}^{\ndim{x}}$ and $\mathcal{U}\subseteq\mathbb{R}^{\ndim{u}}$ specify the admissible states and inputs, respectively, and $\mathcal{X}_\mathrm{f}\subseteq\mathcal{X}$ specifies the admissible final states.
+The sets $\mathcal{X}\subseteq\mathbb{R}^{\ndim{x}}$ and $\mathcal{U}\subseteq\mathbb{R}^{\ndim{u}}$ specify the admissible states and inputs, respectively and $\mathcal{X}_\mathrm{f}\subseteq\mathcal{X}$ specifies the admissible final states.
 \end{samepage}
 %
 Solving~\eqref{eq:mpc_ocp} once gives an open-loop input sequence based on the information available at step $k$.
@@ -92,7 +92,10 @@ The next section compares two ways to formulate that problem for a numerical sol
 Direct multiple shooting and direct single shooting are two common ways to transcribe~\eqref{eq:mpc_ocp} for numerical optimization.
 They differ in how they represent the predicted states.
 
+\subsection{Direct Multiple Shooting}
+
 In multiple shooting, the predicted states are decision variables alongside the inputs.
+The objective and state constraints in~\eqref{eq:mpc_ocp} use the state decision variables directly.
 With one-step shooting intervals, the solver adjusts $(H+1)\ndim{x}$ state components together with $H\ndim{u}$ input components and imposes the initial condition and dynamics through the equality constraints~\cite{Bock1984}
 %
 \begin{equation*}
@@ -102,11 +105,15 @@ With one-step shooting intervals, the solver adjusts $(H+1)\ndim{x}$ state compo
     \quad j = 0, \dots, H-1 \,.
 \end{equation*}
 %
-At an intermediate iterate, these equalities may not hold.
-The iterate then consists of one-step trajectory pieces with gaps between them, as shown in Figure~\ref{fig:shooting}.
+At an intermediate iterate, a violated dynamics equality appears as a gap between the one-step prediction and the next state decision variable, as shown in Figure~\ref{fig:shooting}.
 
-Direct single shooting removes the need for these equality constraints by computing the predicted states through model rollout from the given initial state.
-Only the $H\ndim{u}$ input components are optimized.
+Each dynamics equality couples only two adjacent states and the input between them.
+The resulting constraint Jacobian is sparse, with nonzero blocks formed from local model derivatives and identity matrices~\cite{Bock1984,Rawlings2017}.
+
+\subsection{Direct Single Shooting}
+
+In single shooting, only the $H\ndim{u}$ input components are decision variables.
+The predicted states are computed by rolling out the model from the given initial state.
 For a state $\mathbf{x}\in\mathbb{R}^{\ndim{x}}$ and inputs $\mathbf{u}_i\in\mathbb{R}^{\ndim{u}}$, $i=0,\ldots,H-1$, define the rollout maps $\boldsymbol{\varphi}_j$ recursively by
 %
 \begin{align}
@@ -121,14 +128,10 @@ For a state $\mathbf{x}\in\mathbb{R}^{\ndim{x}}$ and inputs $\mathbf{u}_i\in\mat
        \qquad j = 1, \dots, H-1 \,. \label{eq:single_shooting}
 \end{align}
 %
-Evaluating the maps in~\eqref{eq:single_shooting} at $\hat{\mathbf{x}}_k$ and the candidate inputs gives the states used in the objective and state constraints.
-The dynamics therefore hold at every iterate, while the state and input limits still have to be enforced.
-In multiple shooting, the state constraints instead act directly on the state decision variables.
-The input constraints have the same form in both transcriptions.
+The objective and state constraints in~\eqref{eq:mpc_ocp} use the states obtained by evaluating~\eqref{eq:single_shooting} at $\hat{\mathbf{x}}_k$ and the candidate inputs.
+The rollout satisfies the initial condition and dynamics at every iterate, leaving only the state and input constraints to enforce explicitly.
 
-This difference in the optimization variables also determines which derivatives a gradient-based solver needs to evaluate the objective and constraint sensitivities.
-In multiple shooting, each dynamics equality couples only adjacent states and the input between them.
-In single shooting, an input can affect every subsequent state, so the solver must account for how its effect propagates through the model.
+An input can affect every subsequent state, so the derivatives of the objective and state constraints with respect to the inputs must account for propagation through the model.
 
 At each offset $j=0,\ldots,H-1$, let $\mathbf{A}_{j|k}\in\mathbb{R}^{\ndim{x}\times\ndim{x}}$ and $\mathbf{B}_{j|k}\in\mathbb{R}^{\ndim{x}\times\ndim{u}}$ denote the state and input Jacobians, respectively.
 Both derivatives are evaluated at $(\mathbf{x}_{j|k},\mathbf{u}_{j|k})$.
@@ -147,10 +150,7 @@ For $0\le i<j\le H$, repeated application of the chain rule gives
 \end{equation*}
 %
 where the product of the state Jacobians is the identity when $i=j-1$.
-The product may amplify or attenuate early-input sensitivities, impairing numerical conditioning.
-Single shooting therefore gives a smaller optimization problem, but its derivatives involve products across the prediction horizon.
-Multiple shooting introduces additional variables and equality constraints, whose Jacobians involve local model derivatives and have a sparse structure~\cite{Bock1984,Rawlings2017}.
-The computational tradeoff depends on the dynamics, horizon length and numerical solver.
+The product may amplify or attenuate early-input sensitivities, impairing numerical conditioning~\cite{Rawlings2017}.
 
 \begin{figure}
     \centering
@@ -159,6 +159,13 @@ The computational tradeoff depends on the dynamics, horizon length and numerical
     Multiple shooting treats the state at each sampling instant as an optimization variable; gaps between the one-step predictions and the next state variables indicate violated dynamics constraints at an intermediate iterate.
     Single shooting computes one continuous model rollout from the initial state, with only the inputs as optimization variables.}\label{fig:shooting}
 \end{figure}
+
+\subsection{Computational Tradeoffs}
+
+Both transcriptions use the same input constraints.
+Single shooting gives a smaller optimization problem, but its derivatives can involve products across the prediction horizon.
+Multiple shooting introduces additional variables and equality constraints with a sparse Jacobian.
+The computational tradeoff depends on the dynamics, horizon length and numerical solver.
 
 When the objective or constraints are nonlinear, either transcription gives a constrained \ac{nlp}.
 Methods for solving the resulting \ac{nlp} include \ac{sqp}~\cite{Nocedal2006} and interior-point methods, as implemented in IPOPT~\cite{Waechter2006}.
@@ -258,7 +265,7 @@ The reference recordings are transformed into log-power features as described in
 For each channel and frequency bin, the empirical 90th percentile across healthy reference frames sets the corresponding threshold in the healthy spectral envelope $\spectral_{\mathrm{healthy}}\in\mathbb R^{\nchan\nbin}$.
 A higher percentile leaves more healthy frames unpenalized and also tolerates larger increases in power.
 
-The spectral cost averages the squared excess log power over $\nscore{spec}\in\mathbb N_{>0}$ future frames, all channels, and all frequency bins,
+The spectral cost averages the squared excess log power over $\nscore{spec}\in\mathbb N_{>0}$ future frames, all channels and all frequency bins,
 %
 \begin{equation}
     \mathcal J_{\mathrm{spec}}
@@ -308,7 +315,7 @@ This cost is proportional to the time integral of squared current over the horiz
 The objective combines the applicable suppression penalties and the $L_2$ current cost with nonnegative weights.
 
 The input constraints follow from the stimulation requirements in Section~\ref{sec:stimulation_interface}.
-The current bounds apply to each electrode, and Kirchhoff's current law requires the injected and return currents to balance at every interval.
+The current bounds apply to each electrode and Kirchhoff's current law requires the injected and return currents to balance at every interval.
 With one control coordinate per physical electrode, the input set is
 %
 \begin{equation}
@@ -423,7 +430,7 @@ Adding the activation cost~\eqref{eq:mpc_activation_cost} to the continuous-curr
     \label{eq:mpc_activation_penalty_problem}
 \end{equation}
 %
-subject to~\eqref{eq:mpc_activation_gates}, the dynamics, and the initial condition.
+subject to~\eqref{eq:mpc_activation_gates}, the dynamics and the initial condition.
 For a fixed current sequence, any interval with nonzero current must be enabled.
 If activation variables are independent, the activation penalty makes it optimal to disable every interval with zero current.
 Thus, minimizing over the activation variables makes $\mathcal J_{\delta}$ equal to the fraction of intervals with nonzero current, a normalized group $L_0$ count.
@@ -467,8 +474,8 @@ With nonconvex learned dynamics, local relaxation minima may give unreliable bou
 \subsubsection*{Candidate \ac{mpc} with Grouped Activation Decisions}
 
 Branch and bound seeks to reduce the work of searching the full set of binary schedules.
-An alternative is to restrict that set in advance by allowing activation to change only at selected block boundaries, then solve a continuous \ac{nlp} for each remaining schedule.
-The controller partitions the horizon into $B$ contiguous, nonempty blocks $\mathcal B_1,\ldots,\mathcal B_B$.
+An alternative is to restrict that set by grouping the horizon intervals into blocks and solving a continuous \ac{nlp} for each block schedule.
+The partition is fixed in advance and consists of $B$ contiguous blocks $\mathcal B_1,\ldots,\mathcal B_B$, each containing $H/B$ intervals.
 All intervals in a block share one binary decision $d_b$, giving
 %
 \begin{equation}
@@ -490,12 +497,11 @@ The score combines the continuous objective in~\eqref{eq:mpc_sparse_continuous_c
 \begin{equation}
     C(\mathbf d)
     =\mathcal J_{\mathrm{cont}}\!\left(\mathbf u^{(\mathbf d)}\right)
-     +\frac{w_{\delta}}{H}
-      \sum_{b=1}^{B}|\mathcal B_b|d_b\,.
+     +\frac{w_{\delta}}{B}\sum_{b=1}^{B}d_b\,.
     \label{eq:mpc_candidate_score}
 \end{equation}
 %
-The block-length weights make the activation term proportional to the number of enabled intervals, even when block lengths differ.
+With equal block lengths, the fraction of enabled blocks equals the fraction of enabled intervals.
 The controller selects the successful candidate with the lowest score in~\eqref{eq:mpc_candidate_score} and applies its first current vector.
 The all-disabled schedule fixes the entire current sequence and can be evaluated by a rollout alone.
 
@@ -518,17 +524,21 @@ For the activation schedule $\boldsymbol\delta=(\delta_{0|k},\ldots,\delta_{H-1|
 For $\beta>0$, each summand in~\eqref{eq:mpc_integrality_penalty} vanishes at both binary values and is positive between them.
 The homotopy varies the integrality penalty gradually across a sequence of relaxed problems.
 The first solve uses $\beta=0$, so every relaxed schedule has zero integrality penalty.
-At each subsequent step, a larger $\beta$ raises the cost of fractional activations, and the solver starts from the previous solution to reoptimize the currents and activations.
+At each subsequent step, a larger $\beta$ raises the cost of fractional activations and the solver starts from the previous solution to reoptimize the currents and activations.
 The sequence ends when a solve satisfies the binary restriction within the solver tolerance or when the continuation limit is reached.
 The computational cost depends on the number of continuation solves instead of the size of a search tree.
 Small increases in $\beta$ can require more solves, while large increases can make it harder for the solver to follow the solution branch traced by the preceding solves~\cite{Sager2006}.
 
 \section{Chapter Summary}
 
-By formulating seizure suppression as a receding-horizon problem, we can ask the controller to suppress activity that exceeds the healthy spectral envelope and to weigh that objective against the use of stimulation.
-The waveform cost gives us a different criterion for suppression, and the sparsity penalties let us distinguish between using less current and stimulating in fewer intervals.
-We can solve the resulting problems with single shooting, multiple shooting, or the \acs{narx} transcription, each of which represents the predicted trajectory differently in the optimization.
+At each update, the controller uses a learned predictor to choose a stimulation sequence by weighing predicted seizure activity against the current required to suppress it.
+The waveform cost measures that activity through squared deviations from each \ac{eeg} channel's healthy mean, so sustained offsets and large oscillations both contribute.
+The spectral cost targets elevated power by penalizing squared log-power excess above a healthy threshold for each channel and frequency bin.
 
-What remains to be seen is which combinations suppress seizures with little stimulation and can be solved quickly enough for feedback.
-In Chapter~\ref{ch:experiments_discussion}, we first evaluate the predictors offline, since the choice of stimulation depends on how well they capture the response to current over the control horizon.
-We then compare the controller formulations in closed-loop simulation.
+The stimulation costs distinguish between the magnitude of the current and how often it is applied.
+The quadratic current cost discourages large amplitudes.
+To promote sparse stimulation, the controller can use an $L_1$ penalty that favors zero currents or use binary activation to penalize or cap the number of enabled intervals directly in each plan.
+The resulting activation decisions can be handled by branch and bound, by enumerating schedules over groups of intervals or by progressively penalizing fractional activations in a continuous relaxation.
+
+The predictor dynamics can enter the optimization through single shooting, full-state multiple shooting or the \acs{narx} transcription.
+Chapter~\ref{ch:experiments_discussion} compares these design choices in simulation.
