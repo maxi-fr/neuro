@@ -1,0 +1,13 @@
+# Literature for SPAR-02 and SPAR-06
+
+The two closest precedents for the three-term objective are `Chouzouris2021` and `Salfenmoser2022`. Both combine a target cost with squared input effort and a sparsity cost. Their sparsity cost sums the temporal \(L_2\) norm of each input trajectory across channels, which favors using fewer channels over the control interval. The thesis sums the absolute current over electrodes and sampling intervals, which favors zero currents at individual samples. [Chouzouris et al., Eqs. (2) and (7)](https://doi.org/10.1103/PhysRevE.104.024213), [Salfenmoser and Obermayer, Eqs. (10)–(13)](https://doi.org/10.3389/fncom.2022.931121).
+
+| BibTeX key | Cost formulation and relevance |
+| --- | --- |
+| `Chang2020` | Seizure-suppression MPC minimizes squared tracking error against a smoothed reference derived from normal EEG. This is a precedent for waveform tracking. [Chang et al., p. 2176, Eqs. (6)–(7)](https://doi.org/10.1109/TNSRE.2020.3014927). |
+| `Chouzouris2021` | Optimal control of a whole-brain FitzHugh–Nagumo network adds squared input effort and group sparsity to task-specific state costs for switching and synchronization. The groups are entire node input trajectories. [Chouzouris et al., Sec. II.B, Eqs. (2)–(7)](https://doi.org/10.1103/PhysRevE.104.024213). |
+| `Frohlich2005` | MPC for Hodgkin–Huxley ion channel dynamics combines tracking error with quadratic penalties on the membrane voltage command and its increments. The inner loop adjusts injected current to track that voltage command. [Fröhlich and Jezernik, p. 1199, Eq. (7)](https://doi.org/10.1016/j.conengprac.2004.10.008). |
+| `Salfenmoser2022` | Optimal control of neural population dynamics combines squared state tracking error, quadratic input effort, and group sparsity over input channels. [Salfenmoser and Obermayer, p. 6, Eqs. (10)–(13)](https://doi.org/10.3389/fncom.2022.931121). |
+| `Steffen2025` | Robust MPC for Parkinson’s deep brain stimulation penalizes the squared excess of beta-band activity above a threshold and the squared stimulation input. This is the closest precedent for combining a one-sided suppression cost with quadratic effort. [Steffen and Cannon, Sec. III.C, Eq. (8)](https://doi.org/10.1109/CDC57313.2025.11312469). |
+
+For SPAR-02, explain why the continuous \(L_1\) surrogate is useful for the gradient-based solver. Removing the equivalence result and its normality condition keeps the paragraph focused on that motivation. For SPAR-06, cite `Chouzouris2021` and `Salfenmoser2022` near the combined objective and specify how those studies define sparsity. `Steffen2025` supports the spectral suppression and quadratic effort pairing.

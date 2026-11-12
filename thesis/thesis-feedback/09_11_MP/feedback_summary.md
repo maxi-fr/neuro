@@ -8,8 +8,8 @@
 | Metric | Count |
 | :--- | :--- |
 | **Total Review Comments & Action Items** | **25** |
-| **Status: Open (`[ ]`)** | **9** |
-| **Status: Resolved (`[x]`)** | **16** |
+| **Status: Open (`[ ]`)** | **7** |
+| **Status: Resolved (`[x]`)** | **18** |
 | **Primary Chapters Reviewed** | Chapter 5 (`05_mpc_framework.tex`), pp. 38–48 |
 
 ---
@@ -55,11 +55,11 @@
 | ID | Status | Page (PDF / Doc) | Source File & Line(s) | Marked Text / Element | Reviewer Feedback (Max Pfefferkorn) |
 | :--- | :---: | :---: | :--- | :--- | :--- |
 | **SPAR-01** | `[x]` | 59 / 45 | 05_mpc_framework.tex:L339-341 | `Nagahara et al.,` in `problem studied by Nagahara et al., the L0 and L1 formulations...` | Don't use this citation style |
-| **SPAR-02** | `[ ]` | 59 / 45 | 05_mpc_framework.tex:L339-342 | `For the discrete-time maximum hands-off problem studied by Nagahara et al., the L0 and L1 formulations have the same minimizers if the L1 problem is normal and has a solution [64]. In that setting, normality excludes switching-function values at which the minimizing input is ambiguous.` | Relevance for your work?<br>What is the main message that the reader needs to understand from these two sentences? This is unclear to me right now. |
+| **SPAR-02** | `[x]` | 59 / 45 | 05_mpc_framework.tex:L339-342 | `For the discrete-time maximum hands-off problem studied by Nagahara et al., the L0 and L1 formulations have the same minimizers if the L1 problem is normal and has a solution [64]. In that setting, normality excludes switching-function values at which the minimizing input is ambiguous.` | Relevance for your work?<br>What is the main message that the reader needs to understand from these two sentences? This is unclear to me right now. |
 | **SPAR-03** | `[ ]` | 59 / 45 | 05_mpc_framework.tex:L354 | `continuous-current` in `The continuous-current objective can then be written as` | Why is it called continuous-current? |
 | **SPAR-04** | `[ ]` | 59 / 45 | 05_mpc_framework.tex:L366-370 | `Near zero, a small feasible increase in current can improve predicted suppression to first order while increasing the L2 current cost only to second order... If the first-order decrease in weighted suppression cost is smaller than the first-order increase in weighted L1 cost, a sufficiently small change in that direction increases the objective.` | Please check if you can make the phrasing more intuitive, which would make this easier to get at first read. Maybe state first that L1 prefers currents at zero and bring this as the reasoning. |
 | **SPAR-05** | `[x]` | 59 / 45 | 05_mpc_framework.tex:L375-381 | Margin note next to Eq. (5.12) (`\frac{w_1}{H}\sum_{j=0}^{H-1}\sum_{p=1}^{\ndim{u}}z_{j\vert k,p}`) | J_L1 = ? |
-| **SPAR-06** | `[ ]` | 59 / 45 | 05_mpc_framework.tex:L354-363 | Margin note next to Eq. (5.11) (`\mathcal{J}_{\mathrm{cont}} = \mathcal{J}_{\mathrm{supp}} + w_{L_2}\mathcal{J}_{L_2} + w_1\mathcal{J}_{L_1}`) | If you aren't do so already, you could look into the literature that we originally provided. I think they also used a similar cost structure. So you could relate this to existing work as well. |
+| **SPAR-06** | `[x]` | 59 / 45 | 05_mpc_framework.tex:L354-363 | Margin note next to Eq. (5.11) (`\mathcal{J}_{\mathrm{cont}} = \mathcal{J}_{\mathrm{supp}} + w_{L_2}\mathcal{J}_{L_2} + w_1\mathcal{J}_{L_1}`) | If you aren't do so already, you could look into the literature that we originally provided. I think they also used a similar cost structure. So you could relate this to existing work as well. |
 | **SPAR-07** | `[x]` | 60 / 46 | 05_mpc_framework.tex:L416-424 | `initial condition.` preceding Eq. (5.15) (`\min \mathcal{J}_{\mathrm{cont}} + w_\delta \mathcal{J}_\delta`) | (5.15) doesn't belong to any sentence |
 
 ---

@@ -244,6 +244,7 @@ Regional recruitment cannot be assessed directly from the scalp \ac{eeg} observa
 So instead we extract features of predicted \ac{eeg} to serve as proxies for seizure activity and compare that to features extracted from \ac{eeg} signals of healthy simulated brains.
 To characterize healthy activity, we use unstimulated simulations in which all regions have the healthy background excitability described in Section~\ref{sec:parameter_selection}.
 
+One seizure-suppression \ac{mpc} formulation uses a quadratic cost to track a smoothed reference derived from normal \ac{eeg}~\cite{Chang2020}.
 Figure~\ref{fig:mpc_suppression_references}(a) shows that healthy fluctuations observed through an electrode are small on the scale of seizure oscillations. % chktex 36 -- The panel letter follows the figure number without a space.
 This difference motivates approximating the healthy waveform by a constant and penalizing large departures from it.
 For each channel, the reference is the mean of the waveform samples pooled across time and across the unstimulated healthy simulations.
@@ -313,6 +314,7 @@ To balance predicted seizure suppression against electrode current, the objectiv
 %
 This cost is proportional to the time integral of squared current over the horizon and serves as a proxy for the supplied electrical energy.
 The objective combines the applicable suppression penalties and the $L_2$ current cost with nonnegative weights.
+A related objective for deep brain stimulation in Parkinson's disease penalizes squared excess beta-band activity above a threshold and squared stimulation input~\cite{Steffen2025}.
 
 The input constraints follow from the stimulation requirements in Section~\ref{sec:stimulation_interface}.
 The current bounds apply to each electrode and Kirchhoff's current law requires the injected and return currents to balance at every interval.
@@ -338,14 +340,9 @@ A schedule is more temporally sparse when it applies current in fewer intervals 
 
 \subsection{\texorpdfstring{$L_1$}{L1} Current Penalty}
 
-A direct way to encourage zero currents is to charge a fixed cost for every nonzero current component.
-This count is often called the $L_0$ penalty.
-Each current contributes the same amount regardless of its magnitude, so the penalty jumps when a current departs from zero.
-The discontinuity makes the count unsuitable for direct use with a solver that requires objective gradients.
-A continuous surrogate is the $L_1$ penalty, which sums the absolute current magnitudes.
-For the discrete-time maximum hands-off problem, the $L_0$ and $L_1$ formulations have the same minimizers if the $L_1$ problem is normal and has a solution~\cite{Nagahara2016}.
-In that setting, normality excludes switching-function values at which the minimizing input is ambiguous.
-Here the $L_1$ cost is used to promote sparse currents in an objective that also includes a suppression cost.
+An $L_0$ penalty counts nonzero current components, assigning each the same cost regardless of its magnitude.
+The penalty jumps whenever a current departs from zero, which makes the penalty unsuitable for direct use with a gradient-based solver.
+A common approach is therefore to replace the $L_0$ norm with the $L_1$ norm, a continuous surrogate that sums absolute current magnitudes~\cite{Nagahara2016}.
 
 For the physical electrode currents, the horizon-averaged $L_1$ cost is
 %
@@ -370,6 +367,10 @@ The continuous-current objective can then be written as
 %
 where $\mathcal J_{L_2}$ is the $L_2$ current cost from~\eqref{eq:mpc_current_effort}.
 Setting either current weight to zero removes its term, so the absolute-current penalty can replace or supplement the $L_2$ current cost.
+
+The combination of suppression, energy, and sparsity terms follows related formulations in neural optimal control~\cite{Chouzouris2021,Salfenmoser2022,Salfenmoser2023}.
+The absolute-current penalty in~\eqref{eq:mpc_l1_cost} acts at each sampling step.
+
 Near zero, a small feasible increase in current can improve predicted suppression to first order while increasing the $L_2$ current cost only to second order.
 The absolute-current cost in~\eqref{eq:mpc_l1_cost} also increases to first order.
 If the first-order decrease in weighted suppression cost is smaller than the first-order increase in weighted $L_1$ cost, a sufficiently small change in that direction increases the objective.
