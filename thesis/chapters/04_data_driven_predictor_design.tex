@@ -238,8 +238,8 @@ Figure~\ref{fig:stft_spectrogram} illustrates how recruitment of a simulated neu
     \centering
     \includegraphics{figures/04_data_driven_predictor_design/stft_resolution.pdf}
     \caption{Effects of segment length and temporal averaging on the \ac{lfp} spectrum of an uncoupled \ac{ez} node, sampled at \SI{50}{\hertz}.
-    (a) Hann segments of 25, 50 and 200 samples, with hops of 12, 25 and 100 samples, respectively, each averaged over eight frames.
-    (b) Averages over 1, 4 and 16 frames at a common endpoint, using 200-sample segments and a 100-sample hop.
+    Panel (a) compares Hann segment lengths of 25, 50 and 200 samples, with hops of 12, 25 and 100 samples, respectively, and averaging over eight frames in each case.
+    Panel (b) compares averages over 1, 4 and 16 frames at a common endpoint, using 200-sample segments and a 100-sample hop.
     Longer segments refine the frequency grid; averaging reduces fluctuations.}\label{fig:stft_resolution}
 \end{figure}
 
@@ -248,9 +248,8 @@ Figure~\ref{fig:stft_spectrogram} illustrates how recruitment of a simulated neu
     \includegraphics{figures/04_data_driven_predictor_design/stft_spectrogram.pdf}
     \caption{Waveform and spectrogram of a simulated
     \ac{pz} node recruited by the \ac{ez}.
-    The regional \ac{lfp} is sampled at \SI{50}{\hertz};
-    Hann segments contain 50 samples and advance by
-    25 samples, without additional temporal smoothing.
+    Panel (a) shows the regional \ac{lfp} sampled at \SI{50}{\hertz}.
+    Panel (b) shows the spectrogram computed with Hann segments of 50 samples and a hop of 25 samples, without additional temporal smoothing.
     The spectrogram displays density-scaled power on a logarithmic color scale, with each estimate shown from its causal availability time.
     Recruitment is accompanied by changes in waveform
     amplitude and frequency-specific power.}\label{fig:stft_spectrogram}
@@ -619,7 +618,8 @@ Figure~\ref{fig:cnn_architecture} illustrates the feature extraction and predict
     The boxed convolutional layer is repeated $n_{\mathrm{CNN}}$ times.
     Its first two output-channel filters are shown; each combines all input channels before applying the activation.
     Slice and unit counts are schematic, with fewer output feature channels than input channels shown.
-    The outgoing arrows continue to the common head construction shown in (c). Either representation supplies its feature channels separately.
+    The outgoing arrows continue to the common head construction shown in panel (c).
+    Either representation supplies its feature channels separately.
     Its input $\mathbf{z}_k^{\mathrm{CNN}}$ combines the final feature-array entries, past currents and the candidate current.}\label{fig:cnn_architecture}
 \end{figure}
 

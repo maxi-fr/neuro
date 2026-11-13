@@ -19,12 +19,13 @@ For these predictions, we consider the discrete-time model
     \label{eq:mpc_prediction_dynamics}
 \end{equation}
 %
-where $\mathbf{x}_k\in\mathbb{R}^{\ndim{x}}$ is the model state and $\mathbf{u}_k\in\mathbb{R}^{\ndim{u}}$ is the input at time step $k\in\mathbb{N}_0$.
+where $\mathbf{x}_k\in\mathbb{R}^{\ndim{x}}$ is the model state at sampling instant $t_k$ and $\mathbf{u}_k\in\mathbb{R}^{\ndim{u}}$ is the input applied at a constant value from $t_k$ until $t_{k+1}$.
+The sampling instants are $t_k=k\Delta t$ for $k\in\mathbb{N}_0$, with sampling period $\Delta t>0$.
 The prediction starts from $\mathbf{x}_{0|k}=\hat{\mathbf{x}}_k$, where $\hat{\mathbf{x}}_k$ is the state available to the controller.
 If not measured directly, its estimate can be updated using the latest measurement and the previously applied input~\cite{Findeisen2003}.
 
-The controller plans over $H\in\mathbb{N}_{>0}$ sampling intervals of duration $\Delta t>0$, giving a prediction horizon of duration $T_{\mathrm{pred}}=H\Delta t$.
-Using the notation of Chapter~\ref{ch:data_driven_predictor_design}, $\mathbf{u}_{j|k}$ is the input planned at step $k$ for interval $j=0,\ldots,H-1$ and is held constant over that interval.
+The controller plans over $H\in\mathbb{N}_{>0}$ sampling intervals, giving a prediction horizon of duration $T_{\mathrm{pred}}=H\Delta t$.
+Following the notation of~\eqref{eq:recursive_predictor}, a candidate input sequence is $\mathbf{u}_{0|k},\ldots,\mathbf{u}_{H-1|k}$.
 Starting from $\mathbf{x}_{0|k}$, successive application of~\eqref{eq:mpc_prediction_dynamics} gives the predicted states $\mathbf{x}_{1|k},\ldots,\mathbf{x}_{H|k}$ for that input sequence.
 
 \begin{samepage}
@@ -81,11 +82,11 @@ Figure~\ref{fig:receding_horizon} shows how the plans change as new measurements
 \end{figure}
 
 A task may continue indefinitely, but limiting the prediction horizon gives the solver a finite set of decision variables and constraints at each update.
-The terminal cost can approximate the cost beyond the horizon~\cite{Rawlings2017,Mayne2000}.
-For feedback at the chosen sampling rate, the controller must also solve each finite-horizon problem within one sampling interval.
+The terminal cost can approximate the cost beyond the horizon.
+Replanning alone leaves open whether the problem remains feasible at each update and whether the closed-loop state converges to the target equilibrium.
+A suitably chosen terminal set, terminal cost and terminal feedback law can guarantee both properties for the nominal model~\cite{Rawlings2017,Mayne2000}.
 
-Replanning alone does not ensure that a feasible plan exists at every subsequent update or that the closed-loop state converges to the target equilibrium~\cite{Rawlings2017,Mayne2000}.
-The next section compares two ways to formulate that problem for a numerical solver.
+The next section compares two ways to formulate the finite-horizon problem for a numerical solver.
 
 \section{Numerical Transcription and Solution}\label{sec:mpc_numerical_solution}
 
@@ -240,9 +241,9 @@ The next subsection completes the \ac{ocp} formulation for seizure suppression b
 
 \subsection{Control Costs and Input Constraints}\label{sec:mpc_cost_functions}
 
-Regional recruitment cannot be assessed directly from the scalp \ac{eeg} observations available to the controller.
-So instead we extract features of predicted \ac{eeg} to serve as proxies for seizure activity and compare that to features extracted from \ac{eeg} signals of healthy simulated brains.
-To characterize healthy activity, we use unstimulated simulations in which all regions have the healthy background excitability described in Section~\ref{sec:parameter_selection}.
+The controller observes scalp \ac{eeg}, which provides only an indirect view of regional recruitment.
+The suppression costs therefore use predicted \ac{eeg} and references derived from unstimulated simulations in which all regions have the healthy background excitability described in Section~\ref{sec:parameter_selection}.
+The waveform cost penalizes deviations from the healthy channel means, while the spectral cost penalizes log power above the healthy spectral envelope.
 
 One seizure-suppression \ac{mpc} formulation uses a quadratic cost to track a smoothed reference derived from normal \ac{eeg}~\cite{Chang2020}.
 Figure~\ref{fig:mpc_suppression_references}(a) shows that healthy fluctuations observed through an electrode are small on the scale of seizure oscillations. % chktex 36 -- The panel letter follows the figure number without a space.
@@ -289,9 +290,9 @@ Figure~\ref{fig:mpc_suppression_references}(b) illustrates where seizure log pow
     \caption{Waveform and spectral references at scalp channel CP5 for unstimulated biophysical plant simulations.
     The references are fitted to nine healthy runs after discarding the first \SI{2}{\second} of each recording.
     Both evaluation runs use the same filtering and sampling at \SI{50}{\hertz}.
-    (a) Waveform excerpts from a separate healthy run and an uncontrolled seizure run against the fitted healthy mean.
-    (b) Median log power across frames from \SI{2}{\second} to \SI{20}{\second} for the same runs.
-The lighter and darker bands span the 10th to 90th and 25th to 75th percentiles, respectively, of the pooled healthy reference frames at each frequency.
+    Panel (a) shows waveform excerpts from a separate healthy run and an uncontrolled seizure run alongside the fitted healthy mean.
+    Panel (b) shows median log power across frames from \SI{2}{\second} to \SI{20}{\second} for the same runs.
+    The lighter and darker bands span the 10th to 90th and 25th to 75th percentiles, respectively, of the pooled healthy reference frames at each frequency.
     Frames use \SI{1}{\second} Hann windows and a \SI{0.5}{\second} hop.}\label{fig:mpc_suppression_references}
 \end{figure}
 
@@ -334,14 +335,13 @@ The next section introduces penalties and constraints that favor intervals witho
 
 \section{Sparsity-Promoting Control Formulations}\label{sec:mpc_sparse_formulations}
 
-The squared-current cost penalizes current magnitude.
-To also limit how often current is applied, we seek stimulation schedules that suppress predicted pathological activity while leaving some intervals unstimulated.
-A schedule is more temporally sparse when it applies current in fewer intervals of the prediction horizon.
+In addition to penalizing current magnitude, the objective can favor stimulation schedules that suppress predicted pathological activity using fewer intervals of the prediction horizon.
+An interval is unstimulated when all electrode currents are zero.
 
 \subsection{\texorpdfstring{$L_1$}{L1} Current Penalty}
 
 An $L_0$ penalty counts nonzero current components, assigning each the same cost regardless of its magnitude.
-The penalty jumps whenever a current departs from zero, which makes the penalty unsuitable for direct use with a gradient-based solver.
+The jump at zero makes the penalty unsuitable for direct use in a solver that requires a differentiable objective.
 A common approach is therefore to replace the $L_0$ norm with the $L_1$ norm, a continuous surrogate that sums absolute current magnitudes~\cite{Nagahara2016}.
 
 For the physical electrode currents, the horizon-averaged $L_1$ cost is
@@ -354,27 +354,23 @@ For the physical electrode currents, the horizon-averaged $L_1$ cost is
 \end{equation}
 %
 Let $\mathcal J_{\mathrm{supp}}$ denote the selected suppression cost, including its weight.
-The continuous-current objective can then be written as
+The base objective combines the suppression cost with the weighted $L_2$ and $L_1$ current costs,
 %
 \begin{equation}
-    \mathcal J_{\mathrm{cont}}
+    \mathcal J_{\mathrm{base}}
     =\mathcal J_{\mathrm{supp}}
      +w_{L_2}\mathcal J_{L_2}
      +w_1\mathcal J_{L_1}\,,
-    \qquad w_{L_2},w_1\geq0\,,
-    \label{eq:mpc_sparse_continuous_cost}
+    \qquad w_{L_2},w_1\geq0\,.
+    \label{eq:mpc_base_objective}
 \end{equation}
 %
-where $\mathcal J_{L_2}$ is the $L_2$ current cost from~\eqref{eq:mpc_current_effort}.
-Setting either current weight to zero removes its term, so the absolute-current penalty can replace or supplement the $L_2$ current cost.
-
 The combination of suppression, energy, and sparsity terms follows related formulations in neural optimal control~\cite{Chouzouris2021,Salfenmoser2022,Salfenmoser2023}.
-The absolute-current penalty in~\eqref{eq:mpc_l1_cost} acts at each sampling step.
 
-Near zero, a small feasible increase in current can improve predicted suppression to first order while increasing the $L_2$ current cost only to second order.
-The absolute-current cost in~\eqref{eq:mpc_l1_cost} also increases to first order.
-If the first-order decrease in weighted suppression cost is smaller than the first-order increase in weighted $L_1$ cost, a sufficiently small change in that direction increases the objective.
-The $L_1$ penalty therefore favors keeping a current at zero when the predicted benefit of turning it on is too small to offset the added cost.
+Consider increasing the amplitude of a fixed, balanced electrode-current pattern from zero in one interval while holding the other intervals fixed.
+The squared $L_2$ current cost has zero slope at zero amplitude, so any first-order decrease in suppression cost lowers the objective for a sufficiently small current.
+On the other hand, the $L_1$ cost has a positive slope as the amplitude increases from zero, so a small current increases the objective if the predicted suppression benefit per unit amplitude is below the weighted $L_1$ slope.
+The $L_1$ term thus introduces a threshold for stimulation and therefore promotes sparse stimulation~\cite{Nagahara2016}.
 
 The kink that promotes zero currents also makes the $L_1$ term nondifferentiable at those currents.
 The gradient-based solvers discussed above use objective derivatives to determine their search directions.
@@ -385,11 +381,11 @@ For $w_1>0$, introduce real auxiliary variables $z_{j|k,p}$ and replace $\mathca
     \widetilde{\mathcal J}_{L_1}
     = \frac{1}{H}\sum_{j=0}^{H-1}\sum_{p=1}^{\ndim{u}}z_{j|k,p}\,,
     \qquad
-    -z_{j|k,p}\leq u_{j|k,p}\leq z_{j|k,p}\,.
+    -z_{j|k,p}\leq u_{j|k,p}\leq z_{j|k,p}\,,
     \label{eq:mpc_l1_epigraph}
 \end{equation}
 %
-The inequalities in~\eqref{eq:mpc_l1_epigraph} imply $z_{j|k,p}\geq|u_{j|k,p}|$.
+where the inequalities hold for every $j=0,\ldots,H-1$ and $p=1,\ldots,\ndim{u}$.
 Since reducing any slack lowers the objective without changing the currents or predictions, minimization gives $z_{j|k,p}=|u_{j|k,p}|$.
 At these values, $\widetilde{\mathcal J}_{L_1}=\mathcal J_{L_1}$.
 
@@ -421,12 +417,12 @@ To favor sparse stimulation, we penalize the fraction of intervals in which stim
     \label{eq:mpc_activation_cost}
 \end{equation}
 %
-Adding the activation cost~\eqref{eq:mpc_activation_cost} to the continuous-current objective gives the following problem
+Adding the activation cost~\eqref{eq:mpc_activation_cost} to the base objective gives the following problem
 %
 \begin{equation}
     \min_{\mathbf u_{0|k},\ldots,\mathbf u_{H-1|k},\,
           \delta_{0|k},\ldots,\delta_{H-1|k}}
-    \quad \mathcal J_{\mathrm{cont}}+w_{\delta}\mathcal J_{\delta},
+    \quad \mathcal J_{\mathrm{base}}+w_{\delta}\mathcal J_{\delta},
     \qquad w_{\delta}>0\,,
     \label{eq:mpc_activation_penalty_problem}
 \end{equation}
@@ -436,7 +432,7 @@ For a fixed current sequence, any interval with nonzero current must be enabled.
 If activation variables are independent, the activation penalty makes it optimal to disable every interval with zero current.
 Thus, minimizing over the activation variables makes $\mathcal J_{\delta}$ equal to the fraction of intervals with nonzero current, a normalized group $L_0$ count.
 
-As an alternative to the penalized problem~\eqref{eq:mpc_activation_penalty_problem}, we can minimize $\mathcal J_{\mathrm{cont}}$ subject to an activation cap,
+As an alternative to the penalized problem~\eqref{eq:mpc_activation_penalty_problem}, we can minimize $\mathcal J_{\mathrm{base}}$ subject to an activation cap,
 %
 \begin{equation}
     \sum_{j=0}^{H-1}\delta_{j|k}\leq K\,,
@@ -493,11 +489,11 @@ Disabled blocks have zero current throughout.
 Within an enabled block, each interval's current vector remains independently optimized, so grouping activation decisions does not require holding the current constant over a block.
 
 Let $\mathbf d=(d_1,\ldots,d_B)$ and let $\mathbf u^{(\mathbf d)}$ denote the current sequence returned by a successful candidate solve.
-The score combines the continuous objective in~\eqref{eq:mpc_sparse_continuous_cost}, evaluated on the rollout for that candidate, with the activation penalty
+The score combines the base objective in~\eqref{eq:mpc_base_objective}, evaluated on the rollout for that candidate, with the activation penalty
 %
 \begin{equation}
     C(\mathbf d)
-    =\mathcal J_{\mathrm{cont}}\!\left(\mathbf u^{(\mathbf d)}\right)
+    =\mathcal J_{\mathrm{base}}\!\left(\mathbf u^{(\mathbf d)}\right)
      +\frac{w_{\delta}}{B}\sum_{b=1}^{B}d_b\,.
     \label{eq:mpc_candidate_score}
 \end{equation}
