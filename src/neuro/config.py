@@ -624,12 +624,12 @@ class NNPredictorConfig(StrictConfig):
 
     @model_validator(mode="after")
     def _validate_sweep_exclusivity_and_keys(self) -> Self:
-        """Validate available sweep fits, objective, and search-space keys."""
+        """Validate Sweep fits and dimensions, including fixed-fit Waveform DMD."""
         if self.sweep is None:
             return self
 
-        if self.observable is None and (self.training.fit != "gradient_descent" or "fit" in self.sweep.training):
-            msg = "Waveform sweeps require training.fit='gradient_descent'. Run closed-form Waveform fits separately."
+        if self.observable is None and (self.training.fit == "ridge" or "fit" in self.sweep.training):
+            msg = "Waveform sweeps require a fixed training.fit of 'gradient_descent' or 'dmd'."
             raise ValueError(msg)
 
         _validate_sweep_overlap_and_keys(self.sweep.model, self.model, "model")

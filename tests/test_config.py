@@ -146,15 +146,19 @@ def test_retired_waveform_sweep_objectives_are_rejected(objective: str) -> None:
 
 
 @pytest.mark.parametrize("fit", ["ridge", "dmd"])
-def test_closed_form_waveform_fits_cannot_enter_optuna(fit: str) -> None:
-    """Accept standalone closed-form Waveform fits and reject them in sweeps."""
+def test_waveform_closed_form_sweep_support(fit: str) -> None:
+    """Accept DMD Sweep configs while keeping Waveform ridge a standalone fit."""
     raw = {
         "training": {**_VALID_TRAINING, "fit": fit},
         "model": {"depth": 0, "residual": False},
     }
     assert NNPredictorConfig.from_dict(raw).training.fit == fit
-    with pytest.raises(ValidationError, match="Waveform sweeps require"):
-        NNPredictorConfig.from_dict({**raw, "sweep": {"objective": "val_loss"}})
+    sweep = {**raw, "sweep": {"objective": "val_loss"}}
+    if fit == "dmd":
+        assert NNPredictorConfig.from_dict(sweep).sweep is not None
+    else:
+        with pytest.raises(ValidationError, match="Waveform sweeps require"):
+            NNPredictorConfig.from_dict(sweep)
 
 
 def test_sweep_unknown_param_type_rejected() -> None:

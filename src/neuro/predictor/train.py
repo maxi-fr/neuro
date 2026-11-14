@@ -527,7 +527,7 @@ def _train_waveform_ridge(cfg: NNPredictorConfig, data_files: list[str]) -> Ridg
 
 
 def _train_waveform_dmd(cfg: NNPredictorConfig, data_files: list[str]) -> RidgeTrainingResult:
-    """Fit a standalone Waveform DMD Predictor."""
+    """Fit Waveform DMD and report held-out EEG Rollout MSE and conditioning."""
     if cfg.model.architecture != "mlp":
         msg = "'training.fit: dmd' supports waveform MLP predictors only."
         raise ValueError(msg)
@@ -542,19 +542,24 @@ def _train_waveform_dmd(cfg: NNPredictorConfig, data_files: list[str]) -> RidgeT
     if not isinstance(model, WaveformMLPModel):
         msg = "waveform DMD fitting requires an MLP model"
         raise TypeError(msg)
-    DmdTrainer(
+    if len(data.val_dataset) == 0:
+        msg = "No Waveform validation recording can support the configured DMD history and Rollout."
+        raise ValueError(msg)
+    trainer = DmdTrainer(
         rank=trn.dmd_rank,
         energy=trn.dmd_energy,
         dmd_lambda=trn.dmd_lambda,
-    ).fit(model, data.train_trajs)
+    )
+    trainer.fit(model, data.train_trajs)
 
     model.provenance = training_provenance(data_files, sim.cutoff_hz)
     model.downsample = sim.downsample
-    return RidgeTrainingResult(
-        predictor=model,
-        candidates={},
-        val_trajs=data.val_trajs,
-    )
+    candidates = {"val_loss": _evaluate_val_mse(model, data.val_dataset, batch_size=trn.batch_size)}
+    if trainer.retained_rank is not None:
+        candidates["retained_rank"] = float(trainer.retained_rank)
+    if trainer.condition_number is not None:
+        candidates["condition_number"] = trainer.condition_number
+    return RidgeTrainingResult(predictor=model, candidates=candidates, val_trajs=data.val_trajs)
 
 
 def _train_waveform(cfg: NNPredictorConfig, data_files: list[str], *, seed_offset: int = 0) -> TrainingResult:

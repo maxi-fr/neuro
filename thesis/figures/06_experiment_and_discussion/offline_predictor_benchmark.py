@@ -190,14 +190,14 @@ def save_dmd_grid() -> None:
         )
     ax_loss.set(
         ylabel=r"Validation MSE $\mathcal{L}_{\mathrm{val}}$",
-        title="(a) Recursive prediction error",
+        # title="(a) Recursive prediction error",  # noqa: ERA001
         ylim=(1.614, 1.693),
     )
     handles, labels = ax_loss.get_legend_handles_labels()
     fig.legend(handles, labels, ncols=4, loc="outside upper center", frameon=False)
     ax_loss.plot(best_cutoff, errors.min(), "o", ms=7, mfc="none", mec="black", mew=0.7)
 
-    ax_condition.set(yscale="log", ylabel=r"Condition number $\kappa$", title="(b) Retained subspace conditioning")
+    ax_condition.set(yscale="log", ylabel=r"Condition number $\kappa$") #, title="(b) Retained subspace conditioning")
     ax_condition.plot(
         best_cutoff, conditions[best_history, best_cutoff, best_ridge], "o", ms=7, mfc="none", mec="black", mew=0.7
     )

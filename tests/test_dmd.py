@@ -230,7 +230,10 @@ def test_dmd_waveform_end_to_end(tmp_path: Path) -> None:
 
     result = train(cfg, files)
     assert isinstance(result, RidgeTrainingResult)
-    assert result.candidates == {}
+    assert np.isfinite(result.candidates["val_loss"])
+    assert result.candidates["val_loss"] > 0.0
+    assert result.candidates["retained_rank"] > 0
+    assert result.candidates["condition_number"] >= 1.0
 
     # Save and round-trip to JAX WaveformMLPModel
     ckpt_path = tmp_path / "wave_model"

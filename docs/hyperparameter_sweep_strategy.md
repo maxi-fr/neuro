@@ -82,7 +82,7 @@ Use training-only per-channel mean/std for Waveform EEG and currents, and per-ch
 
 Rank new campaign architecture sweeps by `val_loss`. Preserve the historical Observable CNN ranking by `val_log_mse` and the recorded MLP/DMDc rankings by `val_loss`. Compare differently trained checkpoints using a shared evaluation score or common Plant outcomes.
 
-Waveform ridge and DMD are standalone fits. New neural Waveform runs use their validation Loss without automatically scoring log-energy error or Rollout NMSE.
+Waveform ridge is a standalone fit. The supplemental Waveform DMDc Sweep ranks closed-form fits by 51-step held-out EEG MSE. New neural Waveform runs use their validation Loss without automatically scoring log-energy error or Rollout NMSE.
 
 Use one GPU fit at a time and record contention for controller timing. Resource pilots must reach the full Loss Span.
 
@@ -107,6 +107,10 @@ Run fresh MLP and CNN searches under `waveform_matched_geometry/` with 25 trials
 October Trial 20 MLP and Trial 24 CNN are historical 10 ms checkpoints. October Waveform effort calibration, partial Loss–Cost work, and the archived [timing pilot](../artifacts/sweep_2026_10/waveform_timing/report.md) all depend on that grid. The archived pilot's Observable arms belong to that mixed-protocol pilot. Standalone November Observable evidence retains its existing reference and Warm-up audits.
 
 November Trial 8 MLP and Trial 23 CNN are historical 20 ms checkpoints trained with the symmetric Hann and hop-12 Loss. Keep both generations at their recorded paths. The [matched-geometry rerun report](../artifacts/sweep_2026_11/waveform_matched_geometry/report.md) records which downstream results require replacement.
+
+### 4.5 Waveform Hankel-DMDc
+
+The [supplemental Waveform DMDc package](../artifacts/sweep_2026_11/waveform_dmd/report.md) defines a 140-fit grid on the frozen 20 ms excitation split, qualification and common spectral scoring. It also prepares development effort and Control Horizon comparisons, followed by a four-arm reserved benchmark with Observable DMDc, threshold and uncontrolled comparators. The seven-arm campaign benchmark retains its original scope.
 
 ## 5. Closed-loop protocol and selection
 
