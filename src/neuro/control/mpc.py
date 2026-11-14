@@ -16,6 +16,7 @@ from trajopt.program import WarmStart
 from trajopt.transcription.ipopt import Ipopt
 from trajopt.transcription.single_shooting import SingleShooting
 
+from neuro.control.condensed import CondensedOSQP
 from neuro.control.diagnostics import (
     ACTIVE_CURRENT_THRESHOLD,
     _rollout_states,
@@ -23,7 +24,6 @@ from neuro.control.diagnostics import (
     planned_outputs,
 )
 from neuro.control.execution import CommandPlayback, validate_control_blocks
-from neuro.control.model_wrappers import EpigraphInferenceModel
 from neuro.control.problems import _build_problem
 from neuro.control.solvers import (
     IPOPT_DEFAULTS,
@@ -85,7 +85,7 @@ class TrajOptMPCController(Controller[TrajOptMPCLog]):
         replan_dt: float | None = None,
         control_start_s: float | None = None,
     ) -> None:
-        """Initialize continuous blocking, persistent solvers and native command playback.
+        """Initialize native playback, blocking and persistent solver handles.
 
         Parameters
         ----------
@@ -129,8 +129,7 @@ class TrajOptMPCController(Controller[TrajOptMPCLog]):
             ):
                 msg = "blocked execution supports continuous Control Currents without activation"
                 raise ValueError(msg)
-            base_model = model.base_model if isinstance(model, EpigraphInferenceModel) else model
-            if not isinstance(base_model, (WaveformMLPModel, WaveformCNNModel)):
+            if not isinstance(model, (WaveformMLPModel, WaveformCNNModel)):
                 msg = "blocked execution supports Waveform MLP/CNN Predictors"
                 raise ValueError(msg)
             if not isinstance(self.solver, SingleShooting):
@@ -143,17 +142,11 @@ class TrajOptMPCController(Controller[TrajOptMPCLog]):
         # x0, not just the controls, so it is zeroed to keep that seed finite for every solver.
         unprimed = jnp.nan_to_num(jnp.asarray(self.model.initial_state()), nan=0.0)
         self.mpc = MPC(problem, self.solver, x0=unprimed)
+        if isinstance(self.solver, CondensedOSQP):
+            self.solver.prepare(self.mpc.program)
         self._state = np.asarray(self.model.initial_state(), dtype=np.float64)
-        if (
-            self._integer_mode
-            or isinstance(model, EpigraphInferenceModel)
-            or model.m == 2 * getattr(model, "n_controls", -1)
-        ):
-            self.n_controls = int(self.model.n_controls)
-        else:
-            self.n_controls = int(model.m)
+        self.n_controls = int(model.n_controls) if self._integer_mode else int(model.m)
         self.n_electrodes = self.n_controls
-        self._epigraph_mode = bool(self.model.m == 2 * self.n_electrodes)
         self._u_last = np.zeros(self.n_electrodes, dtype=np.float64)
 
         cont_prob = getattr(problem, "continuous_problem", None)
@@ -178,7 +171,7 @@ class TrajOptMPCController(Controller[TrajOptMPCLog]):
         return planned_u, planned_active, u_cmd
 
     def _prepare_warm_start_u(self, initial_u: FloatArray, initial_active: FloatArray | None) -> FloatArray:
-        """Append activation or epigraph coordinates to a physical Control Current guess."""
+        """Append activation coordinates to a physical Control Current guess in integer mode."""
         u_init = np.asarray(initial_u, dtype=np.float64).reshape(self.horizon, -1)
         if self._integer_mode:
             if initial_active is not None:
@@ -186,8 +179,6 @@ class TrajOptMPCController(Controller[TrajOptMPCLog]):
             else:
                 act_init = (np.any(u_init != 0, axis=1, keepdims=True)).astype(np.float64)
             return np.hstack([u_init, act_init])
-        if self._epigraph_mode and u_init.shape[1] == self.n_electrodes:
-            return np.hstack([u_init, np.abs(u_init)])
         return u_init
 
     @classmethod
@@ -284,7 +275,7 @@ class TrajOptMPCController(Controller[TrajOptMPCLog]):
         )
 
     def _plan(self, t: float) -> TrajOptMPCLog:
-        """Advance the consumed native prefix, pin the absorbed state and capture an unshifted solve."""
+        """Shift the consumed prefix, pin the absorbed state and log the physical solve result."""
         if self._playback.plan_tick is not None:
             self.mpc.advance(self._playback.steps)
         self.mpc.measure(jnp.asarray(self._state), t)
@@ -300,12 +291,27 @@ class TrajOptMPCController(Controller[TrajOptMPCLog]):
                 solve_time=time.perf_counter() - started,
             )
         solve_time = time.perf_counter() - started
-        cost = float(self.mpc.cost())
-        predicted_y = np.asarray(planned_outputs(self.model, self.mpc.states, self.mpc.controls, t, self.dt)).copy()
+        condensed = isinstance(self.solver, CondensedOSQP)
+        cost = float(solved.cost) if condensed else float(self.mpc.cost())
+        predicted_y = np.asarray(
+            planned_outputs(self.model, self.mpc.states, self.mpc.controls, jnp.asarray(t), self.dt)
+        ).copy()
         planned_u, planned_active, u_cmd = self._extract_plan(
             np.asarray(self.mpc.controls), success=bool(solved.success)
         )
-        costs_decomp = decompose_cost(self.mpc.problem, self.mpc.states, self.mpc.controls, t, self.dt)
+        costs_decomp = (
+            {
+                "active_count": float(planned_active.sum()),
+                "cost_active": 0.0,
+                "cost_spectral": solved.info["cost_spectral"],
+                "cost_quadratic_effort": solved.info["cost_quadratic_effort"],
+                "cost_sparse_effort": 0.0,
+                "cost_tracking": 0.0,
+                "normalization": "channel_mean",
+            }
+            if condensed
+            else decompose_cost(self.mpc.problem, self.mpc.states, self.mpc.controls, t, self.dt)
+        )
         return TrajOptMPCLog(
             u=u_cmd.copy(),
             cost=cost,

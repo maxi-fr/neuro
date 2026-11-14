@@ -7,8 +7,13 @@ from typing import TYPE_CHECKING, Any, cast
 import jax.numpy as jnp
 import numpy as np
 import pytest
+from trajopt.costs.base import CostFunction
+from trajopt.costs.l1 import L1ControlCost
+from trajopt.costs.objective import Objective
 from trajopt.costs.output import OutputCost
+from trajopt.costs.sum import cost_terms
 from trajopt.mpc import MPC
+from trajopt.problem import Problem
 from trajopt.solvers.altro import ALTRO
 from trajopt.solvers.boxqp import BoxQP
 from trajopt.trajectory import Trajectory
@@ -18,8 +23,10 @@ from trajopt.transcription.single_shooting import SingleShooting
 
 from neuro.config import StftGeometry
 from neuro.control.candidate import CandidateMPCController
+from neuro.control.condensed import CondensedOSQP
 from neuro.control.costs import ObservableHingeCost
-from neuro.control.model_wrappers import AugmentedActivationModel, EpigraphInferenceModel
+from neuro.control.diagnostics import _rollout_states, decompose_cost
+from neuro.control.model_wrappers import AugmentedActivationModel
 from neuro.control.mpc import TrajOptMPCController, TrajOptMPCLog
 from neuro.control.problems import NeuroProblem, build_observable_problem, build_waveform_problem
 from neuro.control.solvers import _build_solver
@@ -31,6 +38,7 @@ from neuro.transforms import Standardizer
 if TYPE_CHECKING:
     from pathlib import Path
 
+    import jax
     from trajopt.problem import BoundaryConditions
     from trajopt.program import Program, WarmStart
 
@@ -1090,7 +1098,7 @@ def test_trajopt_mpc_controller_cont_polish(tmp_path: Path) -> None:
 
 
 def test_build_waveform_problem_epigraph_construction(tmp_path: Path) -> None:
-    """Problem with l1_mode='epigraph' wraps model in EpigraphInferenceModel and sets augmented bounds."""
+    """Waveform exact L1 exposes a stage term with physical Control Current dimensions."""
     artifact = _build_checkpoint(tmp_path, n_channels=2, n_controls=2)
     prob = build_waveform_problem(
         artifact,
@@ -1101,9 +1109,9 @@ def test_build_waveform_problem_epigraph_construction(tmp_path: Path) -> None:
         w_u_l1=0.5,
         l1_mode="epigraph",
     )
-    assert isinstance(prob.model, EpigraphInferenceModel)
-    assert prob.model.m == 4
-    assert prob.model.n_controls == 2
+    assert any(isinstance(cost, L1ControlCost) for cost in cost_terms(prob.obj.stage_cost))
+    assert prob.model.m == 2
+    assert isinstance(prob.model, WaveformMLPModel)
     assert prob.w_u_l1 == 0.5
 
     # Check that invalid l1_mode raises ValueError
@@ -1119,7 +1127,7 @@ def test_build_waveform_problem_epigraph_construction(tmp_path: Path) -> None:
 
 
 def test_build_observable_problem_epigraph_construction(tmp_path: Path) -> None:
-    """Observable problem with l1_mode='epigraph' wraps model and sets epigraph bounds."""
+    """Observable exact L1 leaves physical Control Current dimensions intact."""
     artifact, geom = _build_observable_checkpoint(tmp_path, n_channels=2, n_controls=2)
     env_path = _write_envelope(tmp_path, geom)
     prob = build_observable_problem(
@@ -1130,14 +1138,22 @@ def test_build_observable_problem_epigraph_construction(tmp_path: Path) -> None:
         reference=HealthyReference.load(env_path),
         l1_mode="epigraph",
     )
-    assert isinstance(prob.model, EpigraphInferenceModel)
-    assert prob.model.m == 4
-    assert prob.model.n_controls == 2
+    assert any(isinstance(cost, L1ControlCost) for cost in cost_terms(prob.obj.stage_cost))
+    assert prob.model.m == 2
+    assert isinstance(prob.model, ObservableMLPModel)
     assert prob.w_u_l1 == 0.5
 
 
+def test_boxqp_rejects_exact_l1_epigraph(tmp_path: Path) -> None:
+    """Reject exact L1 constraints even when the physical Problem has only box bounds."""
+    artifact = _build_checkpoint(tmp_path, depth=0)
+    problem = build_waveform_problem(artifact, horizon=3, u_max=0.5, w_y=0.0, w_u_l1=0.2, l1_mode="epigraph")
+    with pytest.raises(ValueError, match="BoxQP only supports uncoupled box bounds"):
+        TrajOptMPCController(0.01, problem, solver=BoxQP())
+
+
 def test_epigraph_exact_zero_recovery(tmp_path: Path) -> None:
-    """Exact L1 epigraph recovers exact zero controls when sparse penalty dominates."""
+    """Exact L1 recovers zero Control Currents in the physical warm start."""
     artifact = _build_checkpoint(tmp_path, n_channels=2, n_controls=2)
     # With tracking disabled (w_y=0) and w_u_l1 > 0, the optimal control is exactly 0.
     prob = build_waveform_problem(
@@ -1150,7 +1166,6 @@ def test_epigraph_exact_zero_recovery(tmp_path: Path) -> None:
         l1_mode="epigraph",
     )
     ctrl = TrajOptMPCController(dt=0.01, problem=prob)
-    assert ctrl._epigraph_mode  # noqa: SLF001 -- test verifies internal epigraph detection
 
     # Prime controller past warmup
     for k in range(ctrl.model.n_history):
@@ -1166,7 +1181,7 @@ def test_epigraph_exact_zero_recovery(tmp_path: Path) -> None:
 
 
 def test_trajopt_mpc_controller_epigraph_closed_loop(tmp_path: Path) -> None:
-    """Epigraph execution retains native slack coordinates while emitting physical currents."""
+    """Exact L1 execution exposes physical plans and warm starts across replans."""
     artifact = _build_checkpoint(tmp_path, n_channels=2, n_controls=2)
     prob = build_waveform_problem(
         artifact,
@@ -1181,7 +1196,6 @@ def test_trajopt_mpc_controller_epigraph_closed_loop(tmp_path: Path) -> None:
     )
     ctrl = TrajOptMPCController(dt=0.01, problem=prob)
     assert ctrl.n_electrodes == 2
-    assert ctrl._epigraph_mode  # noqa: SLF001 -- test verifies internal epigraph detection
 
     controller_program = ctrl.mpc.program
 
@@ -1204,8 +1218,11 @@ def test_trajopt_mpc_controller_epigraph_closed_loop(tmp_path: Path) -> None:
     np.testing.assert_allclose(log.planned_active, expected_active)
     assert controller_program is ctrl.mpc.program
     native_plan = np.asarray(ctrl.mpc.controls)
-    np.testing.assert_allclose(native_plan[:, :2], log.planned_u)
-    assert np.all(native_plan[:, 2:] >= np.abs(native_plan[:, :2]) - 1e-6)
+    np.testing.assert_allclose(native_plan, log.planned_u)
+    states, controls = ctrl.mpc.warm_start.unpack(prob)
+    assert states.shape == (4, prob.model.n)
+    assert controls.shape == (3, 2)
+    np.testing.assert_allclose(log.cost_sparse_effort, 0.2 * np.abs(native_plan).sum() / 3)
     next_u, next_log = ctrl.update(t_ready + 0.01, ref=np.zeros(1), x_hat=np.ones(2))
     assert next_log.success
     assert next_u.shape == (2,)
@@ -1226,7 +1243,162 @@ def test_epigraph_weight_matches_horizon_normalized_surrogate(tmp_path: Path) ->
         w_u_l1=w_u_l1,
         l1_mode="epigraph",
     )
-    np.testing.assert_allclose(float(cast("Any", prob.obj.stage_cost).weight), w_u_l1 / horizon)
+    term = next(cost for cost in cost_terms(prob.obj.stage_cost) if isinstance(cost, L1ControlCost))
+    np.testing.assert_allclose(float(term.weight), w_u_l1 / horizon)
+
+
+def test_candidate_logs_cost_on_nonuniform_solver_grid(tmp_path: Path) -> None:
+    """Price time-dependent stage and terminal Costs at the solver's knot times."""
+
+    class TimeCost(CostFunction):
+        """Price the squared knot time."""
+
+        def evaluate(self, x: jax.Array, u: jax.Array | None = None, t: float | jax.Array = 0.0) -> jax.Array:
+            """Return the squared time independently of state and Control Current."""
+            del x, u
+            return jnp.asarray(t) ** 2
+
+    artifact = _build_checkpoint(tmp_path, n_y=1, n_u=1, depth=0)
+    model = WaveformMLPModel.load(artifact)
+    objective = Objective(TimeCost(model.n, model.m, terminal=False), TimeCost(model.n, model.m, terminal=True), N=4)
+    problem = Problem(model, objective, dt=jnp.array([0.01, 0.02, 0.03]))
+    controller = CandidateMPCController(0.01, problem, blocks=[])
+    _, log = controller.update(1.0, np.zeros(1), np.zeros(model.n_outputs))
+
+    assert log.success
+    expected = np.square([1.0, 1.01, 1.03, 1.06]).sum()
+    np.testing.assert_allclose(log.cost, expected, atol=1e-12)
+    np.testing.assert_allclose(log.cost_tracking, expected, atol=1e-12)
+
+
+def test_exact_l1_activation_and_candidate(tmp_path: Path) -> None:
+    """Keep activation costs and exact L1 effort separate through both controller paths."""
+    artifact, geometry = _build_observable_checkpoint(tmp_path, n_channels=2, n_controls=2, depth=0)
+    reference = HealthyReference.load(_write_envelope(tmp_path, geometry))
+    problem = build_observable_problem(
+        artifact,
+        horizon=3,
+        u_max=0.5,
+        w_u=0.1,
+        w_u_l1=0.2,
+        w_hinge=1,
+        reference=reference,
+        kirchhoff=True,
+        l1_mode="epigraph",
+        w_active=0.0,
+    )
+    assert problem.continuous_problem is not None
+    dt = float(problem.dt[0])
+    controller = TrajOptMPCController(dt, problem, init_mode="cont_polish")
+    candidate = CandidateMPCController(dt, problem.continuous_problem, blocks=[[0], [1, 2]], w_active=0.0)
+    for k in range(controller.model.n_history + 1):
+        measurement = np.full(controller.model.p, 2.0)
+        _, binary_log = controller.update(k * dt, np.zeros(1), measurement)
+        _, candidate_log = candidate.update(k * dt, np.zeros(1), measurement)
+        for log, controls in ((binary_log, controller.mpc.controls), (candidate_log, candidate_log.planned_u)):
+            if log.warmup:
+                continue
+            assert log.success, log.status
+            assert log.planned_u.shape == (3, 2)
+            np.testing.assert_allclose(log.cost_sparse_effort, 0.2 * np.abs(controls).sum() / 3)
+            np.testing.assert_allclose(
+                log.cost, log.cost_spectral + log.cost_quadratic_effort + log.cost_sparse_effort, atol=1e-10
+            )
+
+
+def test_affine_observable_hinge_and_condensed_mpc_parity() -> None:
+    """Compare objective placement and three configured MPC paths across shifted replans."""
+    geometry = StftGeometry(n_segment=4, n_hop=1, band_hz=(0.0, 1.0))
+    model = ObservableMLPModel(
+        geometry=geometry,
+        n_y=1,
+        n_u=2,
+        horizon=3,
+        n_channels=1,
+        n_controls=2,
+        n_outputs=1,
+        hidden_size=1,
+        depth=0,
+        dt=0.01,
+        residual=True,
+        y_center=np.array([1.2]),
+        y_scale=np.array([2.5]),
+        u_center=np.array([0.2, -0.4]),
+        u_scale=np.array([0.5, 2.0]),
+        weights=(np.array([[-1.0, 0.1, 0.0, 0.6, -0.3]]),),
+        biases=(np.array([0.17]),),
+    )
+    reference = HealthyReference(observable=ObservableEnvelope(power=np.array([[1.4]]), fs=100, geometry=geometry))
+    config = {
+        "dt": model.dt,
+        "problem": {
+            "class_path": "neuro.control.problems.build_observable_problem",
+            "artifact": model,
+            "horizon": 3,
+            "u_max": [0.5, 0.7],
+            "w_u": 0.3,
+            "w_hinge": 2.0,
+            "kirchhoff": True,
+            "reference": reference,
+        },
+        "solver": {
+            "class_path": "trajopt.transcription.single_shooting.SingleShooting",
+            "solver": {
+                "class_path": "trajopt.transcription.ipopt.Ipopt",
+                "options": {"tol": 1e-10, "acceptable_iter": 0},
+            },
+        },
+    }
+    incumbent = TrajOptMPCController.from_config(config)
+    affine_config = {**config, "problem": {**config["problem"], "affine_hinge": True}}
+    affine = TrajOptMPCController.from_config(affine_config)
+    with pytest.raises(ValueError, match="affine_hinge=True"):
+        TrajOptMPCController(model.dt, incumbent.problem, CondensedOSQP())
+    with pytest.raises(ValueError, match="affine_hinge requires"):
+        TrajOptMPCController(model.dt, affine.problem, OSQP())
+    condensed = TrajOptMPCController.from_config(
+        {
+            **affine_config,
+            "solver": {
+                "class_path": "neuro.control.condensed.CondensedOSQP",
+                "options": {"eps_abs": 1e-9, "eps_rel": 1e-9},
+            },
+        }
+    )
+    assert isinstance(condensed.solver, CondensedOSQP)
+    handle = condensed.mpc.program.handles["condensed_osqp"]
+    state = jnp.asarray(model.absorb(model.initial_state(), np.array([5.0]), np.array([0.1, -0.1])))
+    controls = jnp.array([[-0.3, 0.3], [-0.3, 0.3], [0.5, -0.5]])
+    states = _rollout_states(model, state, controls, model.dt)
+    frames = np.asarray(model.output(states)).ravel()
+    np.testing.assert_array_equal(frames > 1.4, [True, False, False, True])
+    physical = decompose_cost(incumbent.problem, states, controls, dt=model.dt)
+    rewritten = decompose_cost(affine.problem, states, controls, dt=model.dt)
+    for name in ("cost_spectral", "cost_quadratic_effort", "cost_total"):
+        np.testing.assert_allclose(rewritten[name], physical[name], atol=1e-12)
+    np.testing.assert_allclose(physical["cost_spectral"], 2 / 3 * (frames[-1] - 1.4) ** 2, atol=1e-12)
+
+    for k, measured in enumerate([5.0, 2.0, 0.8, 1.9]):
+        t = k * model.dt
+        _, expected = incumbent.update(t, np.zeros(1), np.array([measured]))
+        for ctrl in (affine, condensed):
+            _, actual = ctrl.update(t, np.zeros(1), np.array([measured]))
+            if expected.warmup:
+                assert actual.warmup
+                continue
+            assert expected.success, expected.status
+            assert actual.success, actual.status
+            np.testing.assert_allclose(actual.u, expected.u, atol=1e-6)
+            np.testing.assert_allclose(actual.planned_u, expected.planned_u, atol=1e-6)
+            np.testing.assert_allclose(actual.predicted_y, expected.predicted_y, atol=1e-6)
+            np.testing.assert_allclose(actual.planned_u.sum(axis=1), 0.0, atol=1e-8)
+            assert np.all(np.abs(actual.planned_u) <= np.array([0.5, 0.7]) + 1e-8)
+            np.testing.assert_allclose(actual.cost, expected.cost, atol=1e-8)
+            rescore = decompose_cost(incumbent.problem, ctrl.mpc.states, ctrl.mpc.controls, t, model.dt)
+            np.testing.assert_allclose(actual.cost_spectral, rescore["cost_spectral"], atol=1e-12)
+            np.testing.assert_allclose(actual.cost_quadratic_effort, rescore["cost_quadratic_effort"], atol=1e-12)
+            np.testing.assert_allclose(actual.cost, rescore["cost_total"], atol=1e-12)
+        assert condensed.mpc.program.handles["condensed_osqp"] is handle
 
 
 @pytest.mark.parametrize("mode", ["physical", "epigraph", "binary"])

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import importlib
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any
 
 import equinox as eqx
 import jax
@@ -13,26 +13,21 @@ from trajopt.constraints.bounds import ControlBound
 from trajopt.constraints.constraint_list import ConstraintList
 from trajopt.constraints.horizon import LinearHorizonConstraint
 from trajopt.constraints.linear import LinearConstraint
+from trajopt.costs.l1 import L1ControlCost
 from trajopt.costs.objective import Objective
 from trajopt.costs.output import OutputCost
 from trajopt.costs.pseudo_huber import PseudoHuberControlCost
 from trajopt.costs.quadratic import DiagonalCost
-from trajopt.problem import (
-    Problem,
-    _EpigraphModel,
-    add_l1_epigraph,
-)
+from trajopt.costs.sum import SumCost
+from trajopt.problem import Problem
 
 from neuro.control.costs import (
+    AffineObservableHinge,
     ExcludeInitialKnotState,
     ObservableFrameHingeCost,
     ObservableHingeCost,
-    SumCost,
 )
-from neuro.control.model_wrappers import (
-    AugmentedActivationModel,
-    EpigraphInferenceModel,
-)
+from neuro.control.model_wrappers import AugmentedActivationModel
 from neuro.predictor.inference import (
     InferencePredictor,
     ObservableCNNModel,
@@ -85,8 +80,8 @@ def kirchhoff_constraint(n: int, m: int) -> LinearConstraint:
 
 
 def _combine_costs(costs: list[CostFunction]) -> CostFunction:
-    """Return the single stage cost, wrapping several sub-costs in a :class:`SumCost`."""
-    return SumCost(costs) if len(costs) > 1 else costs[0]
+    """Combine stage or terminal Costs while exposing each term to trajopt."""
+    return SumCost(*costs) if len(costs) > 1 else costs[0]
 
 
 def _observable_envelope(
@@ -363,38 +358,16 @@ def _waveform_terminal_cost(
     return _combine_costs([base_terminal, frame_hinge.as_terminal(w_hinge=w_hinge_terminal)])
 
 
-def _wrap_epigraph_if_requested(
-    problem: NeuroProblem,
-    w_u_l1: float,
-    l1_mode: str,
-) -> NeuroProblem:
-    """Preserve native blocking while adding exact L1 epigraph coordinates when requested."""
+def _sparse_effort(n: int, m: int, weight: float, l1_mode: str) -> list[CostFunction]:
+    """Build a stage term for horizon-normalized smooth or exact L1 effort."""
     if l1_mode not in ("smooth", "epigraph"):
         msg = f"l1_mode must be 'smooth' or 'epigraph', got {l1_mode!r}"
         raise ValueError(msg)
-    if w_u_l1 > 0 and l1_mode == "epigraph":
-        epi_problem = add_l1_epigraph(problem, weight=w_u_l1 / problem.horizon)
-        epi_model = EpigraphInferenceModel(cast("_EpigraphModel", epi_problem.model))
-        return NeuroProblem(
-            model=epi_model,
-            obj=epi_problem.obj,
-            constraints=epi_problem.constraints,
-            N=epi_problem.N,
-            dt=epi_problem.dt,
-            binary_control_indices=epi_problem.binary_control_indices,
-            control_block_steps=epi_problem.control_block_steps,
-            horizon=problem.horizon,
-            u_max=problem.u_max,
-            w_active=problem.w_active,
-            w_hinge=problem.w_hinge,
-            w_u=problem.w_u,
-            w_u_l1=w_u_l1,
-            kirchhoff=problem.kirchhoff,
-            envelope=problem.envelope,
-            max_active_intervals=problem.max_active_intervals,
-            continuous_problem=problem.continuous_problem,
-        )
-    return problem
+    if weight <= 0:
+        return []
+    if l1_mode == "epigraph":
+        return [L1ControlCost(n=n, m=m, weight=weight)]
+    return [PseudoHuberControlCost(n=n, m=m, weight=weight, delta=1e-3)]
 
 
 def build_waveform_problem(  # noqa: PLR0913 -- checkpoint plus the eleven MPC cost/bound knobs
@@ -413,7 +386,7 @@ def build_waveform_problem(  # noqa: PLR0913 -- checkpoint plus the eleven MPC c
     kirchhoff: bool = False,
     l1_mode: str = "smooth",
 ) -> NeuroProblem:
-    """Assemble native Waveform Costs and structurally blocked physical Control Currents.
+    """Assemble native Waveform Costs, including exact L1 with optional Control Current blocking.
 
     The objective minimizes tracking deviation from the healthy reference operating point,
     quadratic and L1 control effort, and one-sided log-power Frame hinges against ``reference``.
@@ -483,8 +456,7 @@ def build_waveform_problem(  # noqa: PLR0913 -- checkpoint plus the eleven MPC c
     stage = DiagonalCost.tracking(Q, R, target, jnp.zeros(m))
     output_stage = OutputCost(model, stage)
     costs: list[CostFunction] = [ExcludeInitialKnotState(output_stage)]
-    if w_u_l1 > 0 and l1_mode == "smooth":
-        costs.append(PseudoHuberControlCost(n=n, m=m, weight=w_u_l1 / horizon, delta=1e-3))
+    costs.extend(_sparse_effort(n, m, w_u_l1 / horizon, l1_mode))
     frame_hinge: ObservableFrameHingeCost | None = None
     if envelope is not None:
         frame_hinge = ObservableFrameHingeCost(model, envelope, w_hinge=w_hinge, horizon=horizon)
@@ -498,7 +470,7 @@ def build_waveform_problem(  # noqa: PLR0913 -- checkpoint plus the eleven MPC c
     terminal_cost = _waveform_terminal_cost(base_terminal, frame_hinge, w_hinge_terminal=w_hinge_terminal)
     objective = Objective(stage_cost=stage_cost, terminal_cost=terminal_cost, N=N)
 
-    problem = _assemble_problem(
+    return _assemble_problem(
         model,
         objective,
         N=N,
@@ -511,7 +483,6 @@ def build_waveform_problem(  # noqa: PLR0913 -- checkpoint plus the eleven MPC c
         w_hinge=w_hinge,
         envelope=envelope,
     )
-    return _wrap_epigraph_if_requested(problem, w_u_l1=w_u_l1, l1_mode=l1_mode)
 
 
 def _validate_integer_observable_problem_args(
@@ -537,6 +508,21 @@ def _validate_integer_observable_problem_args(
     return w_active is not None or max_active_intervals is not None
 
 
+def _affine_observable_hinge(
+    model: ObservableMLPModel, envelope: ObservableEnvelope, weight: float
+) -> AffineObservableHinge:
+    """Price the next physical Frame from the affine Predictor's runtime equations."""
+
+    def next_frame(z: jax.Array) -> jax.Array:
+        """Compose the delay-register update with the physical output map."""
+        return model.output(model.discrete_dynamics(z[: model.n], z[model.n :], 0.0, model.dt))
+
+    zero = jnp.zeros(model.n + model.m, dtype=jnp.float64)
+    matrix = jax.jacfwd(next_frame)(zero)
+    limit = jnp.asarray(envelope.power).reshape(-1) - next_frame(zero)
+    return AffineObservableHinge(matrix, limit, weight / limit.size, n=model.n)
+
+
 def build_observable_problem(  # noqa: PLR0913 -- checkpoint plus the MPC cost/bound knobs
     artifact: str | Path | ObservableMLPModel | ObservableCNNModel,
     *,
@@ -551,8 +537,9 @@ def build_observable_problem(  # noqa: PLR0913 -- checkpoint plus the MPC cost/b
     w_active: float | None = None,
     max_active_intervals: int | None = None,
     l1_mode: str = "smooth",
+    affine_hinge: bool = False,
 ) -> NeuroProblem:
-    """Assemble Observable MPC with optional activation controls and the Control Budget.
+    """Assemble Observable MPC with sparse effort, optional activation and the Control Budget.
 
     The model steps one Frame per call on the hop grid. The objective minimizes the one-sided
     log-power hinge against the healthy Observable envelope, plus quadratic and L1 control effort
@@ -590,6 +577,9 @@ def build_observable_problem(  # noqa: PLR0913 -- checkpoint plus the MPC cost/b
     l1_mode
         Sparsity reformulation mode: ``"smooth"`` (default pseudo-Huber surrogate) or
         ``"epigraph"`` (exact L1 epigraph reformulation).
+    affine_hinge
+        Price the next Frame with affine residuals for a continuous depth-zero Observable MLP.
+        Requires equal positive stage and terminal hinge weights and zero L1 weight.
     """
     base = (
         artifact
@@ -620,22 +610,36 @@ def build_observable_problem(  # noqa: PLR0913 -- checkpoint plus the MPC cost/b
     if w_active is not None:
         r = r.at[-1].set(w_active / horizon)
     stage = DiagonalCost(Q=jnp.zeros(n), R=R, q=jnp.zeros(n), r=r)
-    costs: list[CostFunction] = [ExcludeInitialKnotState(stage)]
-    if w_u_l1 > 0 and l1_mode == "smooth":
-        costs.append(PseudoHuberControlCost(n=n, m=m, weight=w_u_l1 / horizon, delta=1e-3))
+    costs: list[CostFunction] = [stage] if affine_hinge else [ExcludeInitialKnotState(stage)]
+    costs.extend(_sparse_effort(n, m, w_u_l1 / horizon, l1_mode))
     w_hinge_term = w_hinge if w_hinge_terminal is None else float(w_hinge_terminal)
+    if affine_hinge and (
+        not isinstance(base, ObservableMLPModel)
+        or len(base.weights) != 1
+        or integer_mode
+        or w_u_l1 != 0
+        or not np.isfinite(w_u)
+        or w_u < 0
+        or w_hinge <= 0
+        or w_hinge_term != w_hinge
+    ):
+        msg = (
+            "affine_hinge requires a continuous depth-zero Observable MLP, equal positive hinge weights,"
+            " zero L1 weight and finite nonnegative quadratic effort"
+        )
+        raise ValueError(msg)
     w_hinge_eff = max(w_hinge, w_hinge_term)
     envelope = _observable_envelope(reference, w_hinge_eff)
-    # The stage trajectory carries every Frame of the Control Horizon but the last, which lives
-    # only in the terminal knot; the terminal Cost scores it so no predicted Frame goes unpriced.
     terminal: CostFunction = DiagonalCost.terminal_tracking(jnp.zeros(n), jnp.zeros(n), m)
     if envelope is not None:
         _validate_observable_envelope(envelope, base)
-        hinge = ObservableHingeCost(envelope, w_hinge=w_hinge, horizon=horizon)
-        output_hinge = OutputCost(model, hinge)
-        costs.append(ExcludeInitialKnotState(output_hinge))
-        term_hinge = ObservableHingeCost(envelope, w_hinge=w_hinge_term, horizon=horizon)
-        terminal = OutputCost(model, term_hinge.as_terminal())
+        if affine_hinge and isinstance(base, ObservableMLPModel):
+            costs.append(_affine_observable_hinge(base, envelope, w_hinge / horizon))
+        else:
+            hinge = ObservableHingeCost(envelope, w_hinge=w_hinge, horizon=horizon)
+            costs.append(ExcludeInitialKnotState(OutputCost(model, hinge)))
+            term_hinge = ObservableHingeCost(envelope, w_hinge=w_hinge_term, horizon=horizon)
+            terminal = OutputCost(model, term_hinge.as_terminal())
     stage_cost: CostFunction = _combine_costs(costs)
     objective = Objective(stage_cost=stage_cost, terminal_cost=terminal, N=N)
 
@@ -649,6 +653,7 @@ def build_observable_problem(  # noqa: PLR0913 -- checkpoint plus the MPC cost/b
             w_u=w_u,
             w_u_l1=w_u_l1,
             w_hinge=w_hinge,
+            w_hinge_terminal=w_hinge_terminal,
             reference=reference,
             kirchhoff=kirchhoff,
             max_active_intervals=None,
@@ -656,7 +661,7 @@ def build_observable_problem(  # noqa: PLR0913 -- checkpoint plus the MPC cost/b
             l1_mode=l1_mode,
         )
 
-    problem = _assemble_problem(
+    return _assemble_problem(
         model,
         objective,
         N=N,
@@ -672,4 +677,3 @@ def build_observable_problem(  # noqa: PLR0913 -- checkpoint plus the MPC cost/b
         envelope=envelope,
         continuous_problem=cont_prob,
     )
-    return _wrap_epigraph_if_requested(problem, w_u_l1=w_u_l1, l1_mode=l1_mode)

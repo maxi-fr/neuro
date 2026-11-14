@@ -10,6 +10,7 @@ import pytest
 from trajopt.constraints.linear import LinearConstraint
 from trajopt.costs.output import OutputCost
 from trajopt.costs.pseudo_huber import PseudoHuberControlCost
+from trajopt.costs.sum import SumCost
 from trajopt.dynamics.base import DiscreteDynamics
 from trajopt.mpc import MPC
 from trajopt.solvers.altro import ALTRO
@@ -23,7 +24,6 @@ from neuro.control.costs import (
     ExcludeInitialKnotState,
     ObservableFrameHingeCost,
     ObservableHingeCost,
-    SumCost,
     compute_waveform_observable_frames,
     frame_grid_offsets,
     has_whole_horizon_cost,
@@ -281,7 +281,7 @@ def test_sum_cost_composes_evaluate_and_stage_costs() -> None:
     u_seq = rng.standard_normal((horizon, m))
     c1 = PseudoHuberControlCost(n=n, m=m, weight=0.1, delta=1e-3)
     c2 = PseudoHuberControlCost(n=n, m=m, weight=0.5, delta=1e-3)
-    combined = SumCost([c1, c2])
+    combined = SumCost(c1, c2)
     per_knot = combined.evaluate(jnp.asarray(x_seq[0]), jnp.asarray(u_seq[0]))
     np.testing.assert_allclose(
         float(per_knot),
@@ -512,7 +512,7 @@ def test_observable_frame_hinge_is_zero_under_the_envelope_and_registered_whole_
     np.testing.assert_allclose(float(stage_vals[0]), 0.0, atol=0.0)
 
     assert has_whole_horizon_cost(cost)
-    assert has_whole_horizon_cost(SumCost([PseudoHuberControlCost(n=n, m=m, weight=1.0, delta=1e-3), cost]))
+    assert has_whole_horizon_cost(SumCost(PseudoHuberControlCost(n=n, m=m, weight=1.0, delta=1e-3), cost))
 
 
 def test_observable_frame_hinge_cost_validation() -> None:

@@ -63,8 +63,8 @@ default-groups = ["dev"]
 
 [tool.uv.sources]
 simulate = { git = "https://github.com/maxi-fr/simulate.git" }
-trajopt = { git = "https://github.com/maxi-fr/trajopt.git" }
 latex-linting = { git = "https://github.com/maxi-fr/latex_linting" }
+trajopt = { git = "https://github.com/maxi-fr/trajopt.git", rev = "8dac6532ce7652b18f5eab8b6261c7fd19390dea" }
 
 [tool.uv.workspace]
 members = ["thesis"]

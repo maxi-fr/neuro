@@ -3,15 +3,19 @@ from __future__ import annotations
 import importlib
 from typing import TYPE_CHECKING, Any
 
+import equinox as eqx
 import numpy as np
 import trajopt.transcription.single_shooting as ss
+from trajopt.costs.l1 import L1ControlCost
+from trajopt.costs.sum import cost_terms
 from trajopt.solvers.altro import ALTRO
 from trajopt.solvers.boxqp import BoxQP
 from trajopt.solvers.options import SolverOptions
 from trajopt.transcription.ipopt import Ipopt
 from trajopt.transcription.single_shooting import SingleShooting
 
-from neuro.control.costs import has_whole_horizon_cost
+from neuro.control.condensed import CondensedOSQP
+from neuro.control.costs import AffineObservableHinge, has_whole_horizon_cost
 
 if TYPE_CHECKING:
     from trajopt.problem import Problem
@@ -27,11 +31,17 @@ if hasattr(ss, "_recover_canonical_multipliers"):
     _orig_recover = ss._recover_canonical_multipliers  # noqa: SLF001 -- patching internal multiplier recovery for large states
 
     def _safe_recover(problem: Problem, traj: Trajectory, info: dict[str, Any]) -> tuple[np.ndarray, np.ndarray]:
+        """Recover canonical Multipliers with cached derivatives below the state-dimension limit."""
         if int(problem.model.n) > _MAX_ADJOINT_STATE_DIM:
             return np.zeros(0, dtype=np.float64), np.zeros(0, dtype=np.float64)
         return _orig_recover(problem, traj, info)
 
-    ss._recover_canonical_multipliers = _safe_recover  # noqa: SLF001 -- patching internal multiplier recovery for large states
+    # Compile the pure JAX kernels while keeping the upstream NumPy assembly and dimension guard.
+    vars(ss).update(
+        _state_stationarity_rhs=eqx.filter_jit(ss._state_stationarity_rhs),  # noqa: SLF001 -- cache lifted Objective and constraint differentiation
+        _backward_adjoint_recursion=eqx.filter_jit(ss._backward_adjoint_recursion),  # noqa: SLF001 -- cache Dynamics differentiation
+        _recover_canonical_multipliers=_safe_recover,
+    )
 
 
 IPOPT_DEFAULTS: dict[str, Any] = {
@@ -45,17 +55,25 @@ IPOPT_DEFAULTS: dict[str, Any] = {
 
 
 def ensure_solver_supports_objective(problem: Problem, solver: Solver) -> None:
-    """Validate the solver against whole-horizon Costs and coupled control constraints."""
+    """Validate solver compatibility with physical and epigraph constraints and Costs."""
+    stage_terms = cost_terms(problem.obj.stage_cost)
+    if any(isinstance(term, AffineObservableHinge) for term in stage_terms) and not isinstance(
+        solver, (CondensedOSQP, Ipopt, SingleShooting)
+    ):
+        msg = "affine_hinge requires CondensedOSQP or IPOPT"
+        raise ValueError(msg)
     if has_whole_horizon_cost(problem.obj.stage_cost) and not isinstance(solver, (SingleShooting, Ipopt)):
         msg = (
             f"{type(solver).__name__} expands costs per knot and cannot score the whole-horizon "
             "hinge cost; use a transcription solver (e.g. SingleShooting(Ipopt(...)))."
         )
         raise ValueError(msg)
-    if isinstance(solver, BoxQP) and sum(problem.constraints.p) > 0:
+    if isinstance(solver, BoxQP) and (
+        sum(problem.constraints.p) > 0 or any(isinstance(term, L1ControlCost) for term in stage_terms)
+    ):
         msg = (
-            f"BoxQP only supports uncoupled box bounds, but problem has non-box constraints "
-            f"(p={problem.constraints.p}); use ALTRO or Ipopt for Kirchhoff's law."
+            "BoxQP only supports uncoupled box bounds. Use ALTRO or Ipopt for "
+            "non-box constraints, including exact L1 epigraph constraints."
         )
         raise ValueError(msg)
 
