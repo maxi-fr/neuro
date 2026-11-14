@@ -17,7 +17,7 @@ Alongside implanted responsive stimulation, closed-loop \ac{tes} has been invest
 
 In recent years, \ac{mpc} has emerged as a promising approach to closed-loop neurostimulation, leveraging dynamical models of neural activity to guide the selection of stimulation inputs~\cite{Chang2020,Fang2023,Liang2024,Steffen2025}.
 In general, \ac{mpc} uses a dynamics model to predict a system's response to candidate input sequences and selects a sequence by optimizing a control objective subject to constraints.
-Only the first input is applied before the optimization is repeated using updated measurements~\cite{Rawlings2017}.
+The controller applies the planned inputs up to the next replanning instant, when it repeats the optimization using updated measurements~\cite{Rawlings2017}.
 For neural stimulation, the inputs describe the applied electrical stimulation, and the model predicts the resulting neural activity.
 Model-based neural control has been investigated at different scales, from feedback control of single-neuron dynamics~\cite{Frohlich2005} to seizure suppression in neural populations and networks~\cite{Chang2020,Liang2024}.
 For seizure-control \ac{mpc}, one study identifies a nonlinear Volterra prediction model from stimulation inputs and neural-mass outputs~\cite{Chang2020}.

@@ -48,7 +48,7 @@ def plot_example_replays(replay_dir: Path, manifest: dict[str, Any], output: Pat
 
 
 def plot_penalty_scatter(bundle: ObservableEvaluationBundle, lag_points: FloatArray, output: Path) -> None:
-    """Plot frame-level costs against seizure state with pooled Pearson correlations."""
+    """Plot frame-level costs against seizure state with correlations in each panel."""
     fig, axes = plt.subplots(1, 3, sharex=True, figsize=style.figsize(height_in=2.25), layout="constrained")
     cost_labels = (
         r"Cost $\mathcal J_{\mathrm{wave}}$",
@@ -58,9 +58,10 @@ def plot_penalty_scatter(bundle: ObservableEvaluationBundle, lag_points: FloatAr
     for ax, (rep, label), color, cost_label in zip(axes, LABELS.items(), COLORS, cost_labels, strict=True):
         points = lag_points if rep == "connectivity" else bundle.seizure_relevance[rep].finite_pairs()
         pearson = SeizureRelevanceResult.pearson(points)
-        title = rf"$r={pearson:.3f}$" if np.isfinite(pearson) else "undefined $r$"
+        correlation = rf"$r={pearson:.3f}$" if np.isfinite(pearson) else "undefined $r$"
         ax.scatter(*points.T, color=color, s=1.8, alpha=0.18, linewidths=0, rasterized=True)
-        ax.set(title=f"{label}\n{title}", xlabel=r"Seizure state $s(t_q)$", ylabel=cost_label)
+        ax.set(title=label, xlabel=r"Seizure state $s(t_q)$", ylabel=cost_label)
+        ax.text(0.07, 0.92, correlation, transform=ax.transAxes, ha="left", va="top")
         ax.grid()
         ax.yaxis.set_major_locator(MaxNLocator(4))
     fig.savefig(output / "observable_penalty_state.pdf", dpi=300)
@@ -75,7 +76,7 @@ def plot_predictability( # noqa: PLR0913, PLR0917
     lag_window_samples: int,
     output: Path,
 ) -> None:
-    """Plot potential predictability for EEG representations and waveform components."""
+    """Plot potential predictability with legends inside both panels."""
     with np.load(split_path) as data:
         times = data["times"]
         waveform, mean, residual = data["ceilings"][0, :3]
@@ -97,12 +98,13 @@ def plot_predictability( # noqa: PLR0913, PLR0917
     right.plot(times, mean, label="Trailing weighted mean", color="C3")
     right.plot(times, residual, label="Waveform minus mean", color="C4")
 
-    for ax in (left, right):
+    for ax, legend_location in ((left, "upper right"), (right, "lower right")):
         ax.axhline(0, color="0.55", linewidth=0.6)
         ax.grid()
         ax.set_xlabel(LOOKAHEAD_LABEL)
         ax.set_xlim(None, 2.0)
-        ax.legend(loc="lower center", bbox_to_anchor=(0.5, 1))
+        anchor = (1, 0.1) if ax is right else None
+        ax.legend(loc=legend_location, bbox_to_anchor=anchor)
     left.set_ylabel(r"Potential predictability $\widehat P(h)$")
     fig.savefig(output / "observable_potential_predictability.pdf")
     plt.close(fig)

@@ -10,7 +10,7 @@ The chapter closes by examining how costs and constraints can promote sparse sti
 
 \section{General \ac{mpc} Formulation}\label{sec:mpc_formulation}
 
-At each sampling instant, the controller plans a sequence of future inputs by predicting how the state would respond to each candidate sequence.
+At each replanning instant, the controller plans a sequence of future inputs by predicting how the state would respond to each candidate sequence.
 For these predictions, we consider the discrete-time model
 %
 \begin{equation}
@@ -59,13 +59,10 @@ The sets $\mathcal{X}\subseteq\mathbb{R}^{\ndim{x}}$ and $\mathcal{U}\subseteq\m
 %
 Solving~\eqref{eq:mpc_ocp} once gives an open-loop input sequence based on the information available at step $k$.
 Disturbances and model error can cause the actual trajectory to depart from the prediction.
-To account for that departure, the controller applies only the first input of an optimal sequence $\mathbf{u}^{\star}_{0|k},\ldots,\mathbf{u}^{\star}_{H-1|k}$,
-%
-\begin{equation*}
-    \mathbf{u}_k=\mathbf{u}^{\star}_{0|k}\,.
-\end{equation*}
-%
-At time step $k+1$, the problem is solved again from the updated initial state with the horizon shifted forward by one step.
+To account for such departures, the controller periodically revises its plan using updated measurements.
+At a replanning instant $t_k$, the controller applies the first $M$ inputs of the optimal sequence in order, where $1\leq M\leq H$.
+Each input is held for one model sampling interval $\Delta t$, so the replanning interval is $M\Delta t$.
+At $t_{k+M}$, the controller solves the problem again from the updated state estimate, shifting the prediction horizon forward by $M$ steps.
 This procedure is called receding-horizon control.
 Although each optimization computes an open-loop input sequence, replanning from updated measurements introduces feedback~\cite{Findeisen2002}.
 Figure~\ref{fig:receding_horizon} shows how the plans change as new measurements become available.
@@ -76,7 +73,7 @@ Figure~\ref{fig:receding_horizon} shows how the plans change as new measurements
     \caption{Illustration of receding-horizon control for a scalar system.
     Dashed curves show predicted states and candidate inputs, while solid curves show the realized states and applied inputs.
     State and input values are dimensionless.
-    Replanning occurs at every sampling instant, with plans at $k=0$, $3$ and $6$ shown for clarity.
+    With $M=3$, the displayed plans at $k=0$, $3$ and $6$ illustrate successive replanning instants.
     The realized state departs from the nominal forecasts because of disturbances.
     The dotted horizontal line marks the upper input bound.}\label{fig:receding_horizon}
 \end{figure}
@@ -441,7 +438,7 @@ As an alternative to the penalized problem~\eqref{eq:mpc_activation_penalty_prob
 %
 where $K\in\{0,\ldots,H\}$ is the maximum number of enabled intervals.
 The cap~\eqref{eq:mpc_activation_cap} and the activation penalty both act on the open-loop plan.
-Since only the first current vector of each plan is applied before replanning, neither formulation guarantees a prescribed fraction of unstimulated intervals in the closed-loop trajectory.
+Since only the first $M$ current vectors of each plan are applied before replanning, neither formulation guarantees a prescribed fraction of unstimulated intervals in the closed-loop trajectory.
 
 \subsection{Solution Approaches for Activation Decisions}
 
@@ -499,7 +496,7 @@ The score combines the base objective in~\eqref{eq:mpc_base_objective}, evaluate
 \end{equation}
 %
 With equal block lengths, the fraction of enabled blocks equals the fraction of enabled intervals.
-The controller selects the successful candidate with the lowest score in~\eqref{eq:mpc_candidate_score} and applies its first current vector.
+The controller selects the successful candidate with the lowest score in~\eqref{eq:mpc_candidate_score} and applies its first $M$ current vectors in order.
 The all-disabled schedule fixes the entire current sequence and can be evaluated by a rollout alone.
 
 Grouping into $B<H$ blocks limits the search to at most $2^B$ continuous solves per update, while a finer partition permits more activation timings at the cost of more candidate solves.

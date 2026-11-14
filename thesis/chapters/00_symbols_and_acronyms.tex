@@ -27,14 +27,18 @@
     $x_{i,1}, x_{i,2}, x_{i,3}$ & Pyramidal, excitatory and inhibitory \acs*{psp} of region $i$ & \si{\milli\volt} \\
     $x_{i,4}, x_{i,5}, x_{i,6}$ & Time derivatives of the three regional \acs*{psp} & \si{\milli\volt\per\second} \\
     $\mathbf{x}_i, \mathbf{x}$ & Regional state vector ($6$ entries) and stacked network state ($6\nreg$ entries) & \textendash{} \\
+    $t_\kappa, \mathbf{x}_{\kappa,i}$ & Time and regional state at plant integration step $\kappa$ & \si{\milli\second}, \textendash{} \\
+    $\mathbf{f}_i$ & Deterministic right-hand side of the regional state equations & \textendash{} \\
     $\mathbf{x}^{(\mathrm{p})}_{\kappa+1,i}$ & Intermediate Heun predictor state of region $i$ & \textendash{} \\
     $h_\mathrm{e}, h_\mathrm{i}$ & Excitatory and inhibitory synaptic impulse responses & \si{\milli\volt} \\
-    $S(v)$ & Wave-to-pulse sigmoid function & \si{\per\second} \\
-    $A_i$ & Regional excitatory synaptic gain & \si{\milli\volt} \\
+    $v$ & Mean membrane potential of a cell population & \si{\milli\volt} \\
+    $S(v)$ & Sigmoid mapping membrane potential to mean firing rate & \si{\per\second} \\
+    $r_\mathrm{p}, r_\mathrm{e}, r_\mathrm{i}$ & Mean firing rates of pyramidal cells and excitatory and inhibitory interneurons & \si{\per\second} \\
+    $A, A_i$ & Excitatory synaptic gain and its value for region $i$ & \si{\milli\volt} \\
     $B$ & Inhibitory synaptic gain & \si{\milli\volt} \\
     $a, b$ & Excitatory and inhibitory synaptic rate constants & \si{\per\second} \\
     $\tau_\mathrm{e}, \tau_\mathrm{i}$ & Excitatory and inhibitory synaptic time constants & \si{\milli\second} \\
-    $c_1, \dots, c_4$ & Intra-columnar synaptic contact numbers & \textendash{} \\
+    $c_1, \dots, c_4$ & Effective connectivity coefficients within a cortical column & \textendash{} \\
     $e_0$ & Half the maximum population firing rate & \si{\per\second} \\
     $v_0$ & Sigmoid midpoint potential & \si{\milli\volt} \\
     $r$ & Sigmoid steepness & \si{\per\milli\volt} \\
@@ -59,12 +63,13 @@
     $y_{\mathrm{reg},i}$, $\mathbf{y}_\mathrm{reg}$ & Regional pyramidal output and stacked output vector & \si{\milli\volt} \\
     $\mathbf{y}_\mathrm{EEG}$ & Uncalibrated scalp \acs*{eeg} channel amplitudes & \textendash{} \\
     $\mathbf{L}_\mathrm{EEG}$ & Scalp \acs*{eeg} lead field, $\nchan \times \nreg$ & \textendash{} \\
+    $V_i, L^{\mathrm{surf}}_{cv}$ & Cortical vertices assigned to region $i$ and projection from vertex $v$ to channel $c$ & \textendash{} \\
     $\mathbf{L}_\mathrm{stim}$ & Stimulation lead field, $\nreg \times \ndim{u}$ & \si{\milli\volt\per\milli\ampere} \\
     $\mathbf{E}_{p,i}$ & Electric-field basis response per milliampere at region centroid $i$ & \si{\volt\per\metre\per\milli\ampere} \\
     $\mathbf{n}_i$ & Regional somato-dendritic orientation unit vector & \textendash{} \\
     $\lambda_\mathrm{p}$ & Neuronal somato-dendritic polarization length & \si{\milli\metre} \\
     $\mathbf{u}$, $u_p$ & Electrode current vector and current at electrode $p$ & \si{\milli\ampere} \\
-    $u_\mathrm{max}$ & Maximum per-electrode current magnitude & \si{\milli\ampere} \\ % latex-lint:ignore=CHKTEX-35
+    $u_\mathrm{max}$ & Per-electrode current-magnitude bound & \si{\milli\ampere} \\ % latex-lint:ignore=CHKTEX-35
     $\mathbf{s}$, $s_i$ & Stimulation drive and its regional entries & \si{\milli\volt} \\
     \midrule
     \multicolumn{3}{@{}l}{\textit{Signals and short-time Fourier transform}} \\*
@@ -74,6 +79,7 @@
     $\nseg$ & Segment length in waveform samples & \textendash{} \\
     $\nhop$ & Hop length between consecutive segments in waveform samples & \textendash{} \\
     $\mathbf{y}_r$, $y_{r,c}$ & Preprocessed waveform sample vector and entry at channel $c$ & \textendash{} \\
+    $y_{\mathrm{LFP}}$ & Simulated regional local field potential in the spectrogram example & \si{\milli\volt} \\
     $\mathbf{w}$, $w_\beta$ & Segment window vector and taper weight at offset $\beta$ & \textendash{} \\
     $m$, $f_m$ & Frequency-bin index and physical frequency & \textendash, \si{\hertz} \\
     $\Delta f$ & Frequency-bin spacing, $f_\mathrm{s} / \nseg$ & \si{\hertz} \\
@@ -97,7 +103,7 @@
     $\boldsymbol{\theta}$, $n_\theta$ & Trainable parameter vector and parameter count & \textendash{} \\
     $\mathcal{D}_{\mathrm{tr}}$ & Training dataset of trajectory samples & \textendash{} \\
     $\nu$, $\ntrain$ & Training sample index and total sample count & \textendash{} \\
-    $\mathbf{U}_k^{(\nu)}, \mathbf{O}_k^{(\nu)}$ & Future input and target trajectory matrices of sample $\nu$ & \textendash{} \\
+    $\mathbf{U}^{(\nu)}_k, \mathbf{O}^{(\nu)}_k$ & Future input and target trajectory matrices of sample $\nu$ & \textendash{} \\
     $\bar{o}_a, \bar{u}_b$ & Training-set coordinate-wise means of observations and currents & \textendash{} \\
     $\sigma_{\mathrm{o},a}, \sigma_{\mathrm{u},b}$ & Training-set standard deviations of observations and currents & \textendash{} \\
     $\widetilde{\mathbf{o}}_k, \widetilde{\mathbf{u}}_k, \widetilde{\mathbf{h}}_k, \widetilde{\spectral}_k$ & Standardized observation, input, history and spectral vectors & \textendash{} \\
@@ -108,29 +114,42 @@
     \midrule
     \multicolumn{3}{@{}l}{\textit{Predictor architectures (\acs*{mlp}, \acs*{cnn}, \acs*{dmdc})}} \\*
     $n_{\mathrm{MLP}}$, $n_{\mathrm{CNN}}$ & \acs*{mlp} affine-layer and \acs*{cnn} convolutional-layer counts & \textendash{} \\
-    $n^{(\ell)}$ & Number of \acs*{mlp} units in layer $\ell$ & \textendash{} \\
+    $n^{(\ell)}$ & Width of \acs*{mlp} input or hidden layer $\ell$ & \textendash{} \\
+    $\mathbf{N}_{\boldsymbol{\theta}}$ & \acs*{mlp} mapping from its regressor to the output layer & \textendash{} \\
+    $\sigma(\cdot)$ & Element-wise neural network activation function & \textendash{} \\
+    $\sigma_{\tanh}$, $\sigma_\mathrm{softplus}$ & Hyperbolic tangent and softplus activations & \textendash{} \\
+    $\sigma_\mathrm{ReLU}$ & Rectified linear activation & \textendash{} \\
     $\mathbf{a}^{(\ell)}$ & Hidden-layer activation vector of layer $\ell$ & \textendash{} \\
     $\mathbf{W}^{(\ell)}$, $\mathbf{b}^{(\ell)}$ & Hidden-layer weights and biases & \textendash{} \\
     $\mathbf{W}^{(n_{\mathrm{MLP}})}$, $\mathbf{b}^{(n_{\mathrm{MLP}})}$ & Output-layer weights and biases & \textendash{} \\
-    $\mathbf{X}^{(\ell)}_k$ & \acs*{cnn} feature array at layer $\ell$ and prediction step $k$ & \textendash{} \\
+    $\mathbf X^{(0)}_k$, $\mathbf X_c^{(\ell)}$ & \acs*{cnn} input history array and feature array for channel $c$ at layer $\ell$ & \textendash{} \\
+    $\mathbf W_{cc'}^{(\ell)}$, $b_c^{(\ell)}$ & Convolutional filter from channel $c'$ to $c$ and shared bias for channel $c$ & \textendash{} \\
+    $\star$ & Convolutional layer filtering operation & \textendash{} \\
     $c,c'$ & Output and input channel indices in a convolutional layer & \textendash{} \\
     $n_{\mathrm{chan}}^{(\ell)}$, $n_{\mathrm{time}}^{(\ell)}$ & Feature channels and temporal positions in layer $\ell$ & \textendash{} \\
     $n_{\mathrm{filter},t}$, $n_{\mathrm{filter},f}$ & Temporal and frequency filter sizes & \textendash{} \\
+    $p_{\mathrm f}$ & Number of lower-frequency padding bins & \textendash{} \\
     $n_{\mathrm{RF}}$ & Effective temporal receptive-field size & \textendash{} \\
-    $\mathbf T, \boldsymbol{\Upsilon}, \boldsymbol{\Omega}$ & Centred target, input snapshot and regressor matrices in \acs*{dmdc} & \textendash{} \\
+    $\mathbf X, \mathbf X_+$ & Starting and successor state snapshot matrices in \acs*{dmdc} & \textendash{} \\
+    $\mathbf A, \mathbf B$ & Fitted state and input matrices in the general \acs*{dmdc} model & \textendash{} \\
+    $\boldsymbol{\Upsilon}, \boldsymbol{\Omega}$ & Input snapshot and stacked regressor matrices in \acs*{dmdc} & \textendash{} \\
+    $\mathbf T$ & Centred target matrix for the affine \acs*{dmdc} fit & \textendash{} \\
     $\mathbf{A}_\mathrm{y}$, $\mathbf{B}_\mathrm{y}$, $\mathbf{c}_\mathrm{y}$ & Affine \acs*{dmdc} output-map parameters & \textendash{} \\
-    $\mathbf{G}$ & Combined \acs*{dmdc} regression matrix $[\mathbf{A}_\mathrm{y}\;\mathbf{B}_\mathrm{y}]$ & \textendash{} \\
+    $\mathbf{G}$ & Combined state and input regression matrix in \acs*{dmdc} & \textendash{} \\
     $n_{\mathrm{rank}}$, $\rho$ & Full and retained \acs*{svd} ranks & \textendash{} \\
-    $\sigma_a$ & Singular value of $\boldsymbol{\Omega}$ along singular direction $a$ & \textendash{} \\
+    $\boldsymbol{\Sigma}, \sigma_a$ & Diagonal singular-value matrix of $\boldsymbol{\Omega}$ and its $a$th entry & \textendash{} \\
     $\lambda$ & Ridge regularization parameter in \acs*{dmdc} & \textendash{} \\
     $\mathbf V_{\mathrm L}$, $\mathbf V_{\mathrm R}$ & Left and right singular-vector matrices & \textendash{} \\
     \midrule
     \multicolumn{3}{@{}l}{\textit{Model predictive control}} \\*
     $H$ & Prediction horizon length & \textendash{} \\
-    $\Delta t$, $T_\mathrm{pred}$ & Controller sampling interval and prediction duration, $T_\mathrm{pred}=H\Delta t$ & \si{\second} \\
+    $M$ & Number of planned inputs applied before replanning & \textendash{} \\
+    $\Delta t$, $T_\mathrm{pred}$ & Model sampling interval and prediction duration, $T_\mathrm{pred}=H\Delta t$ & \si{\second} \\
     $\mathbf{x}_k$, $\ndim{x}$ & Dynamics-model state and its dimension & \textendash{} \\
     $\hat{\mathbf{x}}_k$ & State estimate or initial history state at control step $k$ & \textendash{} \\
     $\mathbf{x}_{j|k}$ & State trajectory forecast $j$ steps ahead of step $k$ & \textendash{} \\
+    $\mathbf{u}_{j|k}, u_{j|k,p}$ & Planned current vector and its electrode-$p$ component at offset $j$ & \si{\milli\ampere} \\
+    $\mathbf f$ & Discrete-time model state transition map & \textendash{} \\
     $\mathbf{F}_{\boldsymbol{\theta}}$ & Shift-and-predict history transition map & \textendash{} \\
     $\boldsymbol{\varphi}_j$ & Single-shooting rollout map over $j$ steps & \textendash{} \\
     $\mathbf{A}_{j|k}$, $\mathbf{B}_{j|k}$ & State and input Jacobians at horizon step offset $j$ ahead of step $k$ & \textendash{} \\
@@ -140,17 +159,44 @@
     $\ell$, $V_\mathrm{f}$ & Control stage cost and terminal cost functions & \textendash{} \\
     $\mathcal J_\mathrm{wave}$ & Waveform tracking cost & \textendash{} \\
     $\mathcal J_\mathrm{spec}$ & One-sided excess spectral power suppression cost & \textendash{} \\
-    $\mathcal J_\mathrm{u}$ & Quadratic current-effort cost & \textendash{} \\
-    $w_\mathrm{u}$ & Nonnegative weight of the quadratic current-effort cost & \textendash{} \\
+    $\mathcal J_{L_2}$ & Horizon-averaged squared electrode-current cost & \si{\milli\ampere\squared} \\
+    $\mathcal J_{L_1}, \widetilde{\mathcal J}_{L_1}$ & Horizon-averaged absolute electrode-current cost and its auxiliary-variable form & \si{\milli\ampere} \\
+    $w_{L_2}, w_1$ & Weights of the squared and absolute current costs & \textendash{} \\
+    $\mathcal J_{\mathrm{supp}}, \mathcal J_{\mathrm{base}}$ & Weighted suppression cost and its sum with the weighted current costs & \textendash{} \\
     $\bar{\mathbf y}_{\mathrm{healthy}}$ & Empirical healthy waveform channel means reference vector & \textendash{} \\
+    $\mathbf y_{j|r}$ & Waveform forecast $j$ steps ahead of waveform sample $r$ & \textendash{} \\
     $\spectral_{\mathrm{healthy}}, \mathcal Y_{\mathrm{healthy},c,m}$ & Empirical healthy spectral envelope and channel-frequency threshold & \textendash{} \\
     \midrule
     \multicolumn{3}{@{}l}{\textit{Constraints and sparsity formulations}} \\*
     $\mathcal{X}$, $\mathcal{U}$ & Admissible state and input sets & \textendash{} \\
     $\mathcal{X}_\mathrm{f}$ & Terminal set & \textendash{} \\
-    $\delta_{j|k}$ & Binary input-activation indicator at horizon step offset $j$ & \textendash{} \\
+    $z_{j|k,p}$ & Auxiliary bound on the absolute planned electrode current & \si{\milli\ampere} \\
+    $\delta_{j|k}, \boldsymbol\delta$ & Interval activation variable and its schedule over the horizon & \textendash{} \\
+    $\mathcal J_\delta, w_\delta$ & Fraction of enabled intervals and its cost weight & \textendash{} \\
+    $K$ & Maximum number of enabled intervals in the activation-cap formulation & \textendash{} \\
+    $B, \mathcal B_b$ & Number of activation blocks and set of intervals in block $b$ & \textendash{} \\
+    $d_b, \mathbf d$ & Binary activation of block $b$ and its schedule over the blocks & \textendash{} \\
+    $\mathbf u^{(\mathbf d)}$ & Planned current sequence for a fixed block schedule $\mathbf d$ & \si{\milli\ampere} \\
+    $C(\mathbf d)$ & Objective score for a candidate block schedule & \textendash{} \\
+    $\mathcal P_\beta, \beta$ & Integrality penalty and its weight in the relaxed activation problem & \textendash{} \\
+    \midrule
+    \multicolumn{3}{@{}l}{\textit{Experimental metrics}} \\*
+    $R_{q,c,c'}$ & Lagged functional connectivity feature for a pair of channels & \textendash{} \\
+    $\bar R_{\mathrm{healthy},c,c'}$ & Healthy reference mean of the connectivity feature & \textendash{} \\
+    $\mathcal E$ & Set of unique channel pairs & \textendash{} \\
+    $\mathcal J_{\mathrm{conn}}$ & Mean squared deviation from healthy functional connectivity & \textendash{} \\
+    $h$ & Lookahead measured from a plant snapshot & \si{\second} \\
+    $n_{\mathrm{snap}}, n_{\mathrm{branch}}$ & Number of snapshots and number of branches per snapshot & \textendash{} \\
+    $o_a^{(\mu,b)}(h), \bar o_a^{(\mu)}(h)$ & Observable component in branch $b$ of snapshot $\mu$ and its mean across branches & \textendash{} \\
+    $\widehat V_{\mathrm{N},a}, \widehat V_{\mathrm{S},a}$ & Estimated within-snapshot noise and between-snapshot signal variances & \textendash{} \\
+    $\widehat P(h)$ & Estimated potential predictability at lookahead $h$ & \textendash{} \\
+    $r$ & Pearson correlation coefficient & \textendash{} \\
+    $s(t)$ & Fraction of brain regions seizing at time $t$ & \textendash{} \\
+    $N_{\mathrm{win}}$ & Number of complete seizure-burden evaluation windows & \textendash{} \\
+    $\bar{s}$ & Seizure burden averaged over the run & \si{\percent} \\
 \end{longtable}
 
+\clearpage
 \section*{Acronyms}
 
 \printacronyms[heading=none]
