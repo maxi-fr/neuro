@@ -1559,7 +1559,7 @@ requires-dist = [
     { name = "setuptools", specifier = ">=81.0.0" },
     { name = "simulate", git = "https://github.com/maxi-fr/simulate.git" },
     { name = "tabulate", specifier = ">=0.10.0" },
-    { name = "trajopt", extras = ["solvers"], git = "https://github.com/maxi-fr/trajopt.git" },
+    { name = "trajopt", extras = ["solvers"], git = "https://github.com/maxi-fr/trajopt.git?rev=8dac6532ce7652b18f5eab8b6261c7fd19390dea" },
     { name = "tvb-data", specifier = ">=3.0.0" },
     { name = "tvb-library", specifier = ">=2.10.0" },
     { name = "wheel", specifier = ">=0.48.0" },
@@ -2859,7 +2859,7 @@ wheels = [
 [[package]]
 name = "trajopt"
 version = "0.1.0"
-source = { git = "https://github.com/maxi-fr/trajopt.git#e7ff2ee08344e52ef9401de717ce772b9044fca4" }
+source = { git = "https://github.com/maxi-fr/trajopt.git?rev=8dac6532ce7652b18f5eab8b6261c7fd19390dea#8dac6532ce7652b18f5eab8b6261c7fd19390dea" }
 dependencies = [
     { name = "equinox" },
     { name = "jax" },

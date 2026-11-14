@@ -7,11 +7,13 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 from trajopt.costs.base import CostFunction
+from trajopt.costs.one_sided_quadratic import OneSidedQuadratic
+from trajopt.costs.sum import cost_terms
 
 from neuro.spectral import LOG_FLOOR, ObservableEnvelope, _frame_kernel_weights, compute_segment_window
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Sequence
+    from collections.abc import Callable
 
     from trajopt.dynamics.base import AbstractModel
 
@@ -19,43 +21,15 @@ if TYPE_CHECKING:
     from neuro.types import FloatArray
 
 
-class SumCost(CostFunction):
-    """Stage cost summing several sub-costs, each evaluated by its own path.
+class AffineObservableHinge(OneSidedQuadratic):
+    """Direct next-Frame Cost whose slacks are allocated by the condensed solver."""
 
-    ``stage_costs`` adds the sub-costs' stacked values: a per-knot cost such as
-    :class:`~trajopt.costs.pseudo_huber.PseudoHuberControlCost` contributes one entry per stage, while a whole-horizon cost such as
-    :class:`ObservableFrameHingeCost` concentrates its value in a single entry, so
-    ``Objective.cost`` reports the exact total either way. ``evaluate`` sums the per-knot
-    evaluations, which is what per-knot Taylor expansions (native solvers, the multiple-shooting
-    Hessian) consume.
-    """
+    def __init__(self, matrix: jax.Array, limit: jax.Array, weight: float, n: int) -> None:
+        """Define a fixed, affine residual on the state and Control Current."""
+        super().__init__(matrix, limit, weight, n=n, formulation="direct")
 
-    costs: tuple[CostFunction, ...]
-
-    def __init__(self, costs: Sequence[CostFunction], *, terminal: bool | None = None) -> None:
-        """Combine dimension-compatible Costs, inheriting or explicitly setting their terminal role."""
-        is_term = costs[0].terminal if terminal is None else terminal
-        super().__init__(n=costs[0].n, m=costs[0].m, terminal=is_term)
-        self.costs = tuple(costs)
-
-    def evaluate(
-        self,
-        x: jax.Array,
-        u: jax.Array | None = None,
-        t: float | jax.Array = 0.0,
-    ) -> jax.Array:
-        """Evaluate the summed per-knot cost at one knot."""
-        value = jnp.zeros(())
-        for cost in self.costs:
-            value = value + cost.evaluate(x, u, t)
-        return value
-
-    def stage_costs(self, X: jax.Array, U: jax.Array, t: jax.Array) -> jax.Array:
-        """Sum the sub-costs' stacked stage values of shape ``(N - 1,)``."""
-        total = jnp.zeros(X.shape[0])
-        for cost in self.costs:
-            total = total + cost.stage_costs(X, U, t)
-        return total
+    def reformulate(self) -> None:  # ty: ignore[invalid-method-override]
+        """Keep physical terms visible to the condensed solver and IPOPT."""
 
 
 def jax_compute_observable_frames(y: jax.Array, geometry: StftGeometry, *, fs: float) -> jax.Array:
@@ -407,11 +381,9 @@ class ExcludeInitialKnotState(CostFunction):
 
 
 def has_whole_horizon_cost(cost: CostFunction) -> bool:
-    """Detect whole-horizon stage terms, excluding terminal Observable Frame hinges.
+    """Detect whole-horizon terms within the stage Cost.
 
     Whole-horizon costs return ``0`` from ``evaluate`` and concentrate their value in
     ``stage_costs``; a native expansion-only solver would silently drop them.
     """
-    if isinstance(cost, SumCost):
-        return any(has_whole_horizon_cost(sub) for sub in cost.costs)
-    return isinstance(cost, ObservableFrameHingeCost) and not cost.terminal
+    return any(isinstance(term, ObservableFrameHingeCost) and not term.terminal for term in cost_terms(cost))

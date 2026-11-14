@@ -7,9 +7,10 @@ import numpy as np
 import pytest
 from test_mpc import _build_checkpoint, _ref
 from test_waveform_cnn import _cnn
-from trajopt.program import WarmStart
+from trajopt.program import Program, WarmStart
 from trajopt.solvers.altro import ALTRO
 from trajopt.transcription.ipopt import Ipopt
+from trajopt.transcription.single_shooting import SingleShooting
 
 from experiments.benchmark import describe_problem
 from neuro.config import StftGeometry
@@ -204,7 +205,7 @@ def test_blocked_configuration_forwards_structure(tmp_path: Path, backend: str) 
 
 
 def test_blocked_epigraph_solve_and_physical_history(tmp_path: Path) -> None:
-    """Blocked slack decisions remain feasible while playback absorbs only physical currents."""
+    """Blocked exact L1 shares current decisions and preserves physical State Absorption."""
     artifact = _build_checkpoint(tmp_path, horizon=12, depth=0)
     problem = build_waveform_problem(
         artifact,
@@ -231,9 +232,17 @@ def test_blocked_epigraph_solve_and_physical_history(tmp_path: Path) -> None:
             assert log.planned_u.shape == (12, 2)
             np.testing.assert_allclose(controller.mpc.x0, absorbed)
             decisions = np.asarray(controller.mpc.controls)
-            assert decisions.shape == (12, 4)
-            assert np.min(decisions[:, 2:] - np.abs(decisions[:, :2])) >= -1e-5
+            assert decisions.shape == (12, 2)
+            np.testing.assert_allclose(log.cost_sparse_effort, 0.2 * np.abs(decisions).sum() / 12)
             np.testing.assert_allclose(
-                decisions.reshape(2, 6, 4), np.repeat(decisions[::6, None], 6, axis=1), atol=1e-10
+                decisions.reshape(2, 6, 2), np.repeat(decisions[::6, None], 6, axis=1), atol=1e-10
             )
         previous = command
+    solver = SingleShooting(solver=Ipopt(options={"print_level": 0, "tol": 1e-9, "acceptable_iter": 0}))
+    diagnostics = Program(problem, solver, penalty_diagnostics=True)
+    result = diagnostics.solve(controller.mpc.bc, controller.mpc.warm_start)
+    assert result.success
+    (penalty,) = result.info["penalties"]
+    assert result.trajectory.U.shape == (12, 2)
+    np.testing.assert_allclose(penalty.stage_violation, np.abs(result.trajectory.U))
+    np.testing.assert_allclose(penalty.stage_slack, penalty.stage_violation, atol=1e-5)
