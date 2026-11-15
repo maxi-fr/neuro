@@ -31,6 +31,7 @@ CAMPAIGN = REPO / "artifacts" / "sweep_2026_11"
 MATCHED = CAMPAIGN / "waveform_matched_geometry"
 DMD_STUDY = CAMPAIGN / "observable_dmd/hop3"
 DIRECT_MLP = CAMPAIGN / "observable_mlp/residual_ablation/model.npz"
+WAVEFORM_LOSS_FITS = MATCHED / "mlp/fits"
 STUDIES = (
     ("Spectral MLP", "observable_mlp", CAMPAIGN / "observable_mlp/architecture"),
     ("Spectral CNN", "observable_cnn", CAMPAIGN / "cnn/observable/architecture"),
@@ -114,9 +115,13 @@ def save_table(path: Path, columns: str, headers: tuple[str, ...], rows: list[tu
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
-def save_lookahead_plot(lookaheads: FloatArray, labels: tuple[str, ...], scores: list[FloatArray]) -> None:
-    """Plot matched log-power error on the common physical lookahead grid."""
-    fig, ax = plt.subplots(figsize=style.figsize(height_in=2.65), layout="constrained")
+def save_lookahead_plot(
+    lookaheads: FloatArray, labels: tuple[str, ...], scores: FloatArray, loss_ablation: FloatArray
+) -> None:
+    """Plot per-lookahead spectral error for both the selected predictors and the waveform loss refits."""
+    fig, (ax, ax_ablation) = plt.subplots(
+        1, 2, figsize=style.figsize(height_in=2.8), sharey=True, layout="constrained"
+    )
     styles = (
         ("0.40", ":", ""),
         ("C0", "-", "o"),
@@ -129,19 +134,36 @@ def save_lookahead_plot(lookaheads: FloatArray, labels: tuple[str, ...], scores:
         ax.plot(
             lookaheads, score, color=color, linestyle=linestyle, marker=marker, markersize=2.5, markevery=3, label=label
         )
-    ax.set(xlabel=r"Lookahead $h$ (s)", ylabel="Log-power MSE")
-    ax.grid(axis="both")
+    for label, score, (color, linestyle, marker) in zip(
+        ("Waveform only", "Spectral only", "Joint"),
+        loss_ablation,
+        (("C3", "--", "s"), ("C4", "-.", "^"), ("C0", "-", "o")),
+        strict=True,
+    ):
+        ax_ablation.plot(
+            lookaheads, score, color=color, linestyle=linestyle, marker=marker, markersize=2.5,
+            markevery=3, label=label,
+        )
+
+    ax.set_title("(a) Selected predictors")
+    ax_ablation.set_title("(b) Waveform MLP loss comparison")
+    ax.set_ylabel(r"Log-power MSE $\mathcal{L}_{\mathrm{spec}}(h)$")
+    for panel in (ax, ax_ablation):
+        panel.set(xlabel=r"Lookahead $h$ (s)", xticks=(0.06, 0.30, 0.54, 0.78, 1.02))
+        panel.grid(axis="both")
     handles, names = ax.get_legend_handles_labels()
     order = (1, 4, 2, 5, 3, 0)
     ax.legend(
         [handles[i] for i in order],
         [names[i] for i in order],
-        loc="lower left",
-        bbox_to_anchor=(0, 1.02, 1, 0),
-        ncols=3,
-        mode="expand",
+        loc="upper left",
+        ncols=2,
+        columnspacing=0.9,
+        handlelength=1.6,
         frameon=False,
     )
+    ax_ablation.legend(loc="upper left", frameon=False)
+    ax.set_ylim(top=max(scores.max(), loss_ablation.max()) + 0.7)
     fig.savefig(FIGURES / "offline_predictor_lookahead.pdf")
     plt.close(fig)
 
@@ -241,7 +263,7 @@ def initialize_scoring(checkpoints: list[Path], start: int, horizon: int) -> Non
 
 
 def main() -> None:
-    """Select fits by search validation loss and generate the table and matched lookahead figures."""
+    """Select predictor fits, score them alongside the waveform loss refits, and generate thesis outputs."""
     summary = json.loads((MATCHED / "offline/summary.json").read_text(encoding="utf-8"))
     configurations = []
     checkpoints = []
@@ -270,14 +292,17 @@ def main() -> None:
 
     manifest = json.loads((MATCHED / "offline_data_manifest.json").read_text(encoding="utf-8"))
     start, horizon = summary["start_frame"], summary["horizon_frames"]
+    ablation_checkpoints = [
+        WAVEFORM_LOSS_FITS / fit / "model.npz" for fit in ("pure_mse", "pure_stft", "joint")
+    ]
     with ProcessPoolExecutor(
-        max_workers=4, initializer=initialize_scoring, initargs=(checkpoints, start, horizon)
+        max_workers=4, initializer=initialize_scoring, initargs=(checkpoints + ablation_checkpoints, start, horizon)
     ) as pool:
         counts, per_trajectory = zip(*pool.map(score_trajectory, manifest["validation_files"]), strict=True)
     if sum(counts) != summary["windows"]:
         raise ValueError("The forecast count differs from the archived evaluation.")
-    scores = np.average(per_trajectory, axis=0, weights=counts)
     labels = ("Persistence", *(label for label, _, _ in STUDIES))
+    scores, loss_ablation = np.split(np.average(per_trajectory, axis=0, weights=counts), [len(labels)])
     lookaheads = np.arange(1, horizon + 1) * summary["geometry"]["n_hop"] / FS
     for label, score in zip(labels, scores, strict=True):
         print(f"{label}: {score.mean():.8f} (first {score[0]:.8f})")
@@ -291,7 +316,7 @@ def main() -> None:
         ("Predictor", "EEG history", "Selected settings"),
         configurations,  # ty: ignore[invalid-argument-type]
     )
-    save_lookahead_plot(lookaheads, labels, list(scores))
+    save_lookahead_plot(lookaheads, labels, scores, loss_ablation)
     save_dmd_grid()
 
 

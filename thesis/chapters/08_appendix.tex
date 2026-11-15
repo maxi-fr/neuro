@@ -69,10 +69,89 @@ Figure~\ref{fig:predictor_search_loss_curves} shows the loss curves for the sele
   \input{tables/08_appendix/waveform_cnn_trials.tex}
 \end{table}
 
-% Waveform and spectral DMDc comparison
-% - Ask whether lifting EEG into log-power Frames makes its dynamics easier to approximate with a linear Predictor.
-% - In each representation, compare DMDc with its nonlinear MLP and CNN peers on the same held-out forecast origins.
-% - Report the DMDc-to-neural MSE gap relative to the best neural peer in each representation. Use the first 240 ms and the pure-MSE fits for Waveform. Use the 60, 120, 180, and 240 ms Frame endpoints for the short-horizon spectral comparison.
-% - Interpret a smaller spectral gap as evidence for the selected Predictors. Note the differences in history, temporal averaging, excitation, and selection horizon. Re-rank the Waveform DMDc grid on 240 ms if matching the selection horizon.
-% - Compare Waveform and spectral DMDc with their nonlinear peers on paired Plant seeds. Report Seizure Burden, Delivered Charge, and solver failures at the charge-calibrated operating points.
-% - Use a shared MPC Cost and physical Control Horizon within each representation where available. Report differences in Current playback and solver budgets when comparing tuned systems across representations.
+\chapter{Linear Prediction of Waveform and Spectral Observables}\label{app:dmdc_comparison}
+
+The Koopman perspective in Section~\ref{sec:linear_dmd_predictor} motivates fitting linear dynamics to nonlinear functions of the measurements.
+An exact finite-dimensional description requires closure of the chosen observables under evolution, whereas the regressions here test prediction over a finite horizon~\cite{Brunton2016,Williams2015}. % what is that supposed to mean? Not a coherent argument. % There are also emprical and approximative koopman approaches. So whats the point? 
+Korda and Mezi\'{c}~\cite{Korda2018} use lifted predictors for \ac{mpc} and show how observables can enter both the cost and constraints. % this citation style: "Korda and Mezi\'{c}~\cite{Korda2018}" is not wanted. Citation comes at the end of the sentence without authors names. % so? 
+Here the lift operates on \ac{eeg} histories and the cost penalizes predicted log-power above a healthy envelope.
+The controller can therefore use the spectral prediction directly, without reconstructing waveform phase or the underlying neural state. % So? why is that important?
+% this whole paragraph is just a series of statements. But there is no real argumentation that the reader can follow.
+
+\section{Comparison with Nonlinear Predictors}
+
+We measure the difference in forecast error between \ac{dmdc} and its nonlinear peers within each prediction target. % its the validation error
+The comparison uses the first \SI{240}{\milli\second}, where the waveform prediction retains useful phase information.
+Within each target every predictor starts from the same validation origins, receives the recorded future currents, and predicts recursively without further measurements.
+For waveform prediction, the neural fits use waveform \ac{mse} alone and are scored at 12 sample endpoints on \num{4120} origins from 40 regenerated validation trajectories.
+The spectral errors use four frame endpoints on \num{6400} origins from the 40 validation trajectories with \SI{60}{\milli\second} current holds.
+
+% Data: waveform_dmd/pure_mse_comparison/matched_cnn_240ms.json and waveform_matched_geometry/offline/lookahead.csv (first four rows).
+\begin{table}
+  \centering
+  \caption{Mean recursive prediction errors through \SI{240}{\milli\second}. Each row uses the units of its prediction target. The gap is the relative increase in \ac{mse} of \ac{dmdc} over the best neural fit.}\label{tab:dmdc_representation_gap}
+  \begin{tabular}{lrrrr}
+    \toprule
+    Prediction target & \ac{dmdc} & \ac{mlp} & \ac{cnn} & Relative gap \\
+    \midrule
+    Waveform             & 39.07 & 29.54 & 35.49 & \(+32.3\%\) \\
+    Spectral log-power   & 1.308 & 1.368 & 1.393 & \(-4.4\%\)  \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+The nonlinear \ac{mlp} improved short-horizon waveform prediction, whereas the spectral \ac{dmdc} matched or improved on both nonlinear fits over the same physical duration (Table~\ref{tab:dmdc_representation_gap}).
+The result supports a useful affine approximation to the evolution of the measured spectra in these trajectories.
+The increase in feature dimension accompanies a loss of phase information and temporal averaging from the overlapping spectral windows, both of which can reduce the variation that the predictor has to explain.
+The history lengths, excitation schedules, and selection criteria also differ, including selection of the waveform \ac{dmdc} fit at \SI{1.02}{\second}.
+The experiment therefore leaves open how much of the smaller spectral gap comes from any one of these changes, and whether the chosen observables are closed under evolution.
+
+\section{Quadratic Programming Formulation}
+
+With a fixed initial history, the affine \ac{dmdc} recurrence makes the stacked predicted log-power \(\mathbf{o}\) affine in the stacked physical currents \(\mathbf{u}\).
+Write \(\mathbf{o}=\mathbf{b}+\mathbf{G}\mathbf{u}\), where \(\mathbf{b}\) is the zero-current rollout from that history and \(\mathbf{G}\) is constant for a fixed predictor and control horizon.
+Let \(\mathbf{e}\) be the healthy envelope repeated over the prediction endpoints.
+An epigraph reformulation of the positive part in~\eqref{eq:mpc_spectral_cost} introduces one auxiliary variable per predicted spectral value.
+\begin{equation}
+    \begin{aligned}
+        \min_{\mathbf{u},\,\mathbf{s}}\quad
+        & \mathbf{u}^{\mathsf T}\mathbf{R}\mathbf{u}
+          +\mathbf{s}^{\mathsf T}\mathbf{W}\mathbf{s} \\
+        \text{subject to}\quad
+        & \mathbf{s}\geq\mathbf{0},\qquad
+          \mathbf{s}\geq\mathbf{b}+\mathbf{G}\mathbf{u}-\mathbf{e}, \\
+        & \text{the current bounds and Kirchhoff equalities in~\eqref{eq:mpc_current_constraints}.}
+    \end{aligned}
+    \label{eq:dmdc_spectral_hinge_qp}
+\end{equation}
+The diagonal matrices \(\mathbf{R}\) and \(\mathbf{W}\) carry the nonnegative quadratic effort and hinge weights, including their normalization.
+For positive hinge weights the minimizing slack is the elementwise positive part of \(\mathbf{o}-\mathbf{e}\), so the reformulation preserves the original objective after minimizing over the slacks.
+The problem has affine constraints and a positive semidefinite quadratic objective, giving a convex quadratic program for linear \ac{mpc}.
+The waveform \ac{dmdc} recurrence is affine as well, but the same spectral cost on a waveform rollout requires evaluating windowed power and the logarithm inside the optimization.
+Those operations make the envelope residual nonlinear in the planned currents.
+
+The condensed implementation solves~\eqref{eq:dmdc_spectral_hinge_qp} with OSQP for continuous, independently chosen currents, equal positive stage and terminal hinge weights, and zero \(L_1\) effort.
+The auxiliary variables here price spectral excess above the healthy envelope, while those in~\eqref{eq:mpc_l1_epigraph} price absolute current.
+Eliminating the predictor states leaves 30 current variables and \num{7440} hinge slacks at the ten-frame control horizon used here.
+The solver reuses the fixed quadratic and constraint matrices and updates the constraint bounds from the new zero-current rollout at each replan.
+
+\section{Closed-Loop Performance and Solve Time}
+
+On ten paired reserved simulation seeds with a \SI{0.60}{\second} control horizon, the spectral and waveform \ac{dmdc} controllers gave mean seizure burdens of \(5.00\%\) and \(5.30\%\), respectively, with mean delivered charges of \SI{25.61}{\milli\ampere\second} and \SI{20.59}{\milli\ampere\second}.
+Both used IPOPT under their respective solver settings, with per-seed median solve times averaging \SI{0.967}{\second} for spectral \ac{dmdc} and \SI{0.715}{\second} for waveform \ac{dmdc}.
+Both replanned every \SI{60}{\milli\second}.
+The waveform controller applied three independently optimized \SI{20}{\milli\second} currents in that interval, while the spectral controller held one.
+The waveform controller also included waveform tracking in addition to the spectral hinge.
+These differences make the comparison one of the tuned controllers as a whole.
+In the earlier reserved comparison of the spectral controllers on the same seeds, the \ac{dmdc}, \ac{mlp}, and \ac{cnn} gave similar mean burdens of \(5.04\%\), \(5.08\%\), and \(5.24\%\), at \SI{25.71}{\milli\ampere\second}, \SI{24.66} {\milli\ampere\second}, and \SI{21.92}{\milli\ampere\second}, respectively.
+The available pure-\ac{mse} waveform neural runs used a tracking-only cost on five development seeds.
+Their mean delivered charges fell below the \SIrange{20}{30}{\milli\ampere\second} development target. % this is irrelevant
+A paired reserved comparison of charge-calibrated waveform controllers under the same cost remains open.
+
+% Data: waveform_dmd/benchmark, observable_benchmark, and artifacts/trajopt_qp_deployment/report.md.
+We assessed the condensed spectral formulation separately by replaying \num{1780} replans from the archived spectral \ac{dmdc} controller.  % weird way of testing that. Setup and run a proper experiment. Just test on the same closed-loop trajectories.
+The warm online calculation, including the rollout, bounds update, and OSQP solve, took \SI{25.4}{\milli\second} at the median and \SI{34.3}{\milli\second} at the 95th percentile.
+All replans in that replay completed within \SI{60}{\milli\second}, while a second replay had one overrun at \SI{68.2}{\milli\second}.
+The archived IPOPT solver timings on these states had a median of \SI{1.14}{\second} and a 95th percentile of \SI{1.51}{\second}, with three unsuccessful solves. % what do you mean archived?
+The replay excludes preparation, initialization, estimation, and logging, and uses states generated by the incumbent controller.
+It shows that the spectral lift and the associated cost permit a much faster solve on the observed states, while closed-loop performance and end-to-end latency with the quadratic-programming backend remain to be measured.

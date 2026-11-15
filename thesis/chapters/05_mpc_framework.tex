@@ -243,7 +243,7 @@ The suppression costs therefore use predicted \ac{eeg} and references derived fr
 The waveform cost penalizes deviations from the healthy channel means, while the spectral cost penalizes log power above the healthy spectral envelope.
 
 One seizure-suppression \ac{mpc} formulation uses a quadratic cost to track a smoothed reference derived from normal \ac{eeg}~\cite{Chang2020}.
-Figure~\ref{fig:mpc_suppression_references}(a) shows that healthy fluctuations observed through an electrode are small on the scale of seizure oscillations. % chktex 36 -- The panel letter follows the figure number without a space.
+Figure~\ref{fig:mpc_suppression_references}~(a) shows that healthy fluctuations observed through an electrode are small on the scale of seizure oscillations. % chktex 36 -- The panel letter follows the figure number without a space.
 This difference motivates approximating the healthy waveform by a constant and penalizing large departures from it.
 For each channel, the reference is the mean of the waveform samples pooled across time and across the unstimulated healthy simulations.
 The vector of healthy channel means $\bar{\mathbf y}_{\mathrm{healthy}}\in\mathbb R^{\nchan}$ serves as the reference for a standard quadratic tracking cost~\cite{Rawlings2017},
@@ -279,7 +279,7 @@ The spectral cost averages the squared excess log power over $\nscore{spec}\in\m
 where ${[a]}_+=\max\{a,0\}$ for $a\in\mathbb R$.
 The prediction boundary is spectral frame $q$.
 The penalty vanishes at or below the healthy envelope.
-Figure~\ref{fig:mpc_suppression_references}(b) illustrates where seizure log power exceeds the envelope at the electrode CP5. % chktex 36 -- The panel letter follows the figure number without a space.
+Figure~\ref{fig:mpc_suppression_references}~(b) illustrates where seizure log power exceeds the envelope at the electrode CP5. % chktex 36 -- The panel letter follows the figure number without a space.
 
 \begin{figure}
     \centering
