@@ -4,7 +4,7 @@ Treat `thesis/` as a document workspace. For work within this directory, parent-
 
 Keep file inspection and changes scoped to `thesis/`. Inspect parent-repository files only when the requested task requires them, such as checking the implementation against the thesis content. Inherited instructions do not expand the task's scope.
 
-Use the latex-lint command when needed:
+The latex-lint command might be a useful tool:
 
 ```bash
 usage: uv run latex-lint [-h] {compile,check,rule,install-skills,refs,format,feedback}

@@ -68,3 +68,11 @@ Figure~\ref{fig:predictor_search_loss_curves} shows the loss curves for the sele
   The selected fit uses one convolutional layer with a three-sample kernel and the geometric-mean head.}\label{tab:search_waveform_cnn}
   \input{tables/08_appendix/waveform_cnn_trials.tex}
 \end{table}
+
+% Waveform and spectral DMDc comparison
+% - Ask whether lifting EEG into log-power Frames makes its dynamics easier to approximate with a linear Predictor.
+% - In each representation, compare DMDc with its nonlinear MLP and CNN peers on the same held-out forecast origins.
+% - Report the DMDc-to-neural MSE gap relative to the best neural peer in each representation. Use the first 240 ms and the pure-MSE fits for Waveform. Use the 60, 120, 180, and 240 ms Frame endpoints for the short-horizon spectral comparison.
+% - Interpret a smaller spectral gap as evidence for the selected Predictors. Note the differences in history, temporal averaging, excitation, and selection horizon. Re-rank the Waveform DMDc grid on 240 ms if matching the selection horizon.
+% - Compare Waveform and spectral DMDc with their nonlinear peers on paired Plant seeds. Report Seizure Burden, Delivered Charge, and solver failures at the charge-calibrated operating points.
+% - Use a shared MPC Cost and physical Control Horizon within each representation where available. Report differences in Current playback and solver budgets when comparing tuned systems across representations.
