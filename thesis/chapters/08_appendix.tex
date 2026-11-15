@@ -1,3 +1,70 @@
+\chapter{Predictor Hyperparameter Searches}\label{app:predictor_search}
 
+Tables~\ref{tab:search_spectral_mlp}--\ref{tab:search_waveform_cnn} list the \ac{mlp} and \ac{cnn} trials from Section~\ref{sec:offline_predictor_benchmark} in trial order. The first 15 trials use randomly chosen hyperparameter sets while the rest are selected using the tree-structured Parzen estimator by Optune.
+Bold rows mark the configuration with the lowest score in each search.
+Figure~\ref{fig:predictor_search_loss_curves} shows the loss curves for the selected fits, and Figure~\ref{fig:predictor_search_dmd_heatmaps} summarizes the spectral \ac{dmdc} grid.
 
-% Calibration of K and \sigma
+% Keep the loss curves with the appendix introduction.
+\begin{figure}[!htbp] % latex-lint:ignore=FLOAT-01
+  \centering
+  \includegraphics{figures/08_appendix/predictor_search_loss_curves.pdf}
+  \caption{Training and validation losses for the selected \ac{mlp} and \ac{cnn} predictors.
+  The jumps in training loss occur when the curriculum lengthens the forecast scored by the observation-space \ac{mse}, adding errors from later steps.
+  This horizon grows from one step to 17 frames for spectral log-power or 12 samples for the waveform.
+  The spectral term in the waveform joint loss always spans 17 frames, and validation uses the final horizons throughout.
+  The dashed line marks the first epoch eligible for checkpoint selection, when the full training horizon is scored and all terms are active.
+  The circle marks the eligible epoch with the lowest logged validation loss.
+  The spectral \ac{cnn} sweep ranked the resulting checkpoints by a separate recursive log-power \ac{mse} evaluation.}\label{fig:predictor_search_loss_curves}
+\end{figure}
+
+% Keep the heatmaps above the first trial table.
+\begin{figure}[!t] % latex-lint:ignore=FLOAT-01
+  \centering
+  \includegraphics{figures/08_appendix/predictor_search_dmd_heatmaps.pdf}
+  \caption{Validation loss across 140 spectral \ac{dmdc} fits.
+  For each \ac{eeg} history \(\nhist{o}\) and retained fraction of the squared singular-value sum, the left panel shows the lowest validation log-power \ac{mse} across five ridge values \(\lambda\).
+  The circle marks the minimum of \(1.6197\) at four frames, a retained fraction of \(0.95\), and \(\lambda=0.01\).
+  The right panel shows the range across ridge values in units of \(10^{-7}\), indicating little effect from ridge at fixed history and retained fraction.}\label{fig:predictor_search_dmd_heatmaps}
+\end{figure}
+
+\begin{table}[!t] % latex-lint:ignore=FLOAT-01
+  \centering
+  \small
+  \caption{Spectral \ac{mlp} trials scored by validation log-power \ac{mse} over 17 forecast frames.
+  History counts input frames.
+  Trials 0--24 predict the increment from the latest frame.
+  Trial 25 uses the architecture of trial 23 to predict the next frame directly and gives the lowest loss.}\label{tab:search_spectral_mlp}
+  \input{tables/08_appendix/observable_mlp_trials.tex}
+\end{table}
+
+\begin{table}
+  \centering
+  \small
+  \caption{Spectral \ac{cnn} trials scored by recursive validation log-power \ac{mse} over 17 frames.
+  \ac{eeg} history is in frames and kernels are given as frames by frequency bins.
+  The Channels column gives the width of the first convolutional layer, and Taper is the factor applied before rounding down the width of each subsequent layer.
+  The Head column gives the hidden width or its sizing rule, with Affine indicating no hidden layer.
+  Trial 25 is the baseline, and trial 26 uses the selected architecture of trial 22 with a kernel spanning one frame instead of three.}\label{tab:search_spectral_cnn}
+  \input{tables/08_appendix/observable_cnn_trials.tex}
+\end{table}
+
+\begin{table}
+  \centering
+  \small
+  \caption{Waveform \ac{mlp} trials scored by joint validation loss at the selected epoch.
+  The score adds waveform \ac{mse} over 12 samples and 15 times log-power \ac{mse} over 17 frames.
+  \ac{eeg} history is in samples and current history is in milliseconds, excluding the candidate current.
+  Residual output predicts the increment from the latest waveform sample, and direct output predicts the next sample itself.}\label{tab:search_waveform_mlp}
+  \input{tables/08_appendix/waveform_mlp_trials.tex}
+\end{table}
+
+\begin{table}
+  \centering
+  \small
+  \caption{Waveform \ac{cnn} trials scored by the same joint validation loss as in Table~\ref{tab:search_waveform_mlp}.
+  \ac{eeg} history and kernel length are in samples and current history is in milliseconds, excluding the candidate current.
+  Channels and taper describe the convolutional layers as in Table~\ref{tab:search_spectral_cnn}.
+  A hidden prediction head takes its width from either the last convolutional layer or the geometric mean of the head's input and output dimensions.
+  The selected fit uses one convolutional layer with a three-sample kernel and the geometric-mean head.}\label{tab:search_waveform_cnn}
+  \input{tables/08_appendix/waveform_cnn_trials.tex}
+\end{table}

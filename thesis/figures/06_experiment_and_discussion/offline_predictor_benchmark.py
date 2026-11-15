@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-import csv
 import hashlib
 import json
 import sqlite3
 import sys
+from concurrent.futures import ProcessPoolExecutor
 from contextlib import closing
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -13,6 +13,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 from neuro.predictor.checkpoint import load_checkpoint
+from neuro.predictor.data import load_trajectory, reduce_trajectory_to_frames
+from neuro.predictor.evaluation import evaluate_spectral_free_run
 from neuro.predictor.inference import ObservableCNNModel, ObservableMLPModel, inference_from_checkpoint
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -28,10 +30,11 @@ REPO = THESIS.parent
 CAMPAIGN = REPO / "artifacts" / "sweep_2026_11"
 MATCHED = CAMPAIGN / "waveform_matched_geometry"
 DMD_STUDY = CAMPAIGN / "observable_dmd/hop3"
+DIRECT_MLP = CAMPAIGN / "observable_mlp/residual_ablation/model.npz"
 STUDIES = (
-    ("Observable MLP", "observable_mlp", CAMPAIGN / "observable_mlp/architecture"),
-    ("Observable CNN", "observable_cnn", CAMPAIGN / "cnn/observable/architecture"),
-    ("Observable Hankel-DMDc", "observable_dmdc", DMD_STUDY),
+    ("Spectral MLP", "observable_mlp", CAMPAIGN / "observable_mlp/architecture"),
+    ("Spectral CNN", "observable_cnn", CAMPAIGN / "cnn/observable/architecture"),
+    ("Spectral DMDc", "observable_dmdc", DMD_STUDY),
     ("Waveform MLP", "waveform_mlp", MATCHED / "mlp/architecture"),
     ("Waveform CNN", "waveform_cnn", MATCHED / "cnn/architecture"),
 )
@@ -39,13 +42,13 @@ OBSERVABLE_MODELS = (ObservableMLPModel, ObservableCNNModel)
 FS = 50
 
 
-def read_study(directory: Path) -> tuple[int, dict[str, float]]:
-    """Read the best completed trial and its DMDc settings from a frozen study."""
+def read_study(directory: Path) -> tuple[int, float, dict[str, float]]:
+    """Read the best completed trial, validation loss, and DMDc settings from a frozen study."""
     db = directory / "nn_predictor_sweep.db"
     with closing(sqlite3.connect(f"{db.as_uri()}?mode=ro&immutable=1", uri=True)) as conn:
-        trial, trial_id = conn.execute(
+        trial, trial_id, validation_loss = conn.execute(
             """
-            SELECT trials.number, trials.trial_id
+            SELECT trials.number, trials.trial_id, trial_values.value
             FROM trials JOIN trial_values USING (trial_id)
             WHERE trials.state = 'COMPLETE' AND trial_values.objective = 0
             ORDER BY trial_values.value, trials.number LIMIT 1
@@ -65,15 +68,16 @@ def read_study(directory: Path) -> tuple[int, dict[str, float]]:
                 (trial_id,),
             ).fetchone()
             dmd["rank"] = json.loads(rank)
-    return trial, dmd
+    return trial, validation_loss, dmd
 
 
 def describe_settings(meta: dict[str, Any], arrays: dict[str, FloatArray], dmd: dict[str, float]) -> str:
-    """Describe the selected neural structure or DMDc identification settings in LaTeX."""
+    """Describe the selected architecture or DMDc rank and regularization in LaTeX."""
     if dmd:
-        energy_percent = 100 * dmd["dmd_energy"]
+        retained_percent = 100 * dmd["dmd_energy"]
         return (
-            rf"Retained rank {dmd['rank']:.0f}, {energy_percent:.0f}\% energy cutoff, \(\lambda={dmd['dmd_lambda']:g}\)"
+            rf"Retained rank {dmd['rank']:.0f}, {retained_percent:.0f}\% of squared singular-value sum, "
+            rf"\(\lambda={dmd['dmd_lambda']:g}\)"
         )
     if meta["model_type"] == "mlp":
         output = "residual output" if meta["residual"] else "direct output"
@@ -87,8 +91,12 @@ def describe_settings(meta: dict[str, Any], arrays: dict[str, FloatArray], dmd: 
         if len(kernel_shape) == 1
         else rf"\({kernel_shape[0]}\times{kernel_shape[1]}\) kernel"
     )
-    head = f"{arrays['head.0.weight'].shape[0]}-unit hidden head" if meta["head_depth"] else "linear readout"
-    return f"{filters} filters, {kernel}, {meta['activation']}, {head}"
+    head = (
+        f"{arrays['head.0.weight'].shape[0]}-unit hidden layer in the prediction head"
+        if meta["head_depth"]
+        else "affine prediction head"
+    )
+    return f"{filters} feature channels, {kernel}, {meta['activation']}, {head}"
 
 
 def save_table(path: Path, columns: str, headers: tuple[str, ...], rows: list[tuple[str, ...]]) -> None:
@@ -139,7 +147,7 @@ def save_lookahead_plot(lookaheads: FloatArray, labels: tuple[str, ...], scores:
 
 
 def save_dmd_grid() -> None:
-    """Plot validation MSE and conditioning versus SVD cutoff with one shared history legend."""
+    """Plot validation MSE and conditioning against the retained fraction of squared singular values."""
     db = DMD_STUDY / "nn_predictor_sweep.db"
     with closing(sqlite3.connect(f"{db.as_uri()}?mode=ro&immutable=1", uri=True)) as conn:
         trials = conn.execute(
@@ -173,12 +181,12 @@ def save_dmd_grid() -> None:
     fig, (ax_loss, ax_condition) = plt.subplots(
         1, 2, figsize=style.figsize(height_in=2.2), layout="constrained"
     )
-    cutoff_positions = np.arange(len(cutoffs))
+    selected_cutoff = cutoffs[best_cutoff]
     markers = ("o", "s", "D", "^")
     for history_index, (history, marker) in enumerate(zip(histories, markers, strict=True)):
         color = f"C{history_index}"
         ax_loss.plot(
-            cutoff_positions,
+            cutoffs,
             errors[history_index].min(axis=1),
             color=color,
             marker=marker,
@@ -186,43 +194,69 @@ def save_dmd_grid() -> None:
             label=f"{history} {'frame' if history == 1 else 'frames'}",
         )
         ax_condition.plot(
-            cutoff_positions, conditions[history_index, :, best_ridge], color=color, marker=marker, markersize=3
+            cutoffs, conditions[history_index, :, best_ridge], color=color, marker=marker, markersize=3
         )
     ax_loss.set(
-        ylabel=r"Validation MSE $\mathcal{L}_{\mathrm{val}}$",
-        # title="(a) Recursive prediction error",  # noqa: ERA001
+        ylabel=r"Validation MSE $\mathcal{L}_{\mathrm{spec}}$",
         ylim=(1.614, 1.693),
     )
     handles, labels = ax_loss.get_legend_handles_labels()
     fig.legend(handles, labels, ncols=4, loc="outside upper center", frameon=False)
-    ax_loss.plot(best_cutoff, errors.min(), "o", ms=7, mfc="none", mec="black", mew=0.7)
+    ax_loss.plot(selected_cutoff, errors.min(), "o", ms=7, mfc="none", mec="black", mew=0.7)
 
-    ax_condition.set(yscale="log", ylabel=r"Condition number $\kappa$") #, title="(b) Retained subspace conditioning")
+    ax_condition.set(yscale="log", ylabel="Condition number")
     ax_condition.plot(
-        best_cutoff, conditions[best_history, best_cutoff, best_ridge], "o", ms=7, mfc="none", mec="black", mew=0.7
+        selected_cutoff, conditions[best_history, best_cutoff, best_ridge], "o", ms=7, mfc="none", mec="black", mew=0.7
     )
     for ax in (ax_loss, ax_condition):
-        ax.set(
-            xlabel=r"SVD energy cutoff $\eta$",
-            xticks=cutoff_positions,
-            xticklabels=[f"{v:g}" for v in cutoffs],
-        )
+        ax.set(xlabel="Retained fraction")
         ax.grid(axis="both")
     fig.savefig(FIGURES / "offline_predictor_dmd_grid.pdf")
     plt.close(fig)
 
 
+def score_trajectory(path: str) -> tuple[int, FloatArray]:
+    """Score all selected fits and persistence at identical origins in one trajectory."""
+    currents, eeg = load_trajectory(str(REPO / path), None, 200, 0.0001)
+    frames = reduce_trajectory_to_frames(eeg, score_geometry, FS)
+    origins = np.arange(score_start, len(frames) - score_horizon)
+    offsets = np.arange(1, score_horizon + 1)
+    persistence = np.square(frames[origins[:, None] + offsets] - frames[origins, None]).mean(axis=(0, 2, 3))
+    scores = [
+        evaluate_spectral_free_run(
+            model, [(currents, eeg)], score_horizon, geometry=score_geometry, fs=FS, start_frame=score_start
+        ).per_step
+        for model in score_models
+    ]
+    return len(origins), np.stack([persistence, *scores])
+
+
+def initialize_scoring(checkpoints: list[Path], start: int, horizon: int) -> None:
+    """Load predictors once per worker and share the archived forecast grid."""
+    global score_models, score_geometry, score_start, score_horizon
+    score_models = [inference_from_checkpoint(*load_checkpoint(path)) for path in checkpoints]
+    score_geometry = score_models[0].geometry
+    score_start = start
+    score_horizon = horizon
+
+
 def main() -> None:
-    """Generate the selection table and figures from the archived benchmark and sweep."""
+    """Select fits by search validation loss and generate the table and matched lookahead figures."""
     summary = json.loads((MATCHED / "offline/summary.json").read_text(encoding="utf-8"))
     configurations = []
+    checkpoints = []
     for label, key, study in STUDIES:
-        trial, dmd = read_study(study)
+        trial, validation_loss, dmd = read_study(study)
         record = summary["checkpoints"][key]
         checkpoint = REPO / record["path"]
         winner = study / f"trial_{trial}" / "model.npz"
         if any(hashlib.sha256(path.read_bytes()).hexdigest() != record["sha256"] for path in (checkpoint, winner)):
             raise ValueError(f"Archived checkpoint for {label} differs from the selected sweep trial.")
+        if key == "observable_mlp":
+            stats = json.loads(DIRECT_MLP.with_name("training_stats.json").read_text(encoding="utf-8"))
+            if stats["val_loss"][stats["selected_epoch"]] < validation_loss:
+                checkpoint = DIRECT_MLP
+        checkpoints.append(checkpoint)
         meta, arrays = load_checkpoint(checkpoint)
         model = inference_from_checkpoint(meta, arrays)
         if isinstance(model, OBSERVABLE_MODELS):
@@ -234,17 +268,21 @@ def main() -> None:
             history = f"{model.n_y} samples"
         configurations.append((label, f"{history} ({samples / FS:.2f} s)", describe_settings(meta, arrays, dmd)))
 
-    with (MATCHED / "offline/lookahead.csv").open(newline="", encoding="utf-8") as stream:
-        lookahead_rows = list(csv.DictReader(stream))
+    manifest = json.loads((MATCHED / "offline_data_manifest.json").read_text(encoding="utf-8"))
+    start, horizon = summary["start_frame"], summary["horizon_frames"]
+    with ProcessPoolExecutor(
+        max_workers=4, initializer=initialize_scoring, initargs=(checkpoints, start, horizon)
+    ) as pool:
+        counts, per_trajectory = zip(*pool.map(score_trajectory, manifest["validation_files"]), strict=True)
+    if sum(counts) != summary["windows"]:
+        raise ValueError("The forecast count differs from the archived evaluation.")
+    scores = np.average(per_trajectory, axis=0, weights=counts)
     labels = ("Persistence", *(label for label, _, _ in STUDIES))
-    keys = ("persistence", *(key for _, key, _ in STUDIES))
-    lookaheads = np.array([float(row["lookahead_s"]) for row in lookahead_rows])
-    scores = [np.array([float(row[key]) for row in lookahead_rows]) for key in keys]
-    np.testing.assert_allclose(
-        [score.mean() for score in scores], [summary["mean_log_power_mse"][key] for key in keys]
-    )
-    if len(lookaheads) != summary["horizon_frames"]:
-        raise ValueError("The archived lookahead count differs from the benchmark summary.")
+    lookaheads = np.arange(1, horizon + 1) * summary["geometry"]["n_hop"] / FS
+    for label, score in zip(labels, scores, strict=True):
+        print(f"{label}: {score.mean():.8f} (first {score[0]:.8f})")
+    for time, index in zip(lookaheads, scores[1:4].argmin(axis=0), strict=True):
+        print(f"{time:.2f} s: {labels[index + 1]}")
 
     TABLES.mkdir(parents=True, exist_ok=True)
     save_table(
@@ -253,7 +291,7 @@ def main() -> None:
         ("Predictor", "EEG history", "Selected settings"),
         configurations,  # ty: ignore[invalid-argument-type]
     )
-    save_lookahead_plot(lookaheads, labels, scores)
+    save_lookahead_plot(lookaheads, labels, list(scores))
     save_dmd_grid()
 
 

@@ -4,24 +4,7 @@
 \chapter{Experiments and Discussion}
 \label{ch:experiments_discussion}
 
-\section{Experimental Protocol}
-
-\subsection{Plant Scenario and Baselines}
-% - Describe spontaneous seizure onset in the EZ and recruitment into the PZ.
-% - Define the uncontrolled and threshold-stimulation baselines and the healthy reference.
-% - Specify the shared montage, current constraints, Warm-up Period, and simulation duration.
-
-Both controller families used a replanning interval of \SI{60}{\milli\second}.
-Between replanning instants, controllers using waveform predictors applied three successive \SI{20}{\milli\second} inputs ($M=3$), and controllers using spectral predictors applied one \SI{60}{\milli\second} input ($M=1$).
-The replanning interval follows the better-performing spectral configuration in preliminary experiments.
-
-\subsection{Evaluation and Controller Selection}
-% - Controller metrics: Seizure Burden, final seizing region count, Delivered Charge.
-% - Solver metrics: solve latency, constraint violations, fallback count.
-% - Controller validation: development Plant seeds. Select lowest mean Seizure Burden within 20--30 mAs mean Delivered Charge.
-% - Controller test: reserved Plant seeds. Report paired differences and bootstrap intervals for Seizure Burden and Delivered Charge.
-% - Predictor validation Loss: checkpoint selection. Predictor test Loss: separate held-out recordings, if available.
-% - Compare Predictors using a common scoring Loss within each comparison.
+% chapter introduction
 
 \section{Observable Predictability and Seizure State}\label{sec:observable_predictability}
 
@@ -48,10 +31,10 @@ We took snapshots at \(1\), \(3\), \(7\), and \SI{14}{\second} in each of 30 uns
 From each of the 120 snapshots, we simulated 30 branches for \SI{3}{\second} without stimulation.
 
 The waveform, spectral log-power, and functional connectivity were derived from the same 62 channels of causally low-pass-filtered scalp \ac{eeg} sampled at \SI{50}{\hertz}.
-Spectral log-power was computed from trailing 25-sample segments (\SI{0.50}{\second}) with an asymmetric Hann window and a three-sample frame hop.
+Spectral log-power was computed from trailing 25-sample segments (\SI{0.50}{\second}) with a rising half-Hann window and a three-sample hop.
 Functional connectivity measures statistical dependence between signals and has been used to characterize changes in coordination across \ac{eeg} channels during seizures~\cite{Roffet2025,Kramer2010,Liang2024}.
 To estimate connectivity, each channel was standardized within the same segment by subtracting its mean and scaling the centered samples to unit Euclidean norm.
-For a fixed frame \(q\), let \(\widetilde y_{\beta,c}\) be the standardized sample of channel \(c\) at segment offset \(\beta=0,\ldots,24\), starting with the oldest sample.
+For the segment ending at \(t_q\), let \(\widetilde y_{\beta,c}\) be the standardized sample of channel \(c\) at segment offset \(\beta=0,\ldots,24\), starting with the oldest sample.
 We form two vectors offset by one sample (\SI{20}{\milli\second}),
 \begin{equation*}
   \mathbf a_c = {[\widetilde y_{0,c},\ldots,\widetilde y_{23,c}]}^\top,
@@ -95,22 +78,22 @@ The estimate depends on the sampled distribution of snapshots.
   \label{fig:observable_potential_predictability}
 \end{figure}
 
-At the first frame, ending \SI{60}{\milli\second} after the snapshot, potential predictability was \(0.90\) for spectral log-power and approximately \(0.99\) for both the waveform and functional connectivity.
-The asymmetric Hann window gives the three branch-specific samples the largest weights, so their fluctuations can affect the spectral estimate despite the shared history.
+At the first spectral frame endpoint, \SI{60}{\milli\second} after the snapshot, potential predictability was \(0.90\) for spectral log-power and approximately \(0.99\) for both the waveform and functional connectivity.
+The rising half-Hann window gives the three branch-specific samples the largest weights, so their fluctuations can affect the spectral estimate despite the shared history.
 The lower predictability is consistent with the variability of single-segment \ac{stft} estimates discussed in Section~\ref{sec:spectral_representation}.
 
 The first frame containing only post-snapshot samples ended at \SI{0.54}{\second}.
 At that lookahead, potential predictability was \(0.46\) for the functional connectivity feature, \(0.64\) for spectral log-power, and \(0.70\) for the waveform (Figure~\ref{fig:observable_potential_predictability}, left).
 
 The waveform was about as predictable as spectral log-power over the plotted lookaheads, even though its oscillations diverged quickly across branches in Figure~\ref{fig:observable_replays}.
-To see whether the slow waveform level explains this result, we used the asymmetric Hann weights from the spectral segment, normalized to sum to one, to compute a trailing mean at each frame endpoint.
+To see whether the slow waveform level explains this result, we used the rising half-Hann weights from the spectral segment, normalized to sum to one, to compute a trailing mean at each frame endpoint.
 The residual after subtracting this mean lost predictability much faster than either the trailing mean or spectral log-power (Figure~\ref{fig:observable_potential_predictability}).
 
 In preliminary runs, waveform predictors trained with a longer waveform loss horizon tended to retain the slow mean while losing seizure oscillations.
 Under squared error, the best point prediction is the conditional mean, so oscillations that drift out of phase across branches can average out while the more reproducible slow level persists.
 A forecast that loses the oscillations can understate their contribution to the waveform suppression cost in~\eqref{eq:mpc_waveform_cost}.
 Spectral log-power can capture oscillatory power without forecasting instantaneous phase.
-Based on these findings, we choose training loss horizons of approximately \SI{0.25}{\second} for the waveform and \SI{1}{\second} for spectral log-power losses respectively for all following experiments.
+Based on these findings, we set the waveform loss horizon to 12 samples (\SI{0.24}{\second}) and the spectral loss horizon to 17 frames (\SI{1.02}{\second}) in the predictor benchmarks that follow.
 The next comparison tests how well the suppression costs reflect recruitment when evaluated on the recorded signals.
 
 \subsection{Suppression Cost and Seizure State}
@@ -133,7 +116,7 @@ The notation \(\lVert\cdot\rVert_0\) counts nonzero entries.
 The waveform and spectral references for this analysis were fitted from two unstimulated healthy runs, using the reference definitions in Section~\ref{sec:mpc_cost_functions}.
 The waveform and spectral scores were aligned at spectral frame endpoints spaced \SI{60}{\milli\second} apart.
 
-For each channel pair \((c,c')\), let \(\bar R_{\mathrm{healthy},c,c'}\) be the mean of~\eqref{eq:connectivity_feature} across frames from the two healthy reference runs.
+For each channel pair \((c,c')\), let \(\bar R_{\mathrm{healthy},c,c'}\) be the mean of~\eqref{eq:connectivity_feature} across segment endpoints from the two healthy reference runs.
 The functional connectivity cost averages the squared deviation from the healthy mean across the set \(\mathcal E\) of unique channel pairs,
 \begin{equation*}
   \mathcal J_{\mathrm{conn}}(q)
@@ -141,14 +124,14 @@ The functional connectivity cost averages the squared deviation from the healthy
      {\bigl(R_{q,c,c'}-\bar R_{\mathrm{healthy},c,c'}\bigr)}^2\,.
 \end{equation*}
 
-For each representation, we paired the cost in each frame with the seizure state \(s(t_q)\) from~\eqref{eq:seizure_state} at that frame's endpoint.
-We pooled the 50 frames per branch and computed Pearson's correlation coefficient \(r\) over all \(180\,000\) finite pairs~\cite{NIST1997Correlation}.
+For each observable, we paired the cost evaluated at each frame with the seizure state \(s(t_q)\) from~\eqref{eq:seizure_state}.
+We pooled the 50 evaluation times per branch and computed Pearson's correlation coefficient \(r\) over all \(180\,000\) finite pairs~\cite{NIST1997Correlation}.
 
 \begin{figure}
   \centering
   \includegraphics{figures/06_experiment_and_discussion/observable_penalty_state.pdf}
   \caption{Suppression cost versus contemporaneous seizure state for each \ac{eeg} representation.
-  Each point pairs the cost for one frame with the fraction of seizing regions at its endpoint in the same branch.
+  Each point pairs the cost and the fraction of seizing regions at the same frame endpoint in one branch.
   The vertical axes show the mean squared waveform deviation, the mean squared excess log-power, and the mean squared deviation of functional connectivity from its healthy mean, respectively.
   Each panel reports Pearson's \(r\) over all plotted pairs.}\label{fig:observable_penalty_state}
 \end{figure}
@@ -158,61 +141,66 @@ The greater dispersion of the connectivity cost in Figure~\ref{fig:observable_pe
 Unit-norm scaling makes the functional connectivity feature insensitive to amplitude changes that preserve waveform shape, which may weaken its association with amplitude-based recruitment.
 This variability and the rapid drop in potential predictability for the functional connectivity feature led us to carry only the waveform and spectral log-power forward to the predictor and controller benchmarks.
 
-\section{Offline Predictor Benchmark}\label{sec:offline_predictor_benchmark}
+\section{Offline Predictor Evaluation}\label{sec:offline_predictor_benchmark}
 
-This benchmark first examines which hyperparameters worked within each predictor family, then compares prediction targets and architectures on validation data. % I don't like the word "benchmark", find something else
+We used validation trajectories to select predictor configurations and compare their spectral prediction errors at matched lookaheads.
 All predictors used \ac{eeg} sampled at \SI{50}{\hertz}.
-We used separate datasets with \SI{60}{\milli\second} current holds for the spectral predictors and \SI{20}{\milli\second} holds for the waveform predictors. % why 60 and why 20? 60 matches hop 3 which in prelininary studies we found to work well. 20 because its one step at 20Hz
-Each dataset contained 200 trajectories, with the first 160 used for fitting and the remaining 40 for validation, as described in Section~\ref{sec:predictor_training}. % it doesn't matter that it's "the first". Stuff like this just reads like codebase documentation
+The spectral training trajectories held each current for \SI{60}{\milli\second}, matching the three-sample hop that performed well in preliminary experiments.
+The waveform training trajectories held each current for \SI{20}{\milli\second}, allowing the input to vary at each prediction step.
+Each dataset contained 200 trajectories, with 160 used for fitting and 40 for validation, as described in Section~\ref{sec:predictor_training}.
 We estimated standardization statistics on the training trajectories and kept them fixed during validation.
-All spectral targets, spectral loss terms, and spectral benchmark scores used a 25-sample segment, a three-sample hop, an asymmetric Hann taper, and a \SIrange{1}{25}{\hertz} band, with no frame smoothing or frequency-bin pooling.
+All spectral targets, spectral loss terms, and spectral validation scores used a 25-sample segment, a three-sample hop, and a rising half-Hann window.
+We retained the individual frequency bins in the \SIrange{1}{25}{\hertz} band and used no frame averaging.
 
-The spectral models used recursive log-power \ac{mse} over 17 frames, corresponding to \SI{1.02}{\second}.
-The waveform models used the joint loss in Equation~\eqref{eq:combined_predictor_loss}, with weight 1 on waveform \ac{mse} over the first 12 samples (\SI{0.24}{\second}) and weight 15 on log-power \ac{mse} over the same 17 spectral frames. % I think "Equation~" is unnecessary. Furthermore, i prefer to also show the symbol for the loss
-The spectral fits used eight past currents plus the candidate current.
-Both waveform searches tested four, twelve, or twenty-four past currents plus the candidate, corresponding to histories of 80, 240, and \SI{480}{\milli\second}. % lets pretend both spectral and waveform searched these past currents. It just makes it easier to read. % why four, twelve, ... and not 4, 12, ...?
+We ranked the spectral predictors by recursive log-power \ac{mse}, $\mathcal{L}_\mathrm{spec}$ in~\eqref{eq:spectral_training_loss}, over 17 frames (\SI{1.02}{\second}).
+The waveform models used the joint loss $\mathcal{L}$ in~\eqref{eq:combined_predictor_loss}, with weight 1 on waveform \ac{mse} over the first 12 samples (\SI{0.24}{\second}) and weight 15 on log-power \ac{mse} over the same 17 spectral frames. % maybe we could rename $\mathcal{L}$ to $\mathcal{L}_\mathrm{joint}$. What do you think?
+Both waveform searches tested 4, 12, or 24 past currents plus the candidate, corresponding to histories of 80, 240, and \SI{480}{\milli\second}.
+The spectral predictors used eight past currents plus the candidate, with each past current spanning one spectral frame interval.
 
-Each neural study used a tree-structured Parzen estimator with 15 startup trials and an effective training seed of 69 plus the trial number, starting at zero. % not "neural study" - "predictor hyperparameter search" - and actually just the CNN/MLp models. % add a citation for optuna and more generally the "tree-structured Parzen estimator". Dont mention the exact seed, it is completely irrelevant. What do 15 startup trials mean? % the sweeps use 15 trials with randomly chosen parameters and then 10 where they are chosen by this algorithm which idk maximises expected improvement or something.  
-We trained with AdamW for up to 150 epochs with weight decay of $10^{-5}$ and increased the recursive curriculum span from epochs 10 to 80.
-For both targets, the \ac{mlp} and \ac{cnn} used a learning rate of $10^{-4}$, a batch size of 256, and an early-stopping patience of 20 epochs.
-Checkpoint selection used the full validation span. % what is that supposed to mean? Also, I don't like the word "checkpoint". Its codebase terminology.
-The Hankel-\ac{dmdc} search evaluated the complete Cartesian grid, and the neural search ranges and completed trial counts are shown alongside it in Table~\ref{tab:predictor_search_spaces}. % thesiswide i don't want to call it "Hankel-\ac{dmdc}". That again is codebase terminology. We just use "\ac{dmdc}" or better Spectral \ac{dmdc} % feel free to explain in a little more about the cartesian grid. Just say that all possible combinations were evaluated % "neural" in this thesis can be confusing neural network with neural as in brain, so choose something else.
+We used the Python library Optuna to run the \ac{mlp} and \ac{cnn} hyperparameter searches~\cite{Akiba2019}.
+After 15 randomly sampled configurations, its tree-structured Parzen estimator used earlier validation losses to propose configurations expected to improve on them~\cite{Bergstra2011}.
+We trained the networks with AdamW for up to 150 epochs with weight decay of $10^{-5}$ and increased the observation-space loss horizon between epochs 10 and 80.
+The \ac{mlp} used a learning rate of $10^{-4}$ and batches of 256, and the \ac{cnn} used $2\times10^{-4}$ and batches of 512.
+Once the curriculum reached its final loss horizon and all loss terms were active, early stopping allowed 20 consecutive epochs without improvement for the \ac{mlp} and 35 for the \ac{cnn}.
+We selected the weights with the lowest validation loss from this phase.
+For spectral \ac{dmdc}, we evaluated every combination of \ac{eeg} history length, retained fraction of the sum of squared singular values, and ridge regularization parameter in Table~\ref{tab:predictor_search_spaces}.
 
 \begin{table}[!hb] % latex-lint:ignore=FLOAT-01
   \centering
   \small
-  \caption{Predictor search spaces and trial counts.
-  The input history is measured in spectral frames for the spectral predictors and in samples for the waveform predictors.}\label{tab:predictor_search_spaces}
-  \begin{tabular}{@{}lp{0.60\linewidth}l@{}}
+  \caption{Predictor settings evaluated for each prediction target.
+  The \ac{eeg} history is measured in spectral frames for the spectral predictors and in samples for the waveform predictors.
+  For the \acp{cnn}, the number of feature channels in each successive convolutional layer was the previous layer's count multiplied by a factor between 0.5 and 1.}\label{tab:predictor_search_spaces}
+  \begin{tabular}{@{}lp{0.77\linewidth}@{}}
     \toprule
-    Predictor & Search space & Completed / attempted \\ % i don't want the completed/attempted column. 
+    Predictor & Settings evaluated \\
     \midrule
     Spectral \ac{mlp} &
     History 1--9, widths 128, 256, 512, 768, and 1024, depth 1--3, and tanh or softplus.
-    Residual output was fixed. & 25 / 25 \\ % residual output was not fixed.
+    The Optuna trials used residual output, and the best architecture was also evaluated with direct output. \\
     Spectral \ac{cnn} &
-    History 5--17, initial filters 8--32, depth 1--2, frequency kernels 1, 3, and 5, tapering ratio 0.5--1, tanh or softplus, and an optional hidden head of width 32--744.
-    Direct output and a temporal kernel length of 3 were fixed. & 24 / 25 \\ % direct output was not fixed.
-    Hankel-\ac{dmdc} &
-    Histories 1, 2, 4, and 8, singular-value energy cutoffs 0.80, 0.85, 0.90, 0.95, 0.99, 0.999, and 1.0, and ridge coefficients $0$, $10^{-8}$, $10^{-6}$, $10^{-4}$, and $10^{-2}$. & 140 / 140 \\
+    History 5--17, 8--32 feature channels in the first layer, 1--2 convolutional layers, filter widths of 1, 3, or 5 frequency bins, tanh or softplus, and an optional hidden layer of 32--744 units in the prediction head.
+    The search used direct output and filters spanning three frames. We also evaluated one-frame filters for the selected architecture. \\
+    Spectral \ac{dmdc} &
+    Histories 1, 2, 4, and 8, retained fractions 0.80, 0.85, 0.90, 0.95, 0.99, 0.999, and 1.0, and ridge regularization parameters $0$, $10^{-8}$, $10^{-6}$, $10^{-4}$, and $10^{-2}$. \\
     Waveform \ac{mlp} &
-    History 3--50, widths 64, 128, and 256, depth 1--3, tanh or softplus, and direct or residual output. & 25 / 25 \\
+    History 3--50, widths 64, 128, and 256, depth 1--3, tanh or softplus, and direct or residual output. \\
     Waveform \ac{cnn} &
-    History 13--75, initial filters 8--32, depth 1--3, kernel length 2--5, tapering ratio 0.5--1, tanh or softplus, and an optional hidden head sized by the final filter count or the geometric mean of its input and output dimensions.
-    Direct output was fixed. & 25 / 26 \\
+    History 13--75, 8--32 feature channels in the first layer, 1--3 convolutional layers, filter lengths of 2--5, and tanh or softplus.
+    The optional hidden layer in the prediction head used either the final convolutional layer's feature channel count or the geometric mean of the head's input and output dimensions as its width. \\
     \bottomrule
   \end{tabular}
 \end{table}
 
 \subsection{Hyperparameter Search and Model Selection}
 
-Table~\ref{tab:offline_predictor_selection} shows the lowest-error configuration within each search.
-The spectral \ac{mlp} and Hankel-\ac{dmdc} were ranked by recursive validation loss, and the spectral \ac{cnn} by its archived recursive log-power \ac{mse} score. % this again is too much detail. We just say that they are all ranked by their validation loss. and are only comparable between prediction targets
-The waveform studies were both ranked by their joint validation loss.
+Within each search, we selected the configuration with the lowest validation loss for its prediction target.
+Appendix~\ref{app:predictor_search} reports the individual \ac{mlp} and \ac{cnn} trials, the loss curves for the selected fits, and the sensitivity of the \ac{dmdc} grid scores to ridge regularization.
+Table~\ref{tab:offline_predictor_selection} lists the configurations used in the common spectral evaluation. % id like to give the rationale behind the parameter ranges. the big one is that we want training not too take too long (7 hours on my machine), meaning that MLP versions cannot look at such a long history  
 
 \begin{table}
   \centering
-  \caption{Predictor configurations selected on the validation recordings.
+  \caption{Predictor configurations selected on the validation trajectories.
   The \ac{eeg} history duration includes the full spectral segment underlying the oldest frame.
   Spectral kernel sizes are given in time steps by frequency bins.}\label{tab:offline_predictor_selection}
   \input{tables/06_experiment_and_discussion/offline_predictor_selection.tex}
@@ -220,96 +208,110 @@ The waveform studies were both ranked by their joint validation loss.
 
 \begin{figure}
   \centering
-  \includegraphics{figures/06_experiment_and_discussion/offline_predictor_dmd_grid.pdf} % why don't we also show a plot for the ridge coefficients? Is that not more interesting than the condition number?
-  \caption{Hankel-\ac{dmdc} grid on the \SI{60}{\milli\second} frame grid.
-  Panel (a) shows the lowest recursive validation error across the five ridge coefficients for each history and singular-value decomposition cutoff.
-  Panel (b) shows the condition number of the retained subspace at each history length and cutoff, which is identical across the five ridge coefficients.
+  \includegraphics{figures/06_experiment_and_discussion/offline_predictor_dmd_grid.pdf}
+  \caption{Spectral \ac{dmdc} validation error and conditioning for different \ac{eeg} history lengths and retained fractions of the sum of squared singular values.
+  The left panel shows the lowest recursive validation error across the five ridge regularization parameters for each pair of settings.
+  The right panel shows the condition number of the retained subspace, which is the same across the five regularization parameters.
   Circles mark the selected setting.}\label{fig:offline_predictor_dmd_grid}
 \end{figure}
 
-\paragraph{Spectral \ac{mlp}.}
-The six best trials used one hidden layer, 768--1024 units, softplus, and one or two frames. % I don't want to put it like that. Rather I want to describe it as the configuration which the hyperparameter search converged to.
-The winning single frame already summarizes \SI{0.50}{\second} of \ac{eeg}, and adjacent frames share 22 of their 25 samples.
-At the selected width, each additional frame would add about \num{762000} first-layer weights. % "The winning single frame". the frame didn't win anything. Say "the best configuration" instead
+\paragraph*{Spectral \ac{mlp}.}
+The search converged on a single hidden layer with softplus activation, favoring larger widths of 768--1024 units and few input frames.
+The lowest validation loss was 1.6340, achieved with direct output, 1024 units, and one input frame.
+One frame already summarizes \SI{0.50}{\second} of \ac{eeg}. % so? The argument is badly introduced.
+Adjacent frames share 22 of their 25 samples.
+At the selected width, each additional frame would add about \num{762000} first-layer weights.
 That gives the dense model many more degrees of freedom to fit highly overlapping inputs.
 The two-layer trials had lower mean training loss than the one-layer trials (1.46 versus 1.57), but higher mean validation loss (1.81 versus 1.76), consistent with overfitting.
-Three-layer trials had higher mean error on both splits, which also leaves room for optimization difficulties. % "leaves room" is too colloquial
-A separate direct-output fit scored 1.6340 compared with 1.6541 for the retained residual-output checkpoint. % there is no "separate fit". Its just one experiment. Include this into the text.
-The fits used different initialization seeds, so the difference leaves the effect of the residual connection unresolved.
+Three-layer trials had higher mean error on both splits, which may reflect greater difficulty in optimizing deeper recursive models.
 
-\paragraph{Spectral \ac{cnn}.}
-The five best trials used 14--17 frames, two convolutional layers, softplus, a one-bin frequency kernel, and a hidden readout of 60--78 units.
-Their second convolution used roughly half as many filters as the first.
-The \ac{cnn} shares temporal filter weights across history positions, although its flattened readout still grows with history.
-The one-bin kernels can extract changes in power over time within each frequency bin, while the compact readout can combine information across bins. % i'd like to explain why a width one convolutional kernel is not a degenerate result and interpret it.
-A separate fit with a one-frame temporal kernel scored 1.6124 versus 1.5996 for the selected three-frame kernel. % there is no "separate fit". Its just one experiment. Include this into the text.
-This comparison also used different initialization seeds. % all trainings use different seeds. Remove this sentence
+\paragraph*{Spectral \ac{cnn}.}
+The search converged on a two-layer convolutional architecture with softplus activation, filters one frequency bin wide, and a hidden layer in the prediction head.
+It favored histories of 14--17 frames and hidden layers of 60--78 units, with roughly half as many feature channels in the second convolutional layer as in the first.
+The \ac{cnn} shares temporal filter weights across history positions, although the number of inputs to the prediction head still grows with history length.
+In the first layer, each kernel spans a single frequency bin, three frames, and all electrode channels.
+It can therefore detect a temporal change in power in one bin using measurements from multiple electrodes.
+The prediction head can then combine these temporal features across frequencies.
+The selected three-frame kernel fit scored 1.5996 on validation, and the one-frame kernel fit scored 1.6124.
 
-\paragraph{Hankel-\ac{dmdc}.}
-History length and singular-value truncation interacted in the grid (Figure~\ref{fig:offline_predictor_dmd_grid}). % this is also not a nice sentence. Way to concise. What is "are interacted" even supposed to mean?
-% the interaction of the hyperparameters shows up quite beautifully in the figure and we can spend some time discussing them. The more frames the smaller the optimal cutoff. The condition number generally rises with the amount of frames and the energy cutoff. ... and why etc. etc.
-The best cutoff shifted from full energy with one frame to \SI{85}{\percent} with eight frames.
-The best validation errors for one, two, four, and eight frames were 1.6509, 1.6261, 1.6197, and 1.6262, respectively. % i don't think we have to name all values, maybe only the best. Because the reader can just look at the figure
-The four-frame fit achieved its lowest error at a \SI{95}{\percent} cutoff, retaining 1339 modes.
-At this history length the full-rank fit raised the condition number from 75 to 579 and slightly increased error.
-A few lagged frames may help the linear model infer whether power is rising or falling, while truncation limits the influence of weakly excited directions as the number of regressors grows.
-At the selected history and cutoff, changing the ridge coefficient shifted validation error by less than $10^{-8}$.
+\paragraph*{Spectral \ac{dmdc}.}
+The retained fraction that minimized validation loss decreased as the history grew (Figure~\ref{fig:offline_predictor_dmd_grid}).
+Retaining all singular directions gave the lowest error with one frame, whereas retaining \SI{85}{\percent} of the sum of squared singular values gave the lowest error with eight frames.
+Adding lags can help the model distinguish rising from falling power, but successive frames overlap and the additional regressors can introduce weakly constrained directions.
+The condition number increased with both history length and the retained fraction, indicating greater sensitivity to variation in the training data.
+Using four frames and retaining \SI{95}{\percent} of the sum of squared singular values gave the lowest validation loss (1.6197) and a retained rank of 1339.
+Across the grid, varying the ridge regularization parameter at fixed history length and retained fraction changed validation loss by at most $3.1\times10^{-7}$.
 
-\paragraph{Waveform \ac{mlp}.}
-The six best trials used tanh, 256 units per layer, two or three hidden layers, 8--19 \ac{eeg} samples, and \SI{240}{\milli\second} of past current.
-Both direct and residual outputs appeared among these trials.
-The waveform search favored more depth than the spectral \ac{mlp} search. % why is that?
-A short history may contain enough local phase information, while the additional layers may help model how the waveform evolves under stimulation.
+\paragraph*{Waveform \ac{mlp}.}
+The search converged on tanh networks with two or three hidden layers of 256 units, short \ac{eeg} histories of 8--19 samples, and \SI{240}{\milli\second} of past current.
+Both output modes performed well, with residual output selected by joint validation loss.
+A short waveform history can capture local phase, and the additional layers may help combine phase and amplitude with the stimulation history.
+The spectral representation already summarizes oscillatory activity as power over a time window, which may make a shallower mapping sufficient.
 
-\paragraph{Waveform \ac{cnn}.}
-The five best trials used one convolutional layer, softplus, 16--21 \ac{eeg} samples, and a hidden readout sized by the geometric mean of its input and output dimensions.
-These trials used kernels of three to five samples.
-The recurrence of the shallow trunk and hidden readout across several kernel lengths suggests that this division of capacity mattered more than the exact filter length in the configurations sampled.
-The winner used \SI{240}{\milli\second} of past current, while the next four used \SI{480}{\milli\second}.
-The neural trials varied settings and seeds jointly, so the recurring combinations identify patterns in the searches and suggest mechanisms for follow-up.
+\paragraph*{Waveform \ac{cnn}.}
+The search converged on one convolutional layer with softplus and a prediction head whose hidden layer width was set by the geometric mean of the head's input and output dimensions.
+It favored \ac{eeg} histories of 16--21 samples, while several kernel lengths and both longer current histories performed well.
+The search repeatedly selected this combination of layers across filter lengths of three to five samples, suggesting that the layer configuration mattered more than the precise filter length.
 
 \subsection{Prediction Target}
 
-We scored free-running forecasts from the same 6400 origins across 40 validation recordings with \SI{60}{\milli\second} current holds. % "free-running forecasts". Im worrying about changing termonology confusing the reader. I prefer validation trajectories as opposed to recordings
-All models received the recorded future currents and predicted 17 frames without refreshing their observation histories.
-We compared their log-power \ac{mse} with persistence, which repeats the last measured spectral frame. % the log-power MSE is just the spectral loss function no? Let's just say that, its easier: spectral loss function on the validation dataset
-The waveform predictions were converted to log-power by joining the predicted samples to the measured history and applying the same spectral transform used to construct the targets. % we know this already.
-These recordings were also used for spectral model selection. % no, this is unnecessary. This is basically the validation loss for the spectral models. We don't need to mention it
+To compare the selected predictors across targets, we measured log-power \ac{mse} at each of 17 lookaheads using the same \num{6400} prediction start times across 40 validation trajectories with \SI{60}{\milli\second} between current updates.
+The mean across lookaheads gives the spectral loss $\mathcal{L}_\mathrm{spec}$ at those start times.
+Each start time provided enough history for every predictor.
+Each predictor received the recorded future currents and used its own predictions recursively.
 
 \begin{figure}
   \centering
-  \includegraphics{figures/06_experiment_and_discussion/offline_predictor_lookahead.pdf} % Observable MLP etc. is wrong. That is codebase terminology. we use spectral instead.
-  \caption{Log-power \ac{mse} at matched lookaheads on the validation recordings with \SI{60}{\milli\second} current holds.
+  \includegraphics{figures/06_experiment_and_discussion/offline_predictor_lookahead.pdf}
+  \caption{Log-power \ac{mse} at matched lookaheads on the validation trajectories with \SI{60}{\milli\second} between current updates.
   Spectral predictors forecast log-power directly, while waveform forecasts are transformed to the same spectral representation.
   Persistence repeats the last measured spectral frame.}\label{fig:offline_predictor_lookahead}
 \end{figure}
 
-The waveform \ac{mlp} had the lowest error at the first lookahead of \SI{60}{\milli\second}, where each scored frame combines 22 measured samples with three predicted samples. % that second part is unnecessary. 
+Every fitted predictor had lower error than persistence, which held the last observed spectrum constant at every lookahead.
+The waveform \ac{mlp} had the lowest error at the first lookahead of \SI{60}{\milli\second}.
 From \SI{120}{\milli\second} onward, all three spectral predictors had lower errors than either waveform predictor.
-The early waveform advantage may reflect the usefulness of local phase information when only a short continuation is needed. % "usefullness" alone is not the right word because it can be mistaken for closed-loop efficacy.
+Local phase information may help the waveform model reconstruct the first few samples accurately.
 As the predicted portion of the spectral segment grows, errors in the timing and shape of the waveform can propagate into log-power.
-Direct spectral prediction can model the evolution of power without reconstructing the individual waveform cycles.
-% i want a bit of a discussion of the figure. For example the persistence isn't talked about as sort of the trivial "worst case". One reason for the direct spectral predictors being better is the dual objectives encoded in the joint loss. We could maybe check out if the waveform predictors generally underestimate the log power. This would confirm the issue of the waveform predictor predicting the mean and not dealing well with the oscillations
-
-% Maybe we could include the waveform predictors trained on the different losses, i.e. pure waveform or pure spectral in this comparison too.
+To examine whether the waveform objective contributed to this crossover, we compared waveform-only, spectral-only, and joint-loss fits of the same waveform \ac{mlp} architecture with the same initialization.
+We scored all three at the same prediction start times.
+The joint-loss fit in this comparison was a refit of the architecture selected by the waveform search, initialized alongside the two single-loss fits.
+At the first lookahead (\SI{60}{\milli\second}), the waveform-only fit had the lowest spectral loss (0.826), followed by the joint fit (0.916) and the spectral-only fit (1.470).
+The first spectral frame depends on only a short predicted continuation, and the lower errors of the waveform-supervised fits suggest that matching individual samples helps at this lookahead.
+Across all 17 lookaheads, the joint fit had the lowest mean spectral loss (2.028), followed by the spectral-only fit (2.085) and the waveform-only fit (3.011).
+The spectral loss term therefore helped retain spectral accuracy over the full horizon.
+The direct spectral predictors still had lower mean error on these trajectories and can model the evolution of power without reconstructing individual waveform cycles.
+The waveform-only fit also underestimated log-power by 0.40 on average, compared with 0.07 for the joint-loss refit.
+The selected waveform and spectral predictors both underestimated the highest-power observations by similar amounts.
 
 \subsection{Predictor Architectures}
 
-% this subsection is missing a discussion of why. Without repeating too much of earlier interpretations it should interpret the result. Why is DMD the best spectral predictor? Why does waveform MLP outperform CNN? All these questions need to be answered here.
-
-Among the spectral predictors, Hankel-\ac{dmdc} had the lowest mean log-power \ac{mse} across the 17 lookaheads (1.5905), followed by the \ac{cnn} (1.5996) and \ac{mlp} (1.6157).
-The spectral \ac{cnn} had the lowest error from \SI{0.30}{\second} through \SI{1.02}{\second}, whereas Hankel-\ac{dmdc} led at the first four lookaheads among the spectral models (Figure~\ref{fig:offline_predictor_lookahead}).
+Among the spectral predictors, \ac{dmdc} had the lowest mean log-power \ac{mse} across the 17 lookaheads (1.5818), followed by the \ac{cnn} (1.5902) and \ac{mlp} (1.5911).
+\ac{dmdc} led the spectral models at the first two lookaheads, the \ac{mlp} from \SIrange{0.18}{0.42}{\second}, and the \ac{cnn} from \SIrange{0.48}{1.02}{\second} (Figure~\ref{fig:offline_predictor_lookahead}).
+The early advantage of \ac{dmdc} suggests that a linear map of recent, temporally averaged spectra can capture much of their immediate evolution.
+The longer history and nonlinear prediction head of the \ac{cnn} may help represent changes farther ahead.
 
 For the waveform target, the \ac{mlp} achieved lower joint validation loss than the \ac{cnn} (63.15 versus 72.43).
 It also had lower waveform \ac{mse} in the original output units over the first 12 samples on the waveform validation set (30.44 versus 36.38).
-On the common spectral benchmark, its mean log-power \ac{mse} was 2.0750, compared with 2.3197 for the waveform \ac{cnn}.
-These rankings describe the selected predictors together with their histories and fitting procedures.
+On the common spectral evaluation, its mean log-power \ac{mse} was 2.0663, compared with 2.3111 for the waveform \ac{cnn}.
+The \ac{mlp} combines raw samples and stimulation currents in its first hidden layer, which may help it learn how the response to stimulation depends on the phase of the recent waveform.
+The \ac{cnn} combines stimulation currents with the waveform features after applying shared temporal filters.
+These comparisons reflect the selected predictors, including their histories and fitting procedures.
 
-% this subsection should end with the decisions for what models we'll use in all the closed-loop experiments: we use spectral DMD and CNN and waveform MLP. Two spectral versions because in preliminary experiments we had found issues with linear predictors.
+We carried the spectral \ac{dmdc}, spectral \ac{cnn}, and waveform \ac{mlp} forward for the main closed-loop comparison.
+Preliminary closed-loop experiments revealed limitations of linear predictors, so we included the spectral \ac{cnn} alongside \ac{dmdc}.
+Their offline results also complement each other, with \ac{dmdc} performing best at short spectral lookaheads and the \ac{cnn} performing better at longer ones.
+The waveform \ac{mlp} gave the lowest validation loss for its target.
+
+% - Ask whether lifting EEG into log-power Frames makes its dynamics easier to approximate with a linear Predictor.
+% - In each representation, compare DMDc with its nonlinear MLP and CNN peers on the same held-out forecast origins.
+% - Report the DMDc-to-neural MSE gap relative to the best neural peer in each representation. Use the first 240 ms and the pure-MSE fits for Waveform. Use the 60, 120, 180, and 240 ms Frame endpoints for the short-horizon spectral comparison.
+% - Interpret a smaller spectral gap as evidence for the selected Predictors. Note the differences in history, temporal averaging, excitation, and selection horizon. Re-rank the Waveform DMDc grid on 240 ms if matching the selection horizon.
 
 \section{Solver and Transcription Benchmark}
 
-We compared the three transcriptions from Table~\ref{tab:mpc_transcription_counts} by solving the same control problem with IPOPT from one snapshot during a seizure.
+At one time during a simulated seizure, we used IPOPT to solve the same control problem with each of the three transcriptions in Table~\ref{tab:mpc_transcription_counts}.
+All three solves started from the same measured \ac{eeg} and applied-current histories.
 The benchmark used a nonlinear waveform predictor with 62 \ac{eeg} channels, two control inputs, and a horizon of $H=20$ steps.
 
 \begin{table}
@@ -338,13 +340,13 @@ We chose single shooting for the closed-loop experiments because its solve times
 
 \section{Closed-Loop Seizure Suppression}
 
-\subsection{Spectral Observable Geometry}
+\subsection{Effect of Spectral Estimation Settings on Seizure Suppression}
 Section~\ref{sec:spectral_representation} described how segment length, frame averaging, and tapering change the spectral estimate available to the controller.
 Sustained stimulation at the current limit delivered about \SI{45}{\milli\ampere\second} and consistently suppressed seizures in preliminary runs.
-We therefore asked which spectral geometries maintained suppression with substantially less charge.
+We therefore asked which spectral estimation settings maintained suppression with substantially less charge.
 
-We varied segment length, frequency band, smoothing kernel width, and taper in successive comparisons on the same five development seeds.
-Each geometry used its own spectral \ac{mlp} predictor and healthy reference.
+We varied segment length, frequency band, the number of frames averaged, and taper in successive comparisons.
+Each setting used its own spectral \ac{mlp} predictor and healthy reference and was evaluated under the same five realizations of plant noise.
 We held the sampling frequency at \SI{50}{\hertz}, the frame hop and replanning interval at \SI{60}{\milli\second}, the control horizon at 17 frames (\SI{1.02}{\second}), and the quadratic current-cost weight at $0.4$.
 
 Seizure burden is the mean fraction of regions seizing over the full \SI{12}{\second} run, expressed as a percentage.
@@ -357,7 +359,7 @@ We also count the regions seizing in the last window and integrate the sum of ab
 
 \begin{table}[htbp] % latex-lint:ignore=FLOAT-01
   \centering
-  \caption{Closed-loop outcomes for the spectral geometry sweep, averaged over five development seeds.
+  \caption{Closed-loop outcomes for the spectral estimation settings, averaged over five runs per setting.
   Both segment lengths started control at \SI{1.98}{\second}, while all band settings started at \SI{0.48}{\second}.
   The smoothing and taper stages started control when the required history was available.}\label{tab:spectral_geometry_sweep}
   \begin{tabular}{@{}llrrr@{}}
@@ -383,22 +385,22 @@ We also count the regions seizing in the last window and integrate the sum of ab
 
 Doubling the segment from 25 to 50 samples refined the frequency grid from \SI{2}{\hertz} to \SI{1}{\hertz} and extended the waveform history needed for each frame.
 We withheld stimulation in both arms until \SI{1.98}{\second} to give the 50-sample predictor time to initialize its spectral and past-current histories and to compare the two segment lengths at the same start time.
-This delay left seed 7005 without stimulation when the seizure reached the \ac{pz} at \SI{1.50}{\second}.
+In one of the five runs, the seizure reached the \ac{pz} at \SI{1.50}{\second}, before stimulation began.
 The longer segment delivered less charge with similar mean burden (Table~\ref{tab:spectral_geometry_sweep}), while the shorter segment reduced the mean solve time from \SI{8.52}{\second} to \SI{4.87}{\second}.
 
-When the 25-sample controller started as soon as its history was available at \SI{0.48}{\second}, the seizure in seed 7005 stayed out of the \ac{pz} for the full run.
-Burden on that seed dropped from \SI{35.73}{\percent} to \SI{4.62}{\percent}, accounting for most of the difference between the two baseline means.
+When the controller using 25-sample segments started as soon as its history was available at \SI{0.48}{\second}, the seizure stayed out of the \ac{pz} in the corresponding run.
+Seizure burden in that run dropped from \SI{35.73}{\percent} to \SI{4.62}{\percent}, accounting for most of the difference in mean burden between the two start times.
 We retained the 25-sample segment because its shorter initialization allowed earlier intervention on fast-spreading seizures.
 
 The band comparison used the earlier start for all three bands.
 The \SIrange{1}{25}{\hertz} band used less charge than either the band that included zero frequency or the narrower \SIrange{3}{12}{\hertz} band, with similar mean burden across all three.
 Keeping the \SIrange{1}{25}{\hertz} band fixed, averaging over four or seven frames extended the waveform support by \SI{180}{\milli\second} or \SI{360}{\milli\second}, respectively, and postponed the first control update.
-Wider kernels yielded slightly lower mean burden and higher mean charge than the unsmoothed frames at the same current-cost weight.
+Averaging over more frames yielded slightly lower mean burden and higher mean charge than using individual frames at the same current-cost weight.
 
 The tapers yielded similar mean charge, but the symmetric Hann allowed the seizure to reach the \ac{pz} in two of five runs, with 30 regions seizing at the end of each.
 We observed no such propagation with the rising half-Hann.
 The rising half-Hann gives the newest samples more weight at the same frame endpoint, which may help the controller respond to emerging activity before it spreads.
-We carried the 25-sample segment, three-sample hop, \SIrange{1}{25}{\hertz} band, and rising half-Hann without frame averaging forward as the shared geometry for the spectral prediction and control comparisons.
+The spectral prediction and control comparisons used the same settings: 25-sample segments, a three-sample hop, the \SIrange{1}{25}{\hertz} band, a rising half-Hann window, and no frame averaging.
 
 \subsection{Waveform Prediction Target}
 % - Compare Waveform controllers trained with waveform MSE, spectral Loss, or both under the planned Loss--Cost pairings.
@@ -415,6 +417,8 @@ We carried the 25-sample segment, three-sample hop, \SIrange{1}{25}{\hertz} band
 \subsection{Controller Comparison}
 % - Compare uncontrolled, threshold, Observable DMDc, Observable MLP/CNN, and Waveform MLP/CNN arms.
 % - Test metrics: Seizure Burden, final seizing regions, Delivered Charge, solver failures.
+% - Compare Waveform and spectral DMDc with their nonlinear peers on paired Plant seeds. Report Seizure Burden, Delivered Charge, and solver failures at the charge-calibrated operating points.
+% - Use a shared MPC Cost and physical Control Horizon within each representation where available. Report differences in Current playback and solver budgets when comparing tuned systems across representations.
 
 \subsection{Sparse Stimulation}
 % - Compare L1 effort, Bonmin, block candidates, and homotopy on a shared evaluation protocol.
