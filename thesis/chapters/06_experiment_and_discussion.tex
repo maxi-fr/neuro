@@ -418,7 +418,16 @@ The ability of time-varying currents to suppress the \ac{ez} remains open.
 
 Continuous seizure activity confined to the three \ac{ez} regions would contribute about \SI{3.95}{\percent} burden.
 Together with the contained threshold runs, this places the burden associated with containment and residual focal activity at about \SIrange{4}{6}{\percent} in this plant.
-The next comparison asks how the spectral representation affects the charge required to achieve this degree of containment.
+The next comparison examines how the weight on stimulation affects delivered charge and containment.
+
+\subsection{Stimulation Cost Weight}
+% Waveform MLP final effort grid is in artifacts/sweep_2026_11/waveform_matched_geometry/mlp/final_effort/rows.csv.
+% Spectral CNN grid is in artifacts/sweep_2026_11/observable_effort_calibration/cnn/rows.csv.
+% Spectral DMDc grid is in artifacts/sweep_2026_11/observable_dmd/calibration/hop3/rows.csv.
+
+% - Vary the quadratic stimulation cost weight $w_u$ for the Spectral and Waveform controllers on the same five development Plant seeds.
+% - Hold the Predictor checkpoint, remaining MPC Cost terms, and Control Horizon fixed within each sweep.
+% - Plot full-run Delivered Charge (mAs) and Seizure Burden (\%) against $w_u$ on a logarithmic axis, showing individual seeds and means.
 
 \subsection{Effect of Spectral Geometry on Seizure Suppression}
 % The stage-by-stage report is artifacts/sweep_2026_11/observable_geometry/report.md.
@@ -498,6 +507,15 @@ It gives the newest samples greater weight at the same frame endpoint, so emergi
 This effect seems to outweight the effects of spectral leakage. 
 The following comparisons used 25-sample segments, a three-sample hop, the \SIrange{1}{25}{\hertz} band, a rising half-Hann window, and individual frames. 
 
+\subsection{Controller Comparison}
+% The ten-seed Waveform MLP comparison, combined rows, paired intervals, and compact traces are in
+% artifacts/sweep_2026_11/waveform_matched_geometry/final/waveform_mlp/evaluation/report.md.
+% For original Spectral and baseline logs see artifacts/sweep_2026_11/observable_benchmark/runs/.
+% For the seed 7104 escape inspect waveform_mlp_s7104/trace.npz in the Waveform evaluation runs and obs_dmdc_s7104/log.npz in the Spectral benchmark runs.
+
+% - Compare uncontrolled, threshold, Spectral DMDc, Spectral MLP/CNN, and Waveform MLP/CNN arms.
+% - Test metrics: Seizure Burden, final seizing regions, Delivered Charge, solver failures.
+
 \subsection{Waveform Prediction Target}
 % Original five-arm table: artifacts/sweep_2026_11/waveform_matched_geometry/mlp/loss_cost/summary.csv. See rows.csv for paired seeds and comparison_manifest.yaml for weights.
 % For the training-loss question, compare A with C under waveform tracking and B with D under the spectral hinge. All arms used w_u=100, but delivered charge differed.
@@ -507,24 +525,6 @@ The following comparisons used 25-sample segments, a three-sample hop, the \SIra
 % The best combined setting within 20--30 mAs gave 4.82% burden at 27.32 mAs. Archived tracking alone gave 5.06% at 22.93 mAs, so the benefit of adding the hinge at comparable charge remains open.
 % Check per-seed rows and final counts. Some settings allowed widespread recruitment on one seed despite low mean burden or similar mean charge.
 % For the horizon and terminal sweeps, see horizons/, terminal/, and terminal_confirm/ under artifacts/sweep_2026_11/waveform_matched_geometry/mlp/.
-
-\subsection{Stimulation Cost Weight}
-% Waveform MLP final effort grid is in artifacts/sweep_2026_11/waveform_matched_geometry/mlp/final_effort/rows.csv.
-% Spectral CNN grid is in artifacts/sweep_2026_11/observable_effort_calibration/cnn/rows.csv.
-% Spectral DMDc grid is in artifacts/sweep_2026_11/observable_dmd/calibration/hop3/rows.csv.
-
-% - Vary the quadratic stimulation cost weight $w_u$ for the Spectral and Waveform controllers on the same five development Plant seeds.
-% - Hold the Predictor checkpoint, remaining MPC Cost terms, and Control Horizon fixed within each sweep.
-% - Plot full-run Delivered Charge (mAs) and Seizure Burden (\%) against $w_u$ on a logarithmic axis, showing individual seeds and means.
-
-\subsection{Controller Comparison}
-% The ten-seed Waveform MLP comparison, combined rows, paired intervals, and compact traces are in
-% artifacts/sweep_2026_11/waveform_matched_geometry/final/waveform_mlp/evaluation/report.md.
-% For original Spectral and baseline logs see artifacts/sweep_2026_11/observable_benchmark/runs/.
-% For the seed 7104 escape inspect waveform_mlp_s7104/trace.npz in the Waveform evaluation runs and obs_dmdc_s7104/log.npz in the Spectral benchmark runs.
-
-% - Compare uncontrolled, threshold, Spectral DMDc, Spectral MLP/CNN, and Waveform MLP/CNN arms.
-% - Test metrics: Seizure Burden, final seizing regions, Delivered Charge, solver failures.
 
 \subsection{Sparse Stimulation}
 % For matched Bonmin, block-candidate, and homotopy development runs see artifacts/sweep_2026_11/sparse_ch05/report.md.
