@@ -112,7 +112,7 @@ With a fixed initial history, the affine \ac{dmdc} recurrence makes the stacked 
 Write \(\mathbf{o}=\mathbf{b}+\mathbf{G}\mathbf{u}\), where \(\mathbf{b}\) is the zero-current rollout from that history and \(\mathbf{G}\) is constant for a fixed predictor and control horizon.
 Let \(\mathbf{e}\) be the healthy envelope repeated over the prediction endpoints.
 An epigraph reformulation of the positive part in~\eqref{eq:mpc_spectral_cost} introduces one auxiliary variable per predicted spectral value.
-\begin{equation}
+\begin{equation} % this equation is not great. I dont feel like it fits into the style of the thesis. It reused symbols. Its lazy by just adding text. there is already an exaple of the epigraph reformulation in another chapter.
     \begin{aligned}
         \min_{\mathbf{u},\,\mathbf{s}}\quad
         & \mathbf{u}^{\mathsf T}\mathbf{R}\mathbf{u}
