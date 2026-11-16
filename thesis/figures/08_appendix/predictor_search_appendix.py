@@ -13,7 +13,7 @@ from neuro.predictor.checkpoint import load_checkpoint
 
 FIGURES = Path(__file__).resolve().parent
 sys.path.insert(0, str(FIGURES.parent / "06_experiment_and_discussion"))
-from offline_predictor_benchmark import CAMPAIGN, DIRECT_MLP, STUDIES, THESIS, style
+from offline_predictor_benchmark import CAMPAIGN, DIRECT_MLP, MATCHED, STUDIES, THESIS, style
 
 TABLES = THESIS / "tables" / FIGURES.name
 EXTRA_RUNS = {
@@ -21,6 +21,15 @@ EXTRA_RUNS = {
     "observable_cnn": (
         CAMPAIGN / "cnn/observable/baseline",
         CAMPAIGN / "cnn/observable/kt1_ablation",
+    ),
+    "waveform_cnn": tuple(
+        MATCHED / "cnn/ablation_kernel1" / name
+        for name in (
+            "trial_k1_exact_champion_seed_offset25",
+            "trial_k1_exact_champion_seed0",
+            "trial_k1_depth2",
+            "trial_k1_ny25",
+        )
     ),
 }
 TABLE_LAYOUTS = {
@@ -75,7 +84,7 @@ def read_stats(directory: Path) -> dict:
 
 
 def neural_trials(key: str, directory: Path) -> list[Trial]:
-    """Append the scored standalone architecture fits after the original Optuna trial numbers."""
+    """Read the study and append other archived fits in table order."""
     trials = read_trials(directory)
     for number, extra in enumerate(EXTRA_RUNS.get(key, ()), start=trials[-1].number + 1):
         params, _ = load_checkpoint(extra / "model.npz")
