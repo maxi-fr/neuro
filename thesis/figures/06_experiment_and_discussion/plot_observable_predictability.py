@@ -53,7 +53,7 @@ def plot_penalty_scatter(bundle: ObservableEvaluationBundle, lag_points: FloatAr
     cost_labels = (
         r"Cost $\mathcal J_{\mathrm{wave}}$",
         r"Cost $\mathcal J_{\mathrm{spec}}$",
-        r"Cost $\mathcal J_{\mathrm{conn}}(q)$",
+        r"Cost $\mathcal J_{\mathrm{conn}}$",
     )
     for ax, (rep, label), color, cost_label in zip(axes, LABELS.items(), COLORS, cost_labels, strict=True):
         points = lag_points if rep == "connectivity" else bundle.seizure_relevance[rep].finite_pairs()

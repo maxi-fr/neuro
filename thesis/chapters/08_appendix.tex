@@ -1,6 +1,6 @@
 \chapter{Predictor Hyperparameter Searches}\label{app:predictor_search}
 
-Tables~\ref{tab:search_spectral_mlp}--\ref{tab:search_waveform_cnn} list the \ac{mlp} and \ac{cnn} trials from Section~\ref{sec:offline_predictor_benchmark} in trial order. The first 15 trials use randomly chosen hyperparameter sets while the rest are selected using the tree-structured Parzen estimator by Optune.
+Tables~\ref{tab:search_spectral_mlp}--\ref{tab:search_waveform_cnn} list the \ac{mlp} and \ac{cnn} trials from Section~\ref{sec:offline_predictor_benchmark} in trial order. The first 15 trials use randomly chosen hyperparameter sets, while the rest are selected using the tree-structured Parzen estimator by Optuna.
 Bold rows mark the configuration with the lowest score in each search.
 Figure~\ref{fig:predictor_search_loss_curves} shows the loss curves for the selected fits, and Figure~\ref{fig:predictor_search_dmd_heatmaps} summarizes the spectral \ac{dmdc} grid.
 
@@ -79,7 +79,7 @@ We first compare the validation errors to assess how much predictive accuracy th
 
 \section{Comparison with Nonlinear Predictors}
 
-We compare the recursive validation \ac{mse} of \ac{dmdc} with that of the \ac{mlp} and \ac{cnn} over the first \SI{240}{\milli\second} for each prediction target.
+We compare the recursive validation \ac{mse} of the \ac{dmdc} predictor with that of the \ac{mlp} and \ac{cnn} predictors over the first \SI{240}{\milli\second} for each prediction target.
 Within each target, all predictors start at the same validation origins, receive the recorded future currents, and predict recursively without further measurements.
 For waveform prediction, the neural fits use waveform \ac{mse} alone and are scored at 12 sample endpoints on \num{4120} origins from 40 regenerated validation trajectories.
 The spectral errors use four frame endpoints on \num{6400} origins from the 40 validation trajectories with \SI{60}{\milli\second} current holds.
@@ -98,7 +98,7 @@ The spectral errors use four frame endpoints on \num{6400} origins from the 40 v
   \end{tabular}
 \end{table}
 
-The waveform \ac{dmdc} had \SI{32.3}{\percent} higher validation error than the waveform \ac{mlp}, while the spectral \ac{dmdc} had \SI{4.4}{\percent} lower validation error than the spectral \ac{mlp} (Table~\ref{tab:dmdc_representation_gap}).
+The waveform \ac{dmdc} predictor had \SI{32.3}{\percent} higher validation error than the waveform \ac{mlp} predictor, while the spectral \ac{dmdc} predictor had \SI{4.4}{\percent} lower validation error than the spectral \ac{mlp} predictor (Table~\ref{tab:dmdc_representation_gap}).
 The history lengths, excitation schedules, and model selection criteria also differed between targets, so the comparison cannot isolate the effect of predicting log-power.
 The spectral result supports testing the affine predictor in closed loop, where its effect on the optimization follows from the form of the suppression cost.
 
@@ -160,13 +160,37 @@ To measure the effect of the optimization method, we ran the spectral controller
 Both implementations used the same predictor, healthy envelope, objective weights, current constraints, control horizon, and replanning interval.
 At each replan, the controller applied the first current vector of its plan to the plant and received a new spectral frame for the next replan.
 Each simulation ran for \SI{12}{\second} with control active from \SI{1.38}{\second}, yielding \num{1780} replan attempts per solver.
-We set the absolute and relative OSQP tolerances to $10^{-8}$ after a pilot run at $10^{-4}$ produced a net current outside the plant's Kirchhoff tolerance.
+We set the absolute and relative OSQP tolerances to $10^{-8}$ to meet the plant's Kirchhoff tolerance.
 
-Both implementations ran serially on the same Windows host with an AMD Ryzen 7 5800HS CPU.
-Other simulation jobs shared the host during part of the benchmark. % this is totally unnecessary information to put into a thesis!! what??
+Both implementations ran serially on the same Windows host with an AMD Ryzen 7 5800HS processor.
 We measured wall-clock time for the solve and for the controller update, which also includes incorporating the latest spectral frame, preparing the solve, evaluating diagnostics, and selecting the applied current.
 The timing distributions include the first replan of each run and any unsuccessful solves.
 We counted controller updates that exceeded the \SI{60}{\milli\second} replanning interval.
+
+\begin{table}
+  \centering
+  \caption{Closed-loop timing and outcomes for the spectral \ac{dmdc} controller. Timing and counts include all \num{1780} replans per solver. Seizure burden and delivered charge are averaged over the ten paired seeds.}\label{tab:dmdc_closed_loop_timing}
+  \begin{tabular}{lrr}
+    \toprule
+    Metric & IPOPT & OSQP \\
+    \midrule
+    Median solve time (ms)                  & 618.0 & 34.7 \\
+    95th-percentile solve time (ms)          & 709.8 & 55.3 \\
+    Median controller-update time (ms)      & 639.0 & 45.5 \\
+    95th-percentile controller-update time (ms) & 731.5 & 65.5 \\
+    Controller updates exceeding \SI{60}{\milli\second} & 1780 & 121 \\
+    Unsuccessful solves                    & 0 & 0 \\
+    Mean seizure burden (\%)                & 5.01 & 5.05 \\
+    Mean delivered charge (mAs)             & 25.74 & 25.79 \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+Condensing the spectral problem reduced median solve time by a factor of 17.8 (Table~\ref{tab:dmdc_closed_loop_timing}).
+OSQP brought most controller updates within the replanning interval, with \SI{6.8}{\percent} of updates exceeding it.
+The simulator advanced only after each controller update finished, so the seizure burden and delivered charge reflect the nominal current-hold schedule.
+Across paired seeds, the OSQP seizure burden differed from the IPOPT value by $-0.09$ to $+0.29$ percentage points.
+The following appendix details the cost and horizon calibration for the waveform \ac{mlp} controller.
 
 \chapter{Waveform Controller Calibration}\label{app:waveform_controller_calibration}
 
@@ -287,9 +311,9 @@ Combining \(L_1\) with tested quadratic weights of \(0.025\) or \(0.05\) also ga
 These settings passed the two-seed screen.
 We retained \(w_1=0.234\) alone and reran it on the same software revision as the quadratic baseline.
 
-The pure activation weight \(w_\delta=0.35\) gave mean burdens below \SI{6}{\percent} with all three methods, yet yielded little off time (Table~\ref{tab:sparse_calibration_binary}).
+The activation-only weight \(w_\delta=0.35\) gave mean burdens below \SI{6}{\percent} with all three methods, yet yielded little off time (Table~\ref{tab:sparse_calibration_binary}).
 At \(w_\delta=0.70\), all three methods still met the burden criterion and brought mean charge closer to the \SI{30}{\milli\ampere\second} target.
-The tested combinations of a quadratic cost with an activation penalty or a cap on enabled holds used more charge and gave less off time than the pure activation comparison at \(w_\delta=0.70\).
+The tested combinations of a quadratic cost with an activation penalty or a cap on enabled holds used more charge and gave less off time than the activation-only comparison at \(w_\delta=0.70\).
 
 \begin{table}
   \centering
@@ -335,3 +359,98 @@ We carried the selected Bonmin configuration and its \(L_1\) baseline forward to
     \bottomrule
   \end{tabular}
 \end{table}
+
+\chapter{Waveform Controller Calibration}\label{app:waveform_controller_calibration}
+
+\section{Training and Control Weights}\label{sec:waveform_cost_calibration}
+
+The waveform \ac{mlp} refits in Section~\ref{sec:waveform_prediction_closed_loop} shared the architecture, training data, and initialization seed.
+In the joint loss \(\mathcal{L}_\mathrm{joint}\) in~\eqref{eq:combined_predictor_loss}, the weights were \(\lambda_\mathrm{wave}=1\) and \(\lambda_\mathrm{spec}=15\) to account for the different numerical scales of the two terms.
+The waveform loss \(\mathcal{L}_\mathrm{wave}\) covered the first 12 samples and the spectral loss \(\mathcal{L}_\mathrm{spec}\) covered 17 frames, following the predictability analysis in Section~\ref{sec:observable_predictability}.
+The single-term fits set the other term's weight to zero.
+
+% Protocol: docs/hyperparameter_sweep_strategy.md (Sections 6.1 and 6.3).
+% Initial calibration: artifacts/sweep_2026_11/waveform_matched_geometry/mlp/effort/summary.csv.
+To select a shared current weight for the suppression cost comparison, we calibrated the controller using the joint-loss fit with both costs active.
+We used \(w_{\mathrm{wave}}=1\) as the reference weight for \(\mathcal J_{\mathrm{wave}}\) and \(w_{\mathrm{spec}}=1000\) as the starting weight for \(\mathcal J_{\mathrm{spec}}\).
+The waveform cost sums over channels, whereas the spectral cost averages squared excess over channels and frequency bins.
+The terminal sample and frame inherited their respective stage weights.
+The current weight \(w_{L_2}\) was swept over \(\{1, 3, 10, 30, 100, 300, 1000\}\) with both suppression terms active.
+The selected weight, \(w_{L_2}=100\), delivered \SI{28.08}{\milli\ampere\second} on average.
+
+% Follow-up: artifacts/waveform_joint_cost_recalibration/{report.md,rows.csv}.
+% Local sensitivity and short replays: thesis/tmp/waveform_cost_weight_probe/report.md.
+Holding \(w_{L_2}\) fixed while removing a suppression cost changes the balance between suppression and current effort.
+To compare outcomes at similar delivered charges, we varied \(w_{\mathrm{spec}}\) and \(w_{L_2}\) with \(w_{\mathrm{wave}}=1\) (Table~\ref{tab:waveform_cost_calibration}).
+The range of \(w_{\mathrm{spec}}\) reflects the relative magnitudes of the suppression costs and their sensitivity to planned currents.
+For example, before \SI{2}{\second} on seed 7001 at the original weights, the median ratio of gradient norms with respect to balanced currents was 2.43 for \(w_{\mathrm{wave}}\mathcal J_{\mathrm{wave}}\) relative to \(w_{\mathrm{spec}}\mathcal J_{\mathrm{spec}}\).
+A weight near 2500 would therefore bring the two local sensitivities closer on those plans.
+For \(\mathcal J_{\mathrm{spec}}\) alone, we used \(w_{\mathrm{spec}}=1000\) and \(w_{L_2}=30\) to match the weight ratio of the development spectral \ac{cnn} and \ac{dmdc} settings at 17 frames.
+
+\begin{table}
+  \centering
+  \caption{Suppression cost calibration for the controller using the joint-loss waveform fit on the five development seeds.
+  Burden and charge are means, and the maximum final count is the largest number of regions seizing in the final window of any run.
+  The first row is the waveform suppression-cost reference from Table~\ref{tab:waveform_loss_cost}.
+  All solves were accepted.}\label{tab:waveform_cost_calibration}
+  \begin{tabular}{@{}rrrrrr@{}}
+    \toprule
+    \(w_{\mathrm{wave}}\) & \(w_{\mathrm{spec}}\) & \(w_{L_2}\) & Burden (\%) & Charge (mAs) & Maximum final count \\
+    \midrule
+    1 & 0 & 100 & 5.06 & 22.93 & 4 \\
+    0 & 1000 & 30 & 10.69 & 27.57 & 30 \\
+    \addlinespace
+    1 & 900 & 60 & 5.64 & 28.91 & 35 \\
+    1 & 900 & 100 & 10.95 & 27.99 & 28 \\
+    1 & 900 & 160 & 5.73 & 22.00 & 35 \\
+    1 & 1500 & 60 & 5.71 & 29.81 & 35 \\
+    1 & 1500 & 100 & 4.95 & 25.94 & 5 \\
+    1 & 1500 & 160 & 8.98 & 24.68 & 29 \\
+    1 & 2500 & 60 & 4.64 & 30.99 & 4 \\
+    1 & 2500 & 100 & 4.82 & 27.32 & 4 \\
+    1 & 2500 & 160 & 10.80 & 27.15 & 30 \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+The timing of stimulation can matter even when total charge differs little.
+In a \SI{7}{\second} replay of the controller using the joint-loss fit with both suppression terms on seed 7001, reducing \(w_{L_2}\) from 100 to 10 increased charge by \SI{2.16}{\milli\ampere\second} over the replay and by \SI{2.22}{\milli\ampere\second} before \SI{2}{\second}.
+The final count fell from 30 to three seizing regions.
+The same weight change with only \(\mathcal J_{\mathrm{spec}}\) active on seed 7004 reduced the final count from 31 to three seizing regions.
+For the controller using the waveform-only fit, the two runs in which spread was contained used just \SI{5.51}{\milli\ampere\second} and \SI{6.10}{\milli\ampere\second}, while the three runs with widespread recruitment recorded 48 to 61 failed solves each.
+
+\section{Control Horizon and Terminal Weight}
+
+% Data: artifacts/sweep_2026_11/waveform_matched_geometry/mlp/{horizons,terminal,terminal_confirm,final_effort}.
+With the joint-loss fit and \(\mathcal J_{\mathrm{wave}}\) selected, we tested whether changing the control horizon or increasing the terminal weight improved containment at \(w_{L_2}=100\).
+Increasing the terminal multiplier replaced the tracking weight on the final forecast sample while retaining weight 1 on the preceding samples.
+A multiplier of 1 gave the same outcomes as the default, which inherits the stage weight.
+The tested increases offered no improvement in mean burden, and the fivefold terminal multiplier allowed widespread recruitment on seed 7004, which ended with 32 regions seizing.
+
+\begin{table}
+  \centering
+  \caption{Development outcomes for the joint-loss waveform \ac{mlp} controller with suppression cost \(\mathcal J_{\mathrm{wave}}\), averaged across five seeds.
+  The terminal sweep held the horizon at 51 samples, and the horizon sweep held the terminal multiplier at 1.
+  All solves were accepted.}\label{tab:waveform_horizon_terminal}
+  \begin{tabular}{@{}llrrr@{}}
+    \toprule
+    Sweep & Setting & Burden (\%) & Charge (mAs) & Final count \\
+    \midrule
+    Terminal multiplier & 1 & 5.06 & 22.93 & 3.6 \\
+                        & 2 & 5.13 & 22.96 & 3.6 \\
+                        & 5 & 9.01 & 25.28 & 9.2 \\
+                        & 10 & 5.15 & 23.57 & 4.0 \\
+    \addlinespace
+    Horizon & 30 samples (\SI{0.60}{\second}) & 5.17 & 19.18 & 3.6 \\
+            & 42 samples (\SI{0.84}{\second}) & 5.08 & 21.82 & 3.8 \\
+            & 51 samples (\SI{1.02}{\second}) & 5.06 & 22.93 & 3.6 \\
+            & 60 samples (\SI{1.20}{\second}) & 5.15 & 23.41 & 4.0 \\
+            & 75 samples (\SI{1.50}{\second}) & 5.08 & 23.67 & 3.8 \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+Mean burden varied by only 0.11 percentage points across the horizon sweep, and all runs ended with at most five seizing regions (Table~\ref{tab:waveform_horizon_terminal}).
+The shortest horizon delivered the least charge.
+We retained the 51-sample horizon used in the original comparison, which spanned the same \SI{1.02}{\second} as the 17-frame spectral design and showed no improvement in mean burden from extending it.
+A final current-weight sweep with this horizon and the waveform suppression cost retained \(w_{L_2}=100\), the tested setting within the development charge range.

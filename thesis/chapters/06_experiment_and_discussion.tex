@@ -36,8 +36,8 @@ The waveform, spectral log-power, and functional connectivity were derived from 
 Spectral log-power was computed from trailing 25-sample segments (\SI{0.50}{\second}) with a rising half-Hann window and a three-sample hop.
 Functional connectivity measures statistical dependence between signals and has been used to characterize changes in coordination across \ac{eeg} channels during seizures~\cite{Roffet2025,Kramer2010,Liang2024}.
 To estimate connectivity, each channel was standardized within the same segment by subtracting its mean and scaling the centered samples to unit Euclidean norm.
-For the segment ending at \(t_q\), let \(\widetilde y_{\beta,c}\) be the standardized sample of channel \(c\) at segment offset \(\beta=0,\ldots,24\), starting with the oldest sample.
-The two vectors used to compute connectivity differ by an offset of one sample (\SI{20}{\milli\second}),
+For the segment indexed by \(q\) ending at \(t_q \ge 0\), let \(\widetilde y_{\beta,c}\) be the standardized sample of channel \(c\) at segment offset \mbox{\(\beta=0,\ldots,24\)}, starting with the oldest sample.
+The two 24-element vectors \(\mathbf a_c, \mathbf b_c \in \mathbb{R}^{24}\) used to compute connectivity differ by an offset of one sample (\SI{20}{\milli\second}),
 \begin{equation*}
   \mathbf a_c = {[\widetilde y_{0,c},\ldots,\widetilde y_{23,c}]}^\top,
   \qquad
@@ -51,9 +51,9 @@ The functional connectivity feature for each distinct channel pair \(c,c'\) is h
 \end{equation}
 The two products cancel for proportional signals, including copies of the same waveform with opposite polarity~\cite{Nolte2006}.
 
-Let \(h\) be the time elapsed since the snapshot.
-At lookahead \(h\), let \(o_a^{(\mu,b)}(h)\) be observable component \(a\) in branch \(b\) from snapshot \(\mu\), and let \(\bar o_a^{(\mu)}(h)\) be its mean across branches.
-For \(n_{\mathrm{snap}}\) snapshots and \(n_{\mathrm{branch}}\) branches per snapshot, the estimates of noise variance within snapshots and signal variance between snapshots are
+Let \(h > 0\) be the time elapsed since the snapshot.
+At lookahead \(h\), let \(o_a^{(\mu,b)}(h) \in \mathbb{R}\) be observable component \(a\) in branch \(b \in \{1,\ldots,n_{\mathrm{branch}}\}\) from snapshot \(\mu \in \{1,\ldots,n_{\mathrm{snap}}\}\), and let \(\bar o_a^{(\mu)}(h)\) be its mean across branches.
+For \(n_{\mathrm{snap}} \in \mathbb{N}\) snapshots and \(n_{\mathrm{branch}} \in \mathbb{N}\) branches per snapshot, the estimates of noise variance within snapshots and signal variance between snapshots are
 \begin{align}
   \widehat V_{\mathrm{N},a}(h) &= \frac{1}{n_{\mathrm{snap}}}\sum_\mu
     \operatorname{Var}_b\bigl(o_a^{(\mu,b)}(h)\bigr),\\
@@ -140,7 +140,7 @@ Pooling the 50 evaluation times per branch yielded \(180\,000\) finite pairs for
   Each panel reports Pearson's \(r\) over all plotted pairs.}\label{fig:observable_penalty_state}
 \end{figure}
 
-Spectral log-power had the strongest association with seizure state (\(r=0.98\)), followed by the waveform (\(r=0.92\)) and functional connectivity (\(r=0.79\)).
+Spectral log-power had the strongest association with seizure state (\mbox{\(r=0.98\)}), followed by the waveform (\mbox{\(r=0.92\)}) and functional connectivity (\mbox{\(r=0.79\)}).
 The greater dispersion of the connectivity cost in Figure~\ref{fig:observable_penalty_state} shows that similar levels of recruitment could incur substantially different costs.
 Unit-norm scaling makes the functional connectivity feature insensitive to amplitude changes that preserve waveform shape, which may weaken its association with amplitude-based recruitment.
 This variability and the rapid drop in potential predictability for the functional connectivity feature led us to carry only the waveform and spectral log-power forward to the predictor and controller experiments.
@@ -153,13 +153,14 @@ Each prediction target used its own dataset for fitting and selection, with stim
 Both datasets contained \ac{eeg} sampled at \SI{50}{\hertz} and were split into 160 training and 40 validation trajectories, as described in Section~\ref{sec:predictor_training}.
 For each dataset, the standardization statistics were estimated from the training split and held fixed during validation.
 
-All spectral targets and scores, including the spectral loss on waveform forecasts, used 25-sample segments with a rising half-Hann window and a three-sample hop, retaining the individual bins from \SIrange{1}{25}{\hertz} without frame averaging.
+All spectral targets and scores, including the spectral loss on waveform forecasts, used the baseline spectral geometry from Section~\ref{sec:observable_predictability}, retaining the individual bins from \SIrange{1}{25}{\hertz} without frame averaging.
 The three-sample hop performed well in preliminary experiments and set the \SI{60}{\milli\second} current hold in the spectral training trajectories.
 Each spectral predictor received eight past currents at these intervals plus the candidate current.
-With a \SI{20}{\milli\second} current hold, the waveform searches tested 4, 12, or 24 past currents plus the candidate, corresponding to histories of 80, 240, and \SI{480}{\milli\second}.
+With a \SI{20}{\milli\second} current hold, the searches for the waveform predictors tested 4, 12, or 24 past currents plus the candidate, corresponding to histories of 80, 240, and \SI{480}{\milli\second}.
 
 The spectral predictors were ranked by the recursive log-power \ac{mse} $\mathcal{L}_\mathrm{spec}$ in~\eqref{eq:spectral_training_loss}, evaluated over 17 frames (\SI{1.02}{\second}).
 For the waveform predictors, the joint loss $\mathcal{L}_\mathrm{joint}$ in~\eqref{eq:combined_predictor_loss} combined log-power \ac{mse} over the same horizon with waveform \ac{mse} over the first 12 samples (\SI{0.24}{\second}), using weights of 15 and 1, respectively.
+Before comparing the two prediction targets on a common footing, we tuned each candidate architecture on its own validation set.
 
 \subsection{Hyperparameter Search and Model Selection}
 % The STUDIES list in thesis/figures/06_experiment_and_discussion/offline_predictor_benchmark.py
@@ -167,16 +168,15 @@ For the waveform predictors, the joint loss $\mathcal{L}_\mathrm{joint}$ in~\eqr
 
 Table~\ref{tab:predictor_search_spaces} lists the settings evaluated for each architecture.
 To keep recursive training tractable, we capped the history lengths and network sizes tested for each architecture.
-The \ac{mlp} searches capped history lengths at fewer samples or frames than the \ac{cnn} searches because each additional sample or frame adds connections to all units in the first dense layer.
+We capped history lengths at fewer samples or frames in the \ac{mlp} hyperparameter searches than in the \ac{cnn} searches because each additional sample or frame adds connections to all units in the first dense layer.
 The \acp{cnn} reuse their convolutional filters across the history, allowing longer inputs within the training budget.
-For spectral \ac{dmdc}, every combination of \ac{eeg} history length, retained fraction of the sum of squared singular values, and ridge regularization parameter in the grid was evaluated.
-The neural-network searches used Optuna~\cite{Akiba2019} with 15 random sampled startup trials followed by 10 to 15 trials with configurations chosen by a tree-structured Parzen estimator. 
+For the spectral \ac{dmdc} predictor, every combination of \ac{eeg} history length, retained fraction of the sum of squared singular values, and ridge regularization parameter in the grid was evaluated.
+The neural-network searches used Optuna~\cite{Akiba2019} with 15 randomly sampled startup trials followed by 10 to 15 trials with configurations chosen by a tree-structured Parzen estimator. 
 The estimator uses validation losses from completed trials to select which configurations to evaluate next~\cite{Bergstra2011}.
 
-Each network was trained with AdamW using weight decay of $10^{-5}$ and a limit of 150 epochs.
-The \ac{mlp} used a learning rate of $10^{-4}$ and batches of 256, and the \ac{cnn} used $2\times10^{-4}$ and batches of 512.
-During training, the observation-space loss horizon increased between epochs 10 and 80.
-Once the horizon reached its final length and all loss terms were active, the early-stopping criterion allowed 20 consecutive epochs without validation improvement for the \ac{mlp} and 35 for the \ac{cnn}.
+Each network was trained with AdamW using a weight decay of $10^{-5}$ for up to 150 epochs, with learning rates and batch sizes scaled to each architecture ($10^{-4}$ and 256 for the \ac{mlp} predictors; $2\times10^{-4}$ and 512 for the \ac{cnn} predictors).
+During training, the observation-space loss horizon ramped up between epochs 10 and 80.
+Once the horizon reached its final length and all loss terms were active, the early-stopping criterion allowed 20 consecutive epochs without validation improvement.
 The weights with the lowest validation loss from that phase were retained.
 
 \begin{table}[!hb] % latex-lint:ignore=FLOAT-01
@@ -235,15 +235,16 @@ The trials also showed signs of overfitting as depth increased from one to two l
 With three layers, the mean error was higher on both splits, which may reflect the difficulty of optimizing deeper recursive models.
 
 \paragraph*{Spectral \ac{cnn}.}
-The spectral \ac{cnn} search converged to configurations with longer histories of 14--17 frames, over which the \ac{cnn} could reuse the same temporal filters, although the number of inputs to the prediction head still grew with history length.
+The spectral \ac{cnn} search converged to histories of 14--17 frames.
+Unlike the \ac{mlp}, the \ac{cnn} reuses its temporal filters across frames, though the prediction head's input dimension still grows with history length.
 The strongest configurations used two softplus convolutional layers with filters one frequency bin wide and roughly half as many feature channels in the second layer as in the first.
 In the selected fit, each first-layer kernel spans three frames and all electrode channels, allowing it to detect temporal changes in a single frequency bin across electrodes.
 A prediction head with a hidden layer, typically 60--78 units in the strongest configurations, can then combine those features across frequencies.
-The selected three-frame fit achieved a validation loss of 1.5996, compared with 1.6124 when the selected architecture used one-frame filters.
+The selected fit with three-frame filters achieved a validation loss of 1.5996, compared with 1.6124 when the selected architecture used one-frame filters.
 
 \paragraph*{Spectral \ac{dmdc}.}
 Including past frames allows \ac{dmdc} to distinguish rising from falling power, while the overlap between successive frames can introduce weakly constrained directions in the fit.
-The condition number of the truncated regressor matrix $\boldsymbol{\Omega}^{(\rho)}$ is the ratio $\sigma_1/\sigma_\rho$ of the largest to the smallest retained singular value.
+The condition number of the truncated regressor matrix $\boldsymbol{\Omega}^{(\rho)}$ is the ratio \mbox{$\sigma_1/\sigma_\rho$} of the largest to the smallest retained singular value.
 It increased with history length and retained fraction (Figure~\ref{fig:offline_predictor_dmd_grid}, right).
 The fraction that minimized validation loss fell from \SI{100}{\percent} with one frame to \SI{85}{\percent} with eight frames.
 This pattern suggests that stronger truncation helps when longer histories add overlapping observations.
@@ -252,15 +253,15 @@ At fixed history length and retained fraction, varying the ridge parameter chang
 Within the range tested, truncation had a much larger effect on forecast accuracy than ridge regularization.
 
 \paragraph*{Waveform \ac{mlp}.}
-The waveform \ac{mlp} achieved its lowest validation loss with 13 \ac{eeg} samples (\SI{0.26}{\second}), with no gain from longer histories in the search.
+The waveform \ac{mlp} predictor achieved its lowest validation loss with 13 \ac{eeg} samples (\SI{0.26}{\second}), with no gain from longer histories in the search.
 The best-performing configurations used two or three tanh layers of 256 units, and residual output gave the lowest joint validation loss even though direct output also performed well.
 The additional layers may help combine local waveform phase and amplitude with the stimulation history, while spectral frames already summarize oscillatory activity as power.
 
 \paragraph*{Waveform \ac{cnn}.}
-The selected waveform \ac{cnn} used 16 \ac{eeg} samples (\SI{0.32}{\second}), three more than the selected waveform \ac{mlp}.
-The selected spectral \ac{cnn} used \SI{1.40}{\second} of \ac{eeg}, suggesting that spectral representation made a longer span of past activity useful to the predictor.
-The search repeatedly favored a single softplus convolutional layer and a prediction head with a hidden layer whose width was the geometric mean of its input and output dimensions.
-Several filter lengths yielded similar validation losses, with the strongest configurations using filters of three and five samples.
+The selected waveform \ac{cnn} predictor used 16 \ac{eeg} samples (\SI{0.32}{\second}), three more than the waveform \ac{mlp} predictor, but far shorter than the \SI{1.40}{\second} span used by the spectral \ac{cnn} predictor, suggesting that the spectral representation makes a longer past window useful.
+Across the search, the lowest validation losses came from a single softplus convolutional layer paired with a prediction head whose hidden-layer width equaled the geometric mean of its input and output dimensions.
+Within this structure, filter lengths of three and five samples yielded similarly low validation errors.
+With one configuration selected for each architecture and target, we can compare the two prediction targets in the spectral setting.
 
 \subsection{Prediction Target}\label{sec:offline_prediction_target}
 % The thesis lookahead figure, shared scoring starts, and waveform loss refits are generated by
@@ -272,8 +273,8 @@ At each start time, every predictor had enough measured history to initialize it
 The waveform forecasts were converted to log-power so that all predictors could be scored by log-power \ac{mse} $\mathcal{L}_\mathrm{spec}(h)$ at each of the 17 lookaheads $h$.
 Averaging these errors across lookaheads gives $\mathcal{L}_\mathrm{spec}$ on the common set of start times.
 
-Every selected predictor improved on persistence, which held the last observed spectrum constant throughout the forecast (Figure~\ref{fig:offline_predictor_lookahead}~(a)).
-The waveform \ac{mlp} was most accurate at \SI{60}{\milli\second}.
+Every selected predictor improved on the persistence baseline, which held the last observed spectrum constant throughout the forecast (Figure~\ref{fig:offline_predictor_lookahead}~(a)).
+The waveform \ac{mlp} predictor was most accurate at \SI{60}{\milli\second}.
 At this lookahead, only the last three samples of the spectral segment came from the forecast, and local phase information may have helped reconstruct them.
 From \SI{120}{\milli\second} onward, all three spectral predictors outperformed both waveform predictors.
 
@@ -281,12 +282,12 @@ From \SI{120}{\milli\second} onward, all three spectral predictors outperformed 
   \centering
   \includegraphics{figures/06_experiment_and_discussion/offline_predictor_lookahead.pdf}
   \caption{Log-power \ac{mse} $\mathcal{L}_\mathrm{spec}(h)$ at matched lookaheads on the validation trajectories with \SI{60}{\milli\second} between current updates.
-  Panel~(a) compares the selected predictors with persistence, which repeats the last measured spectral frame.
+  Panel~(a) compares the selected predictors with the persistence baseline, which repeats the last measured spectral frame.
   Panel~(b) compares refits of the selected waveform \ac{mlp} architecture under three training losses.}\label{fig:offline_predictor_lookahead}
 \end{figure}
 
 To assess whether the waveform term in the joint loss contributed to the gap in spectral accuracy, the selected waveform \ac{mlp} architecture was refitted with waveform-only, spectral-only, and joint losses (Figure~\ref{fig:offline_predictor_lookahead}~(b)).
-At \SI{60}{\milli\second}, the waveform-only fit had the lowest log-power \ac{mse} (0.826), followed by the joint fit (0.916) and the spectral-only fit (1.470).
+At \SI{60}{\milli\second}, the waveform-only fit had the lowest log-power \ac{mse} (0.826), followed by the joint-loss fit (0.916) and the spectral-only fit (1.470).
 Compared with the spectral-only fit, adding the waveform term reduced log-power \ac{mse} at the first three lookaheads, and the two fits had similar errors from \SI{0.24}{\second} onward.
 Over all 17 lookaheads, the joint-loss fit had the lowest mean spectral loss (2.028), followed by the spectral-only fit (2.085) and the waveform-only fit (3.011).
 The gap in mean spectral error persisted under spectral-only training, suggesting that using a waveform forecast as an intermediate step reduces the accuracy of the resulting log-power forecast.
@@ -294,23 +295,24 @@ The gap in mean spectral error persisted under spectral-only training, suggestin
 A further observation can be made when the signs of the forecast errors are considered.
 The waveform-only fit underestimated log-power on average at every lookahead.
 This finding is consistent with the idea that out-of-phase oscillations average out, as discussed in Section~\ref{sec:observable_predictability}.
-Adding the spectral term to the waveform loss reduced the mean signed log-power error (prediction minus observation) from $-0.40$ to $-0.07$, bringing it close to the biases of the direct spectral \ac{cnn} ($-0.03$) and \ac{dmdc} ($0.004$).
+Adding the spectral term to the waveform loss reduced the mean signed log-power error (prediction minus observation) from $-0.40$ to $-0.07$, bringing it close to the biases of the direct spectral \ac{cnn} ($-0.03$) and \ac{dmdc} ($0.004$) predictors.
 
 \subsection{Predictor Architectures}
 
 Within each prediction target, we compared the selected architectures to decide which to carry forward to the closed-loop experiments.
-For spectral prediction, the linear \ac{dmdc} model achieved the lowest mean validation error (1.5818), with both nonlinear architectures within \SI{0.6}{\percent} (1.5902 for the \ac{cnn} and 1.5911 for the \ac{mlp}, Figure~\ref{fig:offline_predictor_lookahead}~(a)).
+For spectral prediction, the linear \ac{dmdc} model achieved the lowest mean validation error (1.5818), with both nonlinear architectures within \SI{0.6}{\percent} (1.5902 for the \ac{cnn} predictor and 1.5911 for the \ac{mlp} predictor, Figure~\ref{fig:offline_predictor_lookahead}~(a)).
 
-For the waveform target, the \ac{mlp} had a lower joint validation loss than the \ac{cnn} (63.15 versus 72.43).
+For the waveform target, the \ac{mlp} predictor had a lower joint validation loss than the \ac{cnn} predictor (63.15 versus 72.43).
 Its advantage was visible both in the waveform \ac{mse} over the first 12 samples in the original output units (30.44 versus 36.38) and in the mean log-power \ac{mse} on the common spectral evaluation (2.0663 versus 2.3111).
 One possible explanation for this difference is where the stimulation currents enter each network.
-The \ac{mlp} combines waveform samples with stimulation currents in its first hidden layer.
-In the \ac{cnn}, the currents enter only after shared temporal filters have extracted waveform features.
-Combining the inputs earlier may help the \ac{mlp} learn how the response to stimulation depends on recent phase.
+The \ac{mlp} predictor combines waveform samples with stimulation currents in its first hidden layer.
+In the \ac{cnn} predictor, the currents enter only after shared temporal filters have extracted waveform features.
+Combining the inputs earlier may help the \ac{mlp} predictor learn how the response to stimulation depends on recent phase.
 The selected fits also differed in their histories and fitting procedures, which may contribute to the observed error differences.
 
-We carried the waveform \ac{mlp} forward to the main closed-loop comparison on the strength of its lower joint validation loss.
-For the spectral target, we selected \ac{dmdc} and the \ac{cnn} to compare the best-performing linear and nonlinear predictors in closed loop.
+We carried the waveform \ac{mlp} predictor forward to the main closed-loop comparison on the strength of its lower joint validation loss.
+For the spectral target, we selected the \ac{dmdc} and \ac{cnn} predictors to compare the best-performing linear and nonlinear predictors in closed loop.
+Running these predictors in closed-loop \ac{mpc} requires choosing a transcription method for the numerical solver.
 
 \section{Solver and Transcription Benchmark}
 % Git commit 12fe8d8 introduced this table. A matching standalone run archive was not located.
@@ -318,7 +320,7 @@ For the spectral target, we selected \ac{dmdc} and the \ac{cnn} to compare the b
 The transcription for the closed-loop simulations was selected based on IPOPT convergence and solve time.
 The benchmark compared full-state multiple shooting, \acs{narx} multiple shooting, and single shooting from Table~\ref{tab:mpc_transcription_counts} on the same \ac{mpc} problem at one time during a simulated seizure.
 All three solves started from the same measured \ac{eeg} and applied-current histories.
-The benchmark used a nonlinear waveform predictor with 62 \ac{eeg} channels, two control inputs, and a horizon of $H=20$ steps.
+The benchmark used a nonlinear waveform predictor with 62 \ac{eeg} channels, two control inputs, and a horizon of \mbox{$H=20$} steps.
 
 \begin{table}
   \centering
@@ -342,7 +344,7 @@ The single-shooting solve took about nine times the \SI{60}{\milli\second} updat
 
 Multiple shooting can be preferable when long rollouts make single shooting poorly conditioned, since its dynamics constraints use only local derivatives (Section~\ref{sec:mpc_numerical_solution}).
 Single-shooting solves were generally numerically stable in these simulations.
-So, we chose single shooting for the closed-loop experiments because it converged fastest in this benchmark and made repeated solves practical in simulation.
+We therefore chose single shooting for the closed-loop experiments because it converged fastest in this benchmark and made repeated solves practical in simulation.
 
 \section{Closed-Loop Seizure Suppression}
 % Development baseline scores are in artifacts/sweep_2026_11/observable_dmd/calibration/hop3/rows.csv.
@@ -356,11 +358,11 @@ Five development seeds (7000, 7001, 7002, 7004, and 7005) were used to select co
 
 With a three-sample hop at \SI{50}{\hertz}, the spectral predictors received a new frame every \SI{60}{\milli\second}.
 The \ac{mpc} controllers replanned at this interval for both prediction targets, giving them the same frequency of feedback updates and keeping the number of optimization solves tractable.
-In the notation of Section~\ref{sec:mpc_formulation}, the spectral controller applied one \SI{60}{\milli\second} hold per plan ($M=1$).
-The waveform controller, whose predictor advances one sample at a time, applied three successive \SI{20}{\milli\second} holds before replanning ($M=3$).
+In the notation of Section~\ref{sec:mpc_formulation}, the spectral controller applied one \SI{60}{\milli\second} hold per plan (\mbox{$M=1$}).
+The waveform controller, whose predictor advances one sample at a time, applied three successive \SI{20}{\milli\second} holds before replanning (\mbox{$M=3$}).
 
-To measure how much seizure activity persisted across a run, the seizure state $s(t_i)$ was evaluated in $N_{\mathrm{win}}=45$ complete \SI{1}{\second} windows spaced \SI{0.25}{\second} apart.
-Let $t_i$ be the endpoint of window $i=1,\ldots,N_{\mathrm{win}}$, with $t_{\mathrm{final}}=t_{N_{\mathrm{win}}}$.
+To measure how much seizure activity persisted across a run, the seizure state $s(t_i)$ was evaluated in \mbox{$N_{\mathrm{win}}=45$} complete \SI{1}{\second} windows spaced \SI{0.25}{\second} apart.
+Let $t_i$ be the endpoint of window \mbox{$i=1,\ldots,N_{\mathrm{win}}$}, with \mbox{$t_{\mathrm{final}}=t_{N_{\mathrm{win}}}$}.
 We define the seizure burden $\bar{s}$ as the mean of the seizure states at these endpoints, expressed as a percentage,
 \begin{equation*}
   \bar{s} = \frac{100\,\%}{N_{\mathrm{win}}}\sum_{i=1}^{N_{\mathrm{win}}} s(t_i)\,.
@@ -372,8 +374,8 @@ Sustained stimulation at the current limit delivers about \SI{45}{\milli\ampere\
 A fixed current can deliver this level of stimulation without the need for \ac{mpc}, so we sought to keep the delivered charge below \SI{30}{\milli\ampere\second}, generally favoring further reductions at comparable burden.
 
 The uncontrolled runs establish how much seizure spread the feedback controllers have to prevent.
-As a feedback baseline, we use a threshold controller adapted from the amplitude-triggered strategy that pairs the highest-energy scalp \ac{eeg} electrode with Ex8~\cite{Yu2024}.
-In our implementation, the controller monitors the peak-to-peak amplitude at TP9 over a trailing \SI{1}{\second} window.
+As a feedback baseline, we used a threshold controller adapted from the amplitude-triggered strategy that pairs the highest-energy scalp \ac{eeg} electrode with Ex8~\cite{Yu2024}.
+In our implementation, the controller monitored the peak-to-peak amplitude at TP9 over a trailing \SI{1}{\second} window.
 When the amplitude exceeded 10 in the scaled \ac{eeg} units of Section~\ref{sec:eeg_measurement}, the controller drove TP9 at the current limit of \SI{2}{\milli\ampere} for \SI{1}{\second}, with Ex8 as return and CP5 inactive.
 
 \begin{table}
@@ -400,33 +402,33 @@ When the amplitude exceeded 10 in the scaled \ac{eeg} units of Section~\ref{sec:
 
 Without stimulation, seizures spread beyond the \ac{ez} on all five development seeds, with 27 to 33 regions seizing at the end of each run (Table~\ref{tab:development_baselines}).
 The threshold controller contained spread in four runs, each with a burden below \SI{6}{\percent}, but failed to contain the seizure on seed 7000.
-Even in the four contained runs, all three \ac{ez} regions recruited during the run.
+Even in the four runs in which spread was contained, all three \ac{ez} regions recruited during the run.
 This leaves the question of whether the persistent focal activity reflects the feedback strategy or the stimulation available to it.
 
 Stimulation acts by shifting the input to the pyramidal firing-rate sigmoid in~\eqref{eq:jr_node}.
-A constant regional drive $s_i$ changes the effective sigmoid midpoint from $v_0$ to $v_0-s_i$, so negative drive raises the midpoint while leaving the excitatory synaptic gain $A_i$ at its assigned value.
+A constant regional drive $s_i$ changes the effective sigmoid midpoint from $v_0$ to \mbox{$v_0-s_i$}, so negative drive raises the midpoint while leaving the excitatory synaptic gain $A_i$ at its assigned value.
 To find how far the montage can shift the midpoint, the regional drive was evaluated at the six permutations of $(+2, 0, -2)\,\si{\milli\ampere}$, which form the vertices of the feasible current set.
 Since the stimulation map is linear, these vertices bound the achievable drive in each region.
 The same vector $(0, -2, +2)\,\si{\milli\ampere}$ gave the most negative drive in all three \ac{ez} regions, shifting their sigmoid midpoints upward by \SIrange{0.041}{0.091}{\milli\volt}.
 
 The size of the shift matters only insofar as it changes the dynamics of an epileptogenic node.
 In the isolated node with the \ac{ez} gain, large-amplitude activity still occurred under a direct offset of $-0.10\,\si{\milli\volt}$, beyond the most negative drive available to any \ac{ez} region.
-Increasing the offset to $-0.25\,\si{\milli\volt}$ kept the isolated node below the seizure criterion in every one-second window entirely under stimulation across the five runs.
+Increasing the offset to $-0.25\,\si{\milli\volt}$ kept the isolated node below the seizure criterion in every \SI{1}{\second} window entirely under stimulation across the five runs.
 In the whole network, the left parahippocampal cortex and amygdala likewise stayed above the seizure criterion under all six sustained vertex currents, whether stimulation began at time zero or at \SI{1.38}{\second}.
 With the strongest \ac{ez}-directed current starting at \SI{1.38}{\second}, mean burden fell to \SI{4.46}{\percent} and both \ac{pz} regions were below threshold by the final window on all five seeds.
 Thus the small available shift was compatible with control of seizure spread while activity persisted in the \ac{ez}.
 The ability of time-varying currents to suppress the \ac{ez} remains open.
 
 Continuous seizure activity confined to the three \ac{ez} regions would contribute about \SI{3.95}{\percent} burden.
-Together with the contained threshold runs, this places the burden associated with containment and residual focal activity at about \SIrange{4}{6}{\percent} in this plant.
+Together with the threshold-controlled runs that contained spread, this places the burden associated with containment and residual focal activity at about \SIrange{4}{6}{\percent} in this plant.
+With this containment baseline established, we next turn to tuning the stimulation effort penalty.
 
 \subsection{Stimulation Cost Weight}\label{sec:stimulation_cost_weight}
 % Waveform MLP final effort grid is in artifacts/sweep_2026_11/waveform_matched_geometry/mlp/final_effort/rows.csv.
 % Spectral CNN grid is in artifacts/sweep_2026_11/observable_effort_calibration/cnn/rows.csv.
 % Spectral DMDc grid is in artifacts/sweep_2026_11/observable_dmd/calibration/hop3/rows.csv.
 
-We calibrated the quadratic current weight $w_{L_2}$ to contain seizure spread while keeping mean delivered charge below \SI{30}{\milli\ampere\second}.
-We varied $w_{L_2}$ for the spectral \ac{dmdc}, spectral \ac{cnn}, and joint-trained waveform \ac{mlp} on the five development seeds.
+To contain seizure spread while keeping mean delivered charge below \SI{30}{\milli\ampere\second}, we varied the quadratic current-cost weight $w_{L_2}$ for the spectral \ac{dmdc}, spectral \ac{cnn}, and joint-trained waveform \ac{mlp} controllers on the five development seeds.
 Each sweep held the predictor, the other cost terms, and the \SI{1.02}{\second} control horizon fixed.
 The spectral controllers used $\mathcal J_{\mathrm{spec}}$, and the waveform controller used $\mathcal J_{\mathrm{wave}}$, so the numerical weights are interpreted within each sweep.
 
@@ -434,42 +436,43 @@ The spectral controllers used $\mathcal J_{\mathrm{spec}}$, and the waveform con
 \begin{figure}[t] % latex-lint:ignore=FLOAT-01
   \centering
   \includegraphics{figures/06_experiment_and_discussion/closed_loop_effort_sweeps}
-  \caption{Delivered charge and seizure burden as functions of the quadratic current weight.
+  \caption{Delivered charge and seizure burden as functions of the quadratic current-cost weight.
   Points show individual development seeds and solid lines show means across seeds.
   The shaded regions indicate charge below \SI{30}{\milli\ampere\second} and burden below \SI{6}{\percent}.
   The dotted vertical lines mark where the mean charge curves cross \SI{30}{\milli\ampere\second}, interpolated between tested weights on the logarithmic axis.}\label{fig:stimulation_cost_weight}
 \end{figure}
 
 Mean delivered charge fell with each increase in $w_{L_2}$ for all three controllers (Figure~\ref{fig:stimulation_cost_weight}).
-The tested settings that kept mean charge below \SI{30}{\milli\ampere\second} and contained spread on all five seeds were $w_{L_2}=0.3$ for both spectral controllers and $w_{L_2}=100$ for the waveform controller.
-These settings delivered \SIlist{25.51;23.00;22.93}{\milli\ampere\second} on average for \ac{dmdc}, \ac{cnn}, and waveform \ac{mlp}, respectively.
+The tested settings that kept mean charge below \SI{30}{\milli\ampere\second} and contained spread on all five seeds were \mbox{$w_{L_2}=0.3$} for both spectral controllers and \mbox{$w_{L_2}=100$} for the waveform controller.
+These settings delivered \SIlist{25.51;23.00;22.93}{\milli\ampere\second} on average for the \ac{dmdc}, \ac{cnn}, and waveform \ac{mlp} controllers, respectively.
 In the same order, mean seizure burden was \SIlist{4.92;5.44;5.06}{\percent}.
 Relative to the lowest weight tested for each controller, mean charge fell by \SIrange{38}{50}{\percent}, while mean burden rose by less than one percentage point and remained within the range associated with containment.
 
-The waveform \ac{mlp} was the most tolerant of changes in the current weight on the development seeds.
+The waveform \ac{mlp} controller was the most tolerant of changes in the current-cost weight on the development seeds.
 Interpolating the mean outcomes on the logarithmic axis gives a roughly threefold range of weights that meet both targets for the waveform controller, compared with less than a twofold range for either spectral controller.
-The smaller change in mean burden gave the waveform controller more room to reduce charge by increasing the current weight before seizure burden exceeded \SI{6}{\percent}.
+The smaller change in mean burden gave the waveform controller more room to reduce charge by increasing the current-cost weight before seizure burden exceeded \SI{6}{\percent}.
 
-Among the spectral controllers, \ac{dmdc} was more robust to weight tuning near the charge target.
+Among the spectral controllers, the \ac{dmdc} controller was more robust to weight tuning near the charge target.
 Once the mean charge dropped below \SI{30}{\milli\ampere\second}, the \ac{dmdc} controller had room to increase the weight before exceeding the burden target.
-The \ac{cnn} met both targets only within a narrow interval around $0.3$.
-For the spectral \ac{cnn} on seed 7004, raising the weight from $0.2$ to $0.3$ reduced the final count from 29 to four seizing regions.
-At $0.2$, the first window showing \ac{pz} recruitment ended at \SI{5}{\second}.
-Through this window endpoint, the controller delivered \SI{9.43}{\milli\ampere\second} at $0.2$ and \SI{7.81}{\milli\ampere\second} at $0.3$.
+The \ac{cnn} controller met both targets only within a narrow interval around $0.3$.
+For the spectral \ac{cnn} controller on seed 7004, raising the weight from $0.2$ to $0.3$ reduced the final count from 29 to four seizing regions.
+At \mbox{$w_{L_2}=0.2$}, the first window showing \ac{pz} recruitment ended at \SI{5}{\second}.
+Through this window endpoint, the controller delivered \SI{9.43}{\milli\ampere\second} at \mbox{$w_{L_2}=0.2$} and \SI{7.81}{\milli\ampere\second} at \mbox{$w_{L_2}=0.3$}.
 Both runs accepted every solve.
 This reversal suggests that how current was applied mattered more for containment on this seed than the cumulative charge alone.
 
 The calibration results favor the linear predictor for spectral control.
-The \ac{cnn} achieved similar validation error (Figure~\ref{fig:offline_predictor_lookahead}) and supported a narrower range of current weights that met both control targets.
+The \ac{cnn} predictor achieved similar validation error (Figure~\ref{fig:offline_predictor_lookahead}), yet the corresponding controller supported a narrower range of current-cost weights that met both control targets.
 One explanation is that the training data supported a shared response to current more reliably than a response specific to each \ac{eeg} history.
 As discussed in Section~\ref{sec:predictor_control_implications}, forecasts under recorded currents provide limited evidence about how accurately a predictor distinguishes alternative currents from the same history.
-By imposing a shared response through~\eqref{eq:dmd_current_sensitivity}, \ac{dmdc} may have preserved the differences between candidate currents that mattered for containment while avoiding variation that the data could not reliably establish.
+By imposing a shared response through~\eqref{eq:dmd_current_sensitivity}, the \ac{dmdc} predictor may have preserved the differences between candidate currents that mattered for containment while avoiding variation that the data could not reliably establish.
 
 The time averaging in seizure burden can also obscure late spread.
-With the waveform \ac{mlp} at $w_{L_2}=30$, mean burden was \SI{5.65}{\percent}, yet seed 7005 finished with 35 seizing regions after first showing \ac{pz} recruitment at the \SI{10.5}{\second} window endpoint.
-Seed 7005 finished with three seizing regions at $w_{L_2}=100$.
+With the waveform \ac{mlp} controller at \mbox{$w_{L_2}=30$}, mean burden was \SI{5.65}{\percent}, yet seed 7005 finished with 35 seizing regions after first showing \ac{pz} recruitment at the \SI{10.5}{\second} window endpoint.
+Seed 7005 finished with three seizing regions at \mbox{$w_{L_2}=100$}.
 
-For subsequent experiments using these controller configurations and the same horizon, we retained $w_{L_2}=0.30$ for the spectral controllers and $w_{L_2}=100$ for the waveform \ac{mlp}.
+For subsequent experiments using these controller configurations and the same horizon, we retained \mbox{$w_{L_2}=0.30$} for the spectral controllers and \mbox{$w_{L_2}=100$} for the waveform \ac{mlp} controller.
+Next we test how the spectral estimation geometry itself affects closed-loop containment and charge.
 
 \subsection{Effect of Spectral Geometry on Seizure Suppression}
 % The stage-by-stage report is artifacts/sweep_2026_11/observable_geometry/report.md.
@@ -495,7 +498,7 @@ Delivered charge can therefore differ substantially between settings and must be
   The smoothing and taper stages started control when the required history was available.}\label{tab:spectral_geometry_sweep}
   \begin{tabular}{@{}llrrr@{}}
     \toprule
-    Stage & Setting & Burden (\%) & Charge (mAs) & Final seizing regions \\
+    Stage & Setting & Burden (\%) & Charge (mAs) & Final count \\
     \midrule
     Segment & 25 samples & 11.44 & 22.27 & 8.8 \\
             & 50 samples & 11.71 & 14.00 & 9.2 \\
@@ -514,19 +517,19 @@ Delivered charge can therefore differ substantially between settings and must be
   \end{tabular}
 \end{table}
 
-The segment comparison examined whether finer frequency resolution would improve containment or reduce charge.
+Comparing 25- and 50-sample segments tested whether finer frequency resolution would improve containment or reduce charge.
 Doubling the segment from 25 to 50 samples refined the frequency grid from \SI{2}{\hertz} to \SI{1}{\hertz}, but also extended the history needed to initialize the predictor.
-To compare the controllers with the same opportunity to intervene, both started at \SI{1.98}{\second}, when the 50-sample controller had acquired its spectral and past-current histories.
-At this common start, the 50-sample controller used substantially less charge with similar mean burden (Table~\ref{tab:spectral_geometry_sweep}).
-The 25-sample controller solved faster, with a mean solve time of \SI{4.87}{\second} compared with \SI{8.52}{\second} for 50 samples.
+To compare the controllers with the same opportunity to intervene, both started at \SI{1.98}{\second}, when the 50-sample-segment controller had acquired its spectral and past-current histories.
+At this common start, the 50-sample-segment controller used substantially less charge with similar mean burden (Table~\ref{tab:spectral_geometry_sweep}).
+The 25-sample-segment controller solved faster, with a mean solve time of \SI{4.87}{\second} compared with \SI{8.52}{\second} for the 50-sample segment.
 
 Matching the start times removed the opportunity to test the shorter segment's earlier start at \SI{0.48}{\second}.
 The importance of that delay became apparent on seed 7005, where the seizure had already spread into the \ac{pz} by \SI{1.50}{\second}.
-To isolate the effect of starting earlier, the 25-sample controller was evaluated on the same seed at its earliest start.
+To isolate the effect of starting earlier, the 25-sample-segment controller was evaluated on the same seed at its earliest start.
 It contained the seizure, reducing burden from \SI{35.73}{\percent} to \SI{4.62}{\percent}.
-The 25-sample segment was retained for the remaining comparisons because it allowed the earliest intervention and contained the seizure on this seed at \SI{26.80}{\milli\ampere\second}.
+The 25-sample segment was retained for the remaining comparisons because it allowed the earliest intervention and contained the seizure on this seed while delivering \SI{26.80}{\milli\ampere\second}.
 
-With the shorter segment in place, the band comparison asked which parts of the spectrum the controller needed for containment.
+With the shorter segment in place, we compared frequency bands to determine which parts of the spectrum the controller needed for containment.
 The \SIrange{0}{25}{\hertz} setting supplied all available bins.
 The zero-frequency bin had the highest energy and captured the weighted level of the signal within a window.
 Removing just this bin with the \SIrange{1}{25}{\hertz} setting tested whether the controller benefited from including that level alongside the oscillatory components.
@@ -539,14 +542,14 @@ Frame averaging was intended to reduce fluctuations in the log-power estimates a
 Averaging over four or seven frames reduced the validation loss on those targets, but extended the waveform support by \SI{180}{\milli\second} or \SI{360}{\milli\second}, respectively, and postponed the first control update.
 In closed loop, averaging lowered mean burden by less than one percentage point while increasing charge to \SI{33.24}{\milli\ampere\second} with four frames and \SI{37.05}{\milli\ampere\second} with seven.
 At the tested current-cost weight, the smoother targets therefore gave only a small improvement in burden and used charge closer to sustained stimulation.
-Because the benefits of multiple frame smoothing aren't clear, the individual frames were retained for the taper comparison.
+Because the benefits of multi-frame smoothing were not clear, the individual frames were retained for the taper comparison.
 
 Changing the taper tests whether the controller benefited from giving recent samples greater weight.
 The taper produced the clearest difference in containment at similar mean charge.
-The symmetric Hann failed to contain the seizure on two of the five seeds, with 30 regions still seizing at the end of each run.
-The rising half-Hann contained the seizure on all five seeds.
+The controller using the symmetric Hann window failed to contain the seizure on two of the five seeds, with 30 regions still seizing at the end of each run.
+The controller using the rising half-Hann window contained the seizure on all five seeds.
 It gives the newest samples greater weight at the same frame endpoint, so emerging activity can contribute more strongly to the spectrum as soon as it is measured.
-This effect seems to outweight the effects of spectral leakage. 
+This effect seems to outweigh the effects of spectral leakage.
 The following comparisons used 25-sample segments, a three-sample hop, the \SIrange{1}{25}{\hertz} band, a rising half-Hann window, and individual frames. 
 
 \subsection{Controller Comparison}\label{sec:controller_comparison}
@@ -556,10 +559,10 @@ The following comparisons used 25-sample segments, a three-sample hop, the \SIra
 % Early drive uses the applied current holds and the linear projection in artifacts/ez_montage_suppression/drive.csv.
 
 After selecting the spectral estimation settings on the development seeds, we tested whether the tuned \ac{mpc} controllers could contain widespread recruitment with less charge than threshold stimulation on the reserved seeds.
-We compared the spectral \ac{dmdc}, spectral \ac{cnn}, and waveform \ac{mlp} with the uncontrolled and threshold baselines.
-All controlled runs started at \SI{1.38}{\second}, when the spectral \ac{cnn} had acquired its input history.
-The spectral \ac{dmdc} used a \SI{0.60}{\second} control horizon and a quadratic current weight of \(0.10\).
-The spectral \ac{cnn} and waveform \ac{mlp} used \SI{1.02}{\second} horizons and current weights of \(0.30\) and \(100\), respectively.
+We compared the spectral \ac{dmdc}, spectral \ac{cnn}, and waveform \ac{mlp} controllers with the uncontrolled and threshold baselines.
+All controlled runs started at \SI{1.38}{\second}, when the spectral \ac{cnn} predictor had acquired its input history.
+The spectral \ac{dmdc} controller used a \SI{0.60}{\second} control horizon and a quadratic current-cost weight of \(0.10\).
+The spectral \ac{cnn} and waveform \ac{mlp} controllers used \SI{1.02}{\second} horizons and current-cost weights of \(0.30\) and \(100\), respectively.
 The spectral controllers penalized excess log-power, and the waveform controller tracked the healthy waveform reference.
 The comparison therefore evaluates the tuned controllers as complete systems.
 
@@ -585,37 +588,37 @@ The uncontrolled runs ended with 26 to 31 seizing regions on six seeds and three
 Threshold stimulation left 28 to 32 regions seizing on four of those six seeds and delivered charge close to sustained stimulation at the current limit (Table~\ref{tab:controller_comparison}).
 Both spectral controllers ended with at most seven seizing regions on every seed and used \SIrange{39}{48}{\percent} less mean charge than the threshold controller.
 Their mean burdens were within the range associated with containment and residual focal activity in this plant.
-The spectral \ac{dmdc} reached this range with the linear predictor and the shortest tested horizon.
-The spectral \ac{cnn} used \SI{3.78}{\milli\ampere\second} less charge on average, with a difference in mean burden of 0.21 percentage points.
+The spectral \ac{dmdc} controller reached this range with the linear predictor and the shortest tested horizon.
+The spectral \ac{cnn} controller used \SI{3.78}{\milli\ampere\second} less charge on average, with a difference in mean burden of 0.21 percentage points.
 The two operating points differed in horizon and cost weights, so the charge difference reflects the combination of those settings and the predictor.
 
-The waveform \ac{mlp} also reduced mean burden relative to threshold stimulation, by 4.87 percentage points (paired 95\% bootstrap interval for the reduction, 0.28 to 10.04 percentage points).
+The waveform \ac{mlp} controller also reduced mean burden relative to threshold stimulation, by 4.87 percentage points.
 It delivered \SI{20.04}{\milli\ampere\second} less charge on average than threshold stimulation.
 Its burden lay between \SIrange{4.74}{6.08}{\percent} on nine seeds.
 On seed 7104, its burden reached \SI{35.64}{\percent} and 28 regions were still seizing at the end, accounting for most of the difference in mean burden from the spectral controllers.
-Every waveform solve was accepted, ruling out fallback after a failed solve as the cause of this outcome.
+Every solve for the waveform controller was accepted, ruling out fallback after a failed solve as the cause of this outcome.
 
-On seed 7104, recruitment accelerated shortly after \SI{2}{\second} under the waveform \ac{mlp}.
+On seed 7104, recruitment accelerated shortly after \SI{2}{\second} under the waveform \ac{mlp} controller.
 Before that point, it supplied weaker negative drive to both \ac{pz} regions than either spectral controller, which allowed the seizure to spread.
 Once recruitment becomes widespread, the available stimulation is insufficient to restore containment in this run.
-As shown in Section~\ref{sec:observable_predictability} the waveform cost tracks recruitment less closely than the spectral cost (Figure~\ref{fig:observable_penalty_state}).
-This run could have been an example of a situation in which the cost didn't accurately represent the seizure state explaining the low stimulation.
+As shown in Section~\ref{sec:observable_predictability}, the waveform cost tracks recruitment less closely than the spectral cost (Figure~\ref{fig:observable_penalty_state}).
+This run could have been a case in which the cost did not accurately represent the seizure state, explaining the low stimulation.
 
-This failure was unexpected given the waveform \ac{mlp}'s apparent robustness on the development seeds (Section~\ref{sec:stimulation_cost_weight}).
+This failure was unexpected given the waveform \ac{mlp} controller's apparent robustness on the development seeds (Section~\ref{sec:stimulation_cost_weight}).
 In the stochastic plant, however, recruitment can progress at different rates, changing how much time the controller has to intervene.
 The ten reserved seeds cover only a sample of the plant's possible noise realizations, so even the spectral predictor results provide no guarantee of containment across other seeds.
-The next comparison examines how training loss and suppression cost affect containment within the waveform \ac{mlp}.
+The next comparison examines how training loss and suppression cost affect containment within the waveform \ac{mlp} controller.
 
 \subsection{Waveform Prediction Target}\label{sec:waveform_prediction_closed_loop}
 
-The controller comparison evaluates the selected waveform and spectral controllers as complete systems.
-To isolate choices within the waveform controller, we varied the training loss and the suppression cost of the waveform \ac{mlp}.
+The controller comparison evaluated the selected waveform and spectral controllers as complete systems.
+To isolate choices within the waveform controller, we varied the predictor's training loss and the controller's suppression cost for the waveform \ac{mlp} architecture.
 We compared each single loss, \(\mathcal{L}_\mathrm{wave}\) or \(\mathcal{L}_\mathrm{spec}\), with the joint loss \(\mathcal{L}_\mathrm{joint}\) under the corresponding suppression cost (A versus C and B versus D in Table~\ref{tab:waveform_loss_cost}).
-Using the joint fit across C, D, and E then let us compare the waveform cost \(\mathcal J_{\mathrm{wave}}\), the spectral cost \(\mathcal J_{\mathrm{spec}}\), and their combination.
+Using the joint-loss fit across C, D, and E then let us compare the waveform cost \(\mathcal J_{\mathrm{wave}}\), the spectral cost \(\mathcal J_{\mathrm{spec}}\), and their combination.
 
 All five configurations ran on the same development seeds, with control starting at \SI{0.48}{\second} and a control horizon of 51 samples (\SI{1.02}{\second}).
-When active, the waveform and spectral costs had weights \(w_{\mathrm{wave}}=1\) and \(w_{\mathrm{spec}}=1000\), respectively.
-With both costs active, \(w_{L_2}=100\) on the quadratic current cost \(\mathcal J_{L_2}\) was the only tested weight that put mean delivered charge in the \SIrange{20}{30}{\milli\ampere\second} target range (Appendix~\ref{app:waveform_controller_calibration}).
+When active, the waveform and spectral costs had weights \mbox{\(w_{\mathrm{wave}}=1\)} and \mbox{\(w_{\mathrm{spec}}=1000\)}, respectively.
+With both costs active, \mbox{\(w_{L_2}=100\)} on the quadratic current cost \(\mathcal J_{L_2}\) was the only tested weight that put mean delivered charge in the \SIrange{20}{30}{\milli\ampere\second} target range (Appendix~\ref{app:waveform_controller_calibration}).
 We held \(w_{L_2}\) fixed to apply the same penalty to a given current sequence in all five configurations.
 
 % Data: artifacts/sweep_2026_11/waveform_matched_geometry/mlp/loss_cost/{comparison_manifest.yaml,summary.csv,rows.csv}.
@@ -638,29 +641,27 @@ We held \(w_{L_2}\) fixed to apply the same penalty to a given current sequence 
   \end{tabular}
 \end{table}
 
-With waveform tracking and the same current weight, adding the spectral training loss was needed to contain spread across all five development seeds (A versus C in Table~\ref{tab:waveform_loss_cost}).
-The waveform-only fit ended with 30 or 31 regions seizing on three seeds, while the joint fit ended with three or four seizing regions on every seed.
-The waveform-only fit delivered less charge on average, yet on seed 7001 it delivered slightly more charge than the joint fit and still allowed widespread recruitment.
+With the waveform suppression cost and the same current-cost weight, adding the spectral training loss was needed to contain spread across all five development seeds (A versus C in Table~\ref{tab:waveform_loss_cost}).
+The controller using the waveform-only fit ended with 30 or 31 regions seizing on three seeds, while the controller using the joint-loss fit ended with three or four seizing regions on every seed.
+The controller using the waveform-only fit delivered less charge on average, yet on seed 7001 it delivered slightly more charge than with the joint-loss fit and still allowed widespread recruitment.
 % Solver configuration: artifacts/sweep_2026_11/waveform_matched_geometry/base_simulation.yaml.
 % Failure handling: src/neuro/control/mpc.py and src/neuro/control/execution.py.
 All 163 failed solves occurred in the three runs with widespread recruitment after the seizure had spread.
 % Timestamped replay: artifacts/waveform_arm_a_timing/report.md.
 A solve counted as failed if IPOPT returned without meeting its convergence or acceptable stopping criteria, or if the call raised an error.
 After a failed solve, the controller applied zero current until the next replan.
-The waveform-only fit was the only fit with failed solves.
+The controller using the waveform-only fit was the only configuration with failed solves.
 
-This closed-loop result supports the earlier prediction analyses.
-Squared waveform error can attenuate phase-uncertain oscillations, making seizure activity appear closer to the healthy waveform reference (Section~\ref{sec:observable_predictability}).
-The addition of the spectral loss reduced that attenuation in the offline forecasts (Section~\ref{sec:offline_prediction_target}) and gave the controller a better basis for penalizing seizure activity through \(\mathcal J_{\mathrm{wave}}\).
+This closed-loop result supports the earlier prediction analyses (Sections~\ref{sec:observable_predictability} and~\ref{sec:offline_prediction_target}): adding the spectral training loss preserved oscillatory power in the forecasts and gave the controller a better basis for penalizing seizure activity through \(\mathcal J_{\mathrm{wave}}\).
 
 The comparison under \(\mathcal J_{\mathrm{spec}}\) isolates the effect of adding \(\mathcal{L}_\mathrm{wave}\) to the spectral loss (B versus D).
 Joint training prevented widespread recruitment on seed 7001, while seed 7004 still showed widespread recruitment.
 IPOPT reported success on every solve in both configurations.
 
-With the joint fit held fixed, both configurations that used \(\mathcal J_{\mathrm{spec}}\) contained spread on fewer seeds than waveform tracking alone (D and E versus C).
-To test whether the relative penalty on current explained this result, we varied the spectral and current weights (Section~\ref{sec:waveform_cost_calibration}).
-Reducing the current weight prevented widespread recruitment in two short replays, so the original weighting contributed to those outcomes.
-Across the five development seeds, waveform tracking alone contained spread at lower mean charge than any tested combination that contained spread on all five seeds.
+With the joint-loss fit held fixed, both configurations that used \(\mathcal J_{\mathrm{spec}}\) contained spread on fewer seeds than the waveform suppression cost alone (D and E versus C).
+To test whether the relative penalty on current explained this result, we varied the spectral and current-cost weights (Section~\ref{sec:waveform_cost_calibration}).
+Reducing the current-cost weight prevented widespread recruitment in two short replays, so the original weighting contributed to those outcomes.
+Across the five development seeds, the waveform suppression cost alone contained spread at lower mean charge than any tested combination that contained spread on all five seeds.
 
 The controllers that predicted log-power directly used \(\mathcal J_{\mathrm{spec}}\) and avoided widespread recruitment on all reserved seeds (Section~\ref{sec:controller_comparison}).
 The higher log-power error of waveform-derived forecasts from \SI{120}{\milli\second} onward may explain why the spectral cost was less effective with the waveform predictor (Section~\ref{sec:offline_prediction_target}).
