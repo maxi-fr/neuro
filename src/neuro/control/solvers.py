@@ -15,7 +15,7 @@ from trajopt.transcription.ipopt import Ipopt
 from trajopt.transcription.single_shooting import SingleShooting
 
 from neuro.control.condensed import CondensedOSQP
-from neuro.control.costs import AffineObservableHinge, has_whole_horizon_cost
+from neuro.control.costs import AffineObservableHinge, CondensedL1ControlCost, has_whole_horizon_cost
 
 if TYPE_CHECKING:
     from trajopt.problem import Problem
@@ -57,6 +57,9 @@ IPOPT_DEFAULTS: dict[str, Any] = {
 def ensure_solver_supports_objective(problem: Problem, solver: Solver) -> None:
     """Validate solver compatibility with physical and epigraph constraints and Costs."""
     stage_terms = cost_terms(problem.obj.stage_cost)
+    if any(isinstance(term, CondensedL1ControlCost) for term in stage_terms) and not isinstance(solver, CondensedOSQP):
+        msg = "Continuous affine_hinge with exact L1 requires CondensedOSQP"
+        raise ValueError(msg)
     if any(isinstance(term, AffineObservableHinge) for term in stage_terms) and not isinstance(
         solver, (CondensedOSQP, Ipopt, SingleShooting)
     ):
@@ -105,7 +108,7 @@ def _instantiate_solver(class_path: str, cfg: dict[str, Any]) -> Solver:
 
 
 def _build_solver(spec: dict[str, Any] | Solver | None, problem: Problem | None = None) -> Solver:
-    """Instantiate a configured Solver or select stock IPOPT single shooting.
+    """Instantiate and validate a configured Solver or stock IPOPT single shooting.
 
     Parameters
     ----------
@@ -115,7 +118,7 @@ def _build_solver(spec: dict[str, Any] | Solver | None, problem: Problem | None 
         Optional Problem used to validate the configured Solver against its Objective.
     """
     if spec is None:
-        return SingleShooting(solver=Ipopt(options=IPOPT_DEFAULTS))
+        spec = SingleShooting(solver=Ipopt(options=IPOPT_DEFAULTS))
 
     if not isinstance(spec, dict):
         if not hasattr(spec, "solve"):

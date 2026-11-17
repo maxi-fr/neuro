@@ -7,6 +7,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 from trajopt.costs.base import CostFunction
+from trajopt.costs.l1 import L1ControlCost
 from trajopt.costs.one_sided_quadratic import OneSidedQuadratic
 from trajopt.costs.sum import cost_terms
 
@@ -15,6 +16,7 @@ from neuro.spectral import LOG_FLOOR, ObservableEnvelope, _frame_kernel_weights,
 if TYPE_CHECKING:
     from collections.abc import Callable
 
+    from trajopt.costs.reformulation import CostReformulation
     from trajopt.dynamics.base import AbstractModel
 
     from neuro.config import StftGeometry
@@ -22,14 +24,26 @@ if TYPE_CHECKING:
 
 
 class AffineObservableHinge(OneSidedQuadratic):
-    """Direct next-Frame Cost whose slacks are allocated by the condensed solver."""
+    """Affine next-Frame Cost for the condensed QP or a lowered NLP."""
 
-    def __init__(self, matrix: jax.Array, limit: jax.Array, weight: float, n: int) -> None:
-        """Define a fixed, affine residual on the state and Control Current."""
-        super().__init__(matrix, limit, weight, n=n, formulation="direct")
+    def __init__(self, matrix: jax.Array, limit: jax.Array, weight: float, n: int, *, epigraph: bool = False) -> None:
+        """Define an affine residual and select who owns its epigraph slacks."""
+        super().__init__(matrix, limit, weight, n=n, formulation="epigraph" if epigraph else "direct")
+
+    def reformulate(self) -> CostReformulation | None:  # ty: ignore[invalid-method-override]
+        """Lower the IPOPT epigraph and leave the direct cost visible to the condensed QP."""
+        return super().reformulate() if self.formulation == "epigraph" else None
+
+
+class CondensedL1ControlCost(L1ControlCost):
+    """Keep the exact physical L1 cost for a solver that owns its epigraph slacks."""
+
+    def __init__(self, n: int, m: int, weight: float) -> None:
+        """Initialize the physical L1 cost with its horizon-normalized weight."""
+        super().__init__(n=n, m=m, weight=weight)
 
     def reformulate(self) -> None:  # ty: ignore[invalid-method-override]
-        """Keep physical terms visible to the condensed solver and IPOPT."""
+        """Leave the absolute-current epigraph to CondensedOSQP."""
 
 
 def jax_compute_observable_frames(y: jax.Array, geometry: StftGeometry, *, fs: float) -> jax.Array:

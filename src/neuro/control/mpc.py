@@ -61,6 +61,7 @@ class TrajOptMPCLog:
     plan_index: int = 0
     fallback: bool = False
     controller_time: float = 0.0
+    replan_time: float = float("nan")
 
 
 _CONTINUOUS_POLISH_THRESHOLD = 0.20
@@ -275,7 +276,8 @@ class TrajOptMPCController(Controller[TrajOptMPCLog]):
         )
 
     def _plan(self, t: float) -> TrajOptMPCLog:
-        """Shift the consumed prefix, pin the absorbed state and log the physical solve result."""
+        """Record the solver interval and the full replan interval separately."""
+        replan_started = time.perf_counter()
         if self._playback.plan_tick is not None:
             self.mpc.advance(self._playback.steps)
         self.mpc.measure(jnp.asarray(self._state), t)
@@ -289,6 +291,7 @@ class TrajOptMPCController(Controller[TrajOptMPCLog]):
                 solve_attempted=True,
                 status=str(exc),
                 solve_time=time.perf_counter() - started,
+                replan_time=time.perf_counter() - replan_started,
             )
         solve_time = time.perf_counter() - started
         condensed = isinstance(self.solver, CondensedOSQP)
@@ -305,7 +308,7 @@ class TrajOptMPCController(Controller[TrajOptMPCLog]):
                 "cost_active": 0.0,
                 "cost_spectral": solved.info["cost_spectral"],
                 "cost_quadratic_effort": solved.info["cost_quadratic_effort"],
-                "cost_sparse_effort": 0.0,
+                "cost_sparse_effort": solved.info["cost_sparse_effort"],
                 "cost_tracking": 0.0,
                 "normalization": "channel_mean",
             }
@@ -329,6 +332,7 @@ class TrajOptMPCController(Controller[TrajOptMPCLog]):
             cost_sparse_effort=costs_decomp["cost_sparse_effort"],
             cost_tracking=costs_decomp["cost_tracking"],
             normalization=costs_decomp["normalization"],
+            replan_time=time.perf_counter() - replan_started,
         )
 
     def solve_state(

@@ -58,6 +58,7 @@ class CasADiMPCLog:
     plan_index: int = 0
     fallback: bool = False
     controller_time: float = 0.0
+    replan_time: float = float("nan")
 
 
 @dataclasses.dataclass(frozen=True)

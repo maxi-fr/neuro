@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import dataclasses
 import itertools
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
 
 import jax.numpy as jnp
@@ -13,7 +14,8 @@ from trajopt.costs.objective import Objective
 from trajopt.costs.output import OutputCost
 from trajopt.costs.sum import cost_terms
 from trajopt.mpc import MPC
-from trajopt.problem import Problem
+from trajopt.problem import BoundaryConditions, Problem
+from trajopt.program import Program, WarmStart
 from trajopt.solvers.altro import ALTRO
 from trajopt.solvers.boxqp import BoxQP
 from trajopt.trajectory import Trajectory
@@ -23,7 +25,9 @@ from trajopt.transcription.single_shooting import SingleShooting
 
 from neuro.config import StftGeometry
 from neuro.control.candidate import CandidateMPCController
+from neuro.control.casadi import build_casadi_observable_problem
 from neuro.control.condensed import CondensedOSQP
+from neuro.control.condensed_casadi import CondensedBonminController
 from neuro.control.costs import ObservableHingeCost
 from neuro.control.diagnostics import _rollout_states, decompose_cost
 from neuro.control.model_wrappers import AugmentedActivationModel
@@ -39,8 +43,6 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     import jax
-    from trajopt.problem import BoundaryConditions
-    from trajopt.program import Program, WarmStart
 
     from neuro.types import FloatArray
 
@@ -1388,6 +1390,7 @@ def test_affine_observable_hinge_and_condensed_mpc_parity() -> None:
                 continue
             assert expected.success, expected.status
             assert actual.success, actual.status
+            assert 0.0 <= actual.solve_time < actual.replan_time
             np.testing.assert_allclose(actual.u, expected.u, atol=1e-6)
             np.testing.assert_allclose(actual.planned_u, expected.planned_u, atol=1e-6)
             np.testing.assert_allclose(actual.predicted_y, expected.predicted_y, atol=1e-6)
@@ -1399,6 +1402,120 @@ def test_affine_observable_hinge_and_condensed_mpc_parity() -> None:
             np.testing.assert_allclose(actual.cost_quadratic_effort, rescore["cost_quadratic_effort"], atol=1e-12)
             np.testing.assert_allclose(actual.cost, rescore["cost_total"], atol=1e-12)
         assert condensed.mpc.program.handles["condensed_osqp"] is handle
+
+
+@pytest.mark.parametrize("u_max", [0.5, [0.0, 0.5, 0.5], 0.0])
+def test_condensed_osqp_and_bonmin_agree_on_fixed_l1_schedule(tmp_path: Path, u_max: float | list[float]) -> None:
+    """Price the same schedule in both epigraphs, including fixed-zero electrodes."""
+    artifact, geometry = _build_observable_checkpoint(tmp_path, depth=0, n_controls=3)
+    reference = HealthyReference.load(_write_envelope(tmp_path, geometry))
+    settings = {
+        "horizon": 4,
+        "u_max": u_max,
+        "kirchhoff": True,
+        "w_hinge": 2.0,
+        "w_u_l1": 0.1,
+        "reference": reference,
+    }
+    problem = build_observable_problem(artifact, **settings, affine_hinge=True, l1_mode="epigraph")
+    solver = CondensedOSQP({"eps_abs": 1e-9, "eps_rel": 1e-9})
+    program = Program(problem, solver)
+    model = cast("ObservableMLPModel", problem.model)
+    state = model.initial_state()
+    for _ in range(model.n_history):
+        state = model.absorb(state, np.full(model.n_outputs, 1.0), np.zeros(model.m))
+    boundary = BoundaryConditions(x0=state, t0=jnp.asarray(0.0))
+    seed = WarmStart.cold(problem, state)
+    schedule = np.array([True, False, True, True])
+    qp = solver.solve(program, boundary, seed, active=schedule)
+    assert qp.success, qp.message
+    bonmin_problem = build_casadi_observable_problem(
+        artifact,
+        **settings,
+        w_active=0.0,
+        solver_options={"bonmin.bb_log_level": 0},
+    )
+    bonmin = CondensedBonminController(model.dt, bonmin_problem)
+    gate_indices = slice(model.m * schedule.size, (model.m + 1) * schedule.size)
+    bonmin._lbx[gate_indices] = schedule  # noqa: SLF001 -- fix the same schedule in both solvers
+    bonmin._ubx[gate_indices] = schedule  # noqa: SLF001 -- fix the same schedule in both solvers
+    mixed = bonmin.solve_state(np.asarray(state), np.asarray(qp.trajectory.U), schedule.astype(float))
+    assert mixed.success, mixed.status
+    np.testing.assert_array_equal(mixed.planned_active, schedule)
+    np.testing.assert_equal(mixed.planned_u[~schedule], 0.0)
+    np.testing.assert_equal(mixed.planned_u[:, np.broadcast_to(u_max, (model.m,)) == 0.0], 0.0)
+    np.testing.assert_allclose(mixed.planned_u.sum(axis=1), 0.0, atol=1e-12)
+    np.testing.assert_allclose(mixed.predicted_y, model.output(qp.trajectory.X), atol=1e-6)
+    np.testing.assert_allclose(mixed.cost, qp.cost, atol=1e-6)
+    np.testing.assert_allclose(mixed.cost_sparse_effort, 0.1 * np.abs(mixed.planned_u).sum() / 4, atol=1e-12)
+    unrestricted = solver.solve(program, boundary, seed)
+    assert unrestricted.success, unrestricted.message
+    assert unrestricted.cost <= qp.cost + 1e-7
+
+
+def test_condensed_candidate_search_prices_all_17_holds(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Evaluate all 16 block schedules and prefer the cheaper four-hold activation."""
+    artifact, geometry = _build_observable_checkpoint(tmp_path, depth=0, horizon=17)
+    reference = HealthyReference.load(_write_envelope(tmp_path, geometry))
+    problem = build_observable_problem(
+        artifact, horizon=17, u_max=0.5, kirchhoff=True, w_hinge=2.0, reference=reference, affine_hinge=True
+    )
+    model = cast("ObservableMLPModel", problem.model)
+    blocks = [list(range(start, stop)) for start, stop in ((0, 4), (4, 8), (8, 12), (12, 17))]
+    controller = CandidateMPCController(model.dt, problem, blocks=blocks, w_active=0.51, condensed_osqp={})
+    schedules = []
+
+    def price_schedule(*_args: object, active: np.ndarray) -> SimpleNamespace:
+        """Make the five-hold QP slightly cheaper before pricing each enabled hold."""
+        schedules.append(active.copy())
+        enabled = np.flatnonzero(active).tolist()
+        if enabled == blocks[0]:
+            cost = -1.0
+        elif enabled == blocks[-1]:
+            cost = -1.02
+        else:
+            cost = 10.0
+        return SimpleNamespace(cost=cost, status=1, success=True, trajectory=SimpleNamespace(U=np.zeros((17, model.m))))
+
+    monkeypatch.setattr(CondensedOSQP, "_solve_at_boundary", price_schedule)
+    for tick in range(model.n_history):
+        _, log = controller.update(tick * model.dt, np.zeros(1), np.ones(model.n_outputs))
+        if log.solve_attempted:
+            break
+    assert log.success
+    assert len(schedules) == 15
+    assert len({schedule.tobytes() for schedule in schedules}) == 15
+    assert all(schedule.any() for schedule in schedules)
+    np.testing.assert_array_equal(np.flatnonzero(log.planned_active), blocks[0])
+    assert log.cost_active == pytest.approx(0.51 * 4 / 17)
+    assert 0.0 <= log.solve_time < log.replan_time
+
+
+def test_activation_homotopy_can_lower_the_affine_hinge(tmp_path: Path) -> None:
+    """Exercise the existing IPOPT continuation with an affine hinge lifted through JAX-TrajOpt."""
+    artifact, geometry = _build_observable_checkpoint(tmp_path, depth=0)
+    reference = HealthyReference.load(_write_envelope(tmp_path, geometry))
+    problem = build_observable_problem(
+        artifact,
+        horizon=4,
+        u_max=0.5,
+        kirchhoff=True,
+        w_hinge=2.0,
+        w_active=0.1,
+        reference=reference,
+        affine_hinge=True,
+    )
+    solver = SingleShooting(solver=Ipopt(options={"print_level": 0, "sb": "yes"}))
+    program = Program(problem, solver)
+    model = cast("AugmentedActivationModel", problem.model)
+    state = model.initial_state()
+    for _ in range(model.n_history):
+        state = model.absorb(state, np.full(model.n_outputs, 1.0), np.zeros(model.n_controls))
+    solution = program.solve(BoundaryConditions(x0=state, t0=jnp.asarray(0.0)), WarmStart.cold(problem, state))
+    assert solution.success, solution.message
+    scores = decompose_cost(problem, solution.trajectory.X, solution.trajectory.U, dt=model.dt)
+    assert scores["cost_spectral"] > 0
+    np.testing.assert_allclose(solution.cost, scores["cost_total"], atol=1e-6)
 
 
 @pytest.mark.parametrize("mode", ["physical", "epigraph", "binary"])

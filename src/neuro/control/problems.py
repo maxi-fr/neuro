@@ -23,6 +23,7 @@ from trajopt.problem import Problem
 
 from neuro.control.costs import (
     AffineObservableHinge,
+    CondensedL1ControlCost,
     ExcludeInitialKnotState,
     ObservableFrameHingeCost,
     ObservableHingeCost,
@@ -509,9 +510,9 @@ def _validate_integer_observable_problem_args(
 
 
 def _affine_observable_hinge(
-    model: ObservableMLPModel, envelope: ObservableEnvelope, weight: float
+    model: ObservableMLPModel, envelope: ObservableEnvelope, weight: float, *, activation: bool = False
 ) -> AffineObservableHinge:
-    """Price the next physical Frame from the affine Predictor's runtime equations."""
+    """Price the next Frame, with a zero gate column for the lifted IPOPT epigraph."""
 
     def next_frame(z: jax.Array) -> jax.Array:
         """Compose the delay-register update with the physical output map."""
@@ -520,7 +521,9 @@ def _affine_observable_hinge(
     zero = jnp.zeros(model.n + model.m, dtype=jnp.float64)
     matrix = jax.jacfwd(next_frame)(zero)
     limit = jnp.asarray(envelope.power).reshape(-1) - next_frame(zero)
-    return AffineObservableHinge(matrix, limit, weight / limit.size, n=model.n)
+    if activation:
+        matrix = jnp.pad(matrix, ((0, 0), (0, 1)))
+    return AffineObservableHinge(matrix, limit, weight / limit.size, n=model.n, epigraph=activation)
 
 
 def build_observable_problem(  # noqa: PLR0913 -- checkpoint plus the MPC cost/bound knobs
@@ -578,8 +581,9 @@ def build_observable_problem(  # noqa: PLR0913 -- checkpoint plus the MPC cost/b
         Sparsity reformulation mode: ``"smooth"`` (default pseudo-Huber surrogate) or
         ``"epigraph"`` (exact L1 epigraph reformulation).
     affine_hinge
-        Price the next Frame with affine residuals for a continuous depth-zero Observable MLP.
-        Requires equal positive stage and terminal hinge weights and zero L1 weight.
+        Price the next Frame with affine residuals for a depth-zero Observable MLP.
+        With activation, lower the hinge through JAX-TrajOpt's epigraph.
+        With continuous exact L1, CondensedOSQP owns both epigraphs.
     """
     base = (
         artifact
@@ -611,21 +615,23 @@ def build_observable_problem(  # noqa: PLR0913 -- checkpoint plus the MPC cost/b
         r = r.at[-1].set(w_active / horizon)
     stage = DiagonalCost(Q=jnp.zeros(n), R=R, q=jnp.zeros(n), r=r)
     costs: list[CostFunction] = [stage] if affine_hinge else [ExcludeInitialKnotState(stage)]
-    costs.extend(_sparse_effort(n, m, w_u_l1 / horizon, l1_mode))
+    if affine_hinge and w_u_l1 > 0 and not integer_mode and l1_mode == "epigraph":
+        costs.append(CondensedL1ControlCost(n=n, m=m, weight=w_u_l1 / horizon))
+    else:
+        costs.extend(_sparse_effort(n, m, w_u_l1 / horizon, l1_mode))
     w_hinge_term = w_hinge if w_hinge_terminal is None else float(w_hinge_terminal)
     if affine_hinge and (
         not isinstance(base, ObservableMLPModel)
         or len(base.weights) != 1
-        or integer_mode
-        or w_u_l1 != 0
+        or (w_u_l1 != 0 and (integer_mode or l1_mode != "epigraph"))
         or not np.isfinite(w_u)
         or w_u < 0
         or w_hinge <= 0
         or w_hinge_term != w_hinge
     ):
         msg = (
-            "affine_hinge requires a continuous depth-zero Observable MLP, equal positive hinge weights,"
-            " zero L1 weight and finite nonnegative quadratic effort"
+            "affine_hinge requires a depth-zero Observable MLP, equal positive hinge weights,"
+            " finite nonnegative quadratic effort, and either zero L1 or continuous exact L1"
         )
         raise ValueError(msg)
     w_hinge_eff = max(w_hinge, w_hinge_term)
@@ -634,7 +640,7 @@ def build_observable_problem(  # noqa: PLR0913 -- checkpoint plus the MPC cost/b
     if envelope is not None:
         _validate_observable_envelope(envelope, base)
         if affine_hinge and isinstance(base, ObservableMLPModel):
-            costs.append(_affine_observable_hinge(base, envelope, w_hinge / horizon))
+            costs.append(_affine_observable_hinge(base, envelope, w_hinge / horizon, activation=integer_mode))
         else:
             hinge = ObservableHingeCost(envelope, w_hinge=w_hinge, horizon=horizon)
             costs.append(ExcludeInitialKnotState(OutputCost(model, hinge)))

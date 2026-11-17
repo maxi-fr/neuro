@@ -16,7 +16,7 @@ from trajopt.problem import (
     Problem,
     retarget_problem,
 )
-from trajopt.program import WarmStart
+from trajopt.program import Program, WarmStart
 from trajopt.transcription.ipopt import _SUCCESS_STATUSES
 from trajopt.transcription.layout import parse_solver_initial_state
 from trajopt.transcription.penalties import PenaltyLayout
@@ -31,6 +31,7 @@ from trajopt.transcription.single_shooting import (
     single_shooting_dimensions,
 )
 
+from neuro.control.condensed import CondensedOSQP
 from neuro.control.diagnostics import (
     _knot_times,
     decompose_cost,
@@ -42,7 +43,7 @@ from neuro.control.problems import _build_problem
 from neuro.predictor.inference import InferencePredictor
 
 if TYPE_CHECKING:
-    from neuro.types import FloatArray
+    from neuro.types import FloatArray, IntArray
 
 
 _rollout_plan = eqx.filter_jit(rollout_states)
@@ -105,15 +106,17 @@ class _CandidateCallback:
 class CandidateMPCController(Controller[TrajOptMPCLog]):
     """Combinatorial control-blocking MPC controller evaluating discrete candidate schedules."""
 
-    def __init__(
+    def __init__(  # noqa: PLR0913 -- solver options join the configured schedule and release
         self,
         dt: float,
         problem: Problem,
         blocks: list[list[int]] | None = None,
         w_active: float = 0.3,
         control_start_s: float | None = None,
+        *,
+        condensed_osqp: dict[str, Any] | None = None,
     ) -> None:
-        """Initialize candidate schedules and lower exact L1 for their direct IPOPT callbacks.
+        """Initialize the schedules and prepare their selected continuous solver.
 
         Parameters
         ----------
@@ -127,6 +130,8 @@ class CandidateMPCController(Controller[TrajOptMPCLog]):
             Sparsity weight on active Control Horizon intervals.
         control_start_s
             Common release on the native solve grid.
+        condensed_osqp
+            OSQP options for the affine spectral QP.
         """
         super().__init__(dt)
         if problem.binary_control_indices:
@@ -163,6 +168,14 @@ class CandidateMPCController(Controller[TrajOptMPCLog]):
         self.blocks = blocks if blocks is not None else [[0, 1, 2], [3, 4, 5], [6, 7, 8, 9]]
         self.w_active = float(w_active)
         self.schedules = self._build_schedules(self.blocks, self.horizon)
+        self._qp = None if condensed_osqp is None else CondensedOSQP(condensed_osqp)
+        self._qp_program = None
+        if self._qp is not None:
+            if sorted(index for block in self.blocks for index in block) != list(range(self.horizon)):
+                msg = "Candidate blocks must partition the Control Horizon"
+                raise ValueError(msg)
+            self._qp_program = Program(problem, self._qp)
+            self._qp.prepare(self._qp_program)
         self._state = np.asarray(self.model.initial_state(), dtype=np.float64)
         self._u_last = np.zeros(self.model.m, dtype=np.float64)
         self.n_controls = int(self.model.m)
@@ -170,10 +183,10 @@ class CandidateMPCController(Controller[TrajOptMPCLog]):
         self._prev_plan_u: FloatArray | None = None
 
     @staticmethod
-    def _build_schedules(blocks: list[list[int]], horizon: int) -> list[np.ndarray]:
-        """Generate all 2^B candidate binary schedules from block definitions."""
+    def _build_schedules(blocks: list[list[int]], horizon: int) -> list[IntArray]:
+        """Generate all binary block schedules, starting with all-off."""
         n_blocks = len(blocks)
-        schedules: list[np.ndarray] = []
+        schedules: list[IntArray] = []
         for code in range(2**n_blocks):
             bits = [(code >> (n_blocks - 1 - b)) & 1 for b in range(n_blocks)]
             sched = np.zeros(horizon, dtype=int)
@@ -186,7 +199,7 @@ class CandidateMPCController(Controller[TrajOptMPCLog]):
 
     @classmethod
     def from_config(cls, config: dict[str, Any]) -> CandidateMPCController:
-        """Instantiate candidate schedules and common release from configuration."""
+        """Instantiate schedules, solver options and release from configuration."""
         problem = _build_problem(config["problem"])
         blocks = config.get("blocks")
         w_active = float(config.get("w_active", 0.3))
@@ -196,6 +209,7 @@ class CandidateMPCController(Controller[TrajOptMPCLog]):
             blocks=blocks,
             w_active=w_active,
             control_start_s=config.get("control_start_s"),
+            condensed_osqp=config.get("condensed_osqp"),
         )
 
     def _evaluate_candidates(
@@ -261,13 +275,36 @@ class CandidateMPCController(Controller[TrajOptMPCLog]):
 
         return best_sol, best_sched, best_status, best_success
 
+    def _solve_condensed_candidates(
+        self, bc: BoundaryConditions, ws: WarmStart
+    ) -> tuple[FloatArray, IntArray, int, bool]:
+        """Search the configured schedules against the solver's measured QP."""
+        qp, program = self._qp, self._qp_program
+        if qp is None or program is None:
+            msg = "The condensed candidate solver has not been prepared"
+            raise RuntimeError(msg)
+        return qp.select_schedule(program, bc, ws, self.schedules, self.w_active)
+
+    def _solve_nlp_candidates(self, bc: BoundaryConditions, ws: WarmStart) -> tuple[np.ndarray, np.ndarray, int, bool]:
+        """Lower the generic objective and enumerate its single-shooting subproblems."""
+        solver_problem = self.problem
+        if self._penalties is not None:
+            solver_problem = self._penalties.lowered
+            ws = self._penalties.lift_warm_start(ws)
+        x0, t0, dt, xf, _ = parse_solver_initial_state(solver_problem, bc, ws)
+        retargeted = retarget_problem(solver_problem, bc)
+        cb = _CandidateCallback(retargeted, x0, t0, jnp.broadcast_to(dt, (self.horizon,)), xf)
+        bounds = (*_primal_bounds(retargeted), *_constraint_bounds(retargeted))
+        _, seed = ws.unpack(solver_problem)
+        return self._evaluate_candidates(cb, bounds, np.asarray(seed).ravel())
+
     def update(
         self,
         t: float,
         ref: FloatArray,  # noqa: ARG002 -- goal is baked into objective
         x_hat: FloatArray,
     ) -> tuple[FloatArray, TrajOptMPCLog]:
-        """Absorb physical history, select a schedule and log its plan on the solver grid."""
+        """Absorb physical history and log the selected plan from the configured schedule solver."""
         update_started = time.perf_counter()
         self._state = np.asarray(self.model.absorb(self._state, np.asarray(x_hat).reshape(-1), self._u_last))
         knots = self.problem.N
@@ -306,34 +343,20 @@ class CandidateMPCController(Controller[TrajOptMPCLog]):
         ws = WarmStart.cold(self.problem, x0_arr)
         if self._prev_plan_u is not None:
             ws = ws.with_primal(self.problem, U=jnp.asarray(self._prev_plan_u))
-        solver_problem = self.problem
-        if self._penalties is not None:
-            solver_problem = self._penalties.lowered
-            ws = self._penalties.lift_warm_start(ws)
-        x0_p, t0_arr, dt_arr, xf_val, _ = parse_solver_initial_state(solver_problem, bc, ws)
-        problem_ret = retarget_problem(solver_problem, bc)
-        dt_arr = jnp.broadcast_to(dt_arr, (self.horizon,))
-
-        z_lower, z_upper = _primal_bounds(problem_ret)
-        g_lower, g_upper = _constraint_bounds(problem_ret)
-        cb = _CandidateCallback(problem_ret, x0_p, t0_arr, dt_arr, xf_val)
-
-        bounds = (z_lower, z_upper, g_lower, g_upper)
-        _, seed = ws.unpack(solver_problem)
-        best_sol, best_sched, best_status, best_success = self._evaluate_candidates(
-            cb, bounds, np.asarray(seed).ravel()
-        )
-
+        solve = self._solve_nlp_candidates if self._qp is None else self._solve_condensed_candidates
+        best_sol, best_sched, best_status, best_success = solve(bc, ws)
         solve_time = time.perf_counter() - started
-        planned_u = best_sol.reshape(self.horizon, solver_problem.model.m)[:, :m_dim].copy()
+        planned_u = best_sol.reshape(self.horizon, -1)[:, :m_dim].copy()
         u_cmd = planned_u[0]
 
         self._u_last = planned_u[0]
         self._prev_plan_u = np.vstack((planned_u[1:], planned_u[-1:]))
 
         u_jax = jnp.asarray(planned_u, dtype=jnp.float64)
+        t0_arr = bc.t0
+        dt_arr = jnp.broadcast_to(self.problem.dt, (self.horizon,))
         times = _knot_times(t0_arr, dt_arr, knots)
-        x_rollout = _rollout_plan(self.problem.model, x0_p, u_jax, t=times, dt=dt_arr)
+        x_rollout = _rollout_plan(self.problem.model, x0_arr, u_jax, t=times, dt=dt_arr)
         predicted_y = np.asarray(planned_outputs(self.model, x_rollout, u_jax, t0_arr, dt_arr)).copy()
         costs_decomp = decompose_cost(self.problem, x_rollout, u_jax, t0_arr, dt_arr)
 
@@ -357,4 +380,5 @@ class CandidateMPCController(Controller[TrajOptMPCLog]):
             normalization="channel_mean",
             fallback=not best_success,
             controller_time=time.perf_counter() - update_started,
+            replan_time=time.perf_counter() - started,
         )

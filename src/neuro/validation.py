@@ -19,7 +19,12 @@ _FILTERING_ESTIMATORS = frozenset(
     {"neuro.filtering.AntiAliasEstimator", "neuro.filtering.LowPassEstimator", "neuro.filtering.ObservableEstimator"}
 )
 _PREDICTIVE_CONTROLLERS = frozenset(
-    {"neuro.control.mpc.TrajOptMPCController", "neuro.control.casadi.CasADiMPCController"}
+    {
+        "neuro.control.mpc.TrajOptMPCController",
+        "neuro.control.casadi.CasADiMPCController",
+        "neuro.control.condensed_casadi.CondensedBonminController",
+        "neuro.control.candidate.CandidateMPCController",
+    }
 )
 _REL_TOL = 1e-9
 
