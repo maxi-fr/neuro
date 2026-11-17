@@ -171,7 +171,7 @@ The \ac{mlp} searches capped history lengths at fewer samples or frames than the
 The \acp{cnn} reuse their convolutional filters across the history, allowing longer inputs within the training budget.
 For spectral \ac{dmdc}, every combination of \ac{eeg} history length, retained fraction of the sum of squared singular values, and ridge regularization parameter in the grid was evaluated.
 The neural-network searches used Optuna~\cite{Akiba2019} with 15 random sampled startup trials followed by 10 to 15 trials with configurations chosen by a tree-structured Parzen estimator. 
-This estimator proposes configurations based on the validation losses of earlier trials~\cite{Bergstra2011}. % this needs to be rephrased
+The estimator uses validation losses from completed trials to select which configurations to evaluate next~\cite{Bergstra2011}.
 
 Each network was trained with AdamW using weight decay of $10^{-5}$ and a limit of 150 epochs.
 The \ac{mlp} used a learning rate of $10^{-4}$ and batches of 256, and the \ac{cnn} used $2\times10^{-4}$ and batches of 512.
@@ -667,13 +667,126 @@ The higher log-power error of waveform-derived forecasts from \SI{120}{\milli\se
 
 The next subsection examines whether containment can be maintained when the controller is encouraged to leave intervals without stimulation.
 
-\subsection{Sparse Stimulation}
-% For matched Bonmin, block-candidate, and homotopy development runs see artifacts/sweep_2026_11/sparse_ch05/report.md.
-% The same-revision quadratic and exact-L1 development comparison, reserved L1 versus Bonmin comparison, and block-withholding replay are indexed in artifacts/sweep_2026_11/sparse_ch05/ch06_followup.md.
+\subsection{Sparse Stimulation}\label{sec:sparse_stimulation}
+% Data and run manifests: artifacts/sweep_2026_11/sparse_ch05/{report.md,ch06_followup.md}.
 
-% i want to show traces of the applied currents from the comparison before to motivate the stimulation free intervals, sparsity.
-% basically what i hope to see is that there is a residual amount of stimulation that is applied which seems unnecessary
+The spectral \ac{dmdc} controller contained seizure spread at reduced charge in Section~\ref{sec:controller_comparison}, but this reduction did not translate into intervals without stimulation.
+After control began, at least one electrode carried \SI{0.32}{\milli\ampere} or more in absolute value in every hold outside fallback.
+This experiment tests whether penalizing current magnitude, the number of enabled holds, or both can create off intervals while maintaining containment (Section~\ref{sec:mpc_sparse_formulations}).
 
-% - Compare L1 effort, Bonmin, block candidates, and homotopy on a shared evaluation protocol.
-% - Metrics: stimulation active time, bout count, Delivered Charge, Seizure Burden, final seizing regions, solve latency.
-% - Open question: withhold one stimulation block in paired replay and measure the change in Seizure Burden over a fixed interval.
+For the sparse stimulation experiments, we used the linear spectral \ac{dmdc} predictor with the spectral suppression cost.
+We chose \SI{0.60}{\second} because it was the shortest horizon tested that still provided adequate seizure suppression.
+At the \SI{60}{\milli\second} update interval, the \SI{1.02}{\second} horizon would require 17 holds.
+The shorter horizon reduced this to 10 holds and, with one binary activation variable per hold, reduced the number of binary decisions by the same amount.
+We compared the formulations and selected weights on the development seeds (Appendix~\ref{app:sparse_calibration}), then evaluated the selected combination against the \(L_1\) controller on the reserved seeds.
+In both sets, a hold counted as off if every electrode current was at most \SI{1}{\micro\ampere} in absolute value.
+Off time excludes holds before control began and holds applied in fallback, so it measures off intervals chosen by the controller.
+A stimulation bout consists of consecutive active holds.
+
+\paragraph*{\texorpdfstring{\(L_1\)}{L1} Penalty.}
+An \(L_1\) penalty can favor zero current without introducing binary decisions (Section~\ref{sec:mpc_sparse_formulations}).
+To test whether this effect carried over to the applied holds, we replaced the quadratic cost at its original weight \(w_{L_2}=0.10\) with the exact epigraph formulation of the \(L_1\) cost at \(w_1=0.234\).
+IPOPT returned a plan at every update for both controllers on the five development seeds.
+The quadratic controller stimulated continuously after control began, whereas the \(L_1\) controller averaged \SI{2.86}{\second} off (Table~\ref{tab:sparse_stimulation_results}).
+
+\begin{table}
+  \centering
+  \setlength{\tabcolsep}{4pt}
+  \caption{Sparse stimulation outcomes on five development seeds and ten reserved seeds.
+  Entries are means across runs. Failed updates count attempts without an accepted new plan.
+  Solve time is the mean of the run-level 95th percentiles. Dashes indicate unreported values.}\label{tab:sparse_stimulation_results} % this caption needs to explain more
+  \begin{tabular}{@{}lrrrrrrr@{}}
+    \toprule
+    Configuration & Burden (\%) & Final count & Charge (mAs) & Off time (s) & Bouts & Failed & Solve (s) \\ % fill in the bouts column for the others
+    \midrule
+    \multicolumn{8}{@{}l}{\textit{Development seeds: current penalties}} \\
+    \(L_2\) & 14.64 & 14.2 & 30.21 & 0.00 & --- & 0.0 & 1.20 \\
+    \(L_1\) &  5.27 &  4.0 & 21.73 & 2.86 & --- & 0.0 & 1.50 \\
+    \addlinespace
+    \multicolumn{8}{@{}l}{\textit{Development seeds: binary activation alone (\(w_\delta=0.70\))}} \\
+    Bonmin             & 4.96 & 3.2 & 30.72 & 2.69 & --- & 10.2 & 1.56 \\
+    Grouped candidates & 4.99 & 3.2 & 28.13 & 3.59 & --- &  0.0 & 1.19 \\
+    Homotopy           & 4.98 & 3.4 & 29.35 & 3.28 & --- &  0.0 & 4.65 \\
+    \addlinespace
+    \multicolumn{8}{@{}l}{\textit{Reserved seeds: \(L_1\) with and without binary activation}} \\
+    \(L_1\)                 & 7.02 & 9.0 & 22.79 & 2.62 & 19.4 & 0.0 & 1.31 \\
+    \(L_1\) with activation & 5.26 & 3.6 & 21.68 & 5.11 & 23.4 & 0.3 & 2.33 \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+The \(L_1\) controller ended with three to five seizing regions on every development seed, while the quadratic runs on seeds 7002 and 7004 ended with 30 and 31, respectively.
+Mean burden fell from \SI{14.64}{\percent} to \SI{5.27}{\percent}.
+Those two quadratic runs also delivered more than \SI{36}{\milli\ampere\second} each, so the drop in mean charge from \SI{30.21}{\milli\ampere\second} to \SI{21.73}{\milli\ampere\second} includes runs with very different containment outcomes.
+% Matched seeds and current traces: artifacts/sweep_2026_11/{observable_dmd/calibration/hop3,sparse_ch05/batches/quadratic_development}.
+In the earlier current weight sweep, the quadratic controller at the same weight contained spread on all five development seeds (Section~\ref{sec:stimulation_cost_weight}).
+That controller began stimulating at \SI{0.66}{\second} and planned over \SI{1.02}{\second}, compared with a \SI{1.38}{\second} start and a \SI{0.60}{\second} horizon here.
+On seeds 7002 and 7004, the quadratic controller in the sparse study delivered less charge before \SI{4}{\second} than in the earlier sweep.
+% Quadratic timing and weight replays: artifacts/sparse_quadratic_followup/report.md.
+On seed 7004, advancing the start alone to \SI{0.96}{\second} still left 28 regions seizing in the final window.
+Extending the horizon alone to \SI{1.02}{\second} reduced that count to three.
+
+To test whether weaker current penalization could recover containment in the sparse setup, we reran both seeds at \(w_{L_2}=0.05\) with the same start time and horizon.  % no. not like this. We need to find the working configuration and then write the section about that. The calibration is not part of this chapter. Maybe it goes into the appendix
+By \SI{4}{\second}, delivered charge had risen from \SI{7.23}{\milli\ampere\second} to \SI{9.58}{\milli\ampere\second} on seed 7002 and from \SI{5.71}{\milli\ampere\second} to \SI{8.93}{\milli\ampere\second} on seed 7004.
+The revised currents produced a more negative mean drive to both \ac{pz} regions over the first \SI{4}{\second}, and both runs ended with three seizing regions.
+At this weight, all five development runs ended with three seizing regions, but mean delivered charge was \SI{36.64}{\milli\ampere\second}, above the \SI{30}{\milli\ampere\second} target.
+
+\paragraph*{Binary Activation.}
+To target off time directly, we charged for each enabled hold by setting \(w_\delta=0.70\) and omitting both current magnitude penalties.
+On the same five development seeds, we compared Bonmin, grouped candidates, and homotopy (Section~\ref{sec:mpc_sparse_formulations}).
+For grouped candidates, the ten planned holds formed blocks of three, three, and four.
+
+All three methods kept burden below \SI{6}{\percent} on every seed, so the main differences were in stimulation and solve time (Table~\ref{tab:sparse_stimulation_results}).
+Under the tested solver budgets, grouped candidates gave the most off time and used the least charge of the three methods, with the shortest 95th-percentile solve time.
+Grouped candidates and homotopy both returned a plan at every update, although homotopy took the longest to solve.
+Bonmin spent an additional \SI{0.25}{\second} off in fallback on average, which does not count toward the off time in the table.
+
+The importance of measuring applied off time is apparent in a separate comparison: capping each plan at six enabled holds with a quadratic current cost gave at most \SI{0.22}{\second} mean off time (Appendix~\ref{app:sparse_calibration}).
+Because the controller applied only the first hold of each plan, it could repeatedly enable that hold and schedule off intervals later in the horizon.
+The tested activation penalty yielded more time off than the cap, but all three methods still used more charge than \(L_1\) alone.
+Once a hold is enabled, the activation penalty places no further cost on increasing its current.
+
+\paragraph*{Combined Penalties.}
+Combining the penalties retains an incentive to limit current within enabled holds.
+In calibration, we kept \(w_1=0.234\) and added an activation penalty of \(w_\delta=0.01\) using Bonmin.
+Mean off time increased from \SI{2.84}{\second} to \SI{5.22}{\second}, with little change in mean burden or charge (Appendix~\ref{app:sparse_calibration}).
+We fixed these weights and evaluated both controllers on the same ten reserved seeds.
+Since the combined controller used Bonmin and the \(L_1\) controller used IPOPT, this comparison evaluates the two implementations as a whole.
+
+With both penalties, stimulation was off for nearly half the time after control began.
+Mean off time increased by \SI{2.49}{\second} relative to \(L_1\) alone, with a paired 95\% bootstrap interval of \SIrange{2.20}{2.81}{\second} (Table~\ref{tab:sparse_stimulation_results}).
+Fallback accounted for only \SI{0.006}{\second} of additional off time on average.
+The combined controller delivered more bouts despite spending less time on, so its bouts were shorter on average.
+Within active holds outside fallback, the mean sum of absolute currents rose from \SI{2.84}{\milli\ampere} to \SI{3.94}{\milli\ampere}, near the feasible maximum of \SI{4}{\milli\ampere}.
+Figure~\ref{fig:sparse_current_traces} illustrates this concentration of current into fewer holds, with both sparse controllers repeatedly resuming stimulation after off intervals.
+The frequent returns to stimulation raise the possibility that the controllers apply current earlier than needed to contain spread.
+
+\begin{figure}
+  \centering
+  \includegraphics{figures/06_experiment_and_discussion/sparse_current_traces}
+  \caption{Sum of absolute applied electrode currents for three spectral \ac{dmdc} controllers on seed 7104.
+  The quadratic trace comes from the controller comparison in Section~\ref{sec:controller_comparison}.
+  The grey band marks the first \SI{1.38}{\second}, when the controllers collected \ac{eeg} history and applied zero current.
+  All three runs ended with four seizing regions.}\label{fig:sparse_current_traces}
+\end{figure}
+
+% Delayed-start replay and seed selection: artifacts/sparse_delayed_start/report.md.
+To test whether early stimulation could be omitted in one run, we selected reserved seed 7109 because it showed late spread without control.
+Its uncontrolled run first exceeded five seizing regions at the \SI{7.50}{\second} window endpoint and ended with 26.
+We withheld all stimulation until \SI{6.90}{\second}, one control horizon before that endpoint, then enabled the combined controller.
+With the later start, the number of seizing regions briefly reached six and fell to four by the end of the run, compared with three at the original \SI{1.38}{\second} start.
+The delay reduced delivered charge from \SI{23.86}{\milli\ampere\second} to \SI{12.95}{\milli\ampere\second}.
+Early stimulation was therefore dispensable for avoiding widespread recruitment on this seed.
+Since we chose the delay using the uncontrolled trajectory, this replay does not establish when a controller should start without that information.
+
+In the comparison at the original start time, the combined controller ended with three to five seizing regions on every reserved seed, whereas two \(L_1\) runs ended with 35 and 27.
+The latter run delivered \SI{30.75}{\milli\ampere\second}, compared with \SI{22.68}{\milli\ampere\second} for the combined controller on the same seed.
+Across seeds, however, the paired 95\% bootstrap intervals included zero for both the mean difference in burden (\(-5.02\) to \(+0.13\) percentage points) and in charge (\(-2.87\) to \(+0.11\)\,\si{\milli\ampere\second}).
+The clearest benefit of combining the penalties was more time off.
+
+The mean of the run-level 95th-percentile solve times rose from \SI{1.31}{\second} to \SI{2.33}{\second} when we added activation to the spectral \ac{dmdc} controller (Table~\ref{tab:sparse_stimulation_results}).
+Both times exceeded the \SI{60}{\milli\second} update interval.
+Preliminary Bonmin tests with the nonlinear spectral \ac{cnn} were slower still.
+The first solve took \SI{45.3}{\second} at a \SI{0.30}{\second} horizon, and controller construction timed out after four minutes at a \SI{1.02}{\second} horizon.
+The combined controller contained spread with intermittent stimulation in simulation, but real-time use would require replanning within the update interval.
+% no. This is in the wrong place. Or at least the discussion of the main thing the binary activation solvers is missing. 

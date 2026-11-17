@@ -71,25 +71,23 @@ Figure~\ref{fig:predictor_search_loss_curves} shows the loss curves for the sele
 
 \chapter{Linear Prediction of Waveform and Spectral Observables}\label{app:dmdc_comparison}
 
-The Koopman perspective in Section~\ref{sec:linear_dmd_predictor} motivates fitting linear dynamics to nonlinear functions of the measurements.
-An exact finite-dimensional description requires closure of the chosen observables under evolution, whereas the regressions here test prediction over a finite horizon~\cite{Brunton2016,Williams2015}. % what is that supposed to mean? Not a coherent argument. % There are also emprical and approximative koopman approaches. So whats the point? 
-Korda and Mezi\'{c}~\cite{Korda2018} use lifted predictors for \ac{mpc} and show how observables can enter both the cost and constraints. % this citation style: "Korda and Mezi\'{c}~\cite{Korda2018}" is not wanted. Citation comes at the end of the sentence without authors names. % so? 
-Here the lift operates on \ac{eeg} histories and the cost penalizes predicted log-power above a healthy envelope.
-The controller can therefore use the spectral prediction directly, without reconstructing waveform phase or the underlying neural state. % So? why is that important?
-% this whole paragraph is just a series of statements. But there is no real argumentation that the reader can follow.
+The spectral suppression cost in~\eqref{eq:mpc_spectral_cost} depends on future log-power, which the controller can obtain either from a predicted waveform or from a direct spectral prediction.
+Fitting an affine predictor to log-power, as in Section~\ref{sec:linear_dmd_predictor}, puts the quantity being penalized directly in the predictor output.
+This choice follows the use of data-driven approximations to predict nonlinear observables with linear models for \ac{mpc}~\cite{Williams2015,Korda2018}.
+For the spectral cost, the resulting affine dependence of log-power on the planned currents makes quadratic programming possible.
+We first compare the validation errors to assess how much predictive accuracy the affine model retains for each target.
 
 \section{Comparison with Nonlinear Predictors}
 
-We measure the difference in forecast error between \ac{dmdc} and its nonlinear peers within each prediction target. % its the validation error
-The comparison uses the first \SI{240}{\milli\second}, where the waveform prediction retains useful phase information.
-Within each target every predictor starts from the same validation origins, receives the recorded future currents, and predicts recursively without further measurements.
+We compare the recursive validation \ac{mse} of \ac{dmdc} with that of the \ac{mlp} and \ac{cnn} over the first \SI{240}{\milli\second} for each prediction target.
+Within each target, all predictors start at the same validation origins, receive the recorded future currents, and predict recursively without further measurements.
 For waveform prediction, the neural fits use waveform \ac{mse} alone and are scored at 12 sample endpoints on \num{4120} origins from 40 regenerated validation trajectories.
 The spectral errors use four frame endpoints on \num{6400} origins from the 40 validation trajectories with \SI{60}{\milli\second} current holds.
 
 % Data: waveform_dmd/pure_mse_comparison/matched_cnn_240ms.json and waveform_matched_geometry/offline/lookahead.csv (first four rows).
 \begin{table}
   \centering
-  \caption{Mean recursive prediction errors through \SI{240}{\milli\second}. Each row uses the units of its prediction target. The gap is the relative increase in \ac{mse} of \ac{dmdc} over the best neural fit.}\label{tab:dmdc_representation_gap}
+  \caption{Mean recursive validation \ac{mse} through \SI{240}{\milli\second}. Each row uses squared units of its prediction target. The signed gap is the difference between the \ac{dmdc} error and the lowest neural predictor error, expressed as a percentage of the latter.}\label{tab:dmdc_representation_gap}
   \begin{tabular}{lrrrr}
     \toprule
     Prediction target & \ac{dmdc} & \ac{mlp} & \ac{cnn} & Relative gap \\
@@ -100,61 +98,75 @@ The spectral errors use four frame endpoints on \num{6400} origins from the 40 v
   \end{tabular}
 \end{table}
 
-The nonlinear \ac{mlp} improved short-horizon waveform prediction, whereas the spectral \ac{dmdc} matched or improved on both nonlinear fits over the same physical duration (Table~\ref{tab:dmdc_representation_gap}).
-The result supports a useful affine approximation to the evolution of the measured spectra in these trajectories.
-The increase in feature dimension accompanies a loss of phase information and temporal averaging from the overlapping spectral windows, both of which can reduce the variation that the predictor has to explain.
-The history lengths, excitation schedules, and selection criteria also differ, including selection of the waveform \ac{dmdc} fit at \SI{1.02}{\second}.
-The experiment therefore leaves open how much of the smaller spectral gap comes from any one of these changes, and whether the chosen observables are closed under evolution.
+The waveform \ac{dmdc} had \SI{32.3}{\percent} higher validation error than the waveform \ac{mlp}, while the spectral \ac{dmdc} had \SI{4.4}{\percent} lower validation error than the spectral \ac{mlp} (Table~\ref{tab:dmdc_representation_gap}).
+The history lengths, excitation schedules, and model selection criteria also differed between targets, so the comparison cannot isolate the effect of predicting log-power.
+The spectral result supports testing the affine predictor in closed loop, where its effect on the optimization follows from the form of the suppression cost.
 
 \section{Quadratic Programming Formulation}
 
-With a fixed initial history, the affine \ac{dmdc} recurrence makes the stacked predicted log-power \(\mathbf{o}\) affine in the stacked physical currents \(\mathbf{u}\).
-Write \(\mathbf{o}=\mathbf{b}+\mathbf{G}\mathbf{u}\), where \(\mathbf{b}\) is the zero-current rollout from that history and \(\mathbf{G}\) is constant for a fixed predictor and control horizon.
-Let \(\mathbf{e}\) be the healthy envelope repeated over the prediction endpoints.
-An epigraph reformulation of the positive part in~\eqref{eq:mpc_spectral_cost} introduces one auxiliary variable per predicted spectral value.
-\begin{equation} % this equation is not great. I dont feel like it fits into the style of the thesis. It reused symbols. Its lazy by just adding text. there is already an exaple of the epigraph reformulation in another chapter.
+At spectral frame $q$, fix the observed history and let $H\in\mathbb N_{>0}$ denote the number of intervals in the control horizon.
+Each planned current vector $\mathbf u_{\ell|q}\in\mathcal U$ is held over interval $\ell=0,\ldots,H-1$, with $\mathcal U\subseteq\mathbb R^{\ndim{u}}$ as in~\eqref{eq:mpc_current_constraints}.
+Recursive substitution of~\eqref{eq:dmd_affine_predictor} gives the log-power prediction $\spectral_{j|q}\in\mathbb R^{\nchan\nbin}$ at frame offset $j=1,\ldots,H$,
+%
+\begin{equation}
+    \spectral_{j|q}
+    = \spectral^{(0)}_{j|q} + \sum_{\ell=0}^{j-1}\mathbf D_{j,\ell}\mathbf u_{\ell|q}\,.
+    \label{eq:dmdc_current_rollout}
+\end{equation}
+%
+Here $\spectral^{(0)}_{j|q}\in\mathbb R^{\nchan\nbin}$ is the prediction with all planned currents set to zero.
+The sensitivity $\mathbf D_{j,\ell}\in\mathbb R^{(\nchan\nbin)\times\ndim{u}}$ maps the current at interval $\ell$ to its contribution at frame offset $j$ and is independent of the observed history.
+
+With equal positive weights on all predicted frames, the controller minimizes $w_{\mathrm{spec}}\mathcal J_{\mathrm{spec}}+w_{L_2}\mathcal J_{L_2}$, where $w_{\mathrm{spec}}>0$ and $w_{L_2}\geq0$ are the spectral suppression and quadratic current weights.
+Following the epigraph formulation in~\eqref{eq:mpc_l1_epigraph}, introduce a real auxiliary variable $z_{j|q,c,m}$ for each predicted frame offset $j$, channel $c=1,\ldots,\nchan$, and frequency bin $m=0,\ldots,\nbin-1$.
+Replace $\mathcal J_{\mathrm{spec}}$ in the objective with
+%
+\begin{equation}
     \begin{aligned}
-        \min_{\mathbf{u},\,\mathbf{s}}\quad
-        & \mathbf{u}^{\mathsf T}\mathbf{R}\mathbf{u}
-          +\mathbf{s}^{\mathsf T}\mathbf{W}\mathbf{s} \\
-        \text{subject to}\quad
-        & \mathbf{s}\geq\mathbf{0},\qquad
-          \mathbf{s}\geq\mathbf{b}+\mathbf{G}\mathbf{u}-\mathbf{e}, \\
-        & \text{the current bounds and Kirchhoff equalities in~\eqref{eq:mpc_current_constraints}.}
+        \widetilde{\mathcal J}_{\mathrm{spec}}
+        &= \frac{1}{H\nchan\nbin}\sum_{j=1}^H\sum_{c=1}^{\nchan}
+          \sum_{m=0}^{\nbin-1}z_{j|q,c,m}^2\,, \\
+        z_{j|q,c,m}
+        &\geq 0\,,\qquad
+        z_{j|q,c,m}\geq \mathcal Y_{j|q,c,m}-\mathcal Y_{\mathrm{healthy},c,m}\,.
     \end{aligned}
     \label{eq:dmdc_spectral_hinge_qp}
 \end{equation}
-The diagonal matrices \(\mathbf{R}\) and \(\mathbf{W}\) carry the nonnegative weights and normalization for \(\mathcal J_{L_2}\) and \(\mathcal J_{\mathrm{spec}}\), respectively.
-For positive spectral cost weights, the minimizing slack is the elementwise positive part of \(\mathbf{o}-\mathbf{e}\), so the reformulation preserves the original objective after minimizing over the slacks.
-The problem has affine constraints and a positive semidefinite quadratic objective, giving a convex quadratic program for linear \ac{mpc}.
-The waveform \ac{dmdc} recurrence is affine as well, but the same spectral cost on a waveform rollout requires evaluating windowed power and the logarithm inside the optimization.
-Those operations make the envelope residual nonlinear in the planned currents.
+%
+The inequalities in~\eqref{eq:dmdc_spectral_hinge_qp} hold for every $j$, $c$, and $m$.
+The entries $\mathcal Y_{j|q,c,m}$ and $\mathcal Y_{\mathrm{healthy},c,m}$ give the predicted log-power and its healthy envelope threshold, respectively.
+For any admissible currents, minimizing the squared auxiliary variables sets each one to its smallest feasible value, ${[\mathcal Y_{j|q,c,m}-\mathcal Y_{\mathrm{healthy},c,m}]}_+$.
+The reformulated objective therefore equals the original objective at the minimizing auxiliary variables.
+Substitution of~\eqref{eq:dmdc_current_rollout} yields affine inequalities in the planned currents and auxiliary variables, so minimizing the two weighted sums of squares gives a convex quadratic program.
+Applying the same spectral cost to waveform predictions requires windowed power and a logarithm, which make the envelope inequalities nonlinear in the planned currents even for an affine waveform predictor.
 
-The condensed implementation solves~\eqref{eq:dmdc_spectral_hinge_qp} with OSQP for continuous, independently chosen currents, equal positive stage and terminal spectral cost weights, and zero \(L_1\) effort.
-The auxiliary variables here price spectral excess above the healthy envelope, while those in~\eqref{eq:mpc_l1_epigraph} price absolute current.
-Eliminating the predictor states leaves 30 current variables and \num{7440} spectral slack variables at the ten-frame control horizon used here.
-The solver reuses the fixed quadratic and constraint matrices and updates the constraint bounds from the new zero-current rollout at each replan.
+At the ten-frame control horizon, the condensed spectral formulation has 30 current variables and \num{7440} auxiliary variables.
+OSQP reuses the fixed objective and constraint matrices and updates the constraint bounds from the new zero-current prediction at each replan.
+The closed-loop comparison tests how much this formulation changes solve time and seizure suppression.
 
 \section{Closed-Loop Performance and Solve Time}
 
-On ten paired reserved simulation seeds with a \SI{0.60}{\second} control horizon, the spectral and waveform \ac{dmdc} controllers gave mean seizure burdens of \(5.00\%\) and \(5.30\%\), respectively, with mean delivered charges of \SI{25.61}{\milli\ampere\second} and \SI{20.59}{\milli\ampere\second}.
-Both used IPOPT under their respective solver settings, with per-seed median solve times averaging \SI{0.967}{\second} for spectral \ac{dmdc} and \SI{0.715}{\second} for waveform \ac{dmdc}.
-Both replanned every \SI{60}{\milli\second}.
-The waveform controller applied three independently optimized \SI{20}{\milli\second} currents in that interval, while the spectral controller held one.
-The waveform controller used both \(\mathcal J_{\mathrm{wave}}\) and \(\mathcal J_{\mathrm{spec}}\).
-These differences make the comparison one of the tuned controllers as a whole.
-In the earlier reserved comparison of the spectral controllers on the same seeds, the \ac{dmdc}, \ac{mlp}, and \ac{cnn} gave similar mean burdens of \(5.04\%\), \(5.08\%\), and \(5.24\%\), at \SI{25.71}{\milli\ampere\second}, \SI{24.66} {\milli\ampere\second}, and \SI{21.92}{\milli\ampere\second}, respectively.
-The available pure-\ac{mse} waveform neural runs used a tracking-only cost on five development seeds.
-Their mean delivered charges fell below the \SIrange{20}{30}{\milli\ampere\second} development target. % this is irrelevant
-A paired reserved comparison of charge-calibrated waveform controllers under the same cost remains open.
+% Data: artifacts/sweep_2026_11/waveform_dmd/benchmark (repository root).
+We first compared the tuned spectral and waveform \ac{dmdc} controllers with IPOPT on ten paired reserved simulation seeds.
+Both planned over \SI{0.60}{\second} and replanned every \SI{60}{\milli\second}.
+The spectral controller held one current vector per replan interval.
+The waveform controller applied three independently optimized \SI{20}{\milli\second} current vectors per interval and used both $\mathcal J_{\mathrm{wave}}$ and $\mathcal J_{\mathrm{spec}}$.
+In spectral and waveform order, the mean seizure burdens were \SI{5.00}{\percent} and \SI{5.30}{\percent}, and the mean delivered charges were \SI{25.61}{\milli\ampere\second} and \SI{20.59}{\milli\ampere\second}.
+The median solve times, averaged across seeds, were \SI{0.967}{\second} for the spectral controller and \SI{0.715}{\second} for the waveform controller.
+The different costs and current holds make these outcomes a comparison of the two tuned controllers.
 
-% Data: waveform_dmd/benchmark, observable_benchmark, and artifacts/trajopt_qp_deployment/report.md.
-We assessed the condensed spectral formulation separately by replaying \num{1780} replans from the archived spectral \ac{dmdc} controller.  % weird way of testing that. Setup and run a proper experiment. Just test on the same closed-loop trajectories.
-The warm online calculation, including the rollout, bounds update, and OSQP solve, took \SI{25.4}{\milli\second} at the median and \SI{34.3}{\milli\second} at the 95th percentile.
-All replans in that replay completed within \SI{60}{\milli\second}, while a second replay had one overrun at \SI{68.2}{\milli\second}.
-The archived IPOPT solver timings on these states had a median of \SI{1.14}{\second} and a 95th percentile of \SI{1.51}{\second}, with three unsuccessful solves. % what do you mean archived?
-The replay excludes preparation, initialization, estimation, and logging, and uses states generated by the incumbent controller.
-It shows that the spectral lift and the associated cost permit a much faster solve on the observed states, while closed-loop performance and end-to-end latency with the quadratic-programming backend remain to be measured.
+% Protocol and timing data: thesis/artifacts/dmdc_closed_loop_timing/.
+To measure the effect of the optimization method, we ran the spectral controller with single-shooting IPOPT and with condensed OSQP on the same ten reserved plant seeds.
+Both implementations used the same predictor, healthy envelope, objective weights, current constraints, control horizon, and replanning interval.
+At each replan, the controller applied the first current vector of its plan to the plant and received a new spectral frame for the next replan.
+Each simulation ran for \SI{12}{\second} with control active from \SI{1.38}{\second}, yielding \num{1780} replan attempts per solver.
+We set the absolute and relative OSQP tolerances to $10^{-8}$ after a pilot run at $10^{-4}$ produced a net current outside the plant's Kirchhoff tolerance.
+
+Both implementations ran serially on the same Windows host with an AMD Ryzen 7 5800HS CPU.
+Other simulation jobs shared the host during part of the benchmark. % this is totally unnecessary information to put into a thesis!! what??
+We measured wall-clock time for the solve and for the controller update, which also includes incorporating the latest spectral frame, preparing the solve, evaluating diagnostics, and selecting the applied current.
+The timing distributions include the first replan of each run and any unsuccessful solves.
+We counted controller updates that exceeded the \SI{60}{\milli\second} replanning interval.
 
 \chapter{Waveform Controller Calibration}\label{app:waveform_controller_calibration}
 
@@ -250,3 +262,76 @@ Mean burden varied by only 0.11 percentage points across the horizon sweep, and 
 The shortest horizon delivered the least charge.
 We retained the 51-sample horizon used in the original comparison, which spanned the same \SI{1.02}{\second} as the 17-frame spectral design and showed no improvement in mean burden from extending it.
 A final current-weight sweep with this horizon and waveform tracking retained \(w_{L_2}=100\), the tested setting within the development charge range.
+
+\chapter{Sparse Stimulation Calibration}\label{app:sparse_calibration}
+% Calibration data and manifests: artifacts/sweep_2026_11/sparse_ch05/{report.md,screen.csv,five_seeds.csv,manifests/}.
+
+For the comparisons in Section~\ref{sec:sparse_stimulation}, we screened settings on seeds 7000 and 7001 and checked selected settings on the full five-seed development set, which included both screening seeds.
+We used a mean burden of at most \SI{6}{\percent} to identify candidate settings, then compared delivered charge and off time.
+Figure~\ref{fig:sparse_calibration_tradeoffs} shows the trade-offs across the settings tested at both stages.
+For the quadratic baseline, we retained \(w_{L_2}=0.10\) from Section~\ref{sec:controller_comparison}.
+
+\begin{figure}[htbp]
+  \centering
+  \includegraphics{figures/08_appendix/sparse_calibration_tradeoffs.pdf}
+  \caption{Mean seizure burden versus delivered charge and time off for the sparse stimulation settings.
+  Open circles show two-seed screening means and filled diamonds show means across all five development seeds.
+  Colors identify the solver families, including settings that combine activation with \(L_1\).
+  Off time excludes warm-up and fallback and uses the \SI{1}{\micro\ampere} threshold per electrode.
+  The dashed line marks the \SI{6}{\percent} burden cutoff.}\label{fig:sparse_calibration_tradeoffs}
+\end{figure}
+
+For the exact \(L_1\) cost, \(w_1=0.234\) gave \SI{5.36}{\percent} burden, \SI{21.57}{\milli\ampere\second} charge, and \SI{2.84}{\second} off across five seeds.
+Increasing \(w_1\) to \(0.28\) increased mean off time to \SI{3.44}{\second}, but mean burden rose to \SI{11.64}{\percent}.
+Combining \(L_1\) with tested quadratic weights of \(0.025\) or \(0.05\) also gave mean burdens above \SI{10}{\percent} across five seeds.
+These settings passed the two-seed screen.
+We retained \(w_1=0.234\) alone and reran it on the same software revision as the quadratic baseline.
+
+The pure activation weight \(w_\delta=0.35\) gave mean burdens below \SI{6}{\percent} with all three methods, yet yielded little off time (Table~\ref{tab:sparse_calibration_binary}).
+At \(w_\delta=0.70\), all three methods still met the burden criterion and brought mean charge closer to the \SI{30}{\milli\ampere\second} target.
+The tested combinations of a quadratic cost with an activation penalty or a cap on enabled holds used more charge and gave less off time than the pure activation comparison at \(w_\delta=0.70\).
+
+\begin{table}
+  \centering
+  \setlength{\tabcolsep}{4.5pt}
+  \caption{Additional matched binary activation settings, averaged across five development seeds.
+  Here \(K\) is the maximum number of enabled holds per plan.}\label{tab:sparse_calibration_binary}
+  \begin{tabular}{@{}llrrr@{}}
+    \toprule
+    Setting & Method & Burden (\%) & Charge (mAs) & Off time (s) \\
+    \midrule
+    \(w_\delta=0.35\) & Bonmin             & 4.38 & 41.90 & 0.10 \\
+                      & Grouped candidates & 4.37 & 41.33 & 0.29 \\
+                      & Homotopy           & 4.40 & 41.76 & 0.16 \\
+    \addlinespace
+    \(w_{L_2}=0.05,\ w_\delta=0.15\) & Bonmin             & 4.87 & 35.39 & 0.91 \\
+                                    & Grouped candidates & 4.89 & 35.27 & 1.07 \\
+                                    & Homotopy           & 4.90 & 33.97 & 1.48 \\
+    \addlinespace
+    \(w_{L_2}=0.05,\ K=6\) & Bonmin             & 4.65 & 36.71 & 0.06 \\
+                          & Grouped candidates & 4.73 & 37.05 & 0.00 \\
+                          & Condensed homotopy  & 4.77 & 36.47 & 0.22 \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+With \(w_1=0.234\), Bonmin at \(w_\delta=0.01\) gave the most off time among the combined settings checked on all five development seeds and was the only one to meet the burden criterion (Table~\ref{tab:sparse_calibration_combined}).
+Grouped candidates with the same weights exceeded the criterion, so the choice depended on the solution method.
+The tests of homotopy with \(L_1\) ended at the two-seed screen.
+We carried the selected Bonmin configuration and its \(L_1\) baseline forward to the reserved comparison.
+
+\begin{table}
+  \centering
+  \setlength{\tabcolsep}{4.5pt}
+  \caption{Settings combining activation with \(w_1=0.234\), averaged across five development seeds.}\label{tab:sparse_calibration_combined}
+  \begin{tabular}{@{}llrrr@{}}
+    \toprule
+    Method & Setting & Burden (\%) & Charge (mAs) & Off time (s) \\
+    \midrule
+    Bonmin             & \(w_\delta=0.01\) &  5.38 & 21.24 & 5.22 \\
+    Bonmin             & \(K=8\)           & 10.51 & 25.15 & 4.03 \\
+    Grouped candidates & \(w_\delta=0.01\) & 11.64 & 25.08 & 4.34 \\
+    Grouped candidates & \(K=8\)           &  6.35 & 22.69 & 4.62 \\
+    \bottomrule
+  \end{tabular}
+\end{table}
