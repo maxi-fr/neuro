@@ -16,7 +16,7 @@ from trajopt.program import WarmStart
 from trajopt.transcription.ipopt import Ipopt
 from trajopt.transcription.single_shooting import SingleShooting
 
-from neuro.control.condensed import CondensedOSQP
+from neuro.control.condensed import CondensedIPOPT, CondensedOSQP
 from neuro.control.diagnostics import (
     ACTIVE_CURRENT_THRESHOLD,
     _rollout_states,
@@ -143,7 +143,7 @@ class TrajOptMPCController(Controller[TrajOptMPCLog]):
         # x0, not just the controls, so it is zeroed to keep that seed finite for every solver.
         unprimed = jnp.nan_to_num(jnp.asarray(self.model.initial_state()), nan=0.0)
         self.mpc = MPC(problem, self.solver, x0=unprimed)
-        if isinstance(self.solver, CondensedOSQP):
+        if isinstance(self.solver, (CondensedOSQP, CondensedIPOPT)):
             self.solver.prepare(self.mpc.program)
         self._state = np.asarray(self.model.initial_state(), dtype=np.float64)
         self.n_controls = int(model.n_controls) if self._integer_mode else int(model.m)
@@ -152,9 +152,14 @@ class TrajOptMPCController(Controller[TrajOptMPCLog]):
 
         cont_prob = getattr(problem, "continuous_problem", None)
         if self._integer_mode and self.init_mode == "cont_polish" and cont_prob is not None:
-            self._cont_mpc: MPC | None = MPC(
-                cont_prob, SingleShooting(solver=Ipopt(options=IPOPT_DEFAULTS)), x0=unprimed
+            cont_solver = (
+                CondensedIPOPT(self.solver.options)
+                if isinstance(self.solver, CondensedIPOPT)
+                else SingleShooting(solver=Ipopt(options=IPOPT_DEFAULTS))
             )
+            self._cont_mpc: MPC | None = MPC(cont_prob, cont_solver, x0=unprimed)
+            if isinstance(cont_solver, CondensedIPOPT):
+                cont_solver.prepare(self._cont_mpc.program)
             self._cont_u_max = float(getattr(problem, "u_max", [2.0])[0])
             self._max_cap = getattr(problem, "max_active_intervals", None)
         else:
@@ -294,7 +299,7 @@ class TrajOptMPCController(Controller[TrajOptMPCLog]):
                 replan_time=time.perf_counter() - replan_started,
             )
         solve_time = time.perf_counter() - started
-        condensed = isinstance(self.solver, CondensedOSQP)
+        condensed = isinstance(self.solver, (CondensedOSQP, CondensedIPOPT))
         cost = float(solved.cost) if condensed else float(self.mpc.cost())
         predicted_y = np.asarray(
             planned_outputs(self.model, self.mpc.states, self.mpc.controls, jnp.asarray(t), self.dt)
@@ -305,7 +310,7 @@ class TrajOptMPCController(Controller[TrajOptMPCLog]):
         costs_decomp = (
             {
                 "active_count": float(planned_active.sum()),
-                "cost_active": 0.0,
+                "cost_active": solved.info.get("cost_active", 0.0),
                 "cost_spectral": solved.info["cost_spectral"],
                 "cost_quadratic_effort": solved.info["cost_quadratic_effort"],
                 "cost_sparse_effort": solved.info["cost_sparse_effort"],

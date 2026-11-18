@@ -31,19 +31,30 @@ class AffineObservableHinge(OneSidedQuadratic):
         super().__init__(matrix, limit, weight, n=n, formulation="epigraph" if epigraph else "direct")
 
     def reformulate(self) -> CostReformulation | None:  # ty: ignore[invalid-method-override]
-        """Lower the IPOPT epigraph and leave the direct cost visible to the condensed QP."""
+        """Lower the IPOPT epigraph and leave the direct Cost visible to condensed solvers."""
         return super().reformulate() if self.formulation == "epigraph" else None
 
 
 class CondensedL1ControlCost(L1ControlCost):
-    """Keep the exact physical L1 cost for a solver that owns its epigraph slacks."""
+    """Keep the exact physical L1 Cost for a solver that owns its epigraph slacks."""
 
-    def __init__(self, n: int, m: int, weight: float) -> None:
-        """Initialize the physical L1 cost with its horizon-normalized weight."""
+    m_phys: int = eqx.field(static=True)
+
+    def __init__(self, n: int, m: int, weight: float, *, m_phys: int | None = None) -> None:
+        """Initialize the physical L1 Cost with its Control Horizon-normalized weight."""
         super().__init__(n=n, m=m, weight=weight)
+        self.m_phys = m if m_phys is None else int(m_phys)
+
+    def _absolute_controls(self, x: jax.Array, u: jax.Array | None) -> jax.Array:
+        """Compute absolute physical Control Currents at one Knot Point or across the Control Horizon."""
+        del x
+        if u is None:
+            msg = "A Control Current vector is required for CondensedL1ControlCost."
+            raise ValueError(msg)
+        return jnp.abs(u[..., : self.m_phys])
 
     def reformulate(self) -> None:  # ty: ignore[invalid-method-override]
-        """Leave the absolute-current epigraph to CondensedOSQP."""
+        """Leave the absolute-Control Current epigraph to condensed solvers."""
 
 
 def jax_compute_observable_frames(y: jax.Array, geometry: StftGeometry, *, fs: float) -> jax.Array:

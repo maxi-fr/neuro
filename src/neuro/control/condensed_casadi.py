@@ -24,7 +24,7 @@ class CondensedBonminController(CasADiMPCController):
     """Solve DMDc activation with an affine prediction map and a convex hinge objective."""
 
     def _build_solver(self) -> None:
-        """Compile the squared-hinge and optional L1 epigraphs with binary gates."""
+        """Compile the condensed direct hinge and optional L1 epigraph with binary gates."""
         model = self.model
         problem = self.problem
         if not isinstance(model, ObservableMLPModel):
@@ -49,24 +49,20 @@ class CondensedBonminController(CasADiMPCController):
         self._reference = np.tile(np.asarray(problem.envelope.power).reshape(-1), h)
         u = ca.MX.sym("current", h * m)
         a = ca.MX.sym("active", h)
-        s = ca.MX.sym("hinge", h * p)
         z = ca.MX.sym("abs_current", h * m if exact_l1 else 0)
         p_sym = ca.MX.sym("free_residual", h * p)
         residual = p_sym + ca.mtimes(ca.sparsify(ca.DM(self._gain), 0.0), u)
-        hinge = problem.w_hinge / (h * p) * ca.sumsqr(s)
+        hinge = problem.w_hinge / (h * p) * ca.sumsqr(ca.fmax(residual, 0.0))
         effort = problem.w_u / h * ca.sumsqr(u)
         active_cost = (problem.w_active or 0.0) / h * ca.sum1(a)
         sparse_cost = problem.w_u_l1 / h * ca.sum1(z) if exact_l1 else 0.0
         total = hinge + effort + active_cost + sparse_cost
-        g, lower, upper = [residual - s], [-np.inf] * (h * p), [0.0] * (h * p)
+        gates = ca.vec(ca.mtimes(ca.DM(problem.u_max), a.T))
+        g, lower, upper = [u - gates, -u - gates], [-np.inf] * (2 * h * m), [0.0] * (2 * h * m)
         if exact_l1:
             g.extend((u - z, -u - z))
             lower.extend([-np.inf] * (2 * h * m))
             upper.extend([0.0] * (2 * h * m))
-        gates = ca.vec(ca.mtimes(ca.DM(problem.u_max), a.T))
-        g.extend((u - gates, -u - gates))
-        lower.extend([-np.inf] * (2 * h * m))
-        upper.extend([0.0] * (2 * h * m))
         if problem.kirchhoff:
             g.append(ca.sum1(ca.reshape(u, m, h)).T)
             lower.extend([0.0] * h)
@@ -75,18 +71,18 @@ class CondensedBonminController(CasADiMPCController):
             g.append(ca.sum1(a))
             lower.append(-np.inf)
             upper.append(float(problem.max_active_intervals))
-        self._lbx = np.r_[np.tile(-problem.u_max, h), np.zeros(h + h * p + z.numel())]
-        self._ubx = np.r_[np.tile(problem.u_max, h), np.ones(h), np.full(h * p + z.numel(), np.inf)]
+        self._lbx = np.r_[np.tile(-problem.u_max, h), np.zeros(h + z.numel())]
+        self._ubx = np.r_[np.tile(problem.u_max, h), np.ones(h), np.full(z.numel(), np.inf)]
         self._lbg = np.asarray(lower)
         self._ubg = np.asarray(upper)
         self._solver = ca.nlpsol(
             "condensed_bonmin",
             "bonmin",
-            {"x": ca.vertcat(u, a, s, z), "p": p_sym, "f": total, "g": ca.vertcat(*g)},
+            {"x": ca.vertcat(u, a, z), "p": p_sym, "f": total, "g": ca.vertcat(*g)},
             {
                 "print_time": False,
                 "calc_lam_p": False,
-                "discrete": [False] * (h * m) + [True] * h + [False] * (h * p + z.numel()),
+                "discrete": [False] * (h * m) + [True] * h + [False] * z.numel(),
                 "bonmin.algorithm": "B-BB",
                 "bonmin.print_level": 0,
                 **problem.solver_options,
@@ -156,7 +152,7 @@ class CondensedBonminController(CasADiMPCController):
                     residual, costs = shifted_residual, shifted_costs
                     backup_source = "FALLBACK_SHIFT"
 
-        incumbent, status, solve_time = self._solve_incumbent(free, residual, currents, activation)
+        incumbent, status, solve_time = self._solve_incumbent(free, currents, activation)
         if incumbent is not None:
             incumbent_residual = free + self._gain @ incumbent[0].ravel()
             incumbent_costs = self._plan_costs(incumbent_residual, *incumbent)
@@ -189,11 +185,11 @@ class CondensedBonminController(CasADiMPCController):
         )
 
     def _solve_incumbent(
-        self, free: FloatArray, residual: FloatArray, currents: FloatArray, activation: FloatArray
+        self, free: FloatArray, currents: FloatArray, activation: FloatArray
     ) -> tuple[tuple[FloatArray, FloatArray] | None, str, float]:
         """Solve from a feasible lifted seed and validate the returned binary incumbent."""
         seed_u = currents.ravel()
-        seed = np.r_[seed_u, activation, np.maximum(residual, 0.0)]
+        seed = np.r_[seed_u, activation]
         if self.problem.w_u_l1 > 0.0:
             seed = np.r_[seed, np.abs(seed_u)]
         started = time.perf_counter()

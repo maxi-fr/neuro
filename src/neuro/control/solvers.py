@@ -14,7 +14,7 @@ from trajopt.solvers.options import SolverOptions
 from trajopt.transcription.ipopt import Ipopt
 from trajopt.transcription.single_shooting import SingleShooting
 
-from neuro.control.condensed import CondensedOSQP
+from neuro.control.condensed import CondensedIPOPT, CondensedOSQP
 from neuro.control.costs import AffineObservableHinge, CondensedL1ControlCost, has_whole_horizon_cost
 
 if TYPE_CHECKING:
@@ -57,15 +57,19 @@ IPOPT_DEFAULTS: dict[str, Any] = {
 def ensure_solver_supports_objective(problem: Problem, solver: Solver) -> None:
     """Validate solver compatibility with physical and epigraph constraints and Costs."""
     stage_terms = cost_terms(problem.obj.stage_cost)
-    if any(isinstance(term, CondensedL1ControlCost) for term in stage_terms) and not isinstance(solver, CondensedOSQP):
-        msg = "Continuous affine_hinge with exact L1 requires CondensedOSQP"
+    if any(isinstance(term, CondensedL1ControlCost) for term in stage_terms) and not isinstance(
+        solver, (CondensedOSQP, CondensedIPOPT)
+    ):
+        msg = "affine_hinge with exact L1 requires CondensedOSQP or CondensedIPOPT"
         raise ValueError(msg)
     if any(isinstance(term, AffineObservableHinge) for term in stage_terms) and not isinstance(
-        solver, (CondensedOSQP, Ipopt, SingleShooting)
+        solver, (CondensedOSQP, CondensedIPOPT, Ipopt, SingleShooting)
     ):
-        msg = "affine_hinge requires CondensedOSQP or IPOPT"
+        msg = "affine_hinge requires CondensedOSQP, CondensedIPOPT, or IPOPT"
         raise ValueError(msg)
-    if has_whole_horizon_cost(problem.obj.stage_cost) and not isinstance(solver, (SingleShooting, Ipopt)):
+    if has_whole_horizon_cost(problem.obj.stage_cost) and (
+        isinstance(solver, CondensedIPOPT) or not isinstance(solver, (SingleShooting, Ipopt))
+    ):
         msg = (
             f"{type(solver).__name__} expands costs per knot and cannot score the whole-horizon "
             "hinge cost; use a transcription solver (e.g. SingleShooting(Ipopt(...)))."
@@ -93,7 +97,7 @@ def _instantiate_solver(class_path: str, cfg: dict[str, Any]) -> Solver:
     if "solver" in cfg and isinstance(cfg["solver"], dict):
         cfg["solver"] = _build_solver(cfg["solver"])
 
-    if issubclass(target_cls, Ipopt):
+    if issubclass(target_cls, Ipopt) and not issubclass(target_cls, CondensedIPOPT):
         cfg["options"] = {**IPOPT_DEFAULTS, **cfg.get("options", {})}
     elif issubclass(target_cls, SingleShooting) and "solver" not in cfg:
         cfg["solver"] = Ipopt(options=dict(IPOPT_DEFAULTS))

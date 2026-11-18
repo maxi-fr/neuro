@@ -31,7 +31,7 @@ from trajopt.transcription.single_shooting import (
     single_shooting_dimensions,
 )
 
-from neuro.control.condensed import CondensedOSQP
+from neuro.control.condensed import CondensedIPOPT, CondensedOSQP
 from neuro.control.diagnostics import (
     _knot_times,
     decompose_cost,
@@ -115,6 +115,7 @@ class CandidateMPCController(Controller[TrajOptMPCLog]):
         control_start_s: float | None = None,
         *,
         condensed_osqp: dict[str, Any] | None = None,
+        condensed_ipopt: dict[str, Any] | None = None,
     ) -> None:
         """Initialize the schedules and prepare their selected continuous solver.
 
@@ -132,8 +133,13 @@ class CandidateMPCController(Controller[TrajOptMPCLog]):
             Common release on the native solve grid.
         condensed_osqp
             OSQP options for the affine spectral QP.
+        condensed_ipopt
+            IPOPT options for the condensed direct-hinge solver.
         """
         super().__init__(dt)
+        if condensed_osqp is not None and condensed_ipopt is not None:
+            msg = "condensed_osqp and condensed_ipopt are mutually exclusive"
+            raise ValueError(msg)
         if problem.binary_control_indices:
             msg = "candidate activation schedules require a continuous Problem"
             raise ValueError(msg)
@@ -168,14 +174,20 @@ class CandidateMPCController(Controller[TrajOptMPCLog]):
         self.blocks = blocks if blocks is not None else [[0, 1, 2], [3, 4, 5], [6, 7, 8, 9]]
         self.w_active = float(w_active)
         self.schedules = self._build_schedules(self.blocks, self.horizon)
-        self._qp = None if condensed_osqp is None else CondensedOSQP(condensed_osqp)
-        self._qp_program = None
-        if self._qp is not None:
+        self._condensed: CondensedOSQP | CondensedIPOPT | None = (
+            CondensedOSQP(condensed_osqp)
+            if condensed_osqp is not None
+            else CondensedIPOPT(condensed_ipopt)
+            if condensed_ipopt is not None
+            else None
+        )
+        self._condensed_program = None
+        if self._condensed is not None:
             if sorted(index for block in self.blocks for index in block) != list(range(self.horizon)):
                 msg = "Candidate blocks must partition the Control Horizon"
                 raise ValueError(msg)
-            self._qp_program = Program(problem, self._qp)
-            self._qp.prepare(self._qp_program)
+            self._condensed_program = Program(problem, self._condensed)
+            self._condensed.prepare(self._condensed_program)
         self._state = np.asarray(self.model.initial_state(), dtype=np.float64)
         self._u_last = np.zeros(self.model.m, dtype=np.float64)
         self.n_controls = int(self.model.m)
@@ -210,6 +222,7 @@ class CandidateMPCController(Controller[TrajOptMPCLog]):
             w_active=w_active,
             control_start_s=config.get("control_start_s"),
             condensed_osqp=config.get("condensed_osqp"),
+            condensed_ipopt=config.get("condensed_ipopt"),
         )
 
     def _evaluate_candidates(
@@ -278,12 +291,12 @@ class CandidateMPCController(Controller[TrajOptMPCLog]):
     def _solve_condensed_candidates(
         self, bc: BoundaryConditions, ws: WarmStart
     ) -> tuple[FloatArray, IntArray, int, bool]:
-        """Search the configured schedules against the solver's measured QP."""
-        qp, program = self._qp, self._qp_program
-        if qp is None or program is None:
+        """Search the configured schedules against the condensed solver."""
+        condensed, program = self._condensed, self._condensed_program
+        if condensed is None or program is None:
             msg = "The condensed candidate solver has not been prepared"
             raise RuntimeError(msg)
-        return qp.select_schedule(program, bc, ws, self.schedules, self.w_active)
+        return condensed.select_schedule(program, bc, ws, self.schedules, self.w_active)
 
     def _solve_nlp_candidates(self, bc: BoundaryConditions, ws: WarmStart) -> tuple[np.ndarray, np.ndarray, int, bool]:
         """Lower the generic objective and enumerate its single-shooting subproblems."""
@@ -343,7 +356,7 @@ class CandidateMPCController(Controller[TrajOptMPCLog]):
         ws = WarmStart.cold(self.problem, x0_arr)
         if self._prev_plan_u is not None:
             ws = ws.with_primal(self.problem, U=jnp.asarray(self._prev_plan_u))
-        solve = self._solve_nlp_candidates if self._qp is None else self._solve_condensed_candidates
+        solve = self._solve_nlp_candidates if self._condensed is None else self._solve_condensed_candidates
         best_sol, best_sched, best_status, best_success = solve(bc, ws)
         solve_time = time.perf_counter() - started
         planned_u = best_sol.reshape(self.horizon, -1)[:, :m_dim].copy()

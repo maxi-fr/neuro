@@ -512,7 +512,7 @@ def _validate_integer_observable_problem_args(
 def _affine_observable_hinge(
     model: ObservableMLPModel, envelope: ObservableEnvelope, weight: float, *, activation: bool = False
 ) -> AffineObservableHinge:
-    """Price the next Frame, with a zero gate column for the lifted IPOPT epigraph."""
+    """Price the next Frame, with a zero gate column and epigraph lowering when activation is enabled."""
 
     def next_frame(z: jax.Array) -> jax.Array:
         """Compose the delay-register update with the physical output map."""
@@ -582,8 +582,8 @@ def build_observable_problem(  # noqa: PLR0913 -- checkpoint plus the MPC cost/b
         ``"epigraph"`` (exact L1 epigraph reformulation).
     affine_hinge
         Price the next Frame with affine residuals for a depth-zero Observable MLP.
-        With activation, lower the hinge through JAX-TrajOpt's epigraph.
-        With continuous exact L1, CondensedOSQP owns both epigraphs.
+        With activation, lower the hinge through JAX-TrajOpt's epigraph; with exact L1,
+        condensed solvers (``CondensedOSQP`` / ``CondensedIPOPT``) own the L1 epigraph.
     """
     base = (
         artifact
@@ -615,15 +615,15 @@ def build_observable_problem(  # noqa: PLR0913 -- checkpoint plus the MPC cost/b
         r = r.at[-1].set(w_active / horizon)
     stage = DiagonalCost(Q=jnp.zeros(n), R=R, q=jnp.zeros(n), r=r)
     costs: list[CostFunction] = [stage] if affine_hinge else [ExcludeInitialKnotState(stage)]
-    if affine_hinge and w_u_l1 > 0 and not integer_mode and l1_mode == "epigraph":
-        costs.append(CondensedL1ControlCost(n=n, m=m, weight=w_u_l1 / horizon))
+    if affine_hinge and w_u_l1 > 0 and l1_mode == "epigraph":
+        costs.append(CondensedL1ControlCost(n=n, m=m, weight=w_u_l1 / horizon, m_phys=m_phys))
     else:
         costs.extend(_sparse_effort(n, m, w_u_l1 / horizon, l1_mode))
     w_hinge_term = w_hinge if w_hinge_terminal is None else float(w_hinge_terminal)
     if affine_hinge and (
         not isinstance(base, ObservableMLPModel)
         or len(base.weights) != 1
-        or (w_u_l1 != 0 and (integer_mode or l1_mode != "epigraph"))
+        or (w_u_l1 != 0 and l1_mode != "epigraph")
         or not np.isfinite(w_u)
         or w_u < 0
         or w_hinge <= 0
@@ -631,7 +631,7 @@ def build_observable_problem(  # noqa: PLR0913 -- checkpoint plus the MPC cost/b
     ):
         msg = (
             "affine_hinge requires a depth-zero Observable MLP, equal positive hinge weights,"
-            " finite nonnegative quadratic effort, and either zero L1 or continuous exact L1"
+            " finite nonnegative quadratic effort, and either zero L1 or exact L1"
         )
         raise ValueError(msg)
     w_hinge_eff = max(w_hinge, w_hinge_term)
@@ -665,6 +665,7 @@ def build_observable_problem(  # noqa: PLR0913 -- checkpoint plus the MPC cost/b
             max_active_intervals=None,
             w_active=None,
             l1_mode=l1_mode,
+            affine_hinge=affine_hinge,
         )
 
     return _assemble_problem(

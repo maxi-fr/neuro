@@ -26,7 +26,7 @@ from trajopt.transcription.single_shooting import SingleShooting
 from neuro.config import StftGeometry
 from neuro.control.candidate import CandidateMPCController
 from neuro.control.casadi import build_casadi_observable_problem
-from neuro.control.condensed import CondensedOSQP
+from neuro.control.condensed import CondensedIPOPT, CondensedOSQP
 from neuro.control.condensed_casadi import CondensedBonminController
 from neuro.control.costs import ObservableHingeCost
 from neuro.control.diagnostics import _rollout_states, decompose_cost
@@ -762,6 +762,10 @@ def test_controller_from_config_loud_validation_errors(tmp_path: Path) -> None:
     }
     with pytest.raises(ValueError, match="cannot score the whole-horizon hinge cost"):
         TrajOptMPCController.from_config(cfg_incompatible)
+    with pytest.raises(ValueError, match="cannot score the whole-horizon hinge cost"):
+        TrajOptMPCController.from_config(
+            {**cfg_incompatible, "solver": {"class_path": "neuro.control.condensed.CondensedIPOPT"}}
+        )
 
     # 4. BoxQP on unhandled coupled linear equality constraints raises ValueError
     cfg_boxqp_coupled = {
@@ -1507,6 +1511,7 @@ def test_activation_homotopy_can_lower_the_affine_hinge(tmp_path: Path) -> None:
     )
     solver = SingleShooting(solver=Ipopt(options={"print_level": 0, "sb": "yes"}))
     program = Program(problem, solver)
+    assert program._penalty_layout is not None  # noqa: SLF001 -- verify affine hinge was lowered via epigraph
     model = cast("AugmentedActivationModel", problem.model)
     state = model.initial_state()
     for _ in range(model.n_history):
@@ -1569,3 +1574,209 @@ def test_failed_solve_absorbs_applied_zero_current(tmp_path: Path, monkeypatch: 
     controller.update((ready_index + 1) * dt, np.zeros(1), np.full(n_outputs, 2.0))
     np.testing.assert_allclose(controller.mpc.x0, expected)
     assert controller.mpc.program is program
+
+
+@pytest.mark.parametrize(("w_u", "w_u_l1"), [(0.3, 0.0), (0.0, 0.2)])
+def test_condensed_ipopt_parity_with_osqp_l2_and_l1(tmp_path: Path, w_u: float, w_u_l1: float) -> None:
+    """CondensedIPOPT matches CondensedOSQP on continuous L2 and exact L1 Observable Problems."""
+    artifact, geometry = _build_observable_checkpoint(tmp_path, depth=0, n_controls=3)
+    reference = HealthyReference.load(_write_envelope(tmp_path, geometry))
+    base_cfg = {
+        "dt": geometry.n_hop / 50.0,
+        "problem": {
+            "class_path": "neuro.control.problems.build_observable_problem",
+            "artifact": str(artifact),
+            "horizon": 4,
+            "u_max": [0.5, 0.5, 0.5],
+            "w_u": w_u,
+            "w_u_l1": w_u_l1,
+            "w_hinge": 2.0,
+            "kirchhoff": True,
+            "l1_mode": "epigraph",
+            "affine_hinge": True,
+            "reference": reference,
+        },
+    }
+    osqp_ctrl = TrajOptMPCController.from_config(
+        {
+            **base_cfg,
+            "solver": {
+                "class_path": "neuro.control.condensed.CondensedOSQP",
+                "options": {"eps_abs": 1e-9, "eps_rel": 1e-9},
+            },
+        }
+    )
+    ipopt_ctrl = TrajOptMPCController.from_config(
+        {
+            **base_cfg,
+            "solver": {
+                "class_path": "neuro.control.condensed.CondensedIPOPT",
+                "options": {"tol": 1e-9},
+            },
+        }
+    )
+    assert isinstance(ipopt_ctrl.solver, CondensedIPOPT)
+    for k in range(osqp_ctrl.model.n_history + 2):
+        meas = np.full(osqp_ctrl.model.p, 1.5 if k % 2 == 0 else -1.0)
+        _, expected = osqp_ctrl.update(k * osqp_ctrl.dt, np.zeros(1), meas)
+        _, actual = ipopt_ctrl.update(k * ipopt_ctrl.dt, np.zeros(1), meas)
+        if expected.warmup:
+            assert actual.warmup
+            continue
+        assert expected.success
+        assert actual.success, actual.status
+        assert 0.0 <= actual.solve_time < actual.replan_time
+        np.testing.assert_allclose(actual.planned_u, expected.planned_u, atol=1e-4)
+        np.testing.assert_allclose(actual.predicted_y, expected.predicted_y, atol=1e-4)
+        np.testing.assert_allclose(actual.cost, expected.cost, atol=1e-6)
+        np.testing.assert_allclose(actual.cost_spectral, expected.cost_spectral, atol=1e-5)
+        np.testing.assert_allclose(actual.cost_quadratic_effort, expected.cost_quadratic_effort, atol=1e-5)
+        np.testing.assert_allclose(actual.cost_sparse_effort, expected.cost_sparse_effort, atol=1e-5)
+
+
+def test_condensed_ipopt_candidate_parity_with_osqp(tmp_path: Path) -> None:
+    """CandidateMPCController with condensed_ipopt matches condensed_osqp on grouped schedules."""
+    artifact, geometry = _build_observable_checkpoint(tmp_path, depth=0, n_controls=3)
+    reference = HealthyReference.load(_write_envelope(tmp_path, geometry))
+    problem = build_observable_problem(
+        artifact,
+        horizon=4,
+        u_max=0.5,
+        w_u=0.0,
+        w_u_l1=0.2,
+        w_hinge=2.0,
+        kirchhoff=True,
+        l1_mode="epigraph",
+        affine_hinge=True,
+        reference=reference,
+    )
+    blocks = [[0, 1], [2, 3]]
+    dt = float(problem.dt[0])
+    cand_osqp = CandidateMPCController(
+        dt, problem, blocks=blocks, w_active=0.3, condensed_osqp={"eps_abs": 1e-9, "eps_rel": 1e-9}
+    )
+    cand_ipopt = CandidateMPCController(dt, problem, blocks=blocks, w_active=0.3, condensed_ipopt={"tol": 1e-9})
+    for k in range(cand_osqp.model.n_history + 2):
+        meas = np.full(cand_osqp.model.p, 1.5)
+        _, expected = cand_osqp.update(k * dt, np.zeros(1), meas)
+        _, actual = cand_ipopt.update(k * dt, np.zeros(1), meas)
+        if expected.warmup:
+            assert actual.warmup
+            continue
+        assert actual.success, actual.status
+        np.testing.assert_allclose(actual.planned_u, expected.planned_u, atol=1e-4)
+        np.testing.assert_array_equal(actual.planned_active, expected.planned_active)
+        np.testing.assert_allclose(actual.cost, expected.cost, atol=1e-6)
+
+
+@pytest.mark.parametrize("w_u_l1", [0.0, 0.2])
+@pytest.mark.parametrize("init_mode", ["shift", "cont_polish"])
+def test_condensed_ipopt_homotopy_activation_and_l1(tmp_path: Path, w_u_l1: float, init_mode: str) -> None:
+    """CondensedIPOPT solves binary activation homotopy with optional exact L1 and cont_polish."""
+    artifact, geometry = _build_observable_checkpoint(tmp_path, depth=0, n_controls=3)
+    reference = HealthyReference.load(_write_envelope(tmp_path, geometry))
+    dt = geometry.n_hop / 50.0
+    controller = TrajOptMPCController.from_config(
+        {
+            "dt": dt,
+            "init_mode": init_mode,
+            "problem": {
+                "class_path": "neuro.control.problems.build_observable_problem",
+                "artifact": str(artifact),
+                "horizon": 4,
+                "u_max": 0.5,
+                "w_u": 0.0,
+                "w_u_l1": w_u_l1,
+                "w_hinge": 2.0,
+                "w_active": 0.3,
+                "kirchhoff": True,
+                "l1_mode": "epigraph",
+                "affine_hinge": True,
+                "reference": reference,
+            },
+            "solver": {
+                "class_path": "neuro.control.condensed.CondensedIPOPT",
+                "max_passes": 4,
+                "options": {"max_iter": 100},
+            },
+        }
+    )
+    if init_mode == "cont_polish":
+        assert controller._cont_mpc is not None  # noqa: SLF001 -- verify cont_polish uses CondensedIPOPT
+        assert isinstance(controller._cont_mpc.solver, CondensedIPOPT)  # noqa: SLF001 -- verify cont_polish uses CondensedIPOPT
+    for k in range(controller.model.n_history + 2):
+        _, log = controller.update(k * dt, np.zeros(1), np.full(controller.model.p, 1.5))
+        if log.warmup:
+            continue
+        assert log.success, log.status
+        assert np.all(np.minimum(np.abs(log.planned_active), np.abs(1.0 - log.planned_active)) <= 1e-4)
+        off = log.planned_active < 0.5
+        np.testing.assert_allclose(log.planned_u[off], 0.0, atol=1e-4)
+        np.testing.assert_allclose(log.planned_u.sum(axis=1), 0.0, atol=1e-6)
+        scores = decompose_cost(controller.problem, controller.mpc.states, controller.mpc.controls, k * dt, dt)
+        np.testing.assert_allclose(log.cost_spectral, scores["cost_spectral"], atol=1e-6)
+        np.testing.assert_allclose(log.cost_sparse_effort, scores["cost_sparse_effort"], atol=1e-6)
+        np.testing.assert_allclose(log.cost_active, scores["cost_active"], atol=1e-6)
+        np.testing.assert_allclose(log.cost, scores["cost_total"], atol=1e-6)
+
+
+@pytest.mark.parametrize("w_u_l1", [0.0, 0.2])
+@pytest.mark.parametrize("init_mode", ["shift", "cont_polish"])
+def test_condensed_ipopt_homotopy_max_active_intervals(tmp_path: Path, w_u_l1: float, init_mode: str) -> None:
+    """CondensedIPOPT enforces max_active_intervals in binary homotopy mode and via lowered Program.solve."""
+    artifact, geometry = _build_observable_checkpoint(tmp_path, depth=0, n_controls=3)
+    reference = HealthyReference.load(_write_envelope(tmp_path, geometry))
+    dt = geometry.n_hop / 50.0
+    max_active = 2
+    problem_cfg = {
+        "class_path": "neuro.control.problems.build_observable_problem",
+        "artifact": str(artifact),
+        "horizon": 4,
+        "u_max": 0.5,
+        "w_u": 0.0,
+        "w_u_l1": w_u_l1,
+        "w_hinge": 2.0,
+        "max_active_intervals": max_active,
+        "kirchhoff": True,
+        "l1_mode": "epigraph",
+        "affine_hinge": True,
+        "reference": reference,
+    }
+    solver_cfg = {
+        "class_path": "neuro.control.condensed.CondensedIPOPT",
+        "max_passes": 4,
+        "options": {"max_iter": 100},
+    }
+    controller = TrajOptMPCController.from_config(
+        {
+            "dt": dt,
+            "init_mode": init_mode,
+            "problem": problem_cfg,
+            "solver": solver_cfg,
+        }
+    )
+    for k in range(controller.model.n_history + 2):
+        _, log = controller.update(k * dt, np.zeros(1), np.full(controller.model.p, 1.5))
+        if log.warmup:
+            continue
+        assert log.success, log.status
+        assert log.active_count <= max_active + 1e-4
+        assert np.all(np.minimum(np.abs(log.planned_active), np.abs(1.0 - log.planned_active)) <= 1e-4)
+        off = log.planned_active < 0.5
+        np.testing.assert_allclose(log.planned_u[off], 0.0, atol=1e-4)
+        np.testing.assert_allclose(log.planned_u.sum(axis=1), 0.0, atol=1e-6)
+        scores = decompose_cost(controller.problem, controller.mpc.states, controller.mpc.controls, k * dt, dt)
+        np.testing.assert_allclose(log.cost_spectral, scores["cost_spectral"], atol=1e-6)
+        np.testing.assert_allclose(log.cost_sparse_effort, scores["cost_sparse_effort"], atol=1e-6)
+        np.testing.assert_allclose(log.cost_active, scores["cost_active"], atol=1e-6)
+        np.testing.assert_allclose(log.cost, scores["cost_total"], atol=1e-6)
+
+    if init_mode == "shift" and w_u_l1 == 0.2:
+        direct_program = Program(controller.problem, CondensedIPOPT(max_passes=4, options={"max_iter": 100}))
+        state = jnp.asarray(controller._state)  # noqa: SLF001 -- exercise direct Program.solve at primed state
+        direct_res = direct_program.solve(
+            BoundaryConditions(x0=state, t0=jnp.asarray(0.0)),
+            WarmStart.cold(controller.problem, state),
+        )
+        assert direct_res.success, direct_res.message
+        assert np.sum(np.asarray(direct_res.trajectory.U)[:, -1]) <= max_active + 1e-4
