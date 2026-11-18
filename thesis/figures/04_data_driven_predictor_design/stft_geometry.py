@@ -75,7 +75,7 @@ def main() -> None:
     ax.set_ylim(-5.3, 2.4)
     ax.set_yticks([-1.0, 0.0, 1.0])
     ax.set_ylabel("Amplitude")
-    ax.set_title("(a) Segments on the hop grid", loc="left")
+    ax.set_title("Segments on the hop grid", loc="left")
     ax.legend(loc="lower right")
 
     ax = axes[1]
@@ -89,7 +89,7 @@ def main() -> None:
     ax.set_yticks([0.0, 25.0, 50.0, 75.0, 100.0])
     ax.set_ylabel("Frequency (Hz)")
     ax.set_xlabel("Time (s)")
-    ax.set_title("(b) Corresponding STFT spectra", loc="left")
+    ax.set_title("Corresponding STFT spectra", loc="left")
 
     for ax in axes:
         ax.grid(visible=True, lw=0.4, alpha=0.4)

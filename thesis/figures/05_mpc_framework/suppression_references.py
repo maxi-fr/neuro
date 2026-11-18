@@ -58,8 +58,8 @@ def main() -> None:
         print(label, "RMS", np.sqrt(np.mean((samples - mean) ** 2)))
         print(label, "exceedance 3 Hz", np.mean(frames[:, 3] > envelope[3]), "frames", len(frames))
 
-    wave.set(title="(a) CP5 waveform", xlabel="Time (s)", ylabel="EEG amplitude")
-    spectral.set(title="(b) CP5 spectral reference", xlabel="Frequency (Hz)", ylabel="Log power")
+    wave.set(title="CP5 waveform", xlabel="Time (s)", ylabel="EEG amplitude")
+    spectral.set(title="CP5 spectral reference", xlabel="Frequency (Hz)", ylabel="Log power")
     for ax in (wave, spectral):
         ax.grid()
         ax.legend()

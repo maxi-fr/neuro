@@ -68,15 +68,14 @@ def plot_penalty_scatter(bundle: ObservableEvaluationBundle, lag_points: FloatAr
     plt.close(fig)
 
 
-def plot_predictability( # noqa: PLR0913, PLR0917
+def plot_predictability(
     bundle: ObservableEvaluationBundle,
     split_path: Path,
     lag_times: FloatArray,
     lag_curve: FloatArray,
-    lag_window_samples: int,
     output: Path,
 ) -> None:
-    """Plot potential predictability with legends inside both panels."""
+    """Compare observable and waveform-component predictability in two panels."""
     with np.load(split_path) as data:
         times = data["times"]
         waveform, mean, residual = data["ceilings"][0, :3]
@@ -90,9 +89,6 @@ def plot_predictability( # noqa: PLR0913, PLR0917
         else:
             curve = bundle.potential_predictability[rep]
             left.plot(curve.times, curve.signal_fraction, label=label, color=color)
-    window_s = lag_window_samples / bundle.metadata.waveform_geometry["fs"]
-    first_post_branch = lag_times[np.searchsorted(lag_times, window_s)]
-    left.axvline(first_post_branch, color="0.55", linewidth=0.6, linestyle="--")
 
     right.plot(times, waveform, label="Waveform", color=COLORS[0])
     right.plot(times, mean, label="Trailing weighted mean", color="C3")
@@ -140,7 +136,6 @@ def main() -> None:
         lag_times = data["times"]
         lag_curve = data["lag_asymmetry"]
         lag_points = data["lag_mean_points"]
-        lag_window_samples = data["window_samples"].item()
     np.testing.assert_array_equal(lag_points[:, 0], bundle.seizure_relevance["waveform"].finite_pairs()[:, 0])
     plot_example_replays(replay_dir, manifest, output_dir)
     plot_penalty_scatter(bundle, lag_points, output_dir)
@@ -149,7 +144,6 @@ def main() -> None:
         args.waveform_split or args.archive / "waveform_split.npz",
         lag_times,
         lag_curve,
-        lag_window_samples,
         output_dir,
     )
 

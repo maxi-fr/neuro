@@ -145,8 +145,8 @@ def save_lookahead_plot(
             markevery=3, label=label,
         )
 
-    ax.set_title("(a) Selected predictors")
-    ax_ablation.set_title("(b) Waveform MLP loss comparison")
+    ax.set_title("Selected predictors")
+    ax_ablation.set_title("Waveform MLP loss comparison")
     ax.set_ylabel(r"Log-power MSE $\mathcal{L}_{\mathrm{spec}}(h)$")
     for panel in (ax, ax_ablation):
         panel.set(xlabel=r"Lookahead $h$ (s)", xticks=(0.06, 0.30, 0.54, 0.78, 1.02))

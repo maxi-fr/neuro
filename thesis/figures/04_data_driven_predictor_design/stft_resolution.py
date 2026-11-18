@@ -85,7 +85,7 @@ def main() -> None:
             color=f"C{idx}",
             label=label,
         )
-    ax.set_title("(a) Three segment lengths, matched averaging", loc="left")
+    ax.set_title("Three segment lengths, matched averaging", loc="left")
 
     ax = axes[1]
     freqs, power = _periodograms(y, KERNEL_SEGMENT, KERNEL_HOP)
@@ -98,7 +98,7 @@ def main() -> None:
             color=f"C{idx}",
             label=rf"$n_{{\mathrm{{smooth}}}} = {width}$",
         )
-    ax.set_title("(b) One segment length, three kernel widths", loc="left")
+    ax.set_title("One segment length, three kernel widths", loc="left")
 
     for ax in axes:
         ax.set_xlim(0.0, BAND_MAX_HZ)

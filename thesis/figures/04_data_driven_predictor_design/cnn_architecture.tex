@@ -13,10 +13,10 @@
         \begin{scope}[shift={(0,-4.2*\panel)}]
             \ifnum\panel=0
                 \node[thesis heading, anchor=west] at (0,1.3)
-                    {(a) Waveform predictor};
+                    {Waveform predictor};
             \else
                 \node[thesis heading, anchor=west] at (0,1.3)
-                    {(b) Spectral predictor};
+                    {Spectral predictor};
             \fi
             % Slice counts are schematic; depth decreases in this illustration.
             \foreach \left/\width/\depth in {0.5/3/5,12/2.5/2} {
@@ -119,7 +119,7 @@
     % A detached continuation enters the shared head from either alternative.
     \begin{scope}[shift={(0,-5.3)}]
         \node[thesis heading, anchor=west] at (0,-2.45)
-            {(c) Fully connected head};
+            {Fully connected head};
         \draw[box] (2,-2.9) rectangle (6.2,-5.7);
         \node[thesis heading] at (4.1,-3.15) {$\mathbf{z}_k^{\mathrm{CNN}}$};
         \node[conv, text width=31mm, minimum height=6mm] (features) at (4.1,-3.8)

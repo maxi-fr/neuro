@@ -69,7 +69,7 @@ def _in_network(node: int) -> tuple[FloatArray, FloatArray]:
 
 
 def main() -> None:
-    """Write the four-row time-series and power-spectrum figure at 0.9 textwidth."""
+    """Write the four-row time-series and power-spectrum figure with more row spacing."""
     panels = [
         (_isolated(A_BACKGROUND), "(a) Background, uncoupled\n$A_i = 3.25$ mV"),
         (_isolated(A_PZ), "(b) Propagation zone, uncoupled\n$A_i = 3.4$ mV"),
@@ -78,8 +78,9 @@ def main() -> None:
     ]
 
     fig, axes = plt.subplots(
-        len(panels), 2, figsize=style.figsize(width_ratio=0.9, height_in=4.4), constrained_layout=True
+        len(panels), 2, figsize=style.figsize(width_ratio=0.9, height_in=4.75), constrained_layout=True
     )
+    fig.set_constrained_layout_pads(hspace=0.16)
     for row, ((t, y), label) in enumerate(panels):
         axes[row, 0].plot(t, y, lw=0.7, color="C0")
         axes[row, 0].set_ylabel("$y_\\mathrm{LFP}$ (mV)")

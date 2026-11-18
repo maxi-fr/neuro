@@ -1,8 +1,42 @@
 \chapter{Predictor Hyperparameter Searches}\label{app:predictor_search}
 
-Tables~\ref{tab:search_spectral_mlp}--\ref{tab:search_waveform_cnn} list the \ac{mlp} and \ac{cnn} trials from Section~\ref{sec:offline_predictor_benchmark} in trial order. The first 15 trials use randomly chosen hyperparameter sets, while the rest are selected using the tree-structured Parzen estimator by Optuna.
+Table~\ref{tab:predictor_search_spaces} lists the settings evaluated in the searches from Section~\ref{sec:offline_predictor_benchmark}.
+After the first convolutional layer, each layer's feature channel count was scaled from the preceding layer's count by a factor between 0.5 and 1.
+Tables~\ref{tab:search_spectral_mlp}--\ref{tab:search_waveform_cnn} list the \ac{mlp} and \ac{cnn} trials in trial order.
 Bold rows mark the configuration with the lowest score in each search.
+
+Each network was trained with AdamW using a weight decay of $10^{-5}$ for up to 150 epochs.
+The \ac{mlp} searches used a learning rate of $10^{-4}$ and a batch size of 256, and the \ac{cnn} searches used $2\times10^{-4}$ and 512.
+The observation-space loss horizon increased between epochs 10 and 80.
+Once it reached its final length and all loss terms were active, training stopped after 20 consecutive epochs without validation improvement, subject to the epoch limit.
+The weights with the lowest validation loss from that phase were retained.
 Figure~\ref{fig:predictor_search_loss_curves} shows the loss curves for the selected fits, and Figure~\ref{fig:predictor_search_dmd_heatmaps} summarizes the spectral \ac{dmdc} grid.
+
+\begin{table}[!htbp] % latex-lint:ignore=FLOAT-01
+  \centering
+  \small
+  \caption{Predictor settings evaluated for each prediction target.
+  The \ac{eeg} history is measured in spectral frames for the spectral predictors and in samples for the waveform predictors.}\label{tab:predictor_search_spaces}
+  \begin{tabular}{@{}lp{0.77\linewidth}@{}}
+    \toprule
+    Predictor & Settings evaluated \\
+    \midrule
+    Spectral \ac{mlp} &
+    History 1--9, widths 128, 256, 512, 768, and 1024, depth 1--3, and tanh or softplus.
+    The Optuna trials used residual output, and the best architecture was also evaluated with direct output. \\
+    Spectral \ac{cnn} &
+    History 5--17, 8--32 feature channels in the first layer, 1--2 convolutional layers, filter widths of 1, 3, or 5 frequency bins, tanh or softplus, and an optional hidden layer of 32--744 units in the prediction head.
+    The search used direct output and filters spanning three frames. The selected architecture was also evaluated with one-frame filters. \\
+    Spectral \ac{dmdc} &
+    Histories 1, 2, 4, and 8, retained fractions 0.80, 0.85, 0.90, 0.95, 0.99, 0.999, and 1.0, and ridge regularization parameters $0$, $10^{-8}$, $10^{-6}$, $10^{-4}$, and $10^{-2}$. \\
+    Waveform \ac{mlp} &
+    History 3--50, widths 64, 128, and 256, depth 1--3, tanh or softplus, and direct or residual output. \\
+    Waveform \ac{cnn} &
+    History 13--75, 8--32 feature channels in the first layer, 1--3 convolutional layers, filter lengths of 1--5, and tanh or softplus.
+    The optional hidden layer in the prediction head used either the final convolutional layer's feature channel count or the geometric mean of the head's input and output dimensions as its width. \\
+    \bottomrule
+  \end{tabular}
+\end{table}
 
 % Keep the loss curves with the appendix introduction.
 \begin{figure}[!htbp] % latex-lint:ignore=FLOAT-01
@@ -288,7 +322,7 @@ We retained the 51-sample horizon used in the original comparison, which spanned
 A final current-weight sweep with this horizon and waveform tracking retained \(w_{L_2}=100\), the tested setting within the development charge range.
 
 \chapter{Sparse Stimulation Calibration}\label{app:sparse_calibration}
-% Data and manifests: artifacts/sparse_stimulation_102/.
+% Data and manifests: artifacts/sparse_stimulation_102/ (calibration), artifacts/sparse_activation_ipopt/ (condensed fmax activation comparison), artifacts/sparse_stimulation_reserved_ipopt/ (reserved IPOPT run).
 
 We calibrated sparse stimulation using the spectral \ac{dmdc} predictor and the \SI{1.02}{\second} Control Horizon selected in Section~\ref{sec:controller_comparison}.
 Each plan contained 17 holds of \SI{60}{\milli\second}, with one hold applied before replanning.
@@ -339,32 +373,37 @@ The adjacent weights show sensitivity to the closed-loop response, with spread o
 For activation-only control we used a common weight \(w_\delta=2.40\), with the current magnitude penalties set to zero.
 The activation cost charged \(w_\delta/17\) per enabled hold.
 The grouped-candidate search partitioned the horizon into four consecutive groups of 4, 4, 4, and 5 holds and evaluated their 16 activation schedules.
-Bonmin used an eight-second solver limit per replan, and the homotopy method used up to four IPOPT passes with a direct spectral hinge.
-Table~\ref{tab:sparse_calibration_binary} reports the five-seed results.
-The three methods met the mean charge target, while Bonmin showed widespread seizure activity on three seeds.
-The fallback counts sum over the five runs.
+We first tested the calibration formulations (Bonmin with explicit spectral epigraph slacks, single-shooting IPOPT homotopy with a direct spectral hinge, and grouped candidates with OSQP), using an eight-second solver limit per replan for Bonmin and up to four IPOPT passes for homotopy.
+Because the explicit spectral epigraph introduced \(17 \times 62 \times 12 = \num{12648}\) slacks per solve and caused frequent Bonmin time-limit fallbacks, and uncondensed single-shooting slowed homotopy, we reran the five-seed comparison at \(w_\delta=2.40\) under the condensed direct-hinge (\texttt{fmax}) formulation across all three methods: direct condensed \texttt{fmax} in Bonmin, condensed \texttt{fmax} homotopy in exact-Hessian IPOPT, and condensed \texttt{fmax} IPOPT subproblems for grouped candidates.
+Table~\ref{tab:sparse_calibration_binary} reports both sets of five-seed results.
+In both formulations all methods met the mean charge target, while removing the \num{12648} spectral slacks reduced Bonmin fallback holds from 99 to 7 and brought its mean burden down from \SI{16.70}{\percent} to \SI{5.06}{\percent} (though seed 7004 still ended with eight seizing regions).
+Condensed \texttt{fmax} homotopy eliminated all 17 fallback holds and achieved \SI{4.56}{\percent} burden with zero healthy recruitment, while grouped candidates matched its original OSQP closed-loop trajectory identically under condensed IPOPT with zero fallbacks.
 
 \begin{table}[htbp]
   \centering
-  \caption{Activation-only calibration at \(w_\delta=2.40\), averaged over five development seeds. Fallback holds are totals across seeds.}\label{tab:sparse_calibration_binary}
-  \begin{tabular}{@{}lrrrr@{}}
+  \caption{Activation-only calibration at \(w_\delta=2.40\), averaged over five development seeds under both the initial epigraph/uncondensed and revised condensed direct-hinge (\texttt{fmax}) formulations. Fallback holds are totals across seeds.}\label{tab:sparse_calibration_binary}
+  \begin{tabular}{@{}llrrrr@{}}
     \toprule
-    Method & Burden (\%) & Charge (mAs) & Off (s) & Fallbacks \\
+    Formulation & Method & Burden (\%) & Charge (mAs) & Off (s) & Fallbacks \\
     \midrule
-    Bonmin             & 16.70 & 28.75 & 4.15 & 99 \\
-    Grouped candidates &  5.01 & 27.98 & 4.34 &  0 \\
-    Homotopy           &  4.95 & 27.79 & 4.19 & 17 \\
+    Epigraph / uncondensed & Bonmin             & 16.70 & 28.75 & 4.15 & 99 \\
+                           & Grouped candidates &  5.01 & 27.98 & 4.34 &  0 \\
+                           & Homotopy           &  4.95 & 27.79 & 4.19 & 17 \\
+    \addlinespace
+    Condensed \texttt{fmax} & Bonmin             &  5.06 & 29.28 & 3.96 &  7 \\
+                            & Grouped candidates &  5.01 & 27.98 & 4.34 &  0 \\
+                            & Homotopy           &  4.56 & 30.76 & 3.65 &  0 \\
     \bottomrule
   \end{tabular}
 \end{table}
 
-With \(w_{L_1}=0.60\), Bonmin and \(w_\delta=0.01\) averaged \SI{16.08}{\percent} burden, \SI{28.85}{\milli\ampere\second} charge, and \SI{4.10}{\second} off across five seeds, with 47 fallback holds.
+With \(w_{L_1}=0.60\) in the initial epigraph calibration, Bonmin and \(w_\delta=0.01\) averaged \SI{16.08}{\percent} burden, \SI{28.85}{\milli\ampere\second} charge, and \SI{4.10}{\second} off across five seeds, with 47 fallback holds.
 Seeds 7002 and 7005 ended with 29 seizing regions.
 At \(w_\delta=0.04\), seed 7001 reached \SI{34.30}{\percent} burden.
 At \(w_\delta=0.08\), the five-seed means were \SI{10.36}{\percent} burden, \SI{26.30}{\milli\ampere\second} charge, and \SI{4.75}{\second} off, with 45 fallback holds.
 Seed 7002 reached \SI{31.11}{\percent} burden and ended with 28 seizing regions.
-Because Bonmin repeatedly reached the solver time limit, triggered fallback holds, and failed to contain spread in both activation-only and combined calibration, we replaced it with the grouped-candidate search for the combined arm.
-For each of the 15 nonzero schedules on the 4, 4, 4, and 5-hold partition, the grouped-candidate controller solved the exact-\(L_1\) subproblem with OSQP and scored the all-off schedule directly.
+Because Bonmin repeatedly reached the solver time limit, triggered fallback holds, and failed to contain spread in both the epigraph activation-only runs and combined calibration, and still exhibited occasional time-limit fallbacks and healthy recruitment on seed 7004 under the condensed \texttt{fmax} formulation, we replaced it with the grouped-candidate search for the combined arm.
+For each of the 15 nonzero schedules on the 4, 4, 4, and 5-hold partition, the grouped-candidate controller solved the condensed exact-\(L_1\) subproblem (calibrated with OSQP and evaluated on the reserved seeds under condensed \texttt{fmax} IPOPT) and scored the all-off schedule directly.
 
 Table~\ref{tab:sparse_calibration_combined} summarizes the five-seed combined calibration for grouped candidates at \(w_{L_1}=0.60\).
 All 15 runs accepted every replan with zero fallback holds.
