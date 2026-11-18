@@ -18,3 +18,27 @@
 %   * Experimental roadmap from in-silico whole-brain models to animal preparations and clinical translation.
 
 %   * spectral predictors showed quite a high error. Some of it for sure due to the inherent variability of the STFT estimator. Future research could look into different spectral power estimators, like TKEO
+
+
+
+
+conclusions
+\begin{itemize}
+    \item spectral cost and waveform cost are good surrogates for seizure state of the network
+    \item spectral loss is necessary in the training of a waveform predictor to ensure it learns the oscillatory patterns and does not regress the mean
+    \item (linear) MPC in the spectral observable directly inside the spectral observable space is possible
+    \item dynamics are more easily described by a linear model in spectral space compared to the waveform EEG space
+    \item approaches to make stimulation work however with some limitations 
+\end{itemize}
+
+limitations
+\begin{itemize}
+    \item all in-silico
+    \item one-type of focal seizure ...
+    \item no consideration of stochasticity can make the controllers quite conservative
+\end{itemize}
+
+outlook
+\begin{itemize}
+    \item 
+\end{itemize}

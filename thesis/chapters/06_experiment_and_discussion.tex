@@ -7,18 +7,18 @@ Finally, the closed-loop experiments assess how these design choices affect seiz
 
 \section{Observable Predictability and Seizure State}\label{sec:observable_predictability}
 
-The suppression costs introduced in Section~\ref{sec:mpc_cost_functions} rely on forecasts of scalp \ac{eeg} to assess seizure activity.
-To guide the choice of observables for the benchmarks, we evaluated how far ahead the waveform, spectral log-power, and functional connectivity remained predictable and how closely their suppression costs tracked regional recruitment.
+The suppression costs introduced in Section~\ref{sec:mpc_cost_functions} use the scalp \ac{eeg} waveform and its spectral log-power to assess seizure activity.
+We compared both representations with functional connectivity, which measures statistical dependence between signals and is widely used to study seizures~\cite{Kramer2010,Liang2024} and other patterns of brain activity in \ac{eeg}~\cite{Nolte2004}.
+For each observable, we examined how far ahead it could be predicted and how closely its cost tracked regional recruitment.
 
 \subsection{Potential Predictability}
 % Predictability curves and matched replays are in artifacts/observable_predictability_expanded/.
 % Figure inputs and reconstruction are in thesis/figures/06_experiment_and_discussion/plot_observable_predictability.py.
 
-Future plant noise makes scalp \ac{eeg} uncertain even when the full initial state is known.
-To isolate this uncertainty, simulations were branched from snapshots of the plant state and recorded \ac{eeg} history.
+We estimated how far ahead the waveform, spectral log-power, and functional connectivity could be predicted when future plant noise was the only source of uncertainty.
+To isolate the effect of this noise, simulations were branched from snapshots of the plant state and recorded \ac{eeg} history.
 Branches from the same snapshot shared their initial state and history and received independent realizations of future noise.
 Figure~\ref{fig:observable_replays} shows how this noise makes waveforms from one snapshot diverge.
-The same branching design provides a common basis for comparing the waveform with spectral log-power and functional connectivity representations.
 Potential predictability measures the fraction of future variance attributable to differences between starting snapshots~\cite{Matsumura2010, Schubert2002}.
 
 \begin{figure}
@@ -35,9 +35,8 @@ Each of the \num{3600} branches ran for \SI{3}{\second} without stimulation.
 
 The waveform, spectral log-power, and functional connectivity were derived from the same 62 channels of causally low-pass-filtered scalp \ac{eeg} sampled at \SI{50}{\hertz}.
 Spectral log-power was computed from trailing 25-sample segments (\SI{0.50}{\second}) with a rising half-Hann window and a three-sample hop.
-Functional connectivity measures statistical dependence between signals and has been used to characterize changes in coordination across \ac{eeg} channels during seizures~\cite{Roffet2025,Kramer2010,Liang2024}.
-Here we estimate connectivity by comparing the two directions of a one-sample lag between channels. % this should get a reference to the paper we got this from 
-For this comparison, each channel was standardized within the same segment by subtracting its mean and scaling the centered samples to unit Euclidean norm.
+We estimated functional connectivity from the asymmetry of the cross-correlation at a one-sample lag, following the approach of~\textcite{Nevado2012}.
+Before computing the cross-correlation, we subtracted each channel's mean within the segment and scaled the centered samples to unit Euclidean norm.
 For the segment indexed by \(q\) ending at \(t_q \ge 0\), let \(\widetilde y_{\beta,c}\) be the standardized sample of channel \(c\) at segment offset \mbox{\(\beta=0,\ldots,24\)}, starting with the oldest sample.
 We pair the early samples \(\mathbf a_c\) from one channel with the late samples \(\mathbf b_{c'}\) from the other, offsetting the two by one sample (\SI{20}{\milli\second}),
 \begin{equation*}
@@ -54,22 +53,26 @@ The functional connectivity feature for each distinct channel pair \(c,c'\) is h
 The two products cancel for proportional signals, including copies of the same waveform with opposite polarity~\cite{Nolte2006}.
 
 Let \(h > 0\) be the time elapsed since the snapshot.
-At lookahead \(h\), let \(o_a^{(\mu,b)}(h) \in \mathbb{R}\) be observable component \(a\) in branch \(b \in \{1,\ldots,n_{\mathrm{branch}}\}\) from snapshot \(\mu \in \{1,\ldots,n_{\mathrm{snap}}\}\), and let \(\bar o_a^{(\mu)}(h)\) be its mean across branches.
-For \(n_{\mathrm{snap}} \in \mathbb{N}\) snapshots and \(n_{\mathrm{branch}} \in \mathbb{N}\) branches per snapshot, the estimates of noise variance within snapshots and signal variance between snapshots are
+Index the \(n_{\mathrm{snap}}\) snapshots by \(\mu\) and the \(n_{\mathrm{branch}}\) branches from each snapshot by \(b\).
+At lookahead \(h\), \(o_a^{(\mu,b)}(h)\) is the value of observable component \(a\) in branch \(b\) from snapshot \(\mu\), and \(\bar o_a^{(\mu)}(h)\) is the mean over those branches.
+Noise variance is the variation in the observable caused by different realizations of future plant noise from the same snapshot.
+Signal variance is the variation in the expected observable due to differences in the initial plant state and \ac{eeg} history across snapshots.
+The two variances can be estimated as~\cite{Schubert2002,Matsumura2010}
 \begin{align}
-  \widehat V_{\mathrm{N},a}(h) &= \frac{1}{n_{\mathrm{snap}}}\sum_\mu
+  \widehat V_{\mathrm{N},a}(h) &= \frac{1}{n_{\mathrm{snap}}}\sum_{\mu=1}^{n_{\mathrm{snap}}}
     \operatorname{Var}_b\bigl(o_a^{(\mu,b)}(h)\bigr),\\
   \widehat V_{\mathrm{S},a}(h) &= \operatorname{Var}_\mu\bigl(\bar o_a^{(\mu)}(h)\bigr)
     - \frac{\widehat V_{\mathrm{N},a}(h)}{n_{\mathrm{branch}}}\,.
 \end{align}
-Both variance operators denote sample variances.
-The subtraction corrects for noise in the means estimated from finitely many branches~\cite{Schubert2002, Matsumura2010}.
+The sample variances are taken over the \(n_{\mathrm{branch}}\) outcomes for a fixed snapshot (\(\operatorname{Var}_b\)) and over the \(n_{\mathrm{snap}}\) snapshot means (\(\operatorname{Var}_\mu\)).
+The subtraction corrects for the contribution of future noise to means estimated from finitely many branches.
 At each lookahead, potential predictability is computed by summing the variance terms over components with complete branch data,
 \begin{equation}
   \widehat P(h) = \frac{\sum_a \widehat V_{\mathrm{S},a}(h)}
   {\sum_a \bigl(\widehat V_{\mathrm{S},a}(h) + \widehat V_{\mathrm{N},a}(h)\bigr)}\,.
 \end{equation}
 This ratio estimates the fraction of mean squared prediction error that could be eliminated by knowing the full initial plant state and required history, compared with predicting the unconditional mean at the same lookahead~\cite{DelSole2004}.
+A potential predictability of 1 means the observable is perfectly predictable from the initial state and history, while 0 means that knowing them gives no improvement over predicting the unconditional mean.
 The estimate depends on the sampled distribution of snapshots.
 
 \begin{figure}
@@ -82,19 +85,17 @@ The estimate depends on the sampled distribution of snapshots.
   \label{fig:observable_potential_predictability}
 \end{figure}
 
-At the first spectral frame endpoint, \SI{60}{\milli\second} after the snapshot, potential predictability was \(0.90\) for spectral log-power and approximately \(0.99\) for both the waveform and functional connectivity.
-The rising half-Hann window gives the three branch-specific samples the largest weights, so their fluctuations can affect the spectral estimate despite the shared history.
-The lower predictability is consistent with the variability of single-segment \ac{stft} estimates discussed in Section~\ref{sec:spectral_representation}.
+Potential predictability declined with lookahead for all three observables (Figure~\ref{fig:observable_potential_predictability}, left).
+Functional connectivity started at a similar level to the waveform but declined most rapidly and approached zero.
+The waveform and spectral log-power both retained potential predictability through \SI{2}{\second}.
 
-The first frame containing only post-snapshot samples ended at \SI{0.54}{\second}.
-At that lookahead, potential predictability was \(0.46\) for the functional connectivity feature, \(0.64\) for spectral log-power, and \(0.70\) for the waveform (Figure~\ref{fig:observable_potential_predictability}, left).
+The waveform retained similar levels of potential predictability to spectral log-power at longer lookaheads, even though discarding phase information might be expected to make log-power easier to predict.
+The waveform oscillations diverged rapidly across branches (Figure~\ref{fig:observable_replays}), so we tested whether slow shifts in the local level around which the waveform oscillates accounted for this result.
+We estimated this level at each frame endpoint using a trailing mean with rising half-Hann weights normalized to sum to one.
+The potential predictability of the waveform residual after subtracting this mean declined much faster than that of either the trailing mean or spectral log-power (Figure~\ref{fig:observable_potential_predictability}).
 
-The waveform was about as predictable as spectral log-power over the plotted lookaheads, even though its oscillations diverged quickly across branches in Figure~\ref{fig:observable_replays}.
-To test whether the slow waveform level accounted for this result, the trailing mean was computed at each frame endpoint using rising half-Hann weights, normalized to sum to one.
-The waveform residual after subtracting this mean lost predictability much faster than either the trailing mean or spectral log-power (Figure~\ref{fig:observable_potential_predictability}).
-
-In preliminary runs, waveform predictors trained with a longer waveform loss horizon tended to retain the slow mean while losing seizure oscillations.
-Under squared error, the best point prediction is the conditional mean, so oscillations that drift out of phase across branches can average out while the more reproducible slow level persists.
+This pattern is consistent with preliminary runs in which waveform predictors trained with a longer waveform loss horizon tended to retain the local level while losing seizure oscillations.
+Under squared error, the best point prediction is the conditional mean, so oscillations that drift out of phase across branches can average out while the more reproducible local level persists.
 A forecast that loses the oscillations can understate their contribution to the waveform suppression cost in~\eqref{eq:mpc_waveform_cost}.
 Spectral log-power can capture oscillatory power without forecasting instantaneous phase.
 Based on these findings, we set the waveform loss horizon to 12 samples (\SI{0.24}{\second}) and the spectral loss horizon to 17 frames (\SI{1.02}{\second}) in the predictor evaluations that follow.
@@ -104,7 +105,8 @@ The next comparison tests how well the suppression costs reflect recruitment whe
 % The expanded score archive is artifacts/observable_predictability_expanded/evaluation_scores.npz.
 % The short-window connectivity analysis and its outputs are in artifacts/fc_time_domain/report.md.
 
-To assess how closely the suppression costs tracked recruitment without the influence of forecast error, the costs were computed directly from the recorded \ac{eeg}.
+Suppression costs are derived quantities computed from scalp \ac{eeg} and may not track regional recruitment in the plant.
+To assess how closely the waveform, spectral, and connectivity costs tracked regional recruitment, we computed each cost directly from recorded \ac{eeg} to avoid the influence of forecast error and correlated it with the seizure state.
 The seizure state \(s(t)\) is the fraction of plant regions whose peak-to-peak amplitude exceeds \SI{5}{\milli\volt} over the preceding second, following the recruitment criterion of Section~\ref{sec:network_calibration},
 \begin{equation}
   s(t) = \frac{1}{\nreg}
@@ -119,11 +121,11 @@ The seizure state \(s(t)\) is the fraction of plant regions whose peak-to-peak a
 The operator \(\operatorname{ptp}\) takes the maximum minus the minimum over the indicated window separately for each regional output \(y_{\mathrm{reg},i}\) in \(\mathbf y_{\mathrm{reg}}\).
 The \(L_0\) norm \(\lVert\cdot\rVert_0\) counts nonzero entries, as in the sparsity penalties of Section~\ref{sec:mpc_sparse_formulations}.
 
-The waveform and spectral references for this analysis were fitted from two unstimulated healthy runs, using the reference definitions in Section~\ref{sec:mpc_cost_functions}.
+We fitted the references for the waveform cost~\eqref{eq:mpc_waveform_cost} and spectral cost~\eqref{eq:mpc_spectral_cost} from two unstimulated healthy runs.
 The waveform and spectral scores were aligned at spectral frame endpoints spaced \SI{60}{\milli\second} apart.
 
-For each channel pair \((c,c')\), let \(\bar R_{\mathrm{healthy},c,c'}\) be the mean of~\eqref{eq:connectivity_feature} across segment endpoints from the two healthy reference runs.
-The functional connectivity cost averages the squared deviation from the healthy mean across the set \(\mathcal E\) of unique channel pairs,
+For each channel pair \((c,c')\), we defined the healthy reference \(\bar R_{\mathrm{healthy},c,c'}\) as the mean of the connectivity feature in~\eqref{eq:connectivity_feature} across frame endpoints in the healthy runs.
+For this comparison, we define the connectivity cost as the mean squared deviation from this reference over the set \(\mathcal E\) of unique channel pairs,
 \begin{equation*}
   \mathcal J_{\mathrm{conn}}(q)
   = \frac{1}{|\mathcal E|}\sum_{(c,c')\in\mathcal E}
@@ -149,8 +151,8 @@ This variability and the rapid drop in potential predictability for the function
 
 \section{Offline Predictor Evaluation}\label{sec:offline_predictor_benchmark}
 
-The predictors for the two remaining targets, waveform and spectral log-power, were compared at matched lookaheads using the same log-power representation that enters the suppression cost.
-Before making this comparison, we searched for a suitable configuration of hyperparameters for each architecture, using the validation loss for its prediction target to select among the candidates.
+We evaluated and compared the predictors across configurations, architectures, and prediction targets using forecast losses computed on validation trajectories.
+Within each comparison, all predictors were scored with the same loss.
 Each prediction target used its own dataset for fitting and selection, with stimulation currents updated at each sample for waveform prediction and at each frame hop for spectral prediction.
 Both datasets contained \ac{eeg} sampled at \SI{50}{\hertz} and were split into 160 training and 40 validation trajectories, as described in Section~\ref{sec:predictor_training}.
 For each dataset, the standardization statistics were estimated from the training split and held fixed during validation.
@@ -162,7 +164,6 @@ With a \SI{20}{\milli\second} current hold, the searches for the waveform predic
 
 The spectral predictors were ranked by the recursive log-power \ac{mse} $\mathcal{L}_\mathrm{spec}$ in~\eqref{eq:spectral_training_loss}, evaluated over 17 frames (\SI{1.02}{\second}).
 For the waveform predictors, the joint loss $\mathcal{L}_\mathrm{joint}$ in~\eqref{eq:combined_predictor_loss} combined log-power \ac{mse} over the same horizon with waveform \ac{mse} over the first 12 samples (\SI{0.24}{\second}), using weights of 15 and 1, respectively.
-Before comparing the two prediction targets on a common footing, we tuned each candidate architecture on its own validation set.
 
 \subsection{Hyperparameter Search and Model Selection}
 % The STUDIES list in thesis/figures/06_experiment_and_discussion/offline_predictor_benchmark.py
@@ -172,6 +173,7 @@ Table~\ref{tab:predictor_search_spaces} lists the settings evaluated for each ar
 To keep recursive training tractable, we capped the history lengths and network sizes tested for each architecture.
 We capped history lengths at fewer samples or frames in the \ac{mlp} hyperparameter searches than in the \ac{cnn} searches because each additional sample or frame adds connections to all units in the first dense layer.
 The \acp{cnn} reuse their convolutional filters across the history, allowing longer inputs within the training budget.
+In the \ac{cnn} searches, the feature channel count of each convolutional layer after the first was scaled relative to the preceding layer by a factor between 0.5 and 1.
 For the spectral \ac{dmdc} predictor, every combination of \ac{eeg} history length, retained fraction of the sum of squared singular values, and ridge regularization parameter in the grid was evaluated.
 The neural-network searches used Optuna~\cite{Akiba2019} with 15 randomly sampled startup trials followed by 10 to 15 trials with configurations chosen by a tree-structured Parzen estimator. 
 The estimator uses validation losses from completed trials to select which configurations to evaluate next~\cite{Bergstra2011}.
@@ -185,8 +187,7 @@ The weights with the lowest validation loss from that phase were retained.
   \centering
   \small
   \caption{Predictor settings evaluated for each prediction target.
-  The \ac{eeg} history is measured in spectral frames for the spectral predictors and in samples for the waveform predictors.
-  For the \acp{cnn}, the number of feature channels in each successive convolutional layer was the previous layer's count multiplied by a factor between 0.5 and 1.}\label{tab:predictor_search_spaces}
+  The \ac{eeg} history is measured in spectral frames for the spectral predictors and in samples for the waveform predictors.}\label{tab:predictor_search_spaces}
   \begin{tabular}{@{}lp{0.77\linewidth}@{}}
     \toprule
     Predictor & Settings evaluated \\
@@ -269,7 +270,8 @@ With one configuration selected for each architecture and target, we can compare
 % The thesis lookahead figure, shared scoring starts, and waveform loss refits are generated by
 % thesis/figures/06_experiment_and_discussion/offline_predictor_benchmark.py.
 
-This comparison examines whether predicting log-power directly reduces spectral error relative to deriving log-power from waveform forecasts, and how the difference varies with lookahead.
+The spectral suppression cost in~\eqref{eq:mpc_spectral_cost} can use log-power predicted directly or computed from a waveform forecast.
+We compared the two routes to determine which gave more accurate log-power estimates at the lookaheads used for control.
 To that end, the selected predictors were evaluated at the same \num{6400} prediction start times across the 40 validation trajectories with \SI{60}{\milli\second} between current updates.
 At each start time, every predictor had enough measured history to initialize its forecast and received the recorded future currents for its recursive rollout.
 The waveform forecasts were converted to log-power so that all predictors could be scored by log-power \ac{mse} $\mathcal{L}_\mathrm{spec}(h)$ at each of the 17 lookaheads $h$.
@@ -298,6 +300,7 @@ A further observation can be made when the signs of the forecast errors are cons
 The waveform-only fit underestimated log-power on average at every lookahead.
 This finding is consistent with the idea that out-of-phase oscillations average out, as discussed in Section~\ref{sec:observable_predictability}.
 Adding the spectral term to the waveform loss reduced the mean signed log-power error (prediction minus observation) from $-0.40$ to $-0.07$, bringing it close to the biases of the direct spectral \ac{cnn} ($-0.03$) and \ac{dmdc} ($0.004$) predictors.
+The closed-loop comparison in Section~\ref{sec:controller_comparison} examines whether the offline advantage of direct spectral prediction is accompanied by better seizure containment.
 
 \subsection{Predictor Architectures}
 
@@ -343,7 +346,6 @@ The \acs{narx} transcription eliminated the repeated history variables but still
 Even with that reduction, the \acs{narx} solve took about 22 times as long as single shooting, which optimized only the stimulation currents.
 The single-shooting solve took about nine times the \SI{60}{\milli\second} update interval used in the closed-loop experiments.
 
-Multiple shooting can be preferable when long rollouts make single shooting poorly conditioned, since its dynamics constraints use only local derivatives (Section~\ref{sec:mpc_numerical_solution}).
 Single-shooting solves were generally numerically stable in these simulations.
 We therefore chose single shooting for the closed-loop experiments because it converged fastest in this benchmark and made repeated solves practical in simulation.
 
@@ -414,7 +416,9 @@ The same vector $(0, -2, +2)\,\si{\milli\ampere}$ gave the most negative drive i
 The size of the shift matters only insofar as it changes the dynamics of an epileptogenic node.
 In the isolated node with the \ac{ez} gain, large-amplitude activity still occurred under a direct offset of $-0.10\,\si{\milli\volt}$, beyond the most negative drive available to any \ac{ez} region.
 Increasing the offset to $-0.25\,\si{\milli\volt}$ kept the isolated node below the seizure criterion in every \SI{1}{\second} window entirely under stimulation across the five runs.
-In the whole network, the left parahippocampal cortex and amygdala likewise stayed above the seizure criterion under all six sustained vertex currents, whether stimulation began at time zero or at \SI{1.38}{\second}.
+In the whole network, we tested each sustained vertex current from the start of the simulation and from \SI{1.38}{\second}.
+The later start matches the controller comparison, when the spectral \ac{cnn} had acquired its input history (Section~\ref{sec:controller_comparison}).
+The left parahippocampal cortex and amygdala stayed above the seizure criterion under all six currents at both start times.
 With the strongest \ac{ez}-directed current starting at \SI{1.38}{\second}, mean burden fell to \SI{4.46}{\percent} and both \ac{pz} regions were below threshold by the final window on all five seeds.
 Thus the small available shift was compatible with control of seizure spread while activity persisted in the \ac{ez}.
 The ability of time-varying currents to suppress the \ac{ez} remains open.
@@ -585,9 +589,9 @@ The comparison therefore evaluates the tuned controllers as complete systems.
   \end{tabular}
 \end{table}
 
+Both spectral controllers contained seizure spread on all ten reserved seeds, ending with at most seven seizing regions and using \SIrange{39}{48}{\percent} less mean charge than the threshold controller (Table~\ref{tab:controller_comparison}).
 The uncontrolled runs ended with 26 to 31 seizing regions on six seeds and three or four on the other four.
-Threshold stimulation left 28 to 32 regions seizing on four of those six seeds and delivered charge close to sustained stimulation at the current limit (Table~\ref{tab:controller_comparison}).
-Both spectral controllers ended with at most seven seizing regions on every seed and used \SIrange{39}{48}{\percent} less mean charge than the threshold controller.
+Threshold stimulation left 28 to 32 regions seizing on four of those six seeds and delivered charge close to sustained stimulation at the current limit.
 Their mean burdens were within the range associated with containment and residual focal activity in this plant.
 The spectral \ac{dmdc} controller reached this range with the linear predictor and the shortest tested horizon.
 The spectral \ac{cnn} controller used \SI{3.78}{\milli\ampere\second} less charge on average, with a difference in mean burden of 0.21 percentage points.
@@ -612,8 +616,8 @@ The next comparison examines how training loss and suppression cost affect conta
 
 \subsection{Waveform Prediction Target}\label{sec:waveform_prediction_closed_loop}
 
-The controller comparison evaluated the selected waveform and spectral controllers as complete systems.
-To isolate choices within the waveform controller, we varied the predictor's training loss and the controller's suppression cost for the waveform \ac{mlp} architecture.
+The waveform \ac{mlp} can support either suppression cost because its forecast can be used directly for the waveform cost or converted to log-power for the spectral cost.
+We therefore varied the predictor's training loss and the controller's suppression cost within this architecture.
 We compared each single loss, \(\mathcal{L}_\mathrm{wave}\) or \(\mathcal{L}_\mathrm{spec}\), with the joint loss \(\mathcal{L}_\mathrm{joint}\) under the corresponding suppression cost (A versus C and B versus D in Table~\ref{tab:waveform_loss_cost}).
 Using the joint-loss fit across C, D, and E then let us compare the waveform cost \(\mathcal J_{\mathrm{wave}}\), the spectral cost \(\mathcal J_{\mathrm{spec}}\), and their combination.
 
