@@ -484,3 +484,75 @@ Mean burden varied by only 0.11 percentage points across the horizon sweep, and 
 The shortest horizon delivered the least charge.
 We retained the 51-sample horizon used in the original comparison, which spanned the same \SI{1.02}{\second} as the 17-frame spectral design and showed no improvement in mean burden from extending it.
 A final current-weight sweep with this horizon and the waveform suppression cost retained \(w_{L_2}=100\), the tested setting within the development charge range.
+
+\chapter{Spectral Geometry Sweep}
+
+To limit the number of runs, we varied segment length, frequency band, frame averaging, and taper in successive stages, carrying the selected setting forward at each stage.
+We trained a spectral \ac{mlp} for each setting and computed the healthy reference using the same geometry.
+The controllers were evaluated on five development seeds at a sampling frequency of \SI{50}{\hertz}, a frame hop of \SI{60}{\milli\second}, a control horizon of 17 frames (\SI{1.02}{\second}), and a fixed quadratic stimulation cost weight of \(w_{L_2}=0.4\).
+Table~\ref{tab:spectral_geometry_sweep} reports mean seizure burden, delivered charge, and the final number of seizing regions for each setting.
+
+\begin{table}
+  \centering
+  \caption{Closed-loop outcomes for the spectral estimation settings, averaged over five runs per setting.
+  Both segment lengths started control at \SI{1.98}{\second}, while all band settings started at \SI{0.48}{\second}.
+  The smoothing and taper stages started control when the required history was available.}\label{tab:spectral_geometry_sweep}
+  \begin{tabular}{@{}llrrr@{}}
+    \toprule
+    Stage & Setting & Burden (\%) & Charge (mAs) & Final count \\
+    \midrule
+    Segment & 25 samples & 11.44 & 22.27 & 8.8 \\
+            & 50 samples & 11.71 & 14.00 & 9.2 \\
+    \addlinespace
+    Band & \SIrange{0}{25}{\hertz} & 4.78 & 30.63 & 3.4 \\
+         & \SIrange{1}{25}{\hertz} & 4.86 & 26.85 & 3.8 \\
+         & \SIrange{3}{12}{\hertz} & 4.91 & 31.51 & 3.2 \\
+    \addlinespace
+    Smoothing & 1 frame & 4.86 & 26.85 & 3.8 \\
+              & 4 frames & 4.48 & 33.24 & 3.4 \\
+              & 7 frames & 4.36 & 37.05 & 3.2 \\
+    \addlinespace
+    Taper & Rising half-Hann & 4.86 & 26.85 & 3.8 \\
+          & Symmetric Hann & 15.20 & 27.69 & 14.2 \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\section{Segment Length}
+
+Comparing 25- and 50-sample segments tested whether finer frequency resolution would improve containment or reduce charge.
+Doubling the segment from 25 to 50 samples refined the frequency grid from \SI{2}{\hertz} to \SI{1}{\hertz}, but also extended the history needed to initialize the predictor.
+To compare the controllers with the same opportunity to intervene, both started at \SI{1.98}{\second}, when the 50-sample-segment controller had acquired its spectral and past-current histories.
+At this common start, the 50-sample-segment controller used less charge with similar mean burden.
+The 25-sample-segment controller solved faster, with a mean solve time of \SI{4.87}{\second} compared with \SI{8.52}{\second} for the 50-sample segment.
+
+On seed 7005, the seizure had already spread into the \ac{pz} by \SI{1.50}{\second}.
+To isolate the effect of starting earlier on this seed, we replayed the 25-sample-segment controller at its earliest start, \SI{0.48}{\second}.
+It contained spread, reducing burden from \SI{35.73}{\percent} to \SI{4.62}{\percent} while delivering \SI{26.80}{\milli\ampere\second}.
+We retained the 25-sample segment because it allowed earlier intervention.
+
+\section{Frequency Band}
+
+With the shorter segment in place, we compared frequency bands to determine which parts of the spectrum the controller needed for containment.
+The \SIrange{0}{25}{\hertz} setting supplied all available bins.
+The zero-frequency bin had the highest energy and captured the weighted level of the signal within a window.
+Removing just this bin with the \SIrange{1}{25}{\hertz} setting tested whether the controller benefited from including that level alongside the oscillatory components.
+The narrower \SIrange{3}{12}{\hertz} setting kept the prominent oscillatory components in the simulated examples in Figure~\ref{fig:bifurcation}~(c).
+This predominantly theta and alpha range has also been used to measure changes in spectral entropy at seizure onset in scalp \ac{eeg} recordings from patients with temporal lobe epilepsy~\cite{Sridevi2019}.
+With all three controllers starting at \SI{0.48}{\second}, mean burden varied by only 0.13 percentage points across the bands.
+The \SIrange{1}{25}{\hertz} setting used the least charge and was carried forward to the frame-averaging comparison.
+
+\section{Frame Averaging}
+
+Frame averaging reduced fluctuations in the log-power estimates.
+Averaging over four or seven frames extended the waveform support by \SI{180}{\milli\second} or \SI{360}{\milli\second}, respectively, delaying the first control update by the same amount.
+Across the tested settings, averaging lowered mean burden by less than one percentage point and raised mean delivered charge to \SI{33.24}{\milli\ampere\second} with four frames and \SI{37.05}{\milli\ampere\second} with seven.
+Individual frames kept mean charge below \SI{30}{\milli\ampere\second} at the tested weight and were retained for the taper comparison.
+
+\section{Taper}
+
+Changing the taper tested whether the controller benefited from giving recent samples greater weight.
+At similar mean charge, the rising half-Hann taper contained spread on all five seeds.
+With the symmetric Hann taper, spread occurred on two of the five seeds, with 30 regions still seizing at the end of each run.
+At the same frame endpoint, the rising taper gives the newest samples more weight, so emerging activity can contribute more strongly to the estimated spectrum as soon as it is measured.
+The benefit of responding sooner to emerging activity may outweigh any adverse effects of spectral leakage from the rising taper.

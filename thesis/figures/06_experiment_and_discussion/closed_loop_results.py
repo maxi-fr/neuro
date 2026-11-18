@@ -91,7 +91,7 @@ def save_effort_sweeps() -> None:
     panels[0, 0].set(ylim=(0, 50), yticks=np.arange(0, 51, 10))
     panels[1, 0].set(ylim=(0, 39), yticks=np.arange(0, 37, 6))
     for ax in panels[1]:
-        ax.set(xscale="log", xlabel=r"Quadratic current weight $w_{L_2}$")
+        ax.set(xscale="log", xlabel=r"Stimulation cost weight $w_{L_2}$")
 
     fig.savefig(FIGURES / "closed_loop_effort_sweeps.pdf")
     plt.close(fig)

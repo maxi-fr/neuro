@@ -479,83 +479,28 @@ Seed 7005 finished with three seizing regions at \mbox{$w_{L_2}=100$}.
 For subsequent experiments using these controller configurations and the same horizon, we retained \mbox{$w_{L_2}=0.30$} for the spectral controllers and \mbox{$w_{L_2}=100$} for the waveform \ac{mlp} controller.
 Next we test how the spectral estimation geometry itself affects closed-loop containment and charge.
 
-\subsection{Effect of Spectral Geometry on Seizure Suppression}
+\subsection{Spectral Geometry Selection}
 % The stage-by-stage report is artifacts/sweep_2026_11/observable_geometry/report.md.
 % MLP per-seed scores and manifests are in artifacts/sweep_2026_11/observable_geometry/mlp/.
 
-The spectral geometry is part of the predictor's hyperparameter configuration because it determines how the training targets are computed from the measured \ac{eeg}.
-In the offline hyperparameter searches, validation loss ranked configurations that shared a prediction target.
-Applying the same selection procedure to spectral geometry would compare losses computed on different targets.
-For example, averaging successive frames can reduce fluctuations in log-power and make it easier to predict, while also attenuating transient changes that might prompt the controller to act.
-The settings were therefore compared in closed loop using seizure burden and delivered charge as metrics.
+We compared spectral geometries to select settings for the closed-loop controller comparison.
+The offline hyperparameter searches ranked predictors by validation loss on a shared target, whereas changing the spectral geometry changes the log-power target itself.
+For example, averaging successive frames can make log-power easier to predict while attenuating transient changes that might prompt the controller to act.
+We therefore compared the settings in closed loop using seizure burden, the final number of seizing regions, and delivered charge.
 
-A full factorial search would have required training a predictor and running closed-loop simulations for every combination of settings.
-To limit the number of runs, the comparison proceeded in stages, varying segment length, frequency band, the number of frames averaged, and taper in that order.
+To limit the number of runs, we varied segment length, frequency band, the number of frames averaged, and taper in successive stages, carrying the selected setting forward at each stage.
 One spectral \ac{mlp} predictor was trained for each setting, and the healthy reference was computed using the same geometry.
-The controllers were evaluated on the five development seeds at a sampling frequency of \SI{50}{\hertz}, a frame hop of \SI{60}{\milli\second}, a control horizon of 17 frames (\SI{1.02}{\second}), and a quadratic stimulation cost weight of $0.4$.
-Holding this weight fixed keeps the penalty on a given current sequence the same across settings, but the predicted benefit of delivering that current changes with the suppression cost.
-Delivered charge can therefore differ substantially between settings and must be considered alongside burden.
+We assumed that the main trade-offs would carry over to the spectral \ac{dmdc} and \ac{cnn} controllers.
+We evaluated each setting on the five development seeds.
 
-\begin{table} % [htbp] % latex-lint:ignore=FLOAT-01
-  \centering
-  \caption{Closed-loop outcomes for the spectral estimation settings, averaged over five runs per setting.
-  Both segment lengths started control at \SI{1.98}{\second}, while all band settings started at \SI{0.48}{\second}.
-  The smoothing and taper stages started control when the required history was available.}\label{tab:spectral_geometry_sweep}
-  \begin{tabular}{@{}llrrr@{}}
-    \toprule
-    Stage & Setting & Burden (\%) & Charge (mAs) & Final count \\
-    \midrule
-    Segment & 25 samples & 11.44 & 22.27 & 8.8 \\
-            & 50 samples & 11.71 & 14.00 & 9.2 \\
-    \addlinespace
-    Band & \SIrange{0}{25}{\hertz} & 4.78 & 30.63 & 3.4 \\
-         & \SIrange{1}{25}{\hertz} & 4.86 & 26.85 & 3.8 \\
-         & \SIrange{3}{12}{\hertz} & 4.91 & 31.51 & 3.2 \\
-    \addlinespace
-    Smoothing & 1 frame & 4.86 & 26.85 & 3.8 \\
-              & 4 frames & 4.48 & 33.24 & 3.4 \\
-              & 7 frames & 4.36 & 37.05 & 3.2 \\
-    \addlinespace
-    Taper & Rising half-Hann & 4.86 & 26.85 & 3.8 \\
-          & Symmetric Hann & 15.20 & 27.69 & 14.2 \\
-    \bottomrule
-  \end{tabular}
-\end{table}
+Varying most spectral geometry parameters had little effect on on closed-loop performance within each stage of the sweep (Table~\ref{tab:spectral_geometry_sweep}).
+The longer segment used less charge at a common start time, but we retained the shorter segment because it allowed earlier intervention and contained spread when started earlier in a replay of one seed.
+Averaging multiple spectral frames increased delivered charge while not reducing seizure burden significantly.
+Changing the taper had a larger effect on containment at similar mean charge: the rising half-Hann contained spread on all five seeds, compared with three of five for the symmetric Hann.
+By giving the newest samples more weight at the same frame endpoint, the rising taper may help the controller respond to emerging seizure activity.
 
-Comparing 25- and 50-sample segments tested whether finer frequency resolution would improve containment or reduce charge.
-Doubling the segment from 25 to 50 samples refined the frequency grid from \SI{2}{\hertz} to \SI{1}{\hertz}, but also extended the history needed to initialize the predictor.
-To compare the controllers with the same opportunity to intervene, both started at \SI{1.98}{\second}, when the 50-sample-segment controller had acquired its spectral and past-current histories.
-At this common start, the 50-sample-segment controller used substantially less charge with similar mean burden (Table~\ref{tab:spectral_geometry_sweep}).
-The 25-sample-segment controller solved faster, with a mean solve time of \SI{4.87}{\second} compared with \SI{8.52}{\second} for the 50-sample segment.
-
-Matching the start times removed the opportunity to test the shorter segment's earlier start at \SI{0.48}{\second}.
-The importance of that delay became apparent on seed 7005, where the seizure had already spread into the \ac{pz} by \SI{1.50}{\second}.
-To isolate the effect of starting earlier, the 25-sample-segment controller was evaluated on the same seed at its earliest start.
-It contained the seizure, reducing burden from \SI{35.73}{\percent} to \SI{4.62}{\percent}.
-The 25-sample segment was retained for the remaining comparisons because it allowed the earliest intervention and contained the seizure on this seed while delivering \SI{26.80}{\milli\ampere\second}.
-
-With the shorter segment in place, we compared frequency bands to determine which parts of the spectrum the controller needed for containment.
-The \SIrange{0}{25}{\hertz} setting supplied all available bins.
-The zero-frequency bin had the highest energy and captured the weighted level of the signal within a window.
-Removing just this bin with the \SIrange{1}{25}{\hertz} setting tested whether the controller benefited from including that level alongside the oscillatory components.
-The narrower \SIrange{3}{12}{\hertz} setting kept the prominent oscillatory components in the simulated examples in Figure~\ref{fig:bifurcation}~(c).
-This predominantly theta and alpha range has also been used to measure changes in spectral entropy at seizure onset in scalp \ac{eeg} recordings from patients with temporal lobe epilepsy~\cite{Sridevi2019}.
-With all three controllers starting at \SI{0.48}{\second}, mean burden varied by only 0.13 percentage points across the bands.
-The \SIrange{1}{25}{\hertz} setting used the least charge at the tested stimulation cost weight and was carried forward to the frame-averaging comparison.
-
-Frame averaging was intended to reduce fluctuations in the log-power estimates and give the predictor a smoother training target.
-Averaging over four or seven frames reduced the validation loss on those targets, but extended the waveform support by \SI{180}{\milli\second} or \SI{360}{\milli\second}, respectively, and postponed the first control update.
-In closed loop, averaging lowered mean burden by less than one percentage point while increasing charge to \SI{33.24}{\milli\ampere\second} with four frames and \SI{37.05}{\milli\ampere\second} with seven.
-At the tested stimulation cost weight, the smoother targets therefore gave only a small improvement in burden and used charge closer to sustained stimulation.
-Because the benefits of multi-frame smoothing were not clear, the individual frames were retained for the taper comparison.
-
-Changing the taper tests whether the controller benefited from giving recent samples greater weight.
-The taper produced the clearest difference in containment at similar mean charge.
-The controller using the symmetric Hann window failed to contain the seizure on two of the five seeds, with 30 regions still seizing at the end of each run.
-The controller using the rising half-Hann window contained the seizure on all five seeds.
-It gives the newest samples greater weight at the same frame endpoint, so emerging activity can contribute more strongly to the spectrum as soon as it is measured.
-This effect seems to outweigh the effects of spectral leakage.
-The following comparisons used 25-sample segments, a three-sample hop, the \SIrange{1}{25}{\hertz} band, a rising half-Hann window, and individual frames. 
+Taken together, the results suggest that predictor training was robust enough to learn the features needed for containment from a representation that preserved short-term changes in spectral power across a broad frequency band without the need for the stabilizing effect of smoothing across frames.
+For the experiments that follow, we retained 25-sample segments with a three-sample hop, the \SIrange{1}{25}{\hertz} band, and a rising half-Hann taper applied to individual frames.
 
 \subsection{Controller Comparison}\label{sec:controller_comparison}
 % Per-seed outcomes and paired differences: artifacts/sweep_2026_11/waveform_matched_geometry/final/waveform_mlp/evaluation/.
