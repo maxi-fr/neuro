@@ -117,7 +117,7 @@ Recursive substitution of~\eqref{eq:dmd_affine_predictor} gives the log-power pr
 Here $\spectral^{(0)}_{j|q}\in\mathbb R^{\nchan\nbin}$ is the prediction with all planned currents set to zero.
 The sensitivity $\mathbf D_{j,\ell}\in\mathbb R^{(\nchan\nbin)\times\ndim{u}}$ maps the current at interval $\ell$ to its contribution at frame offset $j$ and is independent of the observed history.
 
-With equal positive weights on all predicted frames, the controller minimizes $w_{\mathrm{spec}}\mathcal J_{\mathrm{spec}}+w_{L_2}\mathcal J_{L_2}$, where $w_{\mathrm{spec}}>0$ and $w_{L_2}\geq0$ are the spectral suppression and quadratic current weights.
+With equal positive weights on all predicted frames, the controller minimizes $w_{\mathrm{spec}}\mathcal J_{\mathrm{spec}}+w_{L_2}\mathcal J_{L_2}$, where $w_{\mathrm{spec}}>0$ and $w_{L_2}\geq0$ are the spectral suppression and quadratic stimulation weights.
 Following the epigraph formulation in~\eqref{eq:mpc_l1_epigraph}, introduce a real auxiliary variable $z_{j|q,c,m}$ for each predicted frame offset $j$, channel $c=1,\ldots,\nchan$, and frequency bin $m=0,\ldots,\nbin-1$.
 Replace $\mathcal J_{\mathrm{spec}}$ in the objective with
 %
@@ -203,11 +203,11 @@ The single-term fits set the other term's weight to zero.
 
 % Protocol: docs/hyperparameter_sweep_strategy.md (Sections 6.1 and 6.3).
 % Initial calibration: artifacts/sweep_2026_11/waveform_matched_geometry/mlp/effort/summary.csv.
-To select a shared current weight for the suppression cost comparison, we calibrated the joint fit with both costs active.
+To select a shared stimulation weight for the suppression cost comparison, we calibrated the joint fit with both costs active.
 We used \(w_{\mathrm{wave}}=1\) as the reference weight for \(\mathcal J_{\mathrm{wave}}\) and \(w_{\mathrm{spec}}=1000\) as the starting weight for \(\mathcal J_{\mathrm{spec}}\).
 The waveform cost sums over channels, whereas the spectral cost averages squared excess over channels and frequency bins.
 The terminal sample and frame inherited their respective stage weights.
-The current weight \(w_{L_2}\) was swept over \(\{1, 3, 10, 30, 100, 300, 1000\}\) with both suppression terms active.
+The stimulation weight \(w_{L_2}\) was swept over \(\{1, 3, 10, 30, 100, 300, 1000\}\) with both suppression terms active.
 The selected weight, \(w_{L_2}=100\), delivered \SI{28.08}{\milli\ampere\second} on average.
 
 % Follow-up: artifacts/waveform_joint_cost_recalibration/{report.md,rows.csv}.
@@ -288,77 +288,82 @@ We retained the 51-sample horizon used in the original comparison, which spanned
 A final current-weight sweep with this horizon and waveform tracking retained \(w_{L_2}=100\), the tested setting within the development charge range.
 
 \chapter{Sparse Stimulation Calibration}\label{app:sparse_calibration}
-% Calibration data and manifests: artifacts/sweep_2026_11/sparse_ch05/{report.md,screen.csv,five_seeds.csv,manifests/}.
+% Data and manifests: artifacts/sparse_stimulation_102/.
 
-For the comparisons in Section~\ref{sec:sparse_stimulation}, we screened settings on seeds 7000 and 7001 and checked selected settings on the full five-seed development set, which included both screening seeds.
-We used a mean burden of at most \SI{6}{\percent} to identify candidate settings, then compared delivered charge and off time.
-Figure~\ref{fig:sparse_calibration_tradeoffs} shows the trade-offs across the settings tested at both stages.
-For the quadratic baseline, we retained \(w_{L_2}=0.10\) from Section~\ref{sec:controller_comparison}.
+We calibrated sparse stimulation using the spectral \ac{dmdc} predictor and the \SI{1.02}{\second} Control Horizon selected in Section~\ref{sec:controller_comparison}.
+Each plan contained 17 holds of \SI{60}{\milli\second}, with one hold applied before replanning.
+The controller first solved at \SI{0.66}{\second}, when the predictor was ready.
+We screened settings on seeds 7000 and 7001 and evaluated selected settings on the five development seeds 7000, 7001, 7002, 7004, and 7005.
+We sought mean delivered charge near or below \SI{30}{\milli\ampere\second} and mean seizure burden below \SI{6}{\percent}, and inspected the final seizing-region count on each seed.
+Off time was measured after release from applied holds whose electrode currents were all at or below \SI{1}{\micro\ampere}, excluding fallback holds.
+
+Figure~\ref{fig:sparse_calibration_tradeoffs} shows the measured burden, charge, and off-time trade-offs.
 
 \begin{figure}[htbp]
   \centering
   \includegraphics{figures/08_appendix/sparse_calibration_tradeoffs.pdf}
-  \caption{Mean seizure burden versus delivered charge and time off for the sparse stimulation settings.
-  Open circles show two-seed screening means and filled diamonds show means across all five development seeds.
-  Colors identify the solver families, including settings that combine activation with \(L_1\).
-  Off time excludes warm-up and fallback and uses the \SI{1}{\micro\ampere} threshold per electrode.
-  The dashed line marks the \SI{6}{\percent} burden cutoff.}\label{fig:sparse_calibration_tradeoffs}
+  \caption{Mean seizure burden against delivered charge and off time at the \SI{1.02}{\second} Control Horizon.
+  Open circles show the two-seed screening means and filled diamonds show five-seed means.
+  Off time excludes fallback holds and uses the \SI{1}{\micro\ampere} threshold per electrode.
+  The dashed line marks \SI{6}{\percent} burden.}\label{fig:sparse_calibration_tradeoffs}
 \end{figure}
 
-For the exact \(L_1\) cost, \(w_1=0.234\) gave \SI{5.36}{\percent} burden, \SI{21.57}{\milli\ampere\second} charge, and \SI{2.84}{\second} off across five seeds.
-Increasing \(w_1\) to \(0.28\) increased mean off time to \SI{3.44}{\second}, but mean burden rose to \SI{11.64}{\percent}.
-Combining \(L_1\) with tested quadratic weights of \(0.025\) or \(0.05\) also gave mean burdens above \SI{10}{\percent} across five seeds.
-These settings passed the two-seed screen.
-We retained \(w_1=0.234\) alone and reran it on the same software revision as the quadratic baseline.
+\section{Exact Current Penalty}
 
-The activation-only weight \(w_\delta=0.35\) gave mean burdens below \SI{6}{\percent} with all three methods, yet yielded little off time (Table~\ref{tab:sparse_calibration_binary}).
-At \(w_\delta=0.70\), all three methods still met the burden criterion and brought mean charge closer to the \SI{30}{\milli\ampere\second} target.
-The tested combinations of a quadratic cost with an activation penalty or a cap on enabled holds used more charge and gave less off time than the activation-only comparison at \(w_\delta=0.70\).
+The quadratic baseline retained \(w_{L_2}=0.30\).
+Its five-seed replay gave \SI{5.00}{\percent} mean burden and \SI{25.98}{\milli\ampere\second} mean charge.
+Table~\ref{tab:sparse_calibration_l1} compares the exact \(L_1\) settings.
+The previous weight of 0.234 delivered almost continuous stimulation at this horizon.
+Among the tested settings, \(w_{L_1}=0.60\) met both mean targets and ended with three or four seizing regions on every seed.
+Its highest charge was \SI{34.82}{\milli\ampere\second} on seed 7002.
+The adjacent weights show sensitivity to the closed-loop response, with spread on seeds 7004 and 7005 at 0.62 and on seed 7004 at 0.65.
 
-\begin{table}
+\begin{table}[htbp]
   \centering
-  \setlength{\tabcolsep}{4.5pt}
-  \caption{Additional matched binary activation settings, averaged across five development seeds.
-  Here \(K\) is the maximum number of enabled holds per plan.}\label{tab:sparse_calibration_binary}
-  \begin{tabular}{@{}llrrr@{}}
+  \caption{Exact \(L_1\) calibration across five development seeds. Off time excludes fallback.}\label{tab:sparse_calibration_l1}
+  \begin{tabular}{@{}lrrr@{}}
     \toprule
-    Setting & Method & Burden (\%) & Charge (mAs) & Off time (s) \\
+    \(w_{L_1}\) & Burden (\%) & Charge (mAs) & Off time (s) \\
     \midrule
-    \(w_\delta=0.35\) & Bonmin             & 4.38 & 41.90 & 0.10 \\
-                      & Grouped candidates & 4.37 & 41.33 & 0.29 \\
-                      & Homotopy           & 4.40 & 41.76 & 0.16 \\
-    \addlinespace
-    \(w_{L_2}=0.05,\ w_\delta=0.15\) & Bonmin             & 4.87 & 35.39 & 0.91 \\
-                                    & Grouped candidates & 4.89 & 35.27 & 1.07 \\
-                                    & Homotopy           & 4.90 & 33.97 & 1.48 \\
-    \addlinespace
-    \(w_{L_2}=0.05,\ K=6\) & Bonmin             & 4.65 & 36.71 & 0.06 \\
-                          & Grouped candidates & 4.73 & 37.05 & 0.00 \\
-                          & Condensed homotopy  & 4.77 & 36.47 & 0.22 \\
+    0.234 &  4.15 & 44.94 & 0.05 \\
+    0.58  & 10.15 & 32.45 & 2.93 \\
+    0.60  &  5.00 & 29.01 & 3.77 \\
+    0.62  &  6.90 & 28.17 & 4.01 \\
+    0.65  &  5.97 & 25.69 & 4.54 \\
     \bottomrule
   \end{tabular}
 \end{table}
 
-With \(w_1=0.234\), Bonmin at \(w_\delta=0.01\) gave the most off time among the combined settings checked on all five development seeds and was the only one to meet the burden criterion (Table~\ref{tab:sparse_calibration_combined}).
-Grouped candidates with the same weights exceeded the criterion, so the choice depended on the solution method.
-The tests of homotopy with \(L_1\) ended at the two-seed screen.
-We carried the selected Bonmin configuration and its \(L_1\) baseline forward to the reserved comparison.
+\section{Binary Activation and Combined Penalties}
 
-\begin{table}
+For activation-only control we used a common weight \(w_\delta=2.40\), with the current magnitude penalties set to zero.
+The activation cost charged \(w_\delta/17\) per enabled hold.
+The grouped-candidate search partitioned the horizon into four consecutive groups of 4, 4, 4, and 5 holds and evaluated their 16 activation schedules.
+Bonmin used an eight-second solver limit per replan, and the homotopy method used up to four IPOPT passes with a direct spectral hinge.
+Table~\ref{tab:sparse_calibration_binary} reports the five-seed results.
+The three methods met the mean charge target, while Bonmin showed widespread seizure activity on three seeds.
+The fallback counts sum over the five runs.
+
+\begin{table}[htbp]
   \centering
-  \setlength{\tabcolsep}{4.5pt}
-  \caption{Settings combining activation with \(w_1=0.234\), averaged across five development seeds.}\label{tab:sparse_calibration_combined}
-  \begin{tabular}{@{}llrrr@{}}
+  \caption{Activation-only calibration at \(w_\delta=2.40\), averaged over five development seeds. Fallback holds are totals across seeds.}\label{tab:sparse_calibration_binary}
+  \begin{tabular}{@{}lrrrr@{}}
     \toprule
-    Method & Setting & Burden (\%) & Charge (mAs) & Off time (s) \\
+    Method & Burden (\%) & Charge (mAs) & Off (s) & Fallbacks \\
     \midrule
-    Bonmin             & \(w_\delta=0.01\) &  5.38 & 21.24 & 5.22 \\
-    Bonmin             & \(K=8\)           & 10.51 & 25.15 & 4.03 \\
-    Grouped candidates & \(w_\delta=0.01\) & 11.64 & 25.08 & 4.34 \\
-    Grouped candidates & \(K=8\)           &  6.35 & 22.69 & 4.62 \\
+    Bonmin             & 16.70 & 28.75 & 4.15 & 99 \\
+    Grouped candidates &  5.01 & 27.98 & 4.34 &  0 \\
+    Homotopy           &  4.95 & 27.79 & 4.19 & 17 \\
     \bottomrule
   \end{tabular}
 \end{table}
+
+With \(w_{L_1}=0.60\), Bonmin and \(w_\delta=0.01\) averaged \SI{16.08}{\percent} burden, \SI{28.85}{\milli\ampere\second} charge, and \SI{4.10}{\second} off across five seeds, with 47 fallback holds.
+Seeds 7002 and 7005 ended with 29 seizing regions.
+At \(w_\delta=0.04\), seed 7001 reached \SI{34.30}{\percent} burden.
+At \(w_\delta=0.08\), the five-seed means were \SI{10.36}{\percent} burden, \SI{26.30}{\milli\ampere\second} charge, and \SI{4.75}{\second} off, with 45 fallback holds.
+Seed 7002 reached \SI{31.11}{\percent} burden and ended with 28 seizing regions.
+These combined settings therefore leave a trade-off between charge, off time, and seizure containment.
 
 \chapter{Waveform Controller Calibration}\label{app:waveform_controller_calibration}
 
@@ -371,11 +376,11 @@ The single-term fits set the other term's weight to zero.
 
 % Protocol: docs/hyperparameter_sweep_strategy.md (Sections 6.1 and 6.3).
 % Initial calibration: artifacts/sweep_2026_11/waveform_matched_geometry/mlp/effort/summary.csv.
-To select a shared current weight for the suppression cost comparison, we calibrated the controller using the joint-loss fit with both costs active.
+To select a shared stimulation weight for the suppression cost comparison, we calibrated the controller using the joint-loss fit with both costs active.
 We used \(w_{\mathrm{wave}}=1\) as the reference weight for \(\mathcal J_{\mathrm{wave}}\) and \(w_{\mathrm{spec}}=1000\) as the starting weight for \(\mathcal J_{\mathrm{spec}}\).
 The waveform cost sums over channels, whereas the spectral cost averages squared excess over channels and frequency bins.
 The terminal sample and frame inherited their respective stage weights.
-The current weight \(w_{L_2}\) was swept over \(\{1, 3, 10, 30, 100, 300, 1000\}\) with both suppression terms active.
+The stimulation weight \(w_{L_2}\) was swept over \(\{1, 3, 10, 30, 100, 300, 1000\}\) with both suppression terms active.
 The selected weight, \(w_{L_2}=100\), delivered \SI{28.08}{\milli\ampere\second} on average.
 
 % Follow-up: artifacts/waveform_joint_cost_recalibration/{report.md,rows.csv}.

@@ -1,14 +1,14 @@
 \chapter{Experiments and Discussion}\label{ch:experiments_discussion}
 
-This chapter evaluates which scalp \ac{eeg} representations are suitable for predicting seizure activity and guiding stimulation.
-We first estimate how far ahead each representation is predictable and how closely its suppression cost tracks regional recruitment.
+This chapter evaluates which scalp \ac{eeg} based observables are suitable for predicting seizure activity and guiding stimulation.
+We first estimate how far ahead each observable is predictable and how closely its suppression cost tracks regional recruitment.
 We then compare prediction targets and architectures at matched lookaheads and benchmark the \ac{mpc} transcriptions for convergence and solve time.
 Finally, the closed-loop experiments assess how these design choices affect seizure burden and delivered charge.
 
 \section{Observable Predictability and Seizure State}\label{sec:observable_predictability}
 
 The suppression costs introduced in Section~\ref{sec:mpc_cost_functions} rely on forecasts of scalp \ac{eeg} to assess seizure activity.
-To guide the choice of representations for the benchmarks, we evaluated how far ahead each representation remained predictable and how closely its suppression cost tracked regional recruitment.
+To guide the choice of observables for the benchmarks, we evaluated how far ahead the waveform, spectral log-power, and functional connectivity remained predictable and how closely their suppression costs tracked regional recruitment.
 
 \subsection{Potential Predictability}
 % Predictability curves and matched replays are in artifacts/observable_predictability_expanded/.
@@ -18,7 +18,7 @@ Future plant noise makes scalp \ac{eeg} uncertain even when the full initial sta
 To isolate this uncertainty, simulations were branched from snapshots of the plant state and recorded \ac{eeg} history.
 Branches from the same snapshot shared their initial state and history and received independent realizations of future noise.
 Figure~\ref{fig:observable_replays} shows how this noise makes waveforms from one snapshot diverge.
-The same branching design provides a common basis for comparing the waveform with the other \ac{eeg} representations.
+The same branching design provides a common basis for comparing the waveform with spectral log-power and functional connectivity representations.
 Potential predictability measures the fraction of future variance attributable to differences between starting snapshots~\cite{Matsumura2010, Schubert2002}.
 
 \begin{figure}
@@ -29,15 +29,17 @@ Potential predictability measures the fraction of future variance attributable t
   \label{fig:observable_replays}
 \end{figure}
 
-Snapshots were taken at \(1\), \(3\), \(7\), and \SI{14}{\second} in each of 30 unstimulated seizure trajectories.
-Each of the 120 snapshots served as the starting point for 30 branches that ran for \SI{3}{\second} without stimulation.
+Snapshots were taken at \SI{1}{\second}, \SI{3}{\second}, \SI{7}{\second}, and \SI{14}{\second} in each of 30 unstimulated seizure trajectories.
+We chose 30 branches per snapshot to balance estimation precision and simulation cost.
+Each of the \num{3600} branches ran for \SI{3}{\second} without stimulation.
 
 The waveform, spectral log-power, and functional connectivity were derived from the same 62 channels of causally low-pass-filtered scalp \ac{eeg} sampled at \SI{50}{\hertz}.
 Spectral log-power was computed from trailing 25-sample segments (\SI{0.50}{\second}) with a rising half-Hann window and a three-sample hop.
 Functional connectivity measures statistical dependence between signals and has been used to characterize changes in coordination across \ac{eeg} channels during seizures~\cite{Roffet2025,Kramer2010,Liang2024}.
-To estimate connectivity, each channel was standardized within the same segment by subtracting its mean and scaling the centered samples to unit Euclidean norm.
+Here we estimate connectivity by comparing the two directions of a one-sample lag between channels. % this should get a reference to the paper we got this from 
+For this comparison, each channel was standardized within the same segment by subtracting its mean and scaling the centered samples to unit Euclidean norm.
 For the segment indexed by \(q\) ending at \(t_q \ge 0\), let \(\widetilde y_{\beta,c}\) be the standardized sample of channel \(c\) at segment offset \mbox{\(\beta=0,\ldots,24\)}, starting with the oldest sample.
-The two 24-element vectors \(\mathbf a_c, \mathbf b_c \in \mathbb{R}^{24}\) used to compute connectivity differ by an offset of one sample (\SI{20}{\milli\second}),
+We pair the early samples \(\mathbf a_c\) from one channel with the late samples \(\mathbf b_{c'}\) from the other, offsetting the two by one sample (\SI{20}{\milli\second}),
 \begin{equation*}
   \mathbf a_c = {[\widetilde y_{0,c},\ldots,\widetilde y_{23,c}]}^\top,
   \qquad
@@ -74,7 +76,7 @@ The estimate depends on the sampled distribution of snapshots.
   \centering
   \includegraphics{figures/06_experiment_and_discussion/observable_potential_predictability.pdf}
   \caption{Full-state potential predictability across all seizure snapshots.
-  The left panel compares the three \ac{eeg} representations.
+  The left panel compares the three \ac{eeg} observables.
   The right panel compares the waveform, its trailing weighted mean, and the residual after subtracting that mean.
   The dashed line in the left panel marks the first frame whose trailing segment lies entirely after the snapshot time.}%
   \label{fig:observable_potential_predictability}
@@ -89,7 +91,7 @@ At that lookahead, potential predictability was \(0.46\) for the functional conn
 
 The waveform was about as predictable as spectral log-power over the plotted lookaheads, even though its oscillations diverged quickly across branches in Figure~\ref{fig:observable_replays}.
 To test whether the slow waveform level accounted for this result, the trailing mean was computed at each frame endpoint using rising half-Hann weights, normalized to sum to one.
-The residual after subtracting this mean lost predictability much faster than either the trailing mean or spectral log-power (Figure~\ref{fig:observable_potential_predictability}).
+The waveform residual after subtracting this mean lost predictability much faster than either the trailing mean or spectral log-power (Figure~\ref{fig:observable_potential_predictability}).
 
 In preliminary runs, waveform predictors trained with a longer waveform loss horizon tended to retain the slow mean while losing seizure oscillations.
 Under squared error, the best point prediction is the conditional mean, so oscillations that drift out of phase across branches can average out while the more reproducible slow level persists.
@@ -134,7 +136,7 @@ Pooling the 50 evaluation times per branch yielded \(180\,000\) finite pairs for
 \begin{figure}
   \centering
   \includegraphics{figures/06_experiment_and_discussion/observable_penalty_state.pdf}
-  \caption{Suppression cost versus contemporaneous seizure state for each \ac{eeg} representation.
+  \caption{Suppression cost versus contemporaneous seizure state for each \ac{eeg} observable.
   Each point pairs the cost and the fraction of seizing regions at the same frame endpoint in one branch.
   The vertical axes show the mean squared waveform deviation, the mean squared excess log-power, and the mean squared deviation of functional connectivity from its healthy mean, respectively.
   Each panel reports Pearson's \(r\) over all plotted pairs.}\label{fig:observable_penalty_state}
@@ -310,8 +312,7 @@ In the \ac{cnn} predictor, the currents enter only after shared temporal filters
 Combining the inputs earlier may help the \ac{mlp} predictor learn how the response to stimulation depends on recent phase.
 The selected fits also differed in their histories and fitting procedures, which may contribute to the observed error differences.
 
-We carried the waveform \ac{mlp} predictor forward to the main closed-loop comparison on the strength of its lower joint validation loss.
-For the spectral target, we selected the \ac{dmdc} and \ac{cnn} predictors to compare the best-performing linear and nonlinear predictors in closed loop.
+In total, three predictors were carried forward to the main closed-loop comparison: the waveform \ac{mlp} predictor, selected for its lower joint validation loss, together with the spectral \ac{dmdc} and \ac{cnn} predictors, selected to compare the best-performing linear and nonlinear spectral models.
 Running these predictors in closed-loop \ac{mpc} requires choosing a transcription method for the numerical solver.
 
 \section{Solver and Transcription Benchmark}
@@ -350,8 +351,7 @@ We therefore chose single shooting for the closed-loop experiments because it co
 % Development baseline scores are in artifacts/sweep_2026_11/observable_dmd/calibration/hop3/rows.csv.
 % The regional drive calculation and stimulation tests are in artifacts/ez_montage_suppression/.
 
-The closed-loop experiments test whether feedback from scalp \ac{eeg} can contain seizure spread while reducing the delivered charge.
-Each simulation ran for \SI{12}{\second} on the calibrated 76-region plant.
+In \SI{12}{\second} simulations of the calibrated 76-region plant, we tested whether scalp \ac{eeg} feedback could contain seizure spread while limiting delivered charge.
 The controllers received scalp \ac{eeg} and applied stimulation through the TP9, CP5, and Ex8 electrode montage, with zero net current and a limit of \SI{2}{\milli\ampere} per electrode (Section~\ref{sec:stimulation_interface}).
 Within a comparison, the same noise realization was used for every controller so that differences could be evaluated seed by seed.
 Five development seeds (7000, 7001, 7002, 7004, and 7005) were used to select controller settings, and ten reserved seeds (7100--7109) were used to evaluate the selected controllers.
@@ -428,7 +428,7 @@ With this containment baseline established, we next turn to tuning the stimulati
 % Spectral CNN grid is in artifacts/sweep_2026_11/observable_effort_calibration/cnn/rows.csv.
 % Spectral DMDc grid is in artifacts/sweep_2026_11/observable_dmd/calibration/hop3/rows.csv.
 
-To contain seizure spread while keeping mean delivered charge below \SI{30}{\milli\ampere\second}, we varied the quadratic current-cost weight $w_{L_2}$ for the spectral \ac{dmdc}, spectral \ac{cnn}, and joint-trained waveform \ac{mlp} controllers on the five development seeds.
+To contain seizure spread while keeping mean delivered charge below \SI{30}{\milli\ampere\second}, we varied the quadratic stimulation cost weight $w_{L_2}$ in~\eqref{eq:mpc_base_objective} for the spectral \ac{dmdc}, spectral \ac{cnn}, and joint-trained waveform \ac{mlp} controllers on the five development seeds.
 Each sweep held the predictor, the other cost terms, and the \SI{1.02}{\second} control horizon fixed.
 The spectral controllers used $\mathcal J_{\mathrm{spec}}$, and the waveform controller used $\mathcal J_{\mathrm{wave}}$, so the numerical weights are interpreted within each sweep.
 
@@ -436,21 +436,22 @@ The spectral controllers used $\mathcal J_{\mathrm{spec}}$, and the waveform con
 \begin{figure}[t] % latex-lint:ignore=FLOAT-01
   \centering
   \includegraphics{figures/06_experiment_and_discussion/closed_loop_effort_sweeps}
-  \caption{Delivered charge and seizure burden as functions of the quadratic current-cost weight.
+  \caption{Delivered charge and seizure burden as functions of the quadratic stimulation cost weight $w_{L_2}$.
   Points show individual development seeds and solid lines show means across seeds.
   The shaded regions indicate charge below \SI{30}{\milli\ampere\second} and burden below \SI{6}{\percent}.
   The dotted vertical lines mark where the mean charge curves cross \SI{30}{\milli\ampere\second}, interpolated between tested weights on the logarithmic axis.}\label{fig:stimulation_cost_weight}
 \end{figure}
 
+Increasing $w_{L_2}$ penalizes stimulation effort more strongly relative to the suppression objective, trading lower delivered charge for higher seizure burden.
 Mean delivered charge fell with each increase in $w_{L_2}$ for all three controllers (Figure~\ref{fig:stimulation_cost_weight}).
 The tested settings that kept mean charge below \SI{30}{\milli\ampere\second} and contained spread on all five seeds were \mbox{$w_{L_2}=0.3$} for both spectral controllers and \mbox{$w_{L_2}=100$} for the waveform controller.
 These settings delivered \SIlist{25.51;23.00;22.93}{\milli\ampere\second} on average for the \ac{dmdc}, \ac{cnn}, and waveform \ac{mlp} controllers, respectively.
 In the same order, mean seizure burden was \SIlist{4.92;5.44;5.06}{\percent}.
 Relative to the lowest weight tested for each controller, mean charge fell by \SIrange{38}{50}{\percent}, while mean burden rose by less than one percentage point and remained within the range associated with containment.
 
-The waveform \ac{mlp} controller was the most tolerant of changes in the current-cost weight on the development seeds.
+The waveform \ac{mlp} controller was the most tolerant of changes in the stimulation cost weight on the development seeds.
 Interpolating the mean outcomes on the logarithmic axis gives a roughly threefold range of weights that meet both targets for the waveform controller, compared with less than a twofold range for either spectral controller.
-The smaller change in mean burden gave the waveform controller more room to reduce charge by increasing the current-cost weight before seizure burden exceeded \SI{6}{\percent}.
+The smaller change in mean burden gave the waveform controller more room to reduce charge by increasing the stimulation cost weight before seizure burden exceeded \SI{6}{\percent}.
 
 Among the spectral controllers, the \ac{dmdc} controller was more robust to weight tuning near the charge target.
 Once the mean charge dropped below \SI{30}{\milli\ampere\second}, the \ac{dmdc} controller had room to increase the weight before exceeding the burden target.
@@ -462,7 +463,7 @@ Both runs accepted every solve.
 This reversal suggests that how current was applied mattered more for containment on this seed than the cumulative charge alone.
 
 The calibration results favor the linear predictor for spectral control.
-The \ac{cnn} predictor achieved similar validation error (Figure~\ref{fig:offline_predictor_lookahead}), yet the corresponding controller supported a narrower range of current-cost weights that met both control targets.
+The \ac{cnn} predictor achieved similar validation error (Figure~\ref{fig:offline_predictor_lookahead}), yet the corresponding controller supported a narrower range of stimulation cost weights that met both control targets.
 One explanation is that the training data supported a shared response to current more reliably than a response specific to each \ac{eeg} history.
 As discussed in Section~\ref{sec:predictor_control_implications}, forecasts under recorded currents provide limited evidence about how accurately a predictor distinguishes alternative currents from the same history.
 By imposing a shared response through~\eqref{eq:dmd_current_sensitivity}, the \ac{dmdc} predictor may have preserved the differences between candidate currents that mattered for containment while avoiding variation that the data could not reliably establish.
@@ -487,7 +488,7 @@ The settings were therefore compared in closed loop using seizure burden and del
 A full factorial search would have required training a predictor and running closed-loop simulations for every combination of settings.
 To limit the number of runs, the comparison proceeded in stages, varying segment length, frequency band, the number of frames averaged, and taper in that order.
 One spectral \ac{mlp} predictor was trained for each setting, and the healthy reference was computed using the same geometry.
-The controllers were evaluated on the five development seeds at a sampling frequency of \SI{50}{\hertz}, a frame hop of \SI{60}{\milli\second}, a control horizon of 17 frames (\SI{1.02}{\second}), and a quadratic current-cost weight of $0.4$.
+The controllers were evaluated on the five development seeds at a sampling frequency of \SI{50}{\hertz}, a frame hop of \SI{60}{\milli\second}, a control horizon of 17 frames (\SI{1.02}{\second}), and a quadratic stimulation cost weight of $0.4$.
 Holding this weight fixed keeps the penalty on a given current sequence the same across settings, but the predicted benefit of delivering that current changes with the suppression cost.
 Delivered charge can therefore differ substantially between settings and must be considered alongside burden.
 
@@ -536,12 +537,12 @@ Removing just this bin with the \SIrange{1}{25}{\hertz} setting tested whether t
 The narrower \SIrange{3}{12}{\hertz} setting kept the prominent oscillatory components in the simulated examples in Figure~\ref{fig:bifurcation}~(c).
 This predominantly theta and alpha range has also been used to measure changes in spectral entropy at seizure onset in scalp \ac{eeg} recordings from patients with temporal lobe epilepsy~\cite{Sridevi2019}.
 With all three controllers starting at \SI{0.48}{\second}, mean burden varied by only 0.13 percentage points across the bands.
-The \SIrange{1}{25}{\hertz} setting used the least charge at the tested current-cost weight and was carried forward to the frame-averaging comparison.
+The \SIrange{1}{25}{\hertz} setting used the least charge at the tested stimulation cost weight and was carried forward to the frame-averaging comparison.
 
 Frame averaging was intended to reduce fluctuations in the log-power estimates and give the predictor a smoother training target.
 Averaging over four or seven frames reduced the validation loss on those targets, but extended the waveform support by \SI{180}{\milli\second} or \SI{360}{\milli\second}, respectively, and postponed the first control update.
 In closed loop, averaging lowered mean burden by less than one percentage point while increasing charge to \SI{33.24}{\milli\ampere\second} with four frames and \SI{37.05}{\milli\ampere\second} with seven.
-At the tested current-cost weight, the smoother targets therefore gave only a small improvement in burden and used charge closer to sustained stimulation.
+At the tested stimulation cost weight, the smoother targets therefore gave only a small improvement in burden and used charge closer to sustained stimulation.
 Because the benefits of multi-frame smoothing were not clear, the individual frames were retained for the taper comparison.
 
 Changing the taper tests whether the controller benefited from giving recent samples greater weight.
@@ -561,8 +562,8 @@ The following comparisons used 25-sample segments, a three-sample hop, the \SIra
 After selecting the spectral estimation settings on the development seeds, we tested whether the tuned \ac{mpc} controllers could contain widespread recruitment with less charge than threshold stimulation on the reserved seeds.
 We compared the spectral \ac{dmdc}, spectral \ac{cnn}, and waveform \ac{mlp} controllers with the uncontrolled and threshold baselines.
 All controlled runs started at \SI{1.38}{\second}, when the spectral \ac{cnn} predictor had acquired its input history.
-The spectral \ac{dmdc} controller used a \SI{0.60}{\second} control horizon and a quadratic current-cost weight of \(0.10\).
-The spectral \ac{cnn} and waveform \ac{mlp} controllers used \SI{1.02}{\second} horizons and current-cost weights of \(0.30\) and \(100\), respectively.
+The spectral \ac{dmdc} controller used a \SI{0.60}{\second} control horizon and a quadratic stimulation cost weight of \(0.10\).
+The spectral \ac{cnn} and waveform \ac{mlp} controllers used \SI{1.02}{\second} horizons and stimulation cost weights of \(0.30\) and \(100\), respectively.
 The spectral controllers penalized excess log-power, and the waveform controller tracked the healthy waveform reference.
 The comparison therefore evaluates the tuned controllers as complete systems.
 
@@ -641,7 +642,7 @@ We held \(w_{L_2}\) fixed to apply the same penalty to a given current sequence 
   \end{tabular}
 \end{table}
 
-With the waveform suppression cost and the same current-cost weight, adding the spectral training loss was needed to contain spread across all five development seeds (A versus C in Table~\ref{tab:waveform_loss_cost}).
+With the waveform suppression cost and the same stimulation cost weight, adding the spectral training loss was needed to contain spread across all five development seeds (A versus C in Table~\ref{tab:waveform_loss_cost}).
 The controller using the waveform-only fit ended with 30 or 31 regions seizing on three seeds, while the controller using the joint-loss fit ended with three or four seizing regions on every seed.
 The controller using the waveform-only fit delivered less charge on average, yet on seed 7001 it delivered slightly more charge than with the joint-loss fit and still allowed widespread recruitment.
 % Solver configuration: artifacts/sweep_2026_11/waveform_matched_geometry/base_simulation.yaml.
@@ -659,8 +660,8 @@ Joint training prevented widespread recruitment on seed 7001, while seed 7004 st
 IPOPT reported success on every solve in both configurations.
 
 With the joint-loss fit held fixed, both configurations that used \(\mathcal J_{\mathrm{spec}}\) contained spread on fewer seeds than the waveform suppression cost alone (D and E versus C).
-To test whether the relative penalty on current explained this result, we varied the spectral and current-cost weights (Section~\ref{sec:waveform_cost_calibration}).
-Reducing the current-cost weight prevented widespread recruitment in two short replays, so the original weighting contributed to those outcomes.
+To test whether the relative penalty on current explained this result, we varied the spectral and stimulation cost weights (Section~\ref{sec:waveform_cost_calibration}).
+Reducing the stimulation cost weight prevented widespread recruitment in two short replays, so the original weighting contributed to those outcomes.
 Across the five development seeds, the waveform suppression cost alone contained spread at lower mean charge than any tested combination that contained spread on all five seeds.
 
 The controllers that predicted log-power directly used \(\mathcal J_{\mathrm{spec}}\) and avoided widespread recruitment on all reserved seeds (Section~\ref{sec:controller_comparison}).
@@ -686,7 +687,7 @@ A stimulation bout consists of consecutive active holds.
 
 \paragraph*{\texorpdfstring{\(L_1\)}{L1} Penalty.}
 An \(L_1\) penalty can favor zero current without introducing binary decisions (Section~\ref{sec:mpc_sparse_formulations}).
-To test whether this effect carried over to the applied holds, we replaced the quadratic cost at its original weight \(w_{L_2}=0.10\) with the exact epigraph formulation of the \(L_1\) cost at \(w_1=0.234\).
+To test whether this effect carried over to the applied holds, we replaced the quadratic cost at its original weight \(w_{L_2}=0.10\) with the exact epigraph formulation of the \(L_1\) cost at \(w_{L_1}=0.234\).
 IPOPT returned a plan at every update for both controllers on the five development seeds.
 The quadratic controller stimulated continuously after control began, whereas the \(L_1\) controller averaged \SI{2.86}{\second} off (Table~\ref{tab:sparse_stimulation_results}).
 
@@ -720,7 +721,7 @@ The \(L_1\) controller ended with three to five seizing regions on every develop
 Mean burden fell from \SI{14.64}{\percent} to \SI{5.27}{\percent}.
 Those two quadratic runs also delivered more than \SI{36}{\milli\ampere\second} each, so the drop in mean charge from \SI{30.21}{\milli\ampere\second} to \SI{21.73}{\milli\ampere\second} includes runs with very different containment outcomes.
 % Matched seeds and current traces: artifacts/sweep_2026_11/{observable_dmd/calibration/hop3,sparse_ch05/batches/quadratic_development}.
-In the earlier current weight sweep, the quadratic controller at the same weight contained spread on all five development seeds (Section~\ref{sec:stimulation_cost_weight}).
+In the earlier stimulation cost weight sweep, the quadratic controller at the same weight contained spread on all five development seeds (Section~\ref{sec:stimulation_cost_weight}).
 That controller began stimulating at \SI{0.66}{\second} and planned over \SI{1.02}{\second}, compared with a \SI{1.38}{\second} start and a \SI{0.60}{\second} horizon here.
 On seeds 7002 and 7004, the quadratic controller in the sparse study delivered less charge before \SI{4}{\second} than in the earlier sweep.
 % Quadratic timing and weight replays: artifacts/sparse_quadratic_followup/report.md.
@@ -749,7 +750,7 @@ Once a hold is enabled, the activation penalty places no further cost on increas
 
 \paragraph*{Combined Penalties.}
 Combining the penalties retains an incentive to limit current within enabled holds.
-In calibration, we kept \(w_1=0.234\) and added an activation penalty of \(w_\delta=0.01\) using Bonmin.
+In calibration, we kept \(w_{L_1}=0.234\) and added an activation penalty of \(w_\delta=0.01\) using Bonmin.
 Mean off time increased from \SI{2.84}{\second} to \SI{5.22}{\second}, with little change in mean burden or charge (Appendix~\ref{app:sparse_calibration}).
 We fixed these weights and evaluated both controllers on the same ten reserved seeds.
 Since the combined controller used Bonmin and the \(L_1\) controller used IPOPT, this comparison evaluates the two implementations as a whole.
