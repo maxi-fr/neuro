@@ -506,70 +506,72 @@ Whether the spectral \ac{cnn} anticipated that failure cannot be inferred from t
 
 \subsection{Sparse Stimulation}\label{sec:sparse_stimulation}
 
-The spectral \ac{dmdc} controller with a quadratic current penalty contained seizure spread on the ten reserved seeds but stimulated continuously once control began (Figure~\ref{fig:sparse_current_traces}, top).
-Section~\ref{sec:mpc_sparse_formulations} introduced two ways to promote sparse stimulation.
-An \(L_1\) penalty on electrode currents favors zero current, while a binary activation penalty charges for each hold in which stimulation is enabled.
-We compared how much time each controller left unstimulated, how well it suppressed seizure spread, and how long it took to solve each plan.
-We measured sparsity as the total time after control began for which the absolute current on every electrode was at most \SI{1}{\micro\ampere}, excluding holds applied during fallback.
+With a quadratic current penalty, the spectral \ac{dmdc} controller contained seizure spread but stimulated continuously once control began (Figure~\ref{fig:sparse_current_traces}, top).
+Section~\ref{sec:mpc_sparse_formulations} introduced two penalties to promote sparse stimulation: an \(L_1\) penalty on electrode currents and a binary activation penalty for each enabled hold.
+In closed-loop simulations, we compared these penalties individually and in combination, and evaluated three methods for solving the optimal control problem with binary activations.
+The comparison used only the spectral \ac{dmdc} predictor because solve times with the nonlinear predictors were prohibitively large.
+Its affine dependence on planned currents allowed the spectral predictions for the entire horizon to be computed directly from those currents (Equation~\eqref{eq:dmdc_current_rollout}), reducing the cost of evaluating candidate plans inside the \ac{mpc}.
+We measured off time as the total time after control began during which the absolute current on every electrode was at most \SI{1}{\micro\ampere}.
 
-We compared the three methods for solving the binary activation problem on the five development seeds at \(w_\delta=2.40\) (Table~\ref{tab:sparse_stimulation_results}).
-Mean solve time was shortest with homotopy (\SI{0.46}{\second}), followed by exhaustive search over 16 block schedules (\SI{1.43}{\second}) and branch and bound with the Bonmin solver (\SI{1.64}{\second}).
-Even the fastest method exceeded the \SI{60}{\milli\second} update interval.
-The Bonmin solver failed to return a plan at seven updates, and the nonconvex penalty used in homotopy can lead to a locally optimal schedule.
-Grouping the holds restricts when activation can change within a plan, but allows every block schedule to be evaluated at each update.
-With grouped schedules, the controller returned a plan at every update, delivered the least charge, and left stimulation off for the longest total time.
-We therefore used grouped schedules for both controllers with an activation penalty on the reserved seeds.
+The three methods for solving the binary activation problem were compared on the five development seeds with the common activation weight \(w_\delta=2.40\) obtained in Appendix~\ref{app:sparse_calibration} (Table~\ref{tab:sparse_stimulation_results}~(a)).
+With the affine predictor, all three methods were practical for the closed-loop simulations, with mean solve times below \SI{2}{\second} per update.
+The homotopy method took \SI{0.46}{\second} per plan on average, about one third of the time required by the grouped search method (\SI{1.43}{\second}) or the Bonmin solver (\SI{1.64}{\second}).
+The grouped search method restricted activation changes to the boundaries of four blocks containing 4, 4, 4, and 5 holds, respectively.
+Even with this restriction, it yielded the longest mean off time (\SI{4.34}{\second}) and the lowest mean charge (\SI{27.98}{\milli\ampere\second}).
+The bonmin solver failed on seven occasions, possibly contributing to this worse performance.
+With the homotopy method, the controller achieved the lowest mean seizure burden (\SI{4.56}{\percent}) but delivered the most charge and left stimulation off for the shortest time.
+We therefore selected the grouped search method for both controllers with an activation penalty in the final comparison.
 
 \begin{table}
   \centering
   \caption{Sparse stimulation with the spectral \ac{dmdc} controller.
-  We evaluated the three solution methods at the same activation weight on five development seeds and the four penalties at the selected weights on ten reserved seeds (Appendix~\ref{app:sparse_calibration}).
-  Entries are means across seeds. A bout consists of consecutive active holds.
+  Part (a) gives results for three solution methods with the same activation weight in simulations with the five random seeds used for controller development.
+  Part (b) gives results for four stimulation penalties in simulations with ten random seeds reserved for the final comparison, using the weights from Appendix~\ref{app:sparse_calibration}.
+  Each entry is the average across simulations.
+  A bout consists of consecutive active holds.
+  The final count is the number of seizing regions at the end of a simulation. 
   Solve time is the mean per control update.}\label{tab:sparse_stimulation_results}
-  \setlength{\tabcolsep}{4pt}
-  \begin{tabular}{@{}lrrrrrr@{}}
+  \setlength{\tabcolsep}{2pt}
+  \begin{tabular*}{\linewidth}{@{\extracolsep{\fill}}lrrrrrr@{}}
     \toprule
-    Stim. penalty & Burden (\%) & Final count & Charge (mAs) & Off time (s) & Bouts & Solve (s) \\
+    Method or penalty & Burden (\%) & Final count & Charge (mAs) & Off time (s) & Bouts & Solve time (s) \\
     \midrule
-    \multicolumn{7}{@{}l}{\textit{Development seeds}} \\
+    \addlinespace[2pt]
+    \multicolumn{7}{@{}l}{\textit{(a) Binary activation solution methods}} \\
+    \addlinespace[2pt]
     Bonmin solver     & 5.06 & 4.2 & 29.28 & 3.96 & 25.6 & 1.64 \\
-    Grouped schedules & 5.01 & 3.2 & 27.98 & 4.34 & 24.2 & 1.43 \\
-    Homotopy          & 4.56 & 3.4 & 30.76 & 3.65 & 38.6 & 0.46 \\
+    Grouped search method & 5.01 & 3.2 & 27.98 & 4.34 & 24.2 & 1.43 \\
+    Homotopy method          & 4.56 & 3.4 & 30.76 & 3.65 & 38.6 & 0.46 \\
     \addlinespace
-    \multicolumn{7}{@{}l}{\textit{Reserved seeds}} \\
+    \multicolumn{7}{@{}l}{\textit{(b) Stimulation penalties}} \\
+    \addlinespace[2pt]
     Quadratic (\(L_2\))  & 4.91 & 3.5 & 25.40 & 0.00 &  1.0 & 0.11 \\
     \(L_1\)              & 4.95 & 4.2 & 27.60 & 4.06 & 24.1 & 0.17 \\
     Activation           & 6.17 & 6.2 & 27.00 & 4.59 & 25.0 & 1.71 \\
     \(L_1\) + activation & 5.08 & 3.4 & 23.54 & 5.45 & 26.1 & 2.38 \\
     \bottomrule
-  \end{tabular}
+  \end{tabular*}
 \end{table}
 
-On the ten reserved seeds, the controller with the \(L_1\) penalty (\(w_{L_1}=0.60\)) left stimulation off for \SI{4.06}{\second} on average, compared with \SI{4.59}{\second} for the controller with the activation penalty alone.
+In simulations with the ten seeds reserved for the final comparison, mean seizure burden with the \(L_1\) penalty (\(w_{L_1}=0.60\)) was close to that with the quadratic penalty (\SI{4.95}{\percent} and \SI{4.91}{\percent}, respectively).
+The controller with the activation penalty alone contained spread in nine of the ten simulations, but widespread recruitment in the simulation with seed 7107 raised the mean seizure burden to \SI{6.17}{\percent}.
+Both controllers delivered more charge on average than the one with the quadratic penalty, despite mean off times of \SI{4.06}{\second} with the \(L_1\) penalty and \SI{4.59}{\second} with activation alone (Table~\ref{tab:sparse_stimulation_results}~(b)).
 Computing a plan took about ten times as long with binary activation (\SI{1.71}{\second} on average, compared with \SI{0.17}{\second} with the \(L_1\) penalty).
-Both delivered more charge on average than the quadratic controller, despite the pauses visible in the two middle traces of Figure~\ref{fig:sparse_current_traces}.
-The controller with the activation penalty spent more time off than the \(L_1\) controller on nine seeds and ended with three or four seizing regions on each of those nine.
-On the remaining seed, 7107, it spent \SI{1.44}{\second} less time off, yet 29 regions were seizing in the final window, compared with four under the \(L_1\) penalty.
-Both controllers returned a plan at every update on that seed.
-With the activation penalty alone, mean burden reached \SI{6.17}{\percent}, compared with \SI{4.95}{\percent} under the \(L_1\) penalty.
 
 \begin{figure}
   \centering
   \includegraphics{figures/06_experiment_and_discussion/reserved_current_traces_7104.pdf}
-  \caption{Sum of absolute applied electrode currents on reserved seed 7104 for each stimulation penalty.
+  \caption{Sum of absolute applied electrode currents on seed 7104 for each stimulation penalty.
   Shading marks the period before control began.
   All four runs ended with four seizing regions.}\label{fig:sparse_current_traces}
 \end{figure}
 
 With both penalties (\(w_{L_1}=0.60\), \(w_\delta=0.20\)), the controller had the longest mean off time (\SI{5.45}{\second}) and delivered the least charge (\SI{23.54}{\milli\ampere\second}).
-It ended with three or four seizing regions on every reserved seed, including seed 7107.
-Even so, the controller resumed stimulation frequently, delivering an average of 26 bouts per run (Figure~\ref{fig:sparse_current_traces}, bottom).
+These pauses were interspersed between around 26 stimulation bouts per run (Figure~\ref{fig:sparse_current_traces}, bottom).
 
-On seed 7109, we tested whether stimulation could be withheld for longer by leaving the controller off until \SI{6.90}{\second}.
+On seed 7109, we tested whether stimulation could potentially be withheld for longer by leaving the controller off until \SI{6.90}{\second}.
 We chose this time from the uncontrolled trajectory, in which the number of seizing regions rose from seven at \SI{7.50}{\second} to 28 just half a second later.
 When feedback control began at \SI{6.90}{\second}, the count peaked at six and fell to four by the end of the run.
-Suppressing spread on this realization was therefore possible even after an uninterrupted initial pause of nearly seven seconds.
-During feedback control, the controller has to decide from the available \ac{eeg} whether to withhold stimulation for another hold.
-The timing of recruitment varies with the plant noise, so waiting as long on another seed could leave too little time to intervene.
-The penalties allowed intermittent stimulation, but the repeated bouts show how conservative the resulting schedules remained.
-Identifying from the \ac{eeg} when a pause of several seconds is safe remains an open problem.
+This run shows that a pause of nearly seven seconds was compatible with containment on this trajectory, suggesting that sparser stimulation may be possible.
+Plant noise shifts the onset of recruitment substantially across runs, so the controller cannot predict the latest time to intervene from the available \ac{eeg}.
+Choosing weights for reliable containment therefore favors resuming stimulation while a longer pause might still be safe.

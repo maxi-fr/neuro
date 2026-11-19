@@ -575,8 +575,7 @@ The benefit of responding sooner to emerging activity may outweigh any adverse e
 
 This appendix compares the three direct \ac{mpc} transcriptions from Table~\ref{tab:mpc_transcription_counts} on the same JAX and IPOPT solver stack across the three controllers evaluated in Section~\ref{sec:controller_comparison} (spectral \ac{dmdc}, spectral \ac{cnn}, and waveform \ac{mlp}) and four matched physical horizons (\SI{0.30}{\second}, \SI{0.60}{\second}, \SI{1.02}{\second}, and \SI{1.50}{\second}).
 Every configuration used the same \ac{mpc} objective, input bounds, Kirchhoff current equality, and limited-memory IPOPT tolerances as the closed-loop experiments, with a per-solve CPU limit of \SI{120}{\second}.
-For full-state multiple shooting, we exploited the exact shift-register sparsity of the autoregressive delay state and omitted unused Hessian allocations under limited-memory BFGS so that all configurations fit within the host memory (\SI{15.4}{\giga\byte} RAM).
-Open-loop timings were measured after one JIT warmup solve across ten cold-started seizure snapshots extracted from the uncontrolled reserved trajectories (seeds 7100--7109 at \SIrange{2.40}{5.10}{\second}), stopping early after repeated \SI{120}{\second} timeouts or single-iteration timeouts exceeding \SI{360}{\second}.
+Open-loop timings were measured after one JIT compilation warmup solve across ten cold-started seizure snapshots extracted from the uncontrolled reserved trajectories (seeds 7100--7109 at \SIrange{2.40}{5.10}{\second}), stopping early after repeated \SI{120}{\second} timeouts or single-iteration timeouts exceeding \SI{360}{\second}.
 For configurations that converged in open loop with median solve time below \SI{40}{\second}, we also ran a \SI{1.20}{\second} closed-loop slice starting at \SI{1.38}{\second} on seed 7100 (\num{21} total replan updates, yielding \num{20} warm-started steady-state solves after the initial call).
 
 \begin{figure}

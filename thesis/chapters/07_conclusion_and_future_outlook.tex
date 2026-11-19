@@ -1,44 +1,24 @@
-\chapter{Conclusion and Future Outlook}
-\label{ch:conclusion_and_future_outlook}
+\chapter{Conclusions and Outlook}\label{ch:conclusion_and_future_outlook}
 
-% Core Questions:
-% What general principles have been established, what are the fundamental limitations
-% of this study, and what is required to translate data-driven closed-loop neurostimulation
-% toward clinical reality?
+Focal seizures can spread from the epileptogenic zone and recruit other brain regions.
+We investigated whether \ac{mpc} could be used to contain this spread using scalp \ac{eeg} as the only feedback signal and bounded electrode currents for transcranial stimulation.
+To that end, we set up a whole-brain Jansen-Rit model of left-temporal seizure propagation with scalp measurement and stimulation models.
+We used this plant to generate predictor training data and to evaluate the \ac{mpc} in closed-loop simulations.
 
-% Contents:
-% - Summary of Key Contributions and Findings
-% - Critical Discussion of Limitations:
-%   * Model fidelity: Lumped three-population Jansen-Rit dynamics vs. microscopic ion channels.
-%   * Electrode geometry: Fixed 3-electrode montage
-%   * Biological adaptation: Absence of long-term synaptic plasticity, kindling, or tissue habituation.
-% - Future Directions and Translational Roadmap:
-%   * Online adaptive model updates (closing the loop on non-stationary brain dynamics).
-%   * Robust and stochastic MPC formulations to handle uncertainties and stochasticity of the underlying model.
-%   * Experimental roadmap from in-silico whole-brain models to animal preparations and clinical translation.
+We formulated waveform-based \ac{mpc} to track a healthy reference waveform and spectral \ac{mpc} to penalize excess log-power relative to a healthy reference spectrum.
+Both costs tracked the fraction of seizing regions, with the strongest association for excess log-power, supporting their use as surrogates for regional recruitment.
+For waveform-based \ac{mpc}, adding a spectral loss during predictor training reduced the underestimation of oscillatory power which made closed-loop suppresion possible.
 
-%   * spectral predictors showed quite a high error. Some of it for sure due to the inherent variability of the STFT estimator. Future research could look into different spectral power estimators, like TKEO
+Predicting log-power directly allowed us to formulate linear \ac{mpc} in the spectral observable space.
+The affine \ac{dmdc} predictor achieved the lowest mean log-power prediction error among the spectral predictors tested.
+Waveform-based \ac{mpc} and both linear and nonlinear spectral \ac{mpc} reduced seizure burden and delivered less charge than the baseline threshold-triggered stimulation controller.
+Lastly, we showed that we could promote sparse stimulation by penalizing absolute electrode currents or by explicitly penalizing the intervals in which stimulation was enabled.
 
+Both waveform-based and spectral \ac{mpc} relied on a single forecast despite uncertainty in the timing of seizure spread.
+Extending these formulations to stochastic or robust \ac{mpc} would allow us to account for uncertainty in recruitment when deciding when to stimulate and how long to withhold stimulation.
 
+The inherent variability in \ac{stft}-based spectral power estimation may contribute to the observed log-power prediction errors.
+Future work could investigate whether alternative measures of oscillatory power activity, such as the Teager-Kaiser energy operator~\cite{Chourdaki2026}, yield more predictable observables and improve closed-loop performance.
 
-
-conclusions
-\begin{itemize}
-    \item spectral cost and waveform cost are good surrogates for seizure state of the network
-    \item spectral loss is necessary in the training of a waveform predictor to ensure it learns the oscillatory patterns and does not regress the mean
-    \item (linear) MPC in the spectral observable directly inside the spectral observable space is possible
-    \item dynamics are more easily described by a linear model in spectral space compared to the waveform EEG space
-    \item approaches to make stimulation work however with some limitations 
-\end{itemize}
-
-limitations
-\begin{itemize}
-    \item all in-silico
-    \item one-type of focal seizure ...
-    \item no consideration of stochasticity can make the controllers quite conservative
-\end{itemize}
-
-outlook
-\begin{itemize}
-    \item 
-\end{itemize}
+Lastly, our methods were only evaluated on a single type of focal seizure arising in the left temporal lobe.
+Future work should investigate how these methods can be applied to other seizure types and electrode montages.
