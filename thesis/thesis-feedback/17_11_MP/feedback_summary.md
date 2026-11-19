@@ -2,6 +2,7 @@
 
 > [!NOTE]
 > Extracted from `Thesis_Max_Frankenberg_2026_11_17__MP.pdf` in `thesis/thesis-feedback/17_11_MP/`.
+> The feedback was given to the draft at commit f0351a65cf432c7f76508ee6da973f98f7018d89
 
 ## Overview & Statistics
 

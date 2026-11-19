@@ -368,7 +368,7 @@ Increasing $w_{L_2}$ penalizes stimulation effort more heavily relative to suppr
 For each controller, we could contain spread on all five seeds while using \SIrange{38}{50}{\percent} less mean charge than at the lowest weight tested.
 Mean burden rose by less than one percentage point (Figure~\ref{fig:stimulation_cost_weight}).
 
-The waveform \ac{mlp} had the widest range of weights for which mean charge and burden stayed below their targets.
+The waveform \ac{mlp} controller was the most robust to changes in the stimulation cost weight, meeting both the mean charge and mean burden targets over the widest range of tested weights.
 Among the spectral controllers, the \ac{dmdc} had more room than the \ac{cnn} to reduce charge by increasing the weight before mean burden exceeded \SI{6}{\percent}.
 On seed 7004, raising the weight for the spectral \ac{cnn} from $0.2$ to $0.3$ reduced the final count from 29 seizing regions to four, even though the controller had delivered less charge by the time the lower-weight run showed \ac{pz} recruitment.
 This reversal suggests that how the controller applied current mattered more for containment on this seed than cumulative charge alone.
@@ -379,11 +379,7 @@ One explanation is that the training data supported a shared response to current
 As discussed in Section~\ref{sec:predictor_control_implications}, forecasts under recorded currents provide limited evidence about how accurately a predictor distinguishes alternative currents from the same history.
 By imposing a shared response through~\eqref{eq:dmd_current_sensitivity}, the \ac{dmdc} predictor may have preserved the differences between candidate currents that mattered for containment while avoiding variation that the data could not reliably establish.
 
-The time averaging in seizure burden can also obscure late spread.
-With the waveform \ac{mlp} controller at \mbox{$w_{L_2}=30$}, mean burden was \SI{5.65}{\percent}, yet seed 7005 finished with 35 seizing regions after first showing \ac{pz} recruitment at the \SI{10.5}{\second} window endpoint.
-Seed 7005 finished with three seizing regions at \mbox{$w_{L_2}=100$}.
-
-We therefore retained \mbox{$w_{L_2}=0.30$} for the spectral controllers and \mbox{$w_{L_2}=100$} for the waveform \ac{mlp}.
+For the following experiments we retained \mbox{$w_{L_2}=0.30$} for the spectral controllers and \mbox{$w_{L_2}=100$} for the waveform \ac{mlp}.
 
 \subsection{Spectral Geometry Selection}
 % The stage-by-stage report is artifacts/sweep_2026_11/observable_geometry/report.md.
@@ -452,20 +448,18 @@ The weighting also contributed to these outcomes, since reducing the current pen
 Among the tested settings that contained spread on all five seeds, waveform tracking alone used the least mean charge.
 We therefore selected the jointly trained predictor with waveform tracking for the reserved-seed comparison. % following comparisons. "reserved-seed" is overused and there is no real reason why. It does add any interesting information to the sentence
 
+\FloatBarrier
 \subsection{Controller Comparison}\label{sec:controller_comparison}
 % Per-seed outcomes and paired differences: artifacts/sweep_2026_11/waveform_matched_geometry/final/waveform_mlp/evaluation/ and artifacts/observable_benchmark_matched/.
 % Matched spectral controller runs: artifacts/observable_benchmark_matched/; baseline runs: artifacts/sweep_2026_11/observable_benchmark/.
-% Seed 7104 timing uses the window endpoints, which are 0.50 s after the centers stored in the compact waveform trace.
-% Early drive uses the applied current holds and the linear projection in artifacts/ez_montage_suppression/drive.csv.
 
-On the reserved seeds, we tested whether the tuned controllers could contain seizure spread with less charge than threshold stimulation. % can we make it clearer that this is the main comparison? something like with every configuration resolved
-This comparison evaluates each predictor together with its suppression cost as a complete feedback controller. % not necessary information. as in the reader already knows that
-All three \ac{mpc} controllers used a \SI{1.02}{\second} control horizon with quadratic stimulation cost weights of \(0.30\) for the spectral controllers and \(100\) for the waveform controller (Section~\ref{sec:stimulation_cost_weight}). % irrelevant repeated information.
-All controlled runs started at \SI{1.38}{\second}, when the spectral \ac{cnn} had acquired its input history.
+After selecting the predictors in Section~\ref{sec:offline_predictor_benchmark}, we used five development seeds to tune the spectral \ac{dmdc}, spectral \ac{cnn}, and waveform \ac{mlp} controllers.
+On the ten seeds reserved for this comparison, we tested whether these controllers could contain seizure spread with less charge than threshold stimulation.
+Each simulation began without stimulation, and feedback became active at \SI{1.38}{\second}, when the spectral \ac{cnn} had acquired its input history.
 
 \begin{table}
   \centering
-  \caption{Closed-loop outcomes on ten paired reserved seeds.
+  \caption{Closed-loop outcomes on the same ten seeds.
   Burden, charge, and final seizing regions are means across seeds.
   Each \ac{mpc} controller attempted \num{1780} solves.}\label{tab:controller_comparison}
   \begin{tabular}{@{}lrrrr@{}}
@@ -481,51 +475,34 @@ All controlled runs started at \SI{1.38}{\second}, when the spectral \ac{cnn} ha
   \end{tabular}
 \end{table}
 
-Both spectral controllers contained spread on all ten reserved seeds, with mean burdens of \SI{5.04}{\percent} for \ac{dmdc} and \SI{5.23}{\percent} for \ac{cnn}, within the range associated with residual focal activity in this plant (Table~\ref{tab:controller_comparison}).
-They achieved this with \SI{43}{\percent} and \SI{48}{\percent} less mean charge than threshold stimulation, respectively.
-Of the six seeds with widespread recruitment in the uncontrolled run, four still ended with 28 to 32 seizing regions under threshold stimulation.
+Both spectral controllers contained seizure spread on all ten reserved seeds and used \SIrange{43}{48}{\percent} less mean charge than threshold stimulation (Table~\ref{tab:controller_comparison}).
+Of the six seeds on which seizures spread widely without stimulation, threshold stimulation contained spread on only two.
+Notably, the linear spectral \ac{dmdc} predictor was sufficient for containment on these seeds: mean seizure burden was \SI{5.04}{\percent} with \ac{dmdc} and \SI{5.23}{\percent} with the spectral \ac{cnn}, both within the \SIrange{4}{6}{\percent} range associated with residual focal activity in this plant.
 
-The waveform \ac{mlp} delivered a similar mean charge to the spectral \ac{cnn}, and its burden lay between \SI{4.74}{\percent} and \SI{6.08}{\percent} on nine seeds.
-On seed 7104, its burden reached \SI{35.64}{\percent} and 28 regions were still seizing at the end, accounting for most of the difference in mean burden between the waveform \ac{mlp} and spectral \ac{cnn}.
-Every solve for the waveform controller was accepted, ruling out fallback after a failed solve as the cause of this outcome.
+The waveform \ac{mlp} used a similar mean charge to the spectral controllers and contained spread on nine seeds.
+On the remaining seed, 7104, recruitment accelerated shortly after \SI{2}{\second} and remained widespread until end of the run.
 
-To determine how long the spectral \ac{cnn} could still contain spread from the waveform-controlled trajectory, we replayed the applied waveform currents up to each candidate handover and then let the \ac{cnn} replan from the evolving scalp \ac{eeg}.
-A switch at \SI{1.56}{\second} contained spread through the end of the replay at \SI{4}{\second}, whereas a switch at \SI{1.62}{\second} led to 34 seizing regions by \SI{2.75}{\second} (Figure~\ref{fig:seed_7104_recruitment}, left).
-All solves were accepted in both replays, and the trailing-second recruitment count was six at both switch times.
-For the tested spectral policy on this trajectory, the opportunity to contain spread was lost within this interval, before the sharp rise in the regional count after \SI{2}{\second}.
+This failure was unexpected given the waveform \ac{mlp} controller's apparent robustness in the cost weight calibration on the development seeds (Section~\ref{sec:stimulation_cost_weight}).
+To investigate why containment failed on seed 7104, we gave the spectral \ac{cnn} the same measurement and stimulation history as the waveform \ac{mlp} at four snapshots from the waveform-controlled trajectory and replayed their plans on paired branches with differing noise draws (Figure~\ref{fig:seed_7104_recruitment}).
+The regional counts show the consequences of applying each plan.
+To understand why the waveform controller used less current, we scored both plans with its predictor at the \SI{1.56}{\second} snapshot.
+It predicted that the stronger spectral plan would reduce the cost of tracking the healthy \ac{eeg} by 50, too little to offset the additional stimulation cost of 90.
 
-At the common start of \SI{1.38}{\second}, we scored both controllers' first plans with the waveform objective, using either the \ac{mlp} forecast or the \ac{eeg} obtained by replaying each complete plan without replanning under the original noise.
-The \ac{mlp} predicted that the spectral \ac{cnn} plan would save 46 units of tracking cost, too little to offset its additional quadratic stimulation cost of 144.
-The plant replay gave a tracking saving of 729, of which 632 came from reduced fluctuations around the channel means over the horizon.
-The replayed objective therefore favored the spectral plan, which ended the horizon with seven seizing regions compared with 12 under the waveform plan.
-Applying the first spectral hold and then resuming waveform feedback still led to 31 seizing regions at \SI{2.50}{\second}.
-Across 64 alternative future noise draws paired between the two plans from the same plant state, the median tracking advantage was 45, and the spectral plan had a lower total waveform objective in five draws.
-The size of the tracking advantage and the ranking under the full objective therefore depended on the future noise.
+That trade-off held on 83 of the 100 branches.
+On the recorded branch, however, the stronger plan contained spread and reduced the tracking cost by more than \num{3200}.
+Several other branches also benefited enough from stronger stimulation to give the spectral plan the lower mean cost across branches.
+Thus a single waveform forecast understated the value of intervening early on this trajectory, even though the extra current seldom paid off.
+By the \SI{1.68}{\second} snapshot, the spectral plan also failed to contain spread under the recorded noise.
+Whether the spectral \ac{cnn} anticipated that failure cannot be inferred from the regional counts, which were measured only after its plan had been chosen.
 
 \begin{figure}
   \centering
   \includegraphics{figures/06_experiment_and_discussion/seed_7104_recruitment}
-  \caption{Loss of containment and forecast error on seed 7104.
-  Left, trailing-second counts for the original waveform \ac{mlp} and spectral \ac{cnn} runs and for handovers from waveform to spectral feedback, with the interval between handovers shaded.
-  Right, forecast and replay scores for the waveform plan issued at \SI{1.98}{\second}, paired at each \SI{60}{\milli\second} endpoint with the seizure state measured in the replay.
-  The grey points and scoring follow Figure~\ref{fig:observable_penalty_state}, with cost shown on a logarithmic axis.
-  The vertical segment joins the two scores at \SI{2.52}{\second}, and the dotted line marks the tested cost ceiling.}\label{fig:seed_7104_recruitment}
+  \caption{Recruitment under the waveform \ac{mlp} and spectral \ac{cnn} plans at four snapshots from the waveform-controlled trajectory of seed 7104.
+  Bars group the 100 branches with paired future noise by the number of seizing regions in the final second of each \SI{1.02}{\second} plan.
+  Triangles mark the outcomes under the original noise.
+  Both plans ran without replanning.}\label{fig:seed_7104_recruitment}
 \end{figure}
-
-The \ac{mlp} also overestimated the effect of later stimulation.
-From the waveform-controlled state at \SI{1.98}{\second}, we compared its issued plan with a plan that retained the first \SI{60}{\milli\second} of stimulation and set all later currents to zero.
-Keeping the later currents was predicted to reduce tracking cost in the final \SI{60}{\milli\second} by \SI{76}{\percent}, but increased it by \SI{19}{\percent} in the plant replay.
-Both branches ended at \SI{3}{\second} with 33 seizing regions.
-
-Scoring the forecast and replay \ac{eeg} with the same reference and averaging as in Figure~\ref{fig:observable_penalty_state} shows where the cost discrepancy arose.
-At \SI{2.52}{\second}, the replay of the issued waveform plan had 31 seizing regions, with a cost of 407.33 compared with a forecast of 14.83 (Figure~\ref{fig:seed_7104_recruitment}, right).
-The replay cost lay near the 98th percentile of the reference scores at that level of recruitment.
-The measured waveform cost thus registered the spread, while the forecast kept the cost low.
-A ceiling of 16.36 on each predicted \SI{60}{\milli\second} score remained slack through the \SI{1.98}{\second} decision, and the constrained run still reached 31 seizing regions at \SI{2.50}{\second} (Appendix~\ref{app:seed_7104_cost_ceiling}).
-
-This failure was unexpected given the waveform \ac{mlp} controller's apparent robustness on the development seeds (Section~\ref{sec:stimulation_cost_weight}).
-In the stochastic plant, however, recruitment can progress at different rates, changing how much time the controller has to intervene.
-The ten reserved seeds cover only a sample of the plant's possible noise realizations, so even the spectral predictor results provide no guarantee of containment across other seeds.
 
 \subsection{Sparse Stimulation}\label{sec:sparse_stimulation}
 
