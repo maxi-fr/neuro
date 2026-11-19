@@ -14,6 +14,16 @@ from trajopt.transcription.single_shooting import SingleShooting
 
 from neuro.config import StftGeometry
 from neuro.control.mpc import TrajOptMPCController
+from neuro.control.multiple_shooting import (
+    MultipleShooting,
+    _build_ms_sparsity,
+)
+from neuro.control.multiple_shooting import (
+    eval_g as ms_eval_g,
+)
+from neuro.control.multiple_shooting import (
+    eval_jac_g as ms_eval_jac_g,
+)
 from neuro.control.narx import (
     NarxShooting,
     _build_narx_sparsity,
@@ -183,3 +193,29 @@ def test_narx_validation_rejects_unsupported_configurations(tmp_path: Path) -> N
     blocked = build_waveform_problem(art, horizon=4, control_block_steps=2, u_max=1.0, reference=ref)
     with pytest.raises(ValueError, match="control_block_steps=1"):
         narx_dimensions(blocked)
+
+
+def test_shift_sparse_multiple_shooting_jacobian_and_optima_match(tmp_path: Path) -> None:
+    """Shift-sparse MultipleShooting matches dense AD Jacobian and SingleShooting/Ipopt optima."""
+    art = _build_checkpoint(tmp_path, depth=1, n_y=3, n_u=2, horizon=6, n_channels=2, n_controls=2)
+    ref = HealthyReference(eeg_mean=np.zeros(2))
+    problem = build_waveform_problem(art, horizon=6, u_max=1.5, w_y=1.0, w_u=0.5, kirchhoff=True, reference=ref)
+
+    sparsity = _build_ms_sparsity(problem, problem.model)  # ty: ignore[invalid-argument-type]
+    rng = np.random.default_rng(13)
+    x0 = jnp.asarray(rng.standard_normal(problem.model.n))
+    z = jnp.asarray(rng.standard_normal(int(problem.N) * problem.model.n + 6 * problem.model.m))
+
+    jac_vals = np.asarray(ms_eval_jac_g(problem, z, 0.0, problem.dt, gather=sparsity.gather))
+    n_con = (int(problem.N)) * problem.model.n + 6
+    sparse_jac = sp.coo_matrix((jac_vals, (sparsity.rows, sparsity.cols)), shape=(n_con, len(z))).toarray()
+    dense_jac = np.asarray(jax.jacrev(lambda z_: ms_eval_g(problem, z_, x0, 0.0, problem.dt))(z))
+    np.testing.assert_allclose(sparse_jac, dense_jac, atol=1e-10, rtol=1e-10)
+
+    opts = {**IPOPT_DEFAULTS, "tol": 1e-6, "acceptable_tol": 1e-5}
+    res_ss = MPC(problem, SingleShooting(solver=Ipopt(options=opts)), x0=x0).solve()
+    res_ms = MPC(problem, MultipleShooting(solver=Ipopt(options=opts)), x0=x0).solve()
+    assert res_ss.success
+    assert res_ms.success
+    np.testing.assert_allclose(res_ms.cost, res_ss.cost, rtol=1e-4, atol=1e-5)
+    np.testing.assert_allclose(res_ms.trajectory.U, res_ss.trajectory.U, atol=1e-3)

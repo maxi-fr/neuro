@@ -277,10 +277,8 @@ The controllers received scalp \ac{eeg} and applied stimulation through the TP9,
 Within a comparison, the same noise realization was used for every controller so that differences could be evaluated seed by seed.
 Five development seeds (7000, 7001, 7002, 7004, and 7005) were used to select controller settings, and ten reserved seeds (7100--7109) were used to evaluate the selected controllers.
 
-With a three-sample hop at \SI{50}{\hertz}, the spectral predictors received a new frame every \SI{60}{\milli\second}.
-The \ac{mpc} controllers replanned at this interval for both prediction targets, giving them the same frequency of feedback updates and keeping the number of optimization solves tractable.
-In the notation of Section~\ref{sec:mpc_formulation}, the spectral controller applied one \SI{60}{\milli\second} hold per plan (\mbox{$M=1$}).
-The waveform controller, whose predictor advances one sample at a time, applied three successive \SI{20}{\milli\second} holds before replanning (\mbox{$M=3$}).
+All \ac{mpc} controllers replanned at each spectral frame, every \SI{60}{\milli\second} for a three-sample hop at \SI{50}{\hertz}.
+Between updates, the spectral controller applied one \SI{60}{\milli\second} hold ($M=1$ in Section~\ref{sec:mpc_formulation}) and the waveform controller applied three successive \SI{20}{\milli\second} holds ($M=3$).
 For the optimization itself, initial tests favored single shooting with IPOPT over full-state multiple shooting and the \acs{narx} transcription (Table~\ref{tab:mpc_transcription_counts}) because it converged reliably with much lower computational demand.
 
 To measure how much seizure activity persisted across a run, the seizure state $s(t_i)$ was evaluated in \mbox{$N_{\mathrm{win}}=45$} complete \SI{1}{\second} windows spaced \SI{0.25}{\second} apart.
@@ -352,7 +350,7 @@ With this containment baseline established, we next turn to tuning the stimulati
 % Spectral CNN grid is in artifacts/sweep_2026_11/observable_effort_calibration/cnn/rows.csv.
 % Spectral DMDc grid is in artifacts/sweep_2026_11/observable_dmd/calibration/hop3/rows.csv.
 
-To contain seizure spread while keeping mean delivered charge below \SI{30}{\milli\ampere\second}, we varied the quadratic stimulation cost weight $w_{L_2}$ in~\eqref{eq:mpc_base_objective} for the spectral \ac{dmdc}, spectral \ac{cnn}, and joint-trained waveform \ac{mlp} controllers on the five development seeds.
+To contain seizure spread while keeping mean delivered charge below \SI{30}{\milli\ampere\second}, we varied the quadratic stimulation cost weight $w_{L_2}$ in~\eqref{eq:mpc_base_objective} for the spectral \ac{dmdc}, spectral \ac{cnn}, and joint-trained waveform \ac{mlp} controllers.
 Each sweep held the predictor, the other cost terms, and the \SI{1.02}{\second} control horizon fixed.
 The spectral controllers used $\mathcal J_{\mathrm{spec}}$, and the waveform controller used $\mathcal J_{\mathrm{wave}}$, so the numerical weights are interpreted within each sweep.
 
@@ -366,25 +364,14 @@ The spectral controllers used $\mathcal J_{\mathrm{spec}}$, and the waveform con
   The dotted vertical lines mark where the mean charge curves cross \SI{30}{\milli\ampere\second}, interpolated between tested weights on the logarithmic axis.}\label{fig:stimulation_cost_weight}
 \end{figure}
 
-Increasing $w_{L_2}$ penalizes stimulation effort more strongly relative to the suppression objective, trading lower delivered charge for higher seizure burden.
-Mean delivered charge fell with each increase in $w_{L_2}$ for all three controllers (Figure~\ref{fig:stimulation_cost_weight}).
-The tested settings that kept mean charge below \SI{30}{\milli\ampere\second} and contained spread on all five seeds were \mbox{$w_{L_2}=0.3$} for both spectral controllers and \mbox{$w_{L_2}=100$} for the waveform controller.
-These settings delivered \SIlist{25.51;23.00;22.93}{\milli\ampere\second} on average for the \ac{dmdc}, \ac{cnn}, and waveform \ac{mlp} controllers, respectively.
-In the same order, mean seizure burden was \SIlist{4.92;5.44;5.06}{\percent}.
-Relative to the lowest weight tested for each controller, mean charge fell by \SIrange{38}{50}{\percent}, while mean burden rose by less than one percentage point and remained within the range associated with containment.
+Increasing $w_{L_2}$ penalizes stimulation effort more heavily relative to suppression.
+For each controller, we could contain spread on all five seeds while using \SIrange{38}{50}{\percent} less mean charge than at the lowest weight tested.
+Mean burden rose by less than one percentage point (Figure~\ref{fig:stimulation_cost_weight}).
 
-The waveform \ac{mlp} controller was the most tolerant of changes in the stimulation cost weight on the development seeds.
-Interpolating the mean outcomes on the logarithmic axis gives a roughly threefold range of weights that meet both targets for the waveform controller, compared with less than a twofold range for either spectral controller.
-The smaller change in mean burden gave the waveform controller more room to reduce charge by increasing the stimulation cost weight before seizure burden exceeded \SI{6}{\percent}.
-
-Among the spectral controllers, the \ac{dmdc} controller was more robust to weight tuning near the charge target.
-Once the mean charge dropped below \SI{30}{\milli\ampere\second}, the \ac{dmdc} controller had room to increase the weight before exceeding the burden target.
-The \ac{cnn} controller met both targets only within a narrow interval around $0.3$.
-For the spectral \ac{cnn} controller on seed 7004, raising the weight from $0.2$ to $0.3$ reduced the final count from 29 to four seizing regions.
-At \mbox{$w_{L_2}=0.2$}, the first window showing \ac{pz} recruitment ended at \SI{5}{\second}.
-Through this window endpoint, the controller delivered \SI{9.43}{\milli\ampere\second} at \mbox{$w_{L_2}=0.2$} and \SI{7.81}{\milli\ampere\second} at \mbox{$w_{L_2}=0.3$}.
-Both runs accepted every solve.
-This reversal suggests that how current was applied mattered more for containment on this seed than the cumulative charge alone.
+The waveform \ac{mlp} had the widest range of weights for which mean charge and burden stayed below their targets.
+Among the spectral controllers, the \ac{dmdc} had more room than the \ac{cnn} to reduce charge by increasing the weight before mean burden exceeded \SI{6}{\percent}.
+On seed 7004, raising the weight for the spectral \ac{cnn} from $0.2$ to $0.3$ reduced the final count from 29 seizing regions to four, even though the controller had delivered less charge by the time the lower-weight run showed \ac{pz} recruitment.
+This reversal suggests that how the controller applied current mattered more for containment on this seed than cumulative charge alone.
 
 The calibration results favor the linear predictor for spectral control.
 The \ac{cnn} predictor achieved similar validation error (Figure~\ref{fig:offline_predictor_lookahead}), yet the corresponding controller supported a narrower range of stimulation cost weights that met both control targets.
@@ -396,8 +383,7 @@ The time averaging in seizure burden can also obscure late spread.
 With the waveform \ac{mlp} controller at \mbox{$w_{L_2}=30$}, mean burden was \SI{5.65}{\percent}, yet seed 7005 finished with 35 seizing regions after first showing \ac{pz} recruitment at the \SI{10.5}{\second} window endpoint.
 Seed 7005 finished with three seizing regions at \mbox{$w_{L_2}=100$}.
 
-For subsequent experiments using these controller configurations and the same horizon, we retained \mbox{$w_{L_2}=0.30$} for the spectral controllers and \mbox{$w_{L_2}=100$} for the waveform \ac{mlp} controller.
-Next we test how the spectral estimation geometry itself affects closed-loop containment and charge.
+We therefore retained \mbox{$w_{L_2}=0.30$} for the spectral controllers and \mbox{$w_{L_2}=100$} for the waveform \ac{mlp}.
 
 \subsection{Spectral Geometry Selection}
 % The stage-by-stage report is artifacts/sweep_2026_11/observable_geometry/report.md.
@@ -411,9 +397,8 @@ We therefore compared the settings in closed loop using seizure burden, the fina
 To limit the number of runs, we varied segment length, frequency band, the number of frames averaged, and taper in successive stages, carrying the selected setting forward at each stage.
 One spectral \ac{mlp} predictor was trained for each setting, and the healthy reference was computed using the same geometry.
 We assumed that the main trade-offs would carry over to the spectral \ac{dmdc} and \ac{cnn} controllers.
-We evaluated each setting on the five development seeds.
 
-Varying most spectral geometry parameters had little effect on on closed-loop performance within each stage of the sweep (Table~\ref{tab:spectral_geometry_sweep}).
+Varying most spectral geometry parameters had little effect on closed-loop performance within each stage of the sweep (Table~\ref{tab:spectral_geometry_sweep}).
 The longer segment used less charge at a common start time, but we retained the shorter segment because it allowed earlier intervention and contained spread when started earlier in a replay of one seed.
 Averaging multiple spectral frames increased delivered charge while not reducing seizure burden significantly.
 Changing the taper had a larger effect on containment at similar mean charge: the rising half-Hann contained spread on all five seeds, compared with three of five for the symmetric Hann.
@@ -422,74 +407,13 @@ By giving the newest samples more weight at the same frame endpoint, the rising 
 Taken together, the results suggest that predictor training was robust enough to learn the features needed for containment from a representation that preserved short-term changes in spectral power across a broad frequency band without the need for the stabilizing effect of smoothing across frames.
 For the experiments that follow, we retained 25-sample segments with a three-sample hop, the \SIrange{1}{25}{\hertz} band, and a rising half-Hann taper applied to individual frames.
 
-\subsection{Controller Comparison}\label{sec:controller_comparison}
-% Per-seed outcomes and paired differences: artifacts/sweep_2026_11/waveform_matched_geometry/final/waveform_mlp/evaluation/.
-% Spectral controller settings and baseline runs: artifacts/sweep_2026_11/observable_benchmark/.
-% Seed 7104 timing uses the window endpoints, which are 0.50 s after the centers stored in the compact waveform trace.
-% Early drive uses the applied current holds and the linear projection in artifacts/ez_montage_suppression/drive.csv.
-
-After selecting the spectral estimation settings on the development seeds, we tested whether the tuned \ac{mpc} controllers could contain widespread recruitment with less charge than threshold stimulation on the reserved seeds.
-We compared the spectral \ac{dmdc}, spectral \ac{cnn}, and waveform \ac{mlp} controllers with the uncontrolled and threshold baselines.
-All controlled runs started at \SI{1.38}{\second}, when the spectral \ac{cnn} predictor had acquired its input history.
-The spectral \ac{dmdc} controller used a \SI{0.60}{\second} control horizon and a quadratic stimulation cost weight of \(0.10\).
-The spectral \ac{cnn} and waveform \ac{mlp} controllers used \SI{1.02}{\second} horizons and stimulation cost weights of \(0.30\) and \(100\), respectively.
-The spectral controllers penalized excess log-power, and the waveform controller tracked the healthy waveform reference.
-The comparison therefore evaluates the tuned controllers as complete systems.
-
-\begin{table}
-  \centering
-  \caption{Closed-loop outcomes on ten paired reserved seeds.
-  Burden, charge, and final seizing regions are means across seeds.
-  Each \ac{mpc} controller attempted \num{1780} solves.}\label{tab:controller_comparison}
-  \begin{tabular}{@{}lrrrr@{}}
-    \toprule
-    Controller & Burden (\%) & Charge (mAs) & Final count & Failed solves \\
-    \midrule
-    Uncontrolled & 20.06 & 0.00 & 18.7 & -- \\
-    Threshold & 13.28 & 42.43 & 14.9 & -- \\
-    Spectral \ac{dmdc} & 5.04 & 25.71 & 3.9 & 0 \\
-    Spectral \ac{cnn} & 5.24 & 21.92 & 4.0 & 3 \\
-    Waveform \ac{mlp} & 8.41 & 22.38 & 6.2 & 0 \\
-    \bottomrule
-  \end{tabular}
-\end{table}
-
-Both spectral controllers contained seizure spread on all ten reserved seeds, ending with at most seven seizing regions and using \SIrange{39}{48}{\percent} less mean charge than the threshold controller (Table~\ref{tab:controller_comparison}).
-The uncontrolled runs ended with 26 to 31 seizing regions on six seeds and three or four on the other four.
-Threshold stimulation left 28 to 32 regions seizing on four of those six seeds and delivered charge close to sustained stimulation at the current limit.
-Their mean burdens were within the range associated with containment and residual focal activity in this plant.
-The spectral \ac{dmdc} controller reached this range with the linear predictor and the shortest tested horizon.
-The spectral \ac{cnn} controller used \SI{3.78}{\milli\ampere\second} less charge on average, with a difference in mean burden of 0.21 percentage points.
-The two operating points differed in horizon and cost weights, so the charge difference reflects the combination of those settings and the predictor.
-
-The waveform \ac{mlp} controller also reduced mean burden relative to threshold stimulation, by 4.87 percentage points.
-It delivered \SI{20.04}{\milli\ampere\second} less charge on average than threshold stimulation.
-Its burden lay between \SIrange{4.74}{6.08}{\percent} on nine seeds.
-On seed 7104, its burden reached \SI{35.64}{\percent} and 28 regions were still seizing at the end, accounting for most of the difference in mean burden from the spectral controllers.
-Every solve for the waveform controller was accepted, ruling out fallback after a failed solve as the cause of this outcome.
-
-On seed 7104, recruitment accelerated shortly after \SI{2}{\second} under the waveform \ac{mlp} controller.
-Before that point, it supplied weaker negative drive to both \ac{pz} regions than either spectral controller, which allowed the seizure to spread.
-Once recruitment becomes widespread, the available stimulation is insufficient to restore containment in this run.
-As shown in Section~\ref{sec:observable_predictability}, the waveform cost tracks recruitment less closely than the spectral cost (Figure~\ref{fig:observable_penalty_state}).
-This run could have been a case in which the cost did not accurately represent the seizure state, explaining the low stimulation.
-
-This failure was unexpected given the waveform \ac{mlp} controller's apparent robustness on the development seeds (Section~\ref{sec:stimulation_cost_weight}).
-In the stochastic plant, however, recruitment can progress at different rates, changing how much time the controller has to intervene.
-The ten reserved seeds cover only a sample of the plant's possible noise realizations, so even the spectral predictor results provide no guarantee of containment across other seeds.
-The next comparison examines how training loss and suppression cost affect containment within the waveform \ac{mlp} controller.
-
 \subsection{Waveform Prediction Target}\label{sec:waveform_prediction_closed_loop}
 
-The waveform \ac{mlp} can support either suppression cost because its forecast can be used directly for the waveform cost or converted to log-power for the spectral cost.
-We therefore varied the predictor's training loss and the controller's suppression cost within this architecture.
-We compared each single loss, \(\mathcal{L}_\mathrm{wave}\) or \(\mathcal{L}_\mathrm{spec}\), with the joint loss \(\mathcal{L}_\mathrm{joint}\) under the corresponding suppression cost (A versus C and B versus D in Table~\ref{tab:waveform_loss_cost}).
-Using the joint-loss fit across C, D, and E then let us compare the waveform cost \(\mathcal J_{\mathrm{wave}}\), the spectral cost \(\mathcal J_{\mathrm{spec}}\), and their combination.
-
-All five configurations ran on the same development seeds, with control starting at \SI{0.48}{\second} and a control horizon of 51 samples (\SI{1.02}{\second}).
-When active, the waveform and spectral costs had weights \mbox{\(w_{\mathrm{wave}}=1\)} and \mbox{\(w_{\mathrm{spec}}=1000\)}, respectively.
-With both costs active, \mbox{\(w_{L_2}=100\)} on the quadratic current cost \(\mathcal J_{L_2}\) was the only tested weight that put mean delivered charge in the \SIrange{20}{30}{\milli\ampere\second} target range (Appendix~\ref{app:waveform_controller_calibration}).
-We held \(w_{L_2}\) fixed to apply the same penalty to a given current sequence in all five configurations.
+The waveform \ac{mlp} lets us distinguish two roles for spectral information.
+During training, spectral loss penalizes errors in the oscillatory power of the waveform forecast.
+During control, the same forecast can either be tracked against the healthy waveform or converted to log-power and evaluated with the spectral cost.
+We first varied the training loss at a fixed suppression cost, then held the jointly trained predictor fixed and varied the suppression cost (Table~\ref{tab:waveform_loss_cost}).
+Control started at \SI{0.48}{\second}, with the same penalty on a given current sequence in all five configurations (Appendix~\ref{app:waveform_controller_calibration}).
 
 % Data: artifacts/sweep_2026_11/waveform_matched_geometry/mlp/loss_cost/{comparison_manifest.yaml,summary.csv,rows.csv}.
 \begin{table}
@@ -511,161 +435,164 @@ We held \(w_{L_2}\) fixed to apply the same penalty to a given current sequence 
   \end{tabular}
 \end{table}
 
-With the waveform suppression cost and the same stimulation cost weight, adding the spectral training loss was needed to contain spread across all five development seeds (A versus C in Table~\ref{tab:waveform_loss_cost}).
-The controller using the waveform-only fit ended with 30 or 31 regions seizing on three seeds, while the controller using the joint-loss fit ended with three or four seizing regions on every seed.
-The controller using the waveform-only fit delivered less charge on average, yet on seed 7001 it delivered slightly more charge than with the joint-loss fit and still allowed widespread recruitment.
-% Solver configuration: artifacts/sweep_2026_11/waveform_matched_geometry/base_simulation.yaml.
-% Failure handling: src/neuro/control/mpc.py and src/neuro/control/execution.py.
-All 163 failed solves occurred in the three runs with widespread recruitment after the seizure had spread.
+Under waveform tracking, adding spectral loss during training changed the outcome from widespread recruitment on three seeds to containment on all five (A and C in Table~\ref{tab:waveform_loss_cost}).
+On one of the three seeds the waveform-only fit delivered slightly more charge than the joint fit, so lower charge alone cannot explain the difference.
 % Timestamped replay: artifacts/waveform_arm_a_timing/report.md.
-A solve counted as failed if IPOPT returned without meeting its convergence or acceptable stopping criteria, or if the call raised an error.
-After a failed solve, the controller applied zero current until the next replan.
-The controller using the waveform-only fit was the only configuration with failed solves.
+All failed solves occurred after widespread recruitment, ruling out fallback as the cause of the initial spread.
 
-This closed-loop result supports the earlier prediction analyses (Sections~\ref{sec:observable_predictability} and~\ref{sec:offline_prediction_target}): adding the spectral training loss preserved oscillatory power in the forecasts and gave the controller a better basis for penalizing seizure activity through \(\mathcal J_{\mathrm{wave}}\).
+When the phase of an oscillation is uncertain, minimizing waveform error favors a forecast in which out-of-phase peaks and troughs average out (Section~\ref{sec:observable_predictability}).
+Such a forecast can make seizure activity appear closer to the healthy waveform, giving the optimizer less incentive to intervene.
+Adding spectral loss during training reduced the attenuation of oscillatory power in the forecasts (Section~\ref{sec:offline_prediction_target}).
+Preserving that power may have helped waveform tracking assign a larger penalty to predicted seizure activity and intervene before it spread.
 
-The comparison under \(\mathcal J_{\mathrm{spec}}\) isolates the effect of adding \(\mathcal{L}_\mathrm{wave}\) to the spectral loss (B versus D).
-Joint training prevented widespread recruitment on seed 7001, while seed 7004 still showed widespread recruitment.
-IPOPT reported success on every solve in both configurations.
+Using spectral power in the control objective placed a different demand on the waveform predictor.
+The optimizer then needed an accurate estimate of excess log-power from the forecast, and waveform-derived log-power was less accurate than direct spectral prediction from \SI{120}{\milli\second} onward (Section~\ref{sec:offline_prediction_target}).
+With the joint fit held fixed, using the spectral cost alone or adding it to waveform tracking allowed spread on seeds that waveform tracking alone had contained (D and E versus C in Table~\ref{tab:waveform_loss_cost}).
+The weighting also contributed to these outcomes, since reducing the current penalty prevented spread in two short replays (Section~\ref{sec:waveform_cost_calibration}).
+Among the tested settings that contained spread on all five seeds, waveform tracking alone used the least mean charge.
+We therefore selected the jointly trained predictor with waveform tracking for the reserved-seed comparison. % following comparisons. "reserved-seed" is overused and there is no real reason why. It does add any interesting information to the sentence
 
-With the joint-loss fit held fixed, both configurations that used \(\mathcal J_{\mathrm{spec}}\) contained spread on fewer seeds than the waveform suppression cost alone (D and E versus C).
-To test whether the relative penalty on current explained this result, we varied the spectral and stimulation cost weights (Section~\ref{sec:waveform_cost_calibration}).
-Reducing the stimulation cost weight prevented widespread recruitment in two short replays, so the original weighting contributed to those outcomes.
-Across the five development seeds, the waveform suppression cost alone contained spread at lower mean charge than any tested combination that contained spread on all five seeds.
+\subsection{Controller Comparison}\label{sec:controller_comparison}
+% Per-seed outcomes and paired differences: artifacts/sweep_2026_11/waveform_matched_geometry/final/waveform_mlp/evaluation/ and artifacts/observable_benchmark_matched/.
+% Matched spectral controller runs: artifacts/observable_benchmark_matched/; baseline runs: artifacts/sweep_2026_11/observable_benchmark/.
+% Seed 7104 timing uses the window endpoints, which are 0.50 s after the centers stored in the compact waveform trace.
+% Early drive uses the applied current holds and the linear projection in artifacts/ez_montage_suppression/drive.csv.
 
-The controllers that predicted log-power directly used \(\mathcal J_{\mathrm{spec}}\) and avoided widespread recruitment on all reserved seeds (Section~\ref{sec:controller_comparison}).
-The higher log-power error of waveform-derived forecasts from \SI{120}{\milli\second} onward may explain why the spectral cost was less effective with the waveform predictor (Section~\ref{sec:offline_prediction_target}).
-
-The next subsection examines whether containment can be maintained when the controller is encouraged to leave intervals without stimulation.
-
-\subsection{Sparse Stimulation}\label{sec:sparse_stimulation}
-% Updated 1.02 s data and manifests (replacing the earlier 0.60 s sparse_ch05 draft below):
-% - Calibration (1.02 s L1 sweep, original activation screens, combined candidates): artifacts/sparse_stimulation_102/
-% - Condensed direct-hinge (fmax) 5-seed activation comparison (w_active = 2.40): artifacts/sparse_activation_ipopt/{sparse_summary.csv,sparse_rows.csv,report.md}
-% - Reserved 10-seed evaluation (7100--7109, unified CondensedIPOPT backend): artifacts/sparse_stimulation_reserved_ipopt/{sparse_summary.csv,sparse_rows.csv,paired_combined_minus_l1.csv,paired_means.json,reserved_current_traces_7104.pdf,report.md}
-% - Archived OSQP reserved evaluation (for reference): artifacts/sparse_stimulation_reserved/reserved/{sparse_summary.csv,sparse_rows.csv}
-%
-% Why the 1.02 s activation and reserved runs were rerun under condensed direct-hinge (fmax) IPOPT:
-% 1. Removing the 12,648 spectral epigraph slacks in Bonmin (direct ca.fmax) and switching Homotopy from uncondensed single-shooting to condensed fmax IPOPT resolved solver timeouts/failures (Bonmin: 99 -> 7 failures and 16.70% -> 5.06% burden across 5 dev seeds; Homotopy: 17 -> 0 failures, 0.455 s mean solve).
-% 2. Unifying L2, L1, and Grouped Candidates onto CondensedIPOPT puts every sparse arm on a single IPOPT backend while matching CondensedOSQP optima (reserved max |d_burden| <= 0.0023) ~2x faster with 0/5700 failures.
-
-The spectral \ac{dmdc} controller contained seizure spread at reduced charge in Section~\ref{sec:controller_comparison}, but this reduction did not translate into intervals without stimulation.
-After control began, at least one electrode carried \SI{0.32}{\milli\ampere} or more in absolute value in every hold outside fallback.
-This experiment tests whether penalizing current magnitude, the number of enabled holds, or both can create off intervals while maintaining containment (Section~\ref{sec:mpc_sparse_formulations}).
-
-For the sparse stimulation experiments, we used the linear spectral \ac{dmdc} predictor with the spectral suppression cost.
-We chose \SI{0.60}{\second} because it was the shortest horizon tested that still provided adequate seizure suppression.
-At the \SI{60}{\milli\second} update interval, the \SI{1.02}{\second} horizon would require 17 holds.
-The shorter horizon reduced this to 10 holds and, with one binary activation variable per hold, reduced the number of binary decisions by the same amount.
-We compared the formulations and selected weights on the development seeds (Appendix~\ref{app:sparse_calibration}), then evaluated the selected combination against the \(L_1\) controller on the reserved seeds.
-In both sets, a hold counted as off if every electrode current was at most \SI{1}{\micro\ampere} in absolute value.
-Off time excludes holds before control began and holds applied in fallback, so it measures off intervals chosen by the controller.
-A stimulation bout consists of consecutive active holds.
-
-\paragraph*{\texorpdfstring{\(L_1\)}{L1} Penalty.}
-An \(L_1\) penalty can favor zero current without introducing binary decisions (Section~\ref{sec:mpc_sparse_formulations}).
-To test whether this effect carried over to the applied holds, we replaced the quadratic cost at its original weight \(w_{L_2}=0.10\) with the exact epigraph formulation of the \(L_1\) cost at \(w_{L_1}=0.234\).
-IPOPT returned a plan at every update for both controllers on the five development seeds.
-The quadratic controller stimulated continuously after control began, whereas the \(L_1\) controller averaged \SI{2.86}{\second} off (Table~\ref{tab:sparse_stimulation_results}).
+On the reserved seeds, we tested whether the tuned controllers could contain seizure spread with less charge than threshold stimulation. % can we make it clearer that this is the main comparison? something like with every configuration resolved
+This comparison evaluates each predictor together with its suppression cost as a complete feedback controller. % not necessary information. as in the reader already knows that
+All three \ac{mpc} controllers used a \SI{1.02}{\second} control horizon with quadratic stimulation cost weights of \(0.30\) for the spectral controllers and \(100\) for the waveform controller (Section~\ref{sec:stimulation_cost_weight}). % irrelevant repeated information.
+All controlled runs started at \SI{1.38}{\second}, when the spectral \ac{cnn} had acquired its input history.
 
 \begin{table}
   \centering
-  \setlength{\tabcolsep}{4pt}
-  \caption{Sparse stimulation outcomes on five development seeds and ten reserved seeds.
-  Entries are means across runs. Failed updates count attempts without an accepted new plan.
-  Solve time is the mean of the run-level 95th percentiles. Dashes indicate unreported values.}\label{tab:sparse_stimulation_results} % this caption needs to explain more
-  \begin{tabular}{@{}lrrrrrrr@{}}
+  \caption{Closed-loop outcomes on ten paired reserved seeds.
+  Burden, charge, and final seizing regions are means across seeds.
+  Each \ac{mpc} controller attempted \num{1780} solves.}\label{tab:controller_comparison}
+  \begin{tabular}{@{}lrrrr@{}}
     \toprule
-    Configuration & Burden (\%) & Final count & Charge (mAs) & Off time (s) & Bouts & Failed & Solve (s) \\ % fill in the bouts column for the others
+    Controller & Burden (\%) & Charge (mAs) & Final count & Failed solves \\
     \midrule
-    \multicolumn{8}{@{}l}{\textit{Development seeds: current penalties}} \\
-    \(L_2\) & 14.64 & 14.2 & 30.21 & 0.00 & --- & 0.0 & 1.20 \\
-    \(L_1\) &  5.27 &  4.0 & 21.73 & 2.86 & --- & 0.0 & 1.50 \\
-    \addlinespace
-    \multicolumn{8}{@{}l}{\textit{Development seeds: binary activation alone (\(w_\delta=0.70\))}} \\
-    Bonmin             & 4.96 & 3.2 & 30.72 & 2.69 & --- & 10.2 & 1.56 \\
-    Grouped candidates & 4.99 & 3.2 & 28.13 & 3.59 & --- &  0.0 & 1.19 \\
-    Homotopy           & 4.98 & 3.4 & 29.35 & 3.28 & --- &  0.0 & 4.65 \\
-    \addlinespace
-    \multicolumn{8}{@{}l}{\textit{Reserved seeds: \(L_1\) with and without binary activation}} \\
-    \(L_1\)                 & 7.02 & 9.0 & 22.79 & 2.62 & 19.4 & 0.0 & 1.31 \\
-    \(L_1\) with activation & 5.26 & 3.6 & 21.68 & 5.11 & 23.4 & 0.3 & 2.33 \\
+    Uncontrolled & 20.06 & 0.00 & 18.7 & -- \\
+    Threshold & 13.28 & 42.43 & 14.9 & -- \\
+    Spectral \ac{dmdc} & 5.04 & 23.98 & 3.9 & 0 \\
+    Spectral \ac{cnn} & 5.23 & 22.06 & 3.6 & 3 \\
+    Waveform \ac{mlp} & 8.41 & 22.38 & 6.2 & 0 \\
     \bottomrule
   \end{tabular}
 \end{table}
 
-The \(L_1\) controller ended with three to five seizing regions on every development seed, while the quadratic runs on seeds 7002 and 7004 ended with 30 and 31, respectively.
-Mean burden fell from \SI{14.64}{\percent} to \SI{5.27}{\percent}.
-Those two quadratic runs also delivered more than \SI{36}{\milli\ampere\second} each, so the drop in mean charge from \SI{30.21}{\milli\ampere\second} to \SI{21.73}{\milli\ampere\second} includes runs with very different containment outcomes.
-% Matched seeds and current traces: artifacts/sweep_2026_11/{observable_dmd/calibration/hop3,sparse_ch05/batches/quadratic_development}.
-In the earlier stimulation cost weight sweep, the quadratic controller at the same weight contained spread on all five development seeds (Section~\ref{sec:stimulation_cost_weight}).
-That controller began stimulating at \SI{0.66}{\second} and planned over \SI{1.02}{\second}, compared with a \SI{1.38}{\second} start and a \SI{0.60}{\second} horizon here.
-On seeds 7002 and 7004, the quadratic controller in the sparse study delivered less charge before \SI{4}{\second} than in the earlier sweep.
-% Quadratic timing and weight replays: artifacts/sparse_quadratic_followup/report.md.
-On seed 7004, advancing the start alone to \SI{0.96}{\second} still left 28 regions seizing in the final window.
-Extending the horizon alone to \SI{1.02}{\second} reduced that count to three.
+Both spectral controllers contained spread on all ten reserved seeds, with mean burdens of \SI{5.04}{\percent} for \ac{dmdc} and \SI{5.23}{\percent} for \ac{cnn}, within the range associated with residual focal activity in this plant (Table~\ref{tab:controller_comparison}).
+They achieved this with \SI{43}{\percent} and \SI{48}{\percent} less mean charge than threshold stimulation, respectively.
+Of the six seeds with widespread recruitment in the uncontrolled run, four still ended with 28 to 32 seizing regions under threshold stimulation.
 
-To test whether weaker current penalization could recover containment in the sparse setup, we reran both seeds at \(w_{L_2}=0.05\) with the same start time and horizon.  % no. not like this. We need to find the working configuration and then write the section about that. The calibration is not part of this chapter. Maybe it goes into the appendix
-By \SI{4}{\second}, delivered charge had risen from \SI{7.23}{\milli\ampere\second} to \SI{9.58}{\milli\ampere\second} on seed 7002 and from \SI{5.71}{\milli\ampere\second} to \SI{8.93}{\milli\ampere\second} on seed 7004.
-The revised currents produced a more negative mean drive to both \ac{pz} regions over the first \SI{4}{\second}, and both runs ended with three seizing regions.
-At this weight, all five development runs ended with three seizing regions, but mean delivered charge was \SI{36.64}{\milli\ampere\second}, above the \SI{30}{\milli\ampere\second} target.
+The waveform \ac{mlp} delivered a similar mean charge to the spectral \ac{cnn}, and its burden lay between \SI{4.74}{\percent} and \SI{6.08}{\percent} on nine seeds.
+On seed 7104, its burden reached \SI{35.64}{\percent} and 28 regions were still seizing at the end, accounting for most of the difference in mean burden between the waveform \ac{mlp} and spectral \ac{cnn}.
+Every solve for the waveform controller was accepted, ruling out fallback after a failed solve as the cause of this outcome.
 
-\paragraph*{Binary Activation.}
-To target off time directly, we charged for each enabled hold by setting \(w_\delta=0.70\) and omitting both current magnitude penalties.
-On the same five development seeds, we compared Bonmin, grouped candidates, and homotopy (Section~\ref{sec:mpc_sparse_formulations}).
-For grouped candidates, the ten planned holds formed blocks of three, three, and four.
+To determine how long the spectral \ac{cnn} could still contain spread from the waveform-controlled trajectory, we replayed the applied waveform currents up to each candidate handover and then let the \ac{cnn} replan from the evolving scalp \ac{eeg}.
+A switch at \SI{1.56}{\second} contained spread through the end of the replay at \SI{4}{\second}, whereas a switch at \SI{1.62}{\second} led to 34 seizing regions by \SI{2.75}{\second} (Figure~\ref{fig:seed_7104_recruitment}, left).
+All solves were accepted in both replays, and the trailing-second recruitment count was six at both switch times.
+For the tested spectral policy on this trajectory, the opportunity to contain spread was lost within this interval, before the sharp rise in the regional count after \SI{2}{\second}.
 
-All three methods kept burden below \SI{6}{\percent} on every seed, so the main differences were in stimulation and solve time (Table~\ref{tab:sparse_stimulation_results}).
-Under the tested solver budgets, grouped candidates gave the most off time and used the least charge of the three methods, with the shortest 95th-percentile solve time.
-Grouped candidates and homotopy both returned a plan at every update, although homotopy took the longest to solve.
-Bonmin spent an additional \SI{0.25}{\second} off in fallback on average, which does not count toward the off time in the table.
-
-The importance of measuring applied off time is apparent in a separate comparison: capping each plan at six enabled holds with a quadratic current cost gave at most \SI{0.22}{\second} mean off time (Appendix~\ref{app:sparse_calibration}).
-Because the controller applied only the first hold of each plan, it could repeatedly enable that hold and schedule off intervals later in the horizon.
-The tested activation penalty yielded more time off than the cap, but all three methods still used more charge than \(L_1\) alone.
-Once a hold is enabled, the activation penalty places no further cost on increasing its current.
-
-\paragraph*{Combined Penalties.}
-Combining the penalties retains an incentive to limit current within enabled holds.
-In calibration, we kept \(w_{L_1}=0.234\) and added an activation penalty of \(w_\delta=0.01\) using Bonmin.
-Mean off time increased from \SI{2.84}{\second} to \SI{5.22}{\second}, with little change in mean burden or charge (Appendix~\ref{app:sparse_calibration}).
-We fixed these weights and evaluated both controllers on the same ten reserved seeds.
-Since the combined controller used Bonmin and the \(L_1\) controller used IPOPT, this comparison evaluates the two implementations as a whole.
-
-With both penalties, stimulation was off for nearly half the time after control began.
-Mean off time increased by \SI{2.49}{\second} relative to \(L_1\) alone, with a paired 95\% bootstrap interval of \SIrange{2.20}{2.81}{\second} (Table~\ref{tab:sparse_stimulation_results}).
-Fallback accounted for only \SI{0.006}{\second} of additional off time on average.
-The combined controller delivered more bouts despite spending less time on, so its bouts were shorter on average.
-Within active holds outside fallback, the mean sum of absolute currents rose from \SI{2.84}{\milli\ampere} to \SI{3.94}{\milli\ampere}, near the feasible maximum of \SI{4}{\milli\ampere}.
-Figure~\ref{fig:sparse_current_traces} illustrates this concentration of current into fewer holds, with both sparse controllers repeatedly resuming stimulation after off intervals.
-The frequent returns to stimulation raise the possibility that the controllers apply current earlier than needed to contain spread.
+At the common start of \SI{1.38}{\second}, we scored both controllers' first plans with the waveform objective, using either the \ac{mlp} forecast or the \ac{eeg} obtained by replaying each complete plan without replanning under the original noise.
+The \ac{mlp} predicted that the spectral \ac{cnn} plan would save 46 units of tracking cost, too little to offset its additional quadratic stimulation cost of 144.
+The plant replay gave a tracking saving of 729, of which 632 came from reduced fluctuations around the channel means over the horizon.
+The replayed objective therefore favored the spectral plan, which ended the horizon with seven seizing regions compared with 12 under the waveform plan.
+Applying the first spectral hold and then resuming waveform feedback still led to 31 seizing regions at \SI{2.50}{\second}.
+Across 64 alternative future noise draws paired between the two plans from the same plant state, the median tracking advantage was 45, and the spectral plan had a lower total waveform objective in five draws.
+The size of the tracking advantage and the ranking under the full objective therefore depended on the future noise.
 
 \begin{figure}
   \centering
-  \includegraphics{figures/06_experiment_and_discussion/sparse_current_traces}
-  \caption{Sum of absolute applied electrode currents for three spectral \ac{dmdc} controllers on seed 7104.
-  The quadratic trace comes from the controller comparison in Section~\ref{sec:controller_comparison}.
-  The grey band marks the first \SI{1.38}{\second}, when the controllers collected \ac{eeg} history and applied zero current.
-  All three runs ended with four seizing regions.}\label{fig:sparse_current_traces}
+  \includegraphics{figures/06_experiment_and_discussion/seed_7104_recruitment}
+  \caption{Loss of containment and forecast error on seed 7104.
+  Left, trailing-second counts for the original waveform \ac{mlp} and spectral \ac{cnn} runs and for handovers from waveform to spectral feedback, with the interval between handovers shaded.
+  Right, forecast and replay scores for the waveform plan issued at \SI{1.98}{\second}, paired at each \SI{60}{\milli\second} endpoint with the seizure state measured in the replay.
+  The grey points and scoring follow Figure~\ref{fig:observable_penalty_state}, with cost shown on a logarithmic axis.
+  The vertical segment joins the two scores at \SI{2.52}{\second}, and the dotted line marks the tested cost ceiling.}\label{fig:seed_7104_recruitment}
 \end{figure}
 
-% Delayed-start replay and seed selection: artifacts/sparse_delayed_start/report.md.
-To test whether early stimulation could be omitted in one run, we selected reserved seed 7109 because it showed late spread without control.
-Its uncontrolled run first exceeded five seizing regions at the \SI{7.50}{\second} window endpoint and ended with 26.
-We withheld all stimulation until \SI{6.90}{\second}, one control horizon before that endpoint, then enabled the combined controller.
-With the later start, the number of seizing regions briefly reached six and fell to four by the end of the run, compared with three at the original \SI{1.38}{\second} start.
-The delay reduced delivered charge from \SI{23.86}{\milli\ampere\second} to \SI{12.95}{\milli\ampere\second}.
-Early stimulation was therefore dispensable for avoiding widespread recruitment on this seed.
-Since we chose the delay using the uncontrolled trajectory, this replay does not establish when a controller should start without that information.
+The \ac{mlp} also overestimated the effect of later stimulation.
+From the waveform-controlled state at \SI{1.98}{\second}, we compared its issued plan with a plan that retained the first \SI{60}{\milli\second} of stimulation and set all later currents to zero.
+Keeping the later currents was predicted to reduce tracking cost in the final \SI{60}{\milli\second} by \SI{76}{\percent}, but increased it by \SI{19}{\percent} in the plant replay.
+Both branches ended at \SI{3}{\second} with 33 seizing regions.
 
-In the comparison at the original start time, the combined controller ended with three to five seizing regions on every reserved seed, whereas two \(L_1\) runs ended with 35 and 27.
-The latter run delivered \SI{30.75}{\milli\ampere\second}, compared with \SI{22.68}{\milli\ampere\second} for the combined controller on the same seed.
-Across seeds, however, the paired 95\% bootstrap intervals included zero for both the mean difference in burden (\(-5.02\) to \(+0.13\) percentage points) and in charge (\(-2.87\) to \(+0.11\)\,\si{\milli\ampere\second}).
-The clearest benefit of combining the penalties was more time off.
+Scoring the forecast and replay \ac{eeg} with the same reference and averaging as in Figure~\ref{fig:observable_penalty_state} shows where the cost discrepancy arose.
+At \SI{2.52}{\second}, the replay of the issued waveform plan had 31 seizing regions, with a cost of 407.33 compared with a forecast of 14.83 (Figure~\ref{fig:seed_7104_recruitment}, right).
+The replay cost lay near the 98th percentile of the reference scores at that level of recruitment.
+The measured waveform cost thus registered the spread, while the forecast kept the cost low.
+A ceiling of 16.36 on each predicted \SI{60}{\milli\second} score remained slack through the \SI{1.98}{\second} decision, and the constrained run still reached 31 seizing regions at \SI{2.50}{\second} (Appendix~\ref{app:seed_7104_cost_ceiling}).
 
-The mean of the run-level 95th-percentile solve times rose from \SI{1.31}{\second} to \SI{2.33}{\second} when we added activation to the spectral \ac{dmdc} controller (Table~\ref{tab:sparse_stimulation_results}).
-Both times exceeded the \SI{60}{\milli\second} update interval.
-Preliminary Bonmin tests with the nonlinear spectral \ac{cnn} were slower still.
-The first solve took \SI{45.3}{\second} at a \SI{0.30}{\second} horizon, and controller construction timed out after four minutes at a \SI{1.02}{\second} horizon.
-The combined controller contained spread with intermittent stimulation in simulation, but real-time use would require replanning within the update interval.
-% no. This is in the wrong place. Or at least the discussion of the main thing the binary activation solvers is missing. 
+This failure was unexpected given the waveform \ac{mlp} controller's apparent robustness on the development seeds (Section~\ref{sec:stimulation_cost_weight}).
+In the stochastic plant, however, recruitment can progress at different rates, changing how much time the controller has to intervene.
+The ten reserved seeds cover only a sample of the plant's possible noise realizations, so even the spectral predictor results provide no guarantee of containment across other seeds.
+
+\subsection{Sparse Stimulation}\label{sec:sparse_stimulation}
+
+The spectral \ac{dmdc} controller with a quadratic current penalty contained seizure spread on the ten reserved seeds but stimulated continuously once control began (Figure~\ref{fig:sparse_current_traces}, top).
+Section~\ref{sec:mpc_sparse_formulations} introduced two ways to promote sparse stimulation.
+An \(L_1\) penalty on electrode currents favors zero current, while a binary activation penalty charges for each hold in which stimulation is enabled.
+We compared how much time each controller left unstimulated, how well it suppressed seizure spread, and how long it took to solve each plan.
+We measured sparsity as the total time after control began for which the absolute current on every electrode was at most \SI{1}{\micro\ampere}, excluding holds applied during fallback.
+
+We compared the three methods for solving the binary activation problem on the five development seeds at \(w_\delta=2.40\) (Table~\ref{tab:sparse_stimulation_results}).
+Mean solve time was shortest with homotopy (\SI{0.46}{\second}), followed by exhaustive search over 16 block schedules (\SI{1.43}{\second}) and branch and bound with the Bonmin solver (\SI{1.64}{\second}).
+Even the fastest method exceeded the \SI{60}{\milli\second} update interval.
+The Bonmin solver failed to return a plan at seven updates, and the nonconvex penalty used in homotopy can lead to a locally optimal schedule.
+Grouping the holds restricts when activation can change within a plan, but allows every block schedule to be evaluated at each update.
+With grouped schedules, the controller returned a plan at every update, delivered the least charge, and left stimulation off for the longest total time.
+We therefore used grouped schedules for both controllers with an activation penalty on the reserved seeds.
+
+\begin{table}
+  \centering
+  \caption{Sparse stimulation with the spectral \ac{dmdc} controller.
+  We evaluated the three solution methods at the same activation weight on five development seeds and the four penalties at the selected weights on ten reserved seeds (Appendix~\ref{app:sparse_calibration}).
+  Entries are means across seeds. A bout consists of consecutive active holds.
+  Solve time is the mean per control update.}\label{tab:sparse_stimulation_results}
+  \setlength{\tabcolsep}{4pt}
+  \begin{tabular}{@{}lrrrrrr@{}}
+    \toprule
+    Stim. penalty & Burden (\%) & Final count & Charge (mAs) & Off time (s) & Bouts & Solve (s) \\
+    \midrule
+    \multicolumn{7}{@{}l}{\textit{Development seeds}} \\
+    Bonmin solver     & 5.06 & 4.2 & 29.28 & 3.96 & 25.6 & 1.64 \\
+    Grouped schedules & 5.01 & 3.2 & 27.98 & 4.34 & 24.2 & 1.43 \\
+    Homotopy          & 4.56 & 3.4 & 30.76 & 3.65 & 38.6 & 0.46 \\
+    \addlinespace
+    \multicolumn{7}{@{}l}{\textit{Reserved seeds}} \\
+    Quadratic (\(L_2\))  & 4.91 & 3.5 & 25.40 & 0.00 &  1.0 & 0.11 \\
+    \(L_1\)              & 4.95 & 4.2 & 27.60 & 4.06 & 24.1 & 0.17 \\
+    Activation           & 6.17 & 6.2 & 27.00 & 4.59 & 25.0 & 1.71 \\
+    \(L_1\) + activation & 5.08 & 3.4 & 23.54 & 5.45 & 26.1 & 2.38 \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+On the ten reserved seeds, the controller with the \(L_1\) penalty (\(w_{L_1}=0.60\)) left stimulation off for \SI{4.06}{\second} on average, compared with \SI{4.59}{\second} for the controller with the activation penalty alone.
+Computing a plan took about ten times as long with binary activation (\SI{1.71}{\second} on average, compared with \SI{0.17}{\second} with the \(L_1\) penalty).
+Both delivered more charge on average than the quadratic controller, despite the pauses visible in the two middle traces of Figure~\ref{fig:sparse_current_traces}.
+The controller with the activation penalty spent more time off than the \(L_1\) controller on nine seeds and ended with three or four seizing regions on each of those nine.
+On the remaining seed, 7107, it spent \SI{1.44}{\second} less time off, yet 29 regions were seizing in the final window, compared with four under the \(L_1\) penalty.
+Both controllers returned a plan at every update on that seed.
+With the activation penalty alone, mean burden reached \SI{6.17}{\percent}, compared with \SI{4.95}{\percent} under the \(L_1\) penalty.
+
+\begin{figure}
+  \centering
+  \includegraphics{figures/06_experiment_and_discussion/reserved_current_traces_7104.pdf}
+  \caption{Sum of absolute applied electrode currents on reserved seed 7104 for each stimulation penalty.
+  Shading marks the period before control began.
+  All four runs ended with four seizing regions.}\label{fig:sparse_current_traces}
+\end{figure}
+
+With both penalties (\(w_{L_1}=0.60\), \(w_\delta=0.20\)), the controller had the longest mean off time (\SI{5.45}{\second}) and delivered the least charge (\SI{23.54}{\milli\ampere\second}).
+It ended with three or four seizing regions on every reserved seed, including seed 7107.
+Even so, the controller resumed stimulation frequently, delivering an average of 26 bouts per run (Figure~\ref{fig:sparse_current_traces}, bottom).
+
+On seed 7109, we tested whether stimulation could be withheld for longer by leaving the controller off until \SI{6.90}{\second}.
+We chose this time from the uncontrolled trajectory, in which the number of seizing regions rose from seven at \SI{7.50}{\second} to 28 just half a second later.
+When feedback control began at \SI{6.90}{\second}, the count peaked at six and fell to four by the end of the run.
+Suppressing spread on this realization was therefore possible even after an uninterrupted initial pause of nearly seven seconds.
+During feedback control, the controller has to decide from the available \ac{eeg} whether to withhold stimulation for another hold.
+The timing of recruitment varies with the plant noise, so waiting as long on another seed could leave too little time to intervene.
+The penalties allowed intermittent stimulation, but the repeated bouts show how conservative the resulting schedules remained.
+Identifying from the \ac{eeg} when a pause of several seconds is safe remains an open problem.

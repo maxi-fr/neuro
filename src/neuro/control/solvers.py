@@ -16,6 +16,7 @@ from trajopt.transcription.single_shooting import SingleShooting
 
 from neuro.control.condensed import CondensedIPOPT, CondensedOSQP
 from neuro.control.costs import AffineObservableHinge, CondensedL1ControlCost, has_whole_horizon_cost
+from neuro.control.multiple_shooting import MultipleShooting
 from neuro.control.narx import NarxShooting
 
 if TYPE_CHECKING:
@@ -64,12 +65,13 @@ def ensure_solver_supports_objective(problem: Problem, solver: Solver) -> None:
         msg = "affine_hinge with exact L1 requires CondensedOSQP or CondensedIPOPT"
         raise ValueError(msg)
     if any(isinstance(term, AffineObservableHinge) for term in stage_terms) and not isinstance(
-        solver, (CondensedOSQP, CondensedIPOPT, Ipopt, SingleShooting, NarxShooting)
+        solver, (CondensedOSQP, CondensedIPOPT, Ipopt, SingleShooting, NarxShooting, MultipleShooting)
     ):
         msg = "affine_hinge requires CondensedOSQP, CondensedIPOPT, or IPOPT"
         raise ValueError(msg)
     if has_whole_horizon_cost(problem.obj.stage_cost) and (
-        isinstance(solver, CondensedIPOPT) or not isinstance(solver, (SingleShooting, Ipopt, NarxShooting))
+        isinstance(solver, CondensedIPOPT)
+        or not isinstance(solver, (SingleShooting, Ipopt, NarxShooting, MultipleShooting))
     ):
         msg = (
             f"{type(solver).__name__} expands costs per knot and cannot score the whole-horizon "
@@ -100,13 +102,15 @@ def _instantiate_solver(class_path: str, cfg: dict[str, Any]) -> Solver:
 
     if issubclass(target_cls, Ipopt) and not issubclass(target_cls, CondensedIPOPT):
         cfg["options"] = {**IPOPT_DEFAULTS, **cfg.get("options", {})}
-    elif issubclass(target_cls, (SingleShooting, NarxShooting)) and "solver" not in cfg:
+    elif issubclass(target_cls, (SingleShooting, NarxShooting, MultipleShooting)) and "solver" not in cfg:
         cfg["solver"] = Ipopt(options=dict(IPOPT_DEFAULTS))
     elif "options" in cfg and isinstance(cfg["options"], dict) and issubclass(target_cls, (ALTRO, BoxQP)):
         cfg["options"] = SolverOptions(**cfg["options"])
 
     res = target_cls(**cfg) if cfg else target_cls()
-    if not isinstance(res, (ALTRO, BoxQP, SingleShooting, Ipopt, NarxShooting)) and not hasattr(res, "solve"):
+    if not isinstance(res, (ALTRO, BoxQP, SingleShooting, Ipopt, NarxShooting, MultipleShooting)) and not hasattr(
+        res, "solve"
+    ):
         msg = f"Target class {class_path} does not implement Solver interface"
         raise TypeError(msg)
     return res

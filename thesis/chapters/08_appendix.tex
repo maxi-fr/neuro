@@ -331,23 +331,12 @@ We screened settings on seeds 7000 and 7001 and evaluated selected settings on t
 We sought mean delivered charge near or below \SI{30}{\milli\ampere\second} and mean seizure burden below \SI{6}{\percent}, and inspected the final seizing-region count on each seed.
 Off time was measured after release from applied holds whose electrode currents were all at or below \SI{1}{\micro\ampere}, excluding fallback holds.
 
-Figure~\ref{fig:sparse_calibration_tradeoffs} shows the measured burden, charge, and off-time trade-offs.
-
-\begin{figure}[htbp]
-  \centering
-  \includegraphics{figures/08_appendix/sparse_calibration_tradeoffs.pdf}
-  \caption{Mean seizure burden against delivered charge and off time at the \SI{1.02}{\second} Control Horizon.
-  Open circles show the two-seed screening means and filled diamonds show five-seed means.
-  Off time excludes fallback holds and uses the \SI{1}{\micro\ampere} threshold per electrode.
-  The dashed line marks \SI{6}{\percent} burden.}\label{fig:sparse_calibration_tradeoffs}
-\end{figure}
-
 \section{Exact Current Penalty}
 
 The quadratic baseline retained \(w_{L_2}=0.30\).
 Its five-seed replay gave \SI{5.00}{\percent} mean burden and \SI{25.98}{\milli\ampere\second} mean charge.
 Table~\ref{tab:sparse_calibration_l1} compares the exact \(L_1\) settings.
-The previous weight of 0.234 delivered almost continuous stimulation at this horizon.
+A weight of 0.234 delivered almost continuous stimulation at this horizon.
 Among the tested settings, \(w_{L_1}=0.60\) met both mean targets and ended with three or four seizing regions on every seed.
 Its highest charge was \SI{34.82}{\milli\ampere\second} on seed 7002.
 The adjacent weights show sensitivity to the closed-loop response, with spread on seeds 7004 and 7005 at 0.62 and on seed 7004 at 0.65.
@@ -373,37 +362,24 @@ The adjacent weights show sensitivity to the closed-loop response, with spread o
 For activation-only control we used a common weight \(w_\delta=2.40\), with the current magnitude penalties set to zero.
 The activation cost charged \(w_\delta/17\) per enabled hold.
 The grouped-candidate search partitioned the horizon into four consecutive groups of 4, 4, 4, and 5 holds and evaluated their 16 activation schedules.
-We first tested the calibration formulations (Bonmin with explicit spectral epigraph slacks, single-shooting IPOPT homotopy with a direct spectral hinge, and grouped candidates with OSQP), using an eight-second solver limit per replan for Bonmin and up to four IPOPT passes for homotopy.
-Because the explicit spectral epigraph introduced \(17 \times 62 \times 12 = \num{12648}\) slacks per solve and caused frequent Bonmin time-limit fallbacks, and uncondensed single-shooting slowed homotopy, we reran the five-seed comparison at \(w_\delta=2.40\) under the condensed direct-hinge (\texttt{fmax}) formulation across all three methods: direct condensed \texttt{fmax} in Bonmin, condensed \texttt{fmax} homotopy in exact-Hessian IPOPT, and condensed \texttt{fmax} IPOPT subproblems for grouped candidates.
-Table~\ref{tab:sparse_calibration_binary} reports both sets of five-seed results.
-In both formulations all methods met the mean charge target, while removing the \num{12648} spectral slacks reduced Bonmin fallback holds from 99 to 7 and brought its mean burden down from \SI{16.70}{\percent} to \SI{5.06}{\percent} (though seed 7004 still ended with eight seizing regions).
-Condensed \texttt{fmax} homotopy eliminated all 17 fallback holds and achieved \SI{4.56}{\percent} burden with zero healthy recruitment, while grouped candidates matched its original OSQP closed-loop trajectory identically under condensed IPOPT with zero fallbacks.
+All three methods used the condensed predictor with the spectral hinge evaluated directly.
+Bonmin had an eight-second solver limit per update, and homotopy used up to four IPOPT passes.
+For grouped search we solved the current optimization with IPOPT for each of the 15 schedules permitting stimulation and evaluated the all-off schedule directly.
 
 \begin{table}[htbp]
   \centering
-  \caption{Activation-only calibration at \(w_\delta=2.40\), averaged over five development seeds under both the initial epigraph/uncondensed and revised condensed direct-hinge (\texttt{fmax}) formulations. Fallback holds are totals across seeds.}\label{tab:sparse_calibration_binary}
-  \begin{tabular}{@{}llrrrr@{}}
+  \caption{Activation-only control at \(w_\delta=2.40\) on the five development seeds.
+  Outcomes and solve times are means across seeds. Failed updates are totals.}\label{tab:sparse_calibration_binary}
+  \begin{tabular}{@{}lrrrrr@{}}
     \toprule
-    Formulation & Method & Burden (\%) & Charge (mAs) & Off (s) & Fallbacks \\
+    Method & Burden (\%) & Charge (mAs) & Off time (s) & Solve time (s) & Failed updates \\
     \midrule
-    Epigraph / uncondensed & Bonmin             & 16.70 & 28.75 & 4.15 & 99 \\
-                           & Grouped candidates &  5.01 & 27.98 & 4.34 &  0 \\
-                           & Homotopy           &  4.95 & 27.79 & 4.19 & 17 \\
-    \addlinespace
-    Condensed \texttt{fmax} & Bonmin             &  5.06 & 29.28 & 3.96 &  7 \\
-                            & Grouped candidates &  5.01 & 27.98 & 4.34 &  0 \\
-                            & Homotopy           &  4.56 & 30.76 & 3.65 &  0 \\
+    Bonmin             & 5.06 & 29.28 & 3.96 & 1.64 & 7 \\
+    Grouped candidates & 5.01 & 27.98 & 4.34 & 1.43 & 0 \\
+    Homotopy           & 4.56 & 30.76 & 3.65 & 0.46 & 0 \\
     \bottomrule
   \end{tabular}
 \end{table}
-
-With \(w_{L_1}=0.60\) in the initial epigraph calibration, Bonmin and \(w_\delta=0.01\) averaged \SI{16.08}{\percent} burden, \SI{28.85}{\milli\ampere\second} charge, and \SI{4.10}{\second} off across five seeds, with 47 fallback holds.
-Seeds 7002 and 7005 ended with 29 seizing regions.
-At \(w_\delta=0.04\), seed 7001 reached \SI{34.30}{\percent} burden.
-At \(w_\delta=0.08\), the five-seed means were \SI{10.36}{\percent} burden, \SI{26.30}{\milli\ampere\second} charge, and \SI{4.75}{\second} off, with 45 fallback holds.
-Seed 7002 reached \SI{31.11}{\percent} burden and ended with 28 seizing regions.
-Because Bonmin repeatedly reached the solver time limit, triggered fallback holds, and failed to contain spread in both the epigraph activation-only runs and combined calibration, and still exhibited occasional time-limit fallbacks and healthy recruitment on seed 7004 under the condensed \texttt{fmax} formulation, we replaced it with the grouped-candidate search for the combined arm.
-For each of the 15 nonzero schedules on the 4, 4, 4, and 5-hold partition, the grouped-candidate controller solved the condensed exact-\(L_1\) subproblem (calibrated with OSQP and evaluated on the reserved seeds under condensed \texttt{fmax} IPOPT) and scored the all-off schedule directly.
 
 Table~\ref{tab:sparse_calibration_combined} summarizes the five-seed combined calibration for grouped candidates at \(w_{L_1}=0.60\).
 All 15 runs accepted every replan with zero fallback holds.
@@ -415,16 +391,13 @@ We therefore selected grouped candidates with \(w_{L_1}=0.60\) and \(w_\delta=0.
 \begin{table}
   \centering
   \caption{Combined \(L_1\) and activation calibration at \(w_{L_1}=0.60\) across five development seeds. Fallback holds are totals across seeds, and final count gives the range of seizing regions at the run endpoint.}\label{tab:sparse_calibration_combined}
-  \begin{tabular}{@{}llrrrrl@{}}
+    \begin{tabular}{@{}rrrrrr@{}}
     \toprule
-    Method & \(w_\delta\) & Burden (\%) & Charge (mAs) & Off (s) & Fallbacks & Final count \\
+    \(w_\delta\) & Burden (\%) & Charge (mAs) & Off (s) & Fallbacks & Final count \\
     \midrule
-    Bonmin             & 0.01 & 16.08 & 28.85 & 4.10 & 47 & 3--29 \\
-    Bonmin             & 0.08 & 10.36 & 26.30 & 4.75 & 45 & 3--28 \\
-    \addlinespace
-    Grouped candidates & 0.01 &  5.98 & 28.46 & 4.06 &  0 & 3--34 \\
-    Grouped candidates & 0.08 &  4.99 & 27.14 & 4.55 &  0 & 3--4  \\
-    Grouped candidates & 0.20 &  5.09 & 23.85 & 5.38 &  0 & 3--5  \\
+    0.01 & 5.98 & 28.46 & 4.06 & 0 & 3--34 \\
+    0.08 & 4.99 & 27.14 & 4.55 & 0 & 3--4  \\
+    0.20 & 5.09 & 23.85 & 5.38 & 0 & 3--5  \\
     \bottomrule
   \end{tabular}
 \end{table}
@@ -595,3 +568,44 @@ At similar mean charge, the rising half-Hann taper contained spread on all five 
 With the symmetric Hann taper, spread occurred on two of the five seeds, with 30 regions still seizing at the end of each run.
 At the same frame endpoint, the rising taper gives the newest samples more weight, so emerging activity can contribute more strongly to the estimated spectrum as soon as it is measured.
 The benefit of responding sooner to emerging activity may outweigh any adverse effects of spectral leakage from the rising taper.
+
+\chapter{\acs{mpc} Transcription Benchmark}\label{app:transcription_benchmark}
+% Data, snapshots, and cell logs: artifacts/transcription_benchmark/.
+% Runner: src/experiments/transcription_benchmark.py; figure: thesis/figures/08_appendix/transcription_benchmark.py.
+
+This appendix compares the three direct \ac{mpc} transcriptions from Table~\ref{tab:mpc_transcription_counts} on the same JAX and IPOPT solver stack across the three controllers evaluated in Section~\ref{sec:controller_comparison} (spectral \ac{dmdc}, spectral \ac{cnn}, and waveform \ac{mlp}) and four matched physical horizons (\SI{0.30}{\second}, \SI{0.60}{\second}, \SI{1.02}{\second}, and \SI{1.50}{\second}).
+Every configuration used the same \ac{mpc} objective, input bounds, Kirchhoff current equality, and limited-memory IPOPT tolerances as the closed-loop experiments, with a per-solve CPU limit of \SI{120}{\second}.
+For full-state multiple shooting, we exploited the exact shift-register sparsity of the autoregressive delay state and omitted unused Hessian allocations under limited-memory BFGS so that all configurations fit within the host memory (\SI{15.4}{\giga\byte} RAM).
+Open-loop timings were measured after one JIT warmup solve across ten cold-started seizure snapshots extracted from the uncontrolled reserved trajectories (seeds 7100--7109 at \SIrange{2.40}{5.10}{\second}), stopping early after repeated \SI{120}{\second} timeouts or single-iteration timeouts exceeding \SI{360}{\second}.
+For configurations that converged in open loop with median solve time below \SI{40}{\second}, we also ran a \SI{1.20}{\second} closed-loop slice starting at \SI{1.38}{\second} on seed 7100 (\num{21} total replan updates, yielding \num{20} warm-started steady-state solves after the initial call).
+
+\begin{figure}
+  \centering
+  \includegraphics{figures/08_appendix/transcription_benchmark.pdf}
+  \caption{Open-loop median solve time over converged snapshots (top) and convergence rate (bottom) across control horizons for single shooting, 1-step \acs{narx}, and full-state multiple shooting under a \SI{120}{\second} IPOPT CPU limit.
+  Larger horizons omitted for multiple shooting on spectral \ac{dmdc} (\SI{1.02}{\second} and \SI{1.50}{\second}) and spectral \ac{cnn} (\SIrange{0.60}{1.50}{\second}) were skipped after a single iteration exceeded the CPU limit at the preceding horizon.}\label{fig:transcription_benchmark}
+\end{figure}
+
+Direct single shooting converged on all ten open-loop snapshots and all \num{21} closed-loop replans across every predictor and horizon, with open-loop medians between \SI{0.36}{\second} and \SI{1.92}{\second} and warm-started closed-loop steady-state medians between \SI{0.28}{\second} and \SI{1.45}{\second} (Figure~\ref{fig:transcription_benchmark}).
+Full-state multiple shooting converged only on the two shortest waveform \ac{mlp} horizons (\num{8}/10 at \SI{0.30}{\second} in \SI{48.96}{\second} and \num{6}/10 at \SI{0.60}{\second} in \SI{113.84}{\second}), timed out at \SI{1.02}{\second} and \SI{1.50}{\second} on waveform \ac{mlp} and at \SI{0.30}{\second} on spectral \ac{dmdc}, and exceeded \SI{120}{\second} in a single iteration on spectral \ac{dmdc} at \SI{0.60}{\second} and spectral \ac{cnn} at \SI{0.30}{\second} (\num{71601} variables).
+
+The 1-step \acs{narx} transcription eliminated the repeated history states and reduced decision variables by factors of \num{4.2} to \num{17.6} relative to full-state multiple shooting.
+Across all \num{69} jointly converged open-loop solves on spectral \ac{dmdc} and waveform \ac{mlp}, \acs{narx} and multiple shooting matched the single-shooting objective within $2.3\times 10^{-6}$ relative difference.
+On waveform \ac{mlp} ($n_o=62$), \acs{narx} converged on \num{10}/10 snapshots at \SI{0.30}{\second} (\SI{1.32}{\second}) and \SI{0.60}{\second} (\SI{5.72}{\second}), \num{9}/10 at \SI{1.02}{\second} (\SI{12.95}{\second}), and \num{7}/10 at \SI{1.50}{\second} (\SI{18.92}{\second}), with \num{21}/21 closed-loop convergence (\SIrange{1.08}{10.80}{\second}), remaining \num{3.0} to \num{10.4} times slower than single shooting in open loop.
+On spectral \ac{dmdc} ($n_o=744$), \acs{narx} converged on \num{9}/10 snapshots at \SI{0.30}{\second} (\SI{79.59}{\second}) and \num{10}/10 at \SI{0.60}{\second} (\SI{89.40}{\second}) before timing out at \SI{1.02}{\second} and \SI{1.50}{\second}, while spectral \ac{cnn} \acs{narx} timed out at all four horizons.
+Single shooting was therefore retained across all closed-loop experiments.
+
+\chapter{Waveform Cost Ceiling on Seed 7104}\label{app:seed_7104_cost_ceiling}
+% Calibration and replay data: thesis/artifacts/seed_7104_penalty_state/ and thesis/artifacts/seed_7104_runaway_check/.
+
+We tested whether an upper bound on the forecast waveform cost could prompt earlier intervention on seed 7104 (Section~\ref{sec:controller_comparison}).
+The bound of 16.36 was the pooled 95th percentile of the measured waveform scores in Figure~\ref{fig:observable_penalty_state} for frames with at most seven seizing regions.
+We chose seven retrospectively because it was the number of seizing regions at the end of the replay of the first spectral \ac{cnn} plan.
+The score distributions overlapped near this cutoff, with \SI{58}{\percent} of reference frames containing eight or nine seizing regions still below the bound.
+
+We constrained each predicted \SI{60}{\milli\second} block over the \SI{1.02}{\second} horizon using the figure's healthy reference and averaging over three samples and all channels.
+The original waveform objective, current limits, and replan interval were retained.
+All 11 solves through \SI{1.98}{\second} were accepted with the ceiling slack, and the applied currents differed from the original run by at most \SI{0.00036}{\milli\ampere}.
+At \SI{2.04}{\second}, the first constrained solve affected by the ceiling reached the IPOPT iteration limit.
+The following 32 solves through the end of the \SI{4}{\second} replay reported local infeasibility, and the controller applied zero current after each failed solve.
+The constrained and original runs had identical recruitment counts at the sampled endpoints through \SI{3.75}{\second}, including 31 seizing regions at \SI{2.50}{\second}.

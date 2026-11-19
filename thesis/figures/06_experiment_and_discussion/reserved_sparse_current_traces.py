@@ -9,34 +9,32 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import style
 
-EXPERIMENT = Path(__file__).resolve().parents[3] / "artifacts" / "sparse_stimulation_reserved"
-SEED = 7104
+FIGURES = Path(__file__).resolve().parent
 
 
 def save_reserved_current_traces() -> None:
-    """Plot the three applied-current traces on reserved seed 7104."""
-    runs = EXPERIMENT / "reserved" / "runs"
+    """Compare the summed absolute electrode currents for four penalties on seed 7104."""
+    traces = np.genfromtxt(FIGURES / "reserved_current_traces_7104.csv", delimiter=",", names=True)
+    times = traces["time_s"]
+    first_replan = times[np.flatnonzero(traces["control_started"])[0]]
     arms = (
-        (r"Quadratic $L_2$", "quadratic_osqp"),
-        (r"Exact $L_1$", "l1_osqp"),
-        (r"$L_1$ with grouped activation", "combined_candidates"),
+        ("Quadratic", "quadratic_mA"),
+        (r"$L_1$", "l1_mA"),
+        ("Activation", "activation_mA"),
+        (r"$L_1$ + activation", "combined_mA"),
     )
     fig, axes = plt.subplots(
-        3, 1, figsize=style.figsize(height_in=2.85), sharex=True, sharey=True, layout="constrained"
+        4, 1, figsize=style.figsize(height_in=3.65), sharex=True, sharey=True, layout="constrained"
     )
-    for ax, (label, arm) in zip(axes, arms, strict=True):
-        with np.load(runs / f"{arm}_s{SEED}" / "log.npz", allow_pickle=False) as trace:
-            times = trace["controller.t"]
-            currents = np.abs(trace["controller.u"]).sum(axis=1)
-            first_replan = times[np.flatnonzero(trace["controller.solve_attempted"])[0]]
-        ax.step(times, currents, where="post", color="C0")
+    for ax, (label, column) in zip(axes, arms, strict=True):
+        ax.step(times, traces[column], where="post", color="C0")
         ax.axvspan(0, first_replan, color="0.92")
         ax.set_title(label, loc="left")
         ax.set(ylim=(-0.2, 4.25), yticks=[0, 2, 4])
         ax.grid(axis="y")
     axes[-1].set(xlim=(0, 12), xticks=np.arange(0, 13, 2), xlabel="Time (s)")
     fig.supylabel("Summed absolute current (mA)", fontsize=style.FONT_LABEL)
-    fig.savefig(EXPERIMENT / "reserved_current_traces_7104.pdf")
+    fig.savefig(FIGURES / "reserved_current_traces_7104.pdf")
     plt.close(fig)
 
 

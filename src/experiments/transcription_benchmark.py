@@ -25,6 +25,7 @@ from trajopt.transcription.single_shooting import SingleShooting
 
 from experiments.closed_loop_metrics import current_hold_durations, delivered_charge, solve_attempt_mask
 from neuro.config import StftGeometry
+from neuro.control.multiple_shooting import MultipleShooting
 from neuro.control.narx import NarxShooting, narx_dimensions
 from neuro.control.problems import NeuroProblem, build_observable_problem, build_waveform_problem
 from neuro.control.solvers import IPOPT_DEFAULTS
@@ -47,13 +48,13 @@ SNAPSHOT_TIMES_S: tuple[float, ...] = (2.40, 2.70, 3.00, 3.30, 3.60, 3.90, 4.20,
 WARMUP_TIME_S: float = 2.10
 HORIZONS_S: tuple[float, ...] = (0.30, 0.60, 1.02, 1.50)
 TRANSCRIPTIONS: tuple[str, ...] = ("single_shooting", "narx", "multiple_shooting")
-MAX_CPU_TIME_S: float = 30.0
-CLOSED_LOOP_MEDIAN_CAP_S: float = 25.0
-MAX_JAC_BYTES: float = 10.0e9
+MAX_CPU_TIME_S: float = 120.0
+CLOSED_LOOP_MEDIAN_CAP_S: float = 40.0
+MAX_JAC_BYTES: float = 12.0e9
 _EARLY_TIMEOUT_SNAPSHOTS: int = 3
 _IPOPT_CPU_TIMEOUT_STATUS: int = -4
 _SUBPROCESS_TIMEOUT_RC: int = -9
-_SINGLE_ITER_TIMEOUT_MULTIPLIER: float = 5.0
+_SINGLE_ITER_TIMEOUT_MULTIPLIER: float = 3.0
 CLOSED_LOOP_SEED: int = 7100
 CLOSED_LOOP_START_S: float = 1.38
 CLOSED_LOOP_REPLAN_DT: float = 0.06
@@ -226,7 +227,7 @@ def _make_solver(transcription: str) -> Solver:
     if transcription == "narx":
         return NarxShooting(solver=Ipopt(options=ipopt_opts))
     if transcription == "multiple_shooting":
-        return Ipopt(options=ipopt_opts)
+        return MultipleShooting(solver=Ipopt(options=ipopt_opts))
     msg = f"Unknown transcription: {transcription}"
     raise ValueError(msg)
 
@@ -242,7 +243,7 @@ def _solver_config_dict(transcription: str) -> dict[str, Any]:
     if transcription == "narx":
         return {"class_path": "neuro.control.narx.NarxShooting", "solver": ipopt_cfg}
     if transcription == "multiple_shooting":
-        return ipopt_cfg
+        return {"class_path": "neuro.control.multiple_shooting.MultipleShooting", "solver": ipopt_cfg}
     msg = f"Unknown transcription: {transcription}"
     raise ValueError(msg)
 
@@ -267,7 +268,7 @@ def _cell_dimensions(problem: NeuroProblem, transcription: str) -> tuple[int, in
         return n_vars, n_defects + n_user, int(nnz_approx * 8)
     n_vars = (H + 1) * n_h + H * m
     n_eq = (H + 1) * n_h + H
-    nnz_approx = n_h * n_h + H * n_h * (n_h + m + 1) + H * m
+    nnz_approx = n_h + H * (2 * n_h + n_o * n_h + m)
     return n_vars, n_eq, int(nnz_approx * 8)
 
 
@@ -528,7 +529,7 @@ def _run_worker_cell(spec: PredictorSpec, horizon_s: float, transcription: str, 
     ]
     logger.info("Running cell %s", out_json.stem)
     try:
-        proc = subprocess.run(cmd, check=False, timeout=600)  # noqa: S603 -- invokes fixed internal module CLI
+        proc = subprocess.run(cmd, check=False, timeout=1800)  # noqa: S603 -- invokes fixed internal module CLI
         rc = proc.returncode
     except subprocess.TimeoutExpired:
         rc = _SUBPROCESS_TIMEOUT_RC
