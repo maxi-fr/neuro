@@ -37,6 +37,9 @@
 %%%%%%%%%%%%%%%%%%%
 \catcode30=12  % Workaround for current biblatex problem (https://tex.stackexchange.com/questions/564990/error-after-miktex-reinstall-text-line-contains-an-invalid-character)
 \usepackage[backend=biber,style=ieee,bibencoding=utf8]{biblatex}
+\setcounter{biburllcpenalty}{7000}
+\setcounter{biburlucpenalty}{8000}
+\setcounter{biburlnumpenalty}{9000}
 \addbibresource{literature.bib}
 
 % Additional Packages
@@ -224,14 +227,8 @@
 \setcounter{page}{1}
 \section*{Task Description}
 
-	Provided by supervisor
+\input{chapters/task_description.tex}
 
- \vspace{0.5cm}
-\begin{tabular}{ll}
-	Start date: 	& ------ \\
-	End date: 		& ------ \\
-	Date of the colloquium: 	& ------ \\
-\end{tabular}
 \clearpage
 
 \affidavit[digital]

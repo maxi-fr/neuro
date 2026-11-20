@@ -372,7 +372,7 @@ The $L_1$ term thus introduces a threshold for stimulation and therefore promote
 The kink that promotes zero currents also makes the $L_1$ term nondifferentiable at those currents.
 The gradient-based solvers discussed above use objective derivatives to determine their search directions.
 However, the $L_1$ cost can be represented exactly using auxiliary variables and linear inequalities.
-For $w_{L_1}>0$, introduce real auxiliary variables $z_{j|k,p}$ and replace $\mathcal J_{L_1}$ in~\eqref{eq:mpc_sparse_continuous_cost} with the auxiliary cost $\widetilde{\mathcal J}_{L_1}$, defined by
+For $w_{L_1}>0$, introduce real auxiliary variables $z_{j|k,p}$ and replace $\mathcal J_{L_1}$ in~\eqref{eq:mpc_base_objective} with the auxiliary cost $\widetilde{\mathcal J}_{L_1}$, defined by
 %
 \begin{equation}
     \widetilde{\mathcal J}_{L_1}

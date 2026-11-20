@@ -1,0 +1,37 @@
+\begin{center}
+    \textbf{Masterarbeit} \\
+    \vspace{11pt}
+    für Herrn Max Frankenberg (Matrikel-Nr. 2419961) \\
+    \vspace{11pt}
+    \textbf{Data-Driven Model Predictive Control for Seizure Suppression with Sparse Stimulation} \\
+\end{center}
+
+% Aufgabenstellung:
+
+Fokale epileptische Anfälle entstehen in einem begrenzten Bereich des Gehirns und können sich im weiteren Verlauf auf verbundene Hirnregionen ausbreiten. 
+Die gezielte elektrische Stimulation bietet einen möglichen Ansatz, um diese Ausbreitung zu unterdrücken und damit die Auswirkungen epileptischer Anfälle zu begrenzen. 
+Hierfür sind geschlossene Regelungskonzepte erforderlich, die anhand gemessener neuronaler Aktivität geeignete Stimulationssignale in Echtzeit bestimmen. 
+Eine besondere Herausforderung besteht darin, dass für die Regelung lediglich indirekte Messungen der Hirnaktivität, beispielsweise mittels Elektroenzephalographie (EEG), zur Verfügung stehen. 
+Modellprädiktive Regler (Model Predictive Control, MPC) ermöglichen es, zukünftige Systementwicklungen vorherzusagen und die Stimulation unter Berücksichtigung von Nebenbedingungen gezielt anzupassen. 
+Voraussetzung hierfür sind geeignete Vorhersagemodelle, die den Zusammenhang zwischen der gemessenen Hirnaktivität und den applizierten Stimulationssignalen beschreiben. \\
+%
+Im Rahmen dieser Masterarbeit soll der Einsatz modellprädiktiver Regelung zur Unterdrückung der Ausbreitung fokaler epileptischer Anfälle untersucht werden. 
+Hierzu sollen zunächst phänomenologische und datengetriebene Vorhersagemodelle für EEG-Signale und deren spektrale Eigenschaften entwickelt und miteinander verglichen werden. 
+Darauf aufbauend sollen MPC-Ansätze zur Bestimmung geeigneter Stimulationssignale konzipiert und implementiert werden. 
+Ein besonderer Schwerpunkt liegt dabei auf der Untersuchung verschiedener Optimierungsformulierungen, um eine möglichst sparsame Stimulation bei gleichzeitiger effektiver Anfallsunterdrückung zu erreichen. 
+Die entwickelten Ansätze sollen abschließend in einer Simulationsumgebung anhand eines biophysikalischen Ganzhirnmodells evaluiert werden.
+
+Die Arbeit umfasst die folgenden Arbeitspakete:
+\begin{enumerate}
+    \item Einarbeitung in die Themengebiete fokale Epilepsie, elektrische Hirnstimulation und modellprädiktive Regelung sowie Literaturrecherche zu datengetriebenen Vorhersagemodellen neuronaler Aktivität und geeigneten Regelungsansätzen.
+    \item Aufsetzen und Konfiguration einer Simulationsumgebung auf Basis eines biophysikalisch motivierten Ganzhirnmodells zur Simulation fokaler epileptischer Anfälle sowie der EEG-Messung und elektrischen Stimulation. 
+    \item Konzeption und Implementierung von Vorhersagemodellen für EEG-Signalverläufe sowie Entwicklung modellprädiktiver Regler unter Berücksichtigung sparsamer Stimulationsstrategien.
+     \item Evaluation und Vergleich der entwickelten Regelungsansätze anhand von Simulationen hinsichtlich Anfallsunterdrückung, Stimulationsaufwand und Rechenaufwand sowie Erarbeitung von Handlungsempfehlungen für weiterführende Arbeiten. 
+\end{enumerate}
+
+\begin{table}[h!]
+    \begin{tabular}{l l}
+    Tag der Ausgabe:    &   26.05.2026 \\
+    Tag der Abgabe:     &   23.11.2026
+    \end{tabular}
+\end{table}

@@ -392,8 +392,7 @@ Because the assumed proportionality between neural-mass output and physical dipo
 The actuation proceeds in the opposite physical direction.
 In \ac{tes}, currents applied at scalp electrodes generate a distributed electric field inside the head.
 The pyramidal populations are modeled as being polarized by the component of this field along their somato-dendritic axis.
-At the regional scale used here, this axis is approximated by the local cortical normal, so the normal electric-field component determines the effective membrane-potential perturbation~\cite{Buzsaki2012}.
-%At the regional scale used here, that axis is approximated by the regional orientation vector supplied with the \ac{tvb} connectivity and treated as a cortical-normal surrogate, so the field component along this orientation determines the effective membrane-potential perturbation~\cite{Buzsaki2012}. % note that for stimulation not TVB but ROAST is used
+At the regional scale used here, this axis is approximated by the local cortical normal, so the normal electric-field component determines the effective membrane-potential perturbation~\cite{Merlet2013}.
 %For mesial and non-neocortical regions such as the hippocampus and amygdala, this orientation is only a coarse modeling surrogate for the local somato-dendritic axis; the resulting stimulation sensitivity should therefore be interpreted at the regional-model level rather than as a detailed cellular polarization estimate.
 This motivates the additive perturbation $s_i$ in the argument of the pyramidal sigmoid in~\eqref{eq:jr_node}, rather than introducing stimulation as an additional synaptic firing-rate input~\cite{Kunze2016,Merlet2013,Yu2024}.
 
