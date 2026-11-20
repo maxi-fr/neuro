@@ -105,7 +105,7 @@ Figure~\ref{fig:predictor_search_loss_curves} shows the loss curves for the sele
 
 \chapter{Linear Prediction of Waveform and Spectral Observables}\label{app:dmdc_comparison}
 
-The spectral suppression cost in~\eqref{eq:mpc_spectral_cost} depends on future log-power, which the controller can obtain either from a predicted waveform or from a direct spectral prediction.
+The spectral suppression cost in~\eqref{eq:mpc_spectral_cost} depends on future log-power, which the controller can obtain either from a predicted waveform or from a direct spectral prediction. % this is not the introduction that i wanted. I prefer the old version. This appendix chapter is a discussion of the idea of koopman analysis of lifting nonlinear dynamics into a higher dimensional observable space where it can be linear. And then we discuss how well/if that worked here.  
 Fitting an affine predictor to log-power, as in Section~\ref{sec:linear_dmd_predictor}, puts the quantity being penalized directly in the predictor output.
 This choice follows the use of data-driven approximations to predict nonlinear observables with linear models for \ac{mpc}~\cite{Williams2015,Korda2018}.
 For the spectral cost, the resulting affine dependence of log-power on the planned currents makes quadratic programming possible.
@@ -136,6 +136,7 @@ The waveform \ac{dmdc} predictor had \SI{32.3}{\percent} higher validation error
 The history lengths, excitation schedules, and model selection criteria also differed between targets, so the comparison cannot isolate the effect of predicting log-power.
 The spectral result supports testing the affine predictor in closed loop, where its effect on the optimization follows from the form of the suppression cost.
 
+\FloatBarrier
 \section{Quadratic Programming Formulation}
 
 At spectral frame $q$, fix the observed history and let $H\in\mathbb N_{>0}$ denote the number of intervals in the control horizon.
@@ -224,11 +225,112 @@ Condensing the spectral problem reduced median solve time by a factor of 17.8 (T
 OSQP brought most controller updates within the replanning interval, with \SI{6.8}{\percent} of updates exceeding it.
 The simulator advanced only after each controller update finished, so the seizure burden and delivered charge reflect the nominal current-hold schedule.
 Across paired seeds, the OSQP seizure burden differed from the IPOPT value by $-0.09$ to $+0.29$ percentage points.
-The following appendix details the cost and horizon calibration for the waveform \ac{mlp} controller.
 
-\chapter{Waveform Controller Calibration}\label{app:waveform_controller_calibration}
+\chapter{\acs{mpc} Transcription Benchmark}\label{app:transcription_benchmark}
+% Data, snapshots, and cell logs: artifacts/transcription_benchmark/.
+% Runner: src/experiments/transcription_benchmark.py; figure: thesis/figures/08_appendix/transcription_benchmark.py.
 
-\section{Training and Control Weights}\label{sec:waveform_cost_calibration}
+This appendix compares the three direct \ac{mpc} transcriptions from Table~\ref{tab:mpc_transcription_counts} on the same JAX and IPOPT solver stack across the three controllers evaluated in Section~\ref{sec:controller_comparison} (spectral \ac{dmdc}, spectral \ac{cnn}, and waveform \ac{mlp}) and four matched physical horizons (\SI{0.30}{\second}, \SI{0.60}{\second}, \SI{1.02}{\second}, and \SI{1.50}{\second}). % what stack? We implemented the mpc formulation in jax using IPOPT for optimization
+Every configuration used the same \ac{mpc} objective, input bounds, Kirchhoff current equality, and limited-memory IPOPT tolerances as the closed-loop experiments, with a per-solve CPU limit of \SI{120}{\second}.
+Open-loop timings were measured after one JIT compilation warmup solve across ten cold-started seizure snapshots extracted from the uncontrolled reserved trajectories (seeds 7100--7109 at \SIrange{2.40}{5.10}{\second}), stopping early after repeated \SI{120}{\second} timeouts or single-iteration timeouts exceeding \SI{360}{\second}.
+For configurations that converged in open loop with median solve time below \SI{40}{\second}, we also ran a \SI{1.20}{\second} closed-loop slice starting at \SI{1.38}{\second} on seed 7100 (\num{21} total replan updates, yielding \num{20} warm-started steady-state solves after the initial call).
+
+\begin{figure}
+  \centering
+  \includegraphics{figures/08_appendix/transcription_benchmark.pdf}
+  \caption{Open-loop median solve time over converged snapshots (top) and convergence rate (bottom) across control horizons for single shooting, 1-step \acs{narx}, and full-state multiple shooting under a \SI{120}{\second} IPOPT CPU limit.
+  Larger horizons omitted for multiple shooting on spectral \ac{dmdc} (\SI{1.02}{\second} and \SI{1.50}{\second}) and spectral \ac{cnn} (\SIrange{0.60}{1.50}{\second}) were skipped after a single iteration exceeded the CPU limit at the preceding horizon.}\label{fig:transcription_benchmark}
+\end{figure}
+
+Direct single shooting converged on all ten open-loop snapshots and all \num{21} closed-loop replans across every predictor and horizon, with open-loop medians between \SI{0.36}{\second} and \SI{1.92}{\second} and warm-started closed-loop steady-state medians between \SI{0.28}{\second} and \SI{1.45}{\second} (Figure~\ref{fig:transcription_benchmark}).
+Full-state multiple shooting converged only on the two shortest waveform \ac{mlp} horizons (\num{8}/10 at \SI{0.30}{\second} in \SI{48.96}{\second} and \num{6}/10 at \SI{0.60}{\second} in \SI{113.84}{\second}), timed out at \SI{1.02}{\second} and \SI{1.50}{\second} on waveform \ac{mlp} and at \SI{0.30}{\second} on spectral \ac{dmdc}, and exceeded \SI{120}{\second} in a single iteration on spectral \ac{dmdc} at \SI{0.60}{\second} and spectral \ac{cnn} at \SI{0.30}{\second} (\num{71601} variables).
+
+The 1-step \acs{narx} transcription eliminated the repeated history states and reduced decision variables by factors of \num{4.2} to \num{17.6} relative to full-state multiple shooting.
+Across all \num{69} jointly converged open-loop solves on spectral \ac{dmdc} and waveform \ac{mlp}, \acs{narx} and multiple shooting matched the single-shooting objective within $2.3\times 10^{-6}$ relative difference.
+On waveform \ac{mlp} ($n_o=62$), \acs{narx} converged on \num{10}/10 snapshots at \SI{0.30}{\second} (\SI{1.32}{\second}) and \SI{0.60}{\second} (\SI{5.72}{\second}), \num{9}/10 at \SI{1.02}{\second} (\SI{12.95}{\second}), and \num{7}/10 at \SI{1.50}{\second} (\SI{18.92}{\second}), with \num{21}/21 closed-loop convergence (\SIrange{1.08}{10.80}{\second}), remaining \num{3.0} to \num{10.4} times slower than single shooting in open loop.
+On spectral \ac{dmdc} ($n_o=744$), \acs{narx} converged on \num{9}/10 snapshots at \SI{0.30}{\second} (\SI{79.59}{\second}) and \num{10}/10 at \SI{0.60}{\second} (\SI{89.40}{\second}) before timing out at \SI{1.02}{\second} and \SI{1.50}{\second}, while spectral \ac{cnn} \acs{narx} timed out at all four horizons.
+Single shooting was therefore retained across all closed-loop experiments.
+
+\chapter{Closed-Loop Controller Calibration}\label{app:closed_loop_calibration}
+
+This appendix reports the development-seed sweeps used to select the spectral geometry, waveform controller settings, and sparse stimulation weights for the closed-loop experiments in Chapter~\ref{ch:experiments_discussion}.
+
+\section{Spectral Geometry Sweep}\label{sec:spectral_geometry_sweep}
+
+To limit the number of runs, we varied segment length, frequency band, frame averaging, and taper in successive stages, carrying the selected setting forward at each stage.
+We trained a spectral \ac{mlp} for each setting and computed the healthy reference using the same geometry.
+The controllers were evaluated on five development seeds at a sampling frequency of \SI{50}{\hertz}, a frame hop of \SI{60}{\milli\second}, a control horizon of 17 frames (\SI{1.02}{\second}), and a fixed quadratic stimulation cost weight of \(w_{L_2}=0.4\).
+Table~\ref{tab:spectral_geometry_sweep} reports mean seizure burden, delivered charge, and the final number of seizing regions for each setting.
+
+\begin{table}
+  \centering
+  \caption{Closed-loop outcomes for the spectral estimation settings, averaged over five runs per setting.
+  Both segment lengths started control at \SI{1.98}{\second}, while all band settings started at \SI{0.48}{\second}.
+  The smoothing and taper stages started control when the required history was available.}\label{tab:spectral_geometry_sweep}
+  \begin{tabular}{@{}llrrr@{}}
+    \toprule
+    Stage & Setting & Burden (\%) & Charge (mAs) & Final count \\
+    \midrule
+    Segment & 25 samples & 11.44 & 22.27 & 8.8 \\
+            & 50 samples & 11.71 & 14.00 & 9.2 \\
+    \addlinespace
+    Band & \SIrange{0}{25}{\hertz} & 4.78 & 30.63 & 3.4 \\
+         & \SIrange{1}{25}{\hertz} & 4.86 & 26.85 & 3.8 \\
+         & \SIrange{3}{12}{\hertz} & 4.91 & 31.51 & 3.2 \\
+    \addlinespace
+    Smoothing & 1 frame & 4.86 & 26.85 & 3.8 \\
+              & 4 frames & 4.48 & 33.24 & 3.4 \\
+              & 7 frames & 4.36 & 37.05 & 3.2 \\
+    \addlinespace
+    Taper & Rising half-Hann & 4.86 & 26.85 & 3.8 \\
+          & Symmetric Hann & 15.20 & 27.69 & 14.2 \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\subsection{Segment Length}
+
+Comparing 25- and 50-sample segments tested whether finer frequency resolution would improve containment or reduce charge.
+Doubling the segment from 25 to 50 samples refined the frequency grid from \SI{2}{\hertz} to \SI{1}{\hertz}, but also extended the history needed to initialize the predictor.
+To compare the controllers with the same opportunity to intervene, both started at \SI{1.98}{\second}, when the 50-sample-segment controller had acquired its spectral and past-current histories.
+At this common start, the 50-sample-segment controller used less charge with similar mean burden.
+The 25-sample-segment controller solved faster, with a mean solve time of \SI{4.87}{\second} compared with \SI{8.52}{\second} for the 50-sample segment.
+
+On seed 7005, the seizure had already spread into the \ac{pz} by \SI{1.50}{\second}.
+To isolate the effect of starting earlier on this seed, we replayed the 25-sample-segment controller at its earliest start, \SI{0.48}{\second}.
+It contained spread, reducing burden from \SI{35.73}{\percent} to \SI{4.62}{\percent} while delivering \SI{26.80}{\milli\ampere\second}.
+We retained the 25-sample segment because it allowed earlier intervention.
+
+\subsection{Frequency Band}
+
+With the shorter segment in place, we compared frequency bands to determine which parts of the spectrum the controller needed for containment.
+The \SIrange{0}{25}{\hertz} setting supplied all available bins.
+The zero-frequency bin had the highest energy and captured the weighted level of the signal within a window.
+Removing just this bin with the \SIrange{1}{25}{\hertz} setting tested whether the controller benefited from including that level alongside the oscillatory components.
+The narrower \SIrange{3}{12}{\hertz} setting kept the prominent oscillatory components in the simulated examples in Figure~\ref{fig:bifurcation}~(c).
+This predominantly theta and alpha range has also been used to measure changes in spectral entropy at seizure onset in scalp \ac{eeg} recordings from patients with temporal lobe epilepsy~\cite{Sridevi2019}.
+With all three controllers starting at \SI{0.48}{\second}, mean burden varied by only 0.13 percentage points across the bands.
+The \SIrange{1}{25}{\hertz} setting used the least charge and was carried forward to the frame-averaging comparison.
+
+\subsection{Frame Averaging}
+
+Frame averaging reduced fluctuations in the log-power estimates.
+Averaging over four or seven frames extended the waveform support by \SI{180}{\milli\second} or \SI{360}{\milli\second}, respectively, delaying the first control update by the same amount.
+Across the tested settings, averaging lowered mean burden by less than one percentage point and raised mean delivered charge to \SI{33.24}{\milli\ampere\second} with four frames and \SI{37.05}{\milli\ampere\second} with seven.
+Individual frames kept mean charge below \SI{30}{\milli\ampere\second} at the tested weight and were retained for the taper comparison.
+
+\subsection{Taper}
+
+Changing the taper tested whether the controller benefited from giving recent samples greater weight.
+At similar mean charge, the rising half-Hann taper contained spread on all five seeds.
+With the symmetric Hann taper, spread occurred on two of the five seeds, with 30 regions still seizing at the end of each run.
+At the same frame endpoint, the rising taper gives the newest samples more weight, so emerging activity can contribute more strongly to the estimated spectrum as soon as it is measured.
+The benefit of responding sooner to emerging activity may outweigh any adverse effects of spectral leakage from the rising taper.
+
+\FloatBarrier
+\section{Waveform Controller Calibration}\label{sec:waveform_controller_calibration}
+
+\subsection{Training and Control Weights}\label{sec:waveform_cost_calibration}
 
 The waveform \ac{mlp} refits in Section~\ref{sec:waveform_prediction_closed_loop} shared the architecture, training data, and initialization seed.
 In the joint loss \(\mathcal{L}_\mathrm{joint}\) in~\eqref{eq:combined_predictor_loss}, the weights were \(\lambda_\mathrm{wave}=1\) and \(\lambda_\mathrm{spec}=15\) to account for the different numerical scales of the two terms.
@@ -285,7 +387,8 @@ The final count fell from 30 to three seizing regions.
 The same weight change with only \(\mathcal J_{\mathrm{spec}}\) active on seed 7004 reduced the final count from 31 to three seizing regions.
 For the controller using the waveform-only fit, the two runs in which spread was contained used just \SI{5.51}{\milli\ampere\second} and \SI{6.10}{\milli\ampere\second}, while the three runs with widespread recruitment recorded 48 to 61 failed solves each.
 
-\section{Control Horizon and Terminal Weight}
+\FloatBarrier
+\subsection{Control Horizon and Terminal Weight}
 
 % Data: artifacts/sweep_2026_11/waveform_matched_geometry/mlp/{horizons,terminal,terminal_confirm,final_effort}.
 With the joint-loss fit and \(\mathcal J_{\mathrm{wave}}\) selected, we tested whether changing the control horizon or increasing the terminal weight improved containment at \(w_{L_2}=100\).
@@ -321,7 +424,8 @@ The shortest horizon delivered the least charge.
 We retained the 51-sample horizon used in the original comparison, which spanned the same \SI{1.02}{\second} as the 17-frame spectral design and showed no improvement in mean burden from extending it.
 A final current-weight sweep with this horizon and the waveform suppression cost retained \(w_{L_2}=100\), the tested setting within the development charge range.
 
-\chapter{Sparse Stimulation Calibration}\label{app:sparse_calibration}
+\FloatBarrier
+\section{Sparse Stimulation Calibration}\label{sec:sparse_calibration}
 % Data and manifests: artifacts/sparse_stimulation_102/ (calibration), artifacts/sparse_activation_ipopt/ (condensed fmax activation comparison), artifacts/sparse_stimulation_reserved_ipopt/ (reserved IPOPT run).
 
 We calibrated sparse stimulation using the spectral \ac{dmdc} predictor and the \SI{1.02}{\second} Control Horizon selected in Section~\ref{sec:controller_comparison}.
@@ -331,7 +435,7 @@ We screened settings on seeds 7000 and 7001 and evaluated selected settings on t
 We sought mean delivered charge near or below \SI{30}{\milli\ampere\second} and mean seizure burden below \SI{6}{\percent}, and inspected the final seizing-region count on each seed.
 Off time was measured after release from applied holds whose electrode currents were all at or below \SI{1}{\micro\ampere}, excluding fallback holds.
 
-\section{Exact Current Penalty}
+\subsection{Exact Current Penalty}
 
 The quadratic baseline retained \(w_{L_2}=0.30\).
 Its five-seed replay gave \SI{5.00}{\percent} mean burden and \SI{25.98}{\milli\ampere\second} mean charge.
@@ -341,7 +445,7 @@ Among the tested settings, \(w_{L_1}=0.60\) met both mean targets and ended with
 Its highest charge was \SI{34.82}{\milli\ampere\second} on seed 7002.
 The adjacent weights show sensitivity to the closed-loop response, with spread on seeds 7004 and 7005 at 0.62 and on seed 7004 at 0.65.
 
-\begin{table}[htbp]
+\begin{table}
   \centering
   \caption{Exact \(L_1\) calibration across five development seeds. Off time excludes fallback.}\label{tab:sparse_calibration_l1}
   \begin{tabular}{@{}lrrr@{}}
@@ -357,7 +461,8 @@ The adjacent weights show sensitivity to the closed-loop response, with spread o
   \end{tabular}
 \end{table}
 
-\section{Binary Activation and Combined Penalties}
+\FloatBarrier
+\subsection{Binary Activation and Combined Penalties}
 
 For activation-only control we used a common weight \(w_\delta=2.40\), with the current magnitude penalties set to zero.
 The activation cost charged \(w_\delta/17\) per enabled hold.
@@ -365,8 +470,9 @@ The grouped-candidate search partitioned the horizon into four consecutive group
 All three methods used the condensed predictor with the spectral hinge evaluated directly.
 Bonmin had an eight-second solver limit per update, and homotopy used up to four IPOPT passes.
 For grouped search we solved the current optimization with IPOPT for each of the 15 schedules permitting stimulation and evaluated the all-off schedule directly.
+Table~\ref{tab:sparse_calibration_binary} reports the five-seed activation-only outcomes across the three solvers.
 
-\begin{table}[htbp]
+\begin{table}
   \centering
   \caption{Activation-only control at \(w_\delta=2.40\) on the five development seeds.
   Outcomes and solve times are means across seeds. Failed updates are totals.}\label{tab:sparse_calibration_binary}
@@ -401,100 +507,3 @@ We therefore selected grouped candidates with \(w_{L_1}=0.60\) and \(w_\delta=0.
     \bottomrule
   \end{tabular}
 \end{table}
-
-\chapter{Spectral Geometry Sweep}
-
-To limit the number of runs, we varied segment length, frequency band, frame averaging, and taper in successive stages, carrying the selected setting forward at each stage.
-We trained a spectral \ac{mlp} for each setting and computed the healthy reference using the same geometry.
-The controllers were evaluated on five development seeds at a sampling frequency of \SI{50}{\hertz}, a frame hop of \SI{60}{\milli\second}, a control horizon of 17 frames (\SI{1.02}{\second}), and a fixed quadratic stimulation cost weight of \(w_{L_2}=0.4\).
-Table~\ref{tab:spectral_geometry_sweep} reports mean seizure burden, delivered charge, and the final number of seizing regions for each setting.
-
-\begin{table}
-  \centering
-  \caption{Closed-loop outcomes for the spectral estimation settings, averaged over five runs per setting.
-  Both segment lengths started control at \SI{1.98}{\second}, while all band settings started at \SI{0.48}{\second}.
-  The smoothing and taper stages started control when the required history was available.}\label{tab:spectral_geometry_sweep}
-  \begin{tabular}{@{}llrrr@{}}
-    \toprule
-    Stage & Setting & Burden (\%) & Charge (mAs) & Final count \\
-    \midrule
-    Segment & 25 samples & 11.44 & 22.27 & 8.8 \\
-            & 50 samples & 11.71 & 14.00 & 9.2 \\
-    \addlinespace
-    Band & \SIrange{0}{25}{\hertz} & 4.78 & 30.63 & 3.4 \\
-         & \SIrange{1}{25}{\hertz} & 4.86 & 26.85 & 3.8 \\
-         & \SIrange{3}{12}{\hertz} & 4.91 & 31.51 & 3.2 \\
-    \addlinespace
-    Smoothing & 1 frame & 4.86 & 26.85 & 3.8 \\
-              & 4 frames & 4.48 & 33.24 & 3.4 \\
-              & 7 frames & 4.36 & 37.05 & 3.2 \\
-    \addlinespace
-    Taper & Rising half-Hann & 4.86 & 26.85 & 3.8 \\
-          & Symmetric Hann & 15.20 & 27.69 & 14.2 \\
-    \bottomrule
-  \end{tabular}
-\end{table}
-
-\section{Segment Length}
-
-Comparing 25- and 50-sample segments tested whether finer frequency resolution would improve containment or reduce charge.
-Doubling the segment from 25 to 50 samples refined the frequency grid from \SI{2}{\hertz} to \SI{1}{\hertz}, but also extended the history needed to initialize the predictor.
-To compare the controllers with the same opportunity to intervene, both started at \SI{1.98}{\second}, when the 50-sample-segment controller had acquired its spectral and past-current histories.
-At this common start, the 50-sample-segment controller used less charge with similar mean burden.
-The 25-sample-segment controller solved faster, with a mean solve time of \SI{4.87}{\second} compared with \SI{8.52}{\second} for the 50-sample segment.
-
-On seed 7005, the seizure had already spread into the \ac{pz} by \SI{1.50}{\second}.
-To isolate the effect of starting earlier on this seed, we replayed the 25-sample-segment controller at its earliest start, \SI{0.48}{\second}.
-It contained spread, reducing burden from \SI{35.73}{\percent} to \SI{4.62}{\percent} while delivering \SI{26.80}{\milli\ampere\second}.
-We retained the 25-sample segment because it allowed earlier intervention.
-
-\section{Frequency Band}
-
-With the shorter segment in place, we compared frequency bands to determine which parts of the spectrum the controller needed for containment.
-The \SIrange{0}{25}{\hertz} setting supplied all available bins.
-The zero-frequency bin had the highest energy and captured the weighted level of the signal within a window.
-Removing just this bin with the \SIrange{1}{25}{\hertz} setting tested whether the controller benefited from including that level alongside the oscillatory components.
-The narrower \SIrange{3}{12}{\hertz} setting kept the prominent oscillatory components in the simulated examples in Figure~\ref{fig:bifurcation}~(c).
-This predominantly theta and alpha range has also been used to measure changes in spectral entropy at seizure onset in scalp \ac{eeg} recordings from patients with temporal lobe epilepsy~\cite{Sridevi2019}.
-With all three controllers starting at \SI{0.48}{\second}, mean burden varied by only 0.13 percentage points across the bands.
-The \SIrange{1}{25}{\hertz} setting used the least charge and was carried forward to the frame-averaging comparison.
-
-\section{Frame Averaging}
-
-Frame averaging reduced fluctuations in the log-power estimates.
-Averaging over four or seven frames extended the waveform support by \SI{180}{\milli\second} or \SI{360}{\milli\second}, respectively, delaying the first control update by the same amount.
-Across the tested settings, averaging lowered mean burden by less than one percentage point and raised mean delivered charge to \SI{33.24}{\milli\ampere\second} with four frames and \SI{37.05}{\milli\ampere\second} with seven.
-Individual frames kept mean charge below \SI{30}{\milli\ampere\second} at the tested weight and were retained for the taper comparison.
-
-\section{Taper}
-
-Changing the taper tested whether the controller benefited from giving recent samples greater weight.
-At similar mean charge, the rising half-Hann taper contained spread on all five seeds.
-With the symmetric Hann taper, spread occurred on two of the five seeds, with 30 regions still seizing at the end of each run.
-At the same frame endpoint, the rising taper gives the newest samples more weight, so emerging activity can contribute more strongly to the estimated spectrum as soon as it is measured.
-The benefit of responding sooner to emerging activity may outweigh any adverse effects of spectral leakage from the rising taper.
-
-\chapter{\acs{mpc} Transcription Benchmark}\label{app:transcription_benchmark} % TODO: need to reference in the text
-% Data, snapshots, and cell logs: artifacts/transcription_benchmark/.
-% Runner: src/experiments/transcription_benchmark.py; figure: thesis/figures/08_appendix/transcription_benchmark.py.
-
-This appendix compares the three direct \ac{mpc} transcriptions from Table~\ref{tab:mpc_transcription_counts} on the same JAX and IPOPT solver stack across the three controllers evaluated in Section~\ref{sec:controller_comparison} (spectral \ac{dmdc}, spectral \ac{cnn}, and waveform \ac{mlp}) and four matched physical horizons (\SI{0.30}{\second}, \SI{0.60}{\second}, \SI{1.02}{\second}, and \SI{1.50}{\second}). % what stack? We implemented the mpc formulation in jax using IPOPT for optimization
-Every configuration used the same \ac{mpc} objective, input bounds, Kirchhoff current equality, and limited-memory IPOPT tolerances as the closed-loop experiments, with a per-solve CPU limit of \SI{120}{\second}.
-Open-loop timings were measured after one JIT compilation warmup solve across ten cold-started seizure snapshots extracted from the uncontrolled reserved trajectories (seeds 7100--7109 at \SIrange{2.40}{5.10}{\second}), stopping early after repeated \SI{120}{\second} timeouts or single-iteration timeouts exceeding \SI{360}{\second}.
-For configurations that converged in open loop with median solve time below \SI{40}{\second}, we also ran a \SI{1.20}{\second} closed-loop slice starting at \SI{1.38}{\second} on seed 7100 (\num{21} total replan updates, yielding \num{20} warm-started steady-state solves after the initial call).
-
-\begin{figure}
-  \centering
-  \includegraphics{figures/08_appendix/transcription_benchmark.pdf}
-  \caption{Open-loop median solve time over converged snapshots (top) and convergence rate (bottom) across control horizons for single shooting, 1-step \acs{narx}, and full-state multiple shooting under a \SI{120}{\second} IPOPT CPU limit.
-  Larger horizons omitted for multiple shooting on spectral \ac{dmdc} (\SI{1.02}{\second} and \SI{1.50}{\second}) and spectral \ac{cnn} (\SIrange{0.60}{1.50}{\second}) were skipped after a single iteration exceeded the CPU limit at the preceding horizon.}\label{fig:transcription_benchmark}
-\end{figure}
-
-Direct single shooting converged on all ten open-loop snapshots and all \num{21} closed-loop replans across every predictor and horizon, with open-loop medians between \SI{0.36}{\second} and \SI{1.92}{\second} and warm-started closed-loop steady-state medians between \SI{0.28}{\second} and \SI{1.45}{\second} (Figure~\ref{fig:transcription_benchmark}).
-Full-state multiple shooting converged only on the two shortest waveform \ac{mlp} horizons (\num{8}/10 at \SI{0.30}{\second} in \SI{48.96}{\second} and \num{6}/10 at \SI{0.60}{\second} in \SI{113.84}{\second}), timed out at \SI{1.02}{\second} and \SI{1.50}{\second} on waveform \ac{mlp} and at \SI{0.30}{\second} on spectral \ac{dmdc}, and exceeded \SI{120}{\second} in a single iteration on spectral \ac{dmdc} at \SI{0.60}{\second} and spectral \ac{cnn} at \SI{0.30}{\second} (\num{71601} variables).
-
-The 1-step \acs{narx} transcription eliminated the repeated history states and reduced decision variables by factors of \num{4.2} to \num{17.6} relative to full-state multiple shooting.
-Across all \num{69} jointly converged open-loop solves on spectral \ac{dmdc} and waveform \ac{mlp}, \acs{narx} and multiple shooting matched the single-shooting objective within $2.3\times 10^{-6}$ relative difference.
-On waveform \ac{mlp} ($n_o=62$), \acs{narx} converged on \num{10}/10 snapshots at \SI{0.30}{\second} (\SI{1.32}{\second}) and \SI{0.60}{\second} (\SI{5.72}{\second}), \num{9}/10 at \SI{1.02}{\second} (\SI{12.95}{\second}), and \num{7}/10 at \SI{1.50}{\second} (\SI{18.92}{\second}), with \num{21}/21 closed-loop convergence (\SIrange{1.08}{10.80}{\second}), remaining \num{3.0} to \num{10.4} times slower than single shooting in open loop.
-On spectral \ac{dmdc} ($n_o=744$), \acs{narx} converged on \num{9}/10 snapshots at \SI{0.30}{\second} (\SI{79.59}{\second}) and \num{10}/10 at \SI{0.60}{\second} (\SI{89.40}{\second}) before timing out at \SI{1.02}{\second} and \SI{1.50}{\second}, while spectral \ac{cnn} \acs{narx} timed out at all four horizons.
-Single shooting was therefore retained across all closed-loop experiments.

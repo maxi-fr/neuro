@@ -279,7 +279,7 @@ Five development seeds (7000, 7001, 7002, 7004, and 7005) were used to select co
 
 All \ac{mpc} controllers replanned at each spectral frame, every \SI{60}{\milli\second} for a three-sample hop at \SI{50}{\hertz}.
 Between updates, the spectral controller applied one \SI{60}{\milli\second} hold ($M=1$ in Section~\ref{sec:mpc_formulation}) and the waveform controller applied three successive \SI{20}{\milli\second} holds ($M=3$).
-For the optimization itself, initial tests favored single shooting with IPOPT over full-state multiple shooting and the \acs{narx} transcription (Table~\ref{tab:mpc_transcription_counts}) because it converged reliably with much lower computational demand.
+For the optimization itself, initial tests favored single shooting with IPOPT over full-state multiple shooting and the \acs{narx} transcription (Table~\ref{tab:mpc_transcription_counts}; Appendix~\ref{app:transcription_benchmark}) because it converged reliably with much lower computational demand.
 
 To measure how much seizure activity persisted across a run, the seizure state $s(t_i)$ was evaluated in \mbox{$N_{\mathrm{win}}=45$} complete \SI{1}{\second} windows spaced \SI{0.25}{\second} apart.
 Let $t_i$ be the endpoint of window \mbox{$i=1,\ldots,N_{\mathrm{win}}$}, with \mbox{$t_{\mathrm{final}}=t_{N_{\mathrm{win}}}$}.
@@ -394,7 +394,7 @@ To limit the number of runs, we varied segment length, frequency band, the numbe
 One spectral \ac{mlp} predictor was trained for each setting, and the healthy reference was computed using the same geometry.
 We assumed that the main trade-offs would carry over to the spectral \ac{dmdc} and \ac{cnn} controllers.
 
-Varying most spectral geometry parameters had little effect on closed-loop performance within each stage of the sweep (Table~\ref{tab:spectral_geometry_sweep}).
+Varying most spectral geometry parameters had little effect on closed-loop performance within each stage of the sweep (Table~\ref{tab:spectral_geometry_sweep}; Appendix~\ref{sec:spectral_geometry_sweep}). % latex-lint:ignore=TYPO-10
 The longer segment used less charge at a common start time, but we retained the shorter segment because it allowed earlier intervention and contained spread when started earlier in a replay of one seed.
 Averaging multiple spectral frames increased delivered charge while not reducing seizure burden significantly.
 Changing the taper had a larger effect on containment at similar mean charge: the rising half-Hann contained spread on all five seeds, compared with three of five for the symmetric Hann.
@@ -409,7 +409,7 @@ The waveform \ac{mlp} lets us distinguish two roles for spectral information.
 During training, spectral loss penalizes errors in the oscillatory power of the waveform forecast.
 During control, the same forecast can either be tracked against the healthy waveform or converted to log-power and evaluated with the spectral cost.
 We first varied the training loss at a fixed suppression cost, then held the jointly trained predictor fixed and varied the suppression cost (Table~\ref{tab:waveform_loss_cost}).
-Control started at \SI{0.48}{\second}, with the same penalty on a given current sequence in all five configurations (Appendix~\ref{app:waveform_controller_calibration}).
+Control started at \SI{0.48}{\second}, with the same penalty on a given current sequence in all five configurations (Appendix~\ref{sec:waveform_controller_calibration}). % latex-lint:ignore=TYPO-10
 
 % Data: artifacts/sweep_2026_11/waveform_matched_geometry/mlp/loss_cost/{comparison_manifest.yaml,summary.csv,rows.csv}.
 \begin{table}
@@ -444,7 +444,7 @@ Preserving that power may have helped waveform tracking assign a larger penalty 
 Using spectral power in the control objective placed a different demand on the waveform predictor.
 The optimizer then needed an accurate estimate of excess log-power from the forecast, and waveform-derived log-power was less accurate than direct spectral prediction from \SI{120}{\milli\second} onward (Section~\ref{sec:offline_prediction_target}).
 With the joint fit held fixed, using the spectral cost alone or adding it to waveform tracking allowed spread on seeds that waveform tracking alone had contained (D and E versus C in Table~\ref{tab:waveform_loss_cost}).
-The weighting also contributed to these outcomes, since reducing the current penalty prevented spread in two short replays (Section~\ref{sec:waveform_cost_calibration}).
+The weighting also contributed to these outcomes, since reducing the current penalty prevented spread in two short replays (Appendix~\ref{sec:waveform_cost_calibration}). % latex-lint:ignore=TYPO-10
 Among the tested settings that contained spread on all five seeds, waveform tracking alone used the least mean charge.
 We therefore selected the jointly trained predictor with waveform tracking for the reserved-seed comparison. % following comparisons. "reserved-seed" is overused and there is no real reason why. It does add any interesting information to the sentence
 
@@ -513,7 +513,7 @@ The comparison used only the spectral \ac{dmdc} predictor because solve times wi
 Its affine dependence on planned currents allowed the spectral predictions for the entire horizon to be computed directly from those currents (Equation~\eqref{eq:dmdc_current_rollout}), reducing the cost of evaluating candidate plans inside the \ac{mpc}.
 We measured off time as the total time after control began during which the absolute current on every electrode was at most \SI{1}{\micro\ampere}.
 
-The three methods for solving the binary activation problem were compared on the five development seeds with the common activation weight \(w_\delta=2.40\) obtained in Appendix~\ref{app:sparse_calibration} (Table~\ref{tab:sparse_stimulation_results}~(a)).
+The three methods for solving the binary activation problem were compared on the five development seeds with the common activation weight \(w_\delta=2.40\) obtained in Appendix~\ref{sec:sparse_calibration} (Table~\ref{tab:sparse_stimulation_results}~(a)). % latex-lint:ignore=TYPO-10
 With the affine predictor, all three methods were practical for the closed-loop simulations, with mean solve times below \SI{2}{\second} per update.
 The homotopy method took \SI{0.46}{\second} per plan on average, about one third of the time required by the grouped search method (\SI{1.43}{\second}) or the Bonmin solver (\SI{1.64}{\second}).
 The grouped search method restricted activation changes to the boundaries of four blocks containing 4, 4, 4, and 5 holds, respectively.
@@ -526,7 +526,7 @@ We therefore selected the grouped search method for both controllers with an act
   \centering
   \caption{Sparse stimulation with the spectral \ac{dmdc} controller.
   Part (a) gives results for three solution methods with the same activation weight in simulations with the five random seeds used for controller development.
-  Part (b) gives results for four stimulation penalties in simulations with ten random seeds reserved for the final comparison, using the weights from Appendix~\ref{app:sparse_calibration}.
+  Part (b) gives results for four stimulation penalties in simulations with ten random seeds reserved for the final comparison, using the weights from Appendix~\ref{sec:sparse_calibration}. % latex-lint:ignore=TYPO-10
   Each entry is the average across simulations.
   A bout consists of consecutive active holds.
   The final count is the number of seizing regions at the end of a simulation. 
