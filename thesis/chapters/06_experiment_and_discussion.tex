@@ -508,28 +508,29 @@ Whether the spectral \ac{cnn} anticipated that failure cannot be inferred from t
 
 With a quadratic current penalty, the spectral \ac{dmdc} controller contained seizure spread but stimulated continuously once control began (Figure~\ref{fig:sparse_current_traces}, top).
 Section~\ref{sec:mpc_sparse_formulations} introduced two penalties to promote sparse stimulation: an \(L_1\) penalty on electrode currents and a binary activation penalty for each enabled hold.
-In closed-loop simulations, we compared these penalties individually and in combination, and evaluated three methods for solving the optimal control problem with binary activations.
+We first compared three solution methods for the same \ac{mpc} problem with an activation penalty.
+We then compared four choices of stimulation penalty: quadratic, \(L_1\) alone, activation alone, and \(L_1\) combined with activation.
 The comparison used only the spectral \ac{dmdc} predictor because solve times with the nonlinear predictors were prohibitively large.
 Its affine dependence on planned currents allowed the spectral predictions for the entire horizon to be computed directly from those currents (Equation~\eqref{eq:dmdc_current_rollout}), reducing the cost of evaluating candidate plans inside the \ac{mpc}.
-We measured off time as the total time after control began during which the absolute current on every electrode was at most \SI{1}{\micro\ampere}.
 
-The three methods for solving the binary activation problem were compared on the five development seeds with the common activation weight \(w_\delta=2.40\) obtained in Appendix~\ref{sec:sparse_calibration} (Table~\ref{tab:sparse_stimulation_results}~(a)). % latex-lint:ignore=TYPO-10
-With the affine predictor, all three methods were practical for the closed-loop simulations, with mean solve times below \SI{2}{\second} per update.
-The homotopy method took \SI{0.46}{\second} per plan on average, about one third of the time required by the grouped search method (\SI{1.43}{\second}) or the Bonmin solver (\SI{1.64}{\second}).
-The grouped search method restricted activation changes to the boundaries of four blocks containing 4, 4, 4, and 5 holds, respectively.
-Even with this restriction, it yielded the longest mean off time (\SI{4.34}{\second}) and the lowest mean charge (\SI{27.98}{\milli\ampere\second}).
-The bonmin solver failed on seven occasions, possibly contributing to this worse performance.
-With the homotopy method, the controller achieved the lowest mean seizure burden (\SI{4.56}{\percent}) but delivered the most charge and left stimulation off for the shortest time.
-We therefore selected the grouped search method for both controllers with an activation penalty in the final comparison.
+On the five development seeds, we compared Bonmin, grouped candidate search, and the homotopy solution method with the same activation weight \(w_\delta=2.40\) and zero current-magnitude penalty weights (Table~\ref{tab:sparse_stimulation_results}~(a)).
+The homotopy method was fastest at \SI{0.46}{\second} per update on average, followed by grouped candidate search at \SI{1.43}{\second} and Bonmin at \SI{1.64}{\second}.
+The homotopy method resulted in the lowest mean seizure burden (\SI{4.56}{\percent}), but also the highest mean charge and shortest mean off time.
+The bonmin sovler failed on seven updates, possibly contributing to this worse performance.
+Grouped candidate search gave the longest mean off time (\SI{4.34}{\second}) and the lowest mean charge (\SI{27.98}{\milli\ampere\second}).
+We therefore used grouped candidate search for both configurations with an activation penalty in the final comparison.
 
 \begin{table}
   \centering
-  \caption{Sparse stimulation with the spectral \ac{dmdc} controller.
-  Part (a) gives results for three solution methods with the same activation weight in simulations with the five random seeds used for controller development.
-  Part (b) gives results for four stimulation penalties in simulations with ten random seeds reserved for the final comparison, using the weights from Appendix~\ref{sec:sparse_calibration}. % latex-lint:ignore=TYPO-10
-  Each entry is the average across simulations.
+  \caption{Sparse stimulation with spectral \ac{dmdc} \ac{mpc}.
+  Part (a) compares three solution methods for the same activation-penalized problem on five development seeds.
+  Part (b) compares four choices of stimulation penalty on ten reserved seeds, using the weights from Appendix~\ref{sec:sparse_calibration}. % latex-lint:ignore=TYPO-10
+  Both configurations with an activation penalty use grouped candidate search.
+  In the activation-only configuration, the \(L_1\) and quadratic current penalty weights are zero.
+  Results are means across seeds.
+  Off time is the total time after control began during which the absolute current on every electrode was at most \SI{1}{\micro\ampere}.
   A bout consists of consecutive active holds.
-  The final count is the number of seizing regions at the end of a simulation. 
+  The final count is the number of seizing regions at the end of a simulation.
   Solve time is the mean per control update.}\label{tab:sparse_stimulation_results}
   \setlength{\tabcolsep}{2pt}
   \begin{tabular*}{\linewidth}{@{\extracolsep{\fill}}lrrrrrr@{}}
@@ -537,37 +538,40 @@ We therefore selected the grouped search method for both controllers with an act
     Method or penalty & Burden (\%) & Final count & Charge (mAs) & Off time (s) & Bouts & Solve time (s) \\
     \midrule
     \addlinespace[2pt]
-    \multicolumn{7}{@{}l}{\textit{(a) Binary activation solution methods}} \\
+    \multicolumn{7}{@{}l}{\textit{(a) Solution methods for the binary activation problem}} \\
     \addlinespace[2pt]
-    Bonmin solver     & 5.06 & 4.2 & 29.28 & 3.96 & 25.6 & 1.64 \\
-    Grouped search method & 5.01 & 3.2 & 27.98 & 4.34 & 24.2 & 1.43 \\
-    Homotopy method          & 4.56 & 3.4 & 30.76 & 3.65 & 38.6 & 0.46 \\
+    Bonmin                   & 5.06 & 4.2 & 29.28 & 3.96 & 25.6 & 1.64 \\
+    Grouped candidate search & 5.01 & 3.2 & 27.98 & 4.34 & 24.2 & 1.43 \\
+    Homotopy                 & 4.56 & 3.4 & 30.76 & 3.65 & 38.6 & 0.46 \\
     \addlinespace
     \multicolumn{7}{@{}l}{\textit{(b) Stimulation penalties}} \\
     \addlinespace[2pt]
     Quadratic (\(L_2\))  & 4.91 & 3.5 & 25.40 & 0.00 &  1.0 & 0.11 \\
     \(L_1\)              & 4.95 & 4.2 & 27.60 & 4.06 & 24.1 & 0.17 \\
-    Activation           & 6.17 & 6.2 & 27.00 & 4.59 & 25.0 & 1.71 \\
+    Activation only      & 6.17 & 6.2 & 27.00 & 4.59 & 25.0 & 1.71 \\
     \(L_1\) + activation & 5.08 & 3.4 & 23.54 & 5.45 & 26.1 & 2.38 \\
     \bottomrule
   \end{tabular*}
 \end{table}
 
-In simulations with the ten seeds reserved for the final comparison, mean seizure burden with the \(L_1\) penalty (\(w_{L_1}=0.60\)) was close to that with the quadratic penalty (\SI{4.95}{\percent} and \SI{4.91}{\percent}, respectively).
-The controller with the activation penalty alone contained spread in nine of the ten simulations, but widespread recruitment in the simulation with seed 7107 raised the mean seizure burden to \SI{6.17}{\percent}.
-Both controllers delivered more charge on average than the one with the quadratic penalty, despite mean off times of \SI{4.06}{\second} with the \(L_1\) penalty and \SI{4.59}{\second} with activation alone (Table~\ref{tab:sparse_stimulation_results}~(b)).
-Computing a plan took about ten times as long with binary activation (\SI{1.71}{\second} on average, compared with \SI{0.17}{\second} with the \(L_1\) penalty).
+On the ten seeds reserved for the final comparisons, spectral \ac{dmdc} \ac{mpc} gave similar mean seizure burdens with the \(L_1\) penalty (\(w_{L_1}=0.60\)) and the quadratic penalty (\SI{4.95}{\percent} and \SI{4.91}{\percent}, respectively).
+With the activation penalty alone, the controller contained spread in nine of the ten runs.
+Widespread recruitment on seed 7107 raised the mean burden to \SI{6.17}{\percent}.
+Stimulation was off for an average of \SI{4.06}{\second} with the \(L_1\) penalty alone and \SI{4.59}{\second} with the activation penalty alone (Table~\ref{tab:sparse_stimulation_results}~(b)).
+The two middle panels of Figure~\ref{fig:sparse_current_traces} illustrate these pauses on seed 7104.
+Both configurations delivered more charge on average than the quadratic baseline.
+With the activation penalty alone, grouped candidate search took \SI{1.71}{\second} per update on average, about ten times the \SI{0.17}{\second} required with the \(L_1\) penalty alone.
 
 \begin{figure}
   \centering
   \includegraphics{figures/06_experiment_and_discussion/reserved_current_traces_7104.pdf}
-  \caption{Sum of absolute applied electrode currents on seed 7104 for each stimulation penalty.
+  \caption{Sum of absolute applied electrode currents for spectral \ac{dmdc} \ac{mpc} on seed 7104 under each stimulation penalty.
   Shading marks the period before control began.
   All four runs ended with four seizing regions.}\label{fig:sparse_current_traces}
 \end{figure}
 
-With both penalties (\(w_{L_1}=0.60\), \(w_\delta=0.20\)), the controller had the longest mean off time (\SI{5.45}{\second}) and delivered the least charge (\SI{23.54}{\milli\ampere\second}).
-These pauses were interspersed between around 26 stimulation bouts per run (Figure~\ref{fig:sparse_current_traces}, bottom).
+Combining the penalties (\(w_{L_1}=0.60\), \(w_\delta=0.20\)) resulted in the longest mean off time (\SI{5.45}{\second}) and the lowest mean charge (\SI{23.54}{\milli\ampere\second}), with about 26 stimulation bouts per run on average (Table~\ref{tab:sparse_stimulation_results}~(b)).
+The bottom panel of Figure~\ref{fig:sparse_current_traces} shows how these bouts were separated by pauses on seed 7104.
 
 On seed 7109, we tested whether stimulation could potentially be withheld for longer by leaving the controller off until \SI{6.90}{\second}.
 We chose this time from the uncontrolled trajectory, in which the number of seizing regions rose from seven at \SI{7.50}{\second} to 28 just half a second later.

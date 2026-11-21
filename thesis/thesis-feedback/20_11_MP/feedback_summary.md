@@ -9,8 +9,8 @@
 | Metric | Count |
 | :--- | :--- |
 | **Total Review Comments & Action Items** | **11** |
-| **Status: Open (`[ ]`)** | **11** |
-| **Status: Resolved (`[x]`)** | **0** |
+| **Status: Open (`[ ]`)** | **6** |
+| **Status: Resolved (`[x]`)** | **5** |
 | **Primary Sections Reviewed** | Chapter 6 (`06_experiment_and_discussion.tex`, pp. 62–65), Chapter 7 (`07_conclusion_and_future_outlook.tex`, p. 66) |
 
 ---
@@ -19,11 +19,11 @@
 
 | ID | Status | Page (PDF / Doc) | Source File & Line(s) | Marked Text / Element | Reviewer Feedback (Max Pfefferkorn) |
 | :--- | :---: | :---: | :--- | :--- | :--- |
-| **CL-01** | `[ ]` | 78 / 62 | `chapters/06_experiment_and_discussion.tex:L469-470, L478-479` | Margin note next to `Both spectral controllers contained seizure spread on all ten reserved seeds and used \SIrange{43}{48}{\percent} less mean charge than threshold stimulation (Table~\ref{tab:controller_comparison}).` | Compared to the previous version, you do note mentino the uncontrolled and threshold stimulation cases anymore explicitly. Is there a reason? Have they been mentioned earlier and I onmly overlooked it? If not, I'd add one sentence each again to make the reader understand all the approaches listed in Table 6.4. But please check that again. As said, I'm right now scanning through it only very briefly. |
-| **SPAR-01** | `[ ]` | 80 / 64 | `chapters/06_experiment_and_discussion.tex:L550` | `Activation` in Table 6.5 `(b) Stimulation penalties` | Doe this mean that you use the grouped search method only without any additional sparsity-promoting cost on the input? So which is the underlying MPC formulation in (b)? |
-| **SPAR-02** | `[ ]` | 81 / 65 | `chapters/06_experiment_and_discussion.tex:L564` | Margin note next to Figure 6.8 caption (`Sum of absolute applied electrode currents on seed 7104 for each stimulation penalty.`) | Which controller? |
-| **SPAR-03** | `[ ]` | 81 / 65 | `chapters/06_experiment_and_discussion.tex:L556-558` | Margin note next to `penalty (w_{L_1}=0.60) was close to that with the quadratic penalty (\SI{4.95}{\percent} and \SI{4.91}{\percent}, respectively). The controller with the activation penalty alone contained spread in nine of the ten simulations...` | For which controller? Or do I get something wrong here? |
-| **SPAR-04** | `[ ]` | 81 / 65 | `chapters/06_experiment_and_discussion.tex:L570` | `(Figure~\ref{fig:sparse_current_traces}, bottom)` in `These pauses were interspersed between around 26 stimulation bouts per run (Figure~\ref{fig:sparse_current_traces}, bottom).` | I think you only explciitly reference the top and the bottom panels of Figure 6.8, but the two middle panels are left "implicit". |
+| **CL-01** | `[x]` | 78 / 62 | `chapters/06_experiment_and_discussion.tex:L469-470, L478-479` | Margin note next to `Both spectral controllers contained seizure spread on all ten reserved seeds and used \SIrange{43}{48}{\percent} less mean charge than threshold stimulation (Table~\ref{tab:controller_comparison}).` | Compared to the previous version, you do note mentino the uncontrolled and threshold stimulation cases anymore explicitly. Is there a reason? Have they been mentioned earlier and I onmly overlooked it? If not, I'd add one sentence each again to make the reader understand all the approaches listed in Table 6.4. But please check that again. As said, I'm right now scanning through it only very briefly. |
+| **SPAR-01** | `[x]` | 80 / 64 | `chapters/06_experiment_and_discussion.tex:L550` | `Activation` in Table 6.5 `(b) Stimulation penalties` | Doe this mean that you use the grouped search method only without any additional sparsity-promoting cost on the input? So which is the underlying MPC formulation in (b)? |
+| **SPAR-02** | `[x]` | 81 / 65 | `chapters/06_experiment_and_discussion.tex:L564` | Margin note next to Figure 6.8 caption (`Sum of absolute applied electrode currents on seed 7104 for each stimulation penalty.`) | Which controller? |
+| **SPAR-03** | `[x]` | 81 / 65 | `chapters/06_experiment_and_discussion.tex:L556-558` | Margin note next to `penalty (w_{L_1}=0.60) was close to that with the quadratic penalty (\SI{4.95}{\percent} and \SI{4.91}{\percent}, respectively). The controller with the activation penalty alone contained spread in nine of the ten simulations...` | For which controller? Or do I get something wrong here? |
+| **SPAR-04** | `[x]` | 81 / 65 | `chapters/06_experiment_and_discussion.tex:L570` | `(Figure~\ref{fig:sparse_current_traces}, bottom)` in `These pauses were interspersed between around 26 stimulation bouts per run (Figure~\ref{fig:sparse_current_traces}, bottom).` | I think you only explciitly reference the top and the bottom panels of Figure 6.8, but the two middle panels are left "implicit". |
 
 ---
 
