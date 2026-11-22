@@ -21,7 +21,7 @@ The controller applies the planned inputs up to the next replanning instant, whe
 For neural stimulation, the inputs describe the applied electrical stimulation, and the model predicts the resulting neural activity.
 Model-based neural control has been investigated at different scales, from feedback control of single-neuron dynamics~\cite{Frohlich2005} to seizure suppression in neural populations and networks~\cite{Chang2020,Liang2024}.
 For seizure-control \ac{mpc}, one study identifies a nonlinear Volterra prediction model from stimulation inputs and neural-mass outputs~\cite{Chang2020}.
-Another uses dynamic mode decomposition to construct a prediction model for an epileptic network~\cite{Liang2024}.
+Another uses \ac{dmd} to construct a prediction model for an epileptic network~\cite{Liang2024}.
 
 Rather than predicting neural activity itself, prediction models can instead target quantities derived from it.
 Spectral representations provide one way to describe seizure-related activity. Preictal activity is distinguished from interictal activity using \ac{stft} representations of \ac{eeg} in~\cite{Truong2018}.

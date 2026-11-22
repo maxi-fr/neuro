@@ -11,7 +11,7 @@ Every count uses lowercase `n`, with a short subscript naming the counted quanti
 | Regions, physical channels, frequency bins | $n_{\mathrm{reg}},n_{\mathrm{chan}},n_{\mathrm{bin}}$ |
 | State, observable, current dimensions | $n_x,n_o,n_u$ |
 | History and regressor dimensions | $n_h,n_z$ |
-| Observation and current history lengths | $n_{\mathrm{past}\,o},n_{\mathrm{past}\,u}$ |
+| Observation and current history lengths | $n_{\mathrm{past},o},n_{\mathrm{past},u}$ |
 | Prediction horizon | $H$ |
 | Generic scored prediction length | $n_{\mathrm{score}}$ |
 | Scored waveform samples and spectral frames | $n_{\mathrm{wave}},n_{\mathrm{spec}}$ |
@@ -55,15 +55,15 @@ The standardized shared regressor is $\mathbf z_k=[\widetilde{\mathbf h}_k^{\mat
 
 Use $\mathcal L$ for training losses and $\ell$ for control stage costs. Use $\mathcal J$ for finite-horizon control cost; a horizon subscript is unnecessary unless comparing horizons. A bar denotes an average with domain and weights defined locally. Preserve transformation markers in means such as $\overline{\widetilde{\boldsymbol{\mathcal Y}}}$.
 
-Centered DMD targets use $\mathbf T$ and centered regressors $\boldsymbol\Omega$. State snapshots use `prev` and `next`. Left/right singular vectors use $\mathbf V_{\mathrm L},\mathbf V_{\mathrm R}$ and singular values $\sigma_a$. Training standard deviations use $\sigma_{\mathrm o,a},\sigma_{\mathrm u,b}$. Structural connectivity $\mathbf W$ and layer weights $\mathbf W^{(\ell)}$ need no extra qualifier. Keep established biological parameters; locally defined reuse with indices is acceptable.
+Centered DMD targets use $\mathbf T$ and centered regressors $\boldsymbol\Omega$. State snapshots use $\mathbf X$ and $\mathbf X_+$. Left/right singular vectors use $\mathbf V_{\mathrm L},\mathbf V_{\mathrm R}$ and singular values $\sigma_a$. Training standard deviations use $\sigma_{\mathrm o,a},\sigma_{\mathrm u,b}$. Structural connectivity $\mathbf W$ and layer weights $\mathbf W^{(\ell)}$ need no extra qualifier. Keep established biological parameters; locally defined reuse with indices is acceptable.
 
 ## Delays and availability
 
-Keep physical delay $d_{ii'}=\ell_{ii'}/c$ and quantized delay $d_{ii'}^{[\Delta t_{\mathrm p}]}=\Delta t_{\mathrm p}n_{\mathrm{delay},ii'}$ distinct, with integer lag $n_{\mathrm{delay},ii'}=\operatorname{round}(d_{ii'}/\Delta t_{\mathrm p})$. Use the integer lag in discrete coupling.
+Keep physical delay $d_{ii'}=\ell_{ii'}/v_{\mathrm{cond}}$ and quantized delay $d_{ii'}^{[\Delta t_{\mathrm p}]}=\Delta t_{\mathrm p}n_{\mathrm{delay},ii'}$ distinct, with integer lag $n_{\mathrm{delay},ii'}=\operatorname{round}(d_{ii'}/\Delta t_{\mathrm p})$. Use the integer lag in discrete coupling.
 
 Waveform spectral scoring requires $n_{\mathrm{spec}}n_{\mathrm{hop}}\le H$; waveform scoring requires $n_{\mathrm{wave}}\le H$. Spectral-output scoring requires $n_{\mathrm{spec}}\le H$.
 
-Without earlier frames, the first smoothed frame has $q\ge n_{\mathrm{smooth}}-1$ and a complete observation history ends no earlier than $q=n_{\mathrm{smooth}}+n_{\mathrm{past}\,o}-2$. Past-current availability is separate.
+Without earlier frames, the first smoothed frame has $q\ge n_{\mathrm{smooth}}-1$ and a complete observation history ends no earlier than $q=n_{\mathrm{smooth}}+n_{\mathrm{past},o}-2$. Past-current availability is separate.
 
 ## Verification
 

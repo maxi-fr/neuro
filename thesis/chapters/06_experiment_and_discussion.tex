@@ -1,6 +1,6 @@
 \chapter{Experiments and Discussion}\label{ch:experiments_discussion}
 
-This chapter evaluates which scalp \ac{eeg} based observables are suitable for predicting seizure activity and guiding stimulation.
+This chapter evaluates which scalp \ac{eeg}-based observables are suitable for predicting seizure activity and guiding stimulation.
 We first assess the different candidate observables for use in the controller.
 We then compare prediction targets and architectures at matched lookaheads.
 Finally, the closed-loop experiments assess how these design choices affect seizure burden and delivered charge.
@@ -15,11 +15,11 @@ For each observable, we examined how far ahead it could be predicted and how clo
 % Predictability curves and matched replays are in artifacts/observable_predictability_expanded/.
 % Figure inputs and reconstruction are in thesis/figures/06_experiment_and_discussion/plot_observable_predictability.py.
 
-The stochastic nature of the Jansen-Rit plant limits predictability of neural activity even when the initial plant state would be known.
+The stochastic nature of the Jansen-Rit plant limits predictability of neural activity even if the initial plant state were known.
 To estimate the resulting limit on forecast accuracy, we branched simulations from plant snapshots.
 A snapshot is a saved point on a simulated trajectory, and all branches from it share the same pre-branch trajectory.
 Figure~\ref{fig:observable_replays} shows how waveforms from the same snapshot diverged under independent realizations of future noise.
-Potential predictability measures how much of the variation in the observable at a given lookahead can be explained by differences between starting snapshots~\cite{Matsumura2010, Schubert2002}.
+Potential predictability measures how much of the variation in the observable at a given lookahead can be explained by differences between starting snapshots~\cite{Matsumura2010,Schubert2002}.
 
 \begin{figure}
   \centering
@@ -40,14 +40,14 @@ Before computing the cross-correlation, we subtracted each channel's mean within
 For the segment indexed by \(q\) ending at \(t_q \ge 0\), let \(\widetilde y_{\beta,c}\) be the standardized sample of channel \(c\) at segment offset \mbox{\(\beta=0,\ldots,24\)}, starting with the oldest sample.
 We pair the early samples \(\mathbf a_c\) from one channel with the late samples \(\mathbf b_{c'}\) from the other, offsetting the two by one sample (\SI{20}{\milli\second}),
 \begin{equation*}
-  \mathbf a_c = {[\widetilde y_{0,c},\ldots,\widetilde y_{23,c}]}^\top,
+  \mathbf a_c = {[\widetilde y_{0,c},\ldots,\widetilde y_{23,c}]}^{\mathsf{T}},
   \qquad
-  \mathbf b_c = {[\widetilde y_{1,c},\ldots,\widetilde y_{24,c}]}^\top\,.
+  \mathbf b_c = {[\widetilde y_{1,c},\ldots,\widetilde y_{24,c}]}^{\mathsf{T}}\,.
 \end{equation*}
 The functional connectivity feature for each distinct channel pair \(c,c'\) is half the difference between the dot products obtained by shifting each channel in turn,
 \begin{equation}
   R_{q,c,c'} = \frac{1}{2}
-  \bigl(\mathbf b_c^\top \mathbf a_{c'} - \mathbf b_{c'}^\top \mathbf a_c\bigr)\,.
+  \bigl(\mathbf b_c^{\mathsf{T}} \mathbf a_{c'} - \mathbf b_{c'}^{\mathsf{T}} \mathbf a_c\bigr)\,.
   \label{eq:connectivity_feature}
 \end{equation}
 The two products cancel for proportional signals, including copies of the same waveform with opposite polarity~\cite{Nolte2006}.
@@ -72,7 +72,7 @@ At each lookahead, potential predictability is computed by summing the variance 
   {\sum_a \bigl(\widehat V_{\mathrm{S},a}(h) + \widehat V_{\mathrm{N},a}(h)\bigr)}\,.
 \end{equation}
 This ratio estimates the fraction of mean squared prediction error that could be eliminated by using all the information in the starting snapshot, compared with predicting the unconditional mean at the same lookahead~\cite{DelSole2004}.
-A potential predictability of 1 means the observable is perfectly predictable from the snapshot, while 0 means that knowing them gives no improvement over predicting the unconditional mean.
+A value of 1 means the observable is perfectly predictable from the snapshot, whereas 0 indicates no improvement over predicting the unconditional mean.
 
 \begin{figure}
   \centering
@@ -104,9 +104,9 @@ In the predictor evaluations we used 12 samples (\SI{0.24}{\second}) for the wav
 
 Suppression costs are derived quantities computed from scalp \ac{eeg} and may not track regional recruitment in the plant.
 To assess how closely the waveform, spectral, and connectivity costs tracked regional recruitment, we computed each cost directly from recorded \ac{eeg} to avoid the influence of forecast error and correlated it with the seizure state.
-The seizure state \(s(t)\) is the fraction of plant regions whose peak-to-peak amplitude exceeds \SI{5}{\milli\volt} over the preceding second, following the recruitment criterion of Section~\ref{sec:network_calibration},
+The seizure state \(s_{\mathrm{seiz}}(t)\) is the fraction of plant regions whose peak-to-peak amplitude exceeds \SI{5}{\milli\volt} over the preceding second, following the recruitment criterion of Section~\ref{sec:network_calibration},
 \begin{equation}
-  s(t) = \frac{1}{\nreg}
+  s_{\mathrm{seiz}}(t) = \frac{1}{\nreg}
   \left\|
     {\left[
       \underset{\tau\in[t-\SI{1}{\second},\,t]}{\operatorname{ptp}}
@@ -129,7 +129,7 @@ For this comparison, we define the connectivity cost as the mean squared deviati
      {\bigl(R_{q,c,c'}-\bar R_{\mathrm{healthy},c,c'}\bigr)}^2\,.
 \end{equation*}
 
-For each observable, the cost at each frame endpoint was paired with the contemporaneous seizure state \(s(t_q)\) from~\eqref{eq:seizure_state}.
+For each observable, the cost at each frame endpoint was paired with the contemporaneous seizure state \(s_{\mathrm{seiz}}(t_q)\) from~\eqref{eq:seizure_state}.
 Pooling the 50 evaluation times per branch yielded \(180\,000\) finite pairs for computing Pearson's correlation coefficient \(r\)~\cite{NIST1997Correlation}.
 
 \begin{figure}
@@ -219,9 +219,9 @@ The selected \ac{cnn} used 16 frames with about a tenth as many trainable parame
 Together, the \ac{dmdc} and \ac{cnn} results suggest that the benefit of longer spectral histories depends on how the model limits the degrees of freedom used to fit overlapping inputs.
 
 \paragraph*{Network Depth.}
-The spectral \ac{mlp} search favored one wide hidden layer, while the strongest waveform trials used two or three narrower layers (Table~\ref{tab:search_waveform_mlp}).
+The spectral \ac{mlp} search favored one wide hidden layer, while the strongest waveform trials used two or three narrower layers (Appendix~\ref{app:predictor_search}).
 In the spectral search, two-layer trials reached lower mean training loss but higher mean validation loss than one-layer trials, a pattern consistent with overfitting.
-For the \acp{cnn}, the spectral search favored two convolutional layers and the waveform search favored one (Table~\ref{tab:search_waveform_cnn}).
+For the \acp{cnn}, the spectral search favored two convolutional layers and the waveform search favored one.
 These preferences emerged from searches that varied depth alongside other settings.
 
 The selected waveform \ac{cnn} was smaller (\num{71000} versus \num{298000} parameters), while the waveform \ac{mlp} achieved a lower joint validation loss (63.15 versus 72.43).
@@ -279,15 +279,15 @@ Five development seeds (7000, 7001, 7002, 7004, and 7005) were used to select co
 
 All \ac{mpc} controllers replanned at each spectral frame, every \SI{60}{\milli\second} for a three-sample hop at \SI{50}{\hertz}.
 Between updates, the spectral controller applied one \SI{60}{\milli\second} hold ($M=1$ in Section~\ref{sec:mpc_formulation}) and the waveform controller applied three successive \SI{20}{\milli\second} holds ($M=3$).
-For the optimization itself, initial tests favored single shooting with IPOPT over full-state multiple shooting and the \acs{narx} transcription (Table~\ref{tab:mpc_transcription_counts}; Appendix~\ref{app:transcription_benchmark}) because it converged reliably with much lower computational demand.
+For the optimization itself, initial tests favored single shooting with IPOPT over full-state multiple shooting and the \ac{narx} transcription (Table~\ref{tab:mpc_transcription_counts}; Appendix~\ref{app:transcription_benchmark}) because it converged reliably with much lower computational demand.
 
-To measure how much seizure activity persisted across a run, the seizure state $s(t_i)$ was evaluated in \mbox{$N_{\mathrm{win}}=45$} complete \SI{1}{\second} windows spaced \SI{0.25}{\second} apart.
-Let $t_i$ be the endpoint of window \mbox{$i=1,\ldots,N_{\mathrm{win}}$}, with \mbox{$t_{\mathrm{final}}=t_{N_{\mathrm{win}}}$}.
-We define the seizure burden $\bar{s}$ as the mean of the seizure states at these endpoints, expressed as a percentage,
+To measure how much seizure activity persisted across a run, the seizure state $s_{\mathrm{seiz}}(t_i)$ was evaluated in \mbox{$n_{\mathrm{win}}=45$} complete \SI{1}{\second} windows spaced \SI{0.25}{\second} apart.
+Let $t_i$ be the endpoint of window \mbox{$i=1,\ldots,n_{\mathrm{win}}$}, with \mbox{$t_{\mathrm{final}}=t_{n_{\mathrm{win}}}$}.
+We define the seizure burden $\bar{s}_{\mathrm{seiz}}$ as the mean of the seizure states at these endpoints, expressed as a percentage,
 \begin{equation*}
-  \bar{s} = \frac{100\,\%}{N_{\mathrm{win}}}\sum_{i=1}^{N_{\mathrm{win}}} s(t_i)\,.
+  \bar{s}_{\mathrm{seiz}} = \frac{100\,\%}{n_{\mathrm{win}}}\sum_{i=1}^{n_{\mathrm{win}}} s_{\mathrm{seiz}}(t_i)\,.
 \end{equation*}
-The number of seizing regions at the end of the run is $\nreg\,s(t_{\mathrm{final}})$.
+The number of seizing regions at the end of the run is $\nreg\,s_{\mathrm{seiz}}(t_{\mathrm{final}})$.
 
 Delivered charge measures the stimulation needed to achieve these outcomes and is computed by integrating the sum of absolute electrode currents over the run.
 Sustained stimulation at the current limit delivers about \SI{45}{\milli\ampere\second}, depending on when stimulation starts.
@@ -370,7 +370,7 @@ Mean burden rose by less than one percentage point (Figure~\ref{fig:stimulation_
 
 The waveform \ac{mlp} controller was the most robust to changes in the stimulation cost weight, meeting both the mean charge and mean burden targets over the widest range of tested weights.
 Among the spectral controllers, the \ac{dmdc} had more room than the \ac{cnn} to reduce charge by increasing the weight before mean burden exceeded \SI{6}{\percent}.
-On seed 7004, raising the weight for the spectral \ac{cnn} from $0.2$ to $0.3$ reduced the final count from 29 seizing regions to four, even though the controller had delivered less charge by the time the lower-weight run showed \ac{pz} recruitment.
+On seed 7004, raising the weight for the spectral \ac{cnn} from $0.2$ to $0.3$ reduced the final count from 29 seizing regions to 4, even though the controller had delivered less charge by the time the lower-weight run showed \ac{pz} recruitment.
 This reversal suggests that how the controller applied current mattered more for containment on this seed than cumulative charge alone.
 
 The calibration results favor the linear predictor for spectral control.
@@ -396,7 +396,7 @@ We assumed that the main trade-offs would carry over to the spectral \ac{dmdc} a
 
 Varying most spectral geometry parameters had little effect on closed-loop performance within each stage of the sweep (Table~\ref{tab:spectral_geometry_sweep}; Appendix~\ref{sec:spectral_geometry_sweep}). % latex-lint:ignore=TYPO-10
 The longer segment used less charge at a common start time, but we retained the shorter segment because it allowed earlier intervention and contained spread when started earlier in a replay of one seed.
-Averaging multiple spectral frames increased delivered charge while not reducing seizure burden significantly.
+Averaging multiple spectral frames increased delivered charge without substantially reducing seizure burden.
 Changing the taper had a larger effect on containment at similar mean charge: the rising half-Hann contained spread on all five seeds, compared with three of five for the symmetric Hann.
 By giving the newest samples more weight at the same frame endpoint, the rising taper may help the controller respond to emerging seizure activity.
 
@@ -446,7 +446,7 @@ The optimizer then needed an accurate estimate of excess log-power from the fore
 With the joint fit held fixed, using the spectral cost alone or adding it to waveform tracking allowed spread on seeds that waveform tracking alone had contained (D and E versus C in Table~\ref{tab:waveform_loss_cost}).
 The weighting also contributed to these outcomes, since reducing the current penalty prevented spread in two short replays (Appendix~\ref{sec:waveform_cost_calibration}). % latex-lint:ignore=TYPO-10
 Among the tested settings that contained spread on all five seeds, waveform tracking alone used the least mean charge.
-We therefore selected the jointly trained predictor with waveform tracking for the reserved-seed comparison. % following comparisons. "reserved-seed" is overused and there is no real reason why. It does add any interesting information to the sentence
+We therefore selected the jointly trained predictor with waveform tracking for the following comparisons.
 
 \FloatBarrier
 \subsection{Controller Comparison}\label{sec:controller_comparison}
@@ -480,7 +480,7 @@ Of the six seeds on which seizures spread widely without stimulation, threshold 
 Notably, the linear spectral \ac{dmdc} predictor was sufficient for containment on these seeds: mean seizure burden was \SI{5.04}{\percent} with \ac{dmdc} and \SI{5.23}{\percent} with the spectral \ac{cnn}, both within the \SIrange{4}{6}{\percent} range associated with residual focal activity in this plant.
 
 The waveform \ac{mlp} used a similar mean charge to the spectral controllers and contained spread on nine seeds.
-On the remaining seed, 7104, recruitment accelerated shortly after \SI{2}{\second} and remained widespread until end of the run.
+On the remaining seed, 7104, recruitment accelerated shortly after \SI{2}{\second} and remained widespread until the end of the run.
 
 This failure was unexpected given the waveform \ac{mlp} controller's apparent robustness in the cost weight calibration on the development seeds (Section~\ref{sec:stimulation_cost_weight}).
 To investigate why containment failed on seed 7104, we gave the spectral \ac{cnn} the same measurement and stimulation history as the waveform \ac{mlp} at four snapshots from the waveform-controlled trajectory and replayed their plans on paired branches with differing noise draws (Figure~\ref{fig:seed_7104_recruitment}).
@@ -511,7 +511,7 @@ Section~\ref{sec:mpc_sparse_formulations} introduced two penalties to promote sp
 We first compared three solution methods for the same \ac{mpc} problem with an activation penalty.
 We then compared four choices of stimulation penalty: quadratic, \(L_1\) alone, activation alone, and \(L_1\) combined with activation.
 The comparison used only the spectral \ac{dmdc} predictor because solve times with the nonlinear predictors were prohibitively large.
-Its affine dependence on planned currents allowed the spectral predictions for the entire horizon to be computed directly from those currents (Equation~\eqref{eq:dmdc_current_rollout}), reducing the cost of evaluating candidate plans inside the \ac{mpc}.
+Its affine dependence on planned currents allowed the spectral predictions for the entire horizon to be computed directly from those currents (see Appendix~\ref{app:dmdc_comparison},~\eqref{eq:dmdc_current_rollout}), reducing the cost of evaluating candidate plans inside the \ac{mpc}.
 
 On the five development seeds, we compared Bonmin, grouped candidate search, and the homotopy solution method with the same activation weight \(w_\delta=2.40\) and zero current-magnitude penalty weights (Table~\ref{tab:sparse_stimulation_results}~(a)).
 The homotopy method was fastest at \SI{0.46}{\second} per update on average, followed by grouped candidate search at \SI{1.43}{\second} and Bonmin at \SI{1.64}{\second}.

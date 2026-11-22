@@ -125,19 +125,19 @@ In this work, \ac{tvb} supplies the anatomical data; the numerical integration i
 
 The structural connectivity matrix $\mathbf{W}\in\mathbb{R}_{\geq 0}^{\nreg{}\times \nreg{}}$ assigns a weight $w_{ii'}$ to the connection from sending region $i'$ to receiving region $i$.
 The weights are normalized, dimensionless measures of relative connection strength rather than literal axon counts.
-The present model uses symmetric weights, $w_{ii'}=w_{i'i}$ and excludes self-connections by setting $w_{ii}=0$.
+The present model uses symmetric weights, $w_{ii'}=w_{i'i}$, and excludes self-connections by setting $w_{ii}=0$.
 These weights specify how strongly each sending region contributes to the receiving region's input, as in structural network models of interacting neural masses~\cite{SanzLeon2015}.
 
 Each connection also has a tract length $\ell_{ii'}\in\mathbb{R}_{\geq 0}$, which determines when the sending region's activity reaches the receiving region.
-For a uniform conduction speed $c\in\mathbb{R}_{>0}$, the physical transmission delay is~\cite{SanzLeon2015}
+For a uniform conduction speed $v_{\mathrm{cond}}\in\mathbb{R}_{>0}$, the physical transmission delay is~\cite{SanzLeon2015}
 %
 \begin{equation}
-    d_{ii'}=\frac{\ell_{ii'}}{c}\,.
+    d_{ii'}=\frac{\ell_{ii'}}{v_{\mathrm{cond}}}\,.
     \label{eq:physical_delay}
 \end{equation}
 %
 Thus, longer tracts transmit activity later even when their connection weights are identical.
-The chosen speed $c=\SI{50}{\milli\metre\per\milli\second}$ gives a delay of \SI{2}{\milli\second} for a \SI{100}{\milli\metre} tract.
+The chosen speed $v_{\mathrm{cond}}=\SI{50}{\milli\metre\per\milli\second}$ gives a delay of \SI{2}{\milli\second} for a \SI{100}{\milli\metre} tract.
 Figure~\ref{fig:connectome_matrices} shows the connection weights and the corresponding physical delays.
 
 \begin{figure}[t] % latex-lint:ignore=FLOAT-01
@@ -173,7 +173,7 @@ An initial history of those outputs over the longest connection delay is therefo
 
 The network is simulated on a uniform time grid using a stochastic Heun scheme~\cite{SanzLeon2015}.
 The integration step $\Delta t_\mathrm{p}=\SI{0.1}{\milli\second}$ is chosen around 100 times shorter than the fastest synaptic time constant.
-Such small steps are necessary avoid numerical instability of the integration~\cite{Ableidinger2017}.
+Such small steps are necessary to preserve numerical accuracy and stability of the stochastic Jansen-Rit integration~\cite{Ableidinger2017}.
 
 On this grid, we define the times $t_\kappa$ and simulated regional states $\mathbf{x}_{\kappa,i}$ at integration index $\kappa\in\mathbb{N}_0$ by
 %
@@ -184,12 +184,11 @@ On this grid, we define the times $t_\kappa$ and simulated regional states $\mat
 %
 The physical delays in~\eqref{eq:physical_delay} are approximated by the nearest integer lag $n_{\mathrm{delay},ii'}\in\mathbb{N}_0$, giving the applied delay $d_{ii'}^{[\Delta t_\mathrm{p}]}$,
 %
-\begin{equation}
+\begin{equation*}
     n_{\mathrm{delay},ii'}=\operatorname{round}\!\left(\frac{d_{ii'}}{\Delta t_\mathrm{p}}\right),
     \qquad
     d_{ii'}^{[\Delta t_\mathrm{p}]}=n_{\mathrm{delay},ii'}\Delta t_\mathrm{p}\,.
-    \label{eq:delay_quantisation}
-\end{equation}
+\end{equation*}
 %
 Rounding changes a physical delay by at most half a plant step, here \SI{0.05}{\milli\second}.
 
@@ -264,14 +263,20 @@ Healthy background regions use $A_i=3.25\,\si{\milli\volt}$ and remain in a low-
 The \ac{ez} takes $A_i = 3.6\,\si{\milli\volt}$, placing an isolated node in a self-sustained pathological oscillatory regime that does not require network recruitment.
 Finally, the \ac{pz} takes an intermediate value of $A_i = 3.4\,\si{\milli\volt}$, leaving it just below its own oscillatory boundary but sufficiently excitable that coupling from an active \ac{ez} can recruit it into seizure-like activity.
 Background nodes have a lower gain and are less susceptible to the same incoming drive, although sufficiently strong network activity can recruit them too.
-Figure~\ref{fig:bifurcation} illustrates the behaviour of nodes for these different excitability values.
+Figure~\ref{fig:bifurcation} illustrates the behavior of nodes for these different excitability values.
 
-Within this model seizure propagation therefore refers to network-driven recruitment of regions outside the \ac{ez}.
+Within this model, seizure propagation therefore refers to network-driven recruitment of regions outside the \ac{ez}.
 
 \begin{figure}
     \centering
     \includegraphics{figures/03_biological_plant_modeling/excitability_regimes}
-    \caption{Jansen-Rit dynamics at the three excitability levels. Left: Regional output $y_\mathrm{reg}$ over \SI{4}{\second} of simulation following a \SI{4}{\second} transient. Right: Corresponding Welch power spectral density, averaged over three segments of $16{,}000$ samples. Rows (a), (b) and (d) show uncoupled nodes: background tissue and the \ac{pz} fluctuate around a low-amplitude operating point, whereas the \ac{ez} exhibits a large-amplitude spike-wave limit cycle. Row (c) shows the same \ac{pz} node embedded in the 76-region network with three \ac{ez} nodes, where the coupling recruits it into an oscillation. Only the \ac{pz} is shown in both conditions to highlight this coupling-driven transition; a network trace for a recruited background region would show similar behaviour. All runs use the parameters in Table~\ref{tab:jr_params} and the same noise seed.}
+    \caption{Jansen-Rit dynamics at the three excitability levels.
+    Left: Regional output $y_\mathrm{reg}$ over \SI{4}{\second} of simulation following a \SI{4}{\second} transient.
+    Right: Corresponding Welch power spectral density, averaged over three segments of $16{,}000$ samples. 
+    Rows (a), (b) and (d) show uncoupled nodes: background tissue and the \ac{pz} fluctuate around a low-amplitude operating point, whereas the \ac{ez} exhibits a large-amplitude spike-wave limit cycle. 
+    Row (c) shows the same \ac{pz} node embedded in the 76-region network with three \ac{ez} nodes, where the coupling recruits it into an oscillation.
+    Only the \ac{pz} is shown in both conditions to highlight this coupling-driven transition; a network trace for a recruited background region would show similar behavior.
+    All runs use the parameters in Table~\ref{tab:jr_params} and the same noise seed.}
     \label{fig:bifurcation}
 \end{figure}
 
@@ -295,8 +300,8 @@ Figure~\ref{fig:ez_pz_assignment} shows the five selected region centroids withi
 \label{sec:network_calibration}
 
 Table~\ref{tab:jr_params} summarizes the local node parameters and network parameters used throughout the simulations.
-The shared synaptic gains, time constants, sigmoid parameters, connectivity ratios and background input follow the standard Jansen-Rit parameterization~\cite{Jansen1995}.
-The regional values of $A_i$ define the excitability partition described above and the conduction speed $c$ determines the tract delays through~\eqref{eq:physical_delay}.
+The shared synaptic gains, time constants, sigmoid parameters and connectivity ratios follow the standard Jansen-Rit parameterization~\cite{Jansen1995}, while the constant background input $I=\SI{90}{\per\second}$ follows~\cite{Wendling2002,Yu2024}.
+The regional values of $A_i$ define the excitability partition described above and the conduction speed $v_{\mathrm{cond}}$ determines the tract delays through~\eqref{eq:physical_delay}.
 
 The remaining network-level parameters are the global coupling factor $K$ and white-noise amplitude $\sigma$.
 Increasing $K$ strengthens the delayed firing-rate input received from connected regions and therefore promotes recruitment beyond the \ac{ez}.
@@ -313,13 +318,15 @@ Figure~\ref{fig:uncontrolled_propagation} shows a representative run with near-f
 \begin{figure}
     \centering
     \includegraphics{figures/03_biological_plant_modeling/uncontrolled_propagation}
-    \caption{Cumulative regional recruitment in the saved uncontrolled seed-7000 run. The \ac{ez} onset is detected at $t=\SI{0.5}{\second}$; by $t=\SI{10.5}{\second}$, 34 of 38 left regions and no right regions have been recruited. The dotted line marks this time point.}
+    \caption{Cumulative regional recruitment in a representative uncontrolled run.
+    The \ac{ez} onset is detected at $t=\SI{0.5}{\second}$; by $t=\SI{10.5}{\second}$, 34 of 38 left regions and no right regions have been recruited.
+    The dotted line marks this time point.}
     \label{fig:uncontrolled_propagation}
 \end{figure}
 
 \begin{table}
     \centering
-    \caption{Parameters of the Jansen-Rit network model. Shared local parameters follow the original single-column fit~\cite{Jansen1995}; the regional excitability partition follows the whole-brain epilepsy configuration in~\cite{Yu2024}; $K$ and $\sigma$ are calibrated for the present connectome. The noise intensity $\sigma^2$ specifies the Gaussian white-noise drive $\zeta_i$ in~\eqref{eq:jr_node}.}
+    \caption{Parameters of the Jansen-Rit network model. Shared local parameters follow the original single-column fit~\cite{Jansen1995}, except for the constant background input $I$~\cite{Wendling2002,Yu2024}; the regional excitability partition follows the whole-brain epilepsy configuration in~\cite{Yu2024}; $K$ and $\sigma$ are calibrated for the present connectome. The noise intensity $\sigma^2$ specifies the Gaussian white-noise drive $\zeta_i$ in~\eqref{eq:jr_node}.}
     \label{tab:jr_params}
     \begin{tabular}{lp{0.51\linewidth}ll}
         \toprule
@@ -329,17 +336,17 @@ Figure~\ref{fig:uncontrolled_propagation} shows a representative run with near-f
         $B$     & Inhibitory synaptic gain                        & 22    & \si{\milli\volt} \\
         $a$     & Excitatory rate constant ($\tau_\mathrm{e}=\SI{10}{\milli\second}$) & 100 & \si{\per\second} \\
         $b$     & Inhibitory rate constant ($\tau_\mathrm{i}=\SI{20}{\milli\second}$) & 50  & \si{\per\second} \\
-        $c_1$   & Pyramidal-to-excitatory synaptic contacts        & 135   & - \\
-        $c_2$   & Excitatory-to-pyramidal synaptic contacts        & 108   & - \\
-        $c_3$   & Pyramidal-to-inhibitory synaptic contacts        & 33.75 & - \\
-        $c_4$   & Inhibitory-to-pyramidal synaptic contacts        & 33.75 & - \\
+        $c_1$   & Pyramidal-to-excitatory synaptic contacts        & 135   & \textendash{} \\
+        $c_2$   & Excitatory-to-pyramidal synaptic contacts        & 108   & \textendash{} \\
+        $c_3$   & Pyramidal-to-inhibitory synaptic contacts        & 33.75 & \textendash{} \\
+        $c_4$   & Inhibitory-to-pyramidal synaptic contacts        & 33.75 & \textendash{} \\
         $e_0$   & Half the maximum population firing rate          & 2.5   & \si{\per\second} \\
         $v_0$   & Sigmoid midpoint potential                       & 6     & \si{\milli\volt} \\
         $r$     & Sigmoid steepness                                & 0.56  & \si{\per\milli\volt} \\
         $I$     & Constant excitatory background input             & 90    & \si{\per\second} \\
         $\sigma$ & Afferent white-noise amplitude                   & 0.86  & \si{\second^{-1/2}} \\ % latex-lint:ignore=TYPO-05
-        $K$     & Global coupling factor                           & 0.60  & - \\
-        $c$     & Axonal conduction speed                          & 50    & \si{\milli\metre\per\milli\second} \\
+        $K$     & Global coupling factor                           & 0.60  & \textendash{} \\
+        $v_{\mathrm{cond}}$ & Axonal conduction speed                      & 50    & \si{\milli\metre\per\milli\second} \\
         $\Delta t_\mathrm{p}$ & Plant integration step & 0.1 & \si{\milli\second} \\
         \bottomrule
     \end{tabular}
@@ -373,7 +380,7 @@ With fixed geometry and conductivities, the regional contributions superpose lin
 %
 Here $\mathbf{y}_\mathrm{reg}\in\mathbb{R}^{\nreg{}}$ collects the regional outputs, $\mathbf{y}_\mathrm{EEG}\in\mathbb{R}^{\nchan{}}$ contains the sensor measurements and $\mathbf{L}_\mathrm{EEG}\in\mathbb{R}^{\nchan{}\times \nreg{}}$ is the regional \ac{eeg} lead field.
 
-The \ac{tvb} surface projection has $\nchan{}=62$ sensor rows and 16,384 cortical-vertex columns~\cite{SanzLeon2015}.
+The \ac{tvb} surface projection has $\nchan{}=62$ sensor rows and 16,384 cortical-vertex columns~\cite{SanzLeon2013,SanzLeon2015}.
 If $V_i$ is the set of vertices assigned to region $i$ and $L^{\mathrm{surf}}_{cv}$ is the projection from vertex $v$ to channel $c$, the regional matrix is
 %
 \begin{equation*}
@@ -392,9 +399,9 @@ Because the assumed proportionality between neural-mass output and physical dipo
 The actuation proceeds in the opposite physical direction.
 In \ac{tes}, currents applied at scalp electrodes generate a distributed electric field inside the head.
 The pyramidal populations are modeled as being polarized by the component of this field along their somato-dendritic axis.
-At the regional scale used here, this axis is approximated by the local cortical normal, so the normal electric-field component determines the effective membrane-potential perturbation~\cite{Merlet2013}.
+At the regional scale used here, this axis is approximated by the local cortical normal, so the normal electric-field component determines the effective membrane-potential perturbation~\cite{Merlet2013,Kunze2016}.
 %For mesial and non-neocortical regions such as the hippocampus and amygdala, this orientation is only a coarse modeling surrogate for the local somato-dendritic axis; the resulting stimulation sensitivity should therefore be interpreted at the regional-model level rather than as a detailed cellular polarization estimate.
-This motivates the additive perturbation $s_i$ in the argument of the pyramidal sigmoid in~\eqref{eq:jr_node}, rather than introducing stimulation as an additional synaptic firing-rate input~\cite{Kunze2016,Merlet2013,Yu2024}.
+This motivates the additive perturbation $s_i$ in the argument of the pyramidal sigmoid in~\eqref{eq:jr_node}, rather than introducing stimulation as an additional synaptic firing-rate input~\cite{Merlet2013,Yu2024}.
 
 Electric-field basis solutions were computed with ROAST, an automated finite-element modeling pipeline for \ac{tes}, using its standard MNI152 head model~\cite{Huang2019}.
 The selected montage comprises three electrodes ($\ndim{u}=3$), ordered as TP9, CP5 and Ex8 in the current vector.

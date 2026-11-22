@@ -8,7 +8,7 @@ The chapter first explains how model predictive control uses this problem in a f
 It then develops the formulation for seizure suppression using the learned predictor, the suppression objective and the current limits.
 The chapter closes by examining how costs and constraints can promote sparse stimulation.
 
-\section{General \ac{mpc} Formulation}\label{sec:mpc_formulation}
+\section{General \acs{mpc} Formulation}\label{sec:mpc_formulation}
 
 At each replanning instant, the controller plans a sequence of future inputs by predicting how the state would respond to each candidate sequence.
 For these predictions, we consider the discrete-time model
@@ -54,7 +54,7 @@ The controller therefore minimizes the objective over admissible input sequences
     \label{eq:mpc_ocp}
 \end{equation}
 The objective $\mathcal{J}$ sums the stage cost $\ell:\mathbb{R}^{\ndim{x}}\times\mathbb{R}^{\ndim{u}}\to\mathbb{R}$ over the state and input pairs and adds a terminal cost $V_\mathrm{f}:\mathbb{R}^{\ndim{x}}\to\mathbb{R}$ on the final predicted state.
-The sets $\mathcal{X}\subseteq\mathbb{R}^{\ndim{x}}$ and $\mathcal{U}\subseteq\mathbb{R}^{\ndim{u}}$ specify the admissible states and inputs, respectively and $\mathcal{X}_\mathrm{f}\subseteq\mathcal{X}$ specifies the admissible final states.
+The sets $\mathcal{X}\subseteq\mathbb{R}^{\ndim{x}}$ and $\mathcal{U}\subseteq\mathbb{R}^{\ndim{u}}$ specify the admissible states and inputs, respectively, and $\mathcal{X}_\mathrm{f}\subseteq\mathcal{X}$ specifies the admissible final states.
 \end{samepage}
 %
 Solving~\eqref{eq:mpc_ocp} once gives an open-loop input sequence based on the information available at step $k$.
@@ -169,7 +169,7 @@ When the objective or constraints are nonlinear, either transcription gives a co
 Methods for solving the resulting \ac{nlp} include \ac{sqp}~\cite{Nocedal2006} and interior-point methods, as implemented in IPOPT~\cite{Waechter2006}.
 The next section develops the \ac{mpc} formulation for seizure suppression and shows how the learned predictor's history structure reduces the number of decision variables relative to full-state multiple shooting.
 
-\section{\ac{mpc} for Seizure Suppression}\label{sec:mpc_input_output_formulation}
+\section{\acs{mpc} for Seizure Suppression}\label{sec:mpc_input_output_formulation}
 
 To use the learned input-output predictor for seizure suppression, we first express its history update as a state transition.
 The learned map $\mathbf f_{\boldsymbol\theta}$ in~\eqref{eq:recursive_predictor} predicts the next observable, whereas the general \ac{mpc} formulation requires a transition of the complete model state.
@@ -195,10 +195,10 @@ For the history state $\mathbf h$ defined in~\eqref{eq:predictor_history}, this 
 Identifying $\mathbf x\equiv\mathbf h$, $\mathbf f\equiv\mathbf F_{\boldsymbol\theta}$ and $\hat{\mathbf x}_k\equiv\mathbf h_k$ gives the state-space form in~\eqref{eq:mpc_prediction_dynamics}.
 This state-space form permits multiple shooting, but the structure of the history update allows a smaller transcription.
 
-\subsection{\acs{narx} Transcription}
+\subsection{\acs*{narx} Transcription}
 
 Applying multiple shooting to~\eqref{eq:mpc_history_transition} introduces a history variable at each step and equalities that copy entries between consecutive histories.
-Each history can instead be assembled directly from fixed data and the corresponding observable and current decision variables.
+In the \ac{narx} transcription, each history is instead assembled directly from fixed data and the corresponding observable and current decision variables.
 Substituting these entries for the history variable eliminates the copying equalities and leaves only the future observables $\mathbf o_{1|k},\ldots,\mathbf o_{H|k}$ and currents $\mathbf u_{0|k},\ldots,\mathbf u_{H-1|k}$ as decision variables.
 The dynamics constraint links these variables through the learned predictor,
 %
@@ -228,7 +228,7 @@ Table~\ref{tab:mpc_transcription_counts} compares the scalar decision-variable a
         \midrule
         Single shooting & $H\ndim{u}$ & $0$ \\
         Multiple shooting & $(H+1)\ndim{h}+H\ndim{u}$ & $H\ndim{h}$ \\
-        \acs{narx} & $H(\ndim{o}+\ndim{u})$ & $H\ndim{o}$ \\
+        \ac{narx} & $H(\ndim{o}+\ndim{u})$ & $H\ndim{o}$ \\
         \bottomrule
     \end{tabular}
 \end{table}
@@ -303,12 +303,11 @@ The terminal cost $V_{\mathrm f}$ can use the waveform or spectral penalty at th
 
 To balance predicted seizure suppression against electrode current, the objective includes a squared $L_2$ current cost,
 %
-\begin{equation}
+\begin{equation*}
     \mathcal J_{L_2}
     =\frac{1}{H}\sum_{j=0}^{H-1}
       \|\mathbf u_{j|k}\|_2^2\,.
-    \label{eq:mpc_current_effort}
-\end{equation}
+\end{equation*}
 %
 This cost is proportional to the time integral of squared current over the horizon and serves as a proxy for the supplied electrical energy.
 The objective combines the applicable suppression penalties and the $L_2$ current cost with nonnegative weights.
@@ -343,12 +342,11 @@ A common approach is therefore to replace the $L_0$ norm with the $L_1$ norm, a 
 
 For the physical electrode currents, the horizon-averaged $L_1$ cost is
 %
-\begin{equation}
+\begin{equation*}
     \mathcal J_{L_1}
     =\frac{1}{H}\sum_{j=0}^{H-1}\|\mathbf u_{j|k}\|_1
     =\frac{1}{H}\sum_{j=0}^{H-1}\sum_{p=1}^{\ndim{u}}|u_{j|k,p}|\,.
-    \label{eq:mpc_l1_cost}
-\end{equation}
+\end{equation*}
 %
 Let $\mathcal J_{\mathrm{supp}}$ denote the selected suppression cost, including its weight.
 The base objective combines the suppression cost with the weighted $L_2$ and $L_1$ current costs,
@@ -424,7 +422,7 @@ Adding the activation cost~\eqref{eq:mpc_activation_cost} to the base objective 
     \label{eq:mpc_activation_penalty_problem}
 \end{equation}
 %
-subject to~\eqref{eq:mpc_activation_gates}, the dynamics and the initial condition.
+subject to~\eqref{eq:mpc_activation_gates}, $\delta_{j|k}\in\{0,1\}$ for $j=0,\ldots,H-1$, the dynamics and the initial condition.
 For a fixed current sequence, any interval with nonzero current must be enabled.
 If activation variables are independent, the activation penalty makes it optimal to disable every interval with zero current.
 Thus, minimizing over the activation variables makes $\mathcal J_{\delta}$ equal to the fraction of intervals with nonzero current, a normalized group $L_0$ count.
@@ -449,7 +447,7 @@ We therefore discuss three different approaches to handling the binary decisions
 
 \subsubsection*{Branch and Bound}
 
-Branch and bound is a standard approach to solving a \ac{minlp}~\cite{Bonami2008}.
+Branch and bound is a standard approach to solving an \ac{minlp}~\cite{Bonami2008}.
 Its role here can be understood by considering the cost of solving a separate continuous \ac{nlp} for each fixed activation schedule.
 Since each of the $H$ intervals has two possible activation values, exhaustive enumeration could require up to $2^H$ such solves at every control update.
 The branch and bound algorithm can reduce this count by discarding entire branches of schedules.
@@ -459,13 +457,13 @@ If an activation is fractional, the solver splits the schedules into two subsets
 Repeating these splits produces a search tree whose nodes represent progressively more specified schedules.
 The best feasible integer solution found so far is called the incumbent.
 
-The minimum of a relaxed subproblem bounds from below the cost of every binary schedule it represents.
+The global minimum of a relaxed subproblem bounds from below the cost of every binary schedule it represents.
 If that bound reaches or exceeds the incumbent cost, the solver can discard the entire subset.
 This mechanism can save many \ac{nlp} solves, although each visited node still requires a relaxation solve and the tree may have up to $2^H$ leaves.
 Bonmin is the solver used here and its default method follows this approach~\cite{BonminManual}.
 With nonconvex learned dynamics, local relaxation minima may give unreliable bounds, so a global certificate would require valid bounds for those nonconvex subproblems.
 
-\subsubsection*{Candidate \ac{mpc} with Grouped Activation Decisions}
+\subsubsection*{Candidate \acs{mpc} with Grouped Activation Decisions}
 
 Branch and bound seeks to reduce the work of searching the full set of binary schedules.
 An alternative is to restrict that set by grouping the horizon intervals into blocks and solving a continuous \ac{nlp} for each block schedule.
@@ -534,5 +532,5 @@ The quadratic current cost discourages large amplitudes.
 To promote sparse stimulation, the controller can use an $L_1$ penalty that favors zero currents or use binary activation to penalize or cap the number of enabled intervals directly in each plan.
 The resulting activation decisions can be handled by branch and bound, by enumerating schedules over groups of intervals or by progressively penalizing fractional activations in a continuous relaxation.
 
-The predictor dynamics can enter the optimization through single shooting, full-state multiple shooting or the \acs{narx} transcription.
+The predictor dynamics can enter the optimization through single shooting, full-state multiple shooting or the \ac{narx} transcription.
 Chapter~\ref{ch:experiments_discussion} compares these design choices in simulation.

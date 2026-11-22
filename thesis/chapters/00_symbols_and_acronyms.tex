@@ -25,7 +25,7 @@
     \midrule
     \multicolumn{3}{@{}l}{\textit{Plant state and dynamics}} \\*
     $x_{i,1}, x_{i,2}, x_{i,3}$ & Pyramidal, excitatory and inhibitory \acs*{psp} of region $i$ & \si{\milli\volt} \\
-    $x_{i,4}, x_{i,5}, x_{i,6}$ & Time derivatives of the three regional \acs*{psp} & \si{\milli\volt\per\second} \\
+    $x_{i,4}, x_{i,5}, x_{i,6}$ & Time derivatives of the three regional \acsp*{psp} & \si{\milli\volt\per\second} \\
     $\mathbf{x}_i, \mathbf{x}$ & Regional state vector ($6$ entries) and stacked network state ($6\nreg$ entries) & \textendash{} \\
     $t_\kappa, \mathbf{x}_{\kappa,i}$ & Time and regional state at plant integration step $\kappa$ & \si{\milli\second}, \textendash{} \\
     $\mathbf{f}_i$ & Deterministic right-hand side of the regional state equations & \textendash{} \\
@@ -53,8 +53,8 @@
     \multicolumn{3}{@{}l}{\textit{Network}} \\*
     $\mathbf{W}$, $w_{ii'}$ & Structural connectivity matrix and its entries & \textendash{} \\
     $K$ & Global coupling factor & \textendash{} \\
-    $\ell_{ii'}$ & Fibre tract length between regions $i$ and $i'$ & \si{\milli\metre} \\
-    $c$ & Axonal conduction speed & \si{\milli\metre\per\milli\second} \\
+    $\ell_{ii'}$ & Fiber tract length between regions $i$ and $i'$ & \si{\milli\metre} \\
+    $v_{\mathrm{cond}}$ & Axonal conduction speed & \si{\milli\metre\per\milli\second} \\
     $d_{ii'}$, $d_{ii'}^{[\Delta t_\mathrm p]}$ & Physical and quantized conduction delays & \si{\milli\second} \\
     $n_{\mathrm{delay},ii'}$ & Integer conduction lag in plant steps & \textendash{} \\
     $I_{\mathrm{coup},i}$ & Network coupling input to region $i$ & \si{\per\second} \\
@@ -79,7 +79,7 @@
     $\nseg$ & Segment length in waveform samples & \textendash{} \\
     $\nhop$ & Hop length between consecutive segments in waveform samples & \textendash{} \\
     $\mathbf{y}_r$, $y_{r,c}$ & Preprocessed waveform sample vector and entry at channel $c$ & \textendash{} \\
-    $y_{\mathrm{LFP}}$ & Simulated regional local field potential in the spectrogram example & \si{\milli\volt} \\
+    $y_{\mathrm{LFP}}$ & Simulated regional \acs*{lfp} in the spectrogram example & \si{\milli\volt} \\
     $\mathbf{w}$, $w_\beta$ & Segment window vector and taper weight at offset $\beta$ & \textendash{} \\
     $m$, $f_m$ & Frequency-bin index and physical frequency & \textendash, \si{\hertz} \\
     $\Delta f$ & Frequency-bin spacing, $f_\mathrm{s} / \nseg$ & \si{\hertz} \\
@@ -109,6 +109,7 @@
     $\widetilde{\mathbf{o}}_k, \widetilde{\mathbf{u}}_k, \widetilde{\mathbf{h}}_k, \widetilde{\spectral}_k$ & Standardized observation, input, history and spectral vectors & \textendash{} \\
     $\mathcal L_\mathrm{tr}, \mathcal L^{(\nu)}$ & Dataset empirical training loss and per-sample loss & \textendash{} \\
     $\mathcal L_\mathrm{obs}^{(\nu)}, \mathcal L_\mathrm{wave}^{(\nu)}, \mathcal L_\mathrm{spec}^{(\nu)}$ & Observation, waveform and spectral multi-step losses & \textendash{} \\
+    $\mathcal L_\mathrm{joint}^{(\nu)}$ & Combined waveform and spectral per-sample training loss & \textendash{} \\
     $\lambda_\mathrm{wave}, \lambda_\mathrm{spec}$ & Weighting factors of the combined training loss & \textendash{} \\
     $n_{\mathrm{score}}$, $\nscore{wave}$, $\nscore{spec}$ & Loss horizons in observation steps, waveform samples and spectral frames & \textendash{} \\
     \midrule
@@ -133,7 +134,7 @@
     $\mathbf X, \mathbf X_+$ & Starting and successor state snapshot matrices in \acs*{dmdc} & \textendash{} \\
     $\mathbf A, \mathbf B$ & Fitted state and input matrices in the general \acs*{dmdc} model & \textendash{} \\
     $\boldsymbol{\Upsilon}, \boldsymbol{\Omega}$ & Input snapshot and stacked regressor matrices in \acs*{dmdc} & \textendash{} \\
-    $\mathbf T$ & Centred target matrix for the affine \acs*{dmdc} fit & \textendash{} \\
+    $\mathbf T$ & Centered target matrix for the affine \acs*{dmdc} fit & \textendash{} \\
     $\mathbf{A}_\mathrm{y}$, $\mathbf{B}_\mathrm{y}$, $\mathbf{c}_\mathrm{y}$ & Affine \acs*{dmdc} output-map parameters & \textendash{} \\
     $\mathbf{G}$ & Combined state and input regression matrix in \acs*{dmdc} & \textendash{} \\
     $n_{\mathrm{rank}}$, $\rho$ & Full and retained \acs*{svd} ranks & \textendash{} \\
@@ -158,7 +159,8 @@
     $\mathcal J$ & Finite-horizon control cost & \textendash{} \\
     $\ell$, $V_\mathrm{f}$ & Control stage cost and terminal cost functions & \textendash{} \\
     $\mathcal J_\mathrm{wave}$ & Waveform tracking cost & \textendash{} \\
-    $\mathcal J_\mathrm{spec}$ & One-sided excess spectral power suppression cost & \textendash{} \\
+    $\mathcal J_\mathrm{spec}, \widetilde{\mathcal J}_\mathrm{spec}$ & One-sided excess spectral power suppression cost and its auxiliary-variable form & \textendash{} \\
+    $w_{\mathrm{wave}}, w_{\mathrm{spec}}$ & Weights of the waveform and spectral suppression costs & \textendash{} \\
     $\mathcal J_{L_2}$ & Horizon-averaged squared electrode-current cost & \si{\milli\ampere\squared} \\
     $\mathcal J_{L_1}, \widetilde{\mathcal J}_{L_1}$ & Horizon-averaged absolute electrode-current cost and its auxiliary-variable form & \si{\milli\ampere} \\
     $w_{L_2}, w_{L_1}$ & Weights of the squared and absolute current costs & \textendash{} \\
@@ -166,6 +168,8 @@
     $\bar{\mathbf y}_{\mathrm{healthy}}$ & Empirical healthy waveform channel means reference vector & \textendash{} \\
     $\mathbf y_{j|r}$ & Waveform forecast $j$ steps ahead of waveform sample $r$ & \textendash{} \\
     $\spectral_{\mathrm{healthy}}, \mathcal Y_{\mathrm{healthy},c,m}$ & Empirical healthy spectral envelope and channel-frequency threshold & \textendash{} \\
+    $\spectral^{(0)}_{j|q}, \mathbf D_{j,\ell}$ & Zero-current spectral prediction and current-to-spectrum sensitivity matrix & \textendash{} \\
+    $z_{j|q,c,m}$ & Auxiliary variable for excess spectral log-power in frame $j$, channel $c$, bin $m$ & \textendash{} \\
     \midrule
     \multicolumn{3}{@{}l}{\textit{Constraints and sparsity formulations}} \\*
     $\mathcal{X}$, $\mathcal{U}$ & Admissible state and input sets & \textendash{} \\
@@ -191,9 +195,9 @@
     $\widehat V_{\mathrm{N},a}, \widehat V_{\mathrm{S},a}$ & Estimated within-snapshot noise and between-snapshot signal variances & \textendash{} \\
     $\widehat P(h)$ & Estimated potential predictability at lookahead $h$ & \textendash{} \\
     $r$ & Pearson correlation coefficient & \textendash{} \\
-    $s(t)$ & Fraction of brain regions seizing at time $t$ & \textendash{} \\
-    $N_{\mathrm{win}}$ & Number of complete seizure-burden evaluation windows & \textendash{} \\
-    $\bar{s}$ & Seizure burden averaged over the run & \si{\percent} \\
+    $s_{\mathrm{seiz}}(t)$ & Fraction of brain regions seizing at time $t$ & \textendash{} \\
+    $n_{\mathrm{win}}$ & Number of complete seizure-burden evaluation windows & \textendash{} \\
+    $\bar{s}_{\mathrm{seiz}}$ & Seizure burden averaged over the run & \si{\percent} \\
 \end{longtable}
 
 \clearpage

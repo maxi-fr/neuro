@@ -74,9 +74,9 @@ Figure~\ref{fig:predictor_search_loss_curves} shows the loss curves for the sele
     Spectral \ac{dmdc} &
     Histories 1, 2, 4, and 8, retained fractions 0.80, 0.85, 0.90, 0.95, 0.99, 0.999, and 1.0, and ridge regularization parameters $0$, $10^{-8}$, $10^{-6}$, $10^{-4}$, and $10^{-2}$. \\
     Waveform \ac{mlp} &
-    History 3--50, widths 64, 128, and 256, depth 1--3, tanh or softplus, and direct or residual output. \\
+    History 3--50, current history 80, 240, or \SI{480}{\milli\second}, widths 64, 128, and 256, depth 1--3, tanh or softplus, and direct or residual output. \\
     Waveform \ac{cnn} &
-    History 13--75, 8--32 feature channels in the first layer, 1--3 convolutional layers, filter lengths of 1--5, and tanh or softplus.
+    History 13--75, current history 80, 240, or \SI{480}{\milli\second}, 8--32 feature channels in the first layer, 1--3 convolutional layers, filter lengths of 1--5, and tanh or softplus.
     The optional hidden layer in the prediction head used either the final convolutional layer's feature channel count or the geometric mean of the head's input and output dimensions as its width. \\
     \bottomrule
   \end{tabular}
@@ -121,7 +121,7 @@ Figure~\ref{fig:predictor_search_loss_curves} shows the loss curves for the sele
   \caption{Spectral \ac{cnn} trials scored by recursive validation log-power \ac{mse} over 17 frames.
   \ac{eeg} history is in frames and kernels are given as frames by frequency bins.
   The Channels column gives the width of the first convolutional layer, and Taper is the factor applied before rounding down the width of each subsequent layer.
-  The Head column gives the hidden width or its sizing rule, with Affine indicating no hidden layer.
+  The Head column gives the hidden width or its sizing rule, with Affine indicating no hidden layer and Last conv.\ matching the final convolutional layer's feature channel count.
   Trial 25 is the baseline, and trial 26 uses the selected architecture of trial 22 with a kernel spanning one frame instead of three.}\label{tab:search_spectral_cnn}
   \input{tables/08_appendix/observable_cnn_trials.tex}
 \end{table}
@@ -188,9 +188,9 @@ The history lengths, excitation schedules, and model selection criteria differed
 \section{Quadratic Programming Formulation}
 
 For waveform \ac{dmdc}, the predicted \ac{eeg} samples are affine in the planned currents, so tracking the healthy channel means with~\eqref{eq:mpc_waveform_cost} gives a quadratic objective in those currents.
-With a quadratic stimulation penalty and the current bounds in~\eqref{eq:mpc_current_constraints}, the waveform control problem is already a convex quadratic program.
+With a quadratic stimulation penalty and the current bounds in~\eqref{eq:mpc_current_constraints}, the waveform control problem is already a convex \ac{qp}.
 For spectral \ac{dmdc}, the cost in~\eqref{eq:mpc_spectral_cost} is only piecewise quadratic because it penalizes squared deviations from the healthy envelope only where predicted log-power exceeds the threshold.
-As in the epigraph reformulation of the \(L_1\) stimulation cost, we can represent the hinge with auxiliary variables and affine inequalities to obtain an equivalent problem that a quadratic programming solver can solve.
+As in the epigraph reformulation of the \(L_1\) stimulation cost, we can represent the hinge with auxiliary variables and affine inequalities to obtain an equivalent problem that a \ac{qp} solver can solve.
 
 At spectral frame $q$, fix the observed history and let $H\in\mathbb N_{>0}$ denote the number of intervals in the control horizon.
 Each planned current vector $\mathbf u_{\ell|q}\in\mathcal U$ is held over interval $\ell=0,\ldots,H-1$, with $\mathcal U\subseteq\mathbb R^{\ndim{u}}$ as in~\eqref{eq:mpc_current_constraints}.
@@ -225,7 +225,7 @@ The inequalities in~\eqref{eq:dmdc_spectral_hinge_qp} hold for every $j$, $c$, a
 The entries $\mathcal Y_{j|q,c,m}$ and $\mathcal Y_{\mathrm{healthy},c,m}$ give the predicted log-power and its healthy envelope threshold, respectively.
 For any admissible currents, minimizing the squared auxiliary variables sets each one to its smallest feasible value, ${[\mathcal Y_{j|q,c,m}-\mathcal Y_{\mathrm{healthy},c,m}]}_+$.
 The reformulated objective therefore equals the original objective at the minimizing auxiliary variables.
-Substitution of~\eqref{eq:dmdc_current_rollout} yields affine inequalities in the planned currents and auxiliary variables, so minimizing the two weighted sums of squares gives a convex quadratic program.
+Substitution of~\eqref{eq:dmdc_current_rollout} yields affine inequalities in the planned currents and auxiliary variables, so minimizing the two weighted sums of squares gives a convex \ac{qp}.
 
 At the ten-frame control horizon, the condensed spectral formulation has 30 current variables and \num{7440} auxiliary variables.
 OSQP reuses the fixed objective and constraint matrices and updates the constraint bounds from the new zero-current prediction at each replan.
@@ -282,25 +282,25 @@ Across paired seeds, the OSQP seizure burden differed from the IPOPT value by $-
 % Data, snapshots, and cell logs: artifacts/transcription_benchmark/.
 % Runner: src/experiments/transcription_benchmark.py; figure: thesis/figures/08_appendix/transcription_benchmark.py.
 
-This appendix compares the three direct \ac{mpc} transcriptions from Table~\ref{tab:mpc_transcription_counts} on the same JAX and IPOPT solver stack across the three controllers evaluated in Section~\ref{sec:controller_comparison} (spectral \ac{dmdc}, spectral \ac{cnn}, and waveform \ac{mlp}) and four matched physical horizons (\SI{0.30}{\second}, \SI{0.60}{\second}, \SI{1.02}{\second}, and \SI{1.50}{\second}). % what stack? We implemented the mpc formulation in jax using IPOPT for optimization
+This appendix compares the three direct \ac{mpc} transcriptions from Table~\ref{tab:mpc_transcription_counts} implemented in JAX and solved with IPOPT across the three controllers evaluated in Section~\ref{sec:controller_comparison} (spectral \ac{dmdc}, spectral \ac{cnn}, and waveform \ac{mlp}) and four matched physical horizons (\SI{0.30}{\second}, \SI{0.60}{\second}, \SI{1.02}{\second}, and \SI{1.50}{\second}).
 Every configuration used the same \ac{mpc} objective, input bounds, Kirchhoff current equality, and limited-memory IPOPT tolerances as the closed-loop experiments, with a per-solve CPU limit of \SI{120}{\second}.
-Open-loop timings were measured after one JIT compilation warmup solve across ten cold-started seizure snapshots extracted from the uncontrolled reserved trajectories (seeds 7100--7109 at \SIrange{2.40}{5.10}{\second}), stopping early after repeated \SI{120}{\second} timeouts or single-iteration timeouts exceeding \SI{360}{\second}.
+Open-loop timings were measured after one just-in-time compilation warmup solve across ten cold-started seizure snapshots extracted from the uncontrolled reserved trajectories (seeds 7100--7109 at \SIrange{2.40}{5.10}{\second}), stopping early after repeated \SI{120}{\second} timeouts or single-iteration timeouts exceeding \SI{360}{\second}.
 For configurations that converged in open loop with median solve time below \SI{40}{\second}, we also ran a \SI{1.20}{\second} closed-loop slice starting at \SI{1.38}{\second} on seed 7100 (\num{21} total replan updates, yielding \num{20} warm-started steady-state solves after the initial call).
 
 \begin{figure}
   \centering
   \includegraphics{figures/08_appendix/transcription_benchmark.pdf}
-  \caption{Open-loop median solve time over converged snapshots (top) and convergence rate (bottom) across control horizons for single shooting, 1-step \acs{narx}, and full-state multiple shooting under a \SI{120}{\second} IPOPT CPU limit.
+  \caption{Open-loop median solve time over converged snapshots (top) and convergence rate (bottom) across control horizons for single shooting, 1-step \ac{narx}, and full-state multiple shooting under a \SI{120}{\second} IPOPT CPU limit.
   Larger horizons omitted for multiple shooting on spectral \ac{dmdc} (\SI{1.02}{\second} and \SI{1.50}{\second}) and spectral \ac{cnn} (\SIrange{0.60}{1.50}{\second}) were skipped after a single iteration exceeded the CPU limit at the preceding horizon.}\label{fig:transcription_benchmark}
 \end{figure}
 
 Direct single shooting converged on all ten open-loop snapshots and all \num{21} closed-loop replans across every predictor and horizon, with open-loop medians between \SI{0.36}{\second} and \SI{1.92}{\second} and warm-started closed-loop steady-state medians between \SI{0.28}{\second} and \SI{1.45}{\second} (Figure~\ref{fig:transcription_benchmark}).
 Full-state multiple shooting converged only on the two shortest waveform \ac{mlp} horizons (\num{8}/10 at \SI{0.30}{\second} in \SI{48.96}{\second} and \num{6}/10 at \SI{0.60}{\second} in \SI{113.84}{\second}), timed out at \SI{1.02}{\second} and \SI{1.50}{\second} on waveform \ac{mlp} and at \SI{0.30}{\second} on spectral \ac{dmdc}, and exceeded \SI{120}{\second} in a single iteration on spectral \ac{dmdc} at \SI{0.60}{\second} and spectral \ac{cnn} at \SI{0.30}{\second} (\num{71601} variables).
 
-The 1-step \acs{narx} transcription eliminated the repeated history states and reduced decision variables by factors of \num{4.2} to \num{17.6} relative to full-state multiple shooting.
-Across all \num{69} jointly converged open-loop solves on spectral \ac{dmdc} and waveform \ac{mlp}, \acs{narx} and multiple shooting matched the single-shooting objective within $2.3\times 10^{-6}$ relative difference.
-On waveform \ac{mlp} ($n_o=62$), \acs{narx} converged on \num{10}/10 snapshots at \SI{0.30}{\second} (\SI{1.32}{\second}) and \SI{0.60}{\second} (\SI{5.72}{\second}), \num{9}/10 at \SI{1.02}{\second} (\SI{12.95}{\second}), and \num{7}/10 at \SI{1.50}{\second} (\SI{18.92}{\second}), with \num{21}/21 closed-loop convergence (\SIrange{1.08}{10.80}{\second}), remaining \num{3.0} to \num{10.4} times slower than single shooting in open loop.
-On spectral \ac{dmdc} ($n_o=744$), \acs{narx} converged on \num{9}/10 snapshots at \SI{0.30}{\second} (\SI{79.59}{\second}) and \num{10}/10 at \SI{0.60}{\second} (\SI{89.40}{\second}) before timing out at \SI{1.02}{\second} and \SI{1.50}{\second}, while spectral \ac{cnn} \acs{narx} timed out at all four horizons.
+The 1-step \ac{narx} transcription eliminated the repeated history states and reduced decision variables by factors of \num{4.2} to \num{17.6} relative to full-state multiple shooting.
+Across all \num{69} jointly converged open-loop solves on spectral \ac{dmdc} and waveform \ac{mlp}, \ac{narx} and multiple shooting matched the single-shooting objective within $2.3\times 10^{-6}$ relative difference.
+On waveform \ac{mlp} ($n_o=62$), \ac{narx} converged on \num{10}/10 snapshots at \SI{0.30}{\second} (\SI{1.32}{\second}) and \SI{0.60}{\second} (\SI{5.72}{\second}), \num{9}/10 at \SI{1.02}{\second} (\SI{12.95}{\second}), and \num{7}/10 at \SI{1.50}{\second} (\SI{18.92}{\second}), with \num{21}/21 closed-loop convergence (\SIrange{1.08}{10.80}{\second}), remaining \num{3.0} to \num{10.4} times slower than single shooting in open loop.
+On spectral \ac{dmdc} ($n_o=744$), \ac{narx} converged on \num{9}/10 snapshots at \SI{0.30}{\second} (\SI{79.59}{\second}) and \num{10}/10 at \SI{0.60}{\second} (\SI{89.40}{\second}) before timing out at \SI{1.02}{\second} and \SI{1.50}{\second}, while spectral \ac{cnn} \ac{narx} timed out at all four horizons.
 Single shooting was therefore retained across all closed-loop experiments.
 
 \chapter{Closed-Loop Controller Calibration}\label{app:closed_loop_calibration}
@@ -435,8 +435,8 @@ For \(\mathcal J_{\mathrm{spec}}\) alone, we used \(w_{\mathrm{spec}}=1000\) and
 
 The timing of stimulation can matter even when total charge differs little.
 In a \SI{7}{\second} replay of the controller using the joint-loss fit with both suppression terms on seed 7001, reducing \(w_{L_2}\) from 100 to 10 increased charge by \SI{2.16}{\milli\ampere\second} over the replay and by \SI{2.22}{\milli\ampere\second} before \SI{2}{\second}.
-The final count fell from 30 to three seizing regions.
-The same weight change with only \(\mathcal J_{\mathrm{spec}}\) active on seed 7004 reduced the final count from 31 to three seizing regions.
+The final count fell from 30 to 3 seizing regions.
+The same weight change with only \(\mathcal J_{\mathrm{spec}}\) active on seed 7004 reduced the final count from 31 to 3 seizing regions.
 For the controller using the waveform-only fit, the two runs in which spread was contained used just \SI{5.51}{\milli\ampere\second} and \SI{6.10}{\milli\ampere\second}, while the three runs with widespread recruitment recorded 48 to 61 failed solves each.
 
 \FloatBarrier
@@ -480,12 +480,12 @@ A final current-weight sweep with this horizon and the waveform suppression cost
 \section{Sparse Stimulation Calibration}\label{sec:sparse_calibration}
 % Data and manifests: artifacts/sparse_stimulation_102/ (calibration), artifacts/sparse_activation_ipopt/ (condensed fmax activation comparison), artifacts/sparse_stimulation_reserved_ipopt/ (reserved IPOPT run).
 
-We calibrated sparse stimulation using the spectral \ac{dmdc} predictor and the \SI{1.02}{\second} Control Horizon selected in Section~\ref{sec:controller_comparison}.
+We calibrated sparse stimulation using the spectral \ac{dmdc} predictor and the \SI{1.02}{\second} control horizon selected in Section~\ref{sec:controller_comparison}.
 Each plan contained 17 holds of \SI{60}{\milli\second}, with one hold applied before replanning.
 The controller first solved at \SI{0.66}{\second}, when the predictor was ready.
 We screened settings on seeds 7000 and 7001 and evaluated selected settings on the five development seeds 7000, 7001, 7002, 7004, and 7005.
 We sought mean delivered charge near or below \SI{30}{\milli\ampere\second} and mean seizure burden below \SI{6}{\percent}, and inspected the final seizing-region count on each seed.
-Off time was measured after release from applied holds whose electrode currents were all at or below \SI{1}{\micro\ampere}, excluding fallback holds.
+Off time was measured after control began from applied holds whose absolute electrode currents were all at or below \SI{1}{\micro\ampere}, excluding fallback holds.
 
 \subsection{Exact Current Penalty}
 
@@ -551,7 +551,7 @@ We therefore selected grouped candidates with \(w_{L_1}=0.60\) and \(w_\delta=0.
   \caption{Combined \(L_1\) and activation calibration at \(w_{L_1}=0.60\) across five development seeds. Fallback holds are totals across seeds, and final count gives the range of seizing regions at the run endpoint.}\label{tab:sparse_calibration_combined}
     \begin{tabular}{@{}rrrrrr@{}}
     \toprule
-    \(w_\delta\) & Burden (\%) & Charge (mAs) & Off (s) & Fallbacks & Final count \\
+    \(w_\delta\) & Burden (\%) & Charge (mAs) & Off time (s) & Fallbacks & Final count \\
     \midrule
     0.01 & 5.98 & 28.46 & 4.06 & 0 & 3--34 \\
     0.08 & 4.99 & 27.14 & 4.55 & 0 & 3--4  \\

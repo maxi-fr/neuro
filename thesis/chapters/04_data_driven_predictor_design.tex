@@ -97,9 +97,9 @@ Consequently, accurate one-step predictions do not necessarily guarantee accurat
 
 For waveform prediction, the observable consists of the \ac{eeg} amplitudes at a single sampling instant.
 Let $\mathbf{y}_r\in\mathbb R^{\nchan{}}$ denote the multichannel waveform sample at sample index $r\in\mathbb N_0$, with entry $y_{r,c}$ corresponding to channel $c\in\{1,\ldots,\nchan{}\}$.
-Thus, $\mathbf{o}_k=\mathbf{y}_r$ with $k=r$ and $\ndim{o}=\nchan{}$.
+Thus, $\mathbf{o}_k\equiv\mathbf{y}_r$ with $k=r$ and $\ndim{o}=\nchan{}$.
 
-\subsection{Spectral Observable and \ac{stft}}\label{sec:spectral_representation}
+\subsection{Spectral Observable and \acs{stft}}\label{sec:spectral_representation}
 
 To use spectral power as the observable in~\eqref{eq:one_step_predictor}, it must first be estimated from finite intervals of the measured waveform.
 The construction of these estimates determines which oscillatory features are retained and how quickly changes in neural activity are reflected in the observable.
@@ -212,7 +212,7 @@ Averaging is performed before this transformation so that the features describe 
 Here, $\varepsilon>0$ is a small floor preventing undefined values at zero power.
 
 The log-power features from all channels and frequency bins form the spectral observable $\spectral{}_q\in\mathbb R^{\nchan{}\nbin{}}$.
-For spectral prediction, $\mathbf{o}_k=\spectral{}_q$ with $k=q$ and $\ndim{o}=\nchan{}\nbin{}$.
+For spectral prediction, $\mathbf{o}_k\equiv\spectral{}_q$ with $k=q$ and $\ndim{o}=\nchan{}\nbin{}$.
 Each step therefore advances by $\nhop{}$ waveform samples.
 Although the observable is updated at this rate, it summarizes a longer history of measurements.
 A fully supported smoothed frame depends on
@@ -271,7 +271,7 @@ With the target and prediction procedure defined, the next section explains how 
 
 \section{Supervised Learning and Training Data}\label{sec:predictor_training}
 
-In supervised learning, a parameterized mapping is fitted to examples of the desired input-output behaviour~\cite{Goodfellow2016}.
+In supervised learning, a parameterized mapping is fitted to examples of the desired input-output behavior~\cite{Goodfellow2016}.
 Here, the inputs are measured histories and prescribed stimulation currents, and the targets are subsequent observations of neural activity.
 For the nonlinear predictors, this mapping is represented by a neural network, comprising connected layers of weighted sums and nonlinear transformations~\cite{Goodfellow2016}.
 The weights and biases of these layers are learned from the training examples.
@@ -378,7 +378,7 @@ Using the recursive prediction notation from~\eqref{eq:recursive_predictor}, def
     \label{eq:observable_training_loss}
 \end{equation}
 For waveform prediction, this gives the waveform loss $\mathcal{L}_\mathrm{wave}^{(\nu)}$, which scores $\nscore{wave}=n_{\mathrm{score}}$ waveform samples.
-For spectral-output prediction, the same construction uses $\mathbf{o}_k=\spectral{}_q$ and $\ndim{o}=\nchan{} \nbin{}$ to score $\nscore{spec}=n_{\mathrm{score}}$ spectral frames through the spectral loss $\mathcal{L}_\mathrm{spec}^{(\nu)}$.
+For spectral-output prediction, the same construction uses $\mathbf{o}_k\equiv\spectral{}_q$ and $\ndim{o}=\nchan{} \nbin{}$ to score $\nscore{spec}=n_{\mathrm{score}}$ spectral frames through the spectral loss $\mathcal{L}_\mathrm{spec}^{(\nu)}$.
 
 Waveform predictors can also be trained to reproduce spectral power rather than, or in addition to, the individual waveform samples.
 For this purpose, their predicted waveforms are transformed using the same transformation as the spectral targets.
@@ -437,7 +437,7 @@ The following section introduces the neural-network architectures fitted with th
 The training objectives above require a mapping from observation histories and stimulation currents to the next observable.
 We consider three predictor architectures that differ in how they represent the relationship between observation histories, stimulation currents and future neural activity.
 
-\subsection{\ac{mlp}}
+\subsection{\acs{mlp}}
 
 An \ac{mlp} can represent nonlinear relationships between neural activity and stimulation currents.
 Its universal approximation property states that a network with a sufficiently wide hidden layer, biases and a continuous nonpolynomial activation function can approximate any continuous mapping on a compact input domain arbitrarily closely~\cite{Leshno1993}.
@@ -471,7 +471,7 @@ The hidden-layer activations investigated here are the hyperbolic tangent and so
 \begin{equation}
     \sigma_{\tanh}(x)=\tanh(x),
     \qquad
-    \sigma_\mathrm{softplus}(x)=\ln(1+e^x)\,.
+    \sigma_\mathrm{softplus}(x)=\ln(1+\mathrm{e}^x)\,.
     \label{eq:mlp_activations}
 \end{equation}
 Both activations in~\eqref{eq:mlp_activations} are smooth and nonpolynomial.
@@ -506,8 +506,8 @@ For the direct and residual parameterizations introduced in Section~\ref{sec:pre
         & \text{for direct prediction},\\
         \widetilde{\mathbf{o}}_k
         +\mathbf{N}_{\boldsymbol{\theta}}(\mathbf{z}_k),
-        & \text{for residual prediction}
-    \end{cases}\,.
+        & \text{for residual prediction}\,.
+    \end{cases}
     \label{eq:mlp_output}
 \end{equation}
 For residual prediction, the inverse transformation in~\eqref{eq:predictor_standardization} scales the predicted increment by the observation standard deviations; the observation mean cancels.
@@ -532,7 +532,7 @@ It can therefore represent different responses to the same current at different 
 The convolutional architecture introduced next retains this nonlinear dependence but uses shared weights for local feature extraction.
 
 
-\subsection{\ac{cnn}}
+\subsection{\acs{cnn}}
 
 The \ac{mlp} assigns separate weights to observations at different time lags and frequency bins.
 \Acp{cnn} instead reuse learned convolutional filters across neighboring positions, allowing recurring local patterns to be represented with shared parameters~\cite{Goodfellow2016}.
@@ -635,16 +635,16 @@ Sharing filters reduces the parameters used for local feature extraction while l
 Specifically, a temporal layer uses $n_{\mathrm{chan}}^{(\ell)}(n_{\mathrm{chan}}^{(\ell-1)}n_{\mathrm{filter},t}+1)$ parameters and a time-frequency layer uses $n_{\mathrm{chan}}^{(\ell)}(n_{\mathrm{chan}}^{(\ell-1)}n_{\mathrm{filter},t}n_{\mathrm{filter},f}+1)$, regardless of the history length.
 Extending the history therefore increases the number of feature positions without requiring additional filter coefficients, although it increases the number of weights in the fully connected head.
 For illustration, consider waveform prediction with $\nchan{}=62$ channels, $\ndim{u}=3$ stimulation electrodes, $\nhist{u}=10$ past currents and $\nhist{o}=100$ samples.
-Two length-five convolutional layers with 32 and 16 feature channels, followed by a prediction head with a 16-unit hidden layer, give 37,678 trainable parameters, including biases and the 62-dimensional output layer.
-An \ac{mlp} with the same histories and one 256-unit hidden layer has 1,611,838 parameters, approximately 43 times as many.
+Two length-five convolutional layers with 32 and 16 feature channels, followed by a prediction head with a 16-unit hidden layer, give \num{37678} trainable parameters, including biases and the 62-dimensional output layer.
+An \ac{mlp} with the same histories and one 256-unit hidden layer has \num{1611838} parameters, approximately 43 times as many.
 The \ac{cnn} thus combines shared local feature extraction with a position-sensitive nonlinear prediction stage.
 The next subsection introduces a linear alternative based on delay-embedded observations.
 
-\subsection{Linear \ac{dmd}-Based Predictor}\label{sec:linear_dmd_predictor}
+\subsection{Linear \acs{dmd}-Based Predictor}\label{sec:linear_dmd_predictor}
 
 % Motivation
 The neural networks above provide nonlinear prediction models, but a linear alternative is attractive for the subsequent control optimization.
-With continuous decision variables, affine prediction dynamics, convex quadratic costs and affine constraints, \ac{mpc} can be formulated as a convex quadratic program~\cite{Rawlings2017}.
+With continuous decision variables, affine prediction dynamics, convex quadratic costs and affine constraints, \ac{mpc} can be formulated as a convex \ac{qp}~\cite{Rawlings2017}.
 Restricting the predictor to an affine mapping also limits its expressiveness, while truncation and regularization provide further control over fitting complexity.
 
 Although the biophysical plant has nonlinear dynamics, the predictor operates on features extracted from its measurements.

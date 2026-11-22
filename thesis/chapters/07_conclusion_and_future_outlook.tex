@@ -8,7 +8,7 @@ A measurement lead field mapped regional activity to scalp \ac{eeg}, and a stimu
 We used this plant to generate training data for predictors of scalp \ac{eeg} waveforms and their log-power spectra, and to evaluate the resulting controllers in closed-loop simulations.
 We evaluated a \acf{mlp} and a \acf{cnn} for both prediction targets, and \acf{dmdc} for linear log-power prediction.
 
-We formulated waveform-based \ac{mpc} to track a healthy reference waveform and spectral \ac{mpc} to penalize excess log-power relative to a healthy reference spectrum.
+We formulated waveform-based \ac{mpc} to track the healthy channel means and spectral \ac{mpc} to penalize excess log-power above a healthy spectral envelope.
 Both costs correlated positively with the fraction of seizing regions, with a stronger correlation for excess log-power.
 For waveform-based \ac{mpc}, adding a spectral loss during predictor training reduced the underestimation of oscillatory power, which made closed-loop suppression possible.
 Among the spectral predictors, the linear \ac{dmdc} model achieved the lowest prediction error.
@@ -21,7 +21,7 @@ Combining them kept stimulation off for about half the time, with similar seizur
 
 Several directions remain for future work, starting with the computational burden of solving the \ac{mpc} optimization problem in real time, especially for high-dimensional spectral forecasts or binary sparsity penalties.
 A Koopman-inspired extension could test whether adding observables derived from scalp \ac{eeg} improves linear prediction of spectral log-power.
-For predictors that remain affine in the planned electrode currents, future work could evaluate whether a \acf{qp} solver meets the controller's real-time deadline.
+For predictors that remain affine in the planned electrode currents, future work could evaluate whether a \ac{qp} solver meets the controller's real-time deadline.
 Alternatively, a neural network could be trained to imitate the \ac{mpc} feedback law, mapping recent \ac{eeg} and stimulation histories directly to electrode currents to avoid online optimization altogether.
 
 The controllers relied on single forecasts despite uncertainty in the timing of seizure spread.

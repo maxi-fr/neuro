@@ -29,14 +29,14 @@ Figure~\ref{fig:neural_scales} illustrates this relationship between regional ne
 \begin{figure}
     \centering
     \input{figures/02_problem_formulation/problem_overview}
-    \caption{Neural activity across scales: Zoom connectors expand a selected node of a whole-brain network into interacting regional populations, then expand one population into its constituent neurons. Neural mass models summarize population activity and regional nodes aggregate the dynamics of local circuits.}\label{fig:neural_scales}
+    \caption{Neural activity across scales. Zoom connectors expand a selected node of a whole-brain network into interacting regional populations, then expand one population into its constituent neurons. Neural mass models summarize population activity and regional nodes aggregate the dynamics of local circuits.}\label{fig:neural_scales}
 \end{figure}
 
 At the whole-brain scale, regions communicate through bundles of axons, including long-range white-matter pathways~\cite{Hagmann2008}.
 Whole-brain network models connect regional models through a structural connectome, a representation of anatomical connections between brain regions~\cite{SanzLeon2013}.
 Constructing this connectome involves a parcellation that divides the brain into anatomical units and an estimate of the pathways connecting them.
 Diffusion magnetic resonance imaging measures direction-dependent water diffusion in tissue, from which local fiber orientations can be estimated.
-Tractography follows these estimated orientations to reconstruct candidate white-matter pathways. % PROSE-11?
+Candidate white-matter pathways are reconstructed by tracing these estimated orientations with tractography.
 Combining these pathways with the parcellation yields regional connection weights and estimates of pathway lengths~\cite{Hagmann2008}.
 
 In a dynamical network, connection weights determine the strength of interactions, while pathway lengths and conduction speeds determine transmission delays~\cite{SanzLeon2015}.
@@ -51,7 +51,7 @@ The resulting manifestations depend on the neural systems involved~\cite{Fisher2
 
 For the network description adopted here, the \ac{ez} denotes the regions that initiate seizure activity.
 Recruitment means that a region outside the initiating zone develops seizure-like activity through its interaction with the active network.
-It is a change in that region's dynamics, rather than merely the detection of an electrical signal generated elsewhere~\cite{Olmi2019}. % what is "it"? the version before was clearer
+It is a change in that region's dynamics, rather than merely the detection of an electrical signal generated elsewhere~\cite{Olmi2019}.
 
 Whether a region is recruited depends on both its local susceptibility and the input it receives from other regions.
 Structural connectivity alone therefore does not determine the propagation pattern~\cite{Olmi2019}.
@@ -66,10 +66,9 @@ A secondary objective is to limit stimulation effort by reducing electrode-curre
 Suppressing seizure activity requires a way to observe neural activity and an intervention that can influence its evolution.
 \Ac{eeg} records electrical potential differences between electrodes on the scalp.
 The recorded potentials reflect the superposition of contributions from neural currents after conduction through the tissues of the head.
-Consequently, an electrode does not directly measure the activity of a single underlying region.
-The relationship between regional seizure activity and the available measurements is therefore indirect~\cite{Buzsaki2012}.
-Each \ac{eeg} channel shows this mixture as a waveform over time, with the height and spacing of successive waves showing their amplitude and rhythm.
-During a seizure, scalp \ac{eeg} can show rhythmic activity that increases in amplitude and changes in frequency~\cite{Stamoulis2012}.
+Consequently, an electrode does not directly measure the activity of a single underlying region, making the relationship between regional seizure activity and the available measurements indirect~\cite{Buzsaki2012}.
+Each \ac{eeg} channel records this mixture as a waveform over time, with the height and spacing of successive waves reflecting its amplitude and rhythm.
+During a seizure, scalp \ac{eeg} can exhibit rhythmic activity that increases in amplitude and changes in frequency~\cite{Stamoulis2012}.
 
 In \ac{tes}, electrical currents are applied through scalp electrodes to influence neural activity.
 These currents produce electric fields within the head, with their spatial distribution depending on the electrode arrangement and the electrical properties of the tissues~\cite{Huang2019}.
@@ -77,7 +76,7 @@ The effects of stimulation on collective neural activity can be investigated by 
 Together, scalp measurements and stimulation provide the observation and intervention interfaces for feedback control.
 Figure~\ref{fig:scalp_interfaces} illustrates these two interfaces.
 
-\begin{figure} % [!ht] % latex-lint:ignore=FLOAT-01
+\begin{figure}
     \centering
     \input{figures/02_problem_formulation/scalp_interfaces}
     \caption{Scalp measurement and stimulation.
@@ -85,7 +84,7 @@ Figure~\ref{fig:scalp_interfaces} illustrates these two interfaces.
     The right panel shows a current source applying stimulation through scalp electrodes.}\label{fig:scalp_interfaces}
 \end{figure}
 
-\section{Simulation and \ac{mpc} Framework}\label{sec:control_engineering_setting}
+\section{Simulation and \acs{mpc} Framework}\label{sec:control_engineering_setting}
 
 The scalp measurement and stimulation interfaces define the feedback control setting investigated here in simulation.
 The biophysical plant model represents a network of regional neural masses coupled according to anatomical connectivity, with mappings that convert electrode currents into regional inputs and regional activity into scalp \ac{eeg} potentials.
@@ -103,7 +102,7 @@ Figure~\ref{fig:control_setting} provides an overview of the feedback loop and t
     Below the feedback loop, dashed arrows show offline data generation and system identification.}\label{fig:control_setting}
 \end{figure}
 
-\Ac{mpc} uses a dynamical model of the brain network to predict its response to candidate sequences of electrode currents.
+\Ac{mpc} uses a dynamical prediction model to forecast the system's response to candidate sequences of electrode currents.
 A cost function assesses the predicted response and stimulation effort, and the current sequence is optimized subject to constraints.
 The controller applies the planned currents up to the next replanning instant, when it repeats the optimization using updated measurements~\cite{Rawlings2017}.
 
@@ -115,7 +114,7 @@ Depending on the prediction target, it forecasts either \ac{eeg} waveforms or sp
 Because regional neural activity is unavailable to the controller, the cost expresses seizure suppression through deviations of predicted scalp activity from a healthy reference.
 Waveform tracking penalizes deviations from healthy channel means, whereas spectral suppression penalizes power above a healthy reference envelope for each channel and frequency.
 The spectral cost can be evaluated directly from predicted spectral power or from spectra computed from predicted waveforms.
-Additional cost terms penalize electrode-current magnitudes or the number of intervals in which stimulation is applied, balancing seizure suppression against stimulation effort.
+Additional cost terms penalize electrode-current magnitudes and the number of intervals in which stimulation is applied, balancing seizure suppression against stimulation effort.
 
 In addition to the cost, constraints restrict which stimulation sequences are admissible.
 Electrode-current bounds limit the magnitude of each current, while a current-balance constraint requires the electrode currents to sum to zero at each stimulation interval.

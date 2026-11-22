@@ -82,7 +82,7 @@ def main() -> None:
     ax = axes[0]
     ax.plot(t, y, lw=0.6, color="C0")
     ax.set_ylabel(r"$y_{\mathrm{LFP}}$ (mV)")
-    ax.set_title("Propagation-zone node recruited by the epileptogenic zone", loc="left")
+    ax.set_title("Waveform", loc="left")
 
     ax = axes[1]
     d_f = freqs[1] - freqs[0]

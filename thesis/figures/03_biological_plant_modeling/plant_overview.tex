@@ -68,12 +68,12 @@
     \begin{scope}[shift={(0,0.40)}]
         \pic {brain};
         \input{figures/03_biological_plant_modeling/plant_overview_network}
-        % Node 69 is the source of the simulated trace used in the callout.
+        % Highlight a representative frontal node for the regional activity callout.
         \node[region, fill=white, minimum size=8pt, line width=1pt,
-            thesis secondary, text=accentcolor!85!black] at (r69) {$i$};
+            thesis secondary, text=accentcolor!85!black] (calloutnode) at (r60) {$i$};
     \end{scope}
     \draw[accentcolor!85!black, line width=0.65pt]
-        (r69) -- (-0.85,1.94) -- (-0.85,2.30);
+        (calloutnode.north) -- (calloutnode.north |- 0,2.30);
     \path[draw=accentcolor!45, fill=white, rounded corners=2pt,
         line width=0.5pt] (-1.48,2.30) rectangle (1.48,3.00);
     \node[thesis secondary] at (0,2.84) {$y_{\mathrm{reg},i}(t)$};

@@ -60,7 +60,7 @@ def plot_penalty_scatter(bundle: ObservableEvaluationBundle, lag_points: FloatAr
         pearson = SeizureRelevanceResult.pearson(points)
         correlation = rf"$r={pearson:.3f}$" if np.isfinite(pearson) else "undefined $r$"
         ax.scatter(*points.T, color=color, s=1.8, alpha=0.18, linewidths=0, rasterized=True)
-        ax.set(title=label, xlabel=r"Seizure state $s(t_q)$", ylabel=cost_label)
+        ax.set(title=label, xlabel=r"Seizure state $s_{\mathrm{seiz}}(t_q)$", ylabel=cost_label)
         ax.text(0.07, 0.92, correlation, transform=ax.transAxes, ha="left", va="top")
         ax.grid()
         ax.yaxis.set_major_locator(MaxNLocator(4))

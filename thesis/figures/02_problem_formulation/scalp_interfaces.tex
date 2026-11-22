@@ -31,7 +31,7 @@
     }}
 ]
     \path[panel] (0,0) rectangle (7.42,3.84);
-    \node[anchor=west, thesis heading] at (0.23,3.53) {EEG measurement};
+    \node[anchor=west, thesis heading] at (0.23,3.53) {\acs{eeg} measurement};
     \pic {head};
     \path[draw=accentcolor!85!black, fill=accentcolor!14, line width=0.7pt]
         (0.96,2.17)
@@ -43,7 +43,7 @@
         \node[contact] at (\x,\y) {};
     }
     \draw[wire, ->] (3.07,2.24) -- (3.85,2.24);
-    \node[anchor=west, thesis secondary] at (4.10,2.96) {Example EEG channels};
+    \node[anchor=west, thesis secondary] at (4.10,2.96) {Example \acs{eeg} channels};
     \begin{scope}[shift={(4.15,2.49)}]
         \draw[trace] plot[smooth] coordinates {(0,0) (0.20,0.04) (0.36,-0.06)
             (0.54,0.08) (0.74,0.02) (0.92,-0.10) (1.10,0.12) (1.28,-0.05)
