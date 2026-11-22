@@ -516,7 +516,7 @@ Its affine dependence on planned currents allowed the spectral predictions for t
 On the five development seeds, we compared Bonmin, grouped candidate search, and the homotopy solution method with the same activation weight \(w_\delta=2.40\) and zero current-magnitude penalty weights (Table~\ref{tab:sparse_stimulation_results}~(a)).
 The homotopy method was fastest at \SI{0.46}{\second} per update on average, followed by grouped candidate search at \SI{1.43}{\second} and Bonmin at \SI{1.64}{\second}.
 The homotopy method resulted in the lowest mean seizure burden (\SI{4.56}{\percent}), but also the highest mean charge and shortest mean off time.
-The bonmin sovler failed on seven updates, possibly contributing to this worse performance.
+The Bonmin solver failed on seven updates, possibly contributing to its higher mean seizure burden (\SI{5.06}{\percent}) and slower solve time.
 Grouped candidate search gave the longest mean off time (\SI{4.34}{\second}) and the lowest mean charge (\SI{27.98}{\milli\ampere\second}).
 We therefore used grouped candidate search for both configurations with an activation penalty in the final comparison.
 

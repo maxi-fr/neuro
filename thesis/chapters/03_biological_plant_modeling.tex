@@ -296,7 +296,7 @@ Figure~\ref{fig:ez_pz_assignment} shows the five selected region centroids withi
 
 Table~\ref{tab:jr_params} summarizes the local node parameters and network parameters used throughout the simulations.
 The shared synaptic gains, time constants, sigmoid parameters, connectivity ratios and background input follow the standard Jansen-Rit parameterization~\cite{Jansen1995}.
-The regional values of $A_i$ define the excitability partition described above and the conduction speed $c$ determines the tract delays through~\eqref{eq:delay_quantisation}.
+The regional values of $A_i$ define the excitability partition described above and the conduction speed $c$ determines the tract delays through~\eqref{eq:physical_delay}.
 
 The remaining network-level parameters are the global coupling factor $K$ and white-noise amplitude $\sigma$.
 Increasing $K$ strengthens the delayed firing-rate input received from connected regions and therefore promotes recruitment beyond the \ac{ez}.
@@ -306,7 +306,7 @@ There, recruitment spreads through most of the left hemisphere while not extendi
 Inspired by this sequence, the present study targets recruitment through the \ac{pz} across the left hemisphere within approximately \SI{10}{\second} of \ac{ez} seizure onset.
 The resulting values are $K=0.60$ and $\sigma=0.86\,\si{\second^{-1/2}}$.
 A region is classified as recruited if within the past \SI{1}{\second} the peak-to-peak amplitude of $y_{\mathrm{reg}}$ exceeds \SI{5}{\milli\volt}.
-This criterion is used consistently for the calibration and subsequent propagation analyses, with its detailed motivation and sensitivity reported in the appendix.
+This threshold sits between the low-amplitude background fluctuations and the large-amplitude spike-wave limit cycle in Figure~\ref{fig:bifurcation}, and is used consistently throughout for the calibration and subsequent propagation analyses.
 The exact spread pattern remains stochastic across random seeds.
 Figure~\ref{fig:uncontrolled_propagation} shows a representative run with near-full left-hemisphere recruitment after approximately \SI{10}{\second}.
 
@@ -424,8 +424,8 @@ with regional entries
 Ex8 is retained as the third entry of $\mathbf{u}$ so that the physical electrode currents satisfy Kirchhoff's current law.
 As the reference/return electrode used to construct the \ac{fem} basis, it has a zero column in $\mathbf{L}_\mathrm{stim}$.
 
-The montage was selected by a three-electrode search over the available scalp locations for targeted suppressive drive in the \ac{pz}.
-The search procedure and montage comparison are reported in the appendix.
+The montage was selected using a sparse optimization search over the available scalp locations for targeted suppressive drive in the \ac{pz}.
+The search procedure and montage comparison are reported in Appendix~\ref{app:montage_selection}.
 By design, the individual electrode currents are constrained to respect safety and hardware limits,
 %
 \begin{equation*}

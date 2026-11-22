@@ -1,8 +1,8 @@
 \chapter{Conclusions and Outlook}\label{ch:conclusion_and_future_outlook}
 
-Closed-loop neurostimulation uses recordings of brain activity to guide when and how to stimulate.
-Focal seizures can spread from the epileptogenic zone and recruit other brain regions.
-We investigated whether \ac{mpc} could be used to contain this spread using scalp \ac{eeg} as the only feedback signal and bounded electrode currents for transcranial stimulation.
+Closed-loop neurostimulation uses recordings of brain activity to adapt stimulation to the current brain state.
+For focal epilepsy, where seizures can spread from the epileptogenic zone and recruit other brain regions, such feedback control could help contain seizure propagation.
+We investigated whether \ac{mpc} could contain this spread using scalp \ac{eeg} as the only feedback signal and bounded electrode currents for transcranial stimulation.
 To that end, we set up a whole-brain Jansen-Rit model of left-temporal seizure propagation.
 A measurement lead field mapped regional activity to scalp \ac{eeg}, and a stimulation lead field mapped electrode currents to regional membrane-potential shifts.
 We used this plant to generate training data for predictors of scalp \ac{eeg} waveforms and their log-power spectra, and to evaluate the resulting controllers in closed-loop simulations.
@@ -11,25 +11,23 @@ We evaluated a \acf{mlp} and a \acf{cnn} for both prediction targets, and \acf{d
 We formulated waveform-based \ac{mpc} to track a healthy reference waveform and spectral \ac{mpc} to penalize excess log-power relative to a healthy reference spectrum.
 Both costs correlated positively with the fraction of seizing regions, with a stronger correlation for excess log-power.
 For waveform-based \ac{mpc}, adding a spectral loss during predictor training reduced the underestimation of oscillatory power, which made closed-loop suppression possible.
+Among the spectral predictors, the linear \ac{dmdc} model achieved the lowest prediction error.
 
-In closed-loop simulations, waveform-based and spectral \ac{mpc} reduced mean seizure burden relative to threshold-triggered stimulation while delivering \SIrange{43}{48}{\percent} less charge on average.
+In closed-loop simulations, waveform-based and spectral \ac{mpc} reduced mean seizure burden relative to threshold-triggered stimulation while delivering over \SI{40}{\percent} less charge on average.
 At similar mean charge, spectral \ac{mpc} contained seizure spread more consistently than waveform-based \ac{mpc}.
 
-To promote sparse stimulation, we tested an \(L_1\) penalty on electrode currents and a binary penalty for each interval in which stimulation was enabled.
-Combining the penalties kept stimulation off for about half the time after control began, on average, with similar mean seizure burden and lower mean charge than with the quadratic current penalty.
-The combined penalties also required the longest mean solve time.
+To promote sparse stimulation, we tested an \(L_1\) current penalty and a binary penalty on enabled stimulation intervals.
+Combining them kept stimulation off for about half the time, with similar seizure burden to the quadratic penalty on average.
 
-Solving the \ac{mpc} optimization problem in real time remains a challenge.
-The linear \ac{dmdc} predictor achieved the lowest mean log-power prediction error among the spectral predictors tested.
-This predictor enables linear \ac{mpc} with specialized \acf{qp} solvers.
-A Koopman-inspired extension could incorporate additional \ac{eeg}-based features or the waveform history to improve prediction while preserving the \ac{qp} formulation.
-Predicting log-power across many \ac{eeg} channels and frequency bins yields a high-dimensional forecast that can make the \ac{ocp} costly to solve.
-A neural network trained to imitate the \ac{mpc} feedback law could map recent \ac{eeg} and stimulation histories directly to electrode currents, avoiding the need to solve an \ac{ocp} at each update.
+Several directions remain for future work, starting with the computational burden of solving the \ac{mpc} optimization problem in real time, especially for high-dimensional spectral forecasts or binary sparsity penalties.
+A Koopman-inspired extension could test whether adding observables derived from scalp \ac{eeg} improves linear prediction of spectral log-power.
+For predictors that remain affine in the planned electrode currents, future work could evaluate whether a \acf{qp} solver meets the controller's real-time deadline.
+Alternatively, a neural network could be trained to imitate the \ac{mpc} feedback law, mapping recent \ac{eeg} and stimulation histories directly to electrode currents to avoid online optimization altogether.
 
-Both waveform-based and spectral \ac{mpc} relied on a single forecast despite uncertainty in the timing of seizure spread.
-Extending these formulations to stochastic or robust \ac{mpc} would allow us to account for uncertainty in recruitment when deciding when to stimulate and how long to withhold stimulation.
+The controllers relied on single forecasts despite uncertainty in the timing of seizure spread.
+Stochastic or robust \ac{mpc} could account for this uncertainty when scheduling stimulation.
 
-Given the inherent variability of \ac{stft}-based power estimates, future work could test whether alternatives such as the Teager-Kaiser energy operator~\cite{Chourdaki2026} yield more predictable observables and improve control.
+Given the inherent variability of \ac{stft}-based power estimates, future work could investigate whether alternatives such as the Teager-Kaiser energy operator~\cite{Chourdaki2026} yield more predictable observables and improve control.
 
-We evaluated these methods in a single model of left-temporal focal seizures.
-Future work should test whether the methods generalize to other seizure types and electrode montages.
+Finally, we evaluated these methods in a single model of left-temporal focal seizures.
+Future work should test whether they generalize to other seizure types and electrode montages.

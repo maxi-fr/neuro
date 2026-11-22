@@ -1,3 +1,47 @@
+\chapter{Stimulation Montage Selection}\label{app:montage_selection}
+
+This appendix describes the sparse optimization procedure used to evaluate candidate \ac{tes} electrode montages for the biophysical plant in Section~\ref{sec:stimulation_interface}.
+In the 63-channel ROAST \ac{fem} lead field (62 scalp electrodes referenced to Ex8), the deep mesial \ac{ez} structures receive weak scalp-induced fields: the largest single-electrode sensitivity magnitudes across all scalp locations are \SI{0.028}{\milli\volt\per\milli\ampere} in the left hippocampus, \SI{0.029}{\milli\volt\per\milli\ampere} in the left parahippocampal cortex, and \SI{0.063}{\milli\volt\per\milli\ampere} in the left amygdala.
+By contrast, the superficial left inferior temporal region of the \ac{pz} reaches $-\SI{0.337}{\milli\volt\per\milli\ampere}$ under TP9, more than twice the magnitude of the next strongest scalp electrode.
+Montage selection therefore targets suppressive drive in the \ac{pz} rather than direct silencing of the deep \ac{ez}.
+
+To identify sparse candidate montages under the safety and charge-conservation limits, we specify a target regional drive vector $\mathbf{s}_{\mathrm{tar}}\in\mathbb{R}^{\nreg{}}$ with $s_{\mathrm{tar},i}=-\SI{0.8}{\milli\volt}$ on the two \ac{pz} regions (left inferior temporal and left ventral temporal) and $0$ on all other regions.
+Let $\mathbf{L}_{\mathrm{stim,full}}\in\mathbb{R}^{\nreg{}\times 63}$ denote the full ROAST stimulation lead field.
+Candidate electrode subsets are found by sweeping an $\ell_1$-regularized \ac{qp},
+\begin{equation*}
+  \min_{\mathbf{u}\in\mathbb{R}^{63}}\;
+  \frac{1}{2}\bigl\lVert\mathbf{L}_{\mathrm{stim,full}}\mathbf{u}-\mathbf{s}_{\mathrm{tar}}\bigr\rVert_2^2
+  + \lambda\lVert\mathbf{u}\rVert_1
+  \qquad\text{subject to}\qquad
+  \sum_{p=1}^{63}u_p = 0,\quad |u_p|\le\SI{2}{\milli\ampere}\,,
+\end{equation*}
+across 60 log-spaced values of $\lambda\in[10^{-4},10^{1}]$, retaining distinct active supports $\mathcal{S}=\{p:|u_p|>\SI{1e-3}{\milli\ampere}\}$ with $2\le|\mathcal{S}|\le 4$.
+Because the $\ell_1$ penalty shrinks the currents of the selected electrodes toward zero, each candidate support $\mathcal{S}$ is then evaluated by solving the same \ac{qp} without the $\ell_1$ term ($\lambda=0$) restricted to $\mathcal{S}$.
+
+Table~\ref{tab:montage_comparison} compares the resulting $\ell_1$-screened candidates with the selected TP9, CP5, Ex8 montage under the same unregularized active-set \ac{qp}.
+Every sparse candidate anchors on TP9 as the primary hyperpolarizing electrode over the left inferior temporal cortex.
+During $\ell_1$ screening, the penalty on total current favors TP9, F3, Fz at three electrodes ($\lVert\mathbf{u}\rVert_1=\SI{3.35}{\milli\ampere}$ versus \SI{4.00}{\milli\ampere} for TP9, CP5, Ex8).
+After removing shrinkage in the active-set evaluation, however, TP9, CP5, Ex8 achieves a lower field-matching \ac{mse} (\SI{0.00763}{\milli\volt\squared}) than both the three- and four-electrode $\ell_1$-screened montages while delivering comparable \ac{pz} hyperpolarization and off-target deflection.
+It also retains Ex8 as the return electrode following~\cite{Yu2024} and provides two independent control degrees of freedom under Kirchhoff's current law.
+
+\begin{table}[!htbp] % latex-lint:ignore=FLOAT-01
+  \centering
+  \small
+  \setlength{\tabcolsep}{4.5pt}
+  \caption{Comparison of candidate \ac{tes} montages under the unregularized active-set \ac{qp} targeting $-\SI{0.8}{\milli\volt}$ in the left inferior temporal (lTCI) and left ventral temporal (lTCV) \ac{pz} regions at $|u_p|\le\SI{2}{\milli\ampere}$.
+  The refit \ac{mse} is averaged over all \num{76} regions, and the final column gives the largest absolute drive induced in any non-\ac{pz} region.}\label{tab:montage_comparison}
+  \begin{tabular}{@{}lcccccc@{}}
+    \toprule
+    Montage & $k$ & Refit currents (\si{\milli\ampere}) & \ac{mse} (\si{\milli\volt\squared}) & lTCI (\si{\milli\volt}) & lTCV (\si{\milli\volt}) & Max off-target (\si{\milli\volt}) \\
+    \midrule
+    TP9, Fz          & 2 & $+1.55, -1.55$               & 0.00837 & $-0.716$ & $-0.088$ & 0.118 \\
+    TP9, F3, Fz      & 3 & $+1.67, -0.85, -0.82$        & 0.00797 & $-0.743$ & $-0.100$ & 0.108 \\
+    TP9, F3, Fz, Pz  & 4 & $+1.77, -1.08, +0.26, -0.96$ & 0.00779 & $-0.764$ & $-0.096$ & 0.127 \\
+    \textbf{TP9, CP5, Ex8} & \textbf{3} & $+2.00, -2.00, -0.00$ & \textbf{0.00763} & $-0.722$ & $-0.097$ & \textbf{0.107} \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
 \chapter{Predictor Hyperparameter Searches}\label{app:predictor_search}
 
 Table~\ref{tab:predictor_search_spaces} lists the settings evaluated in the searches from Section~\ref{sec:offline_predictor_benchmark}.
@@ -105,15 +149,19 @@ Figure~\ref{fig:predictor_search_loss_curves} shows the loss curves for the sele
 
 \chapter{Linear Prediction of Waveform and Spectral Observables}\label{app:dmdc_comparison}
 
-The spectral suppression cost in~\eqref{eq:mpc_spectral_cost} depends on future log-power, which the controller can obtain either from a predicted waveform or from a direct spectral prediction. % this is not the introduction that i wanted. I prefer the old version. This appendix chapter is a discussion of the idea of koopman analysis of lifting nonlinear dynamics into a higher dimensional observable space where it can be linear. And then we discuss how well/if that worked here.  
-Fitting an affine predictor to log-power, as in Section~\ref{sec:linear_dmd_predictor}, puts the quantity being penalized directly in the predictor output.
-This choice follows the use of data-driven approximations to predict nonlinear observables with linear models for \ac{mpc}~\cite{Williams2015,Korda2018}.
-For the spectral cost, the resulting affine dependence of log-power on the planned currents makes quadratic programming possible.
-We first compare the validation errors to assess how much predictive accuracy the affine model retains for each target.
+The Koopman perspective introduced in Section~\ref{sec:linear_dmd_predictor} suggests lifting nonlinear dynamics into a higher-dimensional space of observables, where a linear operator describes how functions of the state evolve~\cite{Brunton2016}.
+For prediction, the practical question is whether a finite set of observables captures enough of that evolution for a fitted linear model to remain accurate over the horizon of interest~\cite{Williams2015}.
+Here the candidate observables are the log-powers in individual \ac{eeg} channels and frequency bins, each a nonlinear function of a window of waveform samples.
+
+In Section~\ref{sec:offline_prediction_target}, spectral \ac{dmdc} predicted log-power about as accurately as the spectral \ac{mlp} and \ac{cnn}.
+In closed loop, the spectral \ac{dmdc} and \ac{cnn} controllers achieved similar mean seizure burdens on the held-out seeds (Section~\ref{sec:controller_comparison}).
+These results leave open whether the dynamics are more amenable to linear prediction in spectral coordinates than in waveform coordinates.
+To address this question, we introduce a waveform \ac{dmdc} predictor that uses past \ac{eeg} samples and stimulation currents to predict the next waveform sample.
 
 \section{Comparison with Nonlinear Predictors}
 
-We compare the recursive validation \ac{mse} of the \ac{dmdc} predictor with that of the \ac{mlp} and \ac{cnn} predictors over the first \SI{240}{\milli\second} for each prediction target.
+Waveform and log-power errors have different units, so we use the better of the two neural predictors as a reference within each representation.
+We compare its mean recursive validation \ac{mse} with that of the corresponding \ac{dmdc} predictor over the first \SI{240}{\milli\second}.
 Within each target, all predictors start at the same validation origins, receive the recorded future currents, and predict recursively without further measurements.
 For waveform prediction, the neural fits use waveform \ac{mse} alone and are scored at 12 sample endpoints on \num{4120} origins from 40 regenerated validation trajectories.
 The spectral errors use four frame endpoints on \num{6400} origins from the 40 validation trajectories with \SI{60}{\milli\second} current holds.
@@ -133,11 +181,16 @@ The spectral errors use four frame endpoints on \num{6400} origins from the 40 v
 \end{table}
 
 The waveform \ac{dmdc} predictor had \SI{32.3}{\percent} higher validation error than the waveform \ac{mlp} predictor, while the spectral \ac{dmdc} predictor had \SI{4.4}{\percent} lower validation error than the spectral \ac{mlp} predictor (Table~\ref{tab:dmdc_representation_gap}).
-The history lengths, excitation schedules, and model selection criteria also differed between targets, so the comparison cannot isolate the effect of predicting log-power.
-The spectral result supports testing the affine predictor in closed loop, where its effect on the optimization follows from the form of the suppression cost.
+Relative to the nonlinear predictors, an affine model therefore described the evolution of spectral log-power better than it described the waveform over this horizon.
+The history lengths, excitation schedules, and model selection criteria differed between targets, so the size of this advantage cannot be attributed to the choice of observables alone.
 
 \FloatBarrier
 \section{Quadratic Programming Formulation}
+
+For waveform \ac{dmdc}, the predicted \ac{eeg} samples are affine in the planned currents, so tracking the healthy channel means with~\eqref{eq:mpc_waveform_cost} gives a quadratic objective in those currents.
+With a quadratic stimulation penalty and the current bounds in~\eqref{eq:mpc_current_constraints}, the waveform control problem is already a convex quadratic program.
+For spectral \ac{dmdc}, the cost in~\eqref{eq:mpc_spectral_cost} is only piecewise quadratic because it penalizes squared deviations from the healthy envelope only where predicted log-power exceeds the threshold.
+As in the epigraph reformulation of the \(L_1\) stimulation cost, we can represent the hinge with auxiliary variables and affine inequalities to obtain an equivalent problem that a quadratic programming solver can solve.
 
 At spectral frame $q$, fix the observed history and let $H\in\mathbb N_{>0}$ denote the number of intervals in the control horizon.
 Each planned current vector $\mathbf u_{\ell|q}\in\mathcal U$ is held over interval $\ell=0,\ldots,H-1$, with $\mathcal U\subseteq\mathbb R^{\ndim{u}}$ as in~\eqref{eq:mpc_current_constraints}.
@@ -173,7 +226,6 @@ The entries $\mathcal Y_{j|q,c,m}$ and $\mathcal Y_{\mathrm{healthy},c,m}$ give 
 For any admissible currents, minimizing the squared auxiliary variables sets each one to its smallest feasible value, ${[\mathcal Y_{j|q,c,m}-\mathcal Y_{\mathrm{healthy},c,m}]}_+$.
 The reformulated objective therefore equals the original objective at the minimizing auxiliary variables.
 Substitution of~\eqref{eq:dmdc_current_rollout} yields affine inequalities in the planned currents and auxiliary variables, so minimizing the two weighted sums of squares gives a convex quadratic program.
-Applying the same spectral cost to waveform predictions requires windowed power and a logarithm, which make the envelope inequalities nonlinear in the planned currents even for an affine waveform predictor.
 
 At the ten-frame control horizon, the condensed spectral formulation has 30 current variables and \num{7440} auxiliary variables.
 OSQP reuses the fixed objective and constraint matrices and updates the constraint bounds from the new zero-current prediction at each replan.
