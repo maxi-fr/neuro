@@ -38,8 +38,8 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-BENCHMARK_DIR = Path("artifacts/transcription_benchmark")
-UNCONTROLLED_DIR = Path("artifacts/sweep_2026_11/observable_benchmark/runs")
+BENCHMARK_DIR = Path("artifacts/thesis/transcription_benchmark")
+UNCONTROLLED_DIR = Path("artifacts/thesis/sweep_2026_11/observable_benchmark/runs")
 SNAPSHOTS_PATH = BENCHMARK_DIR / "snapshots.npz"
 CELLS_DIR = BENCHMARK_DIR / "cells"
 

@@ -16,7 +16,7 @@ from neuro.spectral import compute_log_power_frames
 from neuro.types import FloatArray
 
 OUT = Path(__file__).resolve().with_suffix(".pdf")
-DATA = OUT.parents[3] / "data"
+DATA = OUT.parents[3] / "artifacts" / "thesis" / "data"
 FS = 50
 GEOMETRY = StftGeometry(n_segment=50, n_hop=25)
 QUANTILE = 0.90

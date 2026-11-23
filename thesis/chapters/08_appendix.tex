@@ -233,7 +233,7 @@ The closed-loop comparison tests how much this formulation changes solve time an
 
 \section{Closed-Loop Performance and Solve Time}
 
-% Data: artifacts/sweep_2026_11/waveform_dmd/benchmark (repository root).
+% Data: artifacts/thesis/sweep_2026_11/waveform_dmd/benchmark (repository root).
 We first compared the tuned spectral and waveform \ac{dmdc} controllers with IPOPT on ten paired reserved simulation seeds.
 Both planned over \SI{0.60}{\second} and replanned every \SI{60}{\milli\second}.
 The spectral controller held one current vector per replan interval.
@@ -242,7 +242,7 @@ In spectral and waveform order, the mean seizure burdens were \SI{5.00}{\percent
 The median solve times, averaged across seeds, were \SI{0.967}{\second} for the spectral controller and \SI{0.715}{\second} for the waveform controller.
 The different costs and current holds make these outcomes a comparison of the two tuned controllers.
 
-% Protocol and timing data: thesis/artifacts/dmdc_closed_loop_timing/.
+% Protocol and timing data: artifacts/thesis/dmdc_closed_loop_timing/.
 To measure the effect of the optimization method, we ran the spectral controller with single-shooting IPOPT and with condensed OSQP on the same ten reserved plant seeds.
 Both implementations used the same predictor, healthy envelope, objective weights, current constraints, control horizon, and replanning interval.
 At each replan, the controller applied the first current vector of its plan to the plant and received a new spectral frame for the next replan.
@@ -279,7 +279,7 @@ The simulator advanced only after each controller update finished, so the seizur
 Across paired seeds, the OSQP seizure burden differed from the IPOPT value by $-0.09$ to $+0.29$ percentage points.
 
 \chapter{\acs{mpc} Transcription Benchmark}\label{app:transcription_benchmark}
-% Data, snapshots, and cell logs: artifacts/transcription_benchmark/.
+% Data, snapshots, and cell logs: artifacts/thesis/transcription_benchmark/.
 % Runner: src/experiments/transcription_benchmark.py; figure: thesis/figures/08_appendix/transcription_benchmark.py.
 
 This appendix compares the three direct \ac{mpc} transcriptions from Table~\ref{tab:mpc_transcription_counts} implemented in JAX and solved with IPOPT across the three controllers evaluated in Section~\ref{sec:controller_comparison} (spectral \ac{dmdc}, spectral \ac{cnn}, and waveform \ac{mlp}) and four matched physical horizons (\SI{0.30}{\second}, \SI{0.60}{\second}, \SI{1.02}{\second}, and \SI{1.50}{\second}).
@@ -390,7 +390,7 @@ The waveform loss \(\mathcal{L}_\mathrm{wave}\) covered the first 12 samples and
 The single-term fits set the other term's weight to zero.
 
 % Protocol: docs/hyperparameter_sweep_strategy.md (Sections 6.1 and 6.3).
-% Initial calibration: artifacts/sweep_2026_11/waveform_matched_geometry/mlp/effort/summary.csv.
+% Initial calibration: artifacts/thesis/sweep_2026_11/waveform_matched_geometry/mlp/effort/summary.csv.
 To select a shared stimulation weight for the suppression cost comparison, we calibrated the controller using the joint-loss fit with both costs active.
 We used \(w_{\mathrm{wave}}=1\) as the reference weight for \(\mathcal J_{\mathrm{wave}}\) and \(w_{\mathrm{spec}}=1000\) as the starting weight for \(\mathcal J_{\mathrm{spec}}\).
 The waveform cost sums over channels, whereas the spectral cost averages squared excess over channels and frequency bins.
@@ -398,7 +398,7 @@ The terminal sample and frame inherited their respective stage weights.
 The stimulation weight \(w_{L_2}\) was swept over \(\{1, 3, 10, 30, 100, 300, 1000\}\) with both suppression terms active.
 The selected weight, \(w_{L_2}=100\), delivered \SI{28.08}{\milli\ampere\second} on average.
 
-% Follow-up: artifacts/waveform_joint_cost_recalibration/{report.md,rows.csv}.
+% Follow-up: artifacts/thesis/waveform_joint_cost_recalibration/{report.md,rows.csv}.
 % Local sensitivity and short replays: thesis/tmp/waveform_cost_weight_probe/report.md.
 Holding \(w_{L_2}\) fixed while removing a suppression cost changes the balance between suppression and current effort.
 To compare outcomes at similar delivered charges, we varied \(w_{\mathrm{spec}}\) and \(w_{L_2}\) with \(w_{\mathrm{wave}}=1\) (Table~\ref{tab:waveform_cost_calibration}).
@@ -442,7 +442,7 @@ For the controller using the waveform-only fit, the two runs in which spread was
 \FloatBarrier
 \subsection{Control Horizon and Terminal Weight}
 
-% Data: artifacts/sweep_2026_11/waveform_matched_geometry/mlp/{horizons,terminal,terminal_confirm,final_effort}.
+% Data: artifacts/thesis/sweep_2026_11/waveform_matched_geometry/mlp/{horizons,terminal,terminal_confirm,final_effort}.
 With the joint-loss fit and \(\mathcal J_{\mathrm{wave}}\) selected, we tested whether changing the control horizon or increasing the terminal weight improved containment at \(w_{L_2}=100\).
 Increasing the terminal multiplier replaced the tracking weight on the final forecast sample while retaining weight 1 on the preceding samples.
 A multiplier of 1 gave the same outcomes as the default, which inherits the stage weight.
@@ -478,7 +478,7 @@ A final current-weight sweep with this horizon and the waveform suppression cost
 
 \FloatBarrier
 \section{Sparse Stimulation Calibration}\label{sec:sparse_calibration}
-% Data and manifests: artifacts/sparse_stimulation_102/ (calibration), artifacts/sparse_activation_ipopt/ (condensed fmax activation comparison), artifacts/sparse_stimulation_reserved_ipopt/ (reserved IPOPT run).
+% Data and manifests: artifacts/thesis/sparse_stimulation_102/ (calibration), artifacts/thesis/sparse_activation_ipopt/ (condensed fmax activation comparison), artifacts/thesis/sparse_stimulation_reserved_ipopt/ (reserved IPOPT run).
 
 We calibrated sparse stimulation using the spectral \ac{dmdc} predictor and the \SI{1.02}{\second} control horizon selected in Section~\ref{sec:controller_comparison}.
 Each plan contained 17 holds of \SI{60}{\milli\second}, with one hold applied before replanning.

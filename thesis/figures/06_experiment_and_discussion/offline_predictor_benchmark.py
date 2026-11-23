@@ -27,7 +27,7 @@ FIGURES = Path(__file__).resolve().parent
 THESIS = FIGURES.parents[1]
 TABLES = THESIS / "tables" / FIGURES.name
 REPO = THESIS.parent
-CAMPAIGN = REPO / "artifacts" / "sweep_2026_11"
+CAMPAIGN = REPO / "artifacts" / "thesis" / "sweep_2026_11"
 MATCHED = CAMPAIGN / "waveform_matched_geometry"
 DMD_STUDY = CAMPAIGN / "observable_dmd/hop3"
 DIRECT_MLP = CAMPAIGN / "observable_mlp/residual_ablation/model.npz"
@@ -83,7 +83,7 @@ def describe_settings(meta: dict[str, Any], arrays: dict[str, FloatArray], dmd: 
     if meta["model_type"] == "mlp":
         output = "residual output" if meta["residual"] else "direct output"
         depth = meta["depth"]
-        layers = "One hidden layer" if depth == 1 else f"{depth} hidden layers"
+        layers = "1 hidden layer" if depth == 1 else f"{depth} hidden layers"
         return f"{layers} of {meta['hidden_size']} units, {meta['activation']}, {output}"
     filters = " then ".join(str(arrays[f"conv.{i}.weight"].shape[0]) for i in range(meta["n_convs"]))
     kernel_shape = arrays["conv.0.weight"].shape[2:]
@@ -112,7 +112,7 @@ def save_table(path: Path, columns: str, headers: tuple[str, ...], rows: list[tu
         r"\bottomrule",
         r"\end{tabular}",
     ]
-    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8", newline="\n")
 
 
 def save_lookahead_plot(
@@ -288,7 +288,9 @@ def main() -> None:
         else:
             samples = model.n_y
             history = f"{model.n_y} samples"
-        configurations.append((label, f"{history} ({samples / FS:.2f} s)", describe_settings(meta, arrays, dmd)))
+        target, architecture = label.split(" ", 1)
+        table_label = rf"{target} \acs{{{architecture.lower()}}}"
+        configurations.append((table_label, f"{history} ({samples / FS:.2f} s)", describe_settings(meta, arrays, dmd)))
 
     manifest = json.loads((MATCHED / "offline_data_manifest.json").read_text(encoding="utf-8"))
     start, horizon = summary["start_frame"], summary["horizon_frames"]
@@ -313,7 +315,7 @@ def main() -> None:
     save_table(
         TABLES / "offline_predictor_selection.tex",
         r"@{}llp{0.48\linewidth}@{}",
-        ("Predictor", "EEG history", "Selected settings"),
+        ("Predictor", r"\acs{eeg} history", "Selected settings"),
         configurations,  # ty: ignore[invalid-argument-type]
     )
     save_lookahead_plot(lookaheads, labels, scores, loss_ablation)

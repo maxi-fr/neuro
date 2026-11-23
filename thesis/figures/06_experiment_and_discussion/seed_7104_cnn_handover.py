@@ -9,7 +9,7 @@ from neuro.plant.jansen_rit import JansenRitDynamics
 
 from seed_7104_forecasts import CHECK, ROOT, RUN
 
-CNN = ROOT / "artifacts/sweep_2026_11/observable_benchmark/runs/obs_cnn_s7104"
+CNN = ROOT / "artifacts/thesis/sweep_2026_11/observable_benchmark/runs/obs_cnn_s7104"
 
 
 def simulate_switch(switch_s: float, duration: float):

@@ -9,7 +9,7 @@ Mark the items you want fixed with `[x]`, completed items with `[o]`, and items 
 - [ ] **C7 `[MODEL / REPRODUCIBILITY]`** `chapters/03_biological_plant_modeling.tex:81,213,313,348` & `chapters/00_symbols_and_acronyms.tex:47-48`
   - **Issue:** The stated diffusion coefficient $A_i a\sigma$ gives 279.5, 292.4 and 309.6 for background, propagation-zone and epileptogenic-zone regions. The benchmark applies 280 directly to the fifth state in every region. The printed equation therefore adds about 11% more noise in the epileptogenic zone.
   - **Fix:** Give the common state-level diffusion coefficient and its units in the equations, table and symbol list. Check which convention earlier simulation campaigns used before extending the correction to them.
-  - **Evidence:** [Benchmark configuration](../artifacts/dmdc_closed_loop_timing/base_simulation.yaml), revision `4de695c`, `src/neuro/plant/jansen_rit.py:165-169`.
+  - **Evidence:** [Benchmark configuration](../../artifacts/thesis/dmdc_closed_loop_timing/base_simulation.yaml), revision `4de695c`, `src/neuro/plant/jansen_rit.py:165-169`.
 
 - [c] **C8 `[FIGURE / TIMING]`** `chapters/03_biological_plant_modeling.tex:314,323` & `chapters/06_experiment_and_discussion.tex:284-290`
   - **Issue:** The caption says onset was detected at 0.5 s. That timestamp is the centre of the first 1 s window in a run of four above-threshold windows spaced 0.25 s apart. Establishing persistence requires later samples.
@@ -43,7 +43,7 @@ Mark the items you want fixed with `[x]`, completed items with `[o]`, and items 
 - [ ] **H34 `[MEASUREMENT LIMITATION]`** `chapters/03_biological_plant_modeling.tex:379` & `chapters/06_experiment_and_discussion.tex:298-299` & `chapters/07_conclusion_and_future_outlook.tex:32`
   - **Issue:** TP9 is used for sensing and stimulation. The observation equation includes only projected neural activity, and the benchmark sets independent sensor-noise standard deviation to zero.
   - **Fix:** State in the outlook that the simulations assumed artifact-free EEG during stimulation and that performance with stimulation artifacts and sensor noise remains untested.
-  - **Evidence:** [Sensor configuration](../artifacts/dmdc_closed_loop_timing/base_simulation.yaml).
+  - **Evidence:** [Sensor configuration](../../artifacts/thesis/dmdc_closed_loop_timing/base_simulation.yaml).
 
 - [ ] **H35 `[STUDY SCOPE]`** `chapters/task_description.tex:19` & `chapters/07_conclusion_and_future_outlook.tex:6-9`
   - **Issue:** The official assignment calls for comparing phenomenological and data-driven predictors. The thesis identifies a biophysical simulation plant and data-driven control predictors, leaving the reader to infer how the phenomenological predictor requirement was addressed.
@@ -52,7 +52,7 @@ Mark the items you want fixed with `[x]`, completed items with `[o]`, and items 
 - [ ] **H36 `[RETROSPECTIVE ANALYSIS]`** `chapters/06_experiment_and_discussion.tex:486,500-504,576-580`
   - **Issue:** The 1.68 s snapshot was selected after looking for a recorded replay with at least 20 seizing regions under the spectral plan. In the separate delayed-start example, 6.90 s was also selected retrospectively from one uncontrolled trajectory.
   - **Fix:** Disclose the 1.68 s selection rule in the figure caption. For the delayed start, report that waiting until 6.90 s worked on that trajectory and leave prospective identification of a safe delay open.
-  - **Evidence:** [Snapshot selection record](../artifacts/seed_7104_snapshot_branches/report.md).
+  - **Evidence:** [Snapshot selection record](../../artifacts/thesis/seed_7104_snapshot_branches/report.md).
 
 ---
 
@@ -69,7 +69,7 @@ Mark the items you want fixed with `[x]`, completed items with `[o]`, and items 
 - [ ] **M34 `[MODEL INITIALIZATION]`** `chapters/03_biological_plant_modeling.tex:170`
   - **Issue:** The model requires a regional state and a history spanning the longest delay. The text does not say how these were initialized.
   - **Fix:** Record the benchmark convention: initialize at the healthy resting state and fill the delay buffer with its unshifted firing rate.
-  - **Evidence:** [Benchmark configuration](../artifacts/dmdc_closed_loop_timing/base_simulation.yaml), revision `4de695c`, `src/neuro/plant/jansen_rit.py`.
+  - **Evidence:** [Benchmark configuration](../../artifacts/thesis/dmdc_closed_loop_timing/base_simulation.yaml), revision `4de695c`, `src/neuro/plant/jansen_rit.py`.
 
 - [ ] **M35 `[OPTIMIZATION COMPARISON]`** `chapters/06_experiment_and_discussion.tex:511,526` & `chapters/08_appendix.tex:520-521`
   - **Issue:** The comparison calls the three approaches solvers for the “same problem.” Grouped search allows only 16 activation schedules, a restriction on the feasible set.
@@ -82,7 +82,7 @@ Mark the items you want fixed with `[x]`, completed items with `[o]`, and items 
 - [ ] **M37 `[RESULT ATTRIBUTION]`** `chapters/08_appendix.tex:246,276`
   - **Issue:** The 17.8-fold median solve-time improvement is attributed to condensing alone. Both the transcription and solver changed.
   - **Fix:** Attribute the measured improvement to condensed OSQP relative to single-shooting IPOPT.
-  - **Evidence:** [Timing protocol](../artifacts/dmdc_closed_loop_timing/report.md).
+  - **Evidence:** [Timing protocol](../../artifacts/thesis/dmdc_closed_loop_timing/report.md).
 
 - [ ] **M38 `[STATISTICAL INTERPRETATION]`** `chapters/06_experiment_and_discussion.tex:133-144`
   - **Issue:** The pooled correlations use 180,000 overlapping frame pairs from branches that share snapshots. The resulting coefficient describes a pooled association under the tested conditions.

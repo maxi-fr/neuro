@@ -1,0 +1,21 @@
+{
+  "thesis/tables/06_experiment_and_discussion/offline_predictor_selection.tex": "5e1150834ee13f9cff1c1dbb4f7700b22a3c4d4fc44c79b8f89add1172b9046c",
+  "thesis/tables/08_appendix/observable_mlp_trials.tex": "91f48277b79070ade8adba6e759f44e4314e6a41e10e6fb502a0ed4de7113e09",
+  "thesis/tables/08_appendix/observable_cnn_trials.tex": "8db9efd0aaf576bddb53b0cffce7b04f667919be62b39faf4b0047f20298c03c",
+  "thesis/tables/08_appendix/waveform_mlp_trials.tex": "e6c5243669780d03c0613840e36d62ff3e60fc513804439425bf6af44f10159d",
+  "thesis/tables/08_appendix/waveform_cnn_trials.tex": "49b3829a55ba2dabca38d1448089e5d9d89dbde78cddba96b5482169789eb953",
+  "thesis/figures/05_mpc_framework/suppression_references.pdf": "76ef8f14ab08fe22dfb89d047bae35ac8fd3217441f62379941bb814d8c1d77f",
+  "thesis/figures/06_experiment_and_discussion/closed_loop_effort_sweeps.pdf": "ed1fca7f6e20a6cb8fc2ea28d36a2b45a07978dbaf8b0af2f40df72d2bbb70c0",
+  "thesis/figures/06_experiment_and_discussion/observable_penalty_state.pdf": "f352298d69ac1101d9dcb3d5118a4543e639de54e55df0029a606f9a3d610d73",
+  "thesis/figures/06_experiment_and_discussion/observable_potential_predictability.pdf": "335e5828cf69dd0690dc9b9e152427a1a3c65972b1eba2742faeba86043907d0",
+  "thesis/figures/06_experiment_and_discussion/observable_replays.pdf": "70b77d7ab4cca0224d786597de36f8cd1c294afe0c514dc59d1aa5905c5bf18c",
+  "thesis/figures/06_experiment_and_discussion/offline_predictor_dmd_grid.pdf": "a4561527c90ce1b0b07b4ffd7125b9960d678ae003a37242627ab66fbfbaca58",
+  "thesis/figures/06_experiment_and_discussion/offline_predictor_lookahead.pdf": "90a0906c30d91474e55b41477c389ebcef5e15a4b8c0c4c7b3bda8ab11d58920",
+  "thesis/figures/06_experiment_and_discussion/reserved_current_traces_7104.pdf": "592f6953f8795c79ff8e5938859baf7ccb701900bf3be45e60a120385bc49316",
+  "thesis/figures/06_experiment_and_discussion/seed_7104_recruitment.pdf": "36ff042afb4eb19596e0a51c9efba91ae15f16b1ac8b6093b8deabacb20e8d1e",
+  "thesis/figures/06_experiment_and_discussion/sparse_current_traces.pdf": "4b90038051842d3b7e135591905d94f1c79b33025305745b45439237ecb47dac",
+  "thesis/figures/08_appendix/predictor_search_dmd_heatmaps.pdf": "fa4ee06258aa6174e80a8bf4b656da17a83f16a4732cd7addd6a7b200ba9aa4b",
+  "thesis/figures/08_appendix/predictor_search_loss_curves.pdf": "d605c335fd908d2c3bea2e6c91d339387c09795c071442c4e9a1d8ed357695b5",
+  "thesis/figures/08_appendix/sparse_calibration_tradeoffs.pdf": "b727cb30a6b5b4e8291992c89be47284753693cd4d0eb0a6d8f3f63ec1455fe7",
+  "thesis/figures/08_appendix/transcription_benchmark.pdf": "f21e6cf0e6e664eac4f4ae1c454c407014f851854c4cc6412816cd2371b3c252"
+}

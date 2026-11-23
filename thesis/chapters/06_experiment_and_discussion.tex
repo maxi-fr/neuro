@@ -12,7 +12,7 @@ We compared both representations with functional connectivity, which measures st
 For each observable, we examined how far ahead it could be predicted and how closely its cost tracked regional recruitment.
 
 \subsection{Potential Predictability}
-% Predictability curves and matched replays are in artifacts/observable_predictability_expanded/.
+% Predictability curves and matched replays are in artifacts/thesis/observable_predictability_expanded/.
 % Figure inputs and reconstruction are in thesis/figures/06_experiment_and_discussion/plot_observable_predictability.py.
 
 The stochastic nature of the Jansen-Rit plant limits predictability of neural activity even if the initial plant state were known.
@@ -99,8 +99,8 @@ The rapid loss of predictability in the waveform residual motivated a shorter wa
 In the predictor evaluations we used 12 samples (\SI{0.24}{\second}) for the waveform loss and 17 frames (\SI{1.02}{\second}) for the spectral loss.
 
 \subsection{Suppression Cost and Seizure State}
-% The expanded score archive is artifacts/observable_predictability_expanded/evaluation_scores.npz.
-% The short-window connectivity analysis and its outputs are in artifacts/fc_time_domain/report.md.
+% The expanded score archive is artifacts/thesis/observable_predictability_expanded/evaluation_scores.npz.
+% The short-window connectivity analysis and its outputs are in artifacts/thesis/fc_time_domain/report.md.
 
 Suppression costs are derived quantities computed from scalp \ac{eeg} and may not track regional recruitment in the plant.
 To assess how closely the waveform, spectral, and connectivity costs tracked regional recruitment, we computed each cost directly from recorded \ac{eeg} to avoid the influence of forecast error and correlated it with the seizure state.
@@ -269,8 +269,8 @@ The closed-loop comparison in Section~\ref{sec:controller_comparison} tests whet
 It compares the waveform \ac{mlp} with the best-performing linear and nonlinear spectral predictors, \ac{dmdc} and the \ac{cnn}.
 
 \section{Closed-Loop Seizure Suppression}
-% Development baseline scores are in artifacts/sweep_2026_11/observable_dmd/calibration/hop3/rows.csv.
-% The regional drive calculation and stimulation tests are in artifacts/ez_montage_suppression/.
+% Development baseline scores are in artifacts/thesis/sweep_2026_11/observable_dmd/calibration/hop3/rows.csv.
+% The regional drive calculation and stimulation tests are in artifacts/thesis/ez_montage_suppression/.
 
 In \SI{12}{\second} simulations of the calibrated 76-region plant, we tested whether scalp \ac{eeg} feedback could contain seizure spread while limiting delivered charge.
 The controllers received scalp \ac{eeg} and applied stimulation through the TP9, CP5, and Ex8 electrode montage, with zero net current and a limit of \SI{2}{\milli\ampere} per electrode (Section~\ref{sec:stimulation_interface}).
@@ -346,9 +346,9 @@ Together with the threshold-controlled runs that contained spread, this places t
 With this containment baseline established, we next turn to tuning the stimulation effort penalty.
 
 \subsection{Stimulation Cost Weight}\label{sec:stimulation_cost_weight}
-% Waveform MLP final effort grid is in artifacts/sweep_2026_11/waveform_matched_geometry/mlp/final_effort/rows.csv.
-% Spectral CNN grid is in artifacts/sweep_2026_11/observable_effort_calibration/cnn/rows.csv.
-% Spectral DMDc grid is in artifacts/sweep_2026_11/observable_dmd/calibration/hop3/rows.csv.
+% Waveform MLP final effort grid is in artifacts/thesis/sweep_2026_11/waveform_matched_geometry/mlp/final_effort/rows.csv.
+% Spectral CNN grid is in artifacts/thesis/sweep_2026_11/observable_effort_calibration/cnn/rows.csv.
+% Spectral DMDc grid is in artifacts/thesis/sweep_2026_11/observable_dmd/calibration/hop3/rows.csv.
 
 To contain seizure spread while keeping mean delivered charge below \SI{30}{\milli\ampere\second}, we varied the quadratic stimulation cost weight $w_{L_2}$ in~\eqref{eq:mpc_base_objective} for the spectral \ac{dmdc}, spectral \ac{cnn}, and joint-trained waveform \ac{mlp} controllers.
 Each sweep held the predictor, the other cost terms, and the \SI{1.02}{\second} control horizon fixed.
@@ -382,8 +382,8 @@ By imposing a shared response through~\eqref{eq:dmd_current_sensitivity}, the \a
 For the following experiments we retained \mbox{$w_{L_2}=0.30$} for the spectral controllers and \mbox{$w_{L_2}=100$} for the waveform \ac{mlp}.
 
 \subsection{Spectral Geometry Selection}
-% The stage-by-stage report is artifacts/sweep_2026_11/observable_geometry/report.md.
-% MLP per-seed scores and manifests are in artifacts/sweep_2026_11/observable_geometry/mlp/.
+% The stage-by-stage report is artifacts/thesis/sweep_2026_11/observable_geometry/report.md.
+% MLP per-seed scores and manifests are in artifacts/thesis/sweep_2026_11/observable_geometry/mlp/.
 
 We compared spectral geometries to select settings for the closed-loop controller comparison.
 The offline hyperparameter searches ranked predictors by validation loss on a shared target, whereas changing the spectral geometry changes the log-power target itself.
@@ -411,7 +411,7 @@ During control, the same forecast can either be tracked against the healthy wave
 We first varied the training loss at a fixed suppression cost, then held the jointly trained predictor fixed and varied the suppression cost (Table~\ref{tab:waveform_loss_cost}).
 Control started at \SI{0.48}{\second}, with the same penalty on a given current sequence in all five configurations (Appendix~\ref{sec:waveform_controller_calibration}). % latex-lint:ignore=TYPO-10
 
-% Data: artifacts/sweep_2026_11/waveform_matched_geometry/mlp/loss_cost/{comparison_manifest.yaml,summary.csv,rows.csv}.
+% Data: artifacts/thesis/sweep_2026_11/waveform_matched_geometry/mlp/loss_cost/{comparison_manifest.yaml,summary.csv,rows.csv}.
 \begin{table}
   \centering
   \setlength{\tabcolsep}{4.5pt}
@@ -433,7 +433,7 @@ Control started at \SI{0.48}{\second}, with the same penalty on a given current 
 
 Under waveform tracking, adding spectral loss during training changed the outcome from widespread recruitment on three seeds to containment on all five (A and C in Table~\ref{tab:waveform_loss_cost}).
 On one of the three seeds the waveform-only fit delivered slightly more charge than the joint fit, so lower charge alone cannot explain the difference.
-% Timestamped replay: artifacts/waveform_arm_a_timing/report.md.
+% Timestamped replay: artifacts/thesis/waveform_arm_a_timing/report.md.
 All failed solves occurred after widespread recruitment, ruling out fallback as the cause of the initial spread.
 
 When the phase of an oscillation is uncertain, minimizing waveform error favors a forecast in which out-of-phase peaks and troughs average out (Section~\ref{sec:observable_predictability}).
@@ -450,8 +450,8 @@ We therefore selected the jointly trained predictor with waveform tracking for t
 
 \FloatBarrier
 \subsection{Controller Comparison}\label{sec:controller_comparison}
-% Per-seed outcomes and paired differences: artifacts/sweep_2026_11/waveform_matched_geometry/final/waveform_mlp/evaluation/ and artifacts/observable_benchmark_matched/.
-% Matched spectral controller runs: artifacts/observable_benchmark_matched/; baseline runs: artifacts/sweep_2026_11/observable_benchmark/.
+% Per-seed outcomes and paired differences: artifacts/thesis/sweep_2026_11/waveform_matched_geometry/final/waveform_mlp/evaluation/ and artifacts/thesis/observable_benchmark_matched/.
+% Matched spectral controller runs: artifacts/thesis/observable_benchmark_matched/; baseline runs: artifacts/thesis/sweep_2026_11/observable_benchmark/.
 
 After selecting the predictors in Section~\ref{sec:offline_predictor_benchmark}, we used five development seeds to tune the spectral \ac{dmdc}, spectral \ac{cnn}, and waveform \ac{mlp} controllers.
 On the ten seeds reserved for this comparison, we tested whether these controllers could contain seizure spread with less charge than threshold stimulation.

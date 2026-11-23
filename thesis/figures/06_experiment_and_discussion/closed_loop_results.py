@@ -12,7 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import style
 
 FIGURES = Path(__file__).resolve().parent
-CAMPAIGN = FIGURES.parents[2] / "artifacts" / "sweep_2026_11"
+CAMPAIGN = FIGURES.parents[2] / "artifacts" / "thesis" / "sweep_2026_11"
 EXTENSION = CAMPAIGN / "stimulation_cost_weight_extension"
 CHARGE_TARGET = 30
 

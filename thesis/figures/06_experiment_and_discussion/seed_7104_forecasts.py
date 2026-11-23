@@ -14,9 +14,9 @@ from neuro.plant.jansen_rit import JansenRitDynamics
 from neuro.predictor.base import InferencePredictor
 
 ROOT = Path(__file__).resolve().parents[3]
-ARM = ROOT / "artifacts/sweep_2026_11/waveform_matched_geometry/final/waveform_mlp"
+ARM = ROOT / "artifacts/thesis/sweep_2026_11/waveform_matched_geometry/final/waveform_mlp"
 RUN = ARM / "evaluation/runs/waveform_mlp_s7104"
-CHECK = Path(__file__).resolve().parents[2] / "artifacts/seed_7104_forecast_check"
+CHECK = ROOT / "artifacts/thesis/seed_7104_forecast_check"
 
 
 def replay_seed(currents, end_s):

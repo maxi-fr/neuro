@@ -12,7 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import style
 
 FIGURES = Path(__file__).resolve().parent
-RESULTS = FIGURES.parents[2] / "artifacts" / "sparse_stimulation_102"
+RESULTS = FIGURES.parents[2] / "artifacts" / "thesis" / "sparse_stimulation_102"
 METHODS = {
     "l1": (r"Exact $L_1$", "#264653"),
     "bonmin": ("Bonmin", "#d75c37"),

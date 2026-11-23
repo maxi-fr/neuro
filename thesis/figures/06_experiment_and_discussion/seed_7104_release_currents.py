@@ -9,7 +9,7 @@ from seed_7104_forecasts import CHECK, ROOT, RUN, forecast_costs, replay_seed, w
 def compare_release_currents() -> None:
     """Score both controllers' issued plans and delivered sequences from the common release."""
     config = yaml.safe_load((RUN / "config.yaml").read_text(encoding="utf-8"))
-    cnn_log = ROOT / "artifacts/sweep_2026_11/observable_benchmark/runs/obs_cnn_s7104/log.npz"
+    cnn_log = ROOT / "artifacts/thesis/sweep_2026_11/observable_benchmark/runs/obs_cnn_s7104/log.npz"
     with np.load(RUN / "trace.npz") as waveform, np.load(cnn_log) as spectral:
         times = waveform["controller.t"]
         first = np.flatnonzero(waveform["controller.solve_attempted"])[0]

@@ -14,7 +14,7 @@ import style
 FIGURES = Path(__file__).resolve().parent
 THESIS = FIGURES.parents[1]
 REPO = THESIS.parent
-CELLS_DIR = REPO / "artifacts" / "transcription_benchmark" / "cells"
+CELLS_DIR = REPO / "artifacts" / "thesis" / "transcription_benchmark" / "cells"
 
 PREDICTORS = (
     ("spectral_dmdc", r"Spectral DMDc ($n_o = 744$)"),

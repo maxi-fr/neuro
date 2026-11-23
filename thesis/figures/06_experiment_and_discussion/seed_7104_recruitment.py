@@ -8,7 +8,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import style
 
 FIGURES = Path(__file__).resolve().parent
-BRANCHES = FIGURES.parents[1] / "artifacts/seed_7104_snapshot_branches/branches.csv"
+BRANCHES = FIGURES.parents[2] / "artifacts/thesis/seed_7104_snapshot_branches/branches.csv"
 
 
 def plot_seed_7104() -> None:
